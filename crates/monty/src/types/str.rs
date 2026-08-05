@@ -1,4 +1,4 @@
-use std::{cell::Cell, fmt::Write, mem, ops};
+use std::{cell::Cell, fmt::Write, ops};
 
 /// Python string type, wrapping a Rust `String`.
 ///
@@ -177,8 +177,6 @@ fn ctor_str_arg<'a>(arg: Option<&'a Value>, default: &'a str, vm: &'a VM<'_>) ->
 /// path), and borrowed `&str` callers avoid an upfront `to_owned()` —
 /// allocation happens only when the string actually needs heap storage.
 ///
-/// Returns `Result<_, ResourceError>` so the function composes with
-/// `RunResult` and other error types that implement `From<ResourceError>`.
 pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Result<Value, ResourceError> {
     let bytes = s.as_ref().as_bytes();
     match bytes.len() {
@@ -381,10 +379,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
 }
 
 impl HeapItem for Str {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.0.len()
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // No-op: strings don't hold Value references
     }
@@ -1727,7 +1721,7 @@ fn str_center<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
     } else {
         // Exact byte capacity: the original string (`s.len()` bytes, possibly
         // multibyte) plus `pad` fillchars of `fillchar.len_utf8()` bytes each.
-        // `width * fillchar.len_utf8()` would mis-charge the `s`-slot bytes.
+        // `width * fillchar.len_utf8()` would overestimate the `s`-slot bytes.
         let total_pad = width - len;
         let capacity = s.len().saturating_add(total_pad.saturating_mul(fillchar.len_utf8()));
         let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
@@ -2105,10 +2099,6 @@ impl StringIterator {
 }
 
 impl HeapItem for StringIterator {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         if let Some(id) = self.source_id() {
             stack.push(id);

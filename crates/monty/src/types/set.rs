@@ -108,9 +108,6 @@ impl SetStorage {
         if existing.is_some() {
             Ok(false)
         } else {
-            // Track memory growth before adding the new entry.
-            // Growth unit matches SetStorage::estimate_size which uses size_of::<SetEntry>().
-            vm.heap.track_growth(mem::size_of::<SetEntry>())?;
             let index = self.entries.len();
             let value = value_guard.into_inner();
             self.entries.push(SetEntry { value, hash });
@@ -554,13 +551,6 @@ impl<'h> HeapRead<'h, SetStorage> {
     }
 }
 
-impl SetStorage {
-    /// Estimates the memory size of this storage.
-    fn estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.len() * mem::size_of::<SetEntry>()
-    }
-}
-
 /// Python set type - mutable, unordered collection of unique hashable elements.
 ///
 /// Sets support standard operations like add, remove, discard, pop, clear, as well
@@ -733,10 +723,6 @@ impl<'h> HeapRead<'h, Set> {
                 return Ok(false);
             }
         }
-
-        // Track memory growth before adding the new entry.
-        // Growth unit matches SetStorage::estimate_size which uses size_of::<SetEntry>().
-        vm.heap.track_growth(mem::size_of::<SetEntry>())?;
 
         // Add new entry
         let (value, vm) = value_guard.into_parts();
@@ -1212,10 +1198,6 @@ impl Set {
 }
 
 impl HeapItem for Set {
-    fn py_estimate_size(&self) -> usize {
-        self.0.estimate_size()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.0.collect_dec_ref_ids(stack);
     }
@@ -1447,10 +1429,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
 }
 
 impl HeapItem for FrozenSet {
-    fn py_estimate_size(&self) -> usize {
-        self.storage.estimate_size()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.storage.collect_dec_ref_ids(stack);
     }
@@ -1586,10 +1564,6 @@ impl SetIterator {
 }
 
 impl HeapItem for SetIterator {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.push(self.source_id());
     }

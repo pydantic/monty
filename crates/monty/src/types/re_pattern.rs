@@ -9,7 +9,7 @@
 //! Custom serde serializes only the pattern string and flags, recompiling the regex
 //! on deserialization. This supports Monty's snapshot/restore feature.
 
-use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str};
+use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, str};
 
 use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -469,10 +469,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
 }
 
 impl HeapItem for RePattern {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.pattern.len()
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // No heap references — all data is owned.
     }

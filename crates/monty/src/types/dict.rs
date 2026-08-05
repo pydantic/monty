@@ -26,7 +26,7 @@ use crate::{
         defaultdict::defaultdict_missing,
     },
     types::Type,
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{EitherStr, Value},
 };
 
 /// Python dict type preserving insertion order.
@@ -136,18 +136,6 @@ impl DictKind {
     pub fn counter() -> Self {
         Self(Some(Box::new(DictSpecial::Counter)))
     }
-
-    /// Bytes the boxed [`DictSpecial`] adds on top of `size_of::<Dict>()`.
-    ///
-    /// Code that turns an *already allocated* dict special must charge this
-    /// with [`Heap::track_growth`], because [`Dict::py_estimate_size`] adds it
-    /// unconditionally and the refund at free time reads the current size.
-    pub const SPECIAL_SIZE: usize = mem::size_of::<DictSpecial>();
-
-    /// Heap bytes owned by this kind beyond the `DictKind` word itself.
-    fn estimate_size(&self) -> usize {
-        if self.0.is_some() { Self::SPECIAL_SIZE } else { 0 }
-    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -177,9 +165,6 @@ impl Dict {
     /// Marks this dict as a `defaultdict` with the given factory (a callable or
     /// `None`), taking ownership of the factory reference. Called once at
     /// construction; the factory joins the dict's `contains_refs` accounting.
-    ///
-    /// If the dict is already on the heap, the caller must first charge
-    /// [`DictKind::SPECIAL_SIZE`] with [`Heap::track_growth`].
     pub fn make_defaultdict(&mut self, factory: Option<Value>) {
         if matches!(factory, Some(Value::Ref(_))) {
             self.contains_refs = true;
@@ -194,9 +179,6 @@ impl Dict {
     }
 
     /// Marks this dict as a `collections.Counter`.
-    ///
-    /// Same tracker contract as [`Dict::make_defaultdict`]: charge
-    /// [`DictKind::SPECIAL_SIZE`] first if the dict is already allocated.
     pub fn make_counter(&mut self) {
         self.kind = DictKind::counter();
     }
@@ -344,10 +326,6 @@ impl Dict {
             old_entry.key.drop_with(vm);
             Ok(Some(old_entry.value))
         } else {
-            if let Err(error) = vm.heap.track_growth(2 * VALUE_SIZE) {
-                entry.drop_with(vm);
-                return Err(error.into());
-            }
             let index = self.entries.len();
             self.entries.push(entry);
             self.indices.insert_unique(hash, index, |&i| self.entries[i].hash);
@@ -565,14 +543,6 @@ impl<'h> HeapRead<'h, Dict> {
             // Transfer ownership of the old value to caller (no clone needed)
             Ok(Some(old_entry.value))
         } else {
-            // Key doesn't exist — track memory growth before adding the new entry.
-            // Growth unit is 2 * size_of::<Value>() to match Dict::py_estimate_size.
-            if let Err(error) = vm.heap.track_growth(2 * VALUE_SIZE) {
-                // The entry never reaches the dict, so release what the caller
-                // transferred rather than leaking it — same contract as above.
-                entry.drop_with(vm);
-                return Err(error.into());
-            }
             let this = self.get_mut(vm.heap);
             let index = this.entries.len();
             this.entries.push(entry);
@@ -1511,12 +1481,6 @@ impl<'h> HeapRead<'h, Dict> {
 }
 
 impl HeapItem for Dict {
-    fn py_estimate_size(&self) -> usize {
-        // Dict size: struct overhead + the boxed kind state (defaultdict/Counter)
-        // + entries (2 Values per entry for key+value)
-        mem::size_of::<Self>() + self.kind.estimate_size() + self.len() * 2 * VALUE_SIZE
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Release the default_factory (a defaultdict with a heap-ref factory, e.g.
         // a lambda). MUST be reported here and in `for_each_child_id` identically.
@@ -1921,10 +1885,6 @@ macro_rules! impl_dict_iterator {
         }
 
         impl HeapItem for $ty {
-            fn py_estimate_size(&self) -> usize {
-                mem::size_of::<Self>()
-            }
-
             fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
                 stack.push(self.source_id());
             }

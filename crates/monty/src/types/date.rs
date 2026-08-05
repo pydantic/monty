@@ -7,7 +7,6 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::{self, Write},
     hash::{Hash, Hasher},
-    mem,
 };
 
 use chrono::{Datelike, NaiveDate, format::StrftimeItems};
@@ -180,10 +179,6 @@ pub(crate) fn extract_str_arg(value: &Value, method_name: &str, heap: &Heap, int
 }
 
 impl HeapItem for Date {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}
 }
 

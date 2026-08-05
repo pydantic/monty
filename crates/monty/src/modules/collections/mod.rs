@@ -36,7 +36,6 @@ use crate::{
     intern::StaticStrings,
     types::{
         Dict, Module, NamedTupleClass, PyTrait, Type,
-        dict::DictKind,
         iter::collect_owned_iterable,
         str::{StringRepr, str_isidentifier},
     },
@@ -164,17 +163,6 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
             return Err(e);
         }
     };
-
-    // The dict is already on the heap, so its `py_estimate_size` was charged
-    // without the boxed kind state — charge that box before installing it,
-    // otherwise the refund at free time exceeds what was tracked.
-    if let Err(error) = vm.heap.track_growth(DictKind::SPECIAL_SIZE) {
-        if let Some(factory) = factory {
-            factory.drop_with(vm);
-        }
-        dict_value.drop_with(vm);
-        return Err(error.into());
-    }
 
     let Value::Ref(dict_id) = dict_value else {
         unreachable!("Dict::init returns a dict ref");

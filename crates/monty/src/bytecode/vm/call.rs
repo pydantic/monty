@@ -866,13 +866,6 @@ impl VM<'_> {
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
-        // Track memory for this frame's locals. Symmetric with
-        // `cleanup_frame_state`. Comprehension variables live on the operand
-        // stack (pushed per-comp), not in any frame-level region, so they
-        // don't enter this accounting.
-        let size = namespace_size * mem::size_of::<Value>();
-        self.heap.tracker_mut().on_grow(|| size)?;
-
         // 1. Build the namespace in the reusable scratch buffer to avoid a
         //    per-call allocation. On error `DropGuard` drops the buffer, so the
         //    pool just restarts empty next call.
@@ -885,10 +878,7 @@ impl VM<'_> {
         {
             let bind_result = func.signature.bind(args, defaults, this, func.name, namespace);
 
-            if let Err(e) = bind_result {
-                this.heap.tracker_mut().on_free(|| size);
-                return Err(e);
-            }
+            bind_result?;
         }
 
         // 3. Install owned cells and captured free-var cells at their slots.

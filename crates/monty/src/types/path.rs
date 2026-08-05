@@ -9,7 +9,6 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem,
 };
 
 use monty_types::MontyPath;
@@ -621,10 +620,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
 }
 
 impl HeapItem for Path {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.path.capacity()
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Path doesn't contain heap references, nothing to do
     }

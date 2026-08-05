@@ -2094,12 +2094,6 @@ impl SimpleException {
         self
     }
 
-    /// The structured payload, [`ExcData::None`] for most exceptions.
-    #[must_use]
-    pub fn data(&self) -> &ExcData {
-        &self.data
-    }
-
     #[must_use]
     pub fn exc_type(&self) -> ExcType {
         self.exc_type

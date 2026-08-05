@@ -1,9 +1,8 @@
 // The wasm worker's memory limit, driven in Node so it needs no browser.
 //
 // The module declares the same `monty-alloc` global allocator as the subprocess
-// worker, so a session's `maxMemory` bounds its linear memory too — but a
-// trapped module has no exit status, so exceeding it surfaces as a crash rather
-// than the `MemoryError` the subprocess pool reports.
+// worker. Soft overruns raise `MemoryError`; a trapped module has no exit
+// status, so only an overrun of the higher hard limit surfaces as a crash.
 
 import { test } from 'vitest'
 
@@ -28,13 +27,13 @@ test('an overrun the interpreter catches leaves the instance alive', async (ctx)
   skipIfBrowser(ctx)
   const pool = await Monty.create()
   const session = await pool.checkout({ limits: { maxMemory: 1024 * 1024 } })
-  // a shape the interpreter accounts for closely enough to catch first, so the
-  // instance survives to serve the next feed
-  const error = await t.throwsAsync(() => session.feedRun("xs = []\nwhile True:\n    xs.append('x' * 24)"), {
+  // The incomplete comprehension is unwound at a checkpoint before the hard limit.
+  const error = await t.throwsAsync(() => session.feedRun('[str(i) for i in range(131_072)]'), {
     instanceOf: MontyRuntimeError,
   })
   t.is(error.message, 'MemoryError: memory limit exceeded: 1048600 bytes > 1048576 bytes')
   t.is(error.exception.typeName, 'MemoryError')
+  t.is(await session.feedRun('1 + 1'), 2)
   await session.close()
   await pool.close()
 })
@@ -43,8 +42,8 @@ test('exceeding the limit kills the instance and the pool recovers', async (ctx)
   skipIfBrowser(ctx)
   const pool = await Monty.create()
   const session = await pool.checkout({ limits: { maxMemory: 1024 } })
-  // the fed snippet is memory the interpreter never accounts for — the module
-  // buys a frame buffer for it before it sees the code
+  // The module allocates the frame buffer before the interpreter can reach a
+  // soft-limit checkpoint.
   const error = await t.throwsAsync(() => session.feedRun('# ' + 'a'.repeat(16 * 1024 * 1024)), {
     instanceOf: MontyCrashedError,
   })

@@ -2347,6 +2347,7 @@ name = "monty-alloc"
 version = "0.0.19"
 dependencies = [
  "monty-proto",
+ "monty-types",
 ]
 
 [[package]]

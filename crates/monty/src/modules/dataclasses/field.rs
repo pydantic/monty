@@ -1,6 +1,6 @@
 //! The `dataclasses.Field` objects making up a class's `__dataclass_fields__`.
 
-use std::{fmt::Write, mem};
+use std::fmt::Write;
 
 use crate::{
     bytecode::{CallResult, VM},
@@ -168,10 +168,6 @@ fn unmodelled_attr_error(attr: &str, missing: &str) -> RunError {
 }
 
 impl HeapItem for DataclassField {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.annotation.py_dec_ref_ids(stack);
         if let Some(default) = &mut self.default {

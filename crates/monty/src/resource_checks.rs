@@ -17,19 +17,17 @@ pub fn check_repeat_size(item_len: usize, count: usize, tracker: &ResourceTracke
 /// For bases with 0 or 1 significant bits (0, 1, -1), the result is always
 /// small regardless of exponent, so the check is skipped.
 ///
-/// The estimate includes a 4× safety multiplier because `BigInt::pow` uses repeated squaring,
-/// which allocates intermediate values on the Rust heap (not tracked by the resource tracker).
-/// At peak, old/new base and old/new accumulator coexist simultaneously during each
-/// multiplication step, requiring roughly 4× the final result size in memory.
+/// The estimate includes a 4× safety multiplier because `BigInt::pow` uses repeated squaring.
+/// At peak, old/new base and old/new accumulator coexist during each multiplication step,
+/// requiring roughly 4× the final result size in memory.
 pub fn check_pow_size(base_bits: u64, exponent: u64, tracker: &ResourceTracker) -> Result<(), ResourceError> {
     // 0**n = 0, 1**n = 1, (-1)**n = ±1 — always small
     if base_bits <= 1 {
         return Ok(());
     }
     let result_bytes = estimate_bits_to_bytes(base_bits.saturating_mul(exponent));
-    // Repeated squaring needs ~4× result size in peak memory (old/new base + old/new accumulator
-    // coexist during each multiplication step), and these are Rust heap allocations not tracked
-    // by the resource tracker.
+    // Repeated squaring needs ~4× result size in peak memory because old/new base and
+    // old/new accumulator coexist during each multiplication step.
     check_estimated_size(result_bytes.saturating_mul(4), tracker)
 }
 
@@ -62,8 +60,7 @@ pub fn check_div_size(dividend_bits: u64, tracker: &ResourceTracker) -> Result<(
 /// Pre-checks that a string/bytes replace won't exceed resource limits before allocating.
 ///
 /// Expanding replacements use the maximum possible match count. Shrinking
-/// replacements use `input_len`, since zero matches copies the full input into
-/// an otherwise untracked Rust `String` or `Vec`.
+/// replacements use `input_len`, since zero matches still copies the full input.
 pub fn check_replace_size(
     input_len: usize,
     old_len: usize,
@@ -121,6 +118,7 @@ impl From<ResourceError> for RunError {
     fn from(err: ResourceError) -> Self {
         let (exc_type, catchable) = match &err {
             ResourceError::Memory { .. } => (ExcType::MemoryError, false),
+            ResourceError::MemoryUnavailable => (ExcType::RuntimeError, false),
             ResourceError::Time { .. } => (ExcType::TimeoutError, false),
             ResourceError::Recursion { .. } => (ExcType::RecursionError, true),
         };

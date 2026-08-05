@@ -91,7 +91,8 @@ pub(crate) fn run() -> ExitCode {
 /// allocator: the wasm worker does the same thing in its own turn loop.
 fn apply_memory_limit(child: &Child) {
     let budget = child.session_budget();
-    monty_alloc::set_limit(budget.max_memory, budget.type_check);
+    monty_alloc::set_limit(budget.max_memory, budget.type_check)
+        .expect("monty-runtime must install LimitedAllocator globally");
 }
 
 /// Writes framed child events to stdout.

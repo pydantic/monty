@@ -446,8 +446,8 @@ pub(crate) fn counter_elements(dict_id: HeapId, args: ArgValues, vm: &mut VM<'_>
     }
 
     // Pre-check the total element count against the resource tracker: a single
-    // large count (e.g. `c['a'] = 10**18`) would otherwise build a multi-exabyte
-    // Rust-heap `Vec` before the allocation tracker ever sees it.
+    // large count (e.g. `c['a'] = 10**18`) would otherwise attempt to build a
+    // multi-exabyte Rust-heap `Vec` before returning a graceful error.
     let total = lengths.iter().fold(0usize, |acc, len| acc.saturating_add(*len));
     check_repeat_size(VALUE_SIZE, total, vm.heap.tracker())?;
 

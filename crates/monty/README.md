@@ -46,7 +46,7 @@ Errors are returned as `MontyException`, with a traceback matching what CPython 
 
 ## Resource limits
 
-Untrusted code shouldn't be able to hog the host. `ResourceTracker` enforces limits on memory, execution time, GC interval and recursion depth; exceeding one terminates execution with a `ResourceError`:
+Untrusted code shouldn't be able to hog the host. `ResourceTracker` enforces execution-time and recursion limits and configures GC scheduling. Memory limits additionally require `monty-alloc` as the executable's global allocator:
 
 ```rust
 use std::time::Duration;
@@ -54,7 +54,6 @@ use monty::MontyRun;
 use monty_types::{CompileOptions, ResourceTracker, PrintWriter, ResourceLimits};
 
 let limits = ResourceLimits {
-    max_memory: Some(10 * 1024 * 1024),
     max_duration: Some(Duration::from_millis(20)),
     ..ResourceLimits::default()
 };

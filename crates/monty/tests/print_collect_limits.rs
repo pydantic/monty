@@ -1,14 +1,12 @@
 //! Byte caps on `PrintWriter::CollectString` / `CollectStreams`.
 //!
-//! Host-side collectors sit outside `ResourceLimits::max_memory` (Monty heap
-//! only). These tests lock the optional `max_bytes` check: capped runs raise
-//! `MemoryError` without growing past the limit; `None` opts out; `Disabled`
-//! under a tight heap limit still succeeds.
+//! These tests lock the optional host-side `max_bytes` check: capped runs
+//! raise `MemoryError` without growing past the limit, while `None` opts out.
 //!
 //! Loops stay at ~256 KiB — safe, not a real OOM.
 
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, PrintStream, PrintWriter, ResourceLimits, ResourceTracker};
+use monty_types::{CompileOptions, ExcType, PrintStream, PrintWriter, ResourceTracker};
 
 /// One KiB payload reused across prints so heap growth stays small.
 const CHUNK: &str = "A";
@@ -79,18 +77,6 @@ fn collect_streams_respects_max_bytes() {
     assert_eq!(err.message(), Some(expected.as_str()));
     assert!(total <= LIMIT_BYTES, "buffer must stay at or under cap, got {total}");
     assert_eq!(total, LIMIT_BYTES);
-}
-
-/// Control: same loop under tight `max_memory` with `Disabled` still succeeds —
-/// proves the print loop itself fits the heap budget; the Collect* failures above
-/// are from the host buffer cap, not sandbox memory.
-#[test]
-fn disabled_print_stays_under_max_memory() {
-    let ex = monty_run(print_loop_code());
-    let limits = ResourceLimits::default().max_memory(LIMIT_BYTES);
-
-    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Disabled);
-    assert!(result.is_ok(), "control failed: {result:?}");
 }
 
 /// Opt-out: `max_bytes=None` still allows growth past a 64 KiB would-be cap.

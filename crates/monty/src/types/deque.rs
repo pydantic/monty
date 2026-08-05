@@ -10,7 +10,7 @@ use crate::{
     intern::StaticStrings,
     resource_checks::check_repeat_size,
     types::{LazyHeapSet, Type, list::repr_sequence_fmt, long_int::repeat_count},
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{EitherStr, Value},
 };
 
 /// `deque([iterable[, maxlen]])` — both positional-or-keyword, both defaulted.
@@ -243,8 +243,7 @@ impl<'h> HeapRead<'h, Deque> {
     ///
     /// Ownership of `item` transfers to the deque (refcount already handled by
     /// the caller); any evicted item is released here.
-    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
-        vm.heap.track_growth(VALUE_SIZE)?;
+    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) {
         if matches!(item, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
         }
@@ -253,17 +252,12 @@ impl<'h> HeapRead<'h, Deque> {
         this.bump_state();
         let evicted = evict_front_if_full(this);
         if let Some(value) = evicted {
-            // Net-zero growth: give back the slot charged above, or a bounded
-            // deque would exhaust the memory limit after enough appends.
-            vm.heap.track_shrink(VALUE_SIZE);
             value.drop_with(vm);
         }
-        Ok(())
     }
 
     /// Appends to the left, evicting from the right if `maxlen` is reached.
-    pub fn appendleft(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
-        vm.heap.track_growth(VALUE_SIZE)?;
+    pub fn appendleft(&mut self, vm: &mut VM<'h>, item: Value) {
         if matches!(item, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
         }
@@ -272,11 +266,8 @@ impl<'h> HeapRead<'h, Deque> {
         this.bump_state();
         let evicted = evict_back_if_full(this);
         if let Some(value) = evicted {
-            // Net-zero growth — see the note in `append`.
-            vm.heap.track_shrink(VALUE_SIZE);
             value.drop_with(vm);
         }
-        Ok(())
     }
 
     /// Clones every item, incrementing refcounts — used by `copy`, `+` and `*`.
@@ -563,10 +554,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
 }
 
 impl HeapItem for Deque {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.items.len() * VALUE_SIZE
-    }
-
     /// Releases every heap reference the deque owns.
     ///
     /// MUST report exactly the same ids as `for_each_child_id` in `heap.rs` —
@@ -632,10 +619,6 @@ impl DequeIterator {
 }
 
 impl HeapItem for DequeIterator {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.push(self.deque);
     }
@@ -708,12 +691,12 @@ fn call_deque_method<'h>(
     match method {
         StaticStrings::Append => {
             let item = args.get_one_arg("deque.append", vm.heap)?;
-            deque.append(vm, item)?;
+            deque.append(vm, item);
             Ok(Value::None)
         }
         StaticStrings::Appendleft => {
             let item = args.get_one_arg("deque.appendleft", vm.heap)?;
-            deque.appendleft(vm, item)?;
+            deque.appendleft(vm, item);
             Ok(Value::None)
         }
         StaticStrings::Pop => {
@@ -819,9 +802,8 @@ fn insert<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>)
         item,
     } = InsertArgs::from_args(args, vm)?;
     defer_drop!(index_value, vm);
-    // Every failing branch below releases `item` through the guard — including
-    // the `track_growth` limit, where a plain `Drop` would leak its refcount.
-    // The insert at the end takes it back out.
+    // Every failing branch below releases `item` through the guard. The insert
+    // at the end takes it back out.
     let mut item_guard = DropGuard::new(item, vm);
     let vm = item_guard.ctx();
 
@@ -846,7 +828,6 @@ fn insert<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>)
     let normalized = if raw < 0 { (raw + len).max(0) } else { raw.min(len) };
     let idx = usize::try_from(normalized).expect("index clamped non-negative");
 
-    vm.heap.track_growth(VALUE_SIZE)?;
     let (item, vm) = item_guard.into_parts();
     if matches!(item, Value::Ref(_)) {
         deque.get_mut(vm.heap).contains_refs = true;
@@ -989,7 +970,7 @@ pub(crate) fn deque_extend(deque_id: HeapId, iterable: Value, end: ExtendEnd, vm
         iterable.drop_with(vm);
         defer_drop_mut!(items, vm);
         for item in items.by_ref() {
-            deque_push(deque_id, item, end, vm)?;
+            deque_push(deque_id, item, end, vm);
         }
         Ok(())
     } else {
@@ -997,7 +978,7 @@ pub(crate) fn deque_extend(deque_id: HeapId, iterable: Value, end: ExtendEnd, vm
         defer_drop!(iter, vm);
         let mut iter = iter.read(vm);
         while let Some(item) = iter.py_next(vm)? {
-            deque_push(deque_id, item, end, vm)?;
+            deque_push(deque_id, item, end, vm);
         }
         Ok(())
     }
@@ -1016,7 +997,7 @@ fn deque_snapshot(deque_id: HeapId, vm: &mut VM<'_>) -> Vec<Value> {
 }
 
 /// Appends one item to whichever end of `deque_id` the extension targets.
-fn deque_push(deque_id: HeapId, item: Value, end: ExtendEnd, vm: &mut VM<'_>) -> RunResult<()> {
+fn deque_push(deque_id: HeapId, item: Value, end: ExtendEnd, vm: &mut VM<'_>) {
     let HeapReadOutput::Deque(mut deque) = vm.heap.read(deque_id) else {
         unreachable!("deque id must reference a deque");
     };

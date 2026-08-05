@@ -56,10 +56,6 @@ impl CallableIterator {
 }
 
 impl HeapItem for CallableIterator {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.callable.py_dec_ref_ids(stack);
         self.sentinel.py_dec_ref_ids(stack);

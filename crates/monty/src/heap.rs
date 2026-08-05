@@ -966,27 +966,6 @@ impl Heap {
         self.tracker.check_time()
     }
 
-    /// Tracks in-place memory growth of an existing heap object.
-    ///
-    /// Call this before performing mutations that grow containers (append, insert,
-    /// extend, dict set, set add). Returns `Err(ResourceError::Memory)` if the
-    /// growth would exceed configured memory limits.
-    #[inline]
-    pub fn track_growth(&self, additional_bytes: usize) -> Result<(), ResourceError> {
-        self.tracker.on_grow(|| additional_bytes)
-    }
-
-    /// Mirror of [`track_growth`](Self::track_growth) for in-place shrinks.
-    ///
-    /// Needed when a heap entry's `py_estimate_size` decreases without the
-    /// entry itself being freed: `on_free` at entry release reads the
-    /// *current* size, so growth charged earlier would otherwise leak in
-    /// the tracker counter.
-    #[inline]
-    pub fn track_shrink(&self, bytes: usize) {
-        self.tracker.on_free(|| bytes);
-    }
-
     /// Number of entries in the heap (including freed slots).
     pub fn size(&self) -> usize {
         self.entries.len()
@@ -1005,16 +984,16 @@ impl Heap {
 
     /// Allocates a new heap entry.
     ///
-    /// Returns `Err(ResourceError)` if allocation would exceed configured limits.
-    /// Use this when you need to handle resource limit errors gracefully.
-    ///
     /// GC-tracked types bump `allocations_since_gc` so that
     /// [`should_gc`](Self::should_gc) eventually fires; trial deletion's own
     /// candidate enrollment happens later, at `dec_ref` time. Leaf types
     /// (strings, bytes, …) cannot participate in cycles and don't count
     /// against the GC interval.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "preserve allocation error propagation and ownership-cleanup contracts"
+    )]
     pub fn allocate(&self, data: HeapData) -> Result<HeapId, ResourceError> {
-        self.tracker.on_grow(|| data.py_estimate_size())?;
         if data.is_gc_tracked() {
             self.allocations_since_gc
                 .set(self.allocations_since_gc.get().wrapping_add(1));
@@ -1027,8 +1006,7 @@ impl Heap {
             color: Cell::new(CcColor::Black),
         };
 
-        let id = self.entries.allocate(new_entry);
-        Ok(id)
+        Ok(self.entries.allocate(new_entry))
     }
 
     /// Returns the singleton empty tuple.
@@ -1174,12 +1152,6 @@ impl Heap {
                     // a &self borrow on `StableHeap`. At least this repeated lookup is already
                     // on the slow path.
                     let mut value = reader.heap.entries.entry(current_id).expect("already looked up").free();
-
-                    // Notify tracker of freed memory
-                    reader
-                        .heap
-                        .tracker
-                        .on_free(|| value.data.0.get_mut().py_estimate_size());
 
                     // Collect child IDs and push onto work stack for iterative processing
                     py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut work_stack);
@@ -1346,7 +1318,6 @@ impl Heap {
             if let HeapData::ExtFunction(function) = value.data.0.get_mut() {
                 Self::remove_ext_function_cache_entry(&mut self.ext_function_cache, &function.cache_key(), id);
             }
-            self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
             freed += 1;
             // Walk children, marking child `Value::Ref`s as `Dereferenced`
             // under `memory-model-checks` so dropping the freed entry's data

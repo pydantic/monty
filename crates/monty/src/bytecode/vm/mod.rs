@@ -1990,14 +1990,6 @@ impl<'h> VM<'h> {
         self.stack
             .drain(frame.stack_base..)
             .for_each(|value| value.drop_with(&mut *self.heap));
-
-        // Track freed memory for the locals region. Matches the `on_grow`
-        // at each frame-entry site (sync function, module, sync coroutine,
-        // spawned coroutine).
-        if frame.locals_count > 0 {
-            let size = usize::from(frame.locals_count) * mem::size_of::<Value>();
-            self.heap.tracker_mut().on_free(|| size);
-        }
     }
 
     /// Cleans up all frames and stack values for the current task.

@@ -452,17 +452,6 @@ impl ExcData {
             _ => None,
         }
     }
-
-    /// Approximate byte footprint, used by the heap's memory accounting when
-    /// an exception carrying this payload is stored on the sandbox heap.
-    #[must_use]
-    pub fn estimate_size(&self) -> usize {
-        match self {
-            Self::None => 0,
-            Self::Unicode(data) => data.estimate_size(),
-            Self::Json(data) => data.estimate_size(),
-        }
-    }
 }
 
 /// Structured fields of a `UnicodeDecodeError` / `UnicodeEncodeError`,
@@ -506,9 +495,8 @@ pub enum UnicodeErrorObject {
 impl UnicodeErrorData {
     /// Payload size cap: unicode errors on objects larger than this carry no
     /// structured data (hosts fall back to the message-only `ValueError`).
-    /// Exception payloads live outside the sandbox's resource tracker once
-    /// the exception escapes, so the cap bounds how much untracked memory a
-    /// single raise can pin.
+    /// Exception payloads are copied into the host once they escape the worker,
+    /// so the cap bounds how much host memory a single raise can pin.
     pub const MAX_OBJECT_LEN: usize = 64 * 1024;
 
     /// Builds the payload for an encode error on `object`, or
@@ -545,17 +533,6 @@ impl UnicodeErrorData {
             ExcData::None
         }
     }
-
-    /// Approximate byte footprint, used by the heap's memory accounting when
-    /// an exception carrying this payload is stored on the sandbox heap.
-    #[must_use]
-    pub fn estimate_size(&self) -> usize {
-        let object_len = match &self.object {
-            UnicodeErrorObject::Bytes(b) => b.len(),
-            UnicodeErrorObject::Str(s) => s.len(),
-        };
-        mem::size_of::<Self>() + self.encoding.len() + object_len + self.reason.len()
-    }
 }
 
 /// Structured fields of a `json.JSONDecodeError`, mirroring CPython's `msg` /
@@ -585,8 +562,8 @@ pub struct JsonErrorData {
 
 impl JsonErrorData {
     /// Document size cap, mirroring [`UnicodeErrorData::MAX_OBJECT_LEN`]:
-    /// exception payloads live outside the sandbox's resource tracker once
-    /// the exception escapes, so `doc` is dropped (not truncated — a partial
+    /// exception payloads are copied into the host once they escape the worker,
+    /// so `doc` is dropped (not truncated — a partial
     /// document would misplace `pos`) for larger inputs.
     pub const MAX_DOC_LEN: usize = 64 * 1024;
 
@@ -606,13 +583,6 @@ impl JsonErrorData {
             lineno,
             colno,
         }))
-    }
-
-    /// Approximate byte footprint, used by the heap's memory accounting when
-    /// an exception carrying this payload is stored on the sandbox heap.
-    #[must_use]
-    pub fn estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.msg.len() + self.doc.as_ref().map_or(0, String::len)
     }
 }
 

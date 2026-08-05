@@ -1,4 +1,4 @@
-use std::{fmt::Write, mem};
+use std::fmt::Write;
 
 use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
@@ -168,10 +168,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
 }
 
 impl HeapItem for Class {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.name.py_estimate_size() + self.namespace.py_estimate_size()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.namespace.py_dec_ref_ids(stack);
     }

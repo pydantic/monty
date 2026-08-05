@@ -3,17 +3,19 @@
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
+    error::Error,
     fmt,
     io::{self, Write},
     process,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-/// Bytes currently charged, and the limit they may not exceed (`usize::MAX`
-/// until [`set_limit`] lowers it). Counting starts with the process: a counter
-/// armed later would see `dealloc`s it never charged and underflow.
+/// Bytes currently charged, plus the session's soft and hard ceilings.
+/// Counting starts with the process: a counter armed later would see `dealloc`s
+/// it never charged and underflow.
 static LIVE: AtomicUsize = AtomicUsize::new(0);
-static LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
+static SOFT_LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
+static HARD_LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// The leanest the process has ever been at an arming point: what the worker
 /// costs to exist, before any session ran. Deriving each limit from the
@@ -21,38 +23,59 @@ static LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
 /// ratchet it up checkout after checkout.
 static BASELINE: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-/// Room above the limit for machinery the session did not ask for and cannot
-/// see: buffers the worker needs to serve it at all, and the type checker's
-/// stubs and caches. Both are generous, since too tight a cap kills healthy
-/// workers, which is far worse than a limit that binds a little late.
+/// Room between the soft and hard limits for exception machinery and work
+/// between interpreter checkpoints. Type checking gets a larger gap because
+/// its stubs and caches are allocated outside Python execution.
 const BASE_HEADROOM: usize = 4 * 1024 * 1024;
 const TYPE_CHECK_HEADROOM: usize = 32 * 1024 * 1024;
 
-/// Applies a session's memory limit, or lifts it while no session has one.
+/// Error returned when [`LimitedAllocator`] is not the process allocator.
+#[derive(Debug)]
+pub struct AllocatorNotInstalled;
+
+impl fmt::Display for AllocatorNotInstalled {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("monty-alloc is not installed as the global allocator")
+    }
+}
+
+impl Error for AllocatorNotInstalled {}
+
+/// Applies a session's soft memory limit and the hard ceiling above it.
 /// Call it after every request, since a session can also arrive (or end)
-/// through a restored dump or a reset; the result depends only on the limit and
-/// the baseline, so re-applying mid-session is a no-op.
+/// through a restored dump or a reset; re-applying mid-session is a no-op.
 ///
 /// On a 32-bit target (wasm) a limit near 4 GiB saturates the arithmetic and
 /// leaves the worker uncapped — there is no cap to express.
-// TODO: update once there's one memory-limit implementation. The interpreter
-// still meters allocations itself, so a session's limit is enforced twice and
-// whichever binds first decides how exceeding it surfaces.
-pub fn set_limit(max_memory: Option<u64>, type_check: bool) {
+pub fn set_limit(max_memory: Option<u64>, type_check: bool) -> Result<(), AllocatorNotInstalled> {
     let live = LIVE.load(Ordering::Relaxed);
+    if live == 0 {
+        return Err(AllocatorNotInstalled);
+    }
+    monty_types::register_memory_probe(session_memory_with);
     // `fetch_min` both reads and lowers the baseline: the first arming, on a
     // pristine worker, sets it, and a later leaner moment can only improve it.
     let baseline = BASELINE.fetch_min(live, Ordering::Relaxed).min(live);
-    let limit = match max_memory {
+    let (soft, hard) = match max_memory {
         Some(bytes) => {
+            let soft = baseline.saturating_add(usize::try_from(bytes).unwrap_or(usize::MAX));
             let headroom = if type_check { TYPE_CHECK_HEADROOM } else { BASE_HEADROOM };
-            baseline
-                .saturating_add(usize::try_from(bytes).unwrap_or(usize::MAX))
-                .saturating_add(headroom)
+            (soft, soft.saturating_add(headroom))
         }
-        None => usize::MAX,
+        None => (usize::MAX, usize::MAX),
     };
-    LIMIT.store(limit, Ordering::Relaxed);
+    // Publish the protective ceiling before lowering the soft checkpoint.
+    HARD_LIMIT.store(hard, Ordering::Relaxed);
+    SOFT_LIMIT.store(soft, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Returns session bytes after a proposed allocation, saturating on overflow.
+#[inline]
+fn session_memory_with(additional: usize) -> usize {
+    LIVE.load(Ordering::Relaxed)
+        .saturating_add(additional)
+        .saturating_sub(BASELINE.load(Ordering::Relaxed))
 }
 
 /// The system allocator, plus the live-byte count that enforces the memory
@@ -115,12 +138,15 @@ unsafe impl GlobalAlloc for LimitedAllocator {
     }
 }
 
-/// Adds `size` to the live total, exiting if that exceeds the limit. Charges
-/// *before* allocating, so the allocation is refused rather than committed; the
-/// overcount left when an allocation then fails is moot, as both paths end here.
+/// Adds `size` to the live total, exiting only past the hard limit.
+///
+/// The common path compares against the soft limit first. Once past it, the
+/// interpreter will raise at its next checkpoint unless this burst also crosses
+/// the hard ceiling, in which case allocation must stop immediately.
 #[inline]
 fn charge(size: usize) {
-    if LIVE.fetch_add(size, Ordering::Relaxed).saturating_add(size) > LIMIT.load(Ordering::Relaxed) {
+    let live = LIVE.fetch_add(size, Ordering::Relaxed).saturating_add(size);
+    if live > SOFT_LIMIT.load(Ordering::Relaxed) && live > HARD_LIMIT.load(Ordering::Relaxed) {
         out_of_memory(format_args!(
             "monty worker: allocation of {size} bytes exceeds the memory limit"
         ));
@@ -147,7 +173,8 @@ fn out_of_memory(reason: fmt::Arguments<'_>) -> ! {
     // Lift the limit first — writing to stderr allocates (the handle's lock),
     // which under an exceeded limit would re-enter and be silenced below,
     // losing the message. Safe because this path never returns.
-    LIMIT.store(usize::MAX, Ordering::Relaxed);
+    SOFT_LIMIT.store(usize::MAX, Ordering::Relaxed);
+    HARD_LIMIT.store(usize::MAX, Ordering::Relaxed);
     if !REPORTING.swap(true, Ordering::Relaxed) {
         let _ = writeln!(io::stderr(), "{reason}");
     }

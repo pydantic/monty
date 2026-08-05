@@ -62,7 +62,7 @@
 //! Any code path that needs one of these should be added explicitly
 //! rather than relying on CPython parity.
 
-use std::{fmt::Write, mem};
+use std::fmt::Write;
 
 use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs};
 
@@ -290,10 +290,6 @@ impl OpenFile {
 }
 
 impl HeapItem for OpenFile {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.path.len()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // The buffer holds a heap reference (Str/Bytes) that must be released
         // when the file is dropped. Everything else is plain Rust data.
@@ -616,15 +612,10 @@ impl<'h> HeapRead<'h, OpenFile> {
 
     /// Marks the file wrapper as closed and releases the cached read buffer.
     ///
-    /// Releasing the buffer matters for **resource accounting**: the
-    /// full-file buffer is a separate heap entry whose `py_estimate_size`
-    /// counts against `max_memory`. Without an explicit release here a
-    /// closed file would keep its (potentially large) buffer alive until
-    /// the file object's Python-level refcount drops to zero — long after
-    /// the user has signalled they're done with it. By `dec_ref`ing the
-    /// buffer here, `current_memory()` drops by the buffer size as soon as
-    /// `close()` returns, matching CPython's behaviour and giving the user
-    /// a deterministic way to free file-cache memory.
+    /// Without an explicit release, a closed file would keep its potentially
+    /// large buffer alive until the file object's Python refcount reaches zero.
+    /// Releasing it here promptly returns allocator-backed memory when no other
+    /// value owns the buffered data.
     ///
     /// Other holders (e.g. a `data = f.read()` reference) keep the entry
     /// alive via their own refcounts, so this release is safe — it only

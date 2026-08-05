@@ -261,10 +261,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
 }
 
 impl HeapItem for DictKeysView {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.push(self.dict_id);
     }
@@ -543,10 +539,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
 }
 
 impl HeapItem for DictItemsView {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.push(self.dict_id);
     }
@@ -639,10 +631,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
 }
 
 impl HeapItem for DictValuesView {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.push(self.dict_id);
     }

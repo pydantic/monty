@@ -12,7 +12,6 @@ use std::{
     borrow::Cow,
     cmp::Ordering,
     fmt::{self, Display, Write},
-    mem,
     ops::{Add, Mul, Neg, Sub},
     sync::OnceLock,
 };
@@ -109,21 +108,6 @@ impl LongInt {
     /// helper so that interned and heap `int` values hash identically.
     pub fn hash(&self) -> HashValue {
         hash_python_long_int(&self.0)
-    }
-
-    /// Estimates memory size in bytes.
-    ///
-    /// Used for resource tracking. The actual size includes the Vec overhead
-    /// plus the digit storage. Rounds up bits to bytes to avoid underestimating
-    /// (e.g., 1 bit = 1 byte, not 0 bytes).
-    pub fn estimate_size(&self) -> usize {
-        // Each BigInt digit is typically a u32 or u64
-        // We estimate based on the number of significant bits
-        let bits = self.0.bits();
-        // Convert bits to bytes (round up), add overhead for Vec and sign
-        // On 32-bit platforms, truncate to usize::MAX if bits is too large
-        let bit_bytes = usize::try_from(bits).unwrap_or(usize::MAX).saturating_add(7) / 8;
-        bit_bytes + mem::size_of::<BigInt>()
     }
 
     /// Returns a reference to the inner `BigInt`.

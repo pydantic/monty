@@ -8,7 +8,7 @@ use crate::{
     exception_private::RunResult,
     heap::{DropWithContext, HeapId, HeapRead},
     types::itertools::ItertoolsIter,
-    value::{VALUE_SIZE, Value},
+    value::Value,
 };
 
 /// Yields every item of each argument in turn.
@@ -57,17 +57,6 @@ impl Chain {
         if let Some(current) = &mut self.current {
             current.py_dec_ref_ids(stack);
         }
-    }
-
-    /// Bytes held in `sources`, on top of the inline struct.
-    ///
-    /// Unlike `cycle`'s buffer this never grows after construction, so it needs
-    /// no incremental charge: `allocate` reads `py_estimate_size` once with the
-    /// arguments already in place, and `on_free` returns the same amount. It
-    /// still has to be counted — the vector is an untracked copy of an
-    /// already-tracked argument list.
-    pub(crate) fn buffered_size(&self) -> usize {
-        self.sources.len() * VALUE_SIZE
     }
 }
 

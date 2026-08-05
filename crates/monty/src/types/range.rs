@@ -7,7 +7,6 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem,
 };
 
 use num_integer::div_ceil;
@@ -324,10 +323,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
 }
 
 impl HeapItem for Range {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Range doesn't contain heap references, nothing to do
     }
@@ -358,10 +353,6 @@ impl RangeIterator {
 }
 
 impl HeapItem for RangeIterator {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, _: &mut Vec<HeapId>) {}
 }
 

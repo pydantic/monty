@@ -10,7 +10,7 @@ use monty_types::ExcType;
 
 use crate::{
     args::ArgValues,
-    asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState, awaited_state_size},
+    asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     bytecode::{CallResult, VM},
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
@@ -331,61 +331,6 @@ impl HeapData {
             Self::Itertools(i) => i.py_type(),
         }
     }
-
-    pub fn py_estimate_size(&self) -> usize {
-        match self {
-            Self::Str(s) => s.py_estimate_size(),
-            Self::Bytes(b) => b.py_estimate_size(),
-            Self::List(l) => l.py_estimate_size(),
-            Self::Deque(d) => d.py_estimate_size(),
-            Self::Tuple(t) => t.py_estimate_size(),
-            Self::NamedTuple(nt) => nt.py_estimate_size(),
-            Self::NamedTupleClass(class) => class.py_estimate_size(),
-            Self::Dict(d) => d.py_estimate_size(),
-            Self::DictKeysView(view) => view.py_estimate_size(),
-            Self::DictItemsView(view) => view.py_estimate_size(),
-            Self::DictValuesView(view) => view.py_estimate_size(),
-            Self::Set(s) => s.py_estimate_size(),
-            Self::FrozenSet(fs) => fs.py_estimate_size(),
-            Self::Closure(closure) => closure.py_estimate_size(),
-            Self::FunctionDefaults(fd) => fd.py_estimate_size(),
-            Self::Cell(cell) => cell.py_estimate_size(),
-            Self::Range(r) => r.py_estimate_size(),
-            Self::Slice(s) => s.py_estimate_size(),
-            Self::Exception(e) => e.py_estimate_size(),
-            Self::Dataclass(dc) => dc.py_estimate_size(),
-            Self::Class(class) => class.py_estimate_size(),
-            Self::Instance(instance) => instance.py_estimate_size(),
-            Self::BoundMethod(bm) => bm.py_estimate_size(),
-            Self::DataclassField(field) => field.py_estimate_size(),
-            Self::LongInt(li) => li.py_estimate_size(),
-            Self::Module(m) => m.py_estimate_size(),
-            Self::Coroutine(coro) => coro.py_estimate_size(),
-            Self::GatherFuture(gather) => gather.py_estimate_size(),
-            Self::ExternalFuture(fut) => fut.py_estimate_size(),
-            Self::Path(p) => p.py_estimate_size(),
-            Self::OpenFile(file) => file.py_estimate_size(),
-            Self::ReMatch(m) => m.py_estimate_size(),
-            Self::RePattern(p) => p.py_estimate_size(),
-            Self::ExtFunction(function) => function.py_estimate_size(),
-            Self::Date(d) => d.py_estimate_size(),
-            Self::DateTime(d) => d.py_estimate_size(),
-            Self::TimeDelta(d) => d.py_estimate_size(),
-            Self::TimeZone(d) => d.py_estimate_size(),
-            Self::ListIterator(d) => d.py_estimate_size(),
-            Self::DequeIterator(d) => d.py_estimate_size(),
-            Self::TupleIterator(d) => d.py_estimate_size(),
-            Self::StringIterator(d) => d.py_estimate_size(),
-            Self::BytesIterator(d) => d.py_estimate_size(),
-            Self::RangeIterator(d) => d.py_estimate_size(),
-            Self::DictKeyIterator(d) => d.py_estimate_size(),
-            Self::DictItemIterator(d) => d.py_estimate_size(),
-            Self::DictValueIterator(d) => d.py_estimate_size(),
-            Self::SetIterator(d) => d.py_estimate_size(),
-            Self::CallableIterator(d) => d.py_estimate_size(),
-            Self::Itertools(d) => d.py_estimate_size(),
-        }
-    }
 }
 
 /// Thin wrapper around `Value` which is used in the `Cell` variant above.
@@ -434,22 +379,12 @@ pub(crate) struct FunctionDefaults {
 }
 
 impl HeapItem for CellValue {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Value>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.0.py_dec_ref_ids(stack);
     }
 }
 
 impl HeapItem for Closure {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-            + self.cells.len() * mem::size_of::<HeapId>()
-            + self.defaults.len() * mem::size_of::<Value>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Decrement ref count for captured cells
         stack.extend(self.cells.iter().copied());
@@ -461,10 +396,6 @@ impl HeapItem for Closure {
 }
 
 impl HeapItem for FunctionDefaults {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.defaults.len() * mem::size_of::<Value>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Decrement ref count for default values that are heap references
         for default in &mut self.defaults {
@@ -474,30 +405,18 @@ impl HeapItem for FunctionDefaults {
 }
 
 impl HeapItem for SimpleException {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.arg().map_or(0, String::len) + self.data().estimate_size()
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Exceptions don't contain heap references
     }
 }
 
 impl HeapItem for LongInt {
-    fn py_estimate_size(&self) -> usize {
-        self.estimate_size()
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // LongInt doesn't contain heap references
     }
 }
 
 impl HeapItem for Coroutine {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.namespace.len() * mem::size_of::<Value>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Decrement ref count for namespace values that are heap references
         for value in &mut self.namespace {
@@ -507,14 +426,6 @@ impl HeapItem for Coroutine {
 }
 
 impl HeapItem for GatherFuture {
-    fn py_estimate_size(&self) -> usize {
-        let state_size = match &self.state {
-            GatherState::Awaited(awaited) => awaited_state_size(&awaited.pending_children, &awaited.results),
-            GatherState::Pending | GatherState::Completed(_) | GatherState::Failed(_) => 0,
-        };
-        mem::size_of::<Self>() + self.items.len() * mem::size_of::<HeapId>() + state_size
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Decrement ref count for items the gather owns (every entry in
         // `items` is inc_ref'd at construction time).
@@ -539,10 +450,6 @@ impl HeapItem for GatherFuture {
 }
 
 impl HeapItem for ExternalFuture {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // `Pending { awaiter: Some(Awaiter::GatherSlot { gather, .. }) }`
         // owns an inc_ref on `gather` — release it when this entry is

@@ -175,8 +175,7 @@ impl<'h> ValueRead<'h, '_> {
 
 /// Size of a single `Value` slot in bytes.
 ///
-/// Used for memory tracking when containers grow (e.g., `list.append`, `list.extend`).
-/// Must match the per-element unit used by `py_estimate_size` implementations.
+/// Used to preflight operations that allocate many value slots at once.
 pub(crate) const VALUE_SIZE: usize = mem::size_of::<Value>();
 
 /// Borrowed integer payload used to format a Python `id()` in callable reprs.
@@ -2328,13 +2327,6 @@ impl EitherStr {
         match self {
             Self::Interned(id) => interns.get_str(id).to_owned(),
             Self::Heap(s) => s,
-        }
-    }
-
-    pub fn py_estimate_size(&self) -> usize {
-        match self {
-            Self::Interned(_) => 0,
-            Self::Heap(s) => s.capacity(),
         }
     }
 }

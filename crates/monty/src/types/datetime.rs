@@ -7,7 +7,6 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem,
 };
 
 use chrono::{
@@ -779,10 +778,6 @@ struct DatetimeReplaceArgs {
 }
 
 impl HeapItem for DateTime {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.timezone_name.as_ref().map_or(0, String::len)
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         if let Some(tzinfo_ref) = self.tzinfo_ref {
             stack.push(tzinfo_ref);

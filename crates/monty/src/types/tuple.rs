@@ -518,10 +518,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
 }
 
 impl HeapItem for Tuple {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.items.len() * mem::size_of::<Value>()
-    }
-
     /// Pushes all heap IDs contained in this tuple onto the stack.
     ///
     /// Called during garbage collection to decrement refcounts of nested values.
@@ -660,10 +656,6 @@ impl TupleIterator {
 }
 
 impl HeapItem for TupleIterator {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.push(self.source_id());
     }

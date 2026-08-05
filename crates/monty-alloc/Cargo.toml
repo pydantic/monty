@@ -16,6 +16,7 @@ repository = { workspace = true }
 name = "monty_alloc"
 
 [dependencies]
+monty-types = { workspace = true }
 # Only for `OOM_EXIT_CODE`, and only when the host can read an exit status.
 monty-proto = { workspace = true, optional = true }
 

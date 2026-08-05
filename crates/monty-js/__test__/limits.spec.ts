@@ -16,7 +16,7 @@ const isRuntimeError = { instanceOf: MontyRuntimeError }
 test('resource limits custom', async () => {
   const limits: ResourceLimits = {
     maxDurationSecs: 5.0,
-    maxMemory: 1024,
+    maxMemory: 64 * 1024,
     gcInterval: 10,
     maxRecursionDepth: 500,
   }
@@ -68,9 +68,10 @@ for i in range(1000):
     result.append('x' * 100)
 len(result)
 `
-  const error = await t.throwsAsync(() => run(code, { limits: { maxMemory: 100 } }), isRuntimeError)
-  const allocated = kind === 'browser' ? 156 : 180
-  t.is(error.message, `MemoryError: memory limit exceeded: ${allocated} bytes > 100 bytes`)
+  const maxMemory = 64 * 1024
+  const error = await t.throwsAsync(() => run(code, { limits: { maxMemory } }), isRuntimeError)
+  const allocated = kind === 'browser' ? 76_160 : 88_673
+  t.is(error.message, `MemoryError: memory limit exceeded: ${allocated} bytes > ${maxMemory} bytes`)
 })
 
 test('memory limit accepts values above u32 max', async () => {
@@ -91,12 +92,14 @@ test('limits with inputs', async () => {
 
 test('pow memory limit', async () => {
   const error = await t.throwsAsync(() => run('2 ** 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  t.is(error.message, 'MemoryError: memory limit exceeded: 10000000 bytes > 1000000 bytes')
+  const allocated = kind === 'browser' ? 10_024_700 : 10_031_056
+  t.is(error.message, `MemoryError: memory limit exceeded: ${allocated} bytes > 1000000 bytes`)
 })
 
 test('lshift memory limit', async () => {
   const error = await t.throwsAsync(() => run('1 << 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  t.is(error.message, 'MemoryError: memory limit exceeded: 1250001 bytes > 1000000 bytes')
+  const allocated = kind === 'browser' ? 1_274_701 : 1_281_057
+  t.is(error.message, `MemoryError: memory limit exceeded: ${allocated} bytes > 1000000 bytes`)
 })
 
 test('mult memory limit', async () => {
@@ -105,7 +108,8 @@ big = 2 ** 4000000
 result = big * big
 `
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  t.is(error.message, 'MemoryError: memory limit exceeded: 4000000 bytes > 1000000 bytes')
+  const allocated = kind === 'browser' ? 4_025_371 : 4_031_724
+  t.is(error.message, `MemoryError: memory limit exceeded: ${allocated} bytes > 1000000 bytes`)
 })
 
 test('small operations within limit', async () => {

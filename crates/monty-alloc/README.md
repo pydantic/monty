@@ -1,9 +1,8 @@
 # monty-alloc
 
 The global allocator [Monty](https://github.com/pydantic/monty) workers run
-under: it counts live bytes against the sandbox session's memory limit, and ends
-the process deliberately when that limit — or the system allocator itself —
-refuses.
+under: it counts live bytes against the sandbox session's soft and hard memory
+limits, and ends the process if the hard limit or system allocator refuses.
 
 Monty executes untrusted Python, so a host has to be able to cap what a session
 may allocate. Enforcing that in the allocator catches every byte the worker asks
@@ -19,18 +18,18 @@ sandboxed code can allocate, but not a direct `mmap`.
 static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 
 // After each request, from the session the worker now holds.
-monty_alloc::set_limit(Some(8 * 1024 * 1024), false);
+monty_alloc::set_limit(Some(8 * 1024 * 1024), false).unwrap();
 ```
 
-The cap is the session's limit, plus what the worker costs to exist, plus
-headroom for machinery the session did not ask for (buffers, and the type
-checker's stubs and caches). `None` lifts it. See
-`limitations/resource_limits.md` in the repository for how exceeding a memory
-limit surfaces to a host.
+The soft limit is the worker baseline plus the session's budget. The interpreter
+reads real usage at execution checkpoints and raises `MemoryError` after crossing
+it. A higher hard limit leaves room for exception machinery and allocations
+between checkpoints; crossing it ends the worker. `None` lifts both limits. See
+`limitations/resource_limits.md` for how each outcome surfaces to a host.
 
 ## Ending the process
 
-Exceeding the limit cannot raise a Python exception — it happens below the
+Exceeding the hard limit cannot raise a Python exception — it happens below the
 interpreter — so the worker dies and its host replaces it. Neither a panic
 (whose machinery allocates) nor a plain abort will do: `SIGABRT` is also what a
 stack overflow produces, and a host that cannot tell those apart cannot report

@@ -25,7 +25,7 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
 fn dump_header_rejects_incompatible_data() {
     let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let bytes = runner.dump().unwrap();
-    assert_eq!(&bytes[..9], b"MONTY\0\x03\x00\x00");
+    assert_eq!(&bytes[..9], b"MONTY\0\x04\x00\x00");
 
     let legacy = postcard::to_allocvec(&runner).unwrap();
     assert_eq!(

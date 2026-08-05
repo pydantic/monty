@@ -129,9 +129,7 @@ impl<'h> HeapRead<'h, List> {
     /// The caller transfers ownership of `item` to the list. The item's refcount
     /// is NOT incremented here - the caller is responsible for ensuring the refcount
     /// was already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
-    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
-        // Check memory limit before growing the internal Vec
-        vm.heap.track_growth(VALUE_SIZE)?;
+    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) {
         // Track whether the list now contains heap refs so child-walk fast paths
         // can short-circuit; cycle-collector seeding is handled by `dec_ref`,
         // not at mutation time.
@@ -140,7 +138,6 @@ impl<'h> HeapRead<'h, List> {
         }
         // Ownership transfer - refcount was already handled by caller
         self.get_mut(vm.heap).items.push(item);
-        Ok(())
     }
 
     /// Inserts an element at the specified index.
@@ -152,9 +149,7 @@ impl<'h> HeapRead<'h, List> {
     /// # Arguments
     /// * `index` - The position to insert at (0-based). If index >= len(),
     ///   the item is appended to the end (matching Python semantics).
-    pub fn insert(&mut self, vm: &mut VM<'h>, index: usize, item: Value) -> RunResult<()> {
-        // Check memory limit before growing the internal Vec
-        vm.heap.track_growth(VALUE_SIZE)?;
+    pub fn insert(&mut self, vm: &mut VM<'h>, index: usize, item: Value) {
         // Track whether the list now contains heap refs so child-walk fast paths
         // can short-circuit; cycle-collector seeding is handled by `dec_ref`.
         if matches!(item, Value::Ref(_)) {
@@ -168,7 +163,6 @@ impl<'h> HeapRead<'h, List> {
         } else {
             this.items.insert(index, item);
         }
-        Ok(())
     }
 }
 
@@ -534,8 +528,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         if Some(*other_id) == self_id {
             // Self-extend: clone our own items with proper refcounting
             let items = self.clone_all_items(vm);
-            // Check memory limit before extending
-            vm.heap.track_growth(items.len() * VALUE_SIZE)?;
             self.get_mut(vm.heap).items.extend(items);
         } else {
             // Pre-check memory limit before extending from the other list.
@@ -544,8 +536,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
             let HeapReadOutput::List(source_list) = source else {
                 return Ok(false);
             };
-            let source_len = source_list.get(vm.heap).len();
-            vm.heap.track_growth(source_len * VALUE_SIZE)?;
             let source_items = source_list.clone_all_items(vm);
             // Check if new items contain refs
             let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(_)));
@@ -588,10 +578,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
 }
 
 impl HeapItem for List {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.items.len() * VALUE_SIZE
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Skip iteration if no refs - major GC optimization for lists of primitives
         if !self.contains_refs {
@@ -626,7 +612,7 @@ fn call_list_method<'h>(
     match method {
         StaticStrings::Append => {
             let item = args.get_one_arg("list.append", heap)?;
-            list.append(vm, item)?;
+            list.append(vm, item);
             Ok(Value::None)
         }
         StaticStrings::Insert => list_insert(list, args, vm),
@@ -678,7 +664,7 @@ fn list_insert<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'
         usize::try_from(index_i64).unwrap_or(len)
     };
     let (item, heap) = item_guard.into_parts();
-    list.insert(heap, index, item)?;
+    list.insert(heap, index, item);
     Ok(Value::None)
 }
 
@@ -773,8 +759,6 @@ fn list_extend<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'
     let iterable = args.get_one_arg("list.extend", vm.heap)?;
     let items: SmallVec<[_; 2]> = collect_owned_iterable(iterable, vm)?;
 
-    // Batch memory check for all items at once, then extend
-    vm.heap.track_growth(items.len() * VALUE_SIZE)?;
     let has_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
     if has_refs {
         list.get_mut(vm.heap).set_contains_refs();
@@ -957,10 +941,6 @@ impl ListIterator {
 }
 
 impl HeapItem for ListIterator {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.push(self.list);
     }

@@ -1,4 +1,4 @@
-use std::{cell::Cell, ffi::c_int, fmt::Write, mem, ops, str};
+use std::{cell::Cell, ffi::c_int, fmt::Write, ops, str};
 
 /// Python bytes type, wrapping a `Vec<u8>`.
 ///
@@ -390,10 +390,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
 }
 
 impl HeapItem for Bytes {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.0.len()
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // No-op: bytes don't hold Value references
     }
@@ -2359,10 +2355,6 @@ impl BytesIterator {
 }
 
 impl HeapItem for BytesIterator {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         if let Some(id) = self.source_id() {
             stack.push(id);

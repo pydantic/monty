@@ -626,8 +626,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
 
     // `spec.width` is the minimum field width; every formatter below pads the
     // value out to it with `spec.fill` via `pad_string`/`iter::repeat_n`, which
-    // build a native `String` through the global allocator — invisible to the
-    // resource tracker until the finished string reaches the heap. A literal
+    // build a native `String` through the global allocator. A literal
     // width is clamped to 16 bits by the bytecode encoding, but a *dynamic*
     // width (`f"{v:>{w}}"`, `w` a runtime value) is not, so an over-large `w`
     // would materialize gigabytes of padding before the post-construction
@@ -638,10 +637,10 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
 
     // `spec.precision` on the float formats is rendered as that many decimal
     // digits. `fmt_float_fixed` / `fmt_float_exp` synthesise the digits beyond
-    // `MAX_FMT_PRECISION` by appending raw `'0'` chars to an untracked Rust
-    // `String`, so an attacker-chosen precision (`f"{v:.{p}f}"`, `p` a runtime
-    // value) would allocate gigabytes before `allocate_string` accounts for the
-    // result. Precision is parsed as an unrestricted `usize`; bound it by the
+    // `MAX_FMT_PRECISION` by appending raw `'0'` chars to a Rust `String`, so an
+    // attacker-chosen precision (`f"{v:.{p}f}"`, `p` a runtime value) could cross
+    // the allocator's hard ceiling before returning a graceful error. Precision
+    // is parsed as an unrestricted `usize`; bound it by the
     // active resource tracker the same way the width check above does. Skip for
     // non-finite floats since the helpers ignore precision in that case.
     //

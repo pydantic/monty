@@ -432,15 +432,77 @@ fn child_enforces_time_limit() {
     child.shutdown();
 }
 
-/// A session's `max_memory` must not disturb work that stays inside it. The
-/// limit here is deliberately tiny: the headroom above it is what keeps a small
-/// limit servable at all.
+/// A session's `max_memory` must not disturb work that stays inside it. This
+/// small budget includes the real allocations needed to compile and run a feed.
 #[test]
 fn small_memory_limit_leaves_normal_work_alone() {
     let mut child = ChildProc::spawn();
-    child.create_repl_with(configure_with_max_memory(1024));
+    child.create_repl_with(configure_with_max_memory(64 * 1024));
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
     child.shutdown();
+}
+
+/// Crossing the allocator's soft limit raises an ordinary session error rather
+/// than killing the worker, and unwinding releases the incomplete result.
+#[test]
+fn exceeding_the_soft_memory_limit_preserves_the_worker() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    let (_, event) = child.feed("[str(i) for i in range(131_072)]");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// Async scheduler state is allocator-accounted even though it lives outside
+/// Monty's object heap, so recursive gathers reach the soft limit safely.
+#[test]
+fn async_accumulation_reaches_the_soft_limit() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "import asyncio\nasync def f():\n    return await asyncio.gather(f())\nasyncio.run(f())";
+    let (_, event) = child.feed(code);
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// Known large results are rejected against allocator usage before they can
+/// jump from below the soft limit past the hard ceiling.
+#[test]
+fn large_allocations_are_rejected_before_the_hard_limit() {
+    let cases = [
+        "'x' * 10_000_000",
+        "b'x' * 10_000_000",
+        "[None] * 1_000_000",
+        "2 ** 10_000_000",
+        "1 << 10_000_000",
+        "('a' * 1000).replace('a', 'b' * 2000)",
+    ];
+    let mut messages = Vec::new();
+
+    for code in cases {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(1024 * 1024));
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{code}");
+        messages.push(error.message.expect("MemoryError should have a message"));
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
+        child.shutdown();
+    }
+
+    assert_eq!(
+        messages,
+        [
+            "memory limit exceeded: 10030889 bytes > 1048576 bytes",
+            "memory limit exceeded: 10031021 bytes > 1048576 bytes",
+            "memory limit exceeded: 16031143 bytes > 1048576 bytes",
+            "memory limit exceeded: 10030982 bytes > 1048576 bytes",
+            "memory limit exceeded: 1280983 bytes > 1048576 bytes",
+            "memory limit exceeded: 2034521 bytes > 1048576 bytes",
+        ]
+    );
 }
 
 /// A refused allocation must leave the parent something it can classify: the
@@ -463,9 +525,9 @@ fn refused_allocation_exits_with_the_oom_code() {
     );
 }
 
-/// The point of enforcing in the allocator: memory the interpreter never
-/// accounts for must still kill the process rather than grow the host without
-/// bound. The allocation here comes from the frame reader — a bare length
+/// Memory allocated outside interpreter checkpoints must still hit the hard
+/// ceiling rather than grow the host without bound. The allocation here comes
+/// from the frame reader — a bare length
 /// prefix, under the wire cap and over the limit, buys a 200 MiB buffer with
 /// four bytes. Same exit code as a refused allocation; the limit only changes
 /// *where* refusal starts.
@@ -488,7 +550,7 @@ fn exceeding_the_memory_limit_exits_with_the_oom_code() {
 #[test]
 fn loading_a_dump_applies_its_own_memory_limit() {
     let mut source = ChildProc::spawn();
-    source.create_repl_with(configure_with_max_memory(1024));
+    source.create_repl_with(configure_with_max_memory(64 * 1024));
     assert_eq!(source.feed_complete("x = 1"), MontyObject::None);
     source.send(pb::parent_request::Kind::Dump(pb::Dump {}));
     let pb::child_event::Kind::DumpResult(dump) = source.recv() else {

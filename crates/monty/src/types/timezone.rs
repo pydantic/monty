@@ -6,7 +6,6 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem,
 };
 
 use crate::{
@@ -212,10 +211,6 @@ fn bad_name_arg(name_arg: &Value, heap: &Heap, interns: &Interns) -> RunError {
 }
 
 impl HeapItem for TimeZone {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.name.as_ref().map_or(0, String::len)
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}
 }
 

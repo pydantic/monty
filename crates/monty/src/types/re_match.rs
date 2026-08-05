@@ -9,7 +9,7 @@
 //! is held as a single refcounted heap reference shared across every match from
 //! one `finditer`/`findall` call, so `py_dec_ref_ids` releases that reference.
 
-use std::{cell::OnceCell, cmp::Ordering, fmt::Write, mem};
+use std::{cell::OnceCell, cmp::Ordering, fmt::Write};
 
 use smallvec::smallvec;
 
@@ -408,24 +408,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
 }
 
 impl HeapItem for ReMatch {
-    fn py_estimate_size(&self) -> usize {
-        // The subject is NOT counted here: it is a shared refcounted heap `Str`
-        // charged once as its own entry, so counting it per match would inflate
-        // a `finditer` of N matches to N× the subject size (see `subject`).
-        mem::size_of::<Self>()
-            + self.full_match.len()
-            + self
-                .groups
-                .iter()
-                .map(|g| g.as_ref().map_or(0, String::len))
-                .sum::<usize>()
-            + self
-                .named_groups
-                .iter()
-                .map(|(name, _)| name.len() + mem::size_of::<usize>())
-                .sum::<usize>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Release the shared subject reference (no-op for an interned subject).
         // `dec_ref_forget` neutralises the `Ref` so the struct's own `Drop`

@@ -8,7 +8,6 @@ use std::{
     fmt,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem,
 };
 
 use super::LazyHeapSet;
@@ -220,10 +219,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
 }
 
 impl HeapItem for Slice {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Slice doesn't contain heap references, nothing to do
     }

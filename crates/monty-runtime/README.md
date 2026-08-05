@@ -46,10 +46,9 @@ process, not by hand.
 
 The binary runs under the
 [`monty-alloc`](https://crates.io/crates/monty-alloc) global allocator, which
-enforces the sandbox session's `max_memory`. It enables that crate's
-`exit-code` feature, so a refused allocation ends the process with a status the
-parent can classify — see the crate's docs for what the alternative is and why
-a wasm worker takes it.
+provides the session's soft-limit usage and enforces a higher hard ceiling.
+Crossing the soft limit raises `MemoryError` at an interpreter checkpoint;
+crossing the hard limit exits with a dedicated status the parent can classify.
 
 ## PyPI packaging (`pydantic-monty-runtime`)
 

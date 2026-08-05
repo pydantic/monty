@@ -1,7 +1,6 @@
 use std::{
     fmt::Write,
     hash::{DefaultHasher, Hash, Hasher},
-    mem,
 };
 
 use serde::ser::SerializeStruct;
@@ -335,13 +334,6 @@ pub(crate) fn write_dataclass_repr<'h>(
 }
 
 impl HeapItem for Dataclass {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-            + self.name.py_estimate_size()
-            + self.field_names.iter().map(String::len).sum::<usize>()
-            + self.attrs.py_estimate_size()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Delegate to the attrs Dict which handles all nested heap references
         self.attrs.py_dec_ref_ids(stack);

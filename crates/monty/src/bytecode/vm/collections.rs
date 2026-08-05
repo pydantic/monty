@@ -10,7 +10,7 @@ use crate::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
         instance::instance_defines_iter, slice::value_to_option_i64,
     },
-    value::{VALUE_SIZE, Value},
+    value::Value,
 };
 
 impl VM<'_> {
@@ -125,8 +125,6 @@ impl VM<'_> {
 
             // Extend the list
             if let Value::Ref(id) = list_ref {
-                this.heap.track_growth(copied_items.len() * VALUE_SIZE)?;
-
                 let HeapReadOutput::List(mut list) = this.heap.read(*id) else {
                     panic!("list_extend: expected List on heap");
                 };
@@ -405,7 +403,7 @@ impl VM<'_> {
             value.drop_with(self);
             return Err(RunError::internal("ListAppend: expected list on heap"));
         };
-        list.append(self, value)?;
+        list.append(self, value);
         Ok(())
     }
 

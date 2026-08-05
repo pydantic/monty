@@ -593,13 +593,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
 }
 
 impl HeapItem for NamedTuple {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-            + self.name.py_estimate_size()
-            + field_names_size(&self.field_names)
-            + self.items.len() * mem::size_of::<Value>()
-    }
-
     /// Pushes all heap IDs contained in this named tuple onto the stack.
     ///
     /// Called during garbage collection to decrement refcounts of nested values.
@@ -936,13 +929,6 @@ impl NamedTupleClass {
 }
 
 impl HeapItem for NamedTupleClass {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-            + self.name.py_estimate_size()
-            + field_names_size(&self.field_names)
-            + self.defaults.len() * mem::size_of::<Value>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         if !self.contains_refs {
             return;
@@ -1044,19 +1030,6 @@ fn cloned_tuple_like_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
         items.push(item);
     }
     Some(items)
-}
-
-/// Memory footprint of a field-name list, for [`HeapItem::py_estimate_size`].
-///
-/// Factory-made namedtuples hold `EitherStr::Heap` names (only Monty's internal
-/// ones are interned), and every instance deep-clones the whole list, so the
-/// owned `String` capacity MUST be charged — sizing these as bare `StringId`s
-/// would let a class with long field names amplify far past the memory limit.
-fn field_names_size(field_names: &[EitherStr]) -> usize {
-    field_names
-        .iter()
-        .map(|name| mem::size_of::<EitherStr>() + name.py_estimate_size())
-        .sum()
 }
 
 /// Builds the synthesised class docstring, e.g. `Point(x, y)`.

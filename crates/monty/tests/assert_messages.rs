@@ -6,8 +6,7 @@
 use insta::assert_snapshot;
 use monty::{MontyRepl, MontyRun};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, MontyException, MontyObject, PrintWriter, ResourceLimits,
-    ResourceTracker,
+    AssertMessageAnnotations, CompileOptions, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker,
 };
 
 /// Runs `code` and returns the exception it raises.
@@ -260,9 +259,9 @@ fn custom_truncation_limit() {
 }
 
 #[test]
-fn huge_operand_repr_is_streamed_not_materialized() {
-    // A ~2MB repr under a 1MB memory limit: streaming stops at the cap, so
-    // the AssertionError stays catchable instead of a terminal MemoryError.
+fn huge_operand_repr_is_truncated() {
+    // The annotation formatter stops at its cap rather than materializing the
+    // complete multi-megabyte representation.
     let code = "
 xs = ['x' * 500] * 4000
 try:
@@ -273,10 +272,7 @@ except AssertionError as e:
 r[:10] + '|' + r[-9:] + '|' + str(len(r))
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let limits = ResourceLimits::default().max_memory(1_048_576);
-    let result = run
-        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
-        .expect("AssertionError must stay catchable under the memory limit");
+    let result = run.run_no_limits(vec![]).expect("AssertionError should be caught");
     // 7 ("assert ") + 121 (120-char repr + `…`) + 6 (" == []") = 134 chars.
     assert_eq!(result, MontyObject::String("assert ['x|xx… == []|134".into()));
 }

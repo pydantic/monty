@@ -82,18 +82,18 @@ pub extern "C" fn monty_dispatch_turn() -> i32 {
         return turn_status::IO_ERROR;
     }
 
-    let (reply, outcome) = CHILD.with_borrow_mut(|child| {
-        let framed = dispatch_frame(child, &request);
+    let (reply, outcome, allocator_ready) = CHILD.with_borrow_mut(|child| {
+        let (reply, outcome) = dispatch_frame(child, &request);
         // Re-read from the session the child now holds, exactly as the
         // subprocess shell does: a dump restored by `Load` brings its own
         // limits, and a rejected request must not disturb the limit.
         let budget = child.session_budget();
-        monty_alloc::set_limit(budget.max_memory, budget.type_check);
-        framed
+        let allocator_ready = monty_alloc::set_limit(budget.max_memory, budget.type_check).is_ok();
+        (reply, outcome, allocator_ready)
     });
 
     let mut stdout = io::stdout();
-    if stdout.write_all(&reply).and_then(|()| stdout.flush()).is_err() {
+    if stdout.write_all(&reply).and_then(|()| stdout.flush()).is_err() || !allocator_ready {
         return turn_status::IO_ERROR;
     }
 

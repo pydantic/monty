@@ -11,49 +11,20 @@ use crate::{
     value::Value,
 };
 
-/// Heap lifecycle operations for memory tracking and reference cleanup.
+/// Collects owned heap references when a heap entry is released.
 ///
-/// This trait captures the two responsibilities shared by all heap-stored types:
-///
-/// 1. **Memory estimation** (`py_estimate_size`): reporting approximate byte footprint
-///    for resource tracking and memory limit enforcement.
-///
-/// 2. **Reference collection** (`py_dec_ref_ids`): collecting contained `HeapId`s during
-///    reference count decrement so child objects can be freed iteratively.
-///
-/// Unlike `PyTrait`, which provides Python-level operations (equality, repr, arithmetic),
-/// `HeapItem` is purely about heap lifecycle management. This separation allows types like
-/// `Closure` and `FunctionDefaults` to participate in heap bookkeeping without needing
-/// the full `PyTrait` interface.
-///
-/// Every `HeapData` variant must implement this trait (either directly on the inner type,
-/// or inline in the dispatch for types we don't own like `String`).
+/// Every `HeapData` variant implements this trait so reference-count cleanup can
+/// walk children iteratively without requiring the Python-level `PyTrait` API.
 pub(crate) trait HeapItem {
-    /// Estimates the memory size in bytes of this value.
-    ///
-    /// Used by resource tracking to enforce memory limits. Returns the approximate
-    /// heap footprint including struct overhead and variable-length data (e.g., string
-    /// contents, list elements).
-    ///
-    /// Note: For containers holding `Value::Ref` entries, this counts the size of
-    /// the reference slots, not the referenced objects. Nested objects are sized
-    /// separately when they are allocated.
-    fn py_estimate_size(&self) -> usize;
-
     /// Pushes every owned heap reference onto the iterative cleanup stack.
     ///
-    /// Owned `HeapId` fields are valid in a `HeapItem`, but each must be documented
-    /// as owned and pushed exactly once here. Prefer this to calling `Heap::dec_ref`
-    /// directly; values containing references should delegate to their own
-    /// `py_dec_ref_ids` implementation.
-    ///
-    /// With `memory-model-checks`, delegation also marks contained `Value`s as
-    /// `Dereferenced`, keeping that cleanup co-located with reference collection.
+    /// Owned `HeapId` fields must be documented as owned and pushed exactly
+    /// once. With `memory-model-checks`, delegation also marks contained
+    /// `Value`s as `Dereferenced`.
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>);
 }
 
-/// This trait represents types that contain a `Heap`; it allows for more complex structures
-/// to participate in the `DropGuard` pattern.
+/// Gives cleanup machinery access to an owned heap.
 pub(crate) trait ContainsHeap {
     fn heap(&self) -> &Heap;
     fn heap_mut(&mut self) -> &mut Heap;

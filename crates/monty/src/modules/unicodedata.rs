@@ -257,7 +257,7 @@ impl NormForm {
 ///
 /// The output length is not bounded by the input (decomposition can expand a
 /// single code point into several), so the result is built through
-/// [`StringBuilder`] which reserves bytes with the resource tracker as it grows.
+/// [`StringBuilder`] which preflights allocator-backed usage as it grows.
 fn normalize_with(form: NormForm, text: &str, heap: &Heap) -> RunResult<Value> {
     let mut builder = StringBuilder::new(heap.tracker());
     match form {

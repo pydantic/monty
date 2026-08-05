@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt::Write, mem};
+use std::{borrow::Cow, fmt::Write};
 
 use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
@@ -323,10 +323,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
 }
 
 impl HeapItem for Instance {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.attrs.py_estimate_size()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.push(self.class);
         self.attrs.py_dec_ref_ids(stack);
@@ -359,10 +355,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BoundMethod> {
 }
 
 impl HeapItem for BoundMethod {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.instance.py_dec_ref_ids(stack);
         self.func.py_dec_ref_ids(stack);
