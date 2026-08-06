@@ -115,7 +115,7 @@ fn open(
                     return Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", path));
                 }
                 Some(OverlayEntry::Deleted) => return Err(MountError::not_found(path)),
-                None => match resolve_real_path_state(path, ctx, Follow::Yes)? {
+                None => match resolve_real_path_state(path, ctx, Follow::Yes, OnLookupFailure::Propagate)? {
                     RealPathState::Present(rel) if real_is_dir(ctx.mount_dir, &rel) => {
                         return Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", path));
                     }
@@ -172,7 +172,7 @@ fn ensure_append_target_exists(
             )?;
             Ok(())
         }
-        None => match resolve_real_path_state(vpath, ctx, Follow::Yes)? {
+        None => match resolve_real_path_state(vpath, ctx, Follow::Yes, OnLookupFailure::Propagate)? {
             RealPathState::Present(rel) if real_is_dir(ctx.mount_dir, &rel) => {
                 Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
             }
@@ -203,7 +203,7 @@ fn exists(
     let exists = match state.get(relative) {
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) | OverlayEntry::Directory { .. }) => true,
         Some(OverlayEntry::Deleted) => false,
-        None => match resolve_real_path_state(vpath, ctx, Follow::Yes)? {
+        None => match resolve_real_path_state(vpath, ctx, Follow::Yes, OnLookupFailure::Missing)? {
             RealPathState::Present(_) => true,
             RealPathState::Missing => false,
         },
@@ -221,7 +221,7 @@ fn is_file(
     let is_file = match state.get(relative) {
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => true,
         Some(OverlayEntry::Directory { .. } | OverlayEntry::Deleted) => false,
-        None => match resolve_real_path_state(vpath, ctx, Follow::Yes)? {
+        None => match resolve_real_path_state(vpath, ctx, Follow::Yes, OnLookupFailure::Missing)? {
             RealPathState::Present(rel) => real_is_file(ctx.mount_dir, &rel),
             RealPathState::Missing => false,
         },
@@ -239,7 +239,7 @@ fn is_dir(
     let is_dir = match state.get(relative) {
         Some(OverlayEntry::Directory { .. }) => true,
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) | OverlayEntry::Deleted) => false,
-        None => match resolve_real_path_state(vpath, ctx, Follow::Yes)? {
+        None => match resolve_real_path_state(vpath, ctx, Follow::Yes, OnLookupFailure::Missing)? {
             RealPathState::Present(rel) => real_is_dir(ctx.mount_dir, &rel),
             RealPathState::Missing => false,
         },
@@ -256,7 +256,7 @@ fn is_symlink(
 ) -> Result<MontyObject, MountError> {
     let is_symlink = match state.get(relative) {
         Some(_) => false,
-        None => match resolve_real_path_state(vpath, ctx, Follow::No)? {
+        None => match resolve_real_path_state(vpath, ctx, Follow::No, OnLookupFailure::Missing)? {
             RealPathState::Present(rel) => ctx.mount_dir.symlink_metadata(&rel).is_ok_and(|m| m.is_symlink()),
             RealPathState::Missing => false,
         },
@@ -452,7 +452,7 @@ fn existing_file_len(
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
         }
-        None => match resolve_real_path_state(vpath, ctx, Follow::Yes)? {
+        None => match resolve_real_path_state(vpath, ctx, Follow::Yes, OnLookupFailure::Propagate)? {
             RealPathState::Present(rel) => file_len(ctx.mount_dir, &rel, vpath),
             RealPathState::Missing => Ok(0),
         },
@@ -491,7 +491,7 @@ fn existing_file_bytes(
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
         }
-        None => match resolve_real_path_state(vpath, ctx, Follow::Yes)? {
+        None => match resolve_real_path_state(vpath, ctx, Follow::Yes, OnLookupFailure::Propagate)? {
             RealPathState::Present(rel) => match read_bytes_fs(ctx.mount_dir, &rel, vpath, budget)? {
                 MontyObject::Bytes(bytes) => Ok(bytes),
                 _ => unreachable!("read_bytes_fs should return bytes"),
@@ -1205,24 +1205,44 @@ fn collect_real_descendants(
 
 /// Resolves a real host path for an overlay fallthrough lookup.
 ///
-/// Overlay existence-style queries intentionally collapse host-side I/O misses
-/// into `Missing` so they return `false` instead of raising.
-fn resolve_real_path_state(vpath: &str, ctx: &MountContext<'_>, follow: Follow) -> Result<RealPathState, MountError> {
+/// Path *policy* rejections (null bytes, drive segments) always raise, as they
+/// do in direct mode and CPython. A failed host *lookup* is governed by
+/// `on_failure`: only a genuinely absent path is `Missing` for everyone.
+fn resolve_real_path_state(
+    vpath: &str,
+    ctx: &MountContext<'_>,
+    follow: Follow,
+    on_failure: OnLookupFailure,
+) -> Result<RealPathState, MountError> {
     let target = match resolve_virtual_path(vpath, ctx.mount_virtual) {
         Ok(target) => target,
         Err(MountError::Io(_, _)) => return Ok(RealPathState::Missing),
         Err(err) => return Err(err),
     };
     let rel = target.for_dir_op();
-    let exists = match follow {
-        Follow::Yes => ctx.mount_dir.metadata(rel).is_ok(),
-        Follow::No => ctx.mount_dir.symlink_metadata(rel).is_ok(),
+    let metadata = match follow {
+        Follow::Yes => ctx.mount_dir.metadata(rel),
+        Follow::No => ctx.mount_dir.symlink_metadata(rel),
     };
-    if exists {
-        Ok(RealPathState::Present(rel.to_owned()))
-    } else {
-        Ok(RealPathState::Missing)
+    match metadata {
+        Ok(_) => Ok(RealPathState::Present(rel.to_owned())),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(RealPathState::Missing),
+        Err(_) if matches!(on_failure, OnLookupFailure::Missing) => Ok(RealPathState::Missing),
+        Err(err) => Err(map_io(err, vpath)),
     }
+}
+
+/// What a caller wants done with a host lookup that failed for a reason other
+/// than the path being absent — a permission error, say.
+#[derive(Clone, Copy)]
+enum OnLookupFailure {
+    /// Treat as absent. `pathlib` predicates answer `False` rather than raise,
+    /// which also keeps out-of-mount paths unobservable.
+    Missing,
+    /// Report it, as a direct mount would. Collapsing it made `open` say
+    /// `FileNotFoundError` for a denied file, and let `append` create an
+    /// overlay entry shadowing a real file it could not see.
+    Propagate,
 }
 
 /// Whether a lookup follows a final symlink, replacing the old resolve modes.

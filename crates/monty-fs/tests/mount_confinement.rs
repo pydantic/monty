@@ -23,7 +23,11 @@ use std::{
 use std::{io::ErrorKind, os::unix::fs::PermissionsExt};
 
 use common::{symlink_dir, symlink_file, try_rename_mount_root};
+#[cfg(unix)]
+use monty_fs::OverlayState;
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable};
+#[cfg(unix)]
+use monty_types::{FileMode, OpenCallArgs, PathStringDataArgs};
 use monty_types::{MontyObject, OsFunctionCall};
 use tempfile::TempDir;
 
@@ -342,4 +346,72 @@ fn genuine_permission_error_is_not_reported_as_an_escape() {
         matches!(&outcome, Err(MountError::Io(err, _)) if err.kind() == ErrorKind::PermissionDenied),
         "expected a plain IO permission error, got {outcome:?}"
     );
+}
+
+/// Overlay mode must classify an in-mount permission failure the way a direct
+/// mount does, instead of collapsing every lookup failure into "missing".
+///
+/// Collapsing turned a denied `open` into `FileNotFoundError`, let `append`
+/// silently succeed into the overlay — shadowing a real file it could not see —
+/// and made `stat` return a result for an unreadable path.
+#[test]
+#[cfg(unix)]
+fn overlay_permission_errors_match_direct_mode() {
+    let probe = TempDir::new().unwrap();
+    let sub = probe.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(sub.join("f.txt"), "content").unwrap();
+    fs::set_permissions(&sub, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(sub.join("f.txt")).is_ok() {
+        eprintln!("skipped: running as root, mode 0o000 is not enforced");
+        return;
+    }
+    drop(probe);
+
+    for mode in [MountMode::ReadWrite, MountMode::OverlayMemory(OverlayState::new())] {
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("f.txt"), "content").unwrap();
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut mounts = MountTable::new();
+        mounts.mount("/mnt", dir.path(), mode, None).expect("failed to mount");
+
+        for call in [
+            OsFunctionCall::ReadText("/mnt/sub/f.txt".into()),
+            OsFunctionCall::Open(OpenCallArgs {
+                path: "/mnt/sub/f.txt".into(),
+                mode: FileMode::Read(false),
+            }),
+            OsFunctionCall::AppendText(PathStringDataArgs {
+                path: "/mnt/sub/f.txt".into(),
+                data: "x".to_owned(),
+            }),
+            OsFunctionCall::Stat("/mnt/sub/f.txt".into()),
+        ] {
+            let label = format!("{call:?}");
+            let outcome = dispatch(&mut mounts, call);
+            assert!(
+                matches!(&outcome, Err(MountError::Io(err, _)) if err.kind() == ErrorKind::PermissionDenied),
+                "{label}: expected a permission error, got {outcome:?}"
+            );
+        }
+
+        // Predicates still must not raise.
+        for call in [
+            OsFunctionCall::Exists("/mnt/sub/f.txt".into()),
+            OsFunctionCall::IsFile("/mnt/sub/f.txt".into()),
+            OsFunctionCall::IsDir("/mnt/sub/f.txt".into()),
+        ] {
+            let label = format!("{call:?}");
+            assert_eq!(
+                dispatch(&mut mounts, call).unwrap(),
+                MontyObject::Bool(false),
+                "{label}: predicates must answer False, not raise"
+            );
+        }
+
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 }
