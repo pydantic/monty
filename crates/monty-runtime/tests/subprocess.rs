@@ -771,6 +771,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
             16_031_971,
         ),
+        // `itertools.batched` preflights one batch, capped at `n`.
+        (
+            "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
+            16_032_590,
+        ),
     ];
 
     for (code, expected) in cases {
@@ -886,6 +891,18 @@ fn reading_partial_args_cannot_kill_the_worker() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "MemoryError");
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// A small `n` caps a batch however long the source, so batching a huge
+/// exact-hint iterable must not trip the `batched` preflight — the memory
+/// really is bounded by `n`, not by the source.
+#[test]
+fn small_batched_n_is_not_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "import itertools\nlen(next(itertools.batched(range(500_000), 8)))";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(8));
     child.shutdown();
 }
 

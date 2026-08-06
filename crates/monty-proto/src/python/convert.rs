@@ -256,6 +256,9 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::ItertoolsDropWhile,
             MontyType::ItertoolsFilterFalse,
             MontyType::ItertoolsStarMap,
+            MontyType::ItertoolsAccumulate,
+            MontyType::ItertoolsBatched,
+            MontyType::ItertoolsZipLongest,
             MontyType::Tuple,
             MontyType::Dict,
             MontyType::Set,
@@ -496,6 +499,9 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         MontyType::ItertoolsDropWhile => cached!("itertools", "dropwhile"),
         MontyType::ItertoolsFilterFalse => cached!("itertools", "filterfalse"),
         MontyType::ItertoolsStarMap => cached!("itertools", "starmap"),
+        MontyType::ItertoolsAccumulate => cached!("itertools", "accumulate"),
+        MontyType::ItertoolsBatched => cached!("itertools", "batched"),
+        MontyType::ItertoolsZipLongest => cached!("itertools", "zip_longest"),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
         MontyType::Path => get_pure_posix_path(py).map(|b| b.clone().unbind()),

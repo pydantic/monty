@@ -10,13 +10,14 @@ notes below.
 `compress(data, selectors)`, `islice(iterable, [start,] stop[, step])`,
 `chain(*iterables)`, `cycle(iterable)`, `takewhile(predicate, iterable)`,
 `dropwhile(predicate, iterable)`, `filterfalse(predicate, iterable)`,
-`starmap(function, iterable)`.
+`starmap(function, iterable)`, `accumulate(iterable, func=None, *, initial=None)`,
+`batched(iterable, n, *, strict=False)`,
+`zip_longest(*iterables, fillvalue=None)`.
 
 ## Not implemented
 
-Everything else: `accumulate`, `batched`, `combinations`,
-`combinations_with_replacement`, `groupby`, `permutations`, `product`, `tee`,
-`zip_longest`.
+Everything else: `combinations`, `combinations_with_replacement`, `groupby`,
+`permutations`, `product`, `tee`.
 
 `chain.from_iterable` is also absent, even though `chain` itself is
 implemented: it is a classmethod reached through an attribute on the `chain`
@@ -47,15 +48,20 @@ raise `AttributeError` at runtime.
   CPython prints `repeat([repeat([...])])`. This is Monty's general cycle
   detection in `repr()`, not specific to `itertools`.
 - **A callable that suspends is rejected, not paused.** `takewhile`,
-  `dropwhile`, `filterfalse` and `starmap` apply their callable through the
-  synchronous `evaluate_function` path, which runs a frame to completion and
-  cannot yield to the host. A callable that reaches an external function, an
-  `os` operation, or a host method call therefore raises
+  `dropwhile`, `filterfalse`, `starmap` and `accumulate` apply their callable
+  through the synchronous `evaluate_function` path, which runs a frame to
+  completion and cannot yield to the host. A callable that reaches an external
+  function, an `os` operation, or a host method call therefore raises
   `NotImplementedError: takewhile(): external function 'f' is not yet supported
   in this context` where CPython would simply call it. This is the same
   restriction that applies to `__init__`, `__next__` and `__repr__` (see
   `limitations/classes.md`); ordinary sandbox-defined functions and lambdas are
   unaffected.
+- **`zip_longest` names the rejected keyword.** A bad keyword raises
+  `zip_longest() got an unexpected keyword argument 'bogus'`, where CPython
+  raises `zip_longest() got an unexpected keyword argument` with no name —
+  CPython hand-rolls that check rather than going through a parser family, and
+  is alone in omitting it. Every other adaptor's wording matches.
 - **Crossing the host boundary loses the repr.** A `count` / `repeat` object
   returned to the host arrives as `<itertools.count object>` /
   `<itertools.repeat object>` rather than its in-sandbox `repr()`
@@ -97,6 +103,14 @@ The adaptors that discard items without yielding — `dropwhile` and
 source raises `TimeoutError` instead of spinning. The poll is amortized (once
 per 64 items), so the limit can be overshot by up to that much work. CPython
 has no duration limit at all and would loop forever.
+
+`batched(iterable, n)` fills a whole batch inside one `next()`, so a large `n`
+over a long source is the same kind of non-yielding loop and polls
+`max_duration` the same way. It also preflights one batch against `max_memory`
+from the source's size hint, capped at `n` — an exact-hint source
+(`batched(range(10**9), 10**9)`) therefore raises `MemoryError` up front rather
+than while filling. A source with no size hint gets no preflight and falls back
+to the limit checks above.
 
 `cycle(iterable)` must buffer every item it has seen so far in order to replay
 them, and that buffer is charged against `max_memory` as it grows, so cycling

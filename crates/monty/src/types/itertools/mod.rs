@@ -10,6 +10,8 @@
 //! - `py_next` cannot hold the state borrow: adaptors re-enter the VM, so each
 //!   per-type function takes the `HeapRead` and re-projects under short borrows.
 
+pub mod accumulate;
+pub mod batched;
 pub mod chain;
 pub mod compress;
 pub mod count;
@@ -22,9 +24,12 @@ pub mod repeat;
 pub mod starmap;
 mod step;
 pub mod takewhile;
+pub mod zip_longest;
 
-use std::{fmt::Write, mem};
+use std::fmt::Write;
 
+pub(crate) use accumulate::Accumulate;
+pub(crate) use batched::Batched;
 pub(crate) use chain::Chain;
 pub(crate) use compress::Compress;
 pub(crate) use count::Count;
@@ -37,6 +42,7 @@ pub(crate) use repeat::Repeat;
 use serde::{Deserialize, Serialize};
 pub(crate) use starmap::StarMap;
 pub(crate) use takewhile::TakeWhile;
+pub(crate) use zip_longest::ZipLongest;
 
 // Only the 64-bit size budget below needs it.
 #[cfg(target_pointer_width = "64")]
@@ -68,6 +74,9 @@ pub(crate) enum ItertoolsIter {
     DropWhile(DropWhile),
     FilterFalse(FilterFalse),
     StarMap(StarMap),
+    Accumulate(Accumulate),
+    Batched(Batched),
+    ZipLongest(ZipLongest),
 }
 
 // `Dict` is the widest `HeapData` payload on 64-bit hosts, so it — not a
@@ -77,7 +86,7 @@ pub(crate) enum ItertoolsIter {
 // TODO: when this fails, box the offending variant (`GroupBy(Box<GroupBy>)`),
 // not the enum and not at the `HeapData` boundary.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(mem::size_of::<ItertoolsIter>() <= mem::size_of::<Dict>());
+const _: () = assert!(size_of::<ItertoolsIter>() <= size_of::<Dict>());
 
 /// Which adaptor an [`ItertoolsIter`] is, without borrowing it.
 ///
@@ -97,6 +106,9 @@ pub(crate) enum Kind {
     DropWhile,
     FilterFalse,
     StarMap,
+    Accumulate,
+    Batched,
+    ZipLongest,
 }
 
 impl ItertoolsIter {
@@ -114,6 +126,9 @@ impl ItertoolsIter {
             Self::DropWhile(_) => Kind::DropWhile,
             Self::FilterFalse(_) => Kind::FilterFalse,
             Self::StarMap(_) => Kind::StarMap,
+            Self::Accumulate(_) => Kind::Accumulate,
+            Self::Batched(_) => Kind::Batched,
+            Self::ZipLongest(_) => Kind::ZipLongest,
         }
     }
 
@@ -131,6 +146,9 @@ impl ItertoolsIter {
             Self::DropWhile(_) => Type::ItertoolsDropWhile,
             Self::FilterFalse(_) => Type::ItertoolsFilterFalse,
             Self::StarMap(_) => Type::ItertoolsStarMap,
+            Self::Accumulate(_) => Type::ItertoolsAccumulate,
+            Self::Batched(_) => Type::ItertoolsBatched,
+            Self::ZipLongest(_) => Type::ItertoolsZipLongest,
         }
     }
 
@@ -150,7 +168,10 @@ impl ItertoolsIter {
             | Self::TakeWhile(_)
             | Self::DropWhile(_)
             | Self::FilterFalse(_)
-            | Self::StarMap(_) => true,
+            | Self::StarMap(_)
+            | Self::Accumulate(_)
+            | Self::Batched(_)
+            | Self::ZipLongest(_) => true,
         }
     }
 
@@ -169,7 +190,10 @@ impl ItertoolsIter {
             | Self::TakeWhile(_)
             | Self::DropWhile(_)
             | Self::FilterFalse(_)
-            | Self::StarMap(_) => 0,
+            | Self::StarMap(_)
+            | Self::Accumulate(_)
+            | Self::Batched(_)
+            | Self::ZipLongest(_) => 0,
             Self::Repeat(repeat) => repeat.size_hint(),
         }
     }
@@ -188,6 +212,9 @@ impl ItertoolsIter {
             Self::DropWhile(drop_while) => drop_while.for_each_child_id(on_child),
             Self::FilterFalse(filter) => filter.for_each_child_id(on_child),
             Self::StarMap(starmap) => starmap.for_each_child_id(on_child),
+            Self::Accumulate(accumulate) => accumulate.for_each_child_id(on_child),
+            Self::Batched(batched) => batched.for_each_child_id(on_child),
+            Self::ZipLongest(zip) => zip.for_each_child_id(on_child),
         }
     }
 }
@@ -207,6 +234,9 @@ impl HeapItem for ItertoolsIter {
             Self::DropWhile(drop_while) => drop_while.py_dec_ref_ids(stack),
             Self::FilterFalse(filter) => filter.py_dec_ref_ids(stack),
             Self::StarMap(starmap) => starmap.py_dec_ref_ids(stack),
+            Self::Accumulate(accumulate) => accumulate.py_dec_ref_ids(stack),
+            Self::Batched(batched) => batched.py_dec_ref_ids(stack),
+            Self::ZipLongest(zip) => zip.py_dec_ref_ids(stack),
         }
     }
 }
@@ -255,7 +285,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
             | Kind::TakeWhile
             | Kind::DropWhile
             | Kind::FilterFalse
-            | Kind::StarMap => {
+            | Kind::StarMap
+            | Kind::Accumulate
+            | Kind::Batched
+            | Kind::ZipLongest => {
                 let mut guard = vm.recursion_guard()?;
                 let vm = &mut *guard;
                 match kind {
@@ -268,6 +301,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
                     Kind::DropWhile => dropwhile::next(self, vm),
                     Kind::FilterFalse => filterfalse::next(self, vm),
                     Kind::StarMap => starmap::next(self, vm),
+                    Kind::Accumulate => accumulate::next(self, vm),
+                    Kind::Batched => batched::next(self, vm),
+                    Kind::ZipLongest => zip_longest::next(self, vm),
                     Kind::Count | Kind::Repeat => unreachable!("handled above"),
                 }
             }
@@ -288,7 +324,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
             | Kind::TakeWhile
             | Kind::DropWhile
             | Kind::FilterFalse
-            | Kind::StarMap => self.py_default_repr_fmt(f, vm),
+            | Kind::StarMap
+            | Kind::Accumulate
+            | Kind::Batched
+            | Kind::ZipLongest => self.py_default_repr_fmt(f, vm),
         }
     }
 }

@@ -25,7 +25,8 @@ CPython-family table and the `at_most_total` litmus test).
 | CPython implementation | `style` |
 |---|---|
 | pure-Python `def` (the `re` functions, `json.dumps`) | `style = def` |
-| Argument Clinic (most modern C builtins/methods) | default — omit `style` |
+| Argument Clinic, positional-only (`sorted`, `math.pow`) | default — omit `style` |
+| Argument Clinic with keyword-capable params (`accumulate`, `os.stat`) | `style = c_named` — it shares `_PyArg_UnpackKeywords` wording |
 | `PyArg_ParseTupleAndKeywords`, anonymous `function` errors | `style = c` |
 | same, with the name embedded (`timezone() missing …`) | `style = c_named` |
 | `PyArg_UnpackTuple` (positional-only, `min..max` arity, kwargs rejected wholesale with `takes no keyword arguments`) | `style = unpack` |
@@ -54,18 +55,20 @@ struct ReSearchArgs {
 }
 ```
 
-A clinic-style function with keyword-only params (`math.rs`):
+A clinic function with keyword-capable positionals and a keyword-only tail
+(`itertools.rs`) — `c_named` per the table, so overflow reports `accumulate()
+takes at most 2 positional arguments (3 given)`:
 
 ```rust
 #[derive(FromArgs)]
-#[from_args(name = "isclose")]
-struct IscloseArgs {
-    a: Value,
-    b: Value,
-    #[from_args(kw_only, default = Value::Float(1e-9))]
-    rel_tol: Value,
-    #[from_args(kw_only, default = Value::Float(0.0))]
-    abs_tol: Value,
+#[from_args(name = "accumulate", style = c_named)]
+struct AccumulateArgs {
+    #[from_args(static_string = "IterableArg")]
+    iterable: Value,
+    #[from_args(default = Value::None)]
+    func: Value,
+    #[from_args(kw_only, default = Value::None)]
+    initial: Value,
 }
 ```
 

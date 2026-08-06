@@ -1255,6 +1255,7 @@ const ITERTOOLS_INFINITE_LOOPS: &[&str] = &[
     "next(itertools.compress(itertools.count(1), itertools.repeat(0)))",
     "next(itertools.islice(itertools.count(1), 10**18, None))",
     "next(itertools.starmap(max, itertools.repeat(itertools.count(1))))",
+    "next(itertools.batched(itertools.count(1), 10**18))",
 ];
 
 /// Test that adaptors discarding items from an infinite source still time out.
