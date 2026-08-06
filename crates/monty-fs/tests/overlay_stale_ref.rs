@@ -15,7 +15,7 @@ use monty_types::{MontyObject, OsFunctionCall, PathStringDataArgs, RenameCallArg
 use tempfile::TempDir;
 
 mod common;
-use common::{symlink_dir, symlink_file};
+use common::{symlink_dir, symlink_file, try_rename_mount_root};
 
 /// Marker written to the out-of-mount file; its appearance in any result is
 /// the disclosure these tests guard against.
@@ -137,11 +137,14 @@ fn stale_ref_is_revalidated_on_append() {
     scenario.assert_rejected(OsFunctionCall::ReadText("/mnt/moved.txt".into()));
 }
 
-/// Swapping the mount root for an escaping symlink after the ref was cached:
-/// the check must compare against the root canonicalized at mount time, since
-/// re-canonicalizing here would follow the swap.
+/// Swapping the mount root for an escaping symlink after the ref was cached
+/// must not redirect the read.
+///
+/// The ref is mount-relative and the mount holds a descriptor, so the swap is
+/// invisible and the read still serves the original file. With a host path it
+/// had to be *rejected* instead.
 #[test]
-fn stale_ref_is_rejected_when_mount_root_is_swapped() {
+fn mount_root_swap_does_not_redirect_a_cached_ref() {
     let base = TempDir::new().unwrap();
     let mount_path = base.path().join("mount");
     let elsewhere = base.path().join("elsewhere");
@@ -153,21 +156,21 @@ fn stale_ref_is_rejected_when_mount_root_is_swapped() {
     let mut mt = mount_overlay(&mount_path);
     dispatch(&mut mt, rename_call("/mnt/inner/file.txt", "/mnt/moved.txt")).expect("rename should succeed");
 
-    // Swap the whole mount root for a link to `elsewhere`, so the cached ref's
-    // path resolves under a directory that was never mounted.
-    fs::rename(&mount_path, base.path().join("mount_old")).unwrap();
-    symlink_dir(&elsewhere, &mount_path);
+    // Swap the whole mount root for a link to `elsewhere`, so the ref's path
+    // *as a string* now names a directory that was never mounted. Windows
+    // refuses the rename while the mount holds the directory open, which denies
+    // the swap outright rather than merely making it ineffective.
+    if try_rename_mount_root(&mount_path, base.path().join("mount_old")) {
+        symlink_dir(&elsewhere, &mount_path);
+    }
 
     let outcome = dispatch(&mut mt, OsFunctionCall::ReadText("/mnt/moved.txt".into()));
     let leaked = matches!(&outcome, Ok(MontyObject::String(s)) if s.contains(SECRET));
     assert!(
         !leaked,
-        "HOST FILE DISCLOSURE: swapping the mount root defeated the check"
+        "HOST FILE DISCLOSURE: swapping the mount root redirected the read"
     );
-    assert!(
-        matches!(outcome, Err(MountError::PathEscape { .. })),
-        "expected PathEscape, got {outcome:?}"
-    );
+    assert_eq!(outcome.unwrap(), MontyObject::String("public".to_owned()));
 }
 
 /// Control — the same escaping symlink read through the normal resolution path

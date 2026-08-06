@@ -1,0 +1,345 @@
+//! Confinement guarantees that hold regardless of what happens to the host
+//! directory *after* the mount is created.
+//!
+//! Only `mount_root_swapped_for_symlink_still_reads_original` and
+//! `mount_survives_host_directory_rename` distinguish this design from
+//! path-based resolution — verified red against it, on Unix; Windows refuses to
+//! rename a mounted directory at all, so it gets its own pair. The other escape
+//! tests pass under both, so they are regression guards, not evidence, and
+//! `concurrent_rename_cannot_redirect_a_read` is a soak: the race was never won
+//! on macOS/APFS, so a green run proves little on any one platform.
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
+#[cfg(unix)]
+use std::{io::ErrorKind, os::unix::fs::PermissionsExt};
+
+use common::{symlink_dir, symlink_file, try_rename_mount_root};
+use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable};
+use monty_types::{MontyObject, OsFunctionCall};
+use tempfile::TempDir;
+
+mod common;
+
+/// Marker written to the out-of-mount file; its appearance in any result is the
+/// disclosure these tests guard against.
+const SECRET: &str = "SECRET-HOST-CONTENT";
+
+/// Dispatches a call, panicking if the mount table declines to handle it.
+fn dispatch(mounts: &mut MountTable, call: OsFunctionCall) -> Result<MontyObject, MountError> {
+    match mounts.handle_os_call(call) {
+        MountCallOutcome::Handled(result) => result,
+        MountCallOutcome::NotHandled(call) => panic!("mount table returned NotHandled: {call:?}"),
+    }
+}
+
+fn read_text(mounts: &mut MountTable, path: &str) -> Result<MontyObject, MountError> {
+    dispatch(mounts, OsFunctionCall::ReadText(path.into()))
+}
+
+fn mount_rw(host: &Path) -> MountTable {
+    let mut mounts = MountTable::new();
+    mounts
+        .mount("/mnt", host, MountMode::ReadWrite, None)
+        .expect("failed to configure mount");
+    mounts
+}
+
+/// The mount is pinned at mount time, so replacing the host directory with a
+/// symlink elsewhere must not redirect reads to it.
+///
+/// Deterministic, and the two designs differ observably: resolving by path
+/// re-reads the swapped root on every call, whereas a descriptor opened at
+/// mount time still refers to the original directory.
+#[test]
+fn mount_root_swapped_for_symlink_still_reads_original() {
+    let base = TempDir::new().unwrap();
+    let mount_path = base.path().join("mount");
+    let elsewhere = base.path().join("elsewhere");
+    fs::create_dir(&mount_path).unwrap();
+    fs::create_dir(&elsewhere).unwrap();
+    fs::write(mount_path.join("file.txt"), "public").unwrap();
+    fs::write(elsewhere.join("file.txt"), SECRET).unwrap();
+
+    let mut mounts = mount_rw(&mount_path);
+
+    // Replace the mount root with a symlink pointing somewhere else entirely.
+    if !try_rename_mount_root(&mount_path, base.path().join("moved")) {
+        // Windows blocks the rename outright, so the swap cannot even be staged
+        // — a stronger guarantee than the one asserted below.
+        assert!(matches!(read_text(&mut mounts, "/mnt/file.txt"), Ok(MontyObject::String(s)) if s == "public"));
+        return;
+    }
+    symlink_dir(&elsewhere, &mount_path);
+
+    let outcome = read_text(&mut mounts, "/mnt/file.txt");
+    let leaked = matches!(&outcome, Ok(MontyObject::String(s)) if s.contains(SECRET));
+    assert!(!leaked, "HOST FILE DISCLOSURE: read followed the swapped mount root");
+    assert!(
+        matches!(&outcome, Ok(MontyObject::String(s)) if s == "public"),
+        "expected the original directory to still back the mount, got {outcome:?}"
+    );
+}
+
+/// Renaming the mount's host directory must not detach the mount.
+///
+/// A descriptor follows the directory through a rename; a stored path does not.
+/// Unix-only: Windows refuses the rename outright, covered below.
+#[test]
+#[cfg(unix)]
+fn mount_survives_host_directory_rename() {
+    let base = TempDir::new().unwrap();
+    let mount_path = base.path().join("mount");
+    fs::create_dir(&mount_path).unwrap();
+    fs::write(mount_path.join("file.txt"), "public").unwrap();
+
+    let mut mounts = mount_rw(&mount_path);
+    fs::rename(&mount_path, base.path().join("renamed")).unwrap();
+
+    let outcome = read_text(&mut mounts, "/mnt/file.txt");
+    assert!(
+        matches!(&outcome, Ok(MontyObject::String(s)) if s == "public"),
+        "expected the mount to follow its directory through a rename, got {outcome:?}"
+    );
+}
+
+/// On Windows the mount's open handle blocks the rename entirely, so the host
+/// cannot move or delete a mounted directory until the mount is dropped.
+#[test]
+#[cfg(windows)]
+fn mounted_directory_cannot_be_renamed_on_windows() {
+    let base = TempDir::new().unwrap();
+    let mount_path = base.path().join("mount");
+    fs::create_dir(&mount_path).unwrap();
+    fs::write(mount_path.join("file.txt"), "public").unwrap();
+
+    let mut mounts = mount_rw(&mount_path);
+    let err = fs::rename(&mount_path, base.path().join("renamed")).unwrap_err();
+    assert_eq!(err.raw_os_error(), Some(32), "expected ERROR_SHARING_VIOLATION");
+
+    let outcome = read_text(&mut mounts, "/mnt/file.txt");
+    assert!(matches!(&outcome, Ok(MontyObject::String(s)) if s == "public"));
+}
+
+/// An intermediate directory replaced by a symlink out of the mount must not
+/// become a route out, whether or not any read is in flight.
+///
+/// Not a design differentiator on its own — resolving by path also rejects this,
+/// via a boundary check rather than structurally.
+#[test]
+fn read_through_swapped_intermediate_directory_is_rejected() {
+    let mount_dir = TempDir::new().unwrap();
+    let outside_dir = TempDir::new().unwrap();
+    fs::write(outside_dir.path().join("secret.txt"), SECRET).unwrap();
+
+    let data = mount_dir.path().join("data");
+    fs::create_dir(&data).unwrap();
+    fs::write(data.join("file.txt"), "public").unwrap();
+
+    let mut mounts = mount_rw(mount_dir.path());
+
+    fs::remove_dir_all(&data).unwrap();
+    symlink_dir(outside_dir.path(), &data);
+
+    let outcome = read_text(&mut mounts, "/mnt/data/secret.txt");
+    let leaked = matches!(&outcome, Ok(MontyObject::String(s)) if s.contains(SECRET));
+    assert!(!leaked, "HOST FILE DISCLOSURE: read traversed an outbound symlink");
+}
+
+/// The reported vector: one session renaming while another reads the same path.
+///
+/// The swap alternates `/mnt/data/file.txt` between a real in-mount file and a
+/// symlink to an out-of-mount file, so a read whose check and open disagree
+/// returns the secret. A descriptor-relative open has no window to lose — but
+/// this only ever *detects* the old failure when the race is won, which did not
+/// happen on macOS/APFS, so treat a green run as a soak rather than a proof.
+#[test]
+fn concurrent_rename_cannot_redirect_a_read() {
+    let mount_dir = TempDir::new().unwrap();
+    let outside_dir = TempDir::new().unwrap();
+
+    let secret = outside_dir.path().join("secret.txt");
+    fs::write(&secret, SECRET).unwrap();
+
+    let data = mount_dir.path().join("data");
+    fs::create_dir(&data).unwrap();
+    let target = data.join("file.txt");
+    fs::write(&target, "public").unwrap();
+
+    // The pre-existing outbound symlink: sandboxed code can relocate it but
+    // never create one.
+    let decoy = mount_dir.path().join("decoy");
+    symlink_file(&secret, &decoy);
+
+    let mut mounts = mount_rw(mount_dir.path());
+    let stop = Arc::new(AtomicBool::new(false));
+    let swaps = Arc::new(AtomicU32::new(0));
+
+    let swapper = {
+        let (stop, swaps) = (Arc::clone(&stop), Arc::clone(&swaps));
+        let staging = mount_dir.path().join("staging");
+        thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                // Swap the symlink in for the real file, then back.
+                if fs::rename(&target, &staging).is_ok()
+                    && fs::rename(&decoy, &target).is_ok()
+                    && fs::rename(&target, &decoy).is_ok()
+                    && fs::rename(&staging, &target).is_ok()
+                {
+                    swaps.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        })
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut leaks = 0_u32;
+    let mut reads = 0_u32;
+    while Instant::now() < deadline {
+        if let Ok(MontyObject::String(s)) = read_text(&mut mounts, "/mnt/data/file.txt") {
+            reads += 1;
+            if s.contains(SECRET) {
+                leaks += 1;
+            }
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    swapper.join().unwrap();
+
+    // Guard against the test silently doing nothing: both sides must have run.
+    assert!(reads > 0, "no read ever succeeded — the scenario did not run");
+    assert!(
+        swaps.load(Ordering::Relaxed) > 0,
+        "no swap ever completed — the scenario did not run"
+    );
+    assert_eq!(leaks, 0, "HOST FILE DISCLOSURE: a racing read returned host content");
+}
+
+/// Writes must be confined too: a rejected write must not create or modify
+/// anything outside the mount.
+#[test]
+fn write_through_swapped_directory_cannot_escape() {
+    let mount_dir = TempDir::new().unwrap();
+    let outside_dir = TempDir::new().unwrap();
+    let outside_file = outside_dir.path().join("target.txt");
+    fs::write(&outside_file, SECRET).unwrap();
+
+    let data = mount_dir.path().join("data");
+    fs::create_dir(&data).unwrap();
+
+    let mut mounts = mount_rw(mount_dir.path());
+
+    fs::remove_dir_all(&data).unwrap();
+    symlink_dir(outside_dir.path(), &data);
+
+    let _ = dispatch(
+        &mut mounts,
+        OsFunctionCall::WriteText(monty_types::PathStringDataArgs {
+            path: "/mnt/data/target.txt".into(),
+            data: "clobbered".to_owned(),
+        }),
+    );
+    assert_eq!(
+        fs::read_to_string(&outside_file).unwrap(),
+        SECRET,
+        "the out-of-mount file was modified"
+    );
+
+    // ...and no new file was created out there either.
+    let created: Vec<PathBuf> = fs::read_dir(outside_dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p != &outside_file)
+        .collect();
+    assert!(created.is_empty(), "files were created outside the mount: {created:?}");
+}
+
+/// Relative symlink targets are followed normally; paired with the test below,
+/// this pins the rule that decides which links work.
+#[test]
+fn relative_symlink_target_is_followed_inside_the_mount() {
+    let mount_dir = TempDir::new().unwrap();
+    fs::write(mount_dir.path().join("hello.txt"), "in-mount").unwrap();
+    symlink_file("hello.txt", mount_dir.path().join("link.txt"));
+
+    let mut mounts = mount_rw(mount_dir.path());
+
+    assert_eq!(
+        read_text(&mut mounts, "/mnt/link.txt").unwrap(),
+        MontyObject::String("in-mount".to_owned())
+    );
+}
+
+/// An absolute symlink target is refused even pointing back into the same mount.
+///
+/// A descriptor has no path, so a leading `/` cannot be interpreted and
+/// "absolute but inside" is indistinguishable from "absolute and outside".
+/// Re-rooting it ourselves would restore the check-then-use this design removes.
+#[test]
+fn absolute_symlink_target_is_refused_even_inside_the_mount() {
+    let mount_dir = TempDir::new().unwrap();
+    fs::write(mount_dir.path().join("hello.txt"), "in-mount").unwrap();
+    symlink_file(mount_dir.path().join("hello.txt"), mount_dir.path().join("abs.txt"));
+
+    let mut mounts = mount_rw(mount_dir.path());
+
+    // The target is the same file the relative link reaches successfully.
+    assert!(
+        matches!(
+            read_text(&mut mounts, "/mnt/abs.txt"),
+            Err(MountError::PathEscape { .. })
+        ),
+        "absolute in-mount symlink should be refused"
+    );
+
+    // `pathlib` predicates cannot raise, so they answer `False` instead.
+    for call in [
+        OsFunctionCall::Exists("/mnt/abs.txt".into()),
+        OsFunctionCall::IsFile("/mnt/abs.txt".into()),
+        OsFunctionCall::IsDir("/mnt/abs.txt".into()),
+    ] {
+        assert_eq!(dispatch(&mut mounts, call).unwrap(), MontyObject::Bool(false));
+    }
+
+    // `is_symlink` does not follow the final component, so it still sees a link.
+    assert_eq!(
+        dispatch(&mut mounts, OsFunctionCall::IsSymlink("/mnt/abs.txt".into())).unwrap(),
+        MontyObject::Bool(true)
+    );
+}
+
+/// A genuine host permission error must not be reported as a path escape.
+///
+/// `cap-std` answers both with `PermissionDenied`; only the errno separates them,
+/// its escape error being synthetic. Conflating them would make `PathEscape`
+/// mean "something was denied" rather than "the boundary caught something".
+#[test]
+#[cfg(unix)]
+fn genuine_permission_error_is_not_reported_as_an_escape() {
+    let mount_dir = TempDir::new().unwrap();
+    let unreadable = mount_dir.path().join("locked.txt");
+    fs::write(&unreadable, "in-mount").unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+
+    // Running as root defeats the mode bits, leaving nothing to assert.
+    if fs::read(&unreadable).is_ok() {
+        eprintln!("skipped: running as root, mode 0o000 is not enforced");
+        return;
+    }
+
+    let mut mounts = mount_rw(mount_dir.path());
+    let outcome = read_text(&mut mounts, "/mnt/locked.txt");
+
+    assert!(
+        matches!(&outcome, Err(MountError::Io(err, _)) if err.kind() == ErrorKind::PermissionDenied),
+        "expected a plain IO permission error, got {outcome:?}"
+    );
+}

@@ -15,6 +15,7 @@ use monty_types::{
 };
 use tempfile::TempDir;
 
+#[expect(dead_code, reason = "shared helper module; not every test crate uses all of it")]
 mod common;
 use common::{symlink_dir, symlink_file};
 
@@ -148,6 +149,18 @@ fn assert_blocked(mt: &mut MountTable, op: PathOp, path: &str) {
         Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_) | MountError::Io(_, _))) | None => {}
         Some(Ok(val)) => panic!("expected blocked, got Ok({val:?}) for path: {path}"),
         Some(Err(other)) => panic!("unexpected error variant for {path}: {other}"),
+    }
+}
+
+/// Asserts a boolean query answers `False` rather than raising.
+///
+/// `pathlib` predicates never raise, so a path leaving the mount comes back as
+/// `False` — indistinguishable from "does not exist". Raising would leak that
+/// something is there to be blocked.
+fn assert_invisible(mt: &mut MountTable, op: PathOp, path: &str) {
+    match call(mt, op, path) {
+        Some(Ok(MontyObject::Bool(false))) => {}
+        other => panic!("expected Ok(Bool(false)) for path: {path}, got {other:?}"),
     }
 }
 
@@ -386,7 +399,7 @@ mod symlink_tests {
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         assert_blocked(&mut mt, PathOp::ReadText, "/mnt/escape_link/secret.txt");
-        assert_blocked(&mut mt, PathOp::Exists, "/mnt/escape_link/secret.txt");
+        assert_invisible(&mut mt, PathOp::Exists, "/mnt/escape_link/secret.txt");
         assert_blocked(&mut mt, PathOp::Iterdir, "/mnt/escape_link");
     }
 
@@ -472,14 +485,14 @@ mod symlink_tests {
 
         let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
         assert_blocked(&mut mt, PathOp::ReadText, "/mnt/escape/secret.txt");
-        assert_blocked(&mut mt, PathOp::Exists, "/mnt/escape/secret.txt");
+        assert_invisible(&mut mt, PathOp::Exists, "/mnt/escape/secret.txt");
     }
 
     #[test]
     fn symlink_within_mount_allowed() {
         // Symlinks that stay within the mount boundary should work.
         let dir = create_test_dir();
-        symlink_file(dir.path().join("hello.txt"), dir.path().join("internal_link"));
+        symlink_file("hello.txt", dir.path().join("internal_link"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         let result = call(&mut mt, PathOp::ReadText, "/mnt/internal_link").unwrap().unwrap();
@@ -490,7 +503,7 @@ mod symlink_tests {
     fn symlink_to_directory_within_mount_allowed() {
         // Symlink to a subdirectory within the mount should work for all operations.
         let dir = create_test_dir();
-        symlink_dir(dir.path().join("subdir"), dir.path().join("dir_link"));
+        symlink_dir("subdir", dir.path().join("dir_link"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
@@ -515,8 +528,8 @@ mod symlink_tests {
     fn chained_symlinks_within_mount_allowed() {
         // A symlink pointing to another symlink, both within the mount, should work.
         let dir = create_test_dir();
-        symlink_file(dir.path().join("hello.txt"), dir.path().join("link1"));
-        symlink_file(dir.path().join("link1"), dir.path().join("link2"));
+        symlink_file("hello.txt", dir.path().join("link1"));
+        symlink_file("link1", dir.path().join("link2"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         let result = call(&mut mt, PathOp::ReadText, "/mnt/link2").unwrap().unwrap();
@@ -627,7 +640,7 @@ mod symlink_tests {
         let dir = create_test_dir();
 
         // Create a symlink within mount pointing to another dir within mount.
-        symlink_dir(dir.path().join("subdir"), dir.path().join("internal_link"));
+        symlink_dir("subdir", dir.path().join("internal_link"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
@@ -769,7 +782,7 @@ mod hard_link_tests {
         // Outbound symlink (points outside mount) — should be filtered.
         symlink(outside.path().join("external.txt"), dir.path().join("escape_link")).unwrap();
         // Inbound symlink (points inside mount) — should be kept.
-        symlink(dir.path().join("hello.txt"), dir.path().join("internal_link")).unwrap();
+        symlink("hello.txt", dir.path().join("internal_link")).unwrap();
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         let result = call(&mut mt, PathOp::Iterdir, "/mnt").unwrap().unwrap();
@@ -813,7 +826,7 @@ mod hard_link_tests {
 
         symlink(outside.path().join("external.txt"), dir.path().join("escape_link")).unwrap();
         symlink(outside.path().join("missing.txt"), dir.path().join("broken_link")).unwrap();
-        symlink(dir.path().join("hello.txt"), dir.path().join("internal_link")).unwrap();
+        symlink("hello.txt", dir.path().join("internal_link")).unwrap();
 
         let mut direct = mount_at_mnt(&dir, MountMode::ReadWrite);
         let direct_result = call(&mut direct, PathOp::Iterdir, "/mnt").unwrap().unwrap();
@@ -832,6 +845,7 @@ mod hard_link_tests {
 }
 
 /// Extracts sorted entry basenames from an `iterdir()` result list.
+#[cfg(unix)]
 fn sorted_names_from_list(obj: &MontyObject) -> Vec<String> {
     match obj {
         MontyObject::List(entries) => {

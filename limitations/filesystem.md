@@ -37,6 +37,12 @@ sandbox-reachable input. Directories raise `IsADirectoryError` as in CPython.
 Existence checks (`exists`, `is_file`, `is_dir`, `is_symlink`) and `stat()`
 still work on special files.
 
+The check runs before the open rather than on the handle, so a *host* process
+with write access to the mount could swap in a FIFO in between and block the
+servicing thread. Sandboxed code cannot — no mount mode creates special files
+or symlinks — so do not mount directories untrusted local processes can write
+to.
+
 ## Mount memory limits
 
 Each mount has a configurable `memory_usage_limit`, defaulting to 100 MB
@@ -67,28 +73,59 @@ the limit along with the newly appended bytes.
 
 ## Sandbox guarantees
 
-The host enforces these invariants on every path operation:
+A mount opens a descriptor on its host directory once, at mount time, and
+every operation runs relative to it, so nothing resolves from the filesystem
+root.
 
-- Canonicalization happens *after* mapping virtual → host paths.
-- The canonical path must remain inside the mount; `..` traversal cannot
-  escape (raises `PermissionError`).
+- The mount is pinned to the **directory**, not its path: renaming the host
+  directory does not detach the mount, and replacing it with a symlink does
+  not redirect reads. On Windows the open handle goes further and blocks the
+  rename outright — a mounted directory cannot be moved or deleted by anyone,
+  including the host, until the mount is dropped.
+- `..` cannot escape, and neither can a symlink or an intermediate directory
+  swapped for one mid-operation; such paths raise `PermissionError`.
 - Path segments a host parser reads as absolute are rejected
   (`PermissionError`) on every OS and in every mount mode: any segment
   containing a backslash or starting with `X:`. So names CPython allows on
   Unix — `a\b.txt`, `a:b.txt` — are refused there too, since Windows would
   read them as drive-relative. Colons elsewhere are fine (`note:2026.txt`).
-- Symlinks pointing outside the mount are rejected on resolution.
-- `OverlayMemory` renames of real files keep a reference to the backing host
-  path rather than copying it. That path is re-checked against the mount on
-  every read, so if a host-side process replaces it with a symlink out of the
-  mount after the rename, the read raises `PermissionError` — where CPython
-  would follow the new symlink and return its contents.
 - Null bytes in any path component are rejected (`ValueError`).
 - Resolved paths returned to the sandbox (e.g. via `Path.resolve()`) are
   virtual paths, never host paths.
 
 `/tmp`, `/etc`, `/proc`, `/dev`, `~`, and the host current working
 directory are **not** available unless the host explicitly mounts them.
+
+### Symlink targets must be relative
+
+**A symlink inside a mount is followed only if its target is relative; an
+absolute target raises `PermissionError` even when it points back into the
+same mount.** CPython follows both. A descriptor has no path of its own, so a
+leading `/` cannot be interpreted and "absolute but inside" is
+indistinguishable from "absolute and outside".
+
+This is the one thing to check before mounting an existing directory.
+Sandboxed code cannot create symlinks, so only links **already present** are
+affected — `node_modules` installs, Homebrew/Nix store trees, build output
+with linked artifacts. Only the links fail; the files themselves are readable,
+the error is loud, and nothing returns wrong data. `exists()`, `is_file()` and
+`is_dir()` answer `False` rather than raising. To keep such links working,
+rewrite them as relative before mounting.
+
+### `OverlayMemory` renames of real files
+
+A rename records a mount-relative reference to the existing file rather than
+copying its bytes, so it cannot come to name anything outside the mount. If
+the host replaces the underlying file before the read, the read sees whatever
+now occupies that path inside the mount; CPython, holding no such reference,
+would not find the renamed-away original.
+
+### Boolean predicates never raise
+
+`exists()`, `is_file()`, `is_dir()` and `is_symlink()` answer `False` for any
+path leaving the mount, so a blocked path is indistinguishable from a missing
+one — raising would confirm something is there to be blocked. CPython follows
+the link and answers `True`.
 
 ## No live host descriptors
 

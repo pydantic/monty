@@ -95,18 +95,23 @@ bindings) services via `MountTable::handle_os_call`.
 obtain any information about any file or directory outside the specific directory
 that is mounted. This is enforced by:
 
-- Path canonicalization after mapping virtual → host paths
-- Boundary checks verifying canonical paths remain within the mount
-- Symlink resolution that rejects links pointing outside the mount
-- Virtual-space normalization that prevents `..` escape
+- A `cap_std::fs::Dir` descriptor opened once at mount time, which every
+  operation runs relative to — so `..`, symlinks and intermediate directories
+  swapped mid-operation cannot reach out
+- Virtual-space normalization that prevents `..` escape in the sandbox namespace
 - `Resolve` and `Absolute` returning virtual paths, never host paths
 - Null byte rejection in all paths
 
-All path resolution goes through `path_security::resolve_path()` (in
-`crates/monty-fs/src/path_security.rs`) which is the sole security boundary.
-**Changes to `path_security.rs` require careful security review.**
+Path confinement is **structural**, not a check: `Mount::dir` (in
+`crates/monty-fs/src/mount_table.rs`) is the boundary; `path_security.rs` is
+now only path policy. The cost is that an absolute symlink target is never
+followed, even inside the mount (see `limitations/filesystem.md`) — do not
+"fix" that by comparing against the mount's host path, which restores the
+check-then-use this removes.
 
-`heap.rs` and `path_security.rs` are the two most security-critical files in the codebase.
+**Changes to `mount_table.rs` or `path_security.rs` require careful security
+review.** `heap.rs` and the mount boundary are the most security-critical
+code in the codebase.
 
 ## Subprocess isolation (`monty-proto`, `monty subprocess`, `monty-pool`)
 

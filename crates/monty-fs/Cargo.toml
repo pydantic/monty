@@ -18,6 +18,7 @@ name = "monty_fs"
 [dependencies]
 monty-types = { workspace = true }
 ahash = { workspace = true }
+cap-std = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

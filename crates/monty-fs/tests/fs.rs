@@ -1001,6 +1001,40 @@ fn ovl_mem_rmdir_overlay() {
     );
 }
 
+/// A missing path must be `FileNotFoundError`, not `NotADirectoryError`.
+///
+/// `resolve_virtual_path` never touches the filesystem, so "does not exist" and
+/// "exists but is not a directory" both arrive as `Ok` and must be separated
+/// here; both modes must agree.
+#[test]
+fn rmdir_nonexistent_is_not_found_in_both_modes() {
+    for mode in [MountMode::ReadWrite, MountMode::OverlayMemory(OverlayState::new())] {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt(&dir, mode);
+
+        let err = call(&mut mt, &OsFunctionCall::Rmdir("/mnt/nonexistent_dir".into()))
+            .unwrap()
+            .unwrap_err()
+            .into_exception();
+        assert_exc(
+            &err,
+            ExcType::FileNotFoundError,
+            "[Errno 2] No such file or directory: '/mnt/nonexistent_dir'",
+        );
+
+        // The neighbouring case must keep its own error.
+        let err = call(&mut mt, &OsFunctionCall::Rmdir("/mnt/hello.txt".into()))
+            .unwrap()
+            .unwrap_err()
+            .into_exception();
+        assert_exc(
+            &err,
+            ExcType::NotADirectoryError,
+            "[Errno 20] Not a directory: '/mnt/hello.txt'",
+        );
+    }
+}
+
 #[test]
 fn ovl_mem_rename() {
     let dir = create_test_dir();
@@ -2300,7 +2334,7 @@ fn ovl_mem_rename_overlay_file_onto_overlay_dir() {
 #[cfg(unix)]
 fn ovl_mem_rename_symlink_preserves_symlink() {
     let dir = create_test_dir();
-    symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+    symlink_file("hello.txt", dir.path().join("link.txt"));
 
     let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
 

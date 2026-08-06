@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use cap_std::{ambient_authority, fs::Dir};
 use monty_types::{MontyObject, OsFunctionCall};
 
 use super::{
@@ -152,8 +153,12 @@ impl MountTable {
 pub struct Mount {
     /// Virtual path prefix (absolute, normalized).
     virtual_path: String,
-    /// Canonical host directory path (resolved at construction time).
+    /// Canonical host directory path. Diagnostics only — see `dir`.
     host_path: PathBuf,
+    /// Descriptor for the mounted directory, opened once here — the sandbox
+    /// boundary. Resolution cannot leave it, and no rename can re-point a name
+    /// between a check and its use.
+    dir: Dir,
     /// Access mode (also owns overlay state for [`MountMode::OverlayMemory`]).
     mode: MountMode,
     /// Cumulative bytes written through this mount (monotonically increasing).
@@ -199,9 +204,15 @@ impl Mount {
             )));
         }
 
+        // The only use of ambient authority: the host is trusted to name the
+        // directory it shares. Everything afterwards is relative to `dir`.
+        let dir = Dir::open_ambient_dir(&canonical_host, ambient_authority())
+            .map_err(|e| MountError::InvalidMount(format!("cannot open host path '{}': {e}", host_path.display())))?;
+
         Ok(Self {
             virtual_path: normalized_virtual,
             host_path: canonical_host,
+            dir,
             mode,
             write_bytes_used: 0,
             write_bytes_limit,
@@ -215,7 +226,7 @@ impl Mount {
         &self.virtual_path
     }
 
-    /// Returns the canonical host directory path.
+    /// Returns the canonical host directory path. Diagnostics only.
     #[must_use]
     pub fn host_path(&self) -> &Path {
         &self.host_path
@@ -266,7 +277,7 @@ impl Mount {
     fn execute(&mut self, call: OsFunctionCall) -> Result<MontyObject, MountError> {
         let mut ctx = MountContext {
             mount_virtual: &self.virtual_path,
-            mount_host: &self.host_path,
+            mount_dir: &self.dir,
             write_bytes_used: &mut self.write_bytes_used,
             write_bytes_limit: self.write_bytes_limit,
             memory_usage_limit: self.memory_usage_limit,
