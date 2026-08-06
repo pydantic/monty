@@ -210,12 +210,13 @@ take_source = iter([[1], [2]])
 latched_take = itertools.takewhile(take_pred, take_source)
 assert list(latched_take) == []
 
-# `dropwhile` releases only its predicate: it never latches, so every later
-# `next` drives the source again and that ref must survive.
+# `dropwhile` releases neither: the predicate goes uncalled after the first
+# rejection but stays owned to destruction, as CPython holds `lz->func`, and
+# it never latches, so every later `next` drives the source again.
 drop_pred = make_shorter_than(1)
 drop_source = iter([[], [1]])
 past_drop = itertools.dropwhile(drop_pred, drop_source)
 assert next(past_drop) == [1]
 
 len('done')
-# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1, 'take_live': 1, 'drop_live': 1, 'filter_live': 1, 'star_live': 1, 'filter_none': 1, 'rejected': 1, 'pred_erroring': 1, 'star_erroring': 1, 'take_pred': 1, 'take_source': 1, 'latched_take': 1, 'drop_pred': 1, 'drop_source': 2, 'past_drop': 1}
+# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1, 'take_live': 1, 'drop_live': 1, 'filter_live': 1, 'star_live': 1, 'filter_none': 1, 'rejected': 1, 'pred_erroring': 1, 'star_erroring': 1, 'take_pred': 1, 'take_source': 1, 'latched_take': 1, 'drop_pred': 2, 'drop_source': 2, 'past_drop': 1}
