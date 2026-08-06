@@ -4,11 +4,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bytecode::VM,
-    defer_drop,
     exception_private::RunResult,
-    heap::{DropGuard, HeapId, HeapRead},
+    heap::{HeapId, HeapRead},
     predicate::call_predicate,
-    types::itertools::ItertoolsIter,
+    types::itertools::{
+        ItertoolsIter,
+        step::{next_item, next_tested},
+    },
     value::Value,
 };
 
@@ -61,36 +63,30 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
         let ItertoolsIter::DropWhile(drop_while) = iter.get(vm.heap) else {
             unreachable!("dispatched on Kind::DropWhile")
         };
-        // Only cloned while still dropping: the tail never consults it.
-        let predicate = drop_while
-            .dropping
-            .then(|| drop_while.predicate.clone_with_heap(vm.heap));
+        let dropping = drop_while.dropping;
         let source = drop_while.source.clone_with_heap(vm.heap);
-        defer_drop!(predicate, vm);
-        defer_drop!(source, vm);
+        // Past the leading run the predicate is never consulted again, so the
+        // item is yielded untested and the predicate is not even cloned.
+        if !dropping {
+            return next_item(source, vm);
+        }
+        let predicate = drop_while.predicate.clone_with_heap(vm.heap);
 
-        let item = {
-            let mut read = source.read(vm);
-            read.py_next(vm)
-        };
-        let Some(item) = item? else {
+        let Some((item, accepted)) = next_tested(predicate, source, vm, |predicate, item, vm| {
+            call_predicate(predicate, item, "dropwhile()", vm)
+        })?
+        else {
             return Ok(None);
         };
-        let Some(predicate) = predicate else {
-            return Ok(Some(item));
-        };
-        // Still dropping: the item is tested, and kept only once the predicate
-        // fails — so it needs a guard across a call that may raise.
-        let mut item_guard = DropGuard::new(item, vm);
-        let (item, vm) = item_guard.as_parts_mut();
-        if !call_predicate(predicate, item, "dropwhile()", vm)? {
+        if !accepted {
             let ItertoolsIter::DropWhile(drop_while) = iter.get_mut(vm.heap) else {
                 unreachable!("dispatched on Kind::DropWhile")
             };
             // Retained, not released: only the flag says it is done with.
             drop_while.dropping = false;
-            let (item, _) = item_guard.into_parts();
             return Ok(Some(item));
         }
+        // Still in the leading run, so this item is discarded.
+        item.drop_with(vm);
     }
 }

@@ -4,11 +4,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bytecode::VM,
-    defer_drop,
     exception_private::RunResult,
-    heap::{DropGuard, HeapId, HeapRead},
+    heap::{HeapId, HeapRead},
     predicate::call_predicate,
-    types::{PyTrait, itertools::ItertoolsIter},
+    types::{
+        PyTrait,
+        itertools::{ItertoolsIter, step::next_tested},
+    },
     value::Value,
 };
 
@@ -54,28 +56,21 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
         };
         let predicate = filter.predicate.clone_with_heap(vm.heap);
         let source = filter.source.clone_with_heap(vm.heap);
-        defer_drop!(predicate, vm);
-        defer_drop!(source, vm);
 
-        let item = {
-            let mut read = source.read(vm);
-            read.py_next(vm)
-        };
-        let Some(item) = item? else {
+        let Some((item, truthy)) = next_tested(predicate, source, vm, |predicate, item, vm| {
+            if matches!(predicate, Value::None) {
+                item.py_bool(vm)
+            } else {
+                call_predicate(predicate, item, "filterfalse()", vm)
+            }
+        })?
+        else {
             return Ok(None);
         };
-        // Guarded across the test: the item is yielded only when rejected, and
-        // a user predicate may raise before the answer is known.
-        let mut item_guard = DropGuard::new(item, vm);
-        let (item, vm) = item_guard.as_parts_mut();
-        let truthy = if matches!(predicate, Value::None) {
-            item.py_bool(vm)?
-        } else {
-            call_predicate(predicate, item, "filterfalse()", vm)?
-        };
         if !truthy {
-            let (item, _) = item_guard.into_parts();
             return Ok(Some(item));
         }
+        // Accepted by the predicate, so this one is filtered out.
+        item.drop_with(vm);
     }
 }

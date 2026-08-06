@@ -4,11 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bytecode::VM,
-    defer_drop,
     exception_private::RunResult,
-    heap::{DropGuard, DropWithContext, HeapId, HeapRead},
+    heap::{DropWithContext, HeapId, HeapRead},
     predicate::call_predicate,
-    types::itertools::ItertoolsIter,
+    types::itertools::{ItertoolsIter, step::next_tested},
     value::Value,
 };
 
@@ -66,27 +65,23 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
     };
     let predicate = predicate.clone_with_heap(vm.heap);
     let source = source.clone_with_heap(vm.heap);
-    defer_drop!(predicate, vm);
-    defer_drop!(source, vm);
 
-    let item = {
-        let mut read = source.read(vm);
-        read.py_next(vm)
-    };
     // Exhaustion does NOT latch: CPython only sets `stop` when the predicate
     // fails, so a source that raises `StopIteration` and later yields again is
     // re-driven on the next call rather than treated as spent.
-    let Some(item) = item? else {
+    let Some((item, accepted)) = next_tested(predicate, source, vm, |predicate, item, vm| {
+        call_predicate(predicate, item, "takewhile()", vm)
+    })?
+    else {
         return Ok(None);
     };
-    // `item` is tested and then yielded, so it needs a guard: the predicate can
-    // raise, and a rejected item is dropped rather than returned.
-    let mut item_guard = DropGuard::new(item, vm);
-    let (item, vm) = item_guard.as_parts_mut();
-    if call_predicate(predicate, item, "takewhile()", vm)? {
-        let (item, _) = item_guard.into_parts();
+
+    if accepted {
         Ok(Some(item))
     } else {
+        // The rejected item is discarded rather than yielded, and the latch
+        // means nothing after it is ever examined.
+        item.drop_with(vm);
         finish(iter, vm);
         Ok(None)
     }

@@ -20,6 +20,7 @@ pub mod islice;
 pub mod pairwise;
 pub mod repeat;
 pub mod starmap;
+mod step;
 pub mod takewhile;
 
 use std::fmt::Write;
