@@ -3,7 +3,7 @@
 # ===
 
 import sys
-from typing import assert_type
+from typing import TypedDict, assert_type
 
 
 def takes_int(x: int) -> None:
@@ -105,5 +105,32 @@ takes_two(a=1, c='wrong')
 
 not_callable: int = 42
 not_callable()
+
+
+# === Errors on loop variables ===
+# The loop variable's element type comes through `Iterator.__next__`, which is
+# `@abstractmethod`; without `abc` in the stub tree it is `Unknown` and none of
+# these errors are reported (https://github.com/pydantic/monty/issues/197).
+
+
+class SearchTag(TypedDict):
+    id: str
+
+
+def loop_over_typed_dicts(tags: list[SearchTag]) -> None:
+    for tag in tags:
+        takes_str(tag['uuid'])
+
+
+def loop_over_ints(values: list[int]) -> None:
+    for value in values:
+        takes_str(value)
+
+
+def loop_over_dict_items(mapping: dict[str, int]) -> None:
+    for key, value in mapping.items():
+        takes_int(key)
+        takes_str(value)
+
 
 print(sys.copyright)

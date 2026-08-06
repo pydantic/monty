@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, assert_type
@@ -591,14 +592,24 @@ assert_type(json.loads('null'), Any)
 assert_type(json.dumps(None), str)
 
 # === iter() / next() ===
-# Asserts only that these resolve and check. Precise element inference through
-# `Iterable[_T]` is a pre-existing gap in the trimmed stub — `sorted([1, 2])`
-# is `list[Unknown]` too — so element types are deliberately not asserted here.
+# Element types must survive the `Iterator` protocol: `Iterator.__next__` is
+# decorated `@abstractmethod`, so a stub tree missing `abc` degrades every one
+# of these to `Unknown` and silently disables checking inside `for` loops.
 it = iter([1, 2, 3])
-next(it)
-next(it, 0)
-list(it)
-for _x in iter([1, 2, 3]):
-    pass
+assert_type(it, Iterator[int])
+assert_type(next(it), int)
+assert_type(next(it, 0), int)
+assert_type(list(it), list[int])
+assert_type(sorted([1, 2]), list[int])
+for x_it in iter([1, 2, 3]):
+    assert_type(x_it, int)
 # two-argument iter(callable, sentinel)
-list(iter(lambda: 0, 0))
+assert_type(list(iter(lambda: 0, 0)), list[int])
+
+# Loop variables keep their element type for every iterable, not just lists
+for x_list in get_list_int():
+    assert_type(x_list, int)
+for k_dict, v_dict in {'a': 1}.items():
+    assert_type(k_dict, str)
+    assert_type(v_dict, int)
+assert_type([y_comp for y_comp in [1, 2]], list[int])

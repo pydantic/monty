@@ -51,3 +51,10 @@ implements just `count` and `repeat` so far, and `collections` only the four
 types above. The absent names are missing from the module namespace rather than
 stubbed, so they fail type checking as well as raising `AttributeError` at
 runtime; see each module's page for the specifics.
+
+## Modules the type checker resolves but the runtime does not
+
+`abc`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` back
+the vendored stubs (e.g. `@abstractmethod` on protocol members), so they have
+to resolve during type checking. Importing them therefore type-checks clean but
+still raises `ModuleNotFoundError` at runtime.

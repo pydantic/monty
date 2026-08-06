@@ -101,6 +101,10 @@ COPY_FILES = [
     'typing.pyi',
     'typing_extensions.pyi',
     '_collections_abc.pyi',
+    # `@abstractmethod` decorates protocol members throughout the stubs above
+    # (e.g. `Iterator.__next__`); without it every such member infers as
+    # `Unknown` and silences downstream errors
+    'abc.pyi',
     # Used in type annotations
     'types.pyi',
     # So type checking works with dataclasses
@@ -138,6 +142,7 @@ VERSIONS = """\
 
 _collections_abc: 3.3-
 _typeshed: 3.0-  # not present at runtime, only for type checking
+abc: 3.0-  # not importable at runtime, only for type checking
 asyncio: 3.4-
 builtins: 3.0-
 collections: 3.0-
