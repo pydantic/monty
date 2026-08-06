@@ -404,7 +404,7 @@ fn call_takewhile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let TakeWhileArgs { callable, iterable } = TakeWhileArgs::from_args(args, vm)?;
     let (predicate, source) = resolve_source(callable, iterable, vm)?;
     let iter = ItertoolsIter::TakeWhile(TakeWhile::new(predicate, source));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
 /// `itertools.dropwhile(predicate, iterable)` — everything past that run.
@@ -412,7 +412,7 @@ fn call_dropwhile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let DropWhileArgs { callable, iterable } = DropWhileArgs::from_args(args, vm)?;
     let (predicate, source) = resolve_source(callable, iterable, vm)?;
     let iter = ItertoolsIter::DropWhile(DropWhile::new(predicate, source));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
 /// `itertools.filterfalse(predicate, iterable)` — the items it rejects.
@@ -420,7 +420,7 @@ fn call_filterfalse(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let FilterFalseArgs { callable, iterable } = FilterFalseArgs::from_args(args, vm)?;
     let (predicate, source) = resolve_source(callable, iterable, vm)?;
     let iter = ItertoolsIter::FilterFalse(FilterFalse::new(predicate, source));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
 /// `itertools.starmap(function, iterable)` — each item spread as arguments.
@@ -428,7 +428,7 @@ fn call_starmap(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let StarMapArgs { callable, iterable } = StarMapArgs::from_args(args, vm)?;
     let (function, source) = resolve_source(callable, iterable, vm)?;
     let iter = ItertoolsIter::StarMap(StarMap::new(function, source));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
 /// Resolves the iterable while keeping the callable safe from the error path.

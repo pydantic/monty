@@ -23,7 +23,7 @@ pub mod starmap;
 mod step;
 pub mod takewhile;
 
-use std::fmt::Write;
+use std::{fmt::Write, mem};
 
 pub(crate) use chain::Chain;
 pub(crate) use compress::Compress;
