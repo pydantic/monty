@@ -842,6 +842,9 @@ pub enum MontyType {
     ItertoolsFilterFalse,
     #[strum(serialize = "itertools.starmap")]
     ItertoolsStarMap,
+    /// The builtin `object`, which the sandbox exposes as a name only — it is
+    /// not a base class and cannot be constructed.
+    Object,
 }
 
 impl fmt::Display for MontyType {

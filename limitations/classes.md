@@ -221,7 +221,9 @@ first, e.g. return a `dict` of the fields.
   `__getattribute__`, `__setattr__`, `__delattr__`, and `__del__`. A missing
   attribute always raises the default `AttributeError` even when the class
   defines `__getattr__`, and attribute writes always go straight to the
-  instance `__dict__`.
+  instance `__dict__`. `object.__setattr__` exists (see below) and is
+  therefore equivalent to a plain `obj.x = v` until those hooks land.
+
 - Introspection attributes other than `__name__`, `__doc__`, `__annotations__`
   and `obj.__class__`: `Foo.__dict__`, `obj.__dict__`, `Foo.__bases__`,
   `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, and explicit
@@ -246,6 +248,27 @@ first, e.g. return a `dict` of the fields.
   annotations never being evaluated, so it would change if they ever are (see
   ./typing.md).
 - `del obj.attr` (the `del` statement is unsupported generally).
+
+## `object`
+
+The name resolves, but it is a carrier for `object.__setattr__` rather than a
+type: Monty has no inheritance, so there is no base class for it to be.
+`isinstance(x, object)` is `True` for every value, as in CPython.
+
+- **`object()` cannot be constructed** — raises `TypeError: cannot create
+  'object' instances`, where CPython returns a featureless instance.
+- **`class Foo(object):` is still rejected**, like any base list (see above),
+  so the idiom carries no more weight than `class Foo:`.
+- **`object.__setattr__` is its only member.** Every other attribute raises
+  `AttributeError`, and the message is Monty's generic `'type' object has no
+  attribute 'x'` where CPython says `type object 'object' has no attribute 'x'`.
+- **`object.__setattr__` accepts only instances of sandbox-defined classes.**
+  Anything else raises CPython's `AttributeError: '<type>' object has no
+  attribute '<name>' and no __dict__ for setting new attributes` — including
+  a class object, where CPython instead raises `TypeError: can't apply this
+  __setattr__ to type object`.
+- **It reprs as `<built-in function object.__setattr__>`**, where CPython says
+  `<slot wrapper '__setattr__' of 'object' objects>`.
 
 ## `FrozenInstanceError`
 

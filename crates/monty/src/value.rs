@@ -10,7 +10,7 @@ use num_bigint::{BigInt, Sign};
 use num_traits::FromPrimitive;
 
 use crate::{
-    builtins::Builtins,
+    builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
@@ -1756,6 +1756,14 @@ impl Value {
                 }
                 if *t == Type::TimeZone && attr.as_str(vm.interns) == "utc" {
                     return Ok(CallResult::Value(vm.heap.get_timezone_utc()));
+                }
+                // `object.__setattr__` is the only member `object` carries: it
+                // exists so a class that hooks attribute writes has a way to
+                // perform one (see `limitations/classes.md`).
+                if *t == Type::Object && attr.as_str(vm.interns) == "__setattr__" {
+                    return Ok(CallResult::Value(Self::Builtin(Builtins::Function(
+                        BuiltinsFunctions::ObjectSetattr,
+                    ))));
                 }
             }
             _ => {}

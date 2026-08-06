@@ -73,21 +73,29 @@ impl<'h> HeapRead<'h, Instance> {
     /// Sets an instance attribute, returning the previous value (if any) for the
     /// caller to drop. Takes ownership of both `name` and `value`.
     ///
-    /// The one hook a `@dataclass(frozen=True)` needs on the write path; what
-    /// counts as frozen and how it reads is [`dataclasses`]' business.
+    /// The entry point for an ordinary `obj.x = v`: it applies whatever the
+    /// class has to say about the write — today just
+    /// `@dataclass(frozen=True)` — and is where a class-level `__setattr__`
+    /// hook would be dispatched once one is. The write itself is
+    /// [`set_attr_unchecked`](Self::set_attr_unchecked).
     pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let class_id = self.get(vm.heap).class();
         if let Some(exc) = dataclasses::frozen_assignment_error(class_id, &name, vm) {
             [name, value].drop_with(vm);
             return Err(exc);
         }
-        self.attrs_mut().set(name, value, vm)
+        self.set_attr_unchecked(name, value, vm)
     }
 
-    /// Sets an attribute without the frozen check, for the synthesized
-    /// `__init__` — which has to populate a `frozen=True` instance that its own
-    /// `set_attr` would refuse, exactly as CPython's generated `__init__` goes
-    /// through `object.__setattr__`.
+    /// Writes straight to the instance `__dict__`, skipping every check
+    /// [`set_attr`](Self::set_attr) makes — the only place the write itself
+    /// lives, and what both `object.__setattr__` and a `@dataclass`'s
+    /// synthesized `__init__` call. The latter has to populate a
+    /// `frozen=True` instance that `set_attr` would refuse, exactly as
+    /// CPython's generated `__init__` goes through `object.__setattr__`.
+    ///
+    /// Whatever `set_attr` grows must stay above this line (see
+    /// `limitations/classes.md`).
     pub fn set_attr_unchecked(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.attrs_mut().set(name, value, vm)
     }
