@@ -121,7 +121,8 @@ impl ResourceLimits {
 
     /// Sets allocator-backed maximum memory usage in bytes.
     ///
-    /// Execution fails if the executable has not installed `monty-alloc`.
+    /// Requires the executable to install and arm `monty-alloc`; otherwise
+    /// the limit is silently not enforced.
     #[must_use]
     pub fn max_memory(mut self, limit: usize) -> Self {
         self.max_memory = Some(limit);
@@ -211,7 +212,8 @@ impl ResourceTracker {
     /// The execution-time clock starts at zero and only runs while the VM
     /// executes, so the tracker can be created any amount of time before
     /// the first run without consuming the duration budget. A configured
-    /// `max_memory` requires [`register_memory_probe`] before execution.
+    /// `max_memory` requires `monty-alloc` installed as the global allocator
+    /// and armed via its `set_limit`; otherwise it is silently not enforced.
     #[must_use]
     pub fn new(limits: ResourceLimits) -> Self {
         Self {

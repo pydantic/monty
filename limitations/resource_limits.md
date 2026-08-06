@@ -23,8 +23,9 @@ subprocess and WebAssembly runtimes do.
 - Memory usage is measured by the worker's process-global allocator, while the
   configured budget belongs to one session.
 - Workers count bytes requested from their global allocator. Direct Rust users
-  must install and arm `monty-alloc` before using `max_memory`; otherwise
-  execution fails with `RuntimeError` rather than applying an approximate limit.
+  must install `monty-alloc` as the global allocator and arm it with
+  `set_limit` before using `max_memory`; without it usage always reads as
+  zero and the limit is silently not enforced.
 - Operations whose result is bounded by simple arithmetic on input sizes
   are **pre-checked** before allocating: integer multiplication, left
   shift, integer power, sequence repeat (`'x' * n`), replacement

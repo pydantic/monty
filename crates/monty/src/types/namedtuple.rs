@@ -46,7 +46,7 @@ use crate::{
         str::allocate_string,
         tuple::TupleVec,
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Python named tuple value stored on the heap.
@@ -224,9 +224,13 @@ impl<'h> HeapRead<'h, NamedTuple> {
     }
 
     /// Clones every item, for the orderings in [`cmp_item_seqs`].
-    pub(crate) fn cloned_items(&self, vm: &mut VM<'h>) -> Vec<Value> {
+    ///
+    /// Preflights the slot bytes so an over-budget clone raises a graceful
+    /// `MemoryError` instead of bursting past the allocator's hard limit.
+    pub(crate) fn cloned_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
         let len = self.get(vm.heap).len();
-        (0..len).map(|i| self.clone_item(i, vm)).collect()
+        vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        Ok((0..len).map(|i| self.clone_item(i, vm)).collect())
     }
 
     /// Returns a stack-borrowed lending iterator over the named tuple's items,
@@ -392,10 +396,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
     /// CPython (the field names describe one instance only, so they cannot
     /// survive concatenation). A non-tuple-like right operand returns `None`.
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
-        let Some(mut other_items) = cloned_tuple_like_items(other, vm) else {
+        let Some(mut other_items) = cloned_tuple_like_items(other, vm)? else {
             return Ok(None);
         };
-        let mut items = self.cloned_items(vm);
+        let mut items = self.cloned_items(vm)?;
         items.append(&mut other_items);
         Ok(Some(allocate_tuple(SmallVec::from_vec(items), vm.heap)?))
     }
@@ -403,10 +407,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
     /// Reflected concatenation (`tuple + namedtuple`), reached when the left
     /// tuple's `py_add_impl` declined the namedtuple right operand.
     fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(mut items) = cloned_tuple_like_items(other, vm) else {
+        let Some(mut items) = cloned_tuple_like_items(other, vm)? else {
             return Ok(None);
         };
-        let mut self_items = self.cloned_items(vm);
+        let mut self_items = self.cloned_items(vm)?;
         items.append(&mut self_items);
         Ok(Some(allocate_tuple(SmallVec::from_vec(items), vm.heap)?))
     }
@@ -636,7 +640,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// `sys.version_info.__getnewargs__()` is `((3, 14, ...),)`, one level deeper.
     fn method_getnewargs(&self, vm: &mut VM<'h>, args: ArgValues, from_factory: bool) -> RunResult<Value> {
         args.check_zero_args("__getnewargs__", vm.heap)?;
-        let items: TupleVec = self.cloned_items(vm).into_iter().collect();
+        let items: TupleVec = self.cloned_items(vm)?.into_iter().collect();
         let values = allocate_tuple(items, vm.heap)?;
         if from_factory {
             Ok(values)
@@ -1006,20 +1010,22 @@ pub(crate) fn cmp_item_seqs(a: Vec<Value>, b: Vec<Value>, vm: &mut VM<'_>) -> Ru
 }
 
 /// Clones the items of a tuple-like value (`tuple` or `namedtuple`) into an
-/// owned `Vec`, incrementing refcounts, or returns `None` for anything else.
+/// owned `Vec`, incrementing refcounts, or returns `Ok(None)` for anything
+/// else. Preflights the slot bytes like [`HeapRead::cloned_items`].
 ///
 /// Shared by named-tuple concatenation (`+`), whose result is always a plain
 /// tuple regardless of which operand is the namedtuple.
-fn cloned_tuple_like_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
+fn cloned_tuple_like_items(value: &Value, vm: &VM<'_>) -> RunResult<Option<Vec<Value>>> {
     let Value::Ref(id) = value else {
-        return None;
+        return Ok(None);
     };
     let id = *id;
     let len = match vm.heap.get(id) {
         HeapData::Tuple(t) => t.as_slice().len(),
         HeapData::NamedTuple(nt) => nt.as_vec().len(),
-        _ => return None,
+        _ => return Ok(None),
     };
+    vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
     let mut items = Vec::with_capacity(len);
     for i in 0..len {
         let item = match vm.heap.get(id) {
@@ -1029,7 +1035,7 @@ fn cloned_tuple_like_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
         };
         items.push(item);
     }
-    Some(items)
+    Ok(Some(items))
 }
 
 /// Builds the synthesised class docstring, e.g. `Point(x, y)`.

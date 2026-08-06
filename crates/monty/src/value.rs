@@ -383,15 +383,15 @@ impl<'h> PyTrait<'h> for Value {
                 // cloned first because the comparison needs `&mut VM`, which
                 // cannot coexist with two live `HeapRead`s.
                 (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => {
-                    let (a, b) = (a.cloned_items(vm), b.cloned_items(vm));
+                    let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
                     cmp_item_seqs(a, b, vm)
                 }
                 (HeapReadOutput::NamedTuple(a), HeapReadOutput::Tuple(b)) => {
-                    let (a, b) = (a.cloned_items(vm), b.cloned_items(vm));
+                    let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
                     cmp_item_seqs(a, b, vm)
                 }
                 (HeapReadOutput::Tuple(a), HeapReadOutput::NamedTuple(b)) => {
-                    let (a, b) = (a.cloned_items(vm), b.cloned_items(vm));
+                    let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
                     cmp_item_seqs(a, b, vm)
                 }
                 (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),

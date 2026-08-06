@@ -10,7 +10,7 @@ use crate::{
     intern::StaticStrings,
     resource_checks::check_repeat_size,
     types::{LazyHeapSet, Type, list::repr_sequence_fmt, long_int::repeat_count},
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// `deque([iterable[, maxlen]])` — both positional-or-keyword, both defaulted.
@@ -271,14 +271,15 @@ impl<'h> HeapRead<'h, Deque> {
     }
 
     /// Clones every item, incrementing refcounts — used by `copy`, `+` and `*`.
-    fn clone_all_items(&self, vm: &mut VM<'h>) -> Vec<Value> {
+    fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
         let len = self.get(vm.heap).len();
+        vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let mut out = Vec::with_capacity(len);
         for i in 0..len {
             let item = self.get(vm.heap).items[i].clone_with_heap(vm.heap);
             out.push(item);
         }
-        out
+        Ok(out)
     }
 
     /// Resolves a Python index (negative counts from the right) to a real one.
@@ -479,8 +480,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
             return Ok(None);
         };
         let maxlen = self.get(vm.heap).maxlen();
-        let mut items = self.clone_all_items(vm);
-        items.extend(other.clone_all_items(vm));
+        let mut items = self.clone_all_items(vm)?;
+        items.extend(other.clone_all_items(vm)?);
         let (deque, evicted) = Deque::new(items, maxlen);
         evicted.drop_with(vm.heap);
         let id = vm.heap.allocate(HeapData::Deque(deque))?;
@@ -735,7 +736,7 @@ fn call_deque_method<'h>(
         StaticStrings::Copy => {
             args.check_zero_args("deque.copy", vm.heap)?;
             let maxlen = deque.get(vm.heap).maxlen();
-            let items = deque.clone_all_items(vm);
+            let items = deque.clone_all_items(vm)?;
             let (new_deque, evicted) = Deque::new(items, maxlen);
             evicted.drop_with(vm);
             let id = vm.heap.allocate(HeapData::Deque(new_deque))?;

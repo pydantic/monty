@@ -42,7 +42,7 @@ use crate::{
         long_int::repeat_count,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Inline capacity for small tuples. Tuples with 2 or fewer elements avoid
@@ -177,20 +177,24 @@ impl<'h> HeapRead<'h, Tuple> {
         self.get(vm.heap).items[index].clone_with_heap(vm)
     }
 
-    /// Clones all items from this tuple with proper refcount management.
     /// Clones every item into a plain `Vec`, for the namedtuple orderings in
     /// [`cmp_item_seqs`](crate::types::namedtuple::cmp_item_seqs).
-    pub(crate) fn cloned_items(&self, vm: &mut VM<'h>) -> Vec<Value> {
-        self.clone_all_items(vm).into_vec()
+    pub(crate) fn cloned_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
+        Ok(self.clone_all_items(vm)?.into_vec())
     }
 
-    fn clone_all_items(&self, vm: &mut VM<'h>) -> TupleVec {
+    /// Clones all items from this tuple with proper refcount management.
+    ///
+    /// Preflights the slot bytes so an over-budget clone raises a graceful
+    /// `MemoryError` instead of bursting past the allocator's hard limit.
+    fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<TupleVec> {
         let len = self.get(vm.heap).items.len();
+        vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let mut result = TupleVec::with_capacity(len);
         for i in 0..len {
             result.push(self.clone_item(i, vm));
         }
-        result
+        Ok(result)
     }
 
     /// Returns a stack-borrowed lending iterator over the tuple's items,
@@ -442,8 +446,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        let mut items = self.clone_all_items(vm);
-        items.extend(other.clone_all_items(vm));
+        let mut items = self.clone_all_items(vm)?;
+        items.extend(other.clone_all_items(vm)?);
         Ok(Some(allocate_tuple(items, vm.heap)?))
     }
 

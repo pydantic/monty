@@ -244,13 +244,17 @@ impl<'h> HeapRead<'h, List> {
     }
 
     /// Clones all items from this list with proper refcount management.
-    fn clone_all_items(&self, vm: &mut VM<'h>) -> Vec<Value> {
+    ///
+    /// Preflights the slot bytes so an over-budget clone raises a graceful
+    /// `MemoryError` instead of bursting past the allocator's hard limit.
+    fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
         let len = self.get(vm.heap).items.len();
+        vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let mut result = Vec::with_capacity(len);
         for i in 0..len {
             result.push(self.clone_item(i, vm));
         }
-        result
+        Ok(result)
     }
 
     /// Returns a stack-borrowed lending iterator over the list's items,
@@ -496,8 +500,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        let mut items = self.clone_all_items(vm);
-        items.extend(other.clone_all_items(vm));
+        let mut items = self.clone_all_items(vm)?;
+        items.extend(other.clone_all_items(vm)?);
         let id = vm.heap.allocate(HeapData::List(List::new(items)))?;
         Ok(Some(Value::Ref(id)))
     }
@@ -526,17 +530,25 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         };
 
         if Some(*other_id) == self_id {
-            // Self-extend: clone our own items with proper refcounting
-            let items = self.clone_all_items(vm);
+            // Self-extend: clone our own items with proper refcounting. Checked
+            // at 2× — the temporary clone plus the equal-sized target growth —
+            // up front, while no owned values need releasing on failure.
+            let len = self.get(vm.heap).items.len();
+            vm.heap.tracker().check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
+            let items = self.clone_all_items(vm)?;
             self.get_mut(vm.heap).items.extend(items);
         } else {
-            // Pre-check memory limit before extending from the other list.
-            // Read source list via HeapRead, clone items into a temporary Vec
+            // Read source list via HeapRead, clone items into a temporary Vec.
+            // Checked at 2× — the clone plus the target growth — see above.
             let source = vm.heap.read(*other_id);
             let HeapReadOutput::List(source_list) = source else {
                 return Ok(false);
             };
-            let source_items = source_list.clone_all_items(vm);
+            let source_len = source_list.get(vm.heap).len();
+            vm.heap
+                .tracker()
+                .check_allocation(source_len.saturating_mul(2 * VALUE_SIZE))?;
+            let source_items = source_list.clone_all_items(vm)?;
             // Check if new items contain refs
             let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(_)));
             self.get_mut(vm.heap).items.extend(source_items);
