@@ -3,7 +3,6 @@
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
-    error::Error,
     fmt,
     io::{self, Write},
     process,
@@ -29,28 +28,16 @@ static BASELINE: AtomicUsize = AtomicUsize::new(usize::MAX);
 const BASE_HEADROOM: usize = 4 * 1024 * 1024;
 const TYPE_CHECK_HEADROOM: usize = 32 * 1024 * 1024;
 
-/// Error returned when [`LimitedAllocator`] is not the process allocator.
-#[derive(Debug)]
-pub struct AllocatorNotInstalled;
-
-impl fmt::Display for AllocatorNotInstalled {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("monty-alloc is not installed as the global allocator")
-    }
-}
-
-impl Error for AllocatorNotInstalled {}
-
 /// Applies a session's soft memory limit and the hard ceiling above it.
 /// Call it after every request, since a session can also arrive (or end)
 /// through a restored dump or a reset; re-applying mid-session is a no-op.
 ///
 /// On a 32-bit target (wasm) a limit near 4 GiB saturates the arithmetic and
 /// leaves the worker uncapped — there is no cap to express.
-pub fn set_limit(max_memory: Option<u64>, type_check: bool) -> Result<(), AllocatorNotInstalled> {
+pub fn set_limit(max_memory: Option<u64>, type_check: bool) -> Result<(), &'static str> {
     let live = LIVE.load(Ordering::Relaxed);
     if live == 0 {
-        return Err(AllocatorNotInstalled);
+        return Err("monty-alloc is not installed as the global allocator");
     }
     monty_types::register_memory_probe(session_memory_with);
     // `fetch_min` both reads and lowers the baseline: the first arming, on a
