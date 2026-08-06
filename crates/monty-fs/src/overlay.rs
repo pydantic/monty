@@ -948,10 +948,10 @@ fn rename(
         let entry = if is_symlink {
             // A stored reference could not escape anyway, but failing here puts
             // the error where the user caused it rather than on a later read.
-            if ctx.mount_dir.metadata(rel).is_err() {
-                return Err(MountError::PathEscape {
-                    virtual_path: src_vpath.to_owned(),
-                });
+            // Route through `map_io` so only a confinement failure reads as
+            // `PathEscape` — a denied in-mount target is a permission error.
+            if let Err(err) = ctx.mount_dir.metadata(rel) {
+                return Err(map_io(err, src_vpath));
             }
             // Preserve the symlink entry itself rather than its target.
             OverlayFileRef::from_lstat(ctx.mount_dir, rel)

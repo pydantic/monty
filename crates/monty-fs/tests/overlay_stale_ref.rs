@@ -9,6 +9,8 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+#[cfg(unix)]
+use std::{io::ErrorKind, os::unix::fs::PermissionsExt};
 
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{MontyObject, OsFunctionCall, PathStringDataArgs, RenameCallArgs};
@@ -171,6 +173,35 @@ fn mount_root_swap_does_not_redirect_a_cached_ref() {
         "HOST FILE DISCLOSURE: swapping the mount root redirected the read"
     );
     assert_eq!(outcome.unwrap(), MontyObject::String("public".to_owned()));
+}
+
+/// Renaming an in-mount symlink whose target is unreadable must report the I/O
+/// error, not a path escape.
+///
+/// `PathEscape` means the boundary caught something; a permission failure on a
+/// target that is plainly inside the mount is not that.
+#[test]
+#[cfg(unix)]
+fn renaming_symlink_to_denied_target_reports_the_io_error() {
+    let mount_dir = TempDir::new().unwrap();
+    let sub = mount_dir.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(sub.join("target.txt"), "content").unwrap();
+    symlink_file("sub/target.txt", mount_dir.path().join("link.txt"));
+    fs::set_permissions(&sub, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(sub.join("target.txt")).is_ok() {
+        eprintln!("skipped: running as root, mode 0o000 is not enforced");
+        return;
+    }
+
+    let mut mt = mount_overlay(mount_dir.path());
+    let outcome = dispatch(&mut mt, rename_call("/mnt/link.txt", "/mnt/moved.txt"));
+
+    fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        matches!(&outcome, Err(MountError::Io(err, _)) if err.kind() == ErrorKind::PermissionDenied),
+        "expected a permission error, got {outcome:?}"
+    );
 }
 
 /// Control — the same escaping symlink read through the normal resolution path
