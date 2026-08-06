@@ -7,10 +7,8 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, HeapId, HeapRead},
-    types::{
-        PyTrait,
-        itertools::{ItertoolsIter, predicate::call_predicate},
-    },
+    predicate::call_predicate,
+    types::{PyTrait, itertools::ItertoolsIter},
     value::Value,
 };
 

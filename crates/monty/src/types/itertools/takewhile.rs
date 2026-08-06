@@ -7,7 +7,8 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, DropWithContext, HeapId, HeapRead},
-    types::itertools::{ItertoolsIter, predicate::call_predicate},
+    predicate::call_predicate,
+    types::itertools::ItertoolsIter,
     value::Value,
 };
 

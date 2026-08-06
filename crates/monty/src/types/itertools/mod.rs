@@ -18,7 +18,6 @@ pub mod dropwhile;
 pub mod filterfalse;
 pub mod islice;
 pub mod pairwise;
-mod predicate;
 pub mod repeat;
 pub mod starmap;
 pub mod takewhile;
