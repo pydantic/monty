@@ -9,8 +9,11 @@
 //! `concurrent_rename_cannot_redirect_a_read` is a soak: the race was never won
 //! on macOS/APFS, so a green run proves little on any one platform.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -19,16 +22,14 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-#[cfg(unix)]
-use std::{io::ErrorKind, os::unix::fs::PermissionsExt};
 
 use common::{symlink_dir, symlink_file, symlinks_supported, try_rename_mount_root};
 #[cfg(unix)]
 use monty_fs::OverlayState;
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable};
 #[cfg(unix)]
-use monty_types::{FileMode, OpenCallArgs, PathStringDataArgs};
-use monty_types::{MontyObject, OsFunctionCall};
+use monty_types::{FileMode, OpenCallArgs};
+use monty_types::{MontyObject, OsFunctionCall, PathStringDataArgs};
 use tempfile::TempDir;
 
 mod common;
@@ -443,4 +444,50 @@ fn overlay_permission_errors_match_direct_mode() {
 
         fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
     }
+}
+
+/// The same guarantee as the test above, on every platform.
+///
+/// That one needs Unix mode bits; this uses the read-only attribute, which
+/// Windows honours even for an elevated process. It is what actually exercises
+/// `map_io`'s errno check on Windows, where std's error plumbing differs and a
+/// misclassification would report a plain denial as a sandbox-boundary error.
+#[test]
+fn denied_write_is_not_reported_as_an_escape() {
+    let mount_dir = TempDir::new().unwrap();
+    let locked = mount_dir.path().join("locked.txt");
+    fs::write(&locked, "content").unwrap();
+    set_readonly(&locked, true);
+
+    // Root ignores Unix mode bits, leaving nothing to assert.
+    if fs::OpenOptions::new().write(true).open(&locked).is_ok() {
+        set_readonly(&locked, false);
+        eprintln!("skipped: host permits writing a read-only file");
+        return;
+    }
+
+    let mut mounts = mount_rw(mount_dir.path());
+    let outcome = dispatch(
+        &mut mounts,
+        OsFunctionCall::WriteText(PathStringDataArgs {
+            path: "/mnt/locked.txt".into(),
+            data: "x".to_owned(),
+        }),
+    );
+
+    // Restore before asserting: Windows cannot delete a read-only file, so a
+    // failure here would otherwise break the temp-dir cleanup too.
+    set_readonly(&locked, false);
+
+    assert!(
+        matches!(&outcome, Err(MountError::Io(err, _)) if err.kind() == ErrorKind::PermissionDenied),
+        "expected a plain IO permission error, got {outcome:?}"
+    );
+}
+
+/// Toggles the read-only attribute (Windows) / write mode bits (Unix).
+fn set_readonly(path: &Path, readonly: bool) {
+    let mut perms = fs::metadata(path).expect("failed to stat").permissions();
+    perms.set_readonly(readonly);
+    fs::set_permissions(path, perms).expect("failed to set permissions");
 }
