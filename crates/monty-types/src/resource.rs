@@ -25,7 +25,7 @@ use web_time::Instant;
 ///
 /// `EX_DATAERR` from BSD `sysexits.h`. See <https://man.freebsd.org/cgi/man.cgi?query=sysexits>.
 pub const OOM_EXIT_CODE: i32 = 65;
-/// Bytes of memory currently used
+/// Allocator-backed live bytes requested through the global allocator
 pub static LIVE_MEMORY: AtomicUsize = AtomicUsize::new(0);
 /// The leanest the process has ever been at an arming point: what the worker
 /// costs to exist, before any session ran.

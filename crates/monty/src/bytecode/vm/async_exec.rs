@@ -737,14 +737,9 @@ impl<'h> VM<'h> {
                     let HeapReadOutput::GatherFuture(mut outer) = this.heap.read(gather) else {
                         panic!("Awaiter::GatherSlot gather id is not a GatherFuture")
                     };
-                    let next = outer.resolve_child(this, source, value);
-                    match next {
-                        Some(success) => {
-                            awaiter = success.awaiter;
-                            value = Value::Ref(success.list_id);
-                        }
-                        None => return None,
-                    }
+                    let success = outer.resolve_child(this, source, value)?;
+                    awaiter = success.awaiter;
+                    value = Value::Ref(success.list_id);
                 }
             }
         }
