@@ -1,42 +1,19 @@
-//! The `@dataclass(...)` options: the flags themselves, and the
-//! `__dataclass_params__` object a decorated class carries them in.
+//! The `__dataclass_params__` object a decorated class reports its
+//! `@dataclass(...)` options in.
+//!
+//! The options themselves are [`DataclassOptions`], which lives in
+//! [`crate::types::class`] because a `Class` stores them.
 
-use std::{fmt::Write, mem};
+use std::fmt::Write;
 
 use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{HeapId, HeapItem, HeapRead},
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{DataclassOptions, LazyHeapSet, PyTrait, Type},
     value::{EitherStr, Value},
 };
-
-/// The `@dataclass(...)` options Monty implements.
-///
-/// Doubles as the payload of the *configured decorator* — the value
-/// `dataclass(frozen=True)` returns while it waits for the class — so it stays
-/// small and `Copy`, needing no heap allocation to live in `ModuleFunctions`.
-/// The rest are rejected at the call, so every CPython flag is either stored
-/// here or known to hold its default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DataclassOptions {
-    /// Synthesize a field-wise `__eq__` (CPython's `eq`, default `True`).
-    pub eq: bool,
-    /// Reject attribute assignment, and hash by field values when `eq` is also
-    /// set (CPython's `frozen`, default `False`).
-    pub frozen: bool,
-}
-
-impl Default for DataclassOptions {
-    /// CPython's defaults: `eq=True, frozen=False`.
-    fn default() -> Self {
-        Self {
-            eq: true,
-            frozen: false,
-        }
-    }
-}
 
 /// The `__dataclass_params__` object `@dataclass` writes into a class
 /// namespace: CPython's `dataclasses._DataclassParams`.
@@ -113,10 +90,6 @@ fn python_bool(value: bool) -> &'static str {
 }
 
 impl HeapItem for DataclassParams {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Two bools, no heap references.
     }

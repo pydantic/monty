@@ -8,10 +8,34 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
-    modules::dataclasses::DataclassOptions,
     types::str::allocate_string,
     value::{EitherStr, Value},
 };
+
+/// The `@dataclass(...)` options Monty implements.
+///
+/// Small and `Copy`, so it doubles as the payload of the *configured decorator*
+/// (`dataclass(frozen=True)`) without a heap allocation. Every other CPython
+/// flag is rejected at the call, so each is either stored here or known to hold
+/// its default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DataclassOptions {
+    /// Synthesize a field-wise `__eq__` (CPython's `eq`, default `True`).
+    pub eq: bool,
+    /// Reject attribute assignment, and hash by field values when `eq` is also
+    /// set (CPython's `frozen`, default `False`).
+    pub frozen: bool,
+}
+
+impl Default for DataclassOptions {
+    /// CPython's defaults: `eq=True, frozen=False`.
+    fn default() -> Self {
+        Self {
+            eq: true,
+            frozen: false,
+        }
+    }
+}
 
 /// A user-defined class object created by a `class Foo: ...` statement.
 ///
@@ -34,9 +58,9 @@ pub(crate) struct Class {
     /// Members: method name / class-variable name -> value.
     namespace: Dict,
     /// The `@dataclass(...)` options this class was decorated with, left at
-    /// CPython's defaults for a class that was not. Baked in here at decoration
-    /// rather than read back from `__dataclass_params__`, because CPython bakes
-    /// them into the dunders it generates and never consults that object again.
+    /// CPython's defaults for a class that was not. Stands in for the dunders
+    /// CPython generates and Monty cannot yet install: baked in at decoration
+    /// so `__dataclass_params__` stays a report, not a rewritable control.
     options: DataclassOptions,
 }
 

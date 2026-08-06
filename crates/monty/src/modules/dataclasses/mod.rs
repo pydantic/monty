@@ -18,12 +18,7 @@ use std::{
     mem,
 };
 
-use monty_types::ResourceError;
-
-pub(crate) use self::{
-    field::DataclassField,
-    options::{DataclassOptions, DataclassParams},
-};
+pub(crate) use self::{field::DataclassField, options::DataclassParams};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     builtins::Builtins,
@@ -35,7 +30,7 @@ use crate::{
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     types::{
-        Class, Dict, Instance, LazyHeapSet, Module, PyTrait,
+        Class, DataclassOptions, Dict, Instance, LazyHeapSet, Module, PyTrait,
         dataclass::write_dataclass_repr,
         instance::{class_defines, class_dunder, class_name, instance_attr},
     },
@@ -324,7 +319,7 @@ fn store_dataclass_params<'h>(
 ) -> RunResult<()> {
     let params = vm
         .heap
-        .allocate(HeapData::DataclassParams(DataclassParams::new(options)))?;
+        .allocate(HeapData::DataclassParams(DataclassParams::new(options)));
     let replaced = class.set_attr(StaticStrings::DataclassParams.into(), Value::Ref(params), vm)?;
     replaced.drop_with(vm);
     Ok(())
@@ -846,7 +841,7 @@ pub(crate) fn dataclass_hash(self_id: HeapId, field_names: &[StringId], vm: &mut
     let mut hasher = DefaultHasher::new();
     for name_id in field_names {
         let field_name = vm.interns.get_str(*name_id).to_owned();
-        let value = instance_attr(self_id, &field_name, vm)?;
+        let value = instance_attr(self_id, &field_name, vm);
         defer_drop!(value, vm);
         let Some(value) = value else {
             let class_name = class_name(class_id, vm.heap, vm.interns).into_owned();
