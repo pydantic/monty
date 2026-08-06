@@ -468,40 +468,53 @@ fn async_accumulation_reaches_the_soft_limit() {
 }
 
 /// Known large results are rejected against allocator usage before they can
-/// jump from below the soft limit past the hard ceiling.
+/// jump from below the soft limit past the hard ceiling. The reported figure is
+/// what each result really costs, so it pins down that the refusal accounted for
+/// the whole allocation rather than tripping on some smaller intermediate.
 #[test]
 fn large_allocations_are_rejected_before_the_hard_limit() {
+    // each case with the allocator usage it should be refused at
     let cases = [
-        "'x' * 10_000_000",
-        "b'x' * 10_000_000",
-        "[None] * 1_000_000",
-        "2 ** 10_000_000",
-        "1 << 10_000_000",
-        "('a' * 1000).replace('a', 'b' * 2000)",
+        ("'x' * 10_000_000", 10_030_889),
+        ("b'x' * 10_000_000", 10_031_021),
+        ("[None] * 1_000_000", 16_031_143),
+        ("2 ** 10_000_000", 10_030_982),
+        ("1 << 10_000_000", 1_280_983),
+        ("('a' * 1000).replace('a', 'b' * 2000)", 2_034_521),
     ];
-    let mut messages = Vec::new();
 
-    for code in cases {
+    for (code, expected) in cases {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(1024 * 1024));
         let (_, event) = child.feed(code);
         let error = expect_error(event);
         assert_eq!(error.exc_type, "MemoryError", "{code}");
-        messages.push(error.message.expect("MemoryError should have a message"));
+        let message = error.message.expect("MemoryError should have a message");
+        assert_reported_usage(&message, expected, code);
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
         child.shutdown();
     }
+}
 
-    assert_eq!(
-        messages,
-        [
-            "memory limit exceeded: 10030889 bytes > 1048576 bytes",
-            "memory limit exceeded: 10031021 bytes > 1048576 bytes",
-            "memory limit exceeded: 16031143 bytes > 1048576 bytes",
-            "memory limit exceeded: 10030982 bytes > 1048576 bytes",
-            "memory limit exceeded: 1280983 bytes > 1048576 bytes",
-            "memory limit exceeded: 2034521 bytes > 1048576 bytes",
-        ]
+/// Assert a `memory limit exceeded` message reports roughly `expected` bytes
+/// used against a 1 MiB limit.
+///
+/// Exact equality is not usable: the figure is real allocator bytes, so the
+/// baseline the session starts from varies by a few dozen bytes between
+/// platforms (macOS runs consistently below Linux and Windows). The tolerance is
+/// far below what a mis-accounted allocation would move the number by.
+fn assert_reported_usage(message: &str, expected: u64, code: &str) {
+    const TOLERANCE: u64 = 1024;
+
+    let used: u64 = message
+        .strip_prefix("memory limit exceeded: ")
+        .and_then(|rest| rest.strip_suffix(" bytes > 1048576 bytes"))
+        .unwrap_or_else(|| panic!("{code}: unexpected message {message:?}"))
+        .parse()
+        .unwrap_or_else(|_| panic!("{code}: unexpected message {message:?}"));
+    assert!(
+        used.abs_diff(expected) <= TOLERANCE,
+        "{code}: reported {used} bytes, expected within {TOLERANCE} of {expected}"
     );
 }
 

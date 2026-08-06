@@ -6,7 +6,7 @@
 
 import { test } from 'vitest'
 
-import { t } from './assertions.js'
+import { assertMemoryError, t } from './assertions.js'
 import { skipIfBrowser } from './env.js'
 
 // everything comes from `/wasm`, which re-exports the error classes: importing
@@ -26,12 +26,13 @@ test('a session limit leaves normal wasm work alone', async (ctx) => {
 test('an overrun the interpreter catches leaves the instance alive', async (ctx) => {
   skipIfBrowser(ctx)
   const pool = await Monty.create()
-  const session = await pool.checkout({ limits: { maxMemory: 1024 * 1024 } })
+  const maxMemory = 1024 * 1024
+  const session = await pool.checkout({ limits: { maxMemory } })
   // The incomplete comprehension is unwound at a checkpoint before the hard limit.
   const error = await t.throwsAsync(() => session.feedRun('[str(i) for i in range(131_072)]'), {
     instanceOf: MontyRuntimeError,
   })
-  t.is(error.message, 'MemoryError: memory limit exceeded: 1048600 bytes > 1048576 bytes')
+  assertMemoryError(error, 1_060_648, maxMemory)
   t.is(error.exception.typeName, 'MemoryError')
   t.is(await session.feedRun('1 + 1'), 2)
   await session.close()

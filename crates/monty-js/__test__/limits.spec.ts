@@ -1,5 +1,5 @@
 import { test } from 'vitest'
-import { t } from './assertions.js'
+import { assertMemoryError, t } from './assertions.js'
 import { kind } from './env.js'
 
 import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
@@ -70,8 +70,7 @@ len(result)
 `
   const maxMemory = 64 * 1024
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory } }), isRuntimeError)
-  const allocated = kind === 'browser' ? 76_160 : 88_673
-  t.is(error.message, `MemoryError: memory limit exceeded: ${allocated} bytes > ${maxMemory} bytes`)
+  assertMemoryError(error, kind === 'browser' ? 76_160 : 88_673, maxMemory)
 })
 
 test('memory limit accepts values above u32 max', async () => {
@@ -92,14 +91,12 @@ test('limits with inputs', async () => {
 
 test('pow memory limit', async () => {
   const error = await t.throwsAsync(() => run('2 ** 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  const allocated = kind === 'browser' ? 10_024_700 : 10_031_056
-  t.is(error.message, `MemoryError: memory limit exceeded: ${allocated} bytes > 1000000 bytes`)
+  assertMemoryError(error, kind === 'browser' ? 10_024_700 : 10_031_056, 1_000_000)
 })
 
 test('lshift memory limit', async () => {
   const error = await t.throwsAsync(() => run('1 << 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  const allocated = kind === 'browser' ? 1_274_701 : 1_281_057
-  t.is(error.message, `MemoryError: memory limit exceeded: ${allocated} bytes > 1000000 bytes`)
+  assertMemoryError(error, kind === 'browser' ? 1_274_701 : 1_281_057, 1_000_000)
 })
 
 test('mult memory limit', async () => {
@@ -108,8 +105,7 @@ big = 2 ** 4000000
 result = big * big
 `
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  const allocated = kind === 'browser' ? 4_025_371 : 4_031_724
-  t.is(error.message, `MemoryError: memory limit exceeded: ${allocated} bytes > 1000000 bytes`)
+  assertMemoryError(error, kind === 'browser' ? 4_025_371 : 4_031_724, 1_000_000)
 })
 
 test('small operations within limit', async () => {

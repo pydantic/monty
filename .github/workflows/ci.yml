@@ -298,7 +298,7 @@ jobs:
       - run: make dev-py-release
       - run: make pytest
         # test uv run exercise script
-      - run: uv run crates/monty-python/exercise.py
+      - run: uv run --no-sync crates/monty-python/exercise.py
 
   test-rust-os:
     name: test rust on ${{ matrix.os }}

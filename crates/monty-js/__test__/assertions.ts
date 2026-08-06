@@ -22,6 +22,26 @@ export const t = {
   pass: () => expect(true).toBe(true),
 }
 
+/**
+ * Assert a `MemoryError` reports roughly `expected` bytes used against `maxMemory`.
+ *
+ * The figure is real allocator bytes, so the baseline a session starts from
+ * drifts a few dozen bytes between platforms (macOS runs consistently below
+ * Linux and Windows) — an exact match would make these tests OS-specific. The
+ * tolerance stays far below what a mis-accounted allocation would move it by.
+ */
+export function assertMemoryError(error: Error, expected: number, maxMemory: number, tolerance = 1024): void {
+  const match = /^MemoryError: memory limit exceeded: (\d+) bytes > (\d+) bytes$/.exec(error.message)
+  if (match === null) {
+    throw new Error(`unexpected MemoryError message: ${error.message}`)
+  }
+  const used = Number(match[1])
+  expect(Number(match[2])).toBe(maxMemory)
+  if (Math.abs(used - expected) > tolerance) {
+    throw new Error(`reported ${used} bytes, expected within ${tolerance} of ${expected}`)
+  }
+}
+
 export function throws<T extends Error = Error>(fn: () => unknown, options?: ThrowsOptions): T {
   try {
     fn()
