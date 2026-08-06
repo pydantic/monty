@@ -17,6 +17,7 @@ name = "monty_type_checking"
 path = "src/lib.rs"
 
 [dependencies]
+monty-types = { workspace = true }
 monty-typeshed = { workspace = true }
 ruff_python_ast = { workspace = true }
 ruff_db = { workspace = true }

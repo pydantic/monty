@@ -2492,6 +2492,7 @@ dependencies = [
  "codspeed-criterion-compat",
  "criterion",
  "insta",
+ "monty-types",
  "monty-typeshed",
  "pprof",
  "pretty_assertions",

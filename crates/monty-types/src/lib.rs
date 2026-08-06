@@ -11,6 +11,7 @@ mod os;
 mod resource;
 mod results;
 mod run_options;
+mod type_checking;
 
 pub use crate::{
     builtins::BuiltinsFunctions,
@@ -35,4 +36,5 @@ pub use crate::{
     },
     results::{ExtFunctionResult, NameLookupResult},
     run_options::{AssertMessageAnnotations, CompileOptions},
+    type_checking::{TypeCheckingConfig, TypeCheckingFormat},
 };

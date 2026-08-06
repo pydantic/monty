@@ -19,10 +19,10 @@
 use std::{borrow::Cow, mem};
 
 use monty::{MontyRepl, ReplProgress, ReplStartError};
-use monty_type_checking::{SourceFile, type_check};
+use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
-    PrintWriter, PrintWriterCallback, ResourceTracker,
+    PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckingConfig,
 };
 
 use super::{
@@ -228,26 +228,23 @@ pub struct Child {
     /// Script name of the current session (used for error and type-check
     /// diagnostics).
     script_name: String,
+    type_checker: TypeChecker,
     /// `Some` when the session was created with `type_check: true`.
     type_check: Option<TypeCheckState>,
 }
 
 impl Default for Child {
     fn default() -> Self {
-        Self::new()
+        Self {
+            state: SessionState::Configured(None),
+            script_name: String::new(),
+            type_checker: TypeChecker::default(),
+            type_check: None,
+        }
     }
 }
 
 impl Child {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            state: SessionState::Configured(None),
-            script_name: String::new(),
-            type_check: None,
-        }
-    }
-
     /// Handles one request: streams any `Print` events and emits exactly one
     /// turn-ending event through `sink`, then reports what the host loop should
     /// do next. `Err` means the sink is broken (for stdout, the parent is
@@ -414,10 +411,13 @@ impl Child {
     /// not-yet-configured worker.
     fn handle_configure(&mut self, configure: pb::Configure) -> pb::ChildEvent {
         if !matches!(self.state, SessionState::Configured(None)) {
-            return protocol_violation("Configure while a session already exists");
+            protocol_violation("Configure while a session already exists")
+        } else if let Err(e) = self.type_checker.reset() {
+            protocol_violation(&e)
+        } else {
+            self.state = SessionState::Configured(Some(Box::new(configure)));
+            ok_event()
         }
-        self.state = SessionState::Configured(Some(Box::new(configure)));
-        ok_event()
     }
 
     /// Materializes the repl from the stored config the first time the session
@@ -807,10 +807,14 @@ impl Child {
         let state = self.type_check.as_ref()?;
         let stubs =
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
-        match type_check(&SourceFile::new(code, &self.script_name), stubs.as_ref()) {
+        match self.type_checker.run(
+            &SourceFile::new(code, &self.script_name),
+            stubs.as_ref(),
+            TypeCheckingConfig::default(),
+        ) {
             Ok(None) => None,
             Ok(Some(diagnostics)) => Some(event(pb::child_event::Kind::TypingError(pb::TypingError {
-                diagnostics: diagnostics.to_string(),
+                diagnostics,
             }))),
             Err(err) => Some(protocol_violation(&format!("type checker failed: {err}"))),
         }
