@@ -29,6 +29,7 @@ use super::{
     FrameError, FrameReader, MAX_FRAME_LEN, MONTY_VERSION, WireFunctionCall, exceeds_max_frame_len,
     exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
 };
+use crate::convert::usize_field;
 
 /// Version tag of the worker-specific dump envelope produced by `Dump`.
 ///
@@ -325,11 +326,7 @@ impl Child {
     pub fn session_budget(&self) -> SessionBudget {
         match &self.state {
             SessionState::Configured(Some(config)) => SessionBudget {
-                max_memory: config
-                    .limits
-                    .as_ref()
-                    .and_then(|limits| limits.max_memory_bytes)
-                    .map(|max_memory| usize::try_from(max_memory).unwrap_or(usize::MAX)),
+                max_memory: usize_field(config.limits.as_ref().and_then(|limits| limits.max_memory_bytes)),
                 type_check: config.type_check,
             },
             SessionState::Configured(None) => SessionBudget::default(),

@@ -952,15 +952,15 @@ impl Heap {
         &mut self.tracker
     }
 
-    /// Checks whether the configured time limit has been exceeded.
+    /// Checks whether a configured time or memory limit has been exceeded.
     ///
-    /// Delegates to the resource tracker's `check_time()`, which compares
-    /// elapsed execution time against the configured `max_duration` (a no-op
-    /// when no time limit is set).
+    /// Delegates to the resource tracker's `check_time()`, which polls
+    /// allocator-backed usage against `max_memory` and elapsed execution time
+    /// against `max_duration` (each a no-op when unset).
     ///
     /// Call this inside Rust-side loops (builtins, sort, iterator collection)
     /// that execute within a single bytecode instruction and would otherwise
-    /// bypass the VM's per-instruction timeout check.
+    /// bypass the VM's per-instruction checkpoint.
     #[inline]
     pub fn check_time(&self) -> Result<(), ResourceError> {
         self.tracker.check_time()

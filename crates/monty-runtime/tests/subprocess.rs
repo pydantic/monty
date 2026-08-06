@@ -485,6 +485,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // growth, `+` preflights each side's clone.
         ("x = [None] * 40_000\nx += x", 1_951_587),
         ("t = (None,) * 40_000\nt + t", 1_311_587),
+        ("x = [None] * 40_000\nx.copy()", 1_311_337),
+        // `deque.extend` preflights exact-hint iterators up front.
+        (
+            "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
+            16_031_723,
+        ),
     ];
 
     for (code, expected) in cases {

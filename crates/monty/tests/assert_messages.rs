@@ -260,8 +260,7 @@ fn custom_truncation_limit() {
 
 #[test]
 fn huge_operand_repr_is_truncated() {
-    // The annotation formatter stops at its cap rather than materializing the
-    // complete multi-megabyte representation.
+    // A multi-megabyte operand repr is cut at the 120-char annotation cap.
     let code = "
 xs = ['x' * 500] * 4000
 try:

@@ -1721,7 +1721,7 @@ fn str_center<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
     } else {
         // Exact byte capacity: the original string (`s.len()` bytes, possibly
         // multibyte) plus `pad` fillchars of `fillchar.len_utf8()` bytes each.
-        // `width * fillchar.len_utf8()` would overestimate the `s`-slot bytes.
+        // `width * fillchar.len_utf8()` would mis-charge the `s`-slot bytes.
         let total_pad = width - len;
         let capacity = s.len().saturating_add(total_pad.saturating_mul(fillchar.len_utf8()));
         let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;

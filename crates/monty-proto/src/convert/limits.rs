@@ -36,6 +36,6 @@ impl From<pb::ResourceLimits> for ResourceLimits {
 }
 
 /// Narrows an optional wire `u64` to `usize`, saturating to `usize::MAX` on 32-bit hosts.
-fn usize_field(value: Option<u64>) -> Option<usize> {
+pub(crate) fn usize_field(value: Option<u64>) -> Option<usize> {
     value.map(|v| usize::try_from(v).unwrap_or(usize::MAX))
 }

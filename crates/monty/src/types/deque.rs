@@ -8,7 +8,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    resource_checks::check_repeat_size,
+    resource_checks::{check_estimated_size, check_repeat_size},
     types::{LazyHeapSet, Type, list::repr_sequence_fmt, long_int::repeat_count},
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -978,6 +978,11 @@ pub(crate) fn deque_extend(deque_id: HeapId, iterable: Value, end: ExtendEnd, vm
         let iter = iterable.into_py_iter(vm)?;
         defer_drop!(iter, vm);
         let mut iter = iter.read(vm);
+        // One-shot preflight from the size hint: exact-hint iterators (e.g.
+        // `range`) reject oversized extends with a graceful `MemoryError`,
+        // matching `collect_python_iterator`; hint-less iterators fall back
+        // to VM checkpoints and the allocator's hard limit.
+        check_estimated_size(iter.iter_size_hint(vm).saturating_mul(VALUE_SIZE), vm.heap.tracker())?;
         while let Some(item) = iter.py_next(vm)? {
             deque_push(deque_id, item, end, vm);
         }

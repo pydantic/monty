@@ -270,7 +270,7 @@ impl OsCall {
         self.snapshot.run(result, print)
     }
 
-    /// Returns the tracker for inspecting elapsed execution time while suspended.
+    /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
         self.snapshot.heap.tracker()

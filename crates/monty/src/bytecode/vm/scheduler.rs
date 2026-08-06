@@ -298,7 +298,7 @@ impl Scheduler {
 
     /// Spawns a new task from a coroutine, enforcing one-task-per-coroutine.
     ///
-    /// Returns `Ok(None)` if `coroutine_id` is already driving a task —
+    /// Returns `None` if `coroutine_id` is already driving a task —
     /// caught here because cross-gather reuse can hit two spawns while
     /// both coroutine states are still `New`, so the state check in
     /// `await_coroutine` doesn't catch it. Callers translate `None`

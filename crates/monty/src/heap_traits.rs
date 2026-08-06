@@ -13,8 +13,10 @@ use crate::{
 
 /// Collects owned heap references when a heap entry is released.
 ///
-/// Every `HeapData` variant implements this trait so reference-count cleanup can
-/// walk children iteratively without requiring the Python-level `PyTrait` API.
+/// `HeapData` variants owning heap references implement this trait (or are
+/// handled inline in `py_dec_ref_ids_for_data`) so reference-count cleanup can
+/// walk children iteratively without requiring the Python-level `PyTrait` API;
+/// leaf variants with no children fall through the dispatch's `_ => {}` arm.
 pub(crate) trait HeapItem {
     /// Pushes every owned heap reference onto the iterative cleanup stack.
     ///

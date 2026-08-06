@@ -318,6 +318,35 @@ builder.finish(vm.heap)
 
 When the input *is* already bounded (e.g. `s.to_lowercase()`, slicing, `to_owned()` of an existing tracked string), passing a plain `String` / `&str` to `allocate_string` is fine — the result is bounded by a known multiple of an already-tracked input, so no amplification is possible.
 
+### Soft memory-limit checks — when and why
+
+`max_memory` is a **soft** limit: the VM polls allocator-backed usage before every
+instruction (`check_time`), and everything pathological is caught by the hard
+limits — the allocator's hard ceiling (soft + headroom, worker exits with
+`OOM_EXIT_CODE` and the pool replaces it) and the pool's turn timeout. Soft
+checks exist ONLY to turn *common* overshoots into a graceful `MemoryError`
+that keeps the session alive; they are not a safety boundary, so do not
+sprinkle them everywhere — every check is code noise and hot-path cost.
+
+Add a check only where ordinary code commonly allocates a multi-MiB burst
+inside a single builtin call (i.e. before the next instruction checkpoint):
+
+- Known-size bulk allocation: one up-front `tracker().check_allocation(n * VALUE_SIZE)`
+  (container clone/copy, e.g. `clone_all_items`, `list_copy`) or
+  `check_repeat_size`-style estimate (`resource_checks.rs`).
+- Iterator collection: `collect_python_iterator` / `checked_preallocation_hint`
+  already handle it; for push-loops that bypass them, a one-shot size-hint
+  preflight (see `deque_extend`) — never a per-item poll.
+- Unbounded/amplifying string building: `StringBuilder` (above).
+
+Do NOT add per-iteration `check_time()` polls to Rust-side loops for memory's
+sake, and do NOT preflight results bounded by a constant multiple of an
+already-tracked input (path joins, `*args` tuples, regex match lists, parsed
+JSON) — rare oversized cases there are the hard limit's job. Test each graceful
+path in `large_allocations_are_rejected_before_the_hard_limit`
+(`crates/monty-runtime/tests/subprocess.rs`) — the interpreter's own tests
+never arm the allocator, so only subprocess tests exercise `max_memory`.
+
 ## Dev Commands
 
 **IMPORTANT**: before running `cargo build` or `cargo run`, it is likely necessary to run `make install-py` to ensure that the Python virtual environment is available for build.

@@ -636,7 +636,7 @@ fn call_list_method<'h>(
         }
         StaticStrings::Copy => {
             args.check_zero_args("list.copy", heap)?;
-            Ok(list_copy(list.get(heap), heap))
+            list_copy(list.get(heap), heap)
         }
         StaticStrings::Extend => list_extend(list, args, vm),
         StaticStrings::Index => list_index(list, args, vm),
@@ -756,11 +756,14 @@ fn list_clear<'h>(list: &mut HeapRead<'h, List>, vm: &mut VM<'h>) {
 
 /// Implements Python's `list.copy()` method.
 ///
-/// Returns a shallow copy of the list.
-fn list_copy(list: &List, heap: &Heap) -> Value {
+/// Returns a shallow copy of the list, preflighting the slot bytes like
+/// `clone_all_items` so a huge copy fails with a graceful `MemoryError`.
+fn list_copy(list: &List, heap: &Heap) -> RunResult<Value> {
+    heap.tracker()
+        .check_allocation(list.items.len().saturating_mul(VALUE_SIZE))?;
     let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
     let heap_id = heap.allocate(HeapData::List(List::new(items)));
-    Value::Ref(heap_id)
+    Ok(Value::Ref(heap_id))
 }
 
 /// Implements Python's `list.extend(iterable)` method.
