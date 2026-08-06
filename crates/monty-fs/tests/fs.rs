@@ -1001,6 +1001,32 @@ fn ovl_mem_rmdir_overlay() {
     );
 }
 
+/// The mount root has no name inside the mount, so renaming it must be refused
+/// in every mode.
+///
+/// Overlay mode plans its move in memory before the descriptor is consulted, so
+/// without this check it silently "succeeds" at an operation the descriptor
+/// would refuse, leaving overlay state disagreeing with the real backend.
+#[test]
+fn rename_of_mount_root_is_refused_in_both_modes() {
+    for mode in [MountMode::ReadWrite, MountMode::OverlayMemory(OverlayState::new())] {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt(&dir, mode);
+
+        // Whichever end names the root is the one reported.
+        for (src, dst) in [("/mnt", "/mnt/moved"), ("/mnt/moved", "/mnt")] {
+            let err = call(&mut mt, &rename(src, dst)).unwrap().unwrap_err().into_exception();
+            assert_exc(&err, ExcType::PermissionError, "[Errno 13] Permission denied: '/mnt'");
+        }
+
+        // The mount must be untouched by the refusal.
+        assert_eq!(
+            call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
+            MontyObject::Bool(true)
+        );
+    }
+}
+
 /// A missing path must be `FileNotFoundError`, not `NotADirectoryError`.
 ///
 /// `resolve_virtual_path` never touches the filesystem, so "does not exist" and

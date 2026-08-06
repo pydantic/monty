@@ -895,6 +895,12 @@ fn rename(
     let src_rel = relative_path(src_vpath, ctx)?;
     let dst_rel = relative_path(dst_vpath, ctx)?;
 
+    // The mount root has no name inside the mount. The descriptor would refuse,
+    // but the overlay commits its in-memory plan first, so it has to refuse too
+    // or the two backends disagree.
+    reject_mount_root_rename(&src_rel, src_vpath)?;
+    reject_mount_root_rename(&dst_rel, dst_vpath)?;
+
     ensure_parent_exists(state, &dst_rel, ctx, dst_vpath)?;
 
     if matches!(state.get(&src_rel), Some(OverlayEntry::Deleted)) {
@@ -1051,6 +1057,17 @@ fn rename(
     }
 
     Ok(MontyObject::None)
+}
+
+/// Refuses to rename the mount root, which has no name inside the mount.
+fn reject_mount_root_rename(relative: &str, vpath: &str) -> Result<(), MountError> {
+    if relative.is_empty() {
+        Err(MountError::PathEscape {
+            virtual_path: vpath.to_owned(),
+        })
+    } else {
+        Ok(())
+    }
 }
 
 /// Rejects rename when the source and destination types are incompatible.
