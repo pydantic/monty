@@ -60,6 +60,7 @@ fn create_repl(child: &mut Child) {
         type_check_stubs: None,
         assert_message_annotations: None,
         monty_version: MONTY_VERSION.to_owned(),
+        ..Default::default()
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -93,7 +94,7 @@ fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
 
 #[test]
 fn feed_round_trips_a_value() {
-    let mut child = Child::new();
+    let mut child = Child::default();
     create_repl(&mut child);
 
     let (_, event) = feed(&mut child, "1 + 2");
@@ -102,7 +103,7 @@ fn feed_round_trips_a_value() {
 
 #[test]
 fn session_state_persists_across_feeds() {
-    let mut child = Child::new();
+    let mut child = Child::default();
     create_repl(&mut child);
 
     let (_, first) = feed(&mut child, "x = 21");
@@ -114,7 +115,7 @@ fn session_state_persists_across_feeds() {
 
 #[test]
 fn print_output_is_streamed_before_the_terminator() {
-    let mut child = Child::new();
+    let mut child = Child::default();
     create_repl(&mut child);
 
     let (prints, event) = feed(&mut child, "print('hello'); print('world')");
@@ -125,7 +126,7 @@ fn print_output_is_streamed_before_the_terminator() {
 
 #[test]
 fn inputs_are_injected() {
-    let mut child = Child::new();
+    let mut child = Child::default();
     create_repl(&mut child);
 
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
@@ -144,7 +145,7 @@ fn inputs_are_injected() {
 
 #[test]
 fn malformed_request_frame_is_recoverable() {
-    let mut child = Child::new();
+    let mut child = Child::default();
     // a length prefix claiming bytes that aren't there: structurally broken
     // framing, not a decode error
     let (bytes, outcome) = dispatch_frame(&mut child, &[0xff, 0xff, 0xff, 0x7f]);
@@ -157,7 +158,7 @@ fn malformed_request_frame_is_recoverable() {
 
 #[test]
 fn shutdown_request_reports_shutdown() {
-    let mut child = Child::new();
+    let mut child = Child::default();
     create_repl(&mut child);
 
     let request = frame_request(pb::parent_request::Kind::Shutdown(pb::Shutdown {}));
@@ -172,7 +173,7 @@ fn shutdown_request_reports_shutdown() {
 /// Dumps from the generic-iterator format are explicitly rejected.
 #[test]
 fn load_rejects_old_dump_version() {
-    let mut child = Child::new();
+    let mut child = Child::default();
     create_repl(&mut child);
     let request = frame_request(pb::parent_request::Kind::Load(pb::Load {
         state: 5u16.to_le_bytes().to_vec(),
@@ -185,7 +186,7 @@ fn load_rejects_old_dump_version() {
     };
     assert_eq!(
         error.exception.unwrap().message.unwrap(),
-        "protocol violation: unsupported dump version 5 (expected 6)"
+        format!("protocol violation: unsupported dump version 5 (expected {DUMP_VERSION})")
     );
 }
 
@@ -218,7 +219,7 @@ fn load_rejects_dump_with_over_deep_suspension_args() {
     state.push(0);
     state.extend_from_slice(&payload);
 
-    let mut child = Child::new();
+    let mut child = Child::default();
     create_repl(&mut child);
     let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);

@@ -12,7 +12,7 @@ use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CompileOptions, ExtFunctionResult, MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits,
-    ResourceTracker, TypeCheckingConfig,
+    ResourceTracker, TypeCheckingConfig, TypeCheckingFormat,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 use tracing::field::Empty;
@@ -52,6 +52,11 @@ struct Cli {
     /// Run the type checker before executing.
     #[arg(short = 't', long = "type-check")]
     type_check: bool,
+
+    /// Rendering of the type checker's diagnostics: full (default), concise,
+    /// azure, json, jsonlines, rdjson, pylint, gitlab or github.
+    #[arg(long = "type-check-format", value_parser = TypeCheckingFormat::from_name, requires = "type_check")]
+    type_check_format: Option<TypeCheckingFormat>,
 
     /// Execute a Python program passed as a string (like `python -c`).
     #[arg(short = 'c')]
@@ -189,7 +194,11 @@ fn main() -> ExitCode {
 
 /// Dispatches a parsed standalone CLI invocation.
 fn run_cli(cli: Cli) -> ExitCode {
-    let type_check_enabled = cli.type_check;
+    // `Some` enables the check and carries how its diagnostics are rendered.
+    let type_check = cli.type_check.then(|| TypeCheckingConfig {
+        format: cli.type_check_format.unwrap_or_default(),
+        color: false,
+    });
 
     let limits = match cli.resource_limits() {
         Ok(limits) => limits,
@@ -198,7 +207,7 @@ fn run_cli(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    monty_alloc::set_limit(limits.max_memory, type_check_enabled)
+    monty_alloc::set_limit(limits.max_memory, type_check.is_some())
         .expect("monty-runtime must install LimitedAllocator globally");
 
     // Build mount table early to fail fast on bad -m args.
@@ -218,7 +227,7 @@ fn run_cli(cli: Cli) -> ExitCode {
         return if cli.interactive {
             dispatch_repl("<string>", &cmd, limits, mount_table)
         } else {
-            dispatch_script("<string>", cmd, type_check_enabled, limits, mount_table)
+            dispatch_script("<string>", cmd, type_check, limits, mount_table)
         };
     }
 
@@ -233,7 +242,7 @@ fn run_cli(cli: Cli) -> ExitCode {
         return if cli.interactive {
             dispatch_repl(file_path, &code, limits, mount_table)
         } else {
-            dispatch_script(file_path, code, type_check_enabled, limits, mount_table)
+            dispatch_script(file_path, code, type_check, limits, mount_table)
         };
     }
 
@@ -261,17 +270,11 @@ fn configure_logfire() -> Result<Option<logfire::ShutdownGuard>, logfire::Config
 fn dispatch_script(
     file_path: &str,
     code: String,
-    type_check_enabled: bool,
+    type_check: Option<TypeCheckingConfig>,
     limits: ResourceLimits,
     mount_table: Option<MountTable>,
 ) -> ExitCode {
-    run_script(
-        file_path,
-        code,
-        type_check_enabled,
-        ResourceTracker::new(limits),
-        mount_table,
-    )
+    run_script(file_path, code, type_check, ResourceTracker::new(limits), mount_table)
 }
 
 /// REPL analog of [`dispatch_script`].
@@ -291,16 +294,14 @@ fn dispatch_repl(file_path: &str, code: &str, limits: ResourceLimits, mount_tabl
 fn run_script(
     file_path: &str,
     code: String,
-    type_check_enabled: bool,
+    type_check: Option<TypeCheckingConfig>,
     tracker: ResourceTracker,
     mut mount_table: Option<MountTable>,
 ) -> ExitCode {
-    if type_check_enabled {
+    if let Some(config) = type_check {
         let start = Instant::now();
-        if let Some(failure) = TypeChecker::default()
-            .run(&SourceFile::new(&code, file_path), None, TypeCheckingConfig::default())
-            .unwrap()
-        {
+        let mut checker = TypeChecker::default();
+        if let Some(failure) = checker.run(&SourceFile::new(&code, file_path), None, config).unwrap() {
             let elapsed = start.elapsed();
             eprintln!(
                 "{DIM}{}{RESET} {BOLD_CYAN}{ARROW}{RESET} {BOLD_RED}type check failed{RESET}:\n{failure}",

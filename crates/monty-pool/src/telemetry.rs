@@ -994,6 +994,7 @@ mod tests {
             type_check_stubs: None,
             monty_version: "0.0.1".to_owned(),
             assert_message_annotations: None,
+            ..Default::default()
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
             code: "double(2)".to_owned(),
@@ -1150,6 +1151,7 @@ mod tests {
             type_check_stubs: None,
             monty_version: "0.0.1".to_owned(),
             assert_message_annotations: None,
+            ..Default::default()
         })));
         recorder.event(&event(pb::child_event::Kind::Ok(pb::Ok {})));
         recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));

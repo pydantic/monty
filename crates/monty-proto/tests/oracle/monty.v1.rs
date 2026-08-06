@@ -510,6 +510,16 @@ pub struct Configure {
     /// any ellipsis, cutting on a character boundary.
     #[prost(uint32, optional, tag = "6")]
     pub assert_message_annotations: ::core::option::Option<u32>,
+    /// How the child renders the diagnostics carried by `TypingError`. The
+    /// structured diagnostics borrow the type checker's database and so cannot
+    /// cross the wire — the parent picks the format up front and the child
+    /// renders it. Ignored when `type_check` is false.
+    #[prost(enumeration = "TypeCheckFormat", tag = "7")]
+    pub type_check_format: i32,
+    /// Render typing diagnostics with ANSI colour escapes. Only `FULL` and
+    /// `CONCISE` carry colour; the machine-readable formats ignore it.
+    #[prost(bool, tag = "8")]
+    pub type_check_color: bool,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -867,7 +877,7 @@ pub struct Error {
 /// survives.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TypingError {
-    /// Rendered diagnostics, one per line.
+    /// Diagnostics rendered in the session's `TypeCheckFormat`.
     #[prost(string, tag = "1")]
     pub diagnostics: ::prost::alloc::string::String,
 }
@@ -904,6 +914,59 @@ pub struct ShutdownDump {
     /// when there was no session yet or the dump itself failed.
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+/// Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's
+/// `DiagnosticFormat`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum TypeCheckFormat {
+    /// Unset by an older parent — the child renders `FULL`.
+    Unspecified = 0,
+    Full = 1,
+    Concise = 2,
+    Azure = 3,
+    Json = 4,
+    JsonLines = 5,
+    Rdjson = 6,
+    Pylint = 7,
+    Gitlab = 8,
+    Github = 9,
+}
+impl TypeCheckFormat {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "TYPE_CHECK_FORMAT_UNSPECIFIED",
+            Self::Full => "TYPE_CHECK_FORMAT_FULL",
+            Self::Concise => "TYPE_CHECK_FORMAT_CONCISE",
+            Self::Azure => "TYPE_CHECK_FORMAT_AZURE",
+            Self::Json => "TYPE_CHECK_FORMAT_JSON",
+            Self::JsonLines => "TYPE_CHECK_FORMAT_JSON_LINES",
+            Self::Rdjson => "TYPE_CHECK_FORMAT_RDJSON",
+            Self::Pylint => "TYPE_CHECK_FORMAT_PYLINT",
+            Self::Gitlab => "TYPE_CHECK_FORMAT_GITLAB",
+            Self::Github => "TYPE_CHECK_FORMAT_GITHUB",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "TYPE_CHECK_FORMAT_UNSPECIFIED" => Some(Self::Unspecified),
+            "TYPE_CHECK_FORMAT_FULL" => Some(Self::Full),
+            "TYPE_CHECK_FORMAT_CONCISE" => Some(Self::Concise),
+            "TYPE_CHECK_FORMAT_AZURE" => Some(Self::Azure),
+            "TYPE_CHECK_FORMAT_JSON" => Some(Self::Json),
+            "TYPE_CHECK_FORMAT_JSON_LINES" => Some(Self::JsonLines),
+            "TYPE_CHECK_FORMAT_RDJSON" => Some(Self::Rdjson),
+            "TYPE_CHECK_FORMAT_PYLINT" => Some(Self::Pylint),
+            "TYPE_CHECK_FORMAT_GITLAB" => Some(Self::Gitlab),
+            "TYPE_CHECK_FORMAT_GITHUB" => Some(Self::Github),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

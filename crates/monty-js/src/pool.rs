@@ -35,11 +35,14 @@ use monty_pool::{
     Checkout, MountSpec, MountSpecMode, OnPrint, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue,
     TurnEvent,
 };
-use monty_types::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintStream, StackFrame};
+use monty_types::{
+    AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintStream, StackFrame, TypeCheckingConfig,
+    TypeCheckingFormat,
+};
 use napi::{
     bindgen_prelude::{Array, Buffer, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw, Unknown},
     threadsafe_function::UnknownReturnValue,
-    Env, Result,
+    Env, Error, Result,
 };
 use napi_derive::napi;
 use tokio::sync::Mutex as AsyncMutex;
@@ -114,6 +117,12 @@ pub struct NativeCheckoutOptions {
     pub type_check: bool,
     /// Stub declarations made available to type checking.
     pub type_check_stubs: Option<String>,
+    /// How typing diagnostics are rendered, e.g. `'full'` or `'concise'`.
+    /// Chosen here rather than on the thrown error because the checker's
+    /// structured diagnostics never leave the worker.
+    pub type_check_format: Option<String>,
+    /// Render typing diagnostics with ANSI colour escapes.
+    pub type_check_color: Option<bool>,
 
     /// Give failed `assert` statements pytest-style introspected messages
     /// (see limitations/assert.md), wire-encoded: absent = on with the
@@ -194,6 +203,13 @@ impl NativePool {
                 limits,
                 type_check: options.type_check,
                 type_check_stubs: options.type_check_stubs,
+                type_check_config: TypeCheckingConfig {
+                    format: match options.type_check_format {
+                        Some(name) => TypeCheckingFormat::from_name(&name).map_err(Error::from_reason)?,
+                        None => TypeCheckingFormat::default(),
+                    },
+                    color: options.type_check_color.unwrap_or(false),
+                },
                 assert_message_annotations: options.assert_message_annotations.map_or_else(
                     AssertMessageAnnotations::default,
                     AssertMessageAnnotations::from_max_bytes,

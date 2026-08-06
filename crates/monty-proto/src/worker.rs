@@ -22,7 +22,7 @@ use monty::{MontyRepl, ReplProgress, ReplStartError};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
-    PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckingConfig,
+    PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckingConfig, TypeCheckingFormat,
 };
 
 use super::{
@@ -40,13 +40,14 @@ use crate::convert::usize_field;
 /// stubs — so a `Load`ed session keeps type-check enforcement:
 ///
 /// - `[script_name str][type_check u8]` and, when `type_check` is 1,
-///   `[committed_stubs str][has_pending u8][pending_snippet str?]`, where each
-///   `str` is a `u32 LE` byte length followed by UTF-8 bytes.
+///   `[committed_stubs str][has_pending u8][pending_snippet str?][format
+///   str][color u8]`, where each `str` is a `u32 LE` byte length followed by
+///   UTF-8 bytes and `format` is a [`TypeCheckingFormat`] name.
 ///
 /// The payload uses monty's independently versioned dump format. This outer
 /// version changes only when the tag or session metadata layout changes.
 /// Public so tests and envelope-inspecting hosts need not hardcode it.
-pub const DUMP_VERSION: u16 = 6;
+pub const DUMP_VERSION: u16 = 7;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -201,6 +202,9 @@ struct TypeCheckState {
     committed_stubs: String,
     /// The in-flight snippet; committed on `Complete`, discarded on error.
     pending_snippet: Option<String>,
+    /// How diagnostics are rendered before they cross the wire, chosen by the
+    /// parent on `Configure` (the structured diagnostics cannot travel).
+    config: TypeCheckingConfig,
 }
 
 /// The child-side session state that lives *outside* the repl/progress payload
@@ -410,13 +414,11 @@ impl Child {
     /// on the first feed/dump (or restored by `Load` instead). Valid only on a
     /// not-yet-configured worker.
     fn handle_configure(&mut self, configure: pb::Configure) -> pb::ChildEvent {
-        if !matches!(self.state, SessionState::Configured(None)) {
-            protocol_violation("Configure while a session already exists")
-        } else if let Err(e) = self.type_checker.reset() {
-            protocol_violation(&e)
-        } else {
+        if matches!(self.state, SessionState::Configured(None)) {
             self.state = SessionState::Configured(Some(Box::new(configure)));
             ok_event()
+        } else {
+            protocol_violation("Configure while a session already exists")
         }
     }
 
@@ -434,12 +436,16 @@ impl Child {
         let Some(config) = config else {
             return Err(Box::new(protocol_violation("session has not been configured")));
         };
+        let type_check_config = TypeCheckingConfig::from(config.as_ref());
         let pb::Configure {
             script_name,
             limits,
             type_check,
             type_check_stubs,
             assert_message_annotations,
+            // read above, through the accessor that validates the enum number
+            type_check_format: _,
+            type_check_color: _,
             // already validated against our own version when `Configure` arrived
             monty_version: _,
         } = *config;
@@ -448,6 +454,7 @@ impl Child {
         self.type_check = type_check.then(|| TypeCheckState {
             committed_stubs: type_check_stubs.unwrap_or_default(),
             pending_snippet: None,
+            config: type_check_config,
         });
         // Missing field means an older parent; the feature defaults to on.
         let options = CompileOptions {
@@ -807,11 +814,10 @@ impl Child {
         let state = self.type_check.as_ref()?;
         let stubs =
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
-        match self.type_checker.run(
-            &SourceFile::new(code, &self.script_name),
-            stubs.as_ref(),
-            TypeCheckingConfig::default(),
-        ) {
+        match self
+            .type_checker
+            .run(&SourceFile::new(code, &self.script_name), stubs.as_ref(), state.config)
+        {
             Ok(None) => None,
             Ok(Some(diagnostics)) => Some(event(pb::child_event::Kind::TypingError(pb::TypingError {
                 diagnostics: diagnostics.to_string(),
@@ -826,6 +832,7 @@ impl Child {
         self.state = SessionState::Configured(None);
         self.type_check = None;
         self.script_name = String::new();
+        self.type_checker.reset().unwrap();
     }
 }
 
@@ -999,6 +1006,8 @@ fn push_session_meta(buf: &mut Vec<u8>, script_name: &str, type_check: Option<&T
                 }
                 None => buf.push(0),
             }
+            push_str_field(buf, &tc.config.format.to_string());
+            buf.push(u8::from(tc.config.color));
         }
         None => buf.push(0),
     }
@@ -1020,10 +1029,19 @@ fn take_session_meta(bytes: &[u8]) -> Option<(SessionMeta, &[u8])> {
                 1 => take_str_field(rest).map(|(snippet, rest)| (Some(snippet), rest))?,
                 _ => return None,
             };
+            let (format, rest) = take_str_field(rest)?;
+            let format = TypeCheckingFormat::from_name(&format).ok()?;
+            let (&color, rest) = rest.split_first()?;
+            let color = match color {
+                0 => false,
+                1 => true,
+                _ => return None,
+            };
             (
                 Some(TypeCheckState {
                     committed_stubs,
                     pending_snippet,
+                    config: TypeCheckingConfig { format, color },
                 }),
                 rest,
             )

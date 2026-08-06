@@ -20,6 +20,7 @@ mod limits;
 pub(crate) use limits::usize_field;
 mod os_call;
 mod resume;
+mod type_checking;
 
 use std::{error, fmt};
 

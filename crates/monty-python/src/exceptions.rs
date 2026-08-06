@@ -145,7 +145,8 @@ impl MontyConversionError {
 ///
 /// Inherits from `MontyError`. Type checking runs inside the worker
 /// subprocess; the diagnostics arrive pre-rendered as text (the structured
-/// diagnostics cannot cross the process boundary).
+/// diagnostics cannot cross the process boundary), in the `type_check_format`
+/// the session was checked out with.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyTypingError {
     rendered: String,

@@ -11,12 +11,9 @@
 //!
 //! - `JsMontyException`: Thin wrapper around `monty_types::MontyException`. The JS wrapper
 //!   checks `exception.typeName` to distinguish syntax errors from runtime errors.
-//! - `MontyTypingError`: Wraps `TypeCheckingDiagnostics` for static type checking errors.
-//!   This is separate because type errors come from static analysis, not Python execution.
 
 use std::{collections::HashMap, fmt, sync::Arc};
 
-use monty_type_checking::TypeCheckingDiagnostics;
 use napi::{bindgen_prelude::*, JsString};
 use napi_derive::napi;
 use serde::{Deserialize, Serialize};
@@ -144,90 +141,6 @@ impl JsMontyException {
     #[must_use]
     pub fn new(exc: monty_types::MontyException) -> Self {
         Self(exc)
-    }
-}
-
-// =============================================================================
-// MontyTypingError - Raised when type checking finds errors
-// =============================================================================
-
-/// Raised when type checking finds errors in the code.
-///
-/// This exception is raised when static type analysis detects type errors.
-/// Use `display()` to render diagnostics in various formats.
-#[napi]
-pub struct MontyTypingError {
-    /// The type checking failure containing diagnostic information.
-    failure: TypeCheckingDiagnostics,
-    /// Cached string representation.
-    cached_string: String,
-}
-
-impl fmt::Display for MontyTypingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.cached_string)
-    }
-}
-
-#[napi]
-impl MontyTypingError {
-    /// Returns information about the inner exception.
-    #[napi(getter)]
-    #[must_use]
-    pub fn exception(&self) -> ExceptionInfo {
-        ExceptionInfo {
-            type_name: "TypeError".to_string(),
-            message: self.cached_string.clone(),
-        }
-    }
-
-    /// Returns the error message.
-    #[napi(getter)]
-    #[must_use]
-    pub fn message(&self) -> String {
-        self.cached_string.clone()
-    }
-
-    /// Renders the type error diagnostics with the specified format and color.
-    ///
-    /// @param format - Output format. One of:
-    ///   - 'full' - Full diagnostic output (default)
-    ///   - 'concise' - Concise output
-    ///   - 'azure' - Azure DevOps format
-    ///   - 'json' - JSON format
-    ///   - 'jsonlines' - JSON Lines format
-    ///   - 'rdjson' - RDJson format
-    ///   - 'pylint' - Pylint format
-    ///   - 'gitlab' - GitLab CI format
-    ///   - 'github' - GitHub Actions format
-    /// @param color - Whether to include ANSI color codes. Default: false
-    #[napi]
-    pub fn display(&self, format: Option<String>, color: Option<bool>) -> Result<String> {
-        let format = format.as_deref().unwrap_or("full");
-        let color = color.unwrap_or(false);
-
-        self.failure
-            .clone()
-            .color(color)
-            .format_from_str(format)
-            .map_err(Error::from_reason)
-            .map(|f| f.to_string())
-    }
-
-    /// Returns a string representation of the error.
-    #[napi(js_name = "toString")]
-    #[must_use]
-    pub fn to_js_string(&self) -> String {
-        self.to_string()
-    }
-}
-
-impl MontyTypingError {
-    /// Creates a MontyTypingError from a TypeCheckingDiagnostics.
-    #[must_use]
-    pub fn from_failure(failure: TypeCheckingDiagnostics) -> Self {
-        let cached_string = failure.to_string();
-        Self { failure, cached_string }
     }
 }
 

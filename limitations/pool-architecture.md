@@ -193,8 +193,13 @@ properties that real CPython does not provide, per the caveat above.
 ## Host-API behaviour notes
 
 - **Typing errors** (`checkout(type_check=True)`) raise `MontyTypingError`
-  whose diagnostics were rendered in the worker with the default format —
-  `display()` takes no arguments.
+  whose diagnostics were rendered *in the worker*, so the format is a
+  checkout argument (`type_check_format=`, `type_check_color=`; JS
+  `typeCheckFormat` / `typeCheckColor`) and `display()` takes no arguments —
+  it cannot re-render, because ty's structured diagnostics resolve their spans
+  against the checker's database and so never cross the wire. Formats are
+  ty's: `full` (default), `concise`, `azure`, `json`, `jsonlines`, `rdjson`,
+  `pylint`, `gitlab`, `github`; only `full` and `concise` carry colour.
 - **Print callbacks** receive buffered chunks flushed at newline boundaries
   or once ~8 KiB accumulates — not per-fragment writes. A chunk may contain
   more than one line, and output larger than the threshold is split into

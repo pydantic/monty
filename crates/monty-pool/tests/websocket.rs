@@ -15,7 +15,7 @@ use monty_pool::{
     Checkout, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{WireFunctionCall, decode_frame, encode_to_capped_vec, pb};
-use monty_types::{AssertMessageAnnotations, MontyObject, PrintStream, ResourceLimits};
+use monty_types::{MontyObject, PrintStream, ResourceLimits};
 use tokio::task::spawn_blocking;
 use tungstenite::{Message, WebSocket};
 
@@ -72,10 +72,7 @@ async fn drives_a_session_over_websocket() {
     let mut checkout = pool
         .checkout(&ReplConfig {
             script_name: "test.py".to_owned(),
-            limits: None,
-            type_check: false,
-            type_check_stubs: None,
-            assert_message_annotations: AssertMessageAnnotations::default(),
+            ..ReplConfig::default()
         })
         .await
         .expect("checkout");

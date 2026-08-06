@@ -121,15 +121,21 @@ impl TypeChecker {
     }
 
     /// Write one root file into the db and remember it for mandatory cleanup.
+    ///
+    /// A path already tracked from an earlier `run` is overwritten rather than
+    /// tracked twice: a session rewrites the same script path on every feed,
+    /// so the tracking list must not grow with the number of feeds.
     fn write_root_file(&mut self, path: &SystemPathBuf, source: &str) -> Result<File, String> {
         self.db.write_file(path, source).map_err(to_string)?;
 
         // The write above succeeded, so interning the path must succeed — otherwise the
-        // file would live in the db but be untracked, poisoning the pool on release, hence the panic.
+        // file would live in the db but be untracked, poisoning cleanup, hence the panic.
         let file = system_path_to_file(&self.db, path)
             .unwrap_or_else(|e| panic!("interning a just-written root file must succeed, DB in an unsafe state: {e}"));
 
-        self.touched_files.push(TouchedRootFile::new(path.clone(), file));
+        if !self.touched_files.iter().any(|t| &t.path == path) {
+            self.touched_files.push(TouchedRootFile::new(path.clone(), file));
+        }
         Ok(file)
     }
 
@@ -137,8 +143,8 @@ impl TypeChecker {
     /// [`Self::write_root_file`].
     ///
     /// Panics if `path` is not already tracked — the caller would otherwise be
-    /// leaving an untracked write behind that cleanup would miss, poisoning the
-    /// pool on release.
+    /// leaving an untracked write behind that cleanup would miss, so a later
+    /// [`Self::reset`] would leave the file visible to the next session.
     fn rewrite_root_file(&mut self, path: &SystemPathBuf, source: &str) -> Result<(), String> {
         assert!(
             self.touched_files.iter().any(|t| &t.path == path),
@@ -147,13 +153,16 @@ impl TypeChecker {
         self.db.write_file(path, source).map_err(to_string)
     }
 
-    /// Remove all files written during a type-check run and sync the filesystem changes.
+    /// Remove every file written since the last reset and sync the filesystem
+    /// changes, so the checker can be reused for unrelated code.
     ///
-    /// Each `TouchedRootFile::cleanup` removes its own file and walks its ancestor
-    /// chain up to `SRC_ROOT`, removing any directory that has become empty. Shared
-    /// parent directories collapse naturally once the last file inside them is gone.
-    /// We sync `SRC_ROOT` once at the end so the next pooled session cannot observe
-    /// the previous root directory listing.
+    /// Security-critical: without this a recycled worker would let one
+    /// session's modules and stubs resolve while checking the next session's
+    /// code. Each `TouchedRootFile::cleanup` removes its own file and walks its
+    /// ancestor chain up to `SRC_ROOT`, removing any directory that has become
+    /// empty. Shared parent directories collapse naturally once the last file
+    /// inside them is gone. We sync `SRC_ROOT` once at the end so the next
+    /// session cannot observe the previous root directory listing.
     pub fn reset(&mut self) -> Result<(), String> {
         let touched_files = mem::take(&mut self.touched_files);
 
@@ -184,14 +193,13 @@ fn adjust_annotation_span(ann: &mut Annotation, main_file: File, offset: TextSiz
     }
 }
 
-/// Represents diagnostic details when type checking fails.
+/// The diagnostics of one failed type check, rendered on `Display`.
 ///
-/// The pooled database is held inside an `Arc<Mutex<...>>` so that:
-/// 1. Diagnostic rendering can borrow the db lazily on every `Display`/`Debug` call,
-///    avoiding eager pre-rendering of every output format.
-/// 2. The `MontyTypingError` Python exception that wraps this type stays `Send + Sync`.
-/// 3. The `PooledMemoryDb` is released back to the pool exactly when the last clone
-///    of this `Arc` is dropped — RAII via `PooledMemoryDb`'s `Drop` impl.
+/// Borrows the checker because ty's diagnostics only resolve their spans (file
+/// paths, source snippets) against the database that produced them — which is
+/// why the format is chosen up front, in [`TypeChecker::run`], and why callers
+/// that outlive the checker (anything across a process boundary) must keep the
+/// rendered string rather than this.
 #[derive(Debug, Clone)]
 pub struct TypeCheckingDiagnostics<'a> {
     /// The actual diagnostic message

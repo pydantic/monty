@@ -2406,7 +2406,6 @@ name = "monty-js"
 version = "0.0.19"
 dependencies = [
  "monty-pool",
- "monty-type-checking",
  "monty-types",
  "napi",
  "napi-build",

@@ -7,7 +7,7 @@
 import { availableParallelism } from 'node:os'
 import { NativePool } from '../native-addon.js'
 import { findMontyBinary } from './binary.js'
-import { type AssertMessageAnnotations, encodeAssertMessageAnnotations } from './options.js'
+import { type AssertMessageAnnotations, type TypeCheckFormat, encodeAssertMessageAnnotations } from './options.js'
 import { MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
 
@@ -57,6 +57,17 @@ export interface CheckoutOptions {
   typeCheck?: boolean
   /** Stub file contents used by type checking. */
   typeCheckStubs?: string
+  /**
+   * How `MontyTypingError` diagnostics are rendered (default `'full'`).
+   * Chosen here rather than on the thrown error because the checker's
+   * structured diagnostics never leave the worker.
+   */
+  typeCheckFormat?: TypeCheckFormat
+  /**
+   * Render typing diagnostics with ANSI colour escapes (default false); only
+   * `'full'` and `'concise'` carry colour.
+   */
+  typeCheckColor?: boolean
   /**
    * Give failed `assert` statements pytest-style introspected messages, e.g.
    * `AssertionError: assert 2 == 5` — a deliberate divergence from CPython's
@@ -127,6 +138,8 @@ export class Monty {
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
       typeCheck: options.typeCheck ?? false,
       ...(options.typeCheckStubs !== undefined ? { typeCheckStubs: options.typeCheckStubs } : {}),
+      ...(options.typeCheckFormat !== undefined ? { typeCheckFormat: options.typeCheckFormat } : {}),
+      ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
       ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
     })
     const telemetryContext = captureTelemetryContext()

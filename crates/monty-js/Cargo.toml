@@ -23,7 +23,6 @@ monty-types = { workspace = true }
 opentelemetry = "0.32"
 opentelemetry_sdk = "0.32"
 monty-pool = { workspace = true, features = ["telemetry-adapter"] }
-monty-type-checking = { workspace = true }
 napi = { version = "3.8", default-features = false, features = ["napi8", "compat-mode", "tokio_rt"] }
 # The pool is async; the binding shares napi's tokio runtime and only needs
 # the sync primitives (the per-session checkout mutex) itself.

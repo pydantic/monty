@@ -36,6 +36,35 @@ test('type check with errors', async () => {
   t.is(error.display(), unsupportedOperatorDiagnostics('main.py'))
 })
 
+test('type check format', async () => {
+  // the format is chosen at checkout: the worker renders the diagnostics
+  // before they cross the wire, so the error cannot re-render them
+  const error = await t.throwsAsync(() => run('"hello" + 1', { typeCheck: true, typeCheckFormat: 'concise' }), {
+    instanceOf: MontyTypingError,
+  })
+  t.is(
+    error.display(),
+    'main.py:1:1: error[unsupported-operator] Operator `+` is not supported between objects of type `Literal["hello"]` and `Literal[1]`\n',
+  )
+})
+
+test('type check format json', async () => {
+  const error = await t.throwsAsync(() => run('"hello" + 1', { typeCheck: true, typeCheckFormat: 'json' }), {
+    instanceOf: MontyTypingError,
+  })
+  const [diagnostic] = JSON.parse(error.display()) as { name: string; location: { row: number; column: number } }[]
+  t.is(diagnostic.name, 'unsupported-operator')
+  t.deepEqual(diagnostic.location, { row: 1, column: 1 })
+})
+
+test('type check color', async () => {
+  const error = await t.throwsAsync(
+    () => run('"hello" + 1', { typeCheck: true, typeCheckFormat: 'concise', typeCheckColor: true }),
+    { instanceOf: MontyTypingError },
+  )
+  t.true(error.display().startsWith('\u001b['))
+})
+
 test('type check function return type', async () => {
   const code = `
 def foo() -> int:

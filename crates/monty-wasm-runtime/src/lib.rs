@@ -46,7 +46,7 @@ thread_local! {
     /// The session worker, created on first use and reused across turns. wasip1
     /// is single-threaded, so a thread-local `RefCell` is the whole story — no
     /// locking, no `static mut`.
-    static CHILD: RefCell<Child> = RefCell::new(Child::new());
+    static CHILD: RefCell<Child> = RefCell::new(Child::default());
 }
 
 /// Counts the bytes the module asks for against the session's `max_memory`

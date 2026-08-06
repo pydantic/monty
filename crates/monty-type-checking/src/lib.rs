@@ -3,4 +3,4 @@
 mod db;
 mod type_check;
 
-pub use crate::type_check::{SourceFile, TypeChecker};
+pub use crate::type_check::{SourceFile, TypeChecker, TypeCheckingDiagnostics};

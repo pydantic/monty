@@ -384,6 +384,30 @@ message Configure {
   // annotations; any other value retains that many bytes per operand before
   // any ellipsis, cutting on a character boundary.
   optional uint32 assert_message_annotations = 6;
+  // How the child renders the diagnostics carried by `TypingError`. The
+  // structured diagnostics borrow the type checker's database and so cannot
+  // cross the wire — the parent picks the format up front and the child
+  // renders it. Ignored when `type_check` is false.
+  TypeCheckFormat type_check_format = 7;
+  // Render typing diagnostics with ANSI colour escapes. Only `FULL` and
+  // `CONCISE` carry colour; the machine-readable formats ignore it.
+  bool type_check_color = 8;
+}
+
+// Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's
+// `DiagnosticFormat`.
+enum TypeCheckFormat {
+  // Unset by an older parent — the child renders `FULL`.
+  TYPE_CHECK_FORMAT_UNSPECIFIED = 0;
+  TYPE_CHECK_FORMAT_FULL = 1;
+  TYPE_CHECK_FORMAT_CONCISE = 2;
+  TYPE_CHECK_FORMAT_AZURE = 3;
+  TYPE_CHECK_FORMAT_JSON = 4;
+  TYPE_CHECK_FORMAT_JSON_LINES = 5;
+  TYPE_CHECK_FORMAT_RDJSON = 6;
+  TYPE_CHECK_FORMAT_PYLINT = 7;
+  TYPE_CHECK_FORMAT_GITLAB = 8;
+  TYPE_CHECK_FORMAT_GITHUB = 9;
 }
 
 // Executes one snippet against the session. Turn ends with `Complete`,
@@ -634,7 +658,7 @@ message Error {
 // was created with type_check). The snippet was not executed; the session
 // survives.
 message TypingError {
-  // Rendered diagnostics, one per line.
+  // Diagnostics rendered in the session's `TypeCheckFormat`.
   string diagnostics = 1;
 }
 

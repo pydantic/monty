@@ -43,7 +43,10 @@ use monty_pool::{
     Checkout, MountSpec, OnPrint, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty_value};
-use monty_types::{AssertMessageAnnotations, ExtFunctionResult, MontyException, MontyObject, PrintStream};
+use monty_types::{
+    AssertMessageAnnotations, ExtFunctionResult, MontyException, MontyObject, PrintStream, TypeCheckingConfig,
+    TypeCheckingFormat,
+};
 use pyo3::{
     Borrowed,
     exceptions::{PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},
@@ -166,6 +169,8 @@ impl PyMonty {
         limits = None,
         type_check = false,
         type_check_stubs = None,
+        type_check_format = TypeCheckFormatArg::default(),
+        type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         dataclass_registry = None,
     ))]
@@ -177,6 +182,8 @@ impl PyMonty {
         limits: Option<&Bound<'_, PyDict>>,
         type_check: bool,
         type_check_stubs: Option<&Bound<'_, PyString>>,
+        type_check_format: TypeCheckFormatArg,
+        type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyMontySession> {
@@ -188,6 +195,10 @@ impl PyMonty {
                 limits,
                 type_check,
                 type_check_stubs,
+                TypeCheckingConfig {
+                    format: type_check_format.0,
+                    color: type_check_color,
+                },
                 assert_message_annotations,
             )?,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
@@ -535,6 +546,8 @@ impl PyAsyncMonty {
         limits = None,
         type_check = false,
         type_check_stubs = None,
+        type_check_format = TypeCheckFormatArg::default(),
+        type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         dataclass_registry = None,
     ))]
@@ -546,6 +559,8 @@ impl PyAsyncMonty {
         limits: Option<&Bound<'_, PyDict>>,
         type_check: bool,
         type_check_stubs: Option<&Bound<'_, PyString>>,
+        type_check_format: TypeCheckFormatArg,
+        type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyAsyncMontySession> {
@@ -557,6 +572,10 @@ impl PyAsyncMonty {
                 limits,
                 type_check,
                 type_check_stubs,
+                TypeCheckingConfig {
+                    format: type_check_format.0,
+                    color: type_check_color,
+                },
                 assert_message_annotations,
             )?,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
@@ -648,6 +667,8 @@ impl PyAsyncMontyWebsocket {
         limits = None,
         type_check = false,
         type_check_stubs = None,
+        type_check_format = TypeCheckFormatArg::default(),
+        type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         dataclass_registry = None,
     ))]
@@ -659,6 +680,8 @@ impl PyAsyncMontyWebsocket {
         limits: Option<&Bound<'_, PyDict>>,
         type_check: bool,
         type_check_stubs: Option<&Bound<'_, PyString>>,
+        type_check_format: TypeCheckFormatArg,
+        type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyAsyncMontySession> {
@@ -670,6 +693,10 @@ impl PyAsyncMontyWebsocket {
                 limits,
                 type_check,
                 type_check_stubs,
+                TypeCheckingConfig {
+                    format: type_check_format.0,
+                    color: type_check_color,
+                },
                 assert_message_annotations,
             )?,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
@@ -1071,6 +1098,7 @@ pub(crate) fn parse_repl_config(
     limits: Option<&Bound<'_, PyDict>>,
     type_check: bool,
     type_check_stubs: Option<&Bound<'_, PyString>>,
+    type_check_config: TypeCheckingConfig,
     assert_message_annotations: AssertAnnotationsArg,
 ) -> PyResult<ReplConfig> {
     Ok(ReplConfig {
@@ -1078,8 +1106,31 @@ pub(crate) fn parse_repl_config(
         limits: limits.map(extract_limits).transpose()?,
         type_check,
         type_check_stubs: extract_type_check_stubs(py, type_check_stubs)?,
+        type_check_config,
         assert_message_annotations: assert_message_annotations.0,
     })
+}
+
+/// The `type_check_format` checkout argument: the name of one of ty's
+/// diagnostic formats, e.g. `'full'` or `'concise'`.
+///
+/// A newtype (rather than a plain `&str` argument) so an unknown name is
+/// rejected at argument-extraction time with the list of valid names, instead
+/// of surfacing later as a worker error.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TypeCheckFormatArg(pub TypeCheckingFormat);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for TypeCheckFormatArg {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        let name = ob
+            .cast::<PyString>()
+            .map_err(|_| PyTypeError::new_err("type_check_format must be a str"))?;
+        TypeCheckingFormat::from_name(&name.to_cow()?)
+            .map(Self)
+            .map_err(PyValueError::new_err)
+    }
 }
 
 /// The `assert_message_annotations` checkout argument: `True`/`False`, or an

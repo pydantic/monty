@@ -6,7 +6,9 @@ for subsequent feeds; failures raise `MontyTypingError` with pre-rendered text.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from inline_snapshot import snapshot
@@ -180,6 +182,67 @@ def test_monty_typing_error_display_matches_str(tc_session: MontySession):
     with pytest.raises(MontyTypingError) as exc_info:
         tc_session.feed_run('"hello" + 1')
     assert exc_info.value.display() == str(exc_info.value)
+
+
+# === type_check_format ===
+
+
+@pytest.mark.parametrize(
+    'fmt,expected',
+    [
+        (
+            'concise',
+            snapshot(
+                'main.py:1:1: error[unsupported-operator] Operator `+` is not supported between objects of type `Literal["hello"]` and `Literal[1]`\n'
+            ),
+        ),
+        (
+            'pylint',
+            snapshot(
+                'main.py:1: [unsupported-operator] Operator `+` is not supported between objects of type `Literal["hello"]` and `Literal[1]`\n'
+            ),
+        ),
+    ],
+)
+def test_type_check_format(pool: Monty, fmt: Any, expected: str):
+    """The format is chosen at checkout — the worker renders it before the error crosses the wire."""
+    with pool.checkout(type_check=True, type_check_format=fmt) as session:
+        with pytest.raises(MontyTypingError) as exc_info:
+            session.feed_run('"hello" + 1')
+    assert str(exc_info.value) == expected
+
+
+def test_type_check_format_json(pool: Monty):
+    """The machine-readable formats are what a host parses instead of scraping `full`."""
+    with pool.checkout(type_check=True, type_check_format='json') as session:
+        with pytest.raises(MontyTypingError) as exc_info:
+            session.feed_run('"hello" + 1')
+    [diagnostic] = json.loads(str(exc_info.value))
+    assert diagnostic['name'] == snapshot('unsupported-operator')
+    assert diagnostic['location'] == snapshot({'column': 1, 'row': 1})
+
+
+def test_type_check_color(pool: Monty):
+    """Colour is part of the same up-front choice; only full and concise carry it."""
+    with pool.checkout(type_check=True, type_check_format='concise', type_check_color=True) as session:
+        with pytest.raises(MontyTypingError) as exc_info:
+            session.feed_run('"hello" + 1')
+    assert str(exc_info.value).startswith('\x1b[')
+
+
+def test_type_check_format_invalid(pool: Monty):
+    with pytest.raises(ValueError) as exc_info:
+        pool.checkout(type_check=True, type_check_format='nonsense')  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot(
+        "unknown type check format 'nonsense', expected one of: "
+        'full, concise, azure, json, jsonlines, rdjson, pylint, gitlab, github'
+    )
+
+
+def test_type_check_format_not_a_string(pool: Monty):
+    with pytest.raises(TypeError) as exc_info:
+        pool.checkout(type_check=True, type_check_format=123)  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot("argument 'type_check_format': type_check_format must be a str")
 
 
 # === type_check_stubs ===

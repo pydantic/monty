@@ -14,7 +14,12 @@
 // string is a follow-up); mounts are rejected (no host filesystem in a worker).
 
 import type { NativeException, NativeFrame, NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
-import { type AssertMessageAnnotations, encodeAssertMessageAnnotations } from '../options.js'
+import {
+  type AssertMessageAnnotations,
+  type TypeCheckFormat,
+  encodeAssertMessageAnnotations,
+  encodeTypeCheckFormat,
+} from '../options.js'
 import type { Dispatcher } from './host.js'
 import { Reader, Wire, Writer, deframe, frame } from './proto.js'
 import { decodeMontyObject, decodeTimeZone, encodeMontyObject } from './value.js'
@@ -35,6 +40,10 @@ export interface WorkerSessionConfig {
   limits?: ResourceLimits
   typeCheck?: boolean
   typeCheckStubs?: string
+  /** How typing diagnostics are rendered by the worker (default `'full'`). */
+  typeCheckFormat?: TypeCheckFormat
+  /** Render typing diagnostics with ANSI colour escapes (default false). */
+  typeCheckColor?: boolean
   /**
    * Give failed `assert`s introspected messages. Absent/true means the
    * child's default (a 120-byte operand-repr truncation), false turns them
@@ -108,6 +117,9 @@ export class WorkerTransport {
     // absent = child default (on, 120-byte truncation), 0 = off, n = custom.
     const assertAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
     if (assertAnnotations !== undefined) create.uint(6, assertAnnotations)
+    // Configure.type_check_format (field 7, enum) and .type_check_color (8).
+    if (config.typeCheckFormat !== undefined) create.uint(7, encodeTypeCheckFormat(config.typeCheckFormat))
+    if (config.typeCheckColor) create.bool(8, true)
     await transport.control(Req.ReplCreate, create.finish(), Ev.Ok, 'ReplCreate')
     return transport
   }

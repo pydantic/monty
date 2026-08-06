@@ -217,6 +217,28 @@ with Monty() as pool:
             #> True
 ```
 
+`type_check_format` picks the rendering — ty's `'full'` (the default: source
+snippet and carets), `'concise'`, `'azure'`, `'json'`, `'jsonlines'`,
+`'rdjson'`, `'pylint'`, `'gitlab'` or `'github'` — and `type_check_color` adds
+ANSI colour to `'full'` and `'concise'`. Both are `checkout()` arguments rather
+than `display()` arguments because the diagnostics are rendered inside the
+worker: ty's structured diagnostics resolve their spans against the type
+checker's database, so only the rendered text crosses the wire.
+
+```python
+from pydantic_monty import Monty, MontyTypingError
+
+with Monty() as pool:
+    with pool.checkout(type_check=True, type_check_format='concise') as session:
+        try:
+            session.feed_run("x: int = 'not an int'")
+        except MontyTypingError as exc:
+            print(exc.display())
+            """
+            main.py:1:10: error[invalid-assignment] Object of type `Literal["not an int"]` is not assignable to `int`
+            """
+```
+
 ### Crash isolation
 
 ```python test="skip"

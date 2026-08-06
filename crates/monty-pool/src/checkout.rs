@@ -13,6 +13,7 @@ use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_proto::{FrameError, MONTY_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 use monty_types::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
+    TypeCheckingConfig,
 };
 use tokio::{task::spawn_blocking, time::timeout};
 
@@ -35,6 +36,10 @@ pub struct ReplConfig {
     pub type_check: bool,
     /// Stub declarations made available to type checking.
     pub type_check_stubs: Option<String>,
+    /// How the worker renders typing diagnostics. Chosen here rather than on
+    /// the raised error because the structured diagnostics never leave the
+    /// worker — only the rendered text crosses the wire.
+    pub type_check_config: TypeCheckingConfig,
     /// Give failed `assert` statements pytest-style introspected messages
     /// (see `limitations/assert.md`). On by default with a 120-byte
     /// operand-repr truncation; `MaxBytes` customizes the truncation.
@@ -48,6 +53,7 @@ impl Default for ReplConfig {
             limits: None,
             type_check: false,
             type_check_stubs: None,
+            type_check_config: TypeCheckingConfig::default(),
             assert_message_annotations: AssertMessageAnnotations::default(),
         }
     }
@@ -260,6 +266,8 @@ impl Checkout {
             limits: repl.limits.as_ref().map(Into::into),
             type_check: repl.type_check,
             type_check_stubs: repl.type_check_stubs.clone(),
+            type_check_format: pb::TypeCheckFormat::from(repl.type_check_config.format).into(),
+            type_check_color: repl.type_check_config.color,
             assert_message_annotations: Some(repl.assert_message_annotations.max_bytes()),
             // This crate ships the matching `monty` binary, so our own
             // version is always what the child expects. The child rejects a

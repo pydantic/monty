@@ -282,12 +282,24 @@ try {
   await session.feedRun('fetch(123)')
 } catch (err) {
   if (err instanceof MontyTypingError) {
-    console.log(err.display()) // rendered diagnostics, one per line
+    console.log(err.display()) // rendered diagnostics
   }
 }
 ```
 
 A snippet that fails type checking does not run; the session survives.
+
+`typeCheckFormat` picks the rendering — ty's `'full'` (the default: source
+snippet and carets), `'concise'`, `'azure'`, `'json'`, `'jsonlines'`,
+`'rdjson'`, `'pylint'`, `'gitlab'` or `'github'` — and `typeCheckColor` adds
+ANSI colour to `'full'` and `'concise'`. Both are checkout options rather than
+`display()` arguments because the diagnostics are rendered inside the worker:
+ty's structured diagnostics resolve their spans against the type checker's
+database, so only the rendered text crosses the wire.
+
+```ts
+const session = await pool.checkout({ typeCheck: true, typeCheckFormat: 'json' })
+```
 
 ## Error Handling
 

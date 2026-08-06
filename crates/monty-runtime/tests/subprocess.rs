@@ -91,6 +91,7 @@ impl ChildProc {
             type_check_stubs: None,
             monty_version: env!("CARGO_PKG_VERSION").to_owned(),
             assert_message_annotations: None,
+            ..Default::default()
         });
     }
 
@@ -415,6 +416,7 @@ fn child_enforces_time_limit() {
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
         assert_message_annotations: None,
+        ..Default::default()
     });
     let (_, event) = child.feed("while True:\n    pass");
     let error = expect_error(event);
@@ -619,6 +621,7 @@ fn configure_with_max_memory(bytes: u64) -> pb::Configure {
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
         assert_message_annotations: None,
+        ..Default::default()
     }
 }
 
@@ -656,6 +659,7 @@ fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
         assert_message_annotations: None,
+        ..Default::default()
     });
 
     let (_, event) = child.feed("x: int = 'not an int'");
@@ -678,6 +682,67 @@ fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
         panic!("expected TypingError for undefined x, got {event:?}");
     };
     child.shutdown();
+}
+
+/// The format is chosen on `Configure` because rendering happens in the child
+/// — only the rendered text crosses the wire, so a parent that wants anything
+/// other than `full` has to ask before the check runs.
+#[test]
+fn type_check_format_selects_the_rendering() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        type_check: true,
+        type_check_format: pb::TypeCheckFormat::Concise.into(),
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        ..Default::default()
+    });
+
+    let (_, event) = child.feed("x: int = 'not an int'");
+    let pb::child_event::Kind::TypingError(typing) = event else {
+        panic!("expected TypingError, got {event:?}");
+    };
+    // one line per diagnostic, with no `-->` source snippet as `full` has
+    assert_eq!(
+        typing.diagnostics,
+        "main.py:1:10: error[invalid-assignment] Object of type `Literal[\"not an int\"]` is not assignable to `int`\n"
+    );
+    child.shutdown();
+}
+
+/// The rendering choice lives in the dump envelope, so a session restored into
+/// a fresh worker keeps reporting diagnostics the way its parent asked for.
+#[test]
+fn type_check_format_survives_dump_and_load() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        type_check: true,
+        type_check_format: pb::TypeCheckFormat::Concise.into(),
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        ..Default::default()
+    });
+    assert_eq!(child.feed_complete("y = 1"), MontyObject::None);
+    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+        panic!("expected DumpResult");
+    };
+    drop(child);
+
+    let mut fresh = ChildProc::spawn();
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    let pb::child_event::Kind::Ok(_) = fresh.recv() else {
+        panic!("expected Ok for Load");
+    };
+    let (_, event) = fresh.feed("x: int = 'not an int'");
+    let pb::child_event::Kind::TypingError(typing) = event else {
+        panic!("expected TypingError after Load, got {event:?}");
+    };
+    assert_eq!(
+        typing.diagnostics,
+        "main.py:1:10: error[invalid-assignment] Object of type `Literal[\"not an int\"]` is not assignable to `int`\n"
+    );
+    fresh.shutdown();
 }
 
 // =============================================================================
@@ -735,6 +800,7 @@ fn type_check_state_survives_dump_and_load() {
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
         assert_message_annotations: None,
+        ..Default::default()
     });
     // a committed snippet that later feeds must see through the dump
     assert_eq!(child.feed_complete("y = 1"), MontyObject::None);
@@ -770,6 +836,7 @@ fn assert_annotation_option_survives_dump_and_load() {
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
         // 0 = annotations off on the wire.
         assert_message_annotations: Some(0),
+        ..Default::default()
     });
     child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
     let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
@@ -801,6 +868,7 @@ fn assert_annotation_custom_limit_survives_dump_and_load() {
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
         // Non-zero = annotations on, truncating operand reprs to N chars.
         assert_message_annotations: Some(6),
+        ..Default::default()
     });
     child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
     let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
@@ -846,6 +914,7 @@ fn protocol_violations_keep_the_child_alive() {
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
         assert_message_annotations: None,
+        ..Default::default()
     }));
     let error = expect_error(child.recv());
     assert!(error.message.unwrap().contains("already exists"));
@@ -884,6 +953,7 @@ fn version_skew_on_create_is_a_fatal_error() {
         type_check_stubs: None,
         monty_version: "0.0.0-not-a-real-version".to_owned(),
         assert_message_annotations: None,
+        ..Default::default()
     }));
     match child.recv() {
         pb::child_event::Kind::FatalError(fatal) => assert!(fatal.message.contains("version skew")),
