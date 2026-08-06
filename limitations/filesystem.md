@@ -122,10 +122,14 @@ would not find the renamed-away original.
 
 ### Boolean predicates never raise
 
-`exists()`, `is_file()`, `is_dir()` and `is_symlink()` answer `False` for any
-path leaving the mount, so a blocked path is indistinguishable from a missing
-one — raising would confirm something is there to be blocked. CPython follows
-the link and answers `True`.
+`exists()`, `is_file()` and `is_dir()` answer `False` for any path leaving the
+mount, so a blocked path is indistinguishable from a missing one — raising
+would confirm something is there to be blocked. CPython follows the link and
+answers `True`.
+
+`is_symlink()` is the exception: it does not follow the final component, so a
+symlink that is itself inside the mount answers `True` even when its target
+escapes. That matches CPython, and reveals nothing about the target.
 
 ## No live host descriptors
 

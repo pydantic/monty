@@ -454,6 +454,27 @@ mod symlink_tests {
         assert_blocked(&mut mt, PathOp::Iterdir, "/mnt/rel_escape");
     }
 
+    /// `is_symlink()` does not follow the final component, so an outbound link
+    /// that is itself inside the mount still answers `True` — as in CPython, and
+    /// revealing nothing about where it points. The following predicates differ.
+    #[test]
+    fn is_symlink_reports_an_outbound_link_that_lives_in_the_mount() {
+        let dir = create_test_dir();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+        symlink_file(outside.path().join("secret.txt"), dir.path().join("escape_link"));
+
+        for mode in [MountMode::ReadWrite, MountMode::OverlayMemory(OverlayState::new())] {
+            let mut mt = mount_at_mnt(&dir, mode);
+            assert_eq!(
+                call(&mut mt, PathOp::IsSymlink, "/mnt/escape_link").unwrap().unwrap(),
+                MontyObject::Bool(true)
+            );
+            assert_invisible(&mut mt, PathOp::Exists, "/mnt/escape_link");
+            assert_invisible(&mut mt, PathOp::IsFile, "/mnt/escape_link");
+        }
+    }
+
     #[test]
     fn symlink_escape_no_info_leak() {
         // Error messages should only contain virtual path, not host path.
