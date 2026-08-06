@@ -506,6 +506,18 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     }
 }
 
+/// A bounded deque retains at most `maxlen` items, so extending it from a huge
+/// exact-hint iterator (the sliding-window pattern) must not trip the
+/// `deque.extend` preflight — the memory really is capped at `maxlen`.
+#[test]
+fn bounded_deque_extend_is_not_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "from collections import deque\nd = deque(maxlen=8)\nd.extend(range(500_000))\nlen(d)";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(8));
+    child.shutdown();
+}
+
 /// Assert a `memory limit exceeded` message reports roughly `expected` bytes
 /// used against a 1 MiB limit.
 ///

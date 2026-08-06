@@ -981,13 +981,25 @@ pub(crate) fn deque_extend(deque_id: HeapId, iterable: Value, end: ExtendEnd, vm
         // One-shot preflight from the size hint: exact-hint iterators (e.g.
         // `range`) reject oversized extends with a graceful `MemoryError`,
         // matching `collect_python_iterator`; hint-less iterators fall back
-        // to VM checkpoints and the allocator's hard limit.
-        check_estimated_size(iter.iter_size_hint(vm).saturating_mul(VALUE_SIZE), vm.heap.tracker())?;
+        // to VM checkpoints and the allocator's hard limit. A bounded deque
+        // retains at most `maxlen` items however long the iterator, so cap
+        // the estimate at what it can actually keep.
+        let hint = iter.iter_size_hint(vm);
+        let retained = deque_maxlen(deque_id, vm).map_or(hint, |maxlen| hint.min(maxlen));
+        check_estimated_size(retained.saturating_mul(VALUE_SIZE), vm.heap.tracker())?;
         while let Some(item) = iter.py_next(vm)? {
             deque_push(deque_id, item, end, vm);
         }
         Ok(())
     }
+}
+
+/// The `maxlen` bound of the deque `deque_id`, or `None` if unbounded.
+fn deque_maxlen(deque_id: HeapId, vm: &VM<'_>) -> Option<usize> {
+    let HeapReadOutput::Deque(deque) = vm.heap.read(deque_id) else {
+        unreachable!("deque id must reference a deque");
+    };
+    deque.get(vm.heap).maxlen()
 }
 
 /// Clones every item of the deque `deque_id`, for the self-extension case.

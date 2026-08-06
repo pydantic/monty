@@ -51,6 +51,8 @@ mutation($id: ID!) {
 }' -F id=<THREAD_ID>
 ```
 
+For ALL responses, prefix your response saying it's from an AI, e.g. "Response from <model/harness name>:"
+
 ## 5. Report
 
 Briefly: what you fixed, what you skipped and why, and which threads you left untouched
