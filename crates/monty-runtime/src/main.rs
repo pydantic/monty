@@ -198,7 +198,7 @@ fn run_cli(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    monty_alloc::set_limit(limits.max_memory.map(|bytes| bytes as u64), type_check_enabled)
+    monty_alloc::set_limit(limits.max_memory, type_check_enabled)
         .expect("monty-runtime must install LimitedAllocator globally");
 
     // Build mount table early to fail fast on bad -m args.

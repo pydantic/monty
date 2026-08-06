@@ -29,7 +29,7 @@ const TYPE_CHECK_HEADROOM: usize = 32 * 1024 * 1024;
 ///
 /// On a 32-bit target (wasm) a limit near 4 GiB saturates the arithmetic and
 /// leaves the worker uncapped — there is no cap to express.
-pub fn set_limit(max_memory: Option<u64>, type_check: bool) -> Result<(), &'static str> {
+pub fn set_limit(max_memory: Option<usize>, type_check: bool) -> Result<(), &'static str> {
     let live = LIVE_MEMORY.load(Ordering::Relaxed);
     if live == 0 {
         return Err("monty-alloc is not installed as the global allocator");
@@ -39,7 +39,7 @@ pub fn set_limit(max_memory: Option<u64>, type_check: bool) -> Result<(), &'stat
     let baseline = BASELINE_MEMORY.fetch_min(live, Ordering::Relaxed).min(live);
     let (soft, hard) = match max_memory {
         Some(bytes) => {
-            let soft = baseline.saturating_add(usize::try_from(bytes).unwrap_or(usize::MAX));
+            let soft = baseline.saturating_add(bytes);
             let headroom = if type_check { TYPE_CHECK_HEADROOM } else { BASE_HEADROOM };
             (soft, soft.saturating_add(headroom))
         }

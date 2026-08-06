@@ -173,7 +173,7 @@ fn dispatch_into(child: &mut Child, request_frame: &[u8], sink: &mut VecEventSin
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SessionBudget {
     /// `max_memory` in bytes; `None` when unlimited, or when no session exists.
-    pub max_memory: Option<u64>,
+    pub max_memory: Option<usize>,
     /// Whether the session type checks each fed snippet.
     pub type_check: bool,
 }
@@ -325,7 +325,11 @@ impl Child {
     pub fn session_budget(&self) -> SessionBudget {
         match &self.state {
             SessionState::Configured(Some(config)) => SessionBudget {
-                max_memory: config.limits.as_ref().and_then(|limits| limits.max_memory_bytes),
+                max_memory: config
+                    .limits
+                    .as_ref()
+                    .and_then(|limits| limits.max_memory_bytes)
+                    .map(|max_memory| usize::try_from(max_memory).unwrap_or(usize::MAX)),
                 type_check: config.type_check,
             },
             SessionState::Configured(None) => SessionBudget::default(),
@@ -337,7 +341,7 @@ impl Child {
     /// The budget of a materialized session, whose limits live in its tracker.
     fn tracker_budget(&self, tracker: &ResourceTracker) -> SessionBudget {
         SessionBudget {
-            max_memory: tracker.max_memory().map(|bytes| bytes as u64),
+            max_memory: tracker.max_memory(),
             type_check: self.type_check.is_some(),
         }
     }
