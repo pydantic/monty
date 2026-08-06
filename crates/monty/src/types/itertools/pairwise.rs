@@ -87,7 +87,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
         unreachable!("dispatched on Kind::Pairwise")
     };
     let first = pairwise.previous.replace(retained).expect("previous was primed above");
-    Ok(Some(allocate_tuple([first, second].into_iter().collect(), vm.heap)?))
+    Ok(Some(allocate_tuple([first, second].into_iter().collect(), vm.heap)))
 }
 
 /// Advances the source, releasing it and `previous` once it stops.

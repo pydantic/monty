@@ -24,7 +24,6 @@
 //! they return `Value` directly (wrapped in `CallResult::Value` by the dispatch
 //! in [`super`]).
 
-use monty_types::ResourceError;
 use unicode_general_category::{GeneralCategory, get_general_category};
 use unicode_normalization::{UnicodeNormalization, char::canonical_combining_class};
 
@@ -75,14 +74,14 @@ const UNICODEDATA_FUNCTIONS: &[(StaticStrings, UnicodedataFunctions)] = &[
 ///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Unicodedata);
 
     for (name, func) in UNICODEDATA_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Unicodedata(*func)), vm);
     }
 
-    let version = allocate_string(UNIDATA_VERSION, vm.heap)?;
+    let version = allocate_string(UNIDATA_VERSION, vm.heap);
     module.set_attr(StaticStrings::UnidataVersion, version, vm);
 
     vm.heap.allocate(HeapData::Module(Box::new(module)))
@@ -110,7 +109,7 @@ fn uni_category(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("category", vm.heap)?;
     defer_drop!(value, vm);
     let c = single_char(value, "category", None, vm)?;
-    Ok(allocate_string(category_abbrev(get_general_category(c)), vm.heap)?)
+    Ok(allocate_string(category_abbrev(get_general_category(c)), vm.heap))
 }
 
 /// `unicodedata.name(chr[, default])` — the Unicode name of a character.
@@ -128,7 +127,7 @@ fn uni_name(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let c = single_char(chr_val, "name", Some(1), vm)?;
 
     match unicode_names2::name(c) {
-        Some(name) => Ok(allocate_string(name.to_string(), vm.heap)?),
+        Some(name) => Ok(allocate_string(name.to_string(), vm.heap)),
         None => match default_guard.into_inner() {
             Some(default) => Ok(default),
             None => Err(SimpleException::new_msg(ExcType::ValueError, "no such name").into()),
@@ -145,7 +144,7 @@ fn uni_lookup(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
     let name = value.to_str(vm)?;
     match unicode_names2::character(name) {
-        Some(c) => Ok(allocate_string(c.to_string(), vm.heap)?),
+        Some(c) => Ok(allocate_string(c.to_string(), vm.heap)),
         None => Err(SimpleException::new_msg(ExcType::KeyError, format!("undefined character name '{name}'")).into()),
     }
 }

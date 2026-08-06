@@ -10,7 +10,7 @@ use std::{
 };
 
 use chrono::{Datelike, NaiveDate, format::StrftimeItems};
-use monty_types::{OsFunctionCall, ResourceError};
+use monty_types::OsFunctionCall;
 
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
@@ -116,7 +116,7 @@ pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
 pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let DateInitArgs { year, month, day } = DateInitArgs::from_args(args, vm)?;
     let date = from_ymd(year, month, day)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))))
 }
 
 /// Argument shape for `date(year, month, day)`.
@@ -155,7 +155,7 @@ pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &In
 
     let date = parse_iso_date(&s)
         .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;
-    Ok(Value::Ref(heap.allocate(HeapData::Date(date))?))
+    Ok(Value::Ref(heap.allocate(HeapData::Date(date))))
 }
 
 /// Parses an ISO 8601 date string into a `Date`.
@@ -222,21 +222,21 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
-        Ok(allocate_string(format!("{year:04}-{month:02}-{day:02}"), vm.heap)?)
+        Ok(allocate_string(format!("{year:04}-{month:02}-{day:02}"), vm.heap))
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        Ok(py_add(*self.get(vm.heap), *other.get(vm.heap), vm.heap)?)
+        Ok(py_add(*self.get(vm.heap), *other.get(vm.heap), vm.heap))
     }
 
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         match other.read_heap(vm) {
-            Some(HeapReadOutput::Date(other)) => Ok(py_sub_date(*self.get(vm.heap), *other.get(vm.heap), vm.heap)?),
+            Some(HeapReadOutput::Date(other)) => Ok(py_sub_date(*self.get(vm.heap), *other.get(vm.heap), vm.heap)),
             Some(HeapReadOutput::TimeDelta(other)) => {
-                Ok(py_sub_timedelta(*self.get(vm.heap), *other.get(vm.heap), vm.heap)?)
+                Ok(py_sub_timedelta(*self.get(vm.heap), *other.get(vm.heap), vm.heap))
             }
             _ => Ok(None),
         }
@@ -257,13 +257,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
                 Ok(CallResult::Value(allocate_string_no_interning(
                     format!("{year:04}-{month:02}-{day:02}"),
                     vm.heap,
-                )?))
+                )))
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 defer_drop!(format, vm);
                 let formatted = format_date_strftime(date, format.as_str(vm))?;
-                Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
+                Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
             }
             Some(id) if id == StaticStrings::Replace => {
                 let (year, month, day) = to_ymd(date);
@@ -278,7 +278,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
                     new_day.unwrap_or(i32::try_from(day).expect("day in 1..=31")),
                 )?;
                 Ok(CallResult::Value(Value::Ref(
-                    vm.heap.allocate(HeapData::Date(new_date))?,
+                    vm.heap.allocate(HeapData::Date(new_date)),
                 )))
             }
             Some(id) if id == StaticStrings::Weekday => {
@@ -309,44 +309,28 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
 }
 
 /// `date - date` returns a timedelta with the difference in days.
-pub(crate) fn py_sub_date(a: Date, b: Date, heap: &mut Heap) -> Result<Option<Value>, ResourceError> {
+pub(crate) fn py_sub_date(a: Date, b: Date, heap: &mut Heap) -> Option<Value> {
     let diff_days = i64::from(to_ordinal(a)) - i64::from(to_ordinal(b));
-    let Ok(delta) = timedelta::from_total_microseconds(i128::from(diff_days) * MICROSECONDS_PER_DAY) else {
-        return Ok(None);
-    };
-    Ok(Some(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))?)))
+    let delta = timedelta::from_total_microseconds(i128::from(diff_days) * MICROSECONDS_PER_DAY).ok()?;
+    Some(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))))
 }
 
 /// `date + timedelta` helper.
-pub(crate) fn py_add(date: Date, delta: TimeDelta, heap: &mut Heap) -> Result<Option<Value>, ResourceError> {
+pub(crate) fn py_add(date: Date, delta: TimeDelta, heap: &mut Heap) -> Option<Value> {
     let (days, _, _) = timedelta::components(&delta);
-    let new_ordinal = i64::from(to_ordinal(date)).checked_add(i64::from(days));
-    let Some(new_ordinal) = new_ordinal else {
-        return Ok(None);
-    };
-    let Ok(new_ordinal) = i32::try_from(new_ordinal) else {
-        return Ok(None);
-    };
-    match from_ordinal(new_ordinal) {
-        Ok(value) => Ok(Some(Value::Ref(heap.allocate(HeapData::Date(value))?))),
-        Err(_) => Ok(None),
-    }
+    let new_ordinal = i64::from(to_ordinal(date)).checked_add(i64::from(days))?;
+    let new_ordinal = i32::try_from(new_ordinal).ok()?;
+    let value = from_ordinal(new_ordinal).ok()?;
+    Some(Value::Ref(heap.allocate(HeapData::Date(value))))
 }
 
 /// `date - timedelta` helper.
-pub(crate) fn py_sub_timedelta(date: Date, delta: TimeDelta, heap: &mut Heap) -> Result<Option<Value>, ResourceError> {
+pub(crate) fn py_sub_timedelta(date: Date, delta: TimeDelta, heap: &mut Heap) -> Option<Value> {
     let (days, _, _) = timedelta::components(&delta);
-    let new_ordinal = i64::from(to_ordinal(date)).checked_sub(i64::from(days));
-    let Some(new_ordinal) = new_ordinal else {
-        return Ok(None);
-    };
-    let Ok(new_ordinal) = i32::try_from(new_ordinal) else {
-        return Ok(None);
-    };
-    match from_ordinal(new_ordinal) {
-        Ok(value) => Ok(Some(Value::Ref(heap.allocate(HeapData::Date(value))?))),
-        Err(_) => Ok(None),
-    }
+    let new_ordinal = i64::from(to_ordinal(date)).checked_sub(i64::from(days))?;
+    let new_ordinal = i32::try_from(new_ordinal).ok()?;
+    let value = from_ordinal(new_ordinal).ok()?;
+    Some(Value::Ref(heap.allocate(HeapData::Date(value))))
 }
 
 /// Formats a [`Date`] with a `strftime` directive string, shared by the

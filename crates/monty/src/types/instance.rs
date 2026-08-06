@@ -94,7 +94,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
-        let name = attribute_name_value(name, value_guard.ctx())?;
+        let name = attribute_name_value(name, value_guard.ctx());
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -371,7 +371,7 @@ impl HeapItem for BoundMethod {
 /// `HeapId`.
 pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let attr_str = attr.as_str(vm.interns);
-    if let Some(value) = instance_attr(self_id, attr_str, vm)? {
+    if let Some(value) = instance_attr(self_id, attr_str, vm) {
         Ok(CallResult::Value(value))
     } else {
         let class_id = instance_class(self_id, vm);
@@ -388,8 +388,8 @@ pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_
 ///
 /// Split out so the synthesized dataclass `__repr__`/`__eq__` read their fields
 /// exactly as `self.field` does, binding a function-valued class member as a
-/// [`BoundMethod`] — which is why this allocates, and so is fallible.
-pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+/// [`BoundMethod`].
+pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> Option<Value> {
     if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id)
         && let Some(value) = inst
             .get(vm.heap)
@@ -397,7 +397,7 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> Run
             .get_by_str(attr, vm.heap, vm.interns)
             .map(|v| v.clone_with_heap(vm.heap))
     {
-        return Ok(Some(value));
+        return Some(value);
     }
     let class_id = instance_class(self_id, vm);
     match class_member(class_id, attr, vm) {
@@ -408,17 +408,17 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> Run
                 instance: Value::Ref(self_id),
                 func: member,
             };
-            Ok(Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))?)))
+            Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
         }
-        Some(member) => Ok(Some(member)),
+        Some(member) => Some(member),
         // `obj.__class__` returns the class object itself (`obj.__class__ is Foo`).
         // Last, so an explicit member of the same name wins, mirroring the
         // `__name__` handling on class objects.
         None if attr == "__class__" => {
             vm.heap.inc_ref(class_id);
-            Ok(Some(Value::Ref(class_id)))
+            Some(Value::Ref(class_id))
         }
-        None => Ok(None),
+        None => None,
     }
 }
 
@@ -429,7 +429,7 @@ pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value
     let mut s = String::new();
     let mut heap_ids = LazyHeapSet::default();
     instance_repr_fmt(self_id, &mut s, vm, &mut heap_ids)?;
-    Ok(allocate_string(s, vm.heap)?)
+    Ok(allocate_string(s, vm.heap))
 }
 
 /// Writes an instance's `repr` into `f`: a user `__repr__` wins, then the

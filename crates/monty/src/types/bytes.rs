@@ -183,7 +183,7 @@ impl Bytes {
             let encoding = encoding.as_str(vm);
             let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
             let encoded = codec.encode(s, errors, vm.heap.tracker())?;
-            let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(encoded)))?;
+            let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(encoded)));
             return Ok(Value::Ref(heap_id));
         }
         if source_str.is_some() {
@@ -217,7 +217,7 @@ impl Bytes {
             },
             Some(v) => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
         };
-        let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(new_data)))?;
+        let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(new_data)));
         Ok(Value::Ref(heap_id))
     }
 }
@@ -244,13 +244,13 @@ pub(crate) fn concat_bytes(lhs: &[u8], rhs: &[u8], heap: &Heap) -> Result<Value,
     let mut result = Vec::with_capacity(result_len);
     result.extend_from_slice(lhs);
     result.extend_from_slice(rhs);
-    Ok(Value::Ref(heap.allocate(HeapData::Bytes(result.into()))?))
+    Ok(Value::Ref(heap.allocate(HeapData::Bytes(result.into()))))
 }
 
 /// Repeats bytes after validating the allocation against resource limits.
 pub(crate) fn repeat_bytes(value: &[u8], count: usize, heap: &Heap) -> Result<Value, ResourceError> {
     check_repeat_size(value.len(), count, heap.tracker())?;
-    Ok(Value::Ref(heap.allocate(HeapData::Bytes(value.repeat(count).into()))?))
+    Ok(Value::Ref(heap.allocate(HeapData::Bytes(value.repeat(count).into()))))
 }
 
 impl From<Vec<u8>> for Bytes {
@@ -294,7 +294,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
     }
 
     fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        BytesIterator::from_heap(self_id.expect("heap values have an id"), vm)
+        Ok(BytesIterator::from_heap(self_id.expect("heap values have an id"), vm))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -308,7 +308,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         {
             let b = self.get(vm.heap);
             let sliced_bytes = slice_collect_iterator(vm, slice, b.0.iter(), |b| *b)?;
-            let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(sliced_bytes)))?;
+            let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(sliced_bytes)));
             return Ok(Value::Ref(heap_id));
         }
 
@@ -424,23 +424,23 @@ fn call_bytes_method_impl<'h>(
         // Simple transformations (no arguments)
         StaticStrings::Lower => {
             args.check_zero_args("bytes.lower", vm.heap)?;
-            bytes_lower(bytes, vm)
+            Ok(bytes_lower(bytes, vm))
         }
         StaticStrings::Upper => {
             args.check_zero_args("bytes.upper", vm.heap)?;
-            bytes_upper(bytes, vm)
+            Ok(bytes_upper(bytes, vm))
         }
         StaticStrings::Capitalize => {
             args.check_zero_args("bytes.capitalize", vm.heap)?;
-            bytes_capitalize(bytes, vm)
+            Ok(bytes_capitalize(bytes, vm))
         }
         StaticStrings::Title => {
             args.check_zero_args("bytes.title", vm.heap)?;
-            bytes_title(bytes, vm)
+            Ok(bytes_title(bytes, vm))
         }
         StaticStrings::Swapcase => {
             args.check_zero_args("bytes.swapcase", vm.heap)?;
-            bytes_swapcase(bytes, vm)
+            Ok(bytes_swapcase(bytes, vm))
         }
         // Predicate methods (no arguments, return bool)
         StaticStrings::Isalpha => {
@@ -534,7 +534,7 @@ fn bytes_decode<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>
 
     let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
     let s = codec.decode(bytes.get(vm.heap), errors)?;
-    Ok(super::str::allocate_string(s, vm.heap)?)
+    Ok(super::str::allocate_string(s, vm.heap))
 }
 
 /// Argument shape for `bytes.decode(encoding='utf-8', errors='strict')`.
@@ -937,7 +937,7 @@ fn parse_bytes_sub_args(
 /// Implements Python's `bytes.lower()` method.
 ///
 /// Returns a copy of the bytes with all ASCII uppercase characters converted to lowercase.
-fn bytes_lower<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> RunResult<Value> {
+fn bytes_lower<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> Value {
     let result: Vec<u8> = bytes.get(vm.heap).iter().map(|&b| b.to_ascii_lowercase()).collect();
     allocate_bytes(result, vm.heap)
 }
@@ -945,7 +945,7 @@ fn bytes_lower<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> RunResult<Val
 /// Implements Python's `bytes.upper()` method.
 ///
 /// Returns a copy of the bytes with all ASCII lowercase characters converted to uppercase.
-fn bytes_upper<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> RunResult<Value> {
+fn bytes_upper<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> Value {
     let result: Vec<u8> = bytes.get(vm.heap).iter().map(|&b| b.to_ascii_uppercase()).collect();
     allocate_bytes(result, vm.heap)
 }
@@ -954,7 +954,7 @@ fn bytes_upper<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> RunResult<Val
 ///
 /// Returns a copy of the bytes with the first byte capitalized (if ASCII) and
 /// the rest lowercased.
-fn bytes_capitalize<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> RunResult<Value> {
+fn bytes_capitalize<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> Value {
     let bytes = bytes.get(vm.heap);
     let mut result = Vec::with_capacity(bytes.len());
     if let Some((&first, rest)) = bytes.split_first() {
@@ -970,7 +970,7 @@ fn bytes_capitalize<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> RunResul
 ///
 /// Returns a titlecased version of the bytes where words start with an uppercase
 /// ASCII character and the remaining characters are lowercase.
-fn bytes_title<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> RunResult<Value> {
+fn bytes_title<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> Value {
     let bytes = bytes.get(vm.heap);
     let mut result = Vec::with_capacity(bytes.len());
     let mut prev_is_cased = false;
@@ -991,7 +991,7 @@ fn bytes_title<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> RunResult<Val
 ///
 /// Returns a copy of the bytes with ASCII uppercase characters converted to
 /// lowercase and vice versa.
-fn bytes_swapcase<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> RunResult<Value> {
+fn bytes_swapcase<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h>) -> Value {
     let result: Vec<u8> = bytes
         .get(vm.heap)
         .iter()
@@ -1169,7 +1169,7 @@ fn bytes_strip<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
         None | Some(Value::None) => bytes_strip_whitespace_both(bytes.get(vm.heap)),
         Some(v) => bytes_strip_both(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
     };
-    allocate_bytes(result.to_vec(), vm.heap)
+    Ok(allocate_bytes(result.to_vec(), vm.heap))
 }
 
 /// Implements Python's `bytes.lstrip([chars])` method.
@@ -1182,7 +1182,7 @@ fn bytes_lstrip<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>
         None | Some(Value::None) => bytes_strip_whitespace_start(bytes.get(vm.heap)),
         Some(v) => bytes_strip_start(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
     };
-    allocate_bytes(result.to_vec(), vm.heap)
+    Ok(allocate_bytes(result.to_vec(), vm.heap))
 }
 
 /// Implements Python's `bytes.rstrip([chars])` method.
@@ -1195,7 +1195,7 @@ fn bytes_rstrip<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>
         None | Some(Value::None) => bytes_strip_whitespace_end(bytes.get(vm.heap)),
         Some(v) => bytes_strip_end(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
     };
-    allocate_bytes(result.to_vec(), vm.heap)
+    Ok(allocate_bytes(result.to_vec(), vm.heap))
 }
 
 /// Strips bytes in `chars` from both ends of the byte slice.
@@ -1260,7 +1260,7 @@ fn bytes_removeprefix<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut 
     } else {
         bytes.to_vec()
     };
-    allocate_bytes(result, vm.heap)
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 /// Implements Python's `bytes.removesuffix(suffix)` method.
@@ -1278,7 +1278,7 @@ fn bytes_removesuffix<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut 
     } else {
         bytes.to_vec()
     };
-    allocate_bytes(result, vm.heap)
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 // =============================================================================
@@ -1318,11 +1318,11 @@ fn bytes_split<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
         vm.heap.check_time()?;
-        list_items.push(allocate_bytes(part.to_vec(), vm.heap)?);
+        list_items.push(allocate_bytes(part.to_vec(), vm.heap));
     }
 
     let list = List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list))?;
+    let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))
 }
 
@@ -1359,11 +1359,11 @@ fn bytes_rsplit<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
         vm.heap.check_time()?;
-        list_items.push(allocate_bytes(part.to_vec(), vm.heap)?);
+        list_items.push(allocate_bytes(part.to_vec(), vm.heap));
     }
 
     let list = List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list))?;
+    let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))
 }
 
@@ -1614,13 +1614,13 @@ fn bytes_splitlines<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM
         } else {
             &bytes[start..line_end]
         };
-        lines.push(allocate_bytes(line.to_vec(), vm.heap)?);
+        lines.push(allocate_bytes(line.to_vec(), vm.heap));
         start = end;
     }
 
     let (lines, vm) = lines_guard.into_parts();
     let list = List::new(lines);
-    let heap_id = vm.heap.allocate(HeapData::List(list))?;
+    let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))
 }
 
@@ -1666,14 +1666,14 @@ fn bytes_partition<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<
         None => (bytes.to_vec(), Vec::new(), Vec::new()),
     };
 
-    let before_val = allocate_bytes(before, vm.heap)?;
-    let sep_val = allocate_bytes(sep_found, vm.heap)?;
-    let after_val = allocate_bytes(after, vm.heap)?;
+    let before_val = allocate_bytes(before, vm.heap);
+    let sep_val = allocate_bytes(sep_found, vm.heap);
+    let after_val = allocate_bytes(after, vm.heap);
 
     Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
         vm.heap,
-    )?)
+    ))
 }
 
 /// Implements Python's `bytes.rpartition(sep)` method.
@@ -1694,14 +1694,14 @@ fn bytes_rpartition<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM
         None => (Vec::new(), Vec::new(), bytes.to_vec()),
     };
 
-    let before_val = allocate_bytes(before, vm.heap)?;
-    let sep_val = allocate_bytes(sep_found, vm.heap)?;
-    let after_val = allocate_bytes(after, vm.heap)?;
+    let before_val = allocate_bytes(before, vm.heap);
+    let sep_val = allocate_bytes(sep_found, vm.heap);
+    let after_val = allocate_bytes(after, vm.heap);
 
     Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
         vm.heap,
-    )?)
+    ))
 }
 
 // =============================================================================
@@ -1725,7 +1725,7 @@ fn bytes_replace<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h
         bytes_replace_n(bytes, &old, &new, n, vm.heap)?
     };
 
-    allocate_bytes(result, vm.heap)
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 /// Parses arguments for bytes.replace method.
@@ -1867,7 +1867,7 @@ fn bytes_center<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>
         result
     };
 
-    allocate_bytes(result, vm.heap)
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 /// Implements Python's `bytes.ljust(width[, fillbyte])` method.
@@ -1892,7 +1892,7 @@ fn bytes_ljust<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
         result
     };
 
-    allocate_bytes(result, vm.heap)
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 /// Implements Python's `bytes.rjust(width[, fillbyte])` method.
@@ -1917,7 +1917,7 @@ fn bytes_rjust<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
         result
     };
 
-    allocate_bytes(result, vm.heap)
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 /// Parses arguments for bytes justify methods (center, ljust, rjust).
@@ -1989,7 +1989,7 @@ fn bytes_zfill<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
         result
     };
 
-    allocate_bytes(result, vm.heap)
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 // =============================================================================
@@ -2045,7 +2045,7 @@ fn bytes_join<'h>(separator: &HeapRead<'h, [u8]>, iterable: Value, vm: &mut VM<'
         index += 1;
     }
 
-    allocate_bytes(result, vm.heap)
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 // =============================================================================
@@ -2121,7 +2121,7 @@ fn bytes_hex<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -
         hex_chars.iter().collect()
     };
 
-    Ok(super::str::allocate_string(result, vm.heap)?)
+    Ok(super::str::allocate_string(result, vm.heap))
 }
 
 /// Parses arguments for bytes.hex method.
@@ -2268,7 +2268,7 @@ pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
         result.push((hi_val << 4) | lo_val);
     }
 
-    allocate_bytes(result, vm.heap)
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 /// Converts a hex character to its numeric value.
@@ -2286,9 +2286,9 @@ fn hex_char_to_value(c: char) -> Option<u8> {
 // =============================================================================
 
 /// Allocates bytes on the heap.
-fn allocate_bytes(bytes: Vec<u8>, heap: &Heap) -> RunResult<Value> {
-    let heap_id = heap.allocate(HeapData::Bytes(Bytes::new(bytes)))?;
-    Ok(Value::Ref(heap_id))
+fn allocate_bytes(bytes: Vec<u8>, heap: &Heap) -> Value {
+    let heap_id = heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
+    Value::Ref(heap_id)
 }
 
 /// Source representation retained by a bytes iterator.
@@ -2307,12 +2307,12 @@ pub(crate) struct BytesIterator {
 
 impl BytesIterator {
     /// Allocates an iterator over interned bytes.
-    pub(crate) fn from_intern(id: BytesId, vm: &mut VM<'_>) -> RunResult<Value> {
+    pub(crate) fn from_intern(id: BytesId, vm: &mut VM<'_>) -> Value {
         Self::allocate(BytesIteratorSource::Intern(id), vm)
     }
 
     /// Allocates an iterator retaining heap bytes.
-    fn from_heap(id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
+    fn from_heap(id: HeapId, vm: &mut VM<'_>) -> Value {
         Self::allocate(BytesIteratorSource::Heap(id), vm)
     }
 
@@ -2341,16 +2341,16 @@ impl BytesIterator {
     }
 
     /// Allocates an iterator and retains a heap source when present.
-    fn allocate(source: BytesIteratorSource, vm: &mut VM<'_>) -> RunResult<Value> {
+    fn allocate(source: BytesIteratorSource, vm: &mut VM<'_>) -> Value {
         let source_id = match source {
             BytesIteratorSource::Heap(id) => Some(id),
             BytesIteratorSource::Intern(_) => None,
         };
-        let id = vm.heap.allocate(HeapData::BytesIterator(Self { source, index: 0 }))?;
+        let id = vm.heap.allocate(HeapData::BytesIterator(Self { source, index: 0 }));
         if let Some(source_id) = source_id {
             vm.heap.inc_ref(source_id);
         }
-        Ok(Value::Ref(id))
+        Value::Ref(id)
     }
 }
 

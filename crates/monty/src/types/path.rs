@@ -298,7 +298,7 @@ impl Path {
                 fold_joinpath(base, rest, vm)?
             }
         };
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))?))
+        Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
     }
 }
 
@@ -329,21 +329,17 @@ fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_>) -> RunResult<Path
 }
 
 /// Joins a `Path` with a path-like right operand for `Path.__truediv__`.
-fn path_div(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<Value>> {
-    let Some(other) = value_as_path_str(other, heap, interns) else {
-        return Ok(None);
-    };
+fn path_div(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> Option<Value> {
+    let other = value_as_path_str(other, heap, interns)?;
     let result = path.joinpath(other);
-    Ok(Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?)))
+    Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))))
 }
 
 /// Prepends a path-like left operand for `Path.__rtruediv__`.
-fn path_rdiv(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<Value>> {
-    let Some(base) = value_as_path_str(other, heap, interns) else {
-        return Ok(None);
-    };
+fn path_rdiv(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> Option<Value> {
+    let base = value_as_path_str(other, heap, interns)?;
     let result = Path::new(base.to_owned()).joinpath(path.as_str());
-    Ok(Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?)))
+    Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))))
 }
 
 /// Normalizes a path string to POSIX format, matching CPython's `pathlib.PurePosixPath`.
@@ -398,44 +394,44 @@ fn normalize_path(mut path: String) -> String {
 impl Path {
     /// Resolves a known attribute by its `StaticStrings` variant.
     ///
-    /// Returns `Ok(Some(value))` for recognized property names (`name`, `parent`,
-    /// `stem`, `suffix`, `suffixes`, `parts`), or `Ok(None)` if the variant doesn't
+    /// Returns `Some(value)` for recognized property names (`name`, `parent`,
+    /// `stem`, `suffix`, `suffixes`, `parts`), or `None` if the variant doesn't
     /// correspond to a Path attribute. Used by `py_getattr` to share logic between
     /// the interned fast path and the heap string slow path.
-    pub(crate) fn getattr_by_static(&self, ss: StaticStrings, heap: &Heap) -> RunResult<Option<Value>> {
+    pub(crate) fn getattr_by_static(&self, ss: StaticStrings, heap: &Heap) -> Option<Value> {
         let v = match ss {
-            StaticStrings::Name => allocate_string(self.name(), heap)?,
+            StaticStrings::Name => allocate_string(self.name(), heap),
             StaticStrings::Parent => {
                 if let Some(parent) = self.parent() {
                     let parent_path = Self::new(parent.to_owned());
-                    Value::Ref(heap.allocate(HeapData::Path(parent_path))?)
+                    Value::Ref(heap.allocate(HeapData::Path(parent_path)))
                 } else {
                     // Return self when there's no parent (root or relative path)
                     let same_path = Self::new(self.as_str().to_owned());
-                    Value::Ref(heap.allocate(HeapData::Path(same_path))?)
+                    Value::Ref(heap.allocate(HeapData::Path(same_path)))
                 }
             }
-            StaticStrings::Stem => allocate_string(self.stem(), heap)?,
-            StaticStrings::Suffix => allocate_string(self.suffix(), heap)?,
+            StaticStrings::Stem => allocate_string(self.stem(), heap),
+            StaticStrings::Suffix => allocate_string(self.suffix(), heap),
             StaticStrings::Suffixes => {
                 let suffixes = self.suffixes();
                 let mut items = Vec::with_capacity(suffixes.len());
                 for suffix in suffixes {
-                    items.push(allocate_string(suffix, heap)?);
+                    items.push(allocate_string(suffix, heap));
                 }
-                Value::Ref(heap.allocate(HeapData::List(List::new(items)))?)
+                Value::Ref(heap.allocate(HeapData::List(List::new(items))))
             }
             StaticStrings::Parts => {
                 let parts = self.parts();
                 let mut items = SmallVec::with_capacity(parts.len());
                 for part in parts {
-                    items.push(allocate_string(part, heap)?);
+                    items.push(allocate_string(part, heap));
                 }
-                allocate_tuple(items, heap)?
+                allocate_tuple(items, heap)
             }
-            _ => return Ok(None),
+            _ => return None,
         };
-        Ok(Some(v))
+        Some(v)
     }
 }
 
@@ -474,15 +470,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     }
 
     fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        path_div(self.get(vm.heap), other, vm.heap, vm.interns)
+        Ok(path_div(self.get(vm.heap), other, vm.heap, vm.interns))
     }
 
     fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        path_rdiv(self.get(vm.heap), other, vm.heap, vm.interns)
+        Ok(path_rdiv(self.get(vm.heap), other, vm.heap, vm.interns))
     }
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap)?)
+        Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -534,7 +530,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                 let pos_args = args.into_pos_only("joinpath", vm.heap)?;
                 defer_drop!(pos_args, vm);
                 let path = fold_joinpath(self.get(vm.heap).clone(), pos_args.as_slice(), vm)?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
             }
             StaticStrings::WithName => {
                 let name_val = args.get_one_arg("with_name", vm.heap)?;
@@ -544,7 +540,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                     .get(vm.heap)
                     .with_name(&name)
                     .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
             }
             StaticStrings::WithStem => {
                 let stem_val = args.get_one_arg("with_stem", vm.heap)?;
@@ -554,7 +550,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                     .get(vm.heap)
                     .with_stem(&stem)
                     .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
             }
             StaticStrings::WithSuffix => {
                 let suffix_val = args.get_one_arg("with_suffix", vm.heap)?;
@@ -564,11 +560,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                     .get(vm.heap)
                     .with_suffix(&suffix)
                     .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
             }
             StaticStrings::AsPosix | StaticStrings::Fspath => {
                 args.check_zero_args(method.into(), vm.heap)?;
-                Ok(allocate_string(self.get(vm.heap).as_posix(), vm.heap)?)
+                Ok(allocate_string(self.get(vm.heap).as_posix(), vm.heap))
             }
             StaticStrings::Open => {
                 // `Path.open(mode='r', ...)` is `open(self, mode, ...)` with
@@ -595,7 +591,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
-            if let Some(v) = self.get(vm.heap).getattr_by_static(ss, vm.heap)? {
+            if let Some(v) = self.get(vm.heap).getattr_by_static(ss, vm.heap) {
                 return Ok(Some(CallResult::Value(v)));
             }
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
@@ -613,7 +609,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         };
         let v = self
             .get(vm.heap)
-            .getattr_by_static(ss, vm.heap)?
+            .getattr_by_static(ss, vm.heap)
             .expect("matched attribute must produce a value");
         Ok(Some(CallResult::Value(v)))
     }

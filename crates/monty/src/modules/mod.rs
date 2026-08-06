@@ -5,7 +5,6 @@
 
 use std::fmt::{self, Write};
 
-use monty_types::ResourceError;
 use strum::FromRepr;
 
 use crate::{
@@ -100,12 +99,10 @@ impl StandardLib {
 
     /// Creates a new instance of this module on the heap.
     ///
-    /// Returns a HeapId pointing to the newly allocated module.
-    ///
     /// # Panics
     ///
     /// Panics if the required strings have not been pre-interned during prepare phase.
-    pub fn create(self, vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
+    pub fn create(self, vm: &mut VM<'_>) -> HeapId {
         match self {
             Self::Sys => sys::create_module(vm),
             Self::Typing => typing::create_module(vm),

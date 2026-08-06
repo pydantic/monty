@@ -159,7 +159,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
-        let name = attribute_name_value(name, value_guard.ctx())?;
+        let name = attribute_name_value(name, value_guard.ctx());
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);

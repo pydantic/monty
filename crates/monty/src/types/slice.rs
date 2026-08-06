@@ -81,7 +81,7 @@ impl Slice {
             _ => return Err(ExcType::type_error_at_most("slice", 3, pos_args.len())),
         };
 
-        Ok(Value::Ref(heap.allocate(HeapData::Slice(slice))?))
+        Ok(Value::Ref(heap.allocate(HeapData::Slice(slice))))
     }
 
     /// Computes concrete indices for a sequence of the given length.

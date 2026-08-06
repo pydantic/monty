@@ -16,7 +16,7 @@
 //! parity but rejected with the `NotImplementedError` CPython raises on
 //! platforms without them — Monty never supports fd-relative paths.
 
-use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs, ResourceError};
+use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs};
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
@@ -55,12 +55,9 @@ pub(crate) enum OsFunctions {
 /// `fspath`); constants are fixed POSIX values since the sandbox path model
 /// is always POSIX.
 ///
-/// # Returns
-/// A HeapId pointing to the newly allocated module.
-///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     /// Shorthand for the function-attribute entries in the table below.
     fn function(f: OsFunctions) -> Value {
         Value::ModuleFunction(ModuleFunctions::Os(f))
@@ -424,7 +421,7 @@ fn fspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         Type::Path => {
             let text = value_to_owned_string(&path, vm.heap, vm.interns).expect("Path always yields a string");
             path.drop_with(vm.heap);
-            Ok(CallResult::Value(allocate_string(text, vm.heap)?))
+            Ok(CallResult::Value(allocate_string(text, vm.heap)))
         }
         _ => {
             let type_name = path.py_type_name_heap(vm.heap, vm.interns).into_owned();

@@ -1,6 +1,5 @@
 use std::{cmp::Ordering, fmt::Write, mem};
 
-use monty_types::ResourceError;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -175,12 +174,12 @@ impl List {
         let value = args.get_zero_one_arg("list", vm.heap)?;
         match value {
             None => {
-                let heap_id = vm.heap.allocate(HeapData::List(Self::new(Vec::new())))?;
+                let heap_id = vm.heap.allocate(HeapData::List(Self::new(Vec::new())));
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
                 let items = collect_owned_iterable(v, vm)?;
-                let heap_id = vm.heap.allocate(HeapData::List(Self::new(items)))?;
+                let heap_id = vm.heap.allocate(HeapData::List(Self::new(items)));
                 Ok(Value::Ref(heap_id))
             }
         }
@@ -195,7 +194,7 @@ impl<'h> HeapRead<'h, List> {
         let items = slice_collect_iterator(vm, slice, self.get(vm.heap).items.iter(), |item| {
             item.clone_with_heap(vm.heap)
         })?;
-        let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+        let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
         Ok(Value::Ref(heap_id))
     }
 
@@ -502,7 +501,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         };
         let mut items = self.clone_all_items(vm)?;
         items.extend(other.clone_all_items(vm)?);
-        let id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+        let id = vm.heap.allocate(HeapData::List(List::new(items)));
         Ok(Some(Value::Ref(id)))
     }
 
@@ -517,7 +516,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
             result.extend(value.as_slice().iter().map(|value| value.clone_with_heap(vm.heap)));
             vm.heap.check_time()?;
         }
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::List(List::new(result)))?)))
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::List(List::new(result))))))
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -583,7 +582,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
 
     fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
         let list_id = self_id.expect("heap values have an id");
-        let iterator = vm.heap.allocate(HeapData::ListIterator(ListIterator::new(list_id)))?;
+        let iterator = vm.heap.allocate(HeapData::ListIterator(ListIterator::new(list_id)));
         vm.heap.inc_ref(list_id);
         Ok(Value::Ref(iterator))
     }
@@ -637,7 +636,7 @@ fn call_list_method<'h>(
         }
         StaticStrings::Copy => {
             args.check_zero_args("list.copy", heap)?;
-            Ok(list_copy(list.get(heap), heap)?)
+            Ok(list_copy(list.get(heap), heap))
         }
         StaticStrings::Extend => list_extend(list, args, vm),
         StaticStrings::Index => list_index(list, args, vm),
@@ -758,10 +757,10 @@ fn list_clear<'h>(list: &mut HeapRead<'h, List>, vm: &mut VM<'h>) {
 /// Implements Python's `list.copy()` method.
 ///
 /// Returns a shallow copy of the list.
-fn list_copy(list: &List, heap: &Heap) -> Result<Value, ResourceError> {
+fn list_copy(list: &List, heap: &Heap) -> Value {
     let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
-    let heap_id = heap.allocate(HeapData::List(List::new(items)))?;
-    Ok(Value::Ref(heap_id))
+    let heap_id = heap.allocate(HeapData::List(List::new(items)));
+    Value::Ref(heap_id)
 }
 
 /// Implements Python's `list.extend(iterable)` method.
@@ -1025,9 +1024,9 @@ mod tests {
     fn create_heap_with_list_and_longint(list_items: Vec<Value>, index_value: BigInt) -> (Heap, HeapId, HeapId) {
         let heap = Heap::new(16, ResourceTracker::default());
         let list = List::new(list_items);
-        let list_id = heap.allocate(HeapData::List(list)).unwrap();
+        let list_id = heap.allocate(HeapData::List(list));
         let long_int = LongInt::new(index_value);
-        let index_id = heap.allocate(HeapData::LongInt(long_int)).unwrap();
+        let index_id = heap.allocate(HeapData::LongInt(long_int));
         (heap, list_id, index_id)
     }
 

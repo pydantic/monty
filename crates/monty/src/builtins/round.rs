@@ -88,7 +88,7 @@ pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                     // Rounding up can cross i64::MAX (e.g. round(2**63 - 1, -1)).
                     Ok(match i64::try_from(result) {
                         Ok(i) => Value::Int(i),
-                        Err(_) => LongInt::new(BigInt::from(result)).into_value(vm.heap)?,
+                        Err(_) => LongInt::new(BigInt::from(result)).into_value(vm.heap),
                     })
                 }
             } else {

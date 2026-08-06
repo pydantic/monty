@@ -13,8 +13,6 @@
 //! - `gc.disable()` / `gc.enable()` — toggle automatic collection.
 //!   Explicit `gc.collect()` calls still run while disabled.
 
-use monty_types::ResourceError;
-
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -44,7 +42,7 @@ pub(crate) enum GcFunctions {
 }
 
 /// Creates the `gc` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Gc);
     for (name, function) in [
         (StaticStrings::Collect, GcFunctions::Collect),

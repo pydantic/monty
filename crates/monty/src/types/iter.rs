@@ -26,7 +26,7 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if let Some(sentinel) = sentinel {
         if object.is_callable(vm.heap) {
             let iter = CallableIterator::new(object, sentinel);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::CallableIterator(iter))?))
+            Ok(Value::Ref(vm.heap.allocate(HeapData::CallableIterator(iter))))
         } else {
             object.drop_with(vm);
             sentinel.drop_with(vm);

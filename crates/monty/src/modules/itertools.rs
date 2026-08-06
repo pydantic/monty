@@ -5,8 +5,6 @@
 //! stubbed, so they raise `AttributeError` up front. See
 //! [`crate::types::itertools`] for why the family shares one `HeapData` variant.
 
-use monty_types::ResourceError;
-
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
@@ -49,7 +47,7 @@ const ITERTOOLS_FUNCTIONS: &[(StaticStrings, ItertoolsFunctions)] = &[
 ///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Itertools);
 
     for (name, func) in ITERTOOLS_FUNCTIONS {
@@ -94,7 +92,7 @@ fn call_count(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Rejecting here means `py_next` can add without a defined-ness check.
     if is_number(&start, vm) && is_number(&step, vm) {
         let iter = ItertoolsIter::Count(Count::new(normalize_bool(start), normalize_bool(step)));
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))?))
+        Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
     } else {
         start.drop_with(vm);
         step.drop_with(vm);
@@ -133,7 +131,7 @@ fn call_repeat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         }
     };
     let iter = ItertoolsIter::Repeat(Repeat::new(object, remaining));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
 /// Whether `value` satisfies CPython's `PyNumber_Check` for `count()`.
@@ -190,7 +188,7 @@ fn call_pairwise(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // here rather than on the first `next()`.
     let source = iterable.into_py_iter(vm)?;
     let iter = ItertoolsIter::Pairwise(Pairwise::new(source));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
 /// Argument shape for `compress(data, selectors)`.
@@ -217,7 +215,7 @@ fn call_compress(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let selectors = selectors.into_py_iter(guard.ctx())?;
     let (data, vm) = guard.into_parts();
     let iter = ItertoolsIter::Compress(Compress::new(data, selectors));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
 /// Argument shape for `islice(iterable, [start,] stop[, step])`.
@@ -260,7 +258,7 @@ fn call_islice(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let source = iterable.into_py_iter(vm)?;
     let iter = ItertoolsIter::Islice(Islice::new(source, start, stop, step));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
 /// Resolves `islice`'s overloaded positional slots into `(start, stop, step)`.
@@ -339,7 +337,7 @@ fn call_chain(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Arguments are NOT resolved here: CPython calls `iter()` on each only as it
     // reaches it, so `chain([1], 5)` constructs and raises mid-consumption.
     let iter = ItertoolsIter::Chain(Chain::new(iterables));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
 /// Argument shape for `cycle(iterable)`.
@@ -359,5 +357,5 @@ fn call_cycle(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Unlike `chain`, CPython resolves eagerly here, so `cycle(5)` raises now.
     let source = iterable.into_py_iter(vm)?;
     let iter = ItertoolsIter::Cycle(Cycle::new(source));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }

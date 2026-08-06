@@ -33,7 +33,6 @@
 use std::rc::Rc;
 
 use ahash::RandomState;
-use monty_types::ResourceError;
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -94,7 +93,7 @@ pub(crate) enum ReFunctions {
 ///
 /// # Panics
 /// If the required strings were not pre-interned during the prepare phase.
-pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Re);
 
     // Functions
@@ -208,7 +207,7 @@ fn call_compile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         // Clone out of the shared cache entry: the returned `re.Pattern` is the
         // user's own object, independent of the cache.
         ResolvedPattern::Cached(compiled) => Ok(Value::Ref(
-            vm.heap.allocate(HeapData::RePattern(Box::new((*compiled).clone())))?,
+            vm.heap.allocate(HeapData::RePattern(Box::new((*compiled).clone()))),
         )),
         // Ownership of the extracted value transfers straight to the caller,
         // so the refcount taken at argument extraction is the caller's.
@@ -765,7 +764,7 @@ fn call_escape(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         result.push(c);
     }
 
-    Ok(allocate_string(result, vm.heap)?)
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Returns whether a character should be escaped by `re.escape()`.

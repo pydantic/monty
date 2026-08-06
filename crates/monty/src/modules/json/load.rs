@@ -6,7 +6,6 @@
 use std::{borrow::Cow, mem};
 
 use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberInt, Peek};
-use monty_types::ResourceError;
 
 use super::JsonStringCache;
 use crate::{
@@ -42,12 +41,6 @@ impl From<JiterError> for JsonLoadError {
 impl From<RunError> for JsonLoadError {
     fn from(error: RunError) -> Self {
         Self::Run(error)
-    }
-}
-
-impl From<ResourceError> for JsonLoadError {
-    fn from(error: ResourceError) -> Self {
-        Self::Run(error.into())
     }
 }
 
@@ -169,7 +162,7 @@ fn parse_json_value_from_peek(
             Ok(Value::None)
         }
         Peek::True | Peek::False => jiter.known_bool(peek).map(Value::Bool).map_err(Into::into),
-        Peek::String => allocate_cached_string(parse_json_string(jiter)?, cache, vm.heap),
+        Peek::String => Ok(allocate_cached_string(parse_json_string(jiter)?, cache, vm.heap)),
         Peek::Array => parse_json_array(jiter, depth, cache, vm),
         Peek::Object => parse_json_object(jiter, depth, cache, vm),
         _ if peek.is_num() => parse_json_number(peek, jiter, vm),
@@ -183,12 +176,12 @@ fn parse_json_value_from_peek(
 /// Allocates a string using the cache when eligible, falling back to direct
 /// allocation for empty/single-char strings (already interned by
 /// `allocate_string`).
-fn allocate_cached_string(s: String, cache: &mut JsonStringCache, heap: &HeapReader<'_>) -> ParseResult<Value> {
+fn allocate_cached_string(s: String, cache: &mut JsonStringCache, heap: &HeapReader<'_>) -> Value {
     if s.len() < 2 {
         // Empty and single-char strings are interned by allocate_string.
-        Ok(allocate_string(s, heap.heap())?)
+        allocate_string(s, heap.heap())
     } else {
-        Ok(cache.get_or_allocate(s, heap)?)
+        cache.get_or_allocate(s, heap)
     }
 }
 
@@ -215,7 +208,7 @@ fn parse_json_number(peek: Peek, jiter: &mut Jiter<'_>, vm: &mut VM<'_>) -> Pars
     })?;
     match number {
         NumberAny::Int(NumberInt::Int(value)) => Ok(Value::Int(value)),
-        NumberAny::Int(NumberInt::BigInt(value)) => Ok(LongInt::new(value).into_value(vm.heap)?),
+        NumberAny::Int(NumberInt::BigInt(value)) => Ok(LongInt::new(value).into_value(vm.heap)),
         NumberAny::Float(value) => Ok(Value::Float(value)),
     }
 }
@@ -233,7 +226,7 @@ fn parse_json_array(
     check_json_recursion_limit(jiter, depth)?;
 
     let Some(mut next) = jiter.known_array()? else {
-        let list_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())))?;
+        let list_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
         return Ok(Value::Ref(list_id));
     };
 
@@ -251,7 +244,7 @@ fn parse_json_array(
     }
 
     let values = values_guard.into_inner();
-    let list_id = vm.heap.allocate(HeapData::List(List::new(values)))?;
+    let list_id = vm.heap.allocate(HeapData::List(List::new(values)));
     Ok(Value::Ref(list_id))
 }
 
@@ -276,7 +269,7 @@ fn parse_json_object(
     check_json_recursion_limit(jiter, depth)?;
 
     let Some(mut key) = parse_first_object_key(jiter)? else {
-        let dict_id = vm.heap.allocate(HeapData::Dict(Dict::new()))?;
+        let dict_id = vm.heap.allocate(HeapData::Dict(Dict::new()));
         return Ok(Value::Ref(dict_id));
     };
 
@@ -284,7 +277,7 @@ fn parse_json_object(
     {
         let (dict, vm) = dict_guard.as_parts_mut();
         loop {
-            let key_value = allocate_cached_string(key, cache, vm.heap)?;
+            let key_value = allocate_cached_string(key, cache, vm.heap);
             let value = parse_json_value(jiter, depth + 1, cache, vm)?;
             if let Some(old_value) = dict.set_json_string_key(key_value, value, vm)? {
                 old_value.drop_with(vm);
@@ -298,7 +291,7 @@ fn parse_json_object(
     }
 
     let dict = dict_guard.into_inner();
-    let dict_id = vm.heap.allocate(HeapData::Dict(dict))?;
+    let dict_id = vm.heap.allocate(HeapData::Dict(dict));
     Ok(Value::Ref(dict_id))
 }
 

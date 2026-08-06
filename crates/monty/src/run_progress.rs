@@ -584,10 +584,8 @@ impl Snapshot {
                     ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
                     ExtFunctionResult::Future(raw_call_id) => {
                         let call_id = CallId::new(raw_call_id);
-                        match vm.add_pending_call(call_id) {
-                            Ok(()) => vm.run_external(),
-                            Err(err) => vm.resume_with_exception(err),
-                        }
+                        vm.add_pending_call(call_id);
+                        vm.run_external()
                     }
                     ExtFunctionResult::NotFound(function_name) => {
                         vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))

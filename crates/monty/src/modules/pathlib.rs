@@ -6,8 +6,6 @@
 //! The `Path` class supports both pure methods (no I/O, handled directly) and
 //! filesystem methods (require I/O, yield external function calls for host resolution).
 
-use monty_types::ResourceError;
-
 use crate::{
     builtins::Builtins,
     bytecode::VM,
@@ -19,12 +17,10 @@ use crate::{
 
 /// Creates the `pathlib` module and allocates it on the heap.
 ///
-/// Returns a HeapId pointing to the newly allocated module.
-///
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Pathlib);
 
     // pathlib.Path - the Path class (callable to create Path instances)

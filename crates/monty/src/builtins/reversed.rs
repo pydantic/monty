@@ -42,7 +42,7 @@ pub fn builtin_reversed(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Reverse in place
     items.reverse();
 
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
     Ok(Value::Ref(heap_id))
 }
 

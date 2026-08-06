@@ -790,7 +790,7 @@ fn parse_int_digits(value: &str, base: u32, invalid: &impl Fn() -> RunError, hea
         return Err(ExcType::value_error_int_str_too_large(digit_count));
     }
     match BigInt::parse_bytes(cleaned.as_bytes(), effective_base) {
-        Some(bi) => Ok(LongInt::new(bi).into_value(heap)?),
+        Some(bi) => Ok(LongInt::new(bi).into_value(heap)),
         // Unreachable in practice: every char was validated as a digit above.
         None => Err(invalid()),
     }

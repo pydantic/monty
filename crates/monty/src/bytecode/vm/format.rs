@@ -28,7 +28,7 @@ impl VM<'_> {
             result.push_str(part_str.to_str(this)?);
         }
 
-        let value = allocate_string(result, this.heap)?;
+        let value = allocate_string(result, this.heap);
         this.push(value);
         Ok(())
     }
@@ -114,7 +114,7 @@ impl VM<'_> {
             }
         };
 
-        let result = allocate_string(formatted, this.heap)?;
+        let result = allocate_string(formatted, this.heap);
         this.push(result);
         Ok(())
     }

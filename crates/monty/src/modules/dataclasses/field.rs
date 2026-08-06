@@ -138,7 +138,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DataclassField> {
         let value = match attr_str {
             "name" => {
                 let name = vm.interns.get_str(self.get(vm.heap).name).to_owned();
-                allocate_string(name, vm.heap)?
+                allocate_string(name, vm.heap)
             }
             "type" => self.get(vm.heap).annotation.clone_with_heap(vm.heap),
             // A required field's default *is* `MISSING` in CPython.

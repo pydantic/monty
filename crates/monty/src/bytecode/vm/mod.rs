@@ -1021,10 +1021,8 @@ impl<'h> VM<'h> {
                     // Handle InternLongInt specially - convert to heap-allocated LongInt
                     if let Value::InternLongInt(long_int_id) = value {
                         let bi = self.interns.get_long_int(*long_int_id).clone();
-                        match LongInt::new(bi).into_value(self.heap) {
-                            Ok(v) => self.push(v),
-                            Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
-                        }
+                        let long_value = LongInt::new(bi).into_value(self.heap);
+                        self.push(long_value);
                     } else {
                         self.push(value.clone_with_heap(self));
                     }
@@ -1033,7 +1031,7 @@ impl<'h> VM<'h> {
                 Opcode::LoadTrue => self.push(Value::Bool(true)),
                 Opcode::LoadFalse => self.push(Value::Bool(false)),
                 Opcode::BuildCell => {
-                    let cell_id = self.heap.allocate(HeapData::Cell(CellValue(Value::Undefined)))?;
+                    let cell_id = self.heap.allocate(HeapData::Cell(CellValue(Value::Undefined)));
                     self.push(Value::Ref(cell_id));
                 }
                 Opcode::LoadSmallInt => {
@@ -1092,7 +1090,7 @@ impl<'h> VM<'h> {
                 Opcode::LoadGlobalCallable => {
                     let (slot, name_idx) = cached_frame.fetch_u16_u16();
                     let name_id = StringId::from_index(name_idx);
-                    try_catch_sync!(self, cached_frame, self.load_global_callable(slot, name_id));
+                    self.load_global_callable(slot, name_id);
                 }
                 Opcode::StoreGlobal => {
                     let slot = cached_frame.fetch_u16();
@@ -1164,10 +1162,8 @@ impl<'h> VM<'h> {
                                 // LongInt bitwise NOT: ~x = -(x + 1)
                                 let inverted = -(li.inner() + 1i32);
                                 value.drop_with(self);
-                                match LongInt::new(inverted).into_value(self.heap) {
-                                    Ok(v) => self.push(v),
-                                    Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
-                                }
+                                let inverted_value = LongInt::new(inverted).into_value(self.heap);
+                                self.push(inverted_value);
                             } else {
                                 let value_type = value.py_type_name(self);
                                 value.drop_with(self);
@@ -1209,11 +1205,11 @@ impl<'h> VM<'h> {
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
                     let count = cached_frame.fetch_u16() as usize;
-                    try_catch_sync!(self, cached_frame, self.build_list(count));
+                    self.build_list(count);
                 }
                 Opcode::BuildTuple => {
                     let count = cached_frame.fetch_u16() as usize;
-                    try_catch_sync!(self, cached_frame, self.build_tuple(count));
+                    self.build_tuple(count);
                 }
                 Opcode::BuildDict => {
                     let count = cached_frame.fetch_u16() as usize;
@@ -1518,7 +1514,7 @@ impl<'h> VM<'h> {
                         // Create FunctionDefaults on heap and push reference
                         let heap_id = self
                             .heap
-                            .allocate(HeapData::FunctionDefaults(FunctionDefaults { func_id, defaults }))?;
+                            .allocate(HeapData::FunctionDefaults(FunctionDefaults { func_id, defaults }));
                         self.push(Value::Ref(heap_id));
                     }
                 }
@@ -1561,7 +1557,7 @@ impl<'h> VM<'h> {
                         func_id,
                         cells,
                         defaults,
-                    }))?;
+                    }));
                     self.push(Value::Ref(heap_id));
                 }
                 // Exception Handling
@@ -1752,7 +1748,7 @@ impl<'h> VM<'h> {
                 // Module Operations
                 Opcode::LoadModule => {
                     let module_id = cached_frame.fetch_u8();
-                    try_catch_sync!(self, cached_frame, self.load_module(module_id));
+                    self.load_module(module_id);
                 }
                 Opcode::RaiseImportError => {
                     // Fetch the module name from the constant pool and raise ModuleNotFoundError
@@ -1785,13 +1781,12 @@ impl<'h> VM<'h> {
     }
 
     /// Loads a built-in module and pushes it onto the stack.
-    fn load_module(&mut self, module_id: u8) -> RunResult<()> {
+    fn load_module(&mut self, module_id: u8) {
         let module = StandardLib::from_repr(module_id).expect("unknown module id");
 
         // Create the module on the heap using pre-interned strings
-        let heap_id = module.create(self)?;
+        let heap_id = module.create(self);
         self.push(Value::Ref(heap_id));
-        Ok(())
     }
 
     /// Resumes execution after an external call completes.
@@ -2094,29 +2089,28 @@ impl<'h> VM<'h> {
     /// (see [`builtin_for_name`]) so `f()` style calls into a builtin still work when
     /// the name happens to have a module slot allocated (e.g. because the module also
     /// `def`-binds the same name elsewhere) but that slot is currently `Undefined`.
-    fn load_global_callable(&mut self, slot: u16, name_id: StringId) -> RunResult<()> {
+    fn load_global_callable(&mut self, slot: u16, name_id: StringId) {
         let value = self.globals[slot as usize].clone_with_heap(self);
 
         if matches!(value, Value::Undefined) {
             if let Some(builtin) = self.builtin_for_name(name_id) {
                 self.push(builtin);
-                return Ok(());
+                return;
             }
             // A reserved module dunder (e.g. `__name__`) in call position resolves
             // to its fixed value; the subsequent call then fails with the usual
             // "object is not callable" error, matching CPython.
-            if let Some(value) = self.module_dunder(name_id)? {
+            if let Some(value) = self.module_dunder(name_id) {
                 self.push(value);
-                return Ok(());
+                return;
             }
             // Save the load instruction's IP so NameError tracebacks point to the name
             self.ext_function_load_ip = Some(self.instruction_ip);
-            let function = self.heap.get_ext_function(self.interns.get_str(name_id))?;
+            let function = self.heap.get_ext_function(self.interns.get_str(name_id));
             self.push(function);
         } else {
             self.push(value);
         }
-        Ok(())
     }
 
     /// Creates an UnboundLocalError for a local variable accessed before assignment.
@@ -2162,15 +2156,15 @@ impl<'h> VM<'h> {
     /// ever puts a loader object there (never `None`), so rather than diverge
     /// on the type we let it raise `NameError` like other unexposed dunders
     /// (`__file__`, `__cached__`, …).
-    fn module_dunder(&self, name_id: StringId) -> RunResult<Option<Value>> {
+    fn module_dunder(&self, name_id: StringId) -> Option<Value> {
         let value = match self.interns.get_str(name_id) {
             "__name__" => Value::InternString(StaticStrings::DunderMain.into()),
             "__debug__" => Value::Bool(true),
-            "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))?),
+            "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))),
             "__doc__" | "__spec__" | "__package__" => Value::None,
-            _ => return Ok(None),
+            _ => return None,
         };
-        Ok(Some(value))
+        Some(value)
     }
 
     /// Creates a NameError for an undefined global variable.
@@ -2217,7 +2211,7 @@ impl<'h> VM<'h> {
                 self.push(builtin);
                 return Ok(None);
             }
-            if let Some(value) = self.module_dunder(name_id)? {
+            if let Some(value) = self.module_dunder(name_id) {
                 self.push(value);
                 return Ok(None);
             }

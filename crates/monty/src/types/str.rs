@@ -105,7 +105,7 @@ impl Str {
         let errors = ctor_str_arg(errors.as_ref(), "strict", vm)?;
         let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
         let s = codec.decode(bytes, errors)?;
-        Ok(allocate_string(s, vm.heap)?)
+        Ok(allocate_string(s, vm.heap))
     }
 
     /// Handles slice-based indexing for strings.
@@ -113,7 +113,7 @@ impl Str {
     /// Returns a new string containing the selected characters (Unicode-aware).
     fn getitem_slice(&self, vm: &VM<'_>, slice: &super::Slice) -> RunResult<Value> {
         let result_str: Box<str> = slice_collect_iterator(vm, slice, self.0.chars(), |c| c)?;
-        Ok(allocate_string(result_str, vm.heap)?)
+        Ok(allocate_string(result_str, vm.heap))
     }
 }
 
@@ -177,11 +177,11 @@ fn ctor_str_arg<'a>(arg: Option<&'a Value>, default: &'a str, vm: &'a VM<'_>) ->
 /// path), and borrowed `&str` callers avoid an upfront `to_owned()` —
 /// allocation happens only when the string actually needs heap storage.
 ///
-pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Result<Value, ResourceError> {
+pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Value {
     let bytes = s.as_ref().as_bytes();
     match bytes.len() {
-        0 => Ok(Value::InternString(StaticStrings::EmptyString.into())),
-        1 => Ok(Value::InternString(StringId::from_ascii(bytes[0]))),
+        0 => Value::InternString(StaticStrings::EmptyString.into()),
+        1 => Value::InternString(StringId::from_ascii(bytes[0])),
         _ => allocate_string_no_interning(s, heap),
     }
 }
@@ -193,15 +193,15 @@ pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Resu
 /// formatted date). For inputs of unknown length, use [`allocate_string`].
 ///
 /// Accepts `impl Into<Box<str>>` for the same reasons as [`allocate_string`].
-pub fn allocate_string_no_interning(s: impl Into<Box<str>>, heap: &Heap) -> Result<Value, ResourceError> {
-    let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
-    Ok(Value::Ref(heap_id))
+pub fn allocate_string_no_interning(s: impl Into<Box<str>>, heap: &Heap) -> Value {
+    let heap_id = heap.allocate(HeapData::Str(Str::new(s)));
+    Value::Ref(heap_id)
 }
 
 /// Repeats a string after validating the allocation against resource limits.
 pub(crate) fn repeat_str(value: &str, count: usize, heap: &Heap) -> Result<Value, ResourceError> {
     check_repeat_size(value.len(), count, heap.tracker())?;
-    allocate_string(value.repeat(count), heap)
+    Ok(allocate_string(value.repeat(count), heap))
 }
 
 /// Allocates a single character as a string value.
@@ -210,12 +210,12 @@ pub(crate) fn repeat_str(value: &str, count: usize, heap: &Heap) -> Result<Value
 /// Non-ASCII characters are allocated on the heap.
 ///
 /// This is used by string iteration and `chr()` builtin.
-pub fn allocate_char(c: char, heap: &Heap) -> Result<Value, ResourceError> {
+pub fn allocate_char(c: char, heap: &Heap) -> Value {
     if c.is_ascii() {
-        Ok(Value::InternString(StringId::from_ascii(c as u8)))
+        Value::InternString(StringId::from_ascii(c as u8))
     } else {
-        let heap_id = heap.allocate(HeapData::Str(Str::new(c.to_string())))?;
-        Ok(Value::Ref(heap_id))
+        let heap_id = heap.allocate(HeapData::Str(Str::new(c.to_string())));
+        Value::Ref(heap_id)
     }
 }
 
@@ -231,7 +231,7 @@ pub(crate) fn concat_allocate_str(a: &str, b: &str, heap: &Heap) -> Result<Value
     let mut concat = String::with_capacity(result_len);
     concat.push_str(a);
     concat.push_str(b);
-    allocate_string(concat, heap)
+    Ok(allocate_string(concat, heap))
 }
 
 /// Gets the character at a given index in a string, handling negative indices.
@@ -277,11 +277,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
     }
 
     fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        StringIterator::from_heap(
+        Ok(StringIterator::from_heap(
             self_id.expect("heap values have an id"),
             self.get(vm.heap).as_str().is_ascii(),
             vm,
-        )
+        ))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -303,7 +303,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         // Use single-pass indexing to avoid Vec<char> allocation
         let s = self.get(vm.heap);
         let c = get_char_at_index(&s.0, index).ok_or_else(ExcType::str_index_error)?;
-        Ok(allocate_char(c, vm.heap)?)
+        Ok(allocate_char(c, vm.heap))
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
@@ -337,7 +337,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
     }
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap)?)
+        Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap))
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
@@ -426,27 +426,27 @@ fn call_str_method_impl<'h>(
         // Simple transformations (no arguments)
         StaticStrings::Lower => {
             args.check_zero_args("str.lower", vm.heap)?;
-            str_lower(s.get(vm.heap), vm)
+            Ok(str_lower(s.get(vm.heap), vm))
         }
         StaticStrings::Upper => {
             args.check_zero_args("str.upper", vm.heap)?;
-            str_upper(s.get(vm.heap), vm)
+            Ok(str_upper(s.get(vm.heap), vm))
         }
         StaticStrings::Capitalize => {
             args.check_zero_args("str.capitalize", vm.heap)?;
-            str_capitalize(s.get(vm.heap), vm)
+            Ok(str_capitalize(s.get(vm.heap), vm))
         }
         StaticStrings::Title => {
             args.check_zero_args("str.title", vm.heap)?;
-            str_title(s.get(vm.heap), vm)
+            Ok(str_title(s.get(vm.heap), vm))
         }
         StaticStrings::Swapcase => {
             args.check_zero_args("str.swapcase", vm.heap)?;
-            str_swapcase(s.get(vm.heap), vm)
+            Ok(str_swapcase(s.get(vm.heap), vm))
         }
         StaticStrings::Casefold => {
             args.check_zero_args("str.casefold", vm.heap)?;
-            str_casefold(s.get(vm.heap), vm)
+            Ok(str_casefold(s.get(vm.heap), vm))
         }
         // Predicate methods (no arguments, return bool)
         StaticStrings::Isalpha => {
@@ -590,7 +590,7 @@ fn str_join<'h>(separator: &HeapRead<'h, str>, iterable: Value, vm: &mut VM<'h>)
     }
 
     // Allocate result (uses interned empty string if result is empty)
-    Ok(allocate_string(result, vm.heap)?)
+    Ok(allocate_string(result, vm.heap))
 }
 
 // =============================================================================
@@ -598,19 +598,19 @@ fn str_join<'h>(separator: &HeapRead<'h, str>, iterable: Value, vm: &mut VM<'h>)
 // =============================================================================
 
 /// Implements Python's `str.lower()` method.
-fn str_lower(s: &str, vm: &VM<'_>) -> RunResult<Value> {
-    Ok(allocate_string(s.to_lowercase(), vm.heap)?)
+fn str_lower(s: &str, vm: &VM<'_>) -> Value {
+    allocate_string(s.to_lowercase(), vm.heap)
 }
 
 /// Implements Python's `str.upper()` method.
-fn str_upper(s: &str, vm: &VM<'_>) -> RunResult<Value> {
-    Ok(allocate_string(s.to_uppercase(), vm.heap)?)
+fn str_upper(s: &str, vm: &VM<'_>) -> Value {
+    allocate_string(s.to_uppercase(), vm.heap)
 }
 
 /// Implements Python's `str.capitalize()` method.
 ///
 /// Returns a copy of the string with its first character capitalized and the rest lowercased.
-fn str_capitalize(s: &str, vm: &VM<'_>) -> RunResult<Value> {
+fn str_capitalize(s: &str, vm: &VM<'_>) -> Value {
     let mut chars = s.chars();
     let result = match chars.next() {
         None => String::new(),
@@ -622,14 +622,14 @@ fn str_capitalize(s: &str, vm: &VM<'_>) -> RunResult<Value> {
             result
         }
     };
-    Ok(allocate_string(result, vm.heap)?)
+    allocate_string(result, vm.heap)
 }
 
 /// Implements Python's `str.title()` method.
 ///
 /// Returns a titlecased version of the string where words start with an uppercase
 /// character and the remaining characters are lowercase.
-fn str_title(s: &str, vm: &VM<'_>) -> RunResult<Value> {
+fn str_title(s: &str, vm: &VM<'_>) -> Value {
     let mut result = String::with_capacity(s.len());
     let mut prev_is_cased = false;
 
@@ -642,13 +642,13 @@ fn str_title(s: &str, vm: &VM<'_>) -> RunResult<Value> {
         prev_is_cased = c.is_alphabetic();
     }
 
-    Ok(allocate_string(result, vm.heap)?)
+    allocate_string(result, vm.heap)
 }
 
 /// Implements Python's `str.swapcase()` method.
 ///
 /// Returns a copy of the string with uppercase characters converted to lowercase and vice versa.
-fn str_swapcase(s: &str, vm: &VM<'_>) -> RunResult<Value> {
+fn str_swapcase(s: &str, vm: &VM<'_>) -> Value {
     let mut result = String::with_capacity(s.len());
 
     for c in s.chars() {
@@ -661,16 +661,16 @@ fn str_swapcase(s: &str, vm: &VM<'_>) -> RunResult<Value> {
         }
     }
 
-    Ok(allocate_string(result, vm.heap)?)
+    allocate_string(result, vm.heap)
 }
 
 /// Implements Python's `str.casefold()` method.
 ///
 /// Returns a casefolded copy of the string. Casefolding is similar to lowercasing
 /// but more aggressive because it is intended for caseless string matching.
-fn str_casefold(s: &str, vm: &VM<'_>) -> RunResult<Value> {
+fn str_casefold(s: &str, vm: &VM<'_>) -> Value {
     // Rust's to_lowercase() is equivalent to Unicode casefolding for most purposes
-    Ok(allocate_string(s.to_lowercase(), vm.heap)?)
+    allocate_string(s.to_lowercase(), vm.heap)
 }
 
 // =============================================================================
@@ -1248,7 +1248,7 @@ fn str_strip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
         Some(c) => s.trim_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim().to_owned(),
     };
-    Ok(allocate_string(result, vm.heap)?)
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Implements Python's `str.lstrip(chars?)` method.
@@ -1261,7 +1261,7 @@ fn str_lstrip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
         Some(c) => s.trim_start_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim_start().to_owned(),
     };
-    Ok(allocate_string(result, vm.heap)?)
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Implements Python's `str.rstrip(chars?)` method.
@@ -1274,7 +1274,7 @@ fn str_rstrip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
         Some(c) => s.trim_end_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim_end().to_owned(),
     };
-    Ok(allocate_string(result, vm.heap)?)
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Parses the optional chars argument for strip methods.
@@ -1304,7 +1304,7 @@ fn str_removeprefix<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>)
 
     let s = s.get(vm.heap);
     let result = s.strip_prefix(&prefix).unwrap_or(s).to_owned();
-    Ok(allocate_string(result, vm.heap)?)
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Implements Python's `str.removesuffix(suffix)` method.
@@ -1318,7 +1318,7 @@ fn str_removesuffix<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>)
 
     let s = s.get(vm.heap);
     let result = s.strip_suffix(&suffix).unwrap_or(s).to_owned();
-    Ok(allocate_string(result, vm.heap)?)
+    Ok(allocate_string(result, vm.heap))
 }
 
 // =============================================================================
@@ -1363,11 +1363,11 @@ fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
         vm.heap.check_time()?;
-        list_items.push(allocate_string(part, vm.heap)?);
+        list_items.push(allocate_string(part, vm.heap));
     }
 
     let list = super::List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list))?;
+    let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))
 }
 
@@ -1412,11 +1412,11 @@ fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
         vm.heap.check_time()?;
-        list_items.push(allocate_string(part, vm.heap)?);
+        list_items.push(allocate_string(part, vm.heap));
     }
 
     let list = super::List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list))?;
+    let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))
 }
 
@@ -1551,13 +1551,13 @@ fn str_splitlines<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
 
         let line = if keepends { &s[start..end] } else { &s[start..line_end] };
 
-        lines.push(allocate_string(line, vm.heap)?);
+        lines.push(allocate_string(line, vm.heap));
 
         start = end;
     }
 
     let list = super::List::new(lines);
-    let heap_id = vm.heap.allocate(HeapData::List(list))?;
+    let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))
 }
 
@@ -1610,14 +1610,14 @@ fn str_partition<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) ->
         None => (s, "", ""),
     };
 
-    let before_val = allocate_string(before, vm.heap)?;
-    let sep_val = allocate_string(sep_found, vm.heap)?;
-    let after_val = allocate_string(after, vm.heap)?;
+    let before_val = allocate_string(before, vm.heap);
+    let sep_val = allocate_string(sep_found, vm.heap);
+    let after_val = allocate_string(after, vm.heap);
 
     Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
         vm.heap,
-    )?)
+    ))
 }
 
 /// Implements Python's `str.rpartition(sep)` method.
@@ -1639,14 +1639,14 @@ fn str_rpartition<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
         None => ("", "", s),
     };
 
-    let before_val = allocate_string(before, vm.heap)?;
-    let sep_val = allocate_string(sep_found, vm.heap)?;
-    let after_val = allocate_string(after, vm.heap)?;
+    let before_val = allocate_string(before, vm.heap);
+    let sep_val = allocate_string(sep_found, vm.heap);
+    let after_val = allocate_string(after, vm.heap);
 
     Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
         vm.heap,
-    )?)
+    ))
 }
 
 // =============================================================================
@@ -1671,7 +1671,7 @@ fn str_replace<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> R
         s.replacen(&old, &new, n)
     };
 
-    Ok(allocate_string(result, vm.heap)?)
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Parses arguments for the replace method.
@@ -1717,7 +1717,7 @@ fn str_center<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
     let len = s.chars().count();
 
     if width <= len {
-        Ok(allocate_string(s, vm.heap)?)
+        Ok(allocate_string(s, vm.heap))
     } else {
         // Exact byte capacity: the original string (`s.len()` bytes, possibly
         // multibyte) plus `pad` fillchars of `fillchar.len_utf8()` bytes each.
@@ -1747,7 +1747,7 @@ fn str_ljust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
     let len = s.chars().count();
 
     if width <= len {
-        Ok(allocate_string(s, vm.heap)?)
+        Ok(allocate_string(s, vm.heap))
     } else {
         let pad = width - len;
         let capacity = s.len().saturating_add(pad.saturating_mul(fillchar.len_utf8()));
@@ -1769,7 +1769,7 @@ fn str_rjust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
     let len = s.chars().count();
 
     if width <= len {
-        Ok(allocate_string(s, vm.heap)?)
+        Ok(allocate_string(s, vm.heap))
     } else {
         let pad = width - len;
         let capacity = s.len().saturating_add(pad.saturating_mul(fillchar.len_utf8()));
@@ -1834,7 +1834,7 @@ fn str_zfill<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
     let len = s.chars().count();
 
     if width <= len {
-        Ok(allocate_string(s, vm.heap)?)
+        Ok(allocate_string(s, vm.heap))
     } else {
         // Exact byte capacity: zfill pads with ASCII '0' (1 byte each), so the
         // result is `s.len() + pad` bytes — `s.len()` (possibly multibyte)
@@ -1940,7 +1940,7 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
 
     let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
     let bytes = codec.encode(s.get(vm.heap), errors, vm.heap.tracker())?;
-    let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)))?;
+    let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
     Ok(Value::Ref(heap_id))
 }
 
@@ -2036,13 +2036,13 @@ pub(crate) struct StringIterator {
 
 impl StringIterator {
     /// Allocates an iterator over an interned string.
-    pub(crate) fn from_intern(id: StringId, vm: &mut VM<'_>) -> RunResult<Value> {
+    pub(crate) fn from_intern(id: StringId, vm: &mut VM<'_>) -> Value {
         let ascii = vm.interns.get_str(id).is_ascii();
         Self::allocate(StringIteratorSource::Intern(id), ascii, vm)
     }
 
     /// Allocates an iterator retaining a heap string.
-    fn from_heap(id: HeapId, ascii: bool, vm: &mut VM<'_>) -> RunResult<Value> {
+    fn from_heap(id: HeapId, ascii: bool, vm: &mut VM<'_>) -> Value {
         Self::allocate(StringIteratorSource::Heap(id), ascii, vm)
     }
 
@@ -2081,7 +2081,7 @@ impl StringIterator {
     }
 
     /// Allocates an iterator and retains a heap source when present.
-    fn allocate(source: StringIteratorSource, ascii: bool, vm: &mut VM<'_>) -> RunResult<Value> {
+    fn allocate(source: StringIteratorSource, ascii: bool, vm: &mut VM<'_>) -> Value {
         let source_id = match source {
             StringIteratorSource::Heap(id) => Some(id),
             StringIteratorSource::Intern(_) => None,
@@ -2090,11 +2090,11 @@ impl StringIterator {
             source,
             byte_offset: 0,
             ascii,
-        }))?;
+        }));
         if let Some(source_id) = source_id {
             vm.heap.inc_ref(source_id);
         }
-        Ok(Value::Ref(id))
+        Value::Ref(id)
     }
 }
 
@@ -2132,7 +2132,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, StringIterator> {
     fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let next = self.get(vm.heap).as_str(vm).chars().next();
         if let Some(character) = next {
-            let value = allocate_char(character, vm.heap)?;
+            let value = allocate_char(character, vm.heap);
             self.get_mut(vm.heap).byte_offset += character.len_utf8();
             Ok(Some(value))
         } else {

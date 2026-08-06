@@ -26,7 +26,7 @@ pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     if iterables.is_empty() {
         // zip() with no arguments returns empty list
-        let heap_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())))?;
+        let heap_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
         return Ok(Value::Ref(heap_id));
     }
 
@@ -77,12 +77,12 @@ pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
         // Create tuple from collected items
         let (tuple_items, vm) = items_guard.into_parts();
-        let tuple_val = allocate_tuple(tuple_items, vm.heap)?;
+        let tuple_val = allocate_tuple(tuple_items, vm.heap);
         result.push(tuple_val);
     }
 
     let (result, vm) = result_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)))?;
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)));
     Ok(Value::Ref(heap_id))
 }
 

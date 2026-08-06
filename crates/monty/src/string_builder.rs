@@ -118,7 +118,7 @@ impl<'t> StringBuilder<'t> {
         if let Some(e) = self.pending_error.take() {
             return Err(e.into());
         }
-        Ok(allocate_string(mem::take(&mut self.inner), heap)?)
+        Ok(allocate_string(mem::take(&mut self.inner), heap))
     }
 
     /// Consumes the builder and returns the raw `String`.

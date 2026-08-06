@@ -7,8 +7,6 @@
 //! Other asyncio functions (`create_task`, `sleep`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
-use monty_types::ResourceError;
-
 use crate::{
     args::{ArgValues, FromArgs},
     asyncio::GatherFuture,
@@ -35,12 +33,9 @@ pub(crate) enum AsyncioFunctions {
 /// The module contains only the `gather` function. Other asyncio functions
 /// are not implemented as they would require additional VM/scheduler features.
 ///
-/// # Returns
-/// A HeapId pointing to the newly allocated module.
-///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Asyncio);
 
     module.set_attr(
@@ -125,7 +120,7 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .map(|arg| arg.into_ref_id().expect("validated gather awaitable is heap-backed"))
         .collect();
     let gather_future = GatherFuture::new(items);
-    let id = vm.heap.allocate(HeapData::GatherFuture(Box::new(gather_future)))?;
+    let id = vm.heap.allocate(HeapData::GatherFuture(Box::new(gather_future)));
     Ok(Value::Ref(id))
 }
 

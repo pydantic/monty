@@ -31,7 +31,7 @@ pub fn builtin_chr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                     *n as u32
                 },
             ) {
-                Ok(allocate_char(c, vm.heap)?)
+                Ok(allocate_char(c, vm.heap))
             } else {
                 // This shouldn't happen for valid Unicode range, but handle it
                 Err(SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)").into())
@@ -40,7 +40,7 @@ pub fn builtin_chr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Value::Bool(b) => {
             // bool is subclass of int
             let c = if *b { '\x01' } else { '\x00' };
-            Ok(allocate_char(c, vm.heap)?)
+            Ok(allocate_char(c, vm.heap))
         }
         _ => {
             let type_name = value.py_type_name(vm);

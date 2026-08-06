@@ -81,7 +81,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
-        let name = attribute_name_value(name, value_guard.ctx())?;
+        let name = attribute_name_value(name, value_guard.ctx());
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -111,7 +111,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
         // still reads `'Foo'`; only instances see the member).
         if attr_str == "__name__" {
             let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
-            return Ok(Some(CallResult::Value(allocate_string(name, vm.heap)?)));
+            return Ok(Some(CallResult::Value(allocate_string(name, vm.heap))));
         }
         // Otherwise look up a member (method or class variable) in the namespace.
         match self.get(vm.heap).namespace.get_by_str(attr_str, vm.heap, vm.interns) {
@@ -137,13 +137,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
         // callable` rather than a spurious `AttributeError`.
         if attr_str == "__name__" {
             let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
-            let name_val = match allocate_string(name, vm.heap) {
-                Ok(v) => v,
-                Err(e) => {
-                    args.drop_with(vm);
-                    return Err(e.into());
-                }
-            };
+            let name_val = allocate_string(name, vm.heap);
             defer_drop!(name_val, vm);
             return vm.call_function(name_val, args);
         }

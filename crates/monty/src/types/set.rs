@@ -673,7 +673,7 @@ impl Set {
             None => Self::new(),
             Some(v) => Self::from_iterable(v, vm)?,
         };
-        let heap_id = vm.heap.allocate(HeapData::Set(set))?;
+        let heap_id = vm.heap.allocate(HeapData::Set(set));
         Ok(Value::Ref(heap_id))
     }
 
@@ -785,7 +785,7 @@ impl<'h> HeapRead<'h, Set> {
             SetAlgebra::SymmetricDifference => self.storage().symmetric_difference(&other_storage, vm)?,
         };
 
-        let heap_id = vm.heap.allocate(HeapData::Set(Set(result)))?;
+        let heap_id = vm.heap.allocate(HeapData::Set(Set(result)));
         Ok(Value::Ref(heap_id))
     }
 
@@ -922,7 +922,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
             SetAlgebra::SymmetricDifference => self.storage().symmetric_difference(&other_storage, vm)?,
         };
 
-        let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(result)))?;
+        let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(result)));
         Ok(Value::Ref(heap_id))
     }
 
@@ -980,7 +980,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
     }
 
     fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        SetIterator::from_set(self_id.expect("heap values have an id"), self.get(vm.heap).len(), vm)
+        Ok(SetIterator::from_set(
+            self_id.expect("heap values have an id"),
+            self.get(vm.heap).len(),
+            vm,
+        ))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -1006,7 +1010,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         let Some(result) = self.sub_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::Set(result))?;
+        let result_id = vm.heap.allocate(HeapData::Set(result));
         Ok(Some(Value::Ref(result_id)))
     }
 
@@ -1014,7 +1018,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         let Some(result) = self.and_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::Set(result))?;
+        let result_id = vm.heap.allocate(HeapData::Set(result));
         Ok(Some(Value::Ref(result_id)))
     }
 
@@ -1022,7 +1026,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         let Some(result) = self.or_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::Set(result))?;
+        let result_id = vm.heap.allocate(HeapData::Set(result));
         Ok(Some(Value::Ref(result_id)))
     }
 
@@ -1030,7 +1034,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         let Some(result) = self.xor_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::Set(result))?;
+        let result_id = vm.heap.allocate(HeapData::Set(result));
         Ok(Some(Value::Ref(result_id)))
     }
 
@@ -1075,7 +1079,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
             Some(StaticStrings::Copy) => {
                 args.check_zero_args("set.copy", vm.heap)?;
                 let copy = self.copy(vm);
-                let heap_id = vm.heap.allocate(HeapData::Set(copy))?;
+                let heap_id = vm.heap.allocate(HeapData::Set(copy));
                 Ok(Value::Ref(heap_id))
             }
             Some(StaticStrings::Update) => {
@@ -1276,7 +1280,7 @@ impl FrozenSet {
             None => Self::new(),
             Some(v) => Self::from_set(Set::from_iterable(v, vm)?),
         };
-        let heap_id = vm.heap.allocate(HeapData::FrozenSet(frozenset))?;
+        let heap_id = vm.heap.allocate(HeapData::FrozenSet(frozenset));
         Ok(Value::Ref(heap_id))
     }
 }
@@ -1295,7 +1299,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
     }
 
     fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        SetIterator::from_frozen_set(self_id.expect("heap values have an id"), self.get(vm.heap).len(), vm)
+        Ok(SetIterator::from_frozen_set(
+            self_id.expect("heap values have an id"),
+            self.get(vm.heap).len(),
+            vm,
+        ))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -1342,7 +1350,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         let Some(result) = self.sub_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::FrozenSet(result))?;
+        let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
         Ok(Some(Value::Ref(result_id)))
     }
 
@@ -1350,7 +1358,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         let Some(result) = self.and_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::FrozenSet(result))?;
+        let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
         Ok(Some(Value::Ref(result_id)))
     }
 
@@ -1358,7 +1366,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         let Some(result) = self.or_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::FrozenSet(result))?;
+        let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
         Ok(Some(Value::Ref(result_id)))
     }
 
@@ -1366,7 +1374,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         let Some(result) = self.xor_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::FrozenSet(result))?;
+        let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
         Ok(Some(Value::Ref(result_id)))
     }
 
@@ -1385,7 +1393,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
             Some(StaticStrings::Copy) => {
                 args.check_zero_args("frozenset.copy", vm.heap)?;
                 let cloned = self.get(vm.heap).storage.clone_with_heap(vm.heap);
-                let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(cloned)))?;
+                let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(cloned)));
                 Ok(Value::Ref(heap_id))
             }
             Some(StaticStrings::Union) => {
@@ -1527,12 +1535,12 @@ pub(crate) struct SetIterator {
 
 impl SetIterator {
     /// Allocates an iterator retaining a mutable set.
-    fn from_set(id: HeapId, expected_len: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+    fn from_set(id: HeapId, expected_len: usize, vm: &mut VM<'_>) -> Value {
         Self::allocate(SetIteratorSource::Set(id), expected_len, vm)
     }
 
     /// Allocates an iterator retaining a frozen set.
-    fn from_frozen_set(id: HeapId, expected_len: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+    fn from_frozen_set(id: HeapId, expected_len: usize, vm: &mut VM<'_>) -> Value {
         Self::allocate(SetIteratorSource::FrozenSet(id), expected_len, vm)
     }
 
@@ -1549,7 +1557,7 @@ impl SetIterator {
     }
 
     /// Allocates an iterator and retains its source.
-    fn allocate(source: SetIteratorSource, expected_len: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+    fn allocate(source: SetIteratorSource, expected_len: usize, vm: &mut VM<'_>) -> Value {
         let source_id = match source {
             SetIteratorSource::Set(id) | SetIteratorSource::FrozenSet(id) => id,
         };
@@ -1557,9 +1565,9 @@ impl SetIterator {
             source,
             index: 0,
             expected_len,
-        }))?;
+        }));
         vm.heap.inc_ref(source_id);
-        Ok(Value::Ref(id))
+        Value::Ref(id)
     }
 }
 

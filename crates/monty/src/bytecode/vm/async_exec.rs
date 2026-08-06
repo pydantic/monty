@@ -129,7 +129,7 @@ impl<'h> VM<'h> {
         // cached `Completed` result, and return an inc_ref'd reference.
         let item_count = gather.get(this.heap).item_count();
         if item_count == 0 {
-            let list_id = this.heap.allocate(HeapData::List(List::new(vec![])))?;
+            let list_id = this.heap.allocate(HeapData::List(List::new(vec![])));
             gather.cache_result(this.heap, list_id);
             return Ok(Poll::Ready(Value::Ref(list_id)));
         }
@@ -157,7 +157,7 @@ impl<'h> VM<'h> {
                 .into_iter()
                 .map(|r| r.expect("all results filled for synchronous gather completion"))
                 .collect();
-            let list_id = this.heap.allocate(HeapData::List(List::new(results)))?;
+            let list_id = this.heap.allocate(HeapData::List(List::new(results)));
             gather.cache_result(this.heap, list_id);
             return Ok(Poll::Ready(Value::Ref(list_id)));
         }
@@ -382,7 +382,7 @@ impl<'h> VM<'h> {
         let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gid) else {
             panic!("task gather_id doesn't point to a GatherFuture")
         };
-        let resolution = gather.resolve_child(self, coroutine_id, result)?;
+        let resolution = gather.resolve_child(self, coroutine_id, result);
         drop(gather);
 
         // The just-completed task is no longer in the gather's
@@ -391,7 +391,7 @@ impl<'h> VM<'h> {
         self.scheduler.cancel_task(task_id, self.heap);
 
         let delivery = match resolution {
-            Some(success) => self.deliver_awaiter_success(success.awaiter, Value::Ref(success.list_id))?,
+            Some(success) => self.deliver_awaiter_success(success.awaiter, Value::Ref(success.list_id)),
             None => None,
         };
 
@@ -651,12 +651,12 @@ impl<'h> VM<'h> {
     /// Called by the host when an async external call completes. Looks up
     /// the `ExternalFuture` heap entry for `call_id`, transitions it to
     /// `Resolved(value)`, and delivers `value` to the awaiter (if any).
-    pub fn resolve_future(&mut self, call_id: u32, value: Value) -> RunResult<()> {
+    pub fn resolve_future(&mut self, call_id: u32, value: Value) {
         let call_id = CallId::new(call_id);
 
         let Some(future_id) = self.scheduler.take_pending_external(call_id) else {
             value.drop_with(self);
-            return Ok(());
+            return;
         };
 
         // Ensure future cleaned up on all paths
@@ -682,10 +682,8 @@ impl<'h> VM<'h> {
         fut.get_mut(this.heap).state = ExternalFutureState::Resolved(value);
 
         if let Some((awaiter, value)) = awaiter_and_value {
-            this.deliver_awaiter_success(awaiter, value)?;
+            this.deliver_awaiter_success(awaiter, value);
         }
-
-        Ok(())
     }
 
     /// Pushes `value` onto `task_id`'s stack and marks it ready. If the task
@@ -725,13 +723,13 @@ impl<'h> VM<'h> {
     /// - `None` if the chain was consumed by an intermediate gather that's
     ///   still in flight, or if the terminal task is gone (in which case
     ///   the value is dropped).
-    fn deliver_awaiter_success(&mut self, mut awaiter: Awaiter, mut value: Value) -> RunResult<Option<TaskId>> {
+    fn deliver_awaiter_success(&mut self, mut awaiter: Awaiter, mut value: Value) -> Option<TaskId> {
         let this = self;
         loop {
             match awaiter {
                 Awaiter::Task(t) => {
                     this.deliver_value_to_task(t, value);
-                    return Ok(Some(t));
+                    return Some(t);
                 }
                 Awaiter::GatherSlot { gather, source } => {
                     let gather_val = Value::Ref(gather);
@@ -739,13 +737,13 @@ impl<'h> VM<'h> {
                     let HeapReadOutput::GatherFuture(mut outer) = this.heap.read(gather) else {
                         panic!("Awaiter::GatherSlot gather id is not a GatherFuture")
                     };
-                    let next = outer.resolve_child(this, source, value)?;
+                    let next = outer.resolve_child(this, source, value);
                     match next {
                         Some(success) => {
                             awaiter = success.awaiter;
                             value = Value::Ref(success.list_id);
                         }
-                        None => return Ok(None),
+                        None => return None,
                     }
                 }
             }
@@ -815,13 +813,12 @@ impl<'h> VM<'h> {
     /// host resolutions can find the heap entry; the `Value::Ref` pushed onto
     /// the stack is the user's reference, which travels with the value until
     /// it's awaited or dropped.
-    pub fn add_pending_call(&mut self, call_id: CallId) -> RunResult<()> {
+    pub fn add_pending_call(&mut self, call_id: CallId) {
         let future_id = self
             .heap
-            .allocate(HeapData::ExternalFuture(Box::new(ExternalFuture::new_pending(call_id))))?;
+            .allocate(HeapData::ExternalFuture(Box::new(ExternalFuture::new_pending(call_id))));
         self.scheduler.add_pending_external(call_id, future_id, self.heap);
         self.push(Value::Ref(future_id));
-        Ok(())
     }
 
     /// Gets the pending call IDs from the scheduler.
@@ -845,7 +842,7 @@ impl<'h> VM<'h> {
                             "Invalid return value for call {call_id}: {e}"
                         )))
                     })?;
-                    self.resolve_future(call_id, value)?;
+                    self.resolve_future(call_id, value);
                 }
                 ExtFunctionResult::Error(exc) => self.fail_future(call_id, RunError::from(exc))?,
                 ExtFunctionResult::Future(_) => {}
@@ -943,7 +940,7 @@ impl<'h> HeapRead<'h, GatherFuture> {
     ///
     /// Returns `None` while children are still in flight; otherwise
     /// `Some(GatherResolution::Success)` with the cached result list.
-    fn resolve_child(&mut self, vm: &mut VM<'h>, child_id: HeapId, value: Value) -> RunResult<Option<GatherSuccess>> {
+    fn resolve_child(&mut self, vm: &mut VM<'h>, child_id: HeapId, value: Value) -> Option<GatherSuccess> {
         // Remove this child's slot-index mapping.
         let indices: SmallVec<[usize; 1]> = self
             .get_mut(vm.heap)
@@ -981,7 +978,7 @@ impl<'h> HeapRead<'h, GatherFuture> {
         awaited.results = results;
 
         if !awaited.pending_children.is_empty() {
-            return Ok(None);
+            return None;
         }
 
         // All children resolved successfully — build the result list.
@@ -996,9 +993,9 @@ impl<'h> HeapRead<'h, GatherFuture> {
             .into_iter()
             .map(|r| r.expect("all results filled when gather is complete"))
             .collect();
-        let list_id = vm.heap.allocate(HeapData::List(List::new(results)))?;
+        let list_id = vm.heap.allocate(HeapData::List(List::new(results)));
         self.cache_result(vm.heap, list_id);
-        Ok(Some(GatherSuccess { list_id, awaiter }))
+        Some(GatherSuccess { list_id, awaiter })
     }
 
     /// Tear the gather down with `error` and return its waiter.

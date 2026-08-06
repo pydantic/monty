@@ -862,7 +862,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             |value| value.py_str(vm),
             else {
                 match self {
-                    Self::Exception(e) => Ok(allocate_string(e.get(vm.heap).py_str(), vm.heap)?),
+                    Self::Exception(e) => Ok(allocate_string(e.get(vm.heap).py_str(), vm.heap)),
                     _ => self.py_repr(vm),
                 }
             }
@@ -959,7 +959,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             else {
                 match self {
                     Self::Module(m) => Ok(m.py_getattr(attr, vm)),
-                    Self::Exception(e) => e.py_getattr(attr, vm),
+                    Self::Exception(e) => Ok(e.py_getattr(attr, vm)),
                     _ => Ok(None),
                 }
             }

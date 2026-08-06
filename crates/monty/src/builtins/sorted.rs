@@ -42,6 +42,6 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     parse_and_sort(items, sort_args, vm)?;
 
     let (items, vm) = items_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
     Ok(Value::Ref(heap_id))
 }

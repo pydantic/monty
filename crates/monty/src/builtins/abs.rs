@@ -29,18 +29,18 @@ pub fn builtin_abs(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             } else {
                 // i64::MIN.abs() overflows, promote to LongInt
                 let bi = BigInt::from(*n).abs();
-                Ok(LongInt::new(bi).into_value(vm.heap)?)
+                Ok(LongInt::new(bi).into_value(vm.heap))
             }
         }
         Value::Float(f) => Ok(Value::Float(f.abs())),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::LongInt(li) => Ok(li.abs().into_value(vm.heap)?),
+            HeapData::LongInt(li) => Ok(li.abs().into_value(vm.heap)),
             HeapData::TimeDelta(td) => {
                 let total = timedelta::total_microseconds(td);
                 let abs_total = total.checked_abs().unwrap_or(total);
                 let delta = timedelta::from_total_microseconds(abs_total)?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))))
             }
             _ => Err(SimpleException::new_msg(
                 ExcType::TypeError,

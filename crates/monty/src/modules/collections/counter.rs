@@ -414,10 +414,10 @@ pub(crate) fn counter_most_common(dict_id: HeapId, args: ArgValues, vm: &mut VM<
         let dict = dict.get(vm.heap);
         let key = dict.key_at(i).expect("index in range").clone_with_heap(vm.heap);
         let count = dict.value_at(i).expect("index in range").clone_with_heap(vm.heap);
-        let pair = allocate_tuple(smallvec![key, count], vm.heap)?;
+        let pair = allocate_tuple(smallvec![key, count], vm.heap);
         items.push(pair);
     }
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))))
 }
 
 /// `Counter.elements()` — a list repeating each element by its count, skipping
@@ -465,7 +465,7 @@ pub(crate) fn counter_elements(dict_id: HeapId, args: ArgValues, vm: &mut VM<'_>
             items.push(key);
         }
     }
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))))
 }
 
 /// The four binary `Counter` algebra operators.
@@ -486,7 +486,7 @@ pub(crate) enum CounterOp {
 pub(crate) fn counter_binary_op(l_id: HeapId, r_id: HeapId, op: CounterOp, vm: &mut VM<'_>) -> RunResult<Value> {
     let mut result = Dict::new();
     result.make_counter();
-    let result_id = vm.heap.allocate(HeapData::Dict(result))?;
+    let result_id = vm.heap.allocate(HeapData::Dict(result));
     // Guard the freshly allocated result dict: a catchable error below (e.g.
     // arithmetic or comparison on non-numeric counts raising `TypeError`) must
     // free it, which the bare `?` early-returns would otherwise leak.
@@ -781,7 +781,7 @@ pub(crate) fn counter_inplace_op(l_id: HeapId, rhs: &Value, op: CounterOp, vm: &
 pub(crate) fn counter_unary_op(id: HeapId, negate: bool, vm: &mut VM<'_>) -> RunResult<Value> {
     let mut result = Dict::new();
     result.make_counter();
-    let result_id = vm.heap.allocate(HeapData::Dict(result))?;
+    let result_id = vm.heap.allocate(HeapData::Dict(result));
     // Guard the freshly allocated result dict: a catchable error below (e.g.
     // comparing a non-numeric count) must free it, which the bare `?`
     // early-returns would otherwise leak.

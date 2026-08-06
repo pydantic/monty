@@ -268,10 +268,7 @@ impl VM<'_> {
             let RunError::Exc(exc) = &error else {
                 unreachable!("terminal errors returned above")
             };
-            match self.create_exception_value(exc) {
-                Ok(v) => v,
-                Err(e) => return Some(e),
-            }
+            self.create_exception_value(exc)
         };
 
         // Use DropGuard because exc_value is conditionally consumed (pushed onto
@@ -408,10 +405,10 @@ impl VM<'_> {
     /// Creates an exception Value from exception info.
     ///
     /// Allocates an Exception on the heap and returns a Value::Ref to it.
-    fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Result<Value, RunError> {
+    fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value {
         let exception = exc.exc.clone();
-        let heap_id = self.heap.allocate(HeapData::Exception(exception))?;
-        Ok(Value::Ref(heap_id))
+        let heap_id = self.heap.allocate(HeapData::Exception(exception));
+        Value::Ref(heap_id)
     }
 
     /// Checks if an exception matches an `except` clause's exception type.

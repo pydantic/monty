@@ -12,8 +12,6 @@ mod field;
 
 use std::{fmt::Write, mem};
 
-use monty_types::ResourceError;
-
 pub(crate) use self::field::DataclassField;
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -42,7 +40,7 @@ pub(crate) enum DataclassesFunctions {
 }
 
 /// Creates the `dataclasses` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Dataclasses);
     module.set_attr(
         StaticStrings::Dataclass,
@@ -133,12 +131,12 @@ fn build_dataclass_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) -> R
 /// fields. The dict owns every `Field` from its first insertion, so a failure
 /// part-way releases them with it.
 fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<DataclassField>) -> RunResult<Value> {
-    let dict_id = vm.heap.allocate(HeapData::Dict(Dict::with_capacity(fields.len())))?;
+    let dict_id = vm.heap.allocate(HeapData::Dict(Dict::with_capacity(fields.len())));
     let mut guard = DropGuard::new(Value::Ref(dict_id), vm);
     let vm = guard.ctx();
     for field in fields {
         let name = field.name();
-        let field_id = vm.heap.allocate(HeapData::DataclassField(field))?;
+        let field_id = vm.heap.allocate(HeapData::DataclassField(field));
         let HeapReadOutput::Dict(mut dict) = vm.heap.read(dict_id) else {
             unreachable!("the dict was just allocated")
         };
@@ -568,11 +566,11 @@ pub(crate) fn dataclass_eq(
     let vm = &mut *guard;
     for name_id in field_names {
         let field_name = vm.interns.get_str(*name_id).to_owned();
-        // Each read is guarded before the next runs, so the second failing
-        // (binding a method allocates) cannot strand the first.
-        let a = instance_attr(self_id, &field_name, vm)?;
+        // Both reads are guarded so a failing comparison below (or an early
+        // return) cannot strand either value.
+        let a = instance_attr(self_id, &field_name, vm);
         defer_drop!(a, vm);
-        let b = instance_attr(other_id, &field_name, vm)?;
+        let b = instance_attr(other_id, &field_name, vm);
         defer_drop!(b, vm);
         match (a, b) {
             (Some(a), Some(b)) if !a.py_eq_operator(b, vm)? => return Ok(Some(false)),
@@ -605,7 +603,7 @@ pub(crate) fn dataclass_repr_fmt(
     // generated f-string does. A field that resolves nowhere raises.
     write_dataclass_repr(f, &name, field_names.len(), vm, heap_ids, |i, vm| {
         let field_name = vm.interns.get_str(field_names[i]).to_owned();
-        match instance_attr(self_id, &field_name, vm)? {
+        match instance_attr(self_id, &field_name, vm) {
             Some(value) => Ok((field_name, Some(value))),
             None => Err(ExcType::attribute_error(&name, &field_name)),
         }

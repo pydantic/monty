@@ -208,7 +208,7 @@ impl Deque {
         let (deque, evicted) = Self::new(items, maxlen);
         // Items dropped by the maxlen truncation still hold their refcounts.
         evicted.drop_with(vm);
-        let heap_id = vm.heap.allocate(HeapData::Deque(deque))?;
+        let heap_id = vm.heap.allocate(HeapData::Deque(deque));
         Ok(Value::Ref(heap_id))
     }
 }
@@ -366,7 +366,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         let deque_id = self_id.expect("heap values have an id");
         let iterator = vm
             .heap
-            .allocate(HeapData::DequeIterator(DequeIterator::new(deque_id, vm)))?;
+            .allocate(HeapData::DequeIterator(DequeIterator::new(deque_id, vm)));
         vm.heap.inc_ref(deque_id);
         Ok(Value::Ref(iterator))
     }
@@ -484,7 +484,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         items.extend(other.clone_all_items(vm)?);
         let (deque, evicted) = Deque::new(items, maxlen);
         evicted.drop_with(vm.heap);
-        let id = vm.heap.allocate(HeapData::Deque(deque))?;
+        let id = vm.heap.allocate(HeapData::Deque(deque));
         Ok(Some(Value::Ref(id)))
     }
 
@@ -739,7 +739,7 @@ fn call_deque_method<'h>(
             let items = deque.clone_all_items(vm)?;
             let (new_deque, evicted) = Deque::new(items, maxlen);
             evicted.drop_with(vm);
-            let id = vm.heap.allocate(HeapData::Deque(new_deque))?;
+            let id = vm.heap.allocate(HeapData::Deque(new_deque));
             Ok(Value::Ref(id))
         }
         StaticStrings::Reverse => {
@@ -1057,5 +1057,5 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
     // no refcounts need releasing — `debug_assert` guards that invariant.
     let (new_deque, evicted) = Deque::new(result, maxlen);
     debug_assert!(evicted.is_empty(), "repeat_deque built more than maxlen items");
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Deque(new_deque))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Deque(new_deque))))
 }

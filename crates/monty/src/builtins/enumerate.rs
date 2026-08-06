@@ -46,13 +46,13 @@ pub fn builtin_enumerate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     while let Some(item) = iter.py_next(vm)? {
         // Create tuple (index, item)
-        let tuple_val = allocate_tuple(smallvec![Value::Int(index), item], vm.heap)?;
+        let tuple_val = allocate_tuple(smallvec![Value::Int(index), item], vm.heap);
         result.push(tuple_val);
         index += 1;
     }
 
     let (result, vm) = result_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)))?;
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)));
     Ok(Value::Ref(heap_id))
 }
 

@@ -112,7 +112,7 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         },
     }
 
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(out)))?;
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(out)));
     Ok(Value::Ref(heap_id))
 }
 

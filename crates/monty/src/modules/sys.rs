@@ -12,8 +12,6 @@
 //!   can simulate Monty's lower default depth on CPython too. Only allows
 //!   *lowering* the host-configured ceiling — see [`SysFunctions`].
 
-use monty_types::ResourceError;
-
 #[cfg(feature = "test-hooks")]
 use crate::{
     args::ArgValues,
@@ -44,12 +42,10 @@ pub(crate) enum SysFunctions {
 
 /// Creates the `sys` module and allocates it on the heap.
 ///
-/// Returns a HeapId pointing to the newly allocated module.
-///
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Sys);
 
     // sys.platform
@@ -79,7 +75,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
             Value::Int(0),
         ],
     );
-    let version_info_id = vm.heap.allocate(HeapData::NamedTuple(Box::new(version_info)))?;
+    let version_info_id = vm.heap.allocate(HeapData::NamedTuple(Box::new(version_info)));
     module.set_attr(StaticStrings::VersionInfo, Value::Ref(version_info_id), vm);
 
     // Test-only callables — see the module-level docs and the

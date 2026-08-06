@@ -324,7 +324,7 @@ impl Signature {
         // any excess (the deferred overflow) stays in `pos_iter`, drained by
         // its guard when the overflow error returns below.
         if self.var_args.is_some() {
-            namespace[namespace_base + total_positional_params] = allocate_tuple(pos_iter.collect(), vm.heap)?;
+            namespace[namespace_base + total_positional_params] = allocate_tuple(pos_iter.collect(), vm.heap);
         }
 
         // 3. Bind keyword args
@@ -529,7 +529,7 @@ impl Signature {
         // Namespace layout: [pos_args][args][*args?][kwargs][**kwargs?]
         let (excess_kwargs, vm) = excess_kwargs_guard.into_parts();
         if let Some(excess_kwargs) = excess_kwargs {
-            let dict_id = vm.heap.allocate(HeapData::Dict(excess_kwargs))?;
+            let dict_id = vm.heap.allocate(HeapData::Dict(excess_kwargs));
             let last_slot = namespace.len() - 1;
             namespace[last_slot] = Value::Ref(dict_id);
         }

@@ -14,7 +14,6 @@ mod dump;
 mod load;
 mod string_cache;
 
-use monty_types::ResourceError;
 pub(crate) use string_cache::JsonStringCache;
 
 use super::ModuleFunctions;
@@ -48,7 +47,7 @@ pub(crate) enum JsonFunctions {
 /// The module exposes `loads`, `dumps`, and `JSONDecodeError`. These are the
 /// most widely used parts of CPython's `json` module and are sufficient for
 /// common data interchange and round-tripping use cases inside the sandbox.
-pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Json);
     module.set_attr(
         StaticStrings::Loads,

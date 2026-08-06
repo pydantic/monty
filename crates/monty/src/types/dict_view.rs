@@ -121,7 +121,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
             }
         }
         let (result, vm) = result_guard.into_parts();
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result))?)))
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result)))))
     }
 
     /// Applies a reflected set-like operation after validating the left iterable.
@@ -136,7 +136,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
         let rhs = self.to_set(vm)?;
         defer_drop!(rhs, vm);
         let result = operation(lhs, rhs, vm)?;
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result))?)))
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result)))))
     }
 
     /// Implements `dict_keys.isdisjoint(iterable)` with CPython's iterable semantics.
@@ -175,7 +175,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
 
     fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
         let dict_id = self.get(vm.heap).dict_id();
-        DictKeyIterator::allocate(dict_id, self.get(vm.heap).dict(vm.heap).len(), vm)
+        Ok(DictKeyIterator::allocate(
+            dict_id,
+            self.get(vm.heap).dict(vm.heap).len(),
+            vm,
+        ))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -330,7 +334,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
         let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
         let (result, vm) = result_guard.as_parts_mut();
         while let Some((key, value)) = iter.next_owned(vm)? {
-            let item = allocate_tuple(smallvec![key, value], vm.heap)?;
+            let item = allocate_tuple(smallvec![key, value], vm.heap);
             result.add(item, vm)?;
         }
         Ok(result_guard.into_inner())
@@ -349,7 +353,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
         } else {
             self.intersect_unhashable_items(other, vm)?
         };
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result))?)))
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result)))))
     }
 
     /// Returns whether every live value can participate in an item tuple hash.
@@ -384,7 +388,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
         let iter = dict.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some((key, value)) = iter.next(vm)? {
-            let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap)?;
+            let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap);
             defer_drop!(item, vm);
             if candidate.py_eq(item, vm)? {
                 return Ok(true);
@@ -405,7 +409,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
         let rhs = self.to_set(vm)?;
         defer_drop!(rhs, vm);
         let result = operation(lhs, rhs, vm)?;
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result))?)))
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result)))))
     }
 
     /// Implements `dict_items.isdisjoint(iterable)` with CPython's iterable semantics.
@@ -459,7 +463,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
 
     fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
         let dict_id = self.get(vm.heap).dict_id();
-        DictItemIterator::allocate(dict_id, self.get(vm.heap).dict(vm.heap).len(), vm)
+        Ok(DictItemIterator::allocate(
+            dict_id,
+            self.get(vm.heap).dict(vm.heap).len(),
+            vm,
+        ))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -611,7 +619,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
 
     fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
         let dict_id = self.get(vm.heap).dict_id();
-        DictValueIterator::allocate(dict_id, self.get(vm.heap).dict(vm.heap).len(), vm)
+        Ok(DictValueIterator::allocate(
+            dict_id,
+            self.get(vm.heap).dict(vm.heap).len(),
+            vm,
+        ))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -678,7 +690,7 @@ fn dict_items_eq_set_like<'h>(
     for i in 0..len {
         vm.heap.check_time()?;
         let (key, value) = dict.get(vm.heap).item_at(i).unwrap();
-        let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap)?;
+        let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap);
         defer_drop!(item, vm);
         if !contains(item, vm)? {
             return Ok(false);
@@ -763,7 +775,7 @@ fn dict_view_binary_op_value(
     defer_drop!(rhs_set, vm);
 
     let result = operation(lhs_set, rhs_set, vm)?;
-    let result_id = vm.heap.allocate(HeapData::Set(result))?;
+    let result_id = vm.heap.allocate(HeapData::Set(result));
     Ok(Some(Value::Ref(result_id)))
 }
 

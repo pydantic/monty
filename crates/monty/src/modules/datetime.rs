@@ -9,8 +9,6 @@
 //! Behavior for constructors, arithmetic, and classmethods is implemented by the
 //! corresponding runtime types.
 
-use monty_types::ResourceError;
-
 use crate::{
     builtins::Builtins,
     bytecode::VM,
@@ -22,12 +20,10 @@ use crate::{
 
 /// Creates the `datetime` module and allocates it on the heap.
 ///
-/// Returns a `HeapId` pointing to the newly allocated module.
-///
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Datetime);
 
     module.set_attr(StaticStrings::Date, Value::Builtin(Builtins::Type(Type::Date)), vm);

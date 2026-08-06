@@ -152,7 +152,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         vm,
     };
     encoder.serialize_value(obj, 0)?;
-    Ok(allocate_string(output, vm.heap)?)
+    Ok(allocate_string(output, vm.heap))
 }
 
 /// Argument shape for `json.dumps(obj, *, indent=None, sort_keys=False,

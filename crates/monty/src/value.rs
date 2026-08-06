@@ -468,12 +468,12 @@ impl<'h> PyTrait<'h> for Value {
             Self::Float(v) => Ok(write!(f, "{}", FormatFloat(*v))?),
             Self::Builtin(b) => Ok(b.py_repr_fmt(f)?),
             Self::ModuleFunction(mf) => {
-                let py_id = self.id().into_value(vm.heap)?;
+                let py_id = self.id().into_value(vm.heap);
                 defer_drop!(py_id, vm);
                 Ok(mf.py_repr_fmt(f, PythonIdDisplay::new(py_id, vm.heap))?)
             }
             Self::DefFunction(f_id) => {
-                let py_id = self.id().into_value(vm.heap)?;
+                let py_id = self.id().into_value(vm.heap);
                 defer_drop!(py_id, vm);
                 Ok(interns
                     .get_function(*f_id)
@@ -532,12 +532,12 @@ impl<'h> PyTrait<'h> for Value {
             Self::Bool(false) => Ok(Self::InternString(StaticStrings::FalseRepr.into())),
             Self::Ellipsis => Ok(Self::InternString(StaticStrings::EllipsisRepr.into())),
             Self::NotImplemented => Ok(Self::InternString(StaticStrings::NotImplementedRepr.into())),
-            Self::Int(i) => Ok(allocate_string(itoa::Buffer::new().format(*i), vm.heap)?),
+            Self::Int(i) => Ok(allocate_string(itoa::Buffer::new().format(*i), vm.heap)),
             _ => {
                 let mut s = String::new();
                 let mut heap_ids = LazyHeapSet::default();
                 self.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
-                Ok(allocate_string(s, vm.heap)?)
+                Ok(allocate_string(s, vm.heap))
             }
         }
     }
@@ -607,7 +607,7 @@ impl<'h> PyTrait<'h> for Value {
             // `checked_neg` catches `i64::MIN`, whose negation only fits a LongInt.
             Self::Int(n) => match n.checked_neg() {
                 Some(negated) => Ok(Some(Self::Int(negated))),
-                None => Ok(Some((-LongInt::from(*n)).into_value(vm.heap)?)),
+                None => Ok(Some((-LongInt::from(*n)).into_value(vm.heap))),
             },
             Self::Float(f) => Ok(Some(Self::Float(-f))),
             Self::Bool(b) => Ok(Some(Self::Int(if *b { -1 } else { 0 }))),
@@ -636,7 +636,7 @@ impl<'h> PyTrait<'h> for Value {
                 if let Some(result) = a.checked_add(*b) {
                     Ok(Some(Self::Int(result)))
                 } else {
-                    Ok(Some(wide_i128_into_value(i128::from(*a) + i128::from(*b), vm.heap)?))
+                    Ok(Some(wide_i128_into_value(i128::from(*a) + i128::from(*b), vm.heap)))
                 }
             }
             (Self::Float(v1), Self::Float(v2)) => Ok(Some(Self::Float(v1 + v2))),
@@ -683,7 +683,7 @@ impl<'h> PyTrait<'h> for Value {
                 if let Some(result) = a.checked_sub(*b) {
                     Ok(Some(Self::Int(result)))
                 } else {
-                    Ok(Some(wide_i128_into_value(i128::from(*a) - i128::from(*b), vm.heap)?))
+                    Ok(Some(wide_i128_into_value(i128::from(*a) - i128::from(*b), vm.heap)))
                 }
             }
             // Float - Float
@@ -712,7 +712,7 @@ impl<'h> PyTrait<'h> for Value {
                 if let Some(result) = a.checked_mul(*b) {
                     Ok(Some(Self::Int(result)))
                 } else {
-                    Ok(Some(wide_i128_into_value(i128::from(*a) * i128::from(*b), vm.heap)?))
+                    Ok(Some(wide_i128_into_value(i128::from(*a) * i128::from(*b), vm.heap)))
                 }
             }
             (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a * b))),
@@ -844,7 +844,7 @@ impl<'h> PyTrait<'h> for Value {
                     Ok(Some(wide_i128_into_value(
                         i128::from(*a).div_euclid(i128::from(*b)),
                         vm.heap,
-                    )?))
+                    )))
                 }
             }
             // Float floor division returns float
@@ -993,11 +993,11 @@ impl<'h> PyTrait<'h> for Value {
                             if let Some(result) = base.checked_pow(exp_u32) {
                                 Ok(Some(Self::Int(result)))
                             } else if let Some(result) = i128::from(*base).checked_pow(exp_u32) {
-                                Ok(Some(wide_i128_into_value(result, vm.heap)?))
+                                Ok(Some(wide_i128_into_value(result, vm.heap)))
                             } else {
                                 check_pow_size(i64_bits(*base), u64::from(exp_u32), vm.heap.tracker())?;
                                 let bi = BigInt::from(*base).pow(exp_u32);
-                                Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
+                                Ok(Some(LongInt::new(bi).into_value(vm.heap)))
                             }
                         } else {
                             // exp > u32::MAX - use BigInt with modpow-style exponentiation
@@ -1008,7 +1008,7 @@ impl<'h> PyTrait<'h> for Value {
                             // Check size before computing to prevent DoS
                             check_pow_size(i64_bits(*base), exp_u64, vm.heap.tracker())?;
                             let bi = bigint_pow(BigInt::from(*base), exp_u64);
-                            Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
+                            Ok(Some(LongInt::new(bi).into_value(vm.heap)))
                         }
                     } else {
                         // Negative exponent: return float
@@ -1260,7 +1260,7 @@ impl<'h> PyTrait<'h> for Value {
                 {
                     let s = interns.get_str(*string_id);
                     let result_str: Box<str> = slice_collect_iterator(vm, slice_obj, s.chars(), |c| c)?;
-                    return Ok(allocate_string(result_str, vm.heap)?);
+                    return Ok(allocate_string(result_str, vm.heap));
                 }
 
                 // Handle interned string indexing, accepting Int and Bool
@@ -1272,7 +1272,7 @@ impl<'h> PyTrait<'h> for Value {
 
                 let s = interns.get_str(*string_id);
                 let c = get_char_at_index(s, index).ok_or_else(ExcType::str_index_error)?;
-                Ok(allocate_char(c, vm.heap)?)
+                Ok(allocate_char(c, vm.heap))
             }
             Self::InternBytes(bytes_id) => {
                 // Check for slice first
@@ -1281,7 +1281,7 @@ impl<'h> PyTrait<'h> for Value {
                 {
                     let bytes = interns.get_bytes(*bytes_id);
                     let result_bytes = slice_collect_iterator(vm, slice_obj, bytes.iter(), |b| *b)?;
-                    let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(result_bytes)))?;
+                    let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(result_bytes)));
                     return Ok(Self::Ref(heap_id));
                 }
 
@@ -1334,8 +1334,8 @@ impl<'h> PyTrait<'h> for Value {
             vm.heap.read(*id).py_iter(Some(*id), vm)
         } else {
             match self {
-                Self::InternString(id) => StringIterator::from_intern(*id, vm),
-                Self::InternBytes(id) => BytesIterator::from_intern(*id, vm),
+                Self::InternString(id) => Ok(StringIterator::from_intern(*id, vm)),
+                Self::InternBytes(id) => Ok(BytesIterator::from_intern(*id, vm)),
                 _ => Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))),
             }
         }
@@ -1740,13 +1740,10 @@ impl Value {
                     |ss| ss == StaticStrings::DunderName,
                 );
                 if is_dunder_name {
-                    return Ok(CallResult::Value(allocate_string(
-                        t.name(vm.heap, vm.interns),
-                        vm.heap,
-                    )?));
+                    return Ok(CallResult::Value(allocate_string(t.name(vm.heap, vm.interns), vm.heap)));
                 }
                 if *t == Type::TimeZone && attr.as_str(vm.interns) == "utc" {
-                    return Ok(CallResult::Value(vm.heap.get_timezone_utc()?));
+                    return Ok(CallResult::Value(vm.heap.get_timezone_utc()));
                 }
             }
             _ => {}
@@ -2474,7 +2471,7 @@ mod tests {
     fn create_heap_with_longint(value: BigInt) -> (Heap, HeapId) {
         let heap = Heap::new(16, ResourceTracker::default());
         let long_int = LongInt::new(value);
-        let heap_id = heap.allocate(HeapData::LongInt(long_int)).unwrap();
+        let heap_id = heap.allocate(HeapData::LongInt(long_int));
         (heap, heap_id)
     }
 

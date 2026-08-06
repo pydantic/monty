@@ -24,7 +24,6 @@
 
 use std::f64::consts;
 
-use monty_types::ResourceError;
 use num_bigint::BigInt;
 use smallvec::smallvec;
 
@@ -176,12 +175,9 @@ pub(crate) enum MathFunctions {
 /// matching CPython's `math` module. Functions are registered as
 /// `ModuleFunctions::Math` variants.
 ///
-/// # Returns
-/// A `HeapId` pointing to the newly allocated module.
-///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Math);
 
     // Register all math functions
@@ -1006,7 +1002,7 @@ fn math_gcd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let n = value_to_int(arg, vm)?;
         result = gcd(result, n.unsigned_abs());
     }
-    u64_to_value(result, vm.heap)
+    Ok(u64_to_value(result, vm.heap))
 }
 
 /// `math.lcm(*integers)` — returns the least common multiple of the arguments.
@@ -1032,7 +1028,7 @@ fn math_lcm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             .checked_mul(abs_n)
             .ok_or_else(|| SimpleException::new_msg(ExcType::OverflowError, "integer overflow in lcm"))?;
     }
-    u64_to_value(result, vm.heap)
+    Ok(u64_to_value(result, vm.heap))
 }
 
 /// `math.comb(n, k)` — returns the number of ways to choose k items from n.
@@ -1195,7 +1191,7 @@ fn math_modf(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let f = value_to_float(value, vm)?;
     let (fractional, integer) = libm::modf(f);
-    let tuple = allocate_tuple(smallvec![Value::Float(fractional), Value::Float(integer)], vm.heap)?;
+    let tuple = allocate_tuple(smallvec![Value::Float(fractional), Value::Float(integer)], vm.heap);
     Ok(tuple)
 }
 
@@ -1209,7 +1205,7 @@ fn math_frexp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let f = value_to_float(value, vm)?;
     let (m, exp) = libm::frexp(f);
-    let tuple = allocate_tuple(smallvec![Value::Float(m), Value::Int(i64::from(exp))], vm.heap)?;
+    let tuple = allocate_tuple(smallvec![Value::Float(m), Value::Int(i64::from(exp))], vm.heap);
     Ok(tuple)
 }
 
@@ -1339,7 +1335,7 @@ fn float_to_int_checked(rounded: f64, original: f64, heap: &mut Heap) -> RunResu
         let bi = s
             .parse::<BigInt>()
             .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "float too large to convert to integer"))?;
-        Ok(LongInt::new(bi).into_value(heap)?)
+        Ok(LongInt::new(bi).into_value(heap))
     }
 }
 
@@ -1403,10 +1399,10 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
 ///
 /// This is needed for operations like `gcd(i64::MIN, 0)` where the unsigned result
 /// (`2^63`) doesn't fit in a signed `i64`.
-fn u64_to_value(n: u64, heap: &mut Heap) -> RunResult<Value> {
+fn u64_to_value(n: u64, heap: &mut Heap) -> Value {
     if let Ok(signed) = i64::try_from(n) {
-        Ok(Value::Int(signed))
+        Value::Int(signed)
     } else {
-        Ok(LongInt::new(BigInt::from(n)).into_value(heap)?)
+        LongInt::new(BigInt::from(n)).into_value(heap)
     }
 }

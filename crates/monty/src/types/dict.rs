@@ -654,7 +654,7 @@ impl Dict {
         }
 
         let dict = dict_guard.into_inner();
-        let heap_id = vm.heap.allocate(HeapData::Dict(dict))?;
+        let heap_id = vm.heap.allocate(HeapData::Dict(dict));
         Ok(Value::Ref(heap_id))
     }
 }
@@ -1138,7 +1138,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
     }
 
     fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        DictKeyIterator::allocate(self_id.expect("heap values have an id"), self.get(vm.heap).len(), vm)
+        Ok(DictKeyIterator::allocate(
+            self_id.expect("heap values have an id"),
+            self.get(vm.heap).len(),
+            vm,
+        ))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -1338,21 +1342,19 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
             }
             StaticStrings::Keys => {
                 args.check_zero_args("dict.keys", vm.heap)?;
-                let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self_id)))?;
+                let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self_id)));
                 vm.heap.inc_ref(self_id);
                 Ok(Value::Ref(view_id))
             }
             StaticStrings::Values => {
                 args.check_zero_args("dict.values", vm.heap)?;
-                let view_id = vm
-                    .heap
-                    .allocate(HeapData::DictValuesView(DictValuesView::new(self_id)))?;
+                let view_id = vm.heap.allocate(HeapData::DictValuesView(DictValuesView::new(self_id)));
                 vm.heap.inc_ref(self_id);
                 Ok(Value::Ref(view_id))
             }
             StaticStrings::Items => {
                 args.check_zero_args("dict.items", vm.heap)?;
-                let view_id = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(self_id)))?;
+                let view_id = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(self_id)));
                 vm.heap.inc_ref(self_id);
                 Ok(Value::Ref(view_id))
             }
@@ -1563,7 +1565,7 @@ fn dict_copy<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Va
     let mut kind_guard = DropGuard::new(kind, vm);
     let mut new_dict = Dict::from_pairs(pairs, kind_guard.ctx())?;
     new_dict.set_kind(kind_guard.into_inner());
-    let heap_id = vm.heap.allocate(HeapData::Dict(new_dict))?;
+    let heap_id = vm.heap.allocate(HeapData::Dict(new_dict));
     Ok(Value::Ref(heap_id))
 }
 
@@ -1742,7 +1744,7 @@ fn dict_popitem<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult
     }
 
     // Create tuple (key, value)
-    Ok(allocate_tuple(smallvec![entry.key, entry.value], vm.heap)?)
+    Ok(allocate_tuple(smallvec![entry.key, entry.value], vm.heap))
 }
 
 // Custom serde implementation for Dict.
@@ -1815,7 +1817,7 @@ pub fn dict_fromkeys(args: ArgValues, kind: DictKind, vm: &mut VM<'_>) -> RunRes
 
     let mut dict = dict_guard.into_inner();
     dict.set_kind(kind);
-    let heap_id = vm.heap.allocate(HeapData::Dict(dict))?;
+    let heap_id = vm.heap.allocate(HeapData::Dict(dict));
     Ok(Value::Ref(heap_id))
 }
 
@@ -1863,14 +1865,14 @@ macro_rules! impl_dict_iterator {
     ($ty:ty, $python_type:expr, $heap_variant:path, $next:expr) => {
         impl $ty {
             /// Allocates an iterator retaining `dict`.
-            pub(crate) fn allocate(dict: HeapId, expected_len: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+            pub(crate) fn allocate(dict: HeapId, expected_len: usize, vm: &mut VM<'_>) -> Value {
                 let id = vm.heap.allocate($heap_variant(Self(DictIteratorState {
                     dict,
                     index: 0,
                     expected_len,
-                })))?;
+                })));
                 vm.heap.inc_ref(dict);
-                Ok(Value::Ref(id))
+                Value::Ref(id)
             }
 
             /// Returns the retained dictionary id for GC tracing.
@@ -1968,7 +1970,7 @@ impl_dict_iterator!(
         Ok(Some(allocate_tuple(
             smallvec![key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)],
             vm.heap,
-        )?))
+        )))
     }
 );
 

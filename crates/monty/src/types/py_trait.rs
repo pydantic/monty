@@ -278,7 +278,7 @@ pub(crate) trait PyTrait<'h> {
         let mut s = String::new();
         let mut heap_ids = LazyHeapSet::default();
         self.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
-        Ok(allocate_string(s, vm.heap)?)
+        Ok(allocate_string(s, vm.heap))
     }
 
     /// Returns the Python `str()` string for this value.
@@ -694,11 +694,11 @@ pub(crate) trait PyTrait<'h> {
 }
 
 /// Converts an attribute name into an owned dict key, preserving interned names.
-pub(crate) fn attribute_name_value(name: &EitherStr, vm: &VM<'_>) -> RunResult<Value> {
-    Ok(match name {
+pub(crate) fn attribute_name_value(name: &EitherStr, vm: &VM<'_>) -> Value {
+    match name {
         EitherStr::Interned(string_id) => Value::InternString(*string_id),
-        EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap)?,
-    })
+        EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap),
+    }
 }
 
 /// Lazy wrapper around [`AHashSet`] that only allocates the set when needed.

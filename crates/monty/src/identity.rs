@@ -4,7 +4,6 @@
 //! must distinguish every identity category. Compact identities remain inline
 //! Python integers; only encodings outside `i64` require a heap `LongInt`.
 
-use monty_types::ResourceError;
 use serde::Serialize;
 
 use crate::{
@@ -88,7 +87,7 @@ impl Identity {
     /// Encodes this key as a nonnegative Python integer.
     ///
     /// Returns an immediate integer when possible, otherwise allocating a `LongInt`.
-    pub(crate) fn into_value(self, heap: &Heap) -> Result<Value, ResourceError> {
+    pub(crate) fn into_value(self, heap: &Heap) -> Value {
         let payload = match &self {
             Self::Undefined | Self::Ellipsis | Self::NotImplemented | Self::None => 0,
             Self::Bool(value) => u128::from(*value),

@@ -12,7 +12,7 @@ use std::{
 use chrono::{
     Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
 };
-use monty_types::{MontyTimeZone, OsFunctionCall, ResourceError};
+use monty_types::{MontyTimeZone, OsFunctionCall};
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -148,7 +148,7 @@ pub(crate) fn from_components(
         }
     }
 
-    attach_or_allocate_tzinfo_ref(&mut datetime, tzinfo_ref, heap)?;
+    attach_or_allocate_tzinfo_ref(&mut datetime, tzinfo_ref, heap);
     Ok(datetime)
 }
 
@@ -218,7 +218,7 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let (tz, tz_ref) = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
     let dt = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, vm.heap)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
 }
 
 /// Argument shape for `datetime(year, month, day, hour=0, minute=0, second=0,
@@ -317,7 +317,7 @@ pub(crate) fn class_strptime(heap: &mut Heap, args: ArgValues, interns: &Interns
         timezone_name: None,
         tzinfo_ref: None,
     };
-    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))?))
+    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
 }
 
 /// Classmethod `datetime.fromisoformat(date_string)`.
@@ -337,7 +337,7 @@ pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &In
     let dt = parse_iso_datetime(&s, heap)
         .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;
 
-    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))?))
+    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
 }
 
 /// Parses an ISO 8601 datetime string into a `DateTime`.
@@ -451,85 +451,59 @@ fn chrono_strptime_formats(fmt: &str) -> Vec<String> {
 }
 
 /// `datetime + timedelta`
-pub(crate) fn py_add(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> Result<Option<Value>, ResourceError> {
+pub(crate) fn py_add(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> Option<Value> {
     let chrono_delta = timedelta::chrono_delta(delta);
 
     let next = if let Some(offset) = datetime.offset_seconds {
-        let Some(utc) = to_utc_naive(datetime) else {
-            return Ok(None);
-        };
-        let Some(next_utc) = utc.checked_add_signed(chrono_delta) else {
-            return Ok(None);
-        };
+        let utc = to_utc_naive(datetime)?;
+        let next_utc = utc.checked_add_signed(chrono_delta)?;
         from_utc_naive_with_timezone_parts(next_utc, offset, datetime.timezone_name.clone())
     } else {
-        let Some(next_local) = datetime.naive.checked_add_signed(chrono_delta) else {
-            return Ok(None);
-        };
+        let next_local = datetime.naive.checked_add_signed(chrono_delta)?;
         from_local_naive(next_local)
     };
 
-    let Some(mut next) = next else {
-        return Ok(None);
-    };
-    attach_or_allocate_tzinfo_ref(&mut next, datetime.tzinfo_ref, heap)?;
-    Ok(Some(Value::Ref(heap.allocate(HeapData::DateTime(next))?)))
+    let mut next = next?;
+    attach_or_allocate_tzinfo_ref(&mut next, datetime.tzinfo_ref, heap);
+    Some(Value::Ref(heap.allocate(HeapData::DateTime(next))))
 }
 
 /// `datetime - timedelta`
-pub(crate) fn py_sub_timedelta(
-    datetime: &DateTime,
-    delta: &TimeDelta,
-    heap: &mut Heap,
-) -> Result<Option<Value>, ResourceError> {
+pub(crate) fn py_sub_timedelta(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> Option<Value> {
     let chrono_delta = timedelta::chrono_delta(delta);
 
     let next = if let Some(offset) = datetime.offset_seconds {
-        let Some(utc) = to_utc_naive(datetime) else {
-            return Ok(None);
-        };
-        let Some(next_utc) = utc.checked_sub_signed(chrono_delta) else {
-            return Ok(None);
-        };
+        let utc = to_utc_naive(datetime)?;
+        let next_utc = utc.checked_sub_signed(chrono_delta)?;
         from_utc_naive_with_timezone_parts(next_utc, offset, datetime.timezone_name.clone())
     } else {
-        let Some(next_local) = datetime.naive.checked_sub_signed(chrono_delta) else {
-            return Ok(None);
-        };
+        let next_local = datetime.naive.checked_sub_signed(chrono_delta)?;
         from_local_naive(next_local)
     };
 
-    let Some(mut next) = next else {
-        return Ok(None);
-    };
-    attach_or_allocate_tzinfo_ref(&mut next, datetime.tzinfo_ref, heap)?;
-    Ok(Some(Value::Ref(heap.allocate(HeapData::DateTime(next))?)))
+    let mut next = next?;
+    attach_or_allocate_tzinfo_ref(&mut next, datetime.tzinfo_ref, heap);
+    Some(Value::Ref(heap.allocate(HeapData::DateTime(next))))
 }
 
 /// `datetime - datetime` returns a timedelta with the difference.
 ///
-/// Both datetimes must be either aware or naive; mixing returns `Ok(None)`.
-pub(crate) fn py_sub_datetime(a: &DateTime, b: &DateTime, heap: &mut Heap) -> Result<Option<Value>, ResourceError> {
+/// Both datetimes must be either aware or naive; mixing returns `None`.
+pub(crate) fn py_sub_datetime(a: &DateTime, b: &DateTime, heap: &mut Heap) -> Option<Value> {
     if is_aware(a) != is_aware(b) {
-        return Ok(None);
+        return None;
     }
 
     let diff = if is_aware(a) {
-        let Some(lhs_utc) = to_utc_naive(a) else {
-            return Ok(None);
-        };
-        let Some(rhs_utc) = to_utc_naive(b) else {
-            return Ok(None);
-        };
+        let lhs_utc = to_utc_naive(a)?;
+        let rhs_utc = to_utc_naive(b)?;
         lhs_utc.signed_duration_since(rhs_utc)
     } else {
         a.naive.signed_duration_since(b.naive)
     };
 
-    let Ok(delta) = timedelta::from_chrono(diff) else {
-        return Ok(None);
-    };
-    Ok(Some(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))?)))
+    let delta = timedelta::from_chrono(diff).ok()?;
+    Some(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))))
 }
 
 fn tzinfo_from_value(value: &Value, heap: &Heap, interns: &Interns) -> RunResult<(Option<TimeZone>, Option<HeapId>)> {
@@ -548,41 +522,32 @@ fn tzinfo_from_value(value: &Value, heap: &Heap, interns: &Interns) -> RunResult
 /// If `preferred_tzinfo_ref` is provided, it is retained and reused so identity
 /// semantics (`is`) match the input timezone object. Otherwise we allocate (or
 /// canonicalize to the UTC singleton) a timezone object once and reuse it.
-fn attach_or_allocate_tzinfo_ref(
-    datetime: &mut DateTime,
-    preferred_tzinfo_ref: Option<HeapId>,
-    heap: &mut Heap,
-) -> Result<(), ResourceError> {
+fn attach_or_allocate_tzinfo_ref(datetime: &mut DateTime, preferred_tzinfo_ref: Option<HeapId>, heap: &mut Heap) {
     let Some(offset_seconds) = datetime.offset_seconds else {
         datetime.tzinfo_ref = None;
-        return Ok(());
+        return;
     };
 
     let tzinfo_ref = if let Some(tzinfo_ref) = preferred_tzinfo_ref {
         heap.inc_ref(tzinfo_ref);
         tzinfo_ref
     } else {
-        allocate_tzinfo_ref(offset_seconds, datetime.timezone_name.clone(), heap)?
+        allocate_tzinfo_ref(offset_seconds, datetime.timezone_name.clone(), heap)
     };
     datetime.tzinfo_ref = Some(tzinfo_ref);
-    Ok(())
 }
 
 /// Allocates a timezone object for datetime storage, canonicalizing UTC to the
 /// shared singleton object.
-fn allocate_tzinfo_ref(
-    offset_seconds: i32,
-    timezone_name: Option<String>,
-    heap: &mut Heap,
-) -> Result<HeapId, ResourceError> {
+fn allocate_tzinfo_ref(offset_seconds: i32, timezone_name: Option<String>, heap: &mut Heap) -> HeapId {
     if offset_seconds == 0 && timezone_name.is_none() {
-        let utc = heap.get_timezone_utc()?;
+        let utc = heap.get_timezone_utc();
         defer_drop!(utc, heap);
         let Value::Ref(id) = utc else {
             unreachable!("timezone.utc must be heap-allocated");
         };
         heap.inc_ref(*id);
-        return Ok(*id);
+        return *id;
     }
     let tz = TimeZone {
         offset_seconds,
@@ -749,7 +714,7 @@ fn extract_datetime_replace_kwargs(args: ArgValues, dt: &DateTime, vm: &mut VM<'
         new_tz_ref,
         vm.heap,
     )?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(new_dt))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(new_dt))))
 }
 
 /// Keyword arguments for `datetime.replace()`. All keyword-only; absent fields
@@ -869,7 +834,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let dt = self.get(vm.heap);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
-            return Ok(allocate_string("<out of range>", vm.heap)?);
+            return Ok(allocate_string("<out of range>", vm.heap));
         };
         let mut s = format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}");
         if microsecond != 0 {
@@ -878,7 +843,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         if let Some(offset) = offset_seconds(dt) {
             s.push_str(&timezone::format_offset_hms(offset));
         }
-        Ok(allocate_string(s, vm.heap)?)
+        Ok(allocate_string(s, vm.heap))
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
@@ -887,7 +852,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         };
         let value = self.get(vm.heap).clone();
         let other = *other.get(vm.heap);
-        Ok(py_add(&value, &other, vm.heap)?)
+        Ok(py_add(&value, &other, vm.heap))
     }
 
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
@@ -895,12 +860,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
             Some(HeapReadOutput::DateTime(other)) => {
                 let value = self.get(vm.heap).clone();
                 let other = other.get(vm.heap).clone();
-                Ok(py_sub_datetime(&value, &other, vm.heap)?)
+                Ok(py_sub_datetime(&value, &other, vm.heap))
             }
             Some(HeapReadOutput::TimeDelta(other)) => {
                 let value = self.get(vm.heap).clone();
                 let other = *other.get(vm.heap);
-                Ok(py_sub_timedelta(&value, &other, vm.heap)?)
+                Ok(py_sub_timedelta(&value, &other, vm.heap))
             }
             _ => Ok(None),
         }
@@ -918,13 +883,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
             Some(id) if id == StaticStrings::Isoformat => {
                 args.check_zero_args("datetime.isoformat", vm.heap)?;
                 let s = format_isoformat(&dt, 'T');
-                Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)?))
+                Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)))
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 defer_drop!(format, vm);
                 let formatted = format_datetime_strftime(&dt, format.as_str(vm))?;
-                Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
+                Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
             }
             Some(id) if id == StaticStrings::Replace => {
                 let result = extract_datetime_replace_kwargs(args, &dt, vm)?;
@@ -949,7 +914,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
                     i32::try_from(dt.naive.date().month()).expect("month in 1..12"),
                     i32::try_from(dt.naive.date().day()).expect("day in 1..31"),
                 )?;
-                Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(d))?)))
+                Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(d)))))
             }
             Some(id) if id == StaticStrings::Timestamp => {
                 args.check_zero_args("datetime.timestamp", vm.heap)?;
@@ -993,10 +958,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
                 }
                 if let Some(tz) = timezone_info(&dt) {
                     if tz.offset_seconds == 0 && tz.name.is_none() {
-                        return Ok(Some(CallResult::Value(vm.heap.get_timezone_utc()?)));
+                        return Ok(Some(CallResult::Value(vm.heap.get_timezone_utc())));
                     }
                     return Ok(Some(CallResult::Value(Value::Ref(
-                        vm.heap.allocate(HeapData::TimeZone(tz))?,
+                        vm.heap.allocate(HeapData::TimeZone(tz)),
                     ))));
                 }
                 Ok(Some(CallResult::Value(Value::None)))

@@ -165,7 +165,7 @@ fn int_pow_int(b: i64, e: i64, heap: &mut Heap) -> RunResult<Value> {
             // Check size before computing to prevent DoS
             check_pow_size(i64_bits(b), u64::from(exp_u32), heap.tracker())?;
             let bi = BigInt::from(b).pow(exp_u32);
-            Ok(LongInt::new(bi).into_value(heap)?)
+            Ok(LongInt::new(bi).into_value(heap))
         }
     } else {
         // Exponent too large for u32 - use BigInt for result
@@ -176,7 +176,7 @@ fn int_pow_int(b: i64, e: i64, heap: &mut Heap) -> RunResult<Value> {
         check_pow_size(i64_bits(b), exp_u64, heap.tracker())?;
         let base_bi = BigInt::from(b);
         let bi = bigint_pow_large(&base_bi, exp_u64)?;
-        Ok(LongInt::new(bi).into_value(heap)?)
+        Ok(LongInt::new(bi).into_value(heap))
     }
 }
 
@@ -207,7 +207,7 @@ fn int_pow_longint(b: i64, e: &BigInt, heap: &Heap) -> RunResult<Value> {
         // Check size before computing to prevent DoS
         check_pow_size(i64_bits(b), u64::from(exp_u32), heap.tracker())?;
         let bi = BigInt::from(b).pow(exp_u32);
-        Ok(LongInt::new(bi).into_value(heap)?)
+        Ok(LongInt::new(bi).into_value(heap))
     } else {
         // Exponent too large
         Err(ExcType::overflow_exponent_too_large())
@@ -230,7 +230,7 @@ fn longint_pow_int(b: &BigInt, e: i64, heap: &Heap) -> RunResult<Value> {
         // Check size before computing to prevent DoS
         check_pow_size(b.bits(), u64::from(exp_u32), heap.tracker())?;
         let bi = b.pow(exp_u32);
-        Ok(LongInt::new(bi).into_value(heap)?)
+        Ok(LongInt::new(bi).into_value(heap))
     } else {
         // Exponent too large for u32
         // Safety: e >= 0 at this point
@@ -239,7 +239,7 @@ fn longint_pow_int(b: &BigInt, e: i64, heap: &Heap) -> RunResult<Value> {
         // Check size before computing to prevent DoS
         check_pow_size(b.bits(), exp_u64, heap.tracker())?;
         let bi = bigint_pow_large(b, exp_u64)?;
-        Ok(LongInt::new(bi).into_value(heap)?)
+        Ok(LongInt::new(bi).into_value(heap))
     }
 }
 
@@ -259,7 +259,7 @@ fn longint_pow_longint(b: &BigInt, e: &BigInt, heap: &Heap) -> RunResult<Value> 
         // Check size before computing to prevent DoS
         check_pow_size(b.bits(), u64::from(exp_u32), heap.tracker())?;
         let bi = b.pow(exp_u32);
-        Ok(LongInt::new(bi).into_value(heap)?)
+        Ok(LongInt::new(bi).into_value(heap))
     } else {
         // Exponent too large
         Err(ExcType::overflow_exponent_too_large())

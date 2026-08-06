@@ -82,11 +82,11 @@ impl TimeZone {
         };
 
         if offset_seconds == 0 && name_str.is_none() {
-            return vm.heap.get_timezone_utc().map_err(Into::into);
+            return Ok(vm.heap.get_timezone_utc());
         }
 
         let tz = Self::new(offset_seconds, name_str)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))?))
+        Ok(Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))))
     }
 
     /// Formats offset as `+HH:MM` / `-HH:MM` with optional `:SS`.
@@ -269,6 +269,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         } else {
             format!("UTC{}", tz.format_utc_offset())
         };
-        Ok(allocate_string(s, vm.heap)?)
+        Ok(allocate_string(s, vm.heap))
     }
 }
