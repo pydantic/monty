@@ -7,24 +7,55 @@
 use std::os::unix::fs::symlink;
 #[cfg(windows)]
 use std::os::windows::fs::{symlink_dir as win_symlink_dir, symlink_file as win_symlink_file};
-use std::{fs, path::Path};
+use std::{fs, io, path::Path, sync::OnceLock};
 
-/// Cross-platform symlink to a file. Windows needs Developer Mode or elevation.
+use tempfile::TempDir;
+
+/// Cross-platform symlink to a file. Guard the test with [`symlinks_supported`].
 pub fn symlink_file(original: impl AsRef<Path>, link: impl AsRef<Path>) {
-    #[cfg(unix)]
-    symlink(original.as_ref(), link.as_ref()).expect("failed to create file symlink");
-    #[cfg(windows)]
-    win_symlink_file(original.as_ref(), link.as_ref())
-        .expect("failed to create file symlink (enable Windows Developer Mode or run elevated)");
+    try_symlink_file(original, link).expect("failed to create file symlink");
 }
 
-/// Cross-platform symlink to a directory. Windows needs Developer Mode or elevation.
+/// Cross-platform symlink to a directory. Guard the test with [`symlinks_supported`].
 pub fn symlink_dir(original: impl AsRef<Path>, link: impl AsRef<Path>) {
+    try_symlink_dir(original, link).expect("failed to create directory symlink");
+}
+
+/// Whether this host can create symlinks at all, probed once per test binary.
+///
+/// Windows needs Developer Mode or elevation; without it there is nothing under
+/// test, so symlink tests should skip rather than fail the whole suite. Keep the
+/// panicking helpers for use *after* this returns true, where a failure is a
+/// real bug rather than a missing privilege.
+pub fn symlinks_supported() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        let Ok(dir) = TempDir::new() else {
+            return false;
+        };
+        let supported = try_symlink_file("probe-target", dir.path().join("probe-link")).is_ok();
+        if !supported {
+            eprintln!(
+                "symlink tests will skip: this host cannot create symlinks \
+                 (Windows needs Developer Mode or elevation)"
+            );
+        }
+        supported
+    })
+}
+
+fn try_symlink_file(original: impl AsRef<Path>, link: impl AsRef<Path>) -> io::Result<()> {
     #[cfg(unix)]
-    symlink(original.as_ref(), link.as_ref()).expect("failed to create directory symlink");
+    return symlink(original.as_ref(), link.as_ref());
     #[cfg(windows)]
-    win_symlink_dir(original.as_ref(), link.as_ref())
-        .expect("failed to create directory symlink (enable Windows Developer Mode or run elevated)");
+    return win_symlink_file(original.as_ref(), link.as_ref());
+}
+
+fn try_symlink_dir(original: impl AsRef<Path>, link: impl AsRef<Path>) -> io::Result<()> {
+    #[cfg(unix)]
+    return symlink(original.as_ref(), link.as_ref());
+    #[cfg(windows)]
+    return win_symlink_dir(original.as_ref(), link.as_ref());
 }
 
 /// Renames a mount's host directory, reporting whether the OS allowed it.

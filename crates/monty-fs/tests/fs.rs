@@ -16,7 +16,7 @@ use tempfile::TempDir;
 // Only `symlink_file` is needed here; `symlink_dir` is dead in this crate.
 #[expect(dead_code, reason = "shared helper module; not every test crate uses all of it")]
 mod common;
-use common::symlink_file;
+use common::{symlink_file, symlinks_supported};
 
 // =============================================================================
 // Helpers
@@ -220,6 +220,9 @@ fn rw_is_symlink() {
 
 #[test]
 fn rw_is_symlink_true_for_symlink() {
+    if !symlinks_supported() {
+        return;
+    }
     let dir = create_test_dir();
     symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
@@ -243,6 +246,9 @@ fn rw_is_symlink_true_for_symlink() {
 
 #[test]
 fn overlay_is_symlink_true_for_symlink() {
+    if !symlinks_supported() {
+        return;
+    }
     let dir = create_test_dir();
     symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
     let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
@@ -2176,6 +2182,9 @@ fn no_limit_allows_large_writes() {
 #[test]
 #[cfg(unix)]
 fn rw_unlink_symlink_removes_link_not_target() {
+    if !symlinks_supported() {
+        return;
+    }
     let dir = create_test_dir();
     symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
 
@@ -2197,6 +2206,9 @@ fn rw_unlink_symlink_removes_link_not_target() {
 #[test]
 #[cfg(unix)]
 fn rw_rename_symlink_renames_link_not_target() {
+    if !symlinks_supported() {
+        return;
+    }
     let dir = create_test_dir();
     symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
 
@@ -2359,6 +2371,9 @@ fn ovl_mem_rename_overlay_file_onto_overlay_dir() {
 #[test]
 #[cfg(unix)]
 fn ovl_mem_rename_symlink_preserves_symlink() {
+    if !symlinks_supported() {
+        return;
+    }
     let dir = create_test_dir();
     symlink_file("hello.txt", dir.path().join("link.txt"));
 

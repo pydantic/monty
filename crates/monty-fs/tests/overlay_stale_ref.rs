@@ -17,7 +17,7 @@ use monty_types::{MontyObject, OsFunctionCall, PathStringDataArgs, RenameCallArg
 use tempfile::TempDir;
 
 mod common;
-use common::{symlink_dir, symlink_file, try_rename_mount_root};
+use common::{symlink_dir, symlink_file, symlinks_supported, try_rename_mount_root};
 
 /// Marker written to the out-of-mount file; its appearance in any result is
 /// the disclosure these tests guard against.
@@ -114,12 +114,18 @@ impl StaleRef {
 /// `read_text` must re-validate the cached ref rather than trust it.
 #[test]
 fn stale_ref_is_revalidated_on_read_text() {
+    if !symlinks_supported() {
+        return;
+    }
     StaleRef::new().assert_rejected(OsFunctionCall::ReadText("/mnt/moved.txt".into()));
 }
 
 /// `read_bytes` shares the `RealFileRef` shortcut and must re-validate too.
 #[test]
 fn stale_ref_is_revalidated_on_read_bytes() {
+    if !symlinks_supported() {
+        return;
+    }
     StaleRef::new().assert_rejected(OsFunctionCall::ReadBytes("/mnt/moved.txt".into()));
 }
 
@@ -128,6 +134,9 @@ fn stale_ref_is_revalidated_on_read_bytes() {
 /// otherwise the secret lands in overlay state and reads back from memory.
 #[test]
 fn stale_ref_is_revalidated_on_append() {
+    if !symlinks_supported() {
+        return;
+    }
     let mut scenario = StaleRef::new();
     scenario.assert_rejected(OsFunctionCall::AppendText(PathStringDataArgs {
         path: "/mnt/moved.txt".into(),
@@ -147,6 +156,9 @@ fn stale_ref_is_revalidated_on_append() {
 /// had to be *rejected* instead.
 #[test]
 fn mount_root_swap_does_not_redirect_a_cached_ref() {
+    if !symlinks_supported() {
+        return;
+    }
     let base = TempDir::new().unwrap();
     let mount_path = base.path().join("mount");
     let elsewhere = base.path().join("elsewhere");
@@ -183,6 +195,9 @@ fn mount_root_swap_does_not_redirect_a_cached_ref() {
 #[test]
 #[cfg(unix)]
 fn renaming_symlink_to_denied_target_reports_the_io_error() {
+    if !symlinks_supported() {
+        return;
+    }
     let mount_dir = TempDir::new().unwrap();
     let sub = mount_dir.path().join("sub");
     fs::create_dir(&sub).unwrap();
@@ -208,6 +223,9 @@ fn renaming_symlink_to_denied_target_reports_the_io_error() {
 /// is rejected, so the leak above is specific to the `RealFileRef` shortcut.
 #[test]
 fn direct_read_through_escaping_symlink_is_rejected() {
+    if !symlinks_supported() {
+        return;
+    }
     let mount_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
 
@@ -244,6 +262,9 @@ fn junction_is_classified_as_symlink() {
 /// `reject_escaping_symlink` is exercised rather than the read-time check behind it.
 #[test]
 fn renaming_escaping_symlink_into_overlay_is_rejected() {
+    if !symlinks_supported() {
+        return;
+    }
     let mount_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
 

@@ -22,7 +22,7 @@ use std::{
 #[cfg(unix)]
 use std::{io::ErrorKind, os::unix::fs::PermissionsExt};
 
-use common::{symlink_dir, symlink_file, try_rename_mount_root};
+use common::{symlink_dir, symlink_file, symlinks_supported, try_rename_mount_root};
 #[cfg(unix)]
 use monty_fs::OverlayState;
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable};
@@ -65,6 +65,9 @@ fn mount_rw(host: &Path) -> MountTable {
 /// mount time still refers to the original directory.
 #[test]
 fn mount_root_swapped_for_symlink_still_reads_original() {
+    if !symlinks_supported() {
+        return;
+    }
     let base = TempDir::new().unwrap();
     let mount_path = base.path().join("mount");
     let elsewhere = base.path().join("elsewhere");
@@ -140,6 +143,9 @@ fn mounted_directory_cannot_be_renamed_on_windows() {
 /// via a boundary check rather than structurally.
 #[test]
 fn read_through_swapped_intermediate_directory_is_rejected() {
+    if !symlinks_supported() {
+        return;
+    }
     let mount_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
     fs::write(outside_dir.path().join("secret.txt"), SECRET).unwrap();
@@ -167,6 +173,9 @@ fn read_through_swapped_intermediate_directory_is_rejected() {
 /// happen on macOS/APFS, so treat a green run as a soak rather than a proof.
 #[test]
 fn concurrent_rename_cannot_redirect_a_read() {
+    if !symlinks_supported() {
+        return;
+    }
     let mount_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
 
@@ -242,6 +251,9 @@ fn concurrent_rename_cannot_redirect_a_read() {
 /// anything outside the mount.
 #[test]
 fn write_through_swapped_directory_cannot_escape() {
+    if !symlinks_supported() {
+        return;
+    }
     let mount_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
     let outside_file = outside_dir.path().join("target.txt");
@@ -281,6 +293,9 @@ fn write_through_swapped_directory_cannot_escape() {
 /// this pins the rule that decides which links work.
 #[test]
 fn relative_symlink_target_is_followed_inside_the_mount() {
+    if !symlinks_supported() {
+        return;
+    }
     let mount_dir = TempDir::new().unwrap();
     fs::write(mount_dir.path().join("hello.txt"), "in-mount").unwrap();
     symlink_file("hello.txt", mount_dir.path().join("link.txt"));
@@ -300,6 +315,9 @@ fn relative_symlink_target_is_followed_inside_the_mount() {
 /// Re-rooting it ourselves would restore the check-then-use this design removes.
 #[test]
 fn absolute_symlink_target_is_refused_even_inside_the_mount() {
+    if !symlinks_supported() {
+        return;
+    }
     let mount_dir = TempDir::new().unwrap();
     fs::write(mount_dir.path().join("hello.txt"), "in-mount").unwrap();
     symlink_file(mount_dir.path().join("hello.txt"), mount_dir.path().join("abs.txt"));

@@ -17,7 +17,7 @@ use tempfile::TempDir;
 
 #[expect(dead_code, reason = "shared helper module; not every test crate uses all of it")]
 mod common;
-use common::{symlink_dir, symlink_file};
+use common::{symlink_dir, symlink_file, symlinks_supported};
 
 // =============================================================================
 // Helpers
@@ -390,6 +390,9 @@ mod symlink_tests {
 
     #[test]
     fn symlink_to_outside_directory() {
+        if !symlinks_supported() {
+            return;
+        }
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("secret.txt"), "secret data").unwrap();
@@ -405,6 +408,9 @@ mod symlink_tests {
 
     #[test]
     fn symlink_to_outside_file() {
+        if !symlinks_supported() {
+            return;
+        }
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("secret.txt"), "secret").unwrap();
@@ -417,6 +423,9 @@ mod symlink_tests {
 
     #[test]
     fn symlink_open_escape() {
+        if !symlinks_supported() {
+            return;
+        }
         // `open()` on a path that escapes the mount via a symlink must be
         // rejected — for read (would read an outside file) and for write
         // (the open-time truncate would write outside the mount).
@@ -433,6 +442,9 @@ mod symlink_tests {
 
     #[test]
     fn symlink_to_parent() {
+        if !symlinks_supported() {
+            return;
+        }
         let dir = create_test_dir();
         let parent = dir.path().parent().unwrap();
 
@@ -445,6 +457,9 @@ mod symlink_tests {
     #[test]
     #[cfg(unix)] // Relative symlink targets are not supported on Windows
     fn relative_symlink_escape() {
+        if !symlinks_supported() {
+            return;
+        }
         let dir = create_test_dir();
 
         // Create symlink that uses relative path to escape.
@@ -459,6 +474,9 @@ mod symlink_tests {
     /// revealing nothing about where it points. The following predicates differ.
     #[test]
     fn is_symlink_reports_an_outbound_link_that_lives_in_the_mount() {
+        if !symlinks_supported() {
+            return;
+        }
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("secret.txt"), "secret").unwrap();
@@ -477,6 +495,9 @@ mod symlink_tests {
 
     #[test]
     fn symlink_escape_no_info_leak() {
+        if !symlinks_supported() {
+            return;
+        }
         // Error messages should only contain virtual path, not host path.
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
@@ -499,6 +520,9 @@ mod symlink_tests {
 
     #[test]
     fn symlink_escape_overlay_memory() {
+        if !symlinks_supported() {
+            return;
+        }
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("secret.txt"), "secret").unwrap();
@@ -511,6 +535,9 @@ mod symlink_tests {
 
     #[test]
     fn symlink_within_mount_allowed() {
+        if !symlinks_supported() {
+            return;
+        }
         // Symlinks that stay within the mount boundary should work.
         let dir = create_test_dir();
         symlink_file("hello.txt", dir.path().join("internal_link"));
@@ -522,6 +549,9 @@ mod symlink_tests {
 
     #[test]
     fn symlink_to_directory_within_mount_allowed() {
+        if !symlinks_supported() {
+            return;
+        }
         // Symlink to a subdirectory within the mount should work for all operations.
         let dir = create_test_dir();
         symlink_dir("subdir", dir.path().join("dir_link"));
@@ -547,6 +577,9 @@ mod symlink_tests {
 
     #[test]
     fn chained_symlinks_within_mount_allowed() {
+        if !symlinks_supported() {
+            return;
+        }
         // A symlink pointing to another symlink, both within the mount, should work.
         let dir = create_test_dir();
         symlink_file("hello.txt", dir.path().join("link1"));
@@ -559,6 +592,9 @@ mod symlink_tests {
 
     #[test]
     fn chained_symlinks_escape_blocked() {
+        if !symlinks_supported() {
+            return;
+        }
         // A symlink within mount pointing to another symlink that escapes should be blocked.
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
@@ -574,6 +610,9 @@ mod symlink_tests {
 
     #[test]
     fn mkdir_parents_through_symlink_escape_blocked_readwrite() {
+        if !symlinks_supported() {
+            return;
+        }
         // Regression test: mkdir(parents=True) through a symlinked ancestor must
         // not create directories outside the mount boundary in ReadWrite mode.
         let dir = create_test_dir();
@@ -600,6 +639,9 @@ mod symlink_tests {
 
     #[test]
     fn mkdir_parents_through_symlink_escape_blocked_readonly() {
+        if !symlinks_supported() {
+            return;
+        }
         // ReadOnly mode should also block mkdir through symlink escape.
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
@@ -622,6 +664,9 @@ mod symlink_tests {
 
     #[test]
     fn mkdir_parents_through_nested_symlink_escape_blocked() {
+        if !symlinks_supported() {
+            return;
+        }
         // mkdir(parents=True) through a symlinked directory deeper in the tree.
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
@@ -657,6 +702,9 @@ mod symlink_tests {
 
     #[test]
     fn mkdir_parents_through_internal_symlink_allowed() {
+        if !symlinks_supported() {
+            return;
+        }
         // mkdir(parents=True) through a symlink that stays within the mount is fine.
         let dir = create_test_dir();
 
@@ -739,6 +787,9 @@ mod hard_link_tests {
     #[test]
     #[cfg(unix)]
     fn broken_symlink_write_escape_blocked() {
+        if !symlinks_supported() {
+            return;
+        }
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
         let escape_target = outside.path().join("pwned.txt");
@@ -767,6 +818,9 @@ mod hard_link_tests {
     #[test]
     #[cfg(unix)]
     fn broken_symlink_overlay_writes_to_memory_not_real_fs() {
+        if !symlinks_supported() {
+            return;
+        }
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
         let escape_target = outside.path().join("pwned.txt");
@@ -796,6 +850,9 @@ mod hard_link_tests {
     #[test]
     #[cfg(unix)]
     fn iterdir_filters_outbound_symlinks_but_keeps_regular_and_inbound() {
+        if !symlinks_supported() {
+            return;
+        }
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("external.txt"), "external").unwrap();
@@ -845,6 +902,9 @@ mod hard_link_tests {
     #[test]
     #[cfg(unix)]
     fn iterdir_keeps_inbound_symlink_with_non_utf8_name() {
+        if !symlinks_supported() {
+            return;
+        }
         let dir = create_test_dir();
         let raw_name = OsStr::from_bytes(b"nonutf8\xff_link");
         if symlink("hello.txt", dir.path().join(raw_name)).is_err() {
@@ -870,6 +930,9 @@ mod hard_link_tests {
     #[test]
     #[cfg(unix)]
     fn overlay_iterdir_filters_symlinks_like_direct_mode() {
+        if !symlinks_supported() {
+            return;
+        }
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("external.txt"), "external").unwrap();
@@ -1139,6 +1202,9 @@ fn rename_traversal_dst() {
 ///    the outside file's contents, completely bypassing boundary checks.
 #[test]
 fn rename_symlink_escape_overlay_read_text() {
+    if !symlinks_supported() {
+        return;
+    }
     // Create the mount directory and a file *outside* it.
     let mount_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
@@ -1190,6 +1256,9 @@ fn rename_symlink_escape_overlay_read_text() {
 /// Same as above but for `read_bytes`.
 #[test]
 fn rename_symlink_escape_overlay_read_bytes() {
+    if !symlinks_supported() {
+        return;
+    }
     let mount_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
     let secret = b"TOP SECRET BYTES";
