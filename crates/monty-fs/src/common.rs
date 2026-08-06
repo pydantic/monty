@@ -5,7 +5,9 @@
 //! byte decoding, stat conversion, and quota bookkeeping logic.
 
 use std::{
+    ffi::OsStr,
     io::{Error as IoError, ErrorKind, Read, Write},
+    path::{Path, PathBuf},
     time::SystemTime,
 };
 
@@ -327,7 +329,11 @@ pub(super) fn list_visible_real_dir_entry_names(
         let file_type = entry.file_type().map_err(|err| map_io(err, vpath))?;
 
         if file_type.is_symlink() {
-            let child = join_relative(rel, &entry.file_name().to_string_lossy());
+            // Join the raw name: a lossy `String` round-trip would look up a
+            // different entry and silently drop this one. The lookup must stay
+            // path-based so it runs through the descriptor's confinement check —
+            // `entry.metadata()` resolves the link without one.
+            let child = join_relative_os(rel, &entry.file_name());
             if dir.metadata(&child).is_err() {
                 continue;
             }
@@ -386,6 +392,17 @@ pub(super) fn dir_mtime(dir: &Dir, rel: &str) -> f64 {
         .map_or_else(|_| SystemTime::now(), CapSystemTime::into_std)
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
+}
+
+/// Joins a mount-relative directory path with a raw directory entry name.
+///
+/// Takes the name as an `OsStr` so a non-UTF-8 filename survives the join.
+pub(super) fn join_relative_os(rel: &str, child: &OsStr) -> PathBuf {
+    if rel.is_empty() || rel == "." {
+        PathBuf::from(child)
+    } else {
+        Path::new(rel).join(child)
+    }
 }
 
 /// Joins a mount-relative directory path with a child name.

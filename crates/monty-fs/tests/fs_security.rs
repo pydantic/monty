@@ -5,7 +5,7 @@
 //! Tests cover all mount modes to ensure the security invariant holds everywhere.
 
 #[cfg(unix)]
-use std::os::unix::fs::symlink;
+use std::{ffi::OsStr, os::unix::ffi::OsStrExt, os::unix::fs::symlink};
 use std::{fmt, fs};
 
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
@@ -813,6 +813,35 @@ mod hard_link_tests {
         } else {
             panic!("expected List from iterdir, got {result:?}");
         }
+    }
+
+    /// An in-mount symlink whose *name* is not valid UTF-8 must still be listed.
+    ///
+    /// The in-mount check has to run against the raw directory entry: rebuilding
+    /// the path from a lossy name looks up something that does not exist, so the
+    /// link is silently dropped. Its listed name is still lossy — that predates
+    /// this and is unchanged here.
+    #[test]
+    #[cfg(unix)]
+    fn iterdir_keeps_inbound_symlink_with_non_utf8_name() {
+        let dir = create_test_dir();
+        let raw_name = OsStr::from_bytes(b"caf\xff_link");
+        if symlink("hello.txt", dir.path().join(raw_name)).is_err() {
+            // APFS and friends reject non-UTF-8 filenames outright, so the bug
+            // this guards is unobservable there. ext4 exercises it.
+            eprintln!("skipped: filesystem rejects non-UTF-8 filenames");
+            return;
+        }
+
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+        let result = call(&mut mt, PathOp::Iterdir, "/mnt").unwrap().unwrap();
+        let names = sorted_names_from_list(&result);
+
+        let lossy = raw_name.to_string_lossy().to_string();
+        assert!(
+            names.contains(&lossy),
+            "in-mount symlink with a non-UTF-8 name was dropped: {names:?}"
+        );
     }
 
     /// Overlay mode should expose the same visible real entries as direct mode:
