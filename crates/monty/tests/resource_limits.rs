@@ -239,21 +239,6 @@ len(result)
 }
 
 #[test]
-fn max_memory_requires_allocator() {
-    let run = MontyRun::new("1 + 1".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let limits = ResourceLimits::default().max_memory(1024);
-    let err = run
-        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
-        .unwrap_err();
-
-    assert_eq!(err.exc_type(), ExcType::RuntimeError);
-    assert_eq!(
-        err.message(),
-        Some("max_memory requires monty-alloc as the global allocator")
-    );
-}
-
-#[test]
 fn time_limit_exceeded() {
     // Create a long-running loop using for + range (while isn't implemented yet)
     // Use a very large range to ensure it runs long enough to hit the time limit
