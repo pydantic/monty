@@ -20,13 +20,6 @@ pub mod worker;
 /// independently. Equals the workspace version, since every crate shares it.
 pub const MONTY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Exit code a worker uses when it exceeded its memory limit or the allocator
-/// refused an allocation, so the parent can report `MemoryError` instead of an
-/// unclassifiable `SIGABRT`.
-///
-/// `EX_DATAERR` from BSD `sysexits.h`. See <https://man.freebsd.org/cgi/man.cgi?query=sysexits>.
-pub const OOM_EXIT_CODE: i32 = 65;
-
 pub use convert::{MAX_VALUE_DEPTH, ProtoConvertError, exceeds_max_value_depth, future_results_from_proto};
 pub use frame::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_framed_into,

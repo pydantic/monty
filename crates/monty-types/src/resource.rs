@@ -3,7 +3,13 @@
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
-use std::{cell::Cell, error::Error, fmt, sync::OnceLock, time::Duration};
+use std::{
+    cell::Cell,
+    error::Error,
+    fmt,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 // `std::time::Instant::now()` panics ("time not implemented on this platform")
 // on `wasm32-unknown-unknown`, so any `max_duration` limit aborts there. Swap in
@@ -12,6 +18,18 @@ use std::{cell::Cell, error::Error, fmt, sync::OnceLock, time::Duration};
 // dependency is pulled in only where it's needed (see Cargo.toml).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use web_time::Instant;
+
+/// Exit code a worker uses when it exceeded its memory limit or the allocator
+/// refused an allocation, so the parent can report `MemoryError` instead of an
+/// unclassifiable `SIGABRT`.
+///
+/// `EX_DATAERR` from BSD `sysexits.h`. See <https://man.freebsd.org/cgi/man.cgi?query=sysexits>.
+pub const OOM_EXIT_CODE: i32 = 65;
+/// Bytes of memory currently used
+pub static LIVE_MEMORY: AtomicUsize = AtomicUsize::new(0);
+/// The leanest the process has ever been at an arming point: what the worker
+/// costs to exist, before any session ran.
+pub static BASELINE_MEMORY: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// Threshold in bytes above which `check_large_result` is called.
 ///
@@ -34,8 +52,6 @@ pub enum ResourceError {
     Time { limit: Duration, elapsed: Duration },
     /// Maximum memory usage exceeded.
     Memory { limit: usize, used: usize },
-    /// A memory limit was requested without allocator-backed accounting.
-    MemoryUnavailable,
     /// Maximum recursion depth exceeded.
     Recursion { limit: usize, depth: usize },
 }
@@ -48,9 +64,6 @@ impl fmt::Display for ResourceError {
             }
             Self::Memory { limit, used } => {
                 write!(f, "memory limit exceeded: {used} bytes > {limit} bytes")
-            }
-            Self::MemoryUnavailable => {
-                write!(f, "max_memory requires monty-alloc as the global allocator")
             }
             Self::Recursion { .. } => {
                 write!(f, "maximum recursion depth exceeded")
@@ -137,27 +150,6 @@ impl ResourceLimits {
 /// By only checking every N calls, we reduce this overhead while still catching
 /// timeouts promptly.
 const TIME_CHECK_INTERVAL: u16 = 10;
-
-/// Reports allocator-backed session memory, including a proposed allocation.
-type MemoryProbe = fn(usize) -> usize;
-
-/// Process-global probe installed by a worker's global allocator.
-static MEMORY_PROBE: OnceLock<MemoryProbe> = OnceLock::new();
-
-/// Installs the allocator-backed memory probe used by worker resource trackers.
-///
-/// This is an integration point for `monty-alloc`; configuring `max_memory`
-/// without installing the probe produces [`ResourceError::MemoryUnavailable`].
-#[doc(hidden)]
-pub fn register_memory_probe(probe: MemoryProbe) {
-    let _ = MEMORY_PROBE.set(probe);
-}
-
-/// Returns allocator-backed session usage when a worker installed the probe.
-#[inline]
-fn probed_memory(additional: usize) -> Option<usize> {
-    MEMORY_PROBE.get().map(|probe| probe(additional))
-}
 
 /// A resource tracker that enforces configurable limits.
 ///
@@ -282,7 +274,7 @@ impl ResourceTracker {
     #[inline]
     pub fn check_allocation(&self, additional: usize) -> Result<(), ResourceError> {
         if let Some(limit) = self.limits.max_memory {
-            let used = probed_memory(additional).ok_or(ResourceError::MemoryUnavailable)?;
+            let used = probe_memory().saturating_add(additional);
             if used > limit {
                 return Err(ResourceError::Memory { limit, used });
             }
@@ -301,7 +293,7 @@ impl ResourceTracker {
     #[inline]
     pub fn check_time(&self) -> Result<(), ResourceError> {
         if let Some(limit) = self.limits.max_memory {
-            let used = probed_memory(0).ok_or(ResourceError::MemoryUnavailable)?;
+            let used = probe_memory();
             if used > limit {
                 return Err(ResourceError::Memory { limit, used });
             }
@@ -412,4 +404,11 @@ impl ResourceTracker {
         self.recursion_limit_override.set(Some(new_limit));
         Ok(())
     }
+}
+
+/// Returns memory used in bytes
+fn probe_memory() -> usize {
+    LIVE_MEMORY
+        .load(Ordering::Relaxed)
+        .saturating_sub(BASELINE_MEMORY.load(Ordering::Relaxed))
 }

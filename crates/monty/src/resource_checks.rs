@@ -118,7 +118,6 @@ impl From<ResourceError> for RunError {
     fn from(err: ResourceError) -> Self {
         let (exc_type, catchable) = match &err {
             ResourceError::Memory { .. } => (ExcType::MemoryError, false),
-            ResourceError::MemoryUnavailable => (ExcType::RuntimeError, false),
             ResourceError::Time { .. } => (ExcType::TimeoutError, false),
             ResourceError::Recursion { .. } => (ExcType::RecursionError, true),
         };

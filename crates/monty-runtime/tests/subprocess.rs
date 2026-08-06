@@ -518,7 +518,7 @@ fn refused_allocation_exits_with_the_oom_code() {
     // no `max_memory`, so the sandbox tracker permits this outright
     child.feed_expecting_death("x = ' ' * (1 << 60)");
     let (status, stderr) = child.reap_with_stderr();
-    assert_eq!(status.code(), Some(monty_proto::OOM_EXIT_CODE), "got {status:?}");
+    assert_eq!(status.code(), Some(monty_types::OOM_EXIT_CODE), "got {status:?}");
     assert!(
         stderr.contains("allocation of 1152921504606846976 bytes failed"),
         "{stderr}"
@@ -537,7 +537,7 @@ fn exceeding_the_memory_limit_exits_with_the_oom_code() {
     child.create_repl_with(configure_with_max_memory(1024));
     child.oversized_prefix_expecting_death();
     let (status, stderr) = child.reap_with_stderr();
-    assert_eq!(status.code(), Some(monty_proto::OOM_EXIT_CODE), "got {status:?}");
+    assert_eq!(status.code(), Some(monty_types::OOM_EXIT_CODE), "got {status:?}");
     assert!(
         stderr.contains("allocation of 209715200 bytes exceeds the memory limit"),
         "{stderr}"
@@ -565,7 +565,7 @@ fn loading_a_dump_applies_its_own_memory_limit() {
     };
     restored.oversized_prefix_expecting_death();
     let (status, stderr) = restored.reap_with_stderr();
-    assert_eq!(status.code(), Some(monty_proto::OOM_EXIT_CODE), "got {status:?}");
+    assert_eq!(status.code(), Some(monty_types::OOM_EXIT_CODE), "got {status:?}");
     assert!(
         stderr.contains("allocation of 209715200 bytes exceeds the memory limit"),
         "{stderr}"

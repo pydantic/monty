@@ -1029,7 +1029,7 @@ impl Checkout {
             PoolError::Disconnected {
                 context: context.to_owned(),
             }
-        } else if status.and_then(|status| status.code()) == Some(monty_proto::OOM_EXIT_CODE) {
+        } else if status.and_then(|status| status.code()) == Some(monty_types::OOM_EXIT_CODE) {
             // the worker is gone, unlike every other `Runtime` error — the
             // checkout is already finished, so later calls report `Finished`
             PoolError::Runtime(MontyException::new(

@@ -9,18 +9,13 @@ use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-/// Bytes currently charged, plus the session's soft and hard ceilings.
+use monty_types::{BASELINE_MEMORY, LIVE_MEMORY, OOM_EXIT_CODE};
+
+/// The session's soft and hard ceilings.
 /// Counting starts with the process: a counter armed later would see `dealloc`s
 /// it never charged and underflow.
-static LIVE: AtomicUsize = AtomicUsize::new(0);
 static SOFT_LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
 static HARD_LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
-
-/// The leanest the process has ever been at an arming point: what the worker
-/// costs to exist, before any session ran. Deriving each limit from the
-/// *current* live total instead would let memory retained between sessions
-/// ratchet it up checkout after checkout.
-static BASELINE: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// Room between the soft and hard limits for exception machinery and work
 /// between interpreter checkpoints. Type checking gets a larger gap because
@@ -35,14 +30,13 @@ const TYPE_CHECK_HEADROOM: usize = 32 * 1024 * 1024;
 /// On a 32-bit target (wasm) a limit near 4 GiB saturates the arithmetic and
 /// leaves the worker uncapped — there is no cap to express.
 pub fn set_limit(max_memory: Option<u64>, type_check: bool) -> Result<(), &'static str> {
-    let live = LIVE.load(Ordering::Relaxed);
+    let live = LIVE_MEMORY.load(Ordering::Relaxed);
     if live == 0 {
         return Err("monty-alloc is not installed as the global allocator");
     }
-    monty_types::register_memory_probe(session_memory_with);
     // `fetch_min` both reads and lowers the baseline: the first arming, on a
     // pristine worker, sets it, and a later leaner moment can only improve it.
-    let baseline = BASELINE.fetch_min(live, Ordering::Relaxed).min(live);
+    let baseline = BASELINE_MEMORY.fetch_min(live, Ordering::Relaxed).min(live);
     let (soft, hard) = match max_memory {
         Some(bytes) => {
             let soft = baseline.saturating_add(usize::try_from(bytes).unwrap_or(usize::MAX));
@@ -55,14 +49,6 @@ pub fn set_limit(max_memory: Option<u64>, type_check: bool) -> Result<(), &'stat
     HARD_LIMIT.store(hard, Ordering::Relaxed);
     SOFT_LIMIT.store(soft, Ordering::Relaxed);
     Ok(())
-}
-
-/// Returns session bytes after a proposed allocation, saturating on overflow.
-#[inline]
-fn session_memory_with(additional: usize) -> usize {
-    LIVE.load(Ordering::Relaxed)
-        .saturating_add(additional)
-        .saturating_sub(BASELINE.load(Ordering::Relaxed))
 }
 
 /// The system allocator, plus the live-byte count that enforces the memory
@@ -132,7 +118,7 @@ unsafe impl GlobalAlloc for LimitedAllocator {
 /// the hard ceiling, in which case allocation must stop immediately.
 #[inline]
 fn charge(size: usize) {
-    let live = LIVE.fetch_add(size, Ordering::Relaxed).saturating_add(size);
+    let live = LIVE_MEMORY.fetch_add(size, Ordering::Relaxed).saturating_add(size);
     if live > SOFT_LIMIT.load(Ordering::Relaxed) && live > HARD_LIMIT.load(Ordering::Relaxed) {
         out_of_memory(format_args!(
             "monty worker: allocation of {size} bytes exceeds the memory limit"
@@ -144,7 +130,7 @@ fn charge(size: usize) {
 /// be eventually right, and no other memory is published through it.
 #[inline]
 fn refund(size: usize) {
-    LIVE.fetch_sub(size, Ordering::Relaxed);
+    LIVE_MEMORY.fetch_sub(size, Ordering::Relaxed);
 }
 
 /// Reports why memory ran out and ends the process — never by panicking, whose
@@ -166,7 +152,7 @@ fn out_of_memory(reason: fmt::Arguments<'_>) -> ! {
         let _ = writeln!(io::stderr(), "{reason}");
     }
     #[cfg(feature = "exit-code")]
-    process::exit(monty_proto::OOM_EXIT_CODE);
+    process::exit(OOM_EXIT_CODE);
     #[cfg(not(feature = "exit-code"))]
     process::abort();
 }
