@@ -115,21 +115,19 @@ fn open(path: &str, mode: FileMode, ctx: &mut MountContext<'_>) -> Result<MontyO
     Ok(file_handle_result(path, mode))
 }
 
-/// Answers a `pathlib` boolean query, treating resolution failure as `false`.
+/// Answers a `pathlib` boolean query.
 ///
-/// `pathlib` predicates never raise, and answering `false` for anything leaving
-/// the mount is what keeps out-of-mount files unobservable.
+/// A path leaving the mount simply fails to resolve against the descriptor and
+/// answers `false`, which is what keeps out-of-mount files unobservable. A path
+/// belonging to no mount never reaches here — `MountTable` returns those as
+/// `NotHandled` before dispatch.
 fn bool_query(
     path: &str,
     ctx: &MountContext<'_>,
     query: impl Fn(&Dir, &str) -> bool,
 ) -> Result<MontyObject, MountError> {
-    let answer = match resolve_virtual_path(path, ctx.mount_virtual) {
-        Ok(target) => query(ctx.mount_dir, target.for_dir_op()),
-        Err(MountError::NoMountPoint(_)) => false,
-        Err(err) => return Err(err),
-    };
-    Ok(MontyObject::Bool(answer))
+    let target = resolve_virtual_path(path, ctx.mount_virtual)?;
+    Ok(MontyObject::Bool(query(ctx.mount_dir, target.for_dir_op())))
 }
 
 /// Writes text after validating quota.

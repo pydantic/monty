@@ -825,7 +825,7 @@ mod hard_link_tests {
     #[cfg(unix)]
     fn iterdir_keeps_inbound_symlink_with_non_utf8_name() {
         let dir = create_test_dir();
-        let raw_name = OsStr::from_bytes(b"caf\xff_link");
+        let raw_name = OsStr::from_bytes(b"nonutf8\xff_link");
         if symlink("hello.txt", dir.path().join(raw_name)).is_err() {
             // APFS and friends reject non-UTF-8 filenames outright, so the bug
             // this guards is unobservable there. ext4 exercises it.

@@ -192,6 +192,17 @@ fn concurrent_rename_cannot_redirect_a_read() {
         let staging = mount_dir.path().join("staging");
         thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
+                // Restore the known-good arrangement first. The swap below is
+                // four non-atomic renames, and a partial one leaves `target`
+                // absent — every later iteration would then fail at its first
+                // rename, freezing `swaps` and silently ending the race.
+                if fs::symlink_metadata(&target).is_err() {
+                    let _ = fs::rename(&staging, &target);
+                } else if fs::symlink_metadata(&decoy).is_err() {
+                    let _ = fs::rename(&target, &decoy);
+                    let _ = fs::rename(&staging, &target);
+                }
+
                 // Swap the symlink in for the real file, then back.
                 if fs::rename(&target, &staging).is_ok()
                     && fs::rename(&decoy, &target).is_ok()
