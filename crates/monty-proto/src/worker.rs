@@ -814,7 +814,7 @@ impl Child {
         ) {
             Ok(None) => None,
             Ok(Some(diagnostics)) => Some(event(pb::child_event::Kind::TypingError(pb::TypingError {
-                diagnostics,
+                diagnostics: diagnostics.to_string(),
             }))),
             Err(err) => Some(protocol_violation(&format!("type checker failed: {err}"))),
         }

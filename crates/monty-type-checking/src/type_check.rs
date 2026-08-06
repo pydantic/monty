@@ -42,18 +42,18 @@ impl TypeChecker {
     /// # Arguments
     /// * `python_source` - The python source code to type check.
     /// * `stubs_file` - Optional stubs file to use for type checking.
-    /// * `diagnostics_config` - Configuration for the type checking diagnostics.
+    /// * `config` - Configuration for the type checking diagnostics.
     ///
     /// # Returns
     /// * `Ok(None)` - If there are no typing errors.
     /// * `Ok(Some(string))` - If there are typing errors.
     /// * `Err(String)` - If there was an unexpected/internal error during type checking.
-    pub fn run(
-        &mut self,
+    pub fn run<'a>(
+        &'a mut self,
         python_source: &SourceFile<'_>,
         stubs_file: Option<&SourceFile<'_>>,
-        diagnostics_config: TypeCheckingConfig,
-    ) -> Result<Option<String>, String> {
+        config: TypeCheckingConfig,
+    ) -> Result<Option<TypeCheckingDiagnostics<'a>>, String> {
         let src_root = SystemPathBuf::from(SRC_ROOT);
         let main_path = src_root.join(python_source.path);
         let main_source = python_source.source_code;
@@ -112,27 +112,11 @@ impl TypeChecker {
             // Sort diagnostics by line number
             diagnostics.sort_by(|a, b| a.rendering_sort_key(&self.db).cmp(&b.rendering_sort_key(&self.db)));
 
-            let format = match diagnostics_config.format {
-                TypeCheckingFormat::Full => DiagnosticFormat::Full,
-                TypeCheckingFormat::Concise => DiagnosticFormat::Concise,
-                TypeCheckingFormat::Azure => DiagnosticFormat::Azure,
-                TypeCheckingFormat::Json => DiagnosticFormat::Json,
-                TypeCheckingFormat::JsonLines => DiagnosticFormat::JsonLines,
-                TypeCheckingFormat::Rdjson => DiagnosticFormat::Rdjson,
-                TypeCheckingFormat::Pylint => DiagnosticFormat::Pylint,
-                TypeCheckingFormat::Gitlab => DiagnosticFormat::Gitlab,
-                TypeCheckingFormat::Github => DiagnosticFormat::Github,
-            };
-            Ok(Some(
-                DisplayDiagnostics::new(
-                    &self.db,
-                    &DisplayDiagnosticConfig::new("monty")
-                        .format(format)
-                        .color(diagnostics_config.color),
-                    &diagnostics,
-                )
-                .to_string(),
-            ))
+            Ok(Some(TypeCheckingDiagnostics {
+                diagnostics,
+                type_checker: self,
+                config,
+            }))
         }
     }
 
@@ -197,6 +181,45 @@ fn adjust_annotation_span(ann: &mut Annotation, main_file: File, offset: TextSiz
         let new_range = TextRange::new(range.start() - offset, range.end() - offset);
         let new_span = span.clone().with_range(new_range);
         ann.set_span(new_span);
+    }
+}
+
+/// Represents diagnostic details when type checking fails.
+///
+/// The pooled database is held inside an `Arc<Mutex<...>>` so that:
+/// 1. Diagnostic rendering can borrow the db lazily on every `Display`/`Debug` call,
+///    avoiding eager pre-rendering of every output format.
+/// 2. The `MontyTypingError` Python exception that wraps this type stays `Send + Sync`.
+/// 3. The `PooledMemoryDb` is released back to the pool exactly when the last clone
+///    of this `Arc` is dropped — RAII via `PooledMemoryDb`'s `Drop` impl.
+#[derive(Debug, Clone)]
+pub struct TypeCheckingDiagnostics<'a> {
+    /// The actual diagnostic message
+    diagnostics: Vec<Diagnostic>,
+    /// The type checker, the db is needed to display diagnostics.
+    type_checker: &'a TypeChecker,
+    /// How to format the output and whether to use color.
+    config: TypeCheckingConfig,
+}
+
+impl fmt::Display for TypeCheckingDiagnostics<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let format = match self.config.format {
+            TypeCheckingFormat::Full => DiagnosticFormat::Full,
+            TypeCheckingFormat::Concise => DiagnosticFormat::Concise,
+            TypeCheckingFormat::Azure => DiagnosticFormat::Azure,
+            TypeCheckingFormat::Json => DiagnosticFormat::Json,
+            TypeCheckingFormat::JsonLines => DiagnosticFormat::JsonLines,
+            TypeCheckingFormat::Rdjson => DiagnosticFormat::Rdjson,
+            TypeCheckingFormat::Pylint => DiagnosticFormat::Pylint,
+            TypeCheckingFormat::Gitlab => DiagnosticFormat::Gitlab,
+            TypeCheckingFormat::Github => DiagnosticFormat::Github,
+        };
+
+        let config = DisplayDiagnosticConfig::new("monty")
+            .format(format)
+            .color(self.config.color);
+        DisplayDiagnostics::new(&self.type_checker.db, &config, &self.diagnostics).fmt(f)
     }
 }
 

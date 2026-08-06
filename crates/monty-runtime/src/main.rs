@@ -9,10 +9,10 @@ use std::{
 use clap::{Parser, Subcommand};
 use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
-use monty_type_checking::{SourceFile, type_check};
+use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CompileOptions, ExtFunctionResult, MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits,
-    ResourceTracker,
+    ResourceTracker, TypeCheckingConfig,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 use tracing::field::Empty;
@@ -297,7 +297,10 @@ fn run_script(
 ) -> ExitCode {
     if type_check_enabled {
         let start = Instant::now();
-        if let Some(failure) = type_check(&SourceFile::new(&code, file_path), None).unwrap() {
+        if let Some(failure) = TypeChecker::default()
+            .run(&SourceFile::new(&code, file_path), None, TypeCheckingConfig::default())
+            .unwrap()
+        {
             let elapsed = start.elapsed();
             eprintln!(
                 "{DIM}{}{RESET} {BOLD_CYAN}{ARROW}{RESET} {BOLD_RED}type check failed{RESET}:\n{failure}",

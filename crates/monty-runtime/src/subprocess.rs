@@ -29,7 +29,7 @@ const EX_PROTOCOL: u8 = 76;
 pub(crate) fn run() -> ExitCode {
     install_panic_hook();
     let mut reader = FrameReader::new(io::stdin().lock());
-    let mut child = Child::new();
+    let mut child = Child::default();
     let mut sink = StdoutSink;
 
     loop {
