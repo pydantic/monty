@@ -486,14 +486,16 @@ fn denied_write_is_not_reported_as_an_escape() {
     );
 }
 
-/// A search-only directory cannot be mounted, because opening the descriptor
-/// needs read permission where the old canonicalize-and-stat did not.
+/// Whether a search-only directory can be mounted is platform-specific: Linux
+/// opens directories with `O_PATH` and accepts one, macOS and the BSDs need
+/// read permission and reject it where the old canonicalize-and-stat did not.
 ///
-/// Documented in `limitations/filesystem.md`; asserted here so the failure
-/// stays a clean `InvalidMount` at construction rather than a surprise later.
+/// Documented in `limitations/filesystem.md`; asserted here so that where it
+/// is refused, the failure stays a clean `InvalidMount` at construction rather
+/// than a surprise on the first read.
 #[test]
 #[cfg(unix)]
-fn search_only_directory_is_not_mountable() {
+fn search_only_directory_mountability() {
     let base = TempDir::new().unwrap();
     let target = base.path().join("searchonly");
     fs::create_dir(&target).unwrap();
@@ -505,9 +507,8 @@ fn search_only_directory_is_not_mountable() {
     // Restore before asserting so the temp dir can still be cleaned up.
     fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
 
-    // Root ignores mode bits, leaving nothing to assert.
+    // Linux's `O_PATH`, or running as root, which ignores mode bits.
     if outcome.is_ok() {
-        eprintln!("skipped: host permits opening a search-only directory");
         return;
     }
     assert!(

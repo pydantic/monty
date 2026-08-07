@@ -107,12 +107,13 @@ while Monty reads it as `sibling.txt` — each finds a file the other does not.
 The textual rule is what makes `..` unable to escape at all, so it is
 deliberate; only paths mixing `..` with symlinked directories are affected.
 
-### A mount needs read permission on its host directory
+### A search-only host directory may not be mountable
 
-Mounting opens a descriptor, which requires read access. A search-only
-directory (mode `0o111`) is therefore not mountable — `MountDir` raises at
-construction — even though a host process can traverse it and read known
-paths inside. Grant `r-x` on the directory being mounted.
+Mounting opens a descriptor on the host directory. On macOS and the BSDs that
+needs read permission, so a search-only directory (mode `0o111`) is refused —
+`MountDir` raises at construction — even though a host process can traverse it
+and read known paths inside. Linux opens directories with `O_PATH` and accepts
+it. Grant `r-x` on anything you intend to mount portably.
 
 ### Symlink targets must be relative
 

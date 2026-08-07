@@ -59,9 +59,9 @@ impl MountTable {
     /// # Errors
     ///
     /// Returns [`MountError::InvalidMount`] if the virtual path is not absolute,
-    /// the host path doesn't exist or isn't a directory, or it cannot be opened.
-    /// The descriptor needs read permission, so a search-only (`0o111`)
-    /// directory is not mountable even though its contents are reachable.
+    /// the host path doesn't exist or isn't a directory, or it cannot be opened
+    /// — on macOS/BSD that includes a search-only (`0o111`) directory, which
+    /// Linux accepts because it opens directories with `O_PATH`.
     pub fn mount(
         &mut self,
         virtual_path: &str,

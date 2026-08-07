@@ -596,15 +596,18 @@ def test_absolute_symlink_target_is_refused(monty_run: RunMonty, test_dir: Path)
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX mode bits')
-def test_search_only_directory_is_not_mountable(test_dir: Path):
-    """Mounting opens a descriptor, which needs read permission — a
-    search-only directory is rejected at construction."""
+def test_search_only_directory_mountability(test_dir: Path):
+    """Mounting opens a descriptor on the host directory, and whether that
+    needs read permission is platform-specific: Linux opens directories with
+    `O_PATH` and accepts a search-only one, macOS and the BSDs reject it at
+    construction. Root ignores mode bits everywhere."""
     target = test_dir / 'searchonly'
     target.mkdir()
     target.chmod(0o111)
     try:
-        if os.access(target, os.R_OK):
-            pytest.skip('host ignores mode bits (running as root)')
+        if sys.platform.startswith('linux') or os.access(target, os.R_OK):
+            assert MountDir(host_path=target, virtual_path='/data').virtual_path == '/data'
+            return
         with pytest.raises(TypeError) as exc_info:
             MountDir(host_path=target, virtual_path='/data')
         # The temp path varies per run; everything around it must not.
