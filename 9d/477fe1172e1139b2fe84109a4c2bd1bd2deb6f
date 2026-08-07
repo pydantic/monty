@@ -1,0 +1,34 @@
+limitations/filesystem.md
+  s_a0fa6b7447fb63::t_d05fdc5f95db1b 92-95
+crates/monty-fs/src/direct.rs
+  s_a0fa6b7447fb63::t_eaa6c7f22a3d62 67
+  s_a0fa6b7447fb63::t_52fb596e41fcbe 183-184
+  s_a0fa6b7447fb63::t_c30c0834d91bf5 192-195
+crates/monty-fs/tests/fs.rs
+  s_a0fa6b7447fb63::t_356c3388dcbc5b 1055-1058
+  s_a0fa6b7447fb63::t_8e6578af7b108a 1036-1054,1059-1065
+crates/monty-fs/src/overlay.rs
+  s_a0fa6b7447fb63::t_ca7eb20481e9ae 1065-1068
+  s_a0fa6b7447fb63::t_0baef935f766e1 904-905
+  s_a0fa6b7447fb63::t_b050d7e4b43fa8 696-699
+crates/monty-fs/tests/mount_confinement.rs
+  s_a0fa6b7447fb63::t_a2b56ffa95c3aa 507-509,523
+  s_a0fa6b7447fb63::t_cdbc65beeeea4b 488-490
+  s_a0fa6b7447fb63::t_356c3388dcbc5b 524-527
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9d477fe1172e1139b2fe84109a4c2bd1bd2deb6f",
+  "prompts": {},
+  "sessions": {
+    "s_a0fa6b7447fb63": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7fd8480f-f003-4eda-a8e3-57a2354d004b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
