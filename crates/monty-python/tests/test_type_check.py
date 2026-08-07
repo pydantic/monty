@@ -288,7 +288,7 @@ def test_type_check_format_invalid(pool: Monty):
 def test_type_check_format_not_a_string(pool: Monty):
     with pytest.raises(TypeError) as exc_info:
         pool.checkout(type_check=True, type_check_format=123)  # pyright: ignore[reportArgumentType]
-    assert exc_info.value.args[0] == snapshot("argument 'type_check_format': type_check_format must be a str")
+    assert exc_info.value.args[0] == snapshot('type_check_format must be a str')
 
 
 # === type_check_stubs ===
