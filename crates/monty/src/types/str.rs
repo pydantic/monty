@@ -1181,6 +1181,18 @@ fn extract_int_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<i64> {
     value.as_int(vm)
 }
 
+/// Extracts a C `int`-bounded integer, as CPython's clinic `int` converter does.
+///
+/// Distinct from [`extract_int_arg`], which is `ssize_t`-bounded: `str.expandtabs`
+/// declares `tabsize` as a C `int`, so `2**31` is an `OverflowError` there while
+/// an `ssize_t` argument still accepts it. Rejecting up front also keeps a large
+/// `tabsize` from reaching the space-building loop, where each tab amplifies into
+/// `tabsize` bytes.
+fn extract_c_int_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<i32> {
+    let as_i64 = value.as_int_with_overflow(vm, ExcType::overflow_c_int)?;
+    i32::try_from(as_i64).map_err(|_| ExcType::overflow_c_int())
+}
+
 /// Extracts an optional slice index from a `Value`, treating `None` as `default`.
 ///
 /// Used by argument parsers where `None` means "use the default index" and
@@ -1874,21 +1886,21 @@ fn str_expandtabs<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
     let tabsize = match tabsize {
         None => 8,
         Some(val) => {
-            let result_int = extract_int_arg(&val, vm)?;
-            val.drop_with(vm.heap);
-            if result_int < 0 {
-                0
-            } else {
-                usize::try_from(result_int).unwrap_or(usize::MAX)
-            }
+            // `defer_drop!` rather than a trailing `drop_with`: the conversion
+            // raises for anything outside C `int`, and that `?` would otherwise
+            // leave `val`'s reference behind.
+            defer_drop!(val, vm);
+            // A negative tabsize expands to nothing, as CPython's `<= 0` test does.
+            usize::try_from(extract_c_int_arg(val, vm)?).unwrap_or(0)
         }
     };
 
     let s = s.get(vm.heap);
-    // `tabsize` is attacker-controlled (saturates to `usize::MAX`) and we don't
-    // know the result size up front, so use the unbounded builder — its 2×
-    // growth policy rejects the build at the first push that would exceed the
-    // memory limit, capping wasted intermediate allocation to `O(limit)`.
+    // `tabsize` is bounded by C `int` above, but a tab still amplifies into
+    // `tabsize` bytes and the result size is not known up front, so use the
+    // unbounded builder — its 2× growth policy rejects the build at the first
+    // push that would exceed the memory limit, capping wasted intermediate
+    // allocation to `O(limit)`.
     let mut builder = StringBuilder::new(&vm.heap.tracker);
     let mut column = 0;
 

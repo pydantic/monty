@@ -1782,6 +1782,18 @@ impl Value {
     /// automatically demotes i64-fitting values to `Value::Int`. However, this path could be
     /// reached via deserialization of crafted snapshot data.
     pub fn as_int(&self, vm: &mut VM<'_>) -> RunResult<i64> {
+        self.as_int_with_overflow(vm, ExcType::overflow_c_ssize_t)
+    }
+
+    /// [`Self::as_int`] with a caller-chosen overflow error.
+    ///
+    /// The width a value must fit is a property of the *consumer*, not of the
+    /// coercion: CPython's clinic `int` parameters (`str.expandtabs`'s
+    /// `tabsize`) report `... to C int` where an `ssize_t` parameter reports
+    /// `... to C ssize_t`, at every magnitude and through `__index__` alike.
+    /// Callers narrower than `i64` still range-check the result themselves —
+    /// this only makes the message theirs to choose.
+    pub(crate) fn as_int_with_overflow(&self, vm: &mut VM<'_>, on_overflow: fn() -> RunError) -> RunResult<i64> {
         match self {
             Self::Int(i) => Ok(*i),
             // `bool` is an `int` subclass in CPython, so it satisfies every
@@ -1789,13 +1801,13 @@ impl Value {
             // `try_index` below only dispatches for user instances.
             Self::Bool(b) => Ok(i64::from(*b)),
             Self::Ref(heap_id) if let HeapData::LongInt(li) = vm.heap.get(*heap_id) => {
-                li.to_i64().ok_or_else(ExcType::overflow_c_ssize_t)
+                li.to_i64().ok_or_else(on_overflow)
             }
             // Everything else is either `__index__`-able or a type error, and
             // `try_index` answers which without this arm inspecting the heap.
             _ => {
                 if let Some(index) = self.try_index(vm)? {
-                    Self::narrow_index_to_i64(index, vm, ExcType::overflow_c_ssize_t)
+                    Self::narrow_index_to_i64(index, vm, on_overflow)
                 } else {
                     let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type_name(vm));
                     Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
