@@ -90,8 +90,8 @@ impl MountTable {
     /// back untouched for the caller's fallback handler (a host callback or
     /// [`OsFunctionCall::on_no_handler`]).
     pub fn handle_os_call(&mut self, call: OsFunctionCall) -> MountCallOutcome {
-        if call.is_filesystem() {
-            match self.route_call(&call) {
+        if let Some(primary_path) = call.fs_primary_path() {
+            match self.route_call(primary_path, &call) {
                 Some(Ok(index)) => MountCallOutcome::Handled(self.mounts[index].execute(call)),
                 Some(Err(err)) => MountCallOutcome::Handled(Err(err)),
                 None => MountCallOutcome::NotHandled(call),
@@ -118,8 +118,7 @@ impl MountTable {
     ///
     /// Rename requests require both source and destination to resolve to the
     /// same longest-prefix mount. Other requests only route on the primary path.
-    fn route_call(&self, call: &OsFunctionCall) -> Option<Result<usize, MountError>> {
-        let primary_path = call.primary_path().expect("filesystem call always has a primary path");
+    fn route_call(&self, primary_path: &str, call: &OsFunctionCall) -> Option<Result<usize, MountError>> {
         let src_mount_index = self.find_mount_index(primary_path)?;
 
         if let Some(dst_path) = call.rename_destination() {
