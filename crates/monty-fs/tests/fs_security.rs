@@ -449,6 +449,26 @@ mod symlink_tests {
         );
     }
 
+    /// `open(..., 'a')` on a file that already exists below an in-mount symlink
+    /// is refused at open time, not on the first append. Only the append path
+    /// takes the "target already exists" shortcut, which used to skip the
+    /// parent walk that every other overlay write runs.
+    #[test]
+    fn overlay_append_open_below_inbound_symlink_dir_is_refused() {
+        if !symlinks_supported() {
+            return;
+        }
+        let dir = create_test_dir();
+        symlink_dir("subdir", dir.path().join("link_dir"));
+
+        let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+        assert_open_blocked(&mut mt, "/mnt/link_dir/nested.txt", "a");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("subdir/nested.txt")).unwrap(),
+            "nested content"
+        );
+    }
+
     /// Even a symlink resolving to an in-mount directory blocks overlay writes
     /// through it: entries would be keyed under the link's spelling, invisible
     /// via the resolved name. Direct mode follows such links; the overlay

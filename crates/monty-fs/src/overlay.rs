@@ -178,7 +178,10 @@ fn ensure_append_target_exists(
                 RealTarget::Symlink => Err(MountError::PathEscape {
                     virtual_path: vpath.to_owned(),
                 }),
-                RealTarget::File => Ok(()),
+                // The file is already there, but the write policy still refuses
+                // a symlink anywhere in the path; checking it here rather than
+                // at the first append makes `open` fail where the user asked.
+                RealTarget::File => ensure_parent_exists(state, &relative, ctx, vpath),
                 RealTarget::Absent => {
                     ensure_parent_exists(state, &relative, ctx, vpath)?;
                     state.insert(
