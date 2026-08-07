@@ -42,11 +42,6 @@ test('browser wasm reports mounts as unsupported', async (ctx) => {
 
 test('a mount follows its directory across feeds, not its path', async (ctx) => {
   skipIfBrowser(ctx)
-  if (process.platform === 'win32') {
-    // Planting the link needs symlink creation, which Windows gates behind a
-    // privilege; the confinement itself is not platform-specific.
-    ctx.skip()
-  }
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'monty-mount-pin-'))
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'monty-mount-out-'))
   try {
@@ -54,8 +49,13 @@ test('a mount follows its directory across feeds, not its path', async (ctx) => 
     fs.mkdirSync(shared)
     fs.writeFileSync(path.join(shared, 'inside.txt'), 'in-mount')
     fs.writeFileSync(path.join(outside, 'secret.txt'), 'HOST SECRET')
-    // Host-planted link out of the tree; the sandbox only moves it.
-    fs.symlinkSync(outside, path.join(base, 'prepared-link'), 'dir')
+    // Host-planted link out of the tree; the sandbox only moves it. Windows
+    // gates symlink creation behind a privilege, so skip rather than fail.
+    try {
+      fs.symlinkSync(outside, path.join(base, 'prepared-link'), 'dir')
+    } catch {
+      ctx.skip()
+    }
 
     const child = new MountDir({ hostPath: shared, virtualPath: '/child', mode: 'read-only' })
     const parent = new MountDir({ hostPath: base, virtualPath: '/parent', mode: 'read-write' })

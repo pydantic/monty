@@ -350,9 +350,6 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
         self.ensure_ready()?;
-        // Build mounts before touching any state, so a failure here leaves the
-        // checkout unchanged (notably `duration_budget`, whose loss would
-        // silently drop the parent-side backstop from later feeds).
         let feed_mounts = Self::build_feed_mounts(mounts);
         // the dump carries its own limits/consumed time/script name — forget
         // what the worker's Configure established and re-adopt from the reply

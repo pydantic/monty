@@ -7,6 +7,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::{
     env, fs,
     future::ready,
+    io,
     path::{Path, PathBuf},
     process::Command,
     sync::Once,
@@ -89,6 +90,15 @@ async fn feed_with_mounts(
             None => return Ok(event),
         }
     }
+}
+
+/// Creates a directory symlink, reporting the failure a host without the
+/// privilege gives so the caller can skip rather than fail.
+fn try_symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    return symlink(original, link);
+    #[cfg(windows)]
+    return symlink_dir(original, link);
 }
 
 /// Kills a process by pid with SIGKILL — simulates a hard crash.
@@ -337,9 +347,8 @@ body";
 /// the sandbox renaming a symlink over that directory's name, from inside a
 /// read-write mount of the parent, redirects the *path* and nothing else.
 ///
-/// Unix-only because planting the link needs symlink creation; the confinement
-/// itself is not platform-specific.
-#[cfg(unix)]
+/// Skipped where the host cannot create symlinks (Windows without Developer
+/// Mode or elevation), since planting the link needs one.
 #[tokio::test]
 async fn a_reused_mount_spec_survives_a_rename_of_its_host_directory() {
     let base = tempfile::tempdir().unwrap();
@@ -349,7 +358,10 @@ async fn a_reused_mount_spec_survives_a_rename_of_its_host_directory() {
     fs::write(shared.join("inside.txt"), "in-mount").unwrap();
     fs::write(outside.path().join("secret.txt"), "HOST SECRET").unwrap();
     // Host-planted link out of the tree; the sandbox only moves it.
-    symlink(outside.path(), base.path().join("prepared-link")).unwrap();
+    if try_symlink_dir(outside.path(), &base.path().join("prepared-link")).is_err() {
+        eprintln!("skipping: this host cannot create symlinks");
+        return;
+    }
 
     // Both built once, as a host holding long-lived mount objects would.
     let child = MountSpec::new("/child", shared, MountSpecMode::ReadOnly).unwrap();
