@@ -52,9 +52,9 @@ pub(super) fn resolve_virtual_path(
     mount_virtual_path: &str,
 ) -> Result<MountRelativePath, MountError> {
     reject_null_bytes(virtual_path)?;
+    reject_overlong_path(virtual_path)?;
 
     let normalized = normalize_virtual_path(virtual_path);
-    reject_overlong_path(&normalized, virtual_path)?;
     let relative = strip_mount_prefix(&normalized, mount_virtual_path)
         .ok_or_else(|| MountError::NoMountPoint(virtual_path.to_owned()))?
         .to_owned();
@@ -146,14 +146,18 @@ fn reject_null_bytes(virtual_path: &str) -> Result<(), MountError> {
 /// Rejects paths that exceed Linux filesystem length limits.
 ///
 /// Applied regardless of host OS so the sandbox behaves identically everywhere,
-/// rather than inheriting whatever the host filesystem happens to allow.
-pub(super) fn reject_overlong_path(normalized: &str, original: &str) -> Result<(), MountError> {
-    let too_long = normalized.len() > PATH_MAX || normalized.split('/').any(|component| component.len() > NAME_MAX);
+/// rather than inheriting whatever the host filesystem happens to allow. Measures
+/// the path as sent, before normalization: a request padded with `..` collapses
+/// short, and the kernel would reject the bytes handed to it, not the collapsed
+/// form. Checking first also keeps the per-segment normalization off oversized
+/// input.
+pub(super) fn reject_overlong_path(path: &str) -> Result<(), MountError> {
+    let too_long = path.len() > PATH_MAX || path.split('/').any(|component| component.len() > NAME_MAX);
     if too_long {
         Err(MountError::io_err(
             ErrorKind::InvalidFilename,
             "File name too long",
-            original,
+            path,
         ))
     } else {
         Ok(())

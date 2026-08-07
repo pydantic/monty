@@ -5,7 +5,7 @@
 
 use std::{fs, io::ErrorKind};
 
-use monty_fs::{Mount, MountCallOutcome, MountError, MountMode, MountTable};
+use monty_fs::{Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{MontyObject, MontyPath, OsFunctionCall, RenameCallArgs};
 use tempfile::TempDir;
 
@@ -101,31 +101,42 @@ fn rename_out_of_mount_bypasses_the_mount_table() {
     assert!(host.path().join("source.txt").exists());
 }
 
-/// `PATH_MAX` is checked after normalization, so it bounds the collapsed path
-/// rather than the bytes the sandbox sent.
+/// `PATH_MAX` bounds the bytes the sandbox sent, not the path they collapse to,
+/// so padding a request with `..` no longer buys unlimited length.
 #[test]
-fn overlong_path_accepted_when_it_normalizes_short() {
+fn overlong_path_rejected_even_when_it_normalizes_short() {
     let host = TempDir::new().unwrap();
     fs::write(host.path().join("hello.txt"), "hello").unwrap();
 
-    let mut mt = MountTable::new();
-    mt.mount("/mnt", host.path(), MountMode::ReadOnly, None).unwrap();
-
-    // Control: the same length without `..` is rejected before any host I/O.
     let long_and_deep = format!("/mnt/{}hello.txt", "a/".repeat(5_000));
-    assert!(long_and_deep.len() > 4096);
-    match read_text(&mut mt, &long_and_deep) {
+    let long_but_collapsing = format!("/mnt/{}{}hello.txt", "a/".repeat(5_000), "../".repeat(5_000));
+    assert!(long_and_deep.len() > 4096 && long_but_collapsing.len() > 4096);
+
+    // Both backends resolve paths through their own entry point, so both are checked.
+    for mode in [MountMode::ReadOnly, MountMode::OverlayMemory(OverlayState::new())] {
+        let mut mt = MountTable::new();
+        mt.mount("/mnt", host.path(), mode, None).unwrap();
+
+        // A path without `..` is rejected before any host I/O.
+        assert_too_long(read_text(&mut mt, &long_and_deep));
+
+        // The same length collapsing to `/mnt/hello.txt` is rejected on the same
+        // grounds, rather than being measured after the `..` components cancel out.
+        assert_too_long(read_text(&mut mt, &long_but_collapsing));
+
+        // The path it collapses to is served normally, so only length is at issue.
+        let read = read_text(&mut mt, "/mnt/a/../hello.txt").unwrap();
+        assert_eq!(read, MontyObject::String("hello".to_owned()));
+    }
+}
+
+/// Asserts an operation failed with the `ENAMETOOLONG` form of [`MountError`].
+fn assert_too_long(result: Result<MontyObject, MountError>) {
+    match result {
         Err(MountError::Io(err, _)) => {
             assert_eq!(err.kind(), ErrorKind::InvalidFilename);
             assert_eq!(err.to_string(), "File name too long");
         }
         other => panic!("expected the overlong path to be rejected, got {other:?}"),
     }
-
-    let long_but_collapsing = format!("/mnt/{}{}hello.txt", "a/".repeat(5_000), "../".repeat(5_000));
-    assert!(long_but_collapsing.len() > 4096);
-
-    // FIX: reject on raw length, before normalization allocates per segment.
-    let read = read_text(&mut mt, &long_but_collapsing).expect("reproduction: the overlong request is accepted");
-    assert_eq!(read, MontyObject::String("hello".to_owned()));
 }
