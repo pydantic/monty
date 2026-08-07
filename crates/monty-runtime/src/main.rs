@@ -45,11 +45,17 @@ const ARROW: &str = "❯";
 /// Whether stderr should carry ANSI styling.
 ///
 /// Resolved by `anstream` from the signals its macros use — is stderr a
-/// terminal, `NO_COLOR`, `CLICOLOR{,_FORCE}`, `TERM` — so that anything we
-/// render ourselves (the type checker's diagnostics, the REPL prompt) agrees
-/// with the styling `eprintln!` puts around it.
+/// terminal, `NO_COLOR`, `CLICOLOR{,_FORCE}`, `TERM` — so that what we render
+/// ourselves (the type checker's diagnostics) agrees with the styling
+/// `eprintln!` puts around it.
 fn stderr_styled() -> bool {
     AutoStream::choice(&io::stderr()) != ColorChoice::Never
+}
+
+/// The same question for stdout, which is where rustyline writes the REPL
+/// prompt. Asking about stderr instead would put escapes in `monty -i > out`.
+fn stdout_styled() -> bool {
+    AutoStream::choice(&io::stdout()) != ColorChoice::Never
 }
 
 /// Monty — a sandboxed Python interpreter written in Rust.
@@ -427,9 +433,9 @@ fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut mount_tab
     let mut pending_snippet = String::new();
     let mut continuation_mode = ReplContinuationMode::Complete;
 
-    // rustyline writes the prompt itself, so `anstream` never sees it — style
-    // it up front, or not at all when styling is off.
-    let statement_prompt = if stderr_styled() {
+    // rustyline writes the prompt to stdout itself, so `anstream` never sees
+    // it — style it up front, against stdout, or not at all.
+    let statement_prompt = if stdout_styled() {
         format!("{BOLD_CYAN}{ARROW}{BOLD_CYAN:#} ")
     } else {
         format!("{ARROW} ")

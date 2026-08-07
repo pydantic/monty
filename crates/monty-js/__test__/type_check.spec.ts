@@ -2,6 +2,7 @@ import { test } from 'vitest'
 import { t } from './assertions.js'
 
 import { MontyError, MontyRuntimeError, MontyTypingError } from '@pydantic/monty'
+import { encodeTypeCheckFormat } from '../ts/options.js'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -63,6 +64,18 @@ test('type check color', async () => {
     { instanceOf: MontyTypingError },
   )
   t.true(error.display().startsWith('\u001b['))
+})
+
+test('type check format rejects inherited property names', () => {
+  // A plain lookup would find `Object.prototype.toString` and hand a function
+  // to the wire encoder; JS callers are not bound by the TypeScript type.
+  for (const bogus of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'nonsense']) {
+    t.throws(() => encodeTypeCheckFormat(bogus as never), {
+      instanceOf: RangeError,
+      message: `unknown typeCheckFormat '${bogus}', expected one of: full, concise, azure, json, jsonlines, rdjson, pylint, gitlab, github`,
+    })
+  }
+  t.is(encodeTypeCheckFormat('jsonlines'), 5)
 })
 
 test('type check function return type', async () => {

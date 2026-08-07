@@ -33,9 +33,15 @@ const TYPE_CHECK_FORMATS: Record<TypeCheckFormat, number> = {
   github: 9,
 }
 
-/** Encodes a {@link TypeCheckFormat} to its wire number, throwing on an unknown name. */
+/**
+ * Encodes a {@link TypeCheckFormat} to its wire number, throwing on an unknown name.
+ *
+ * The own-property check matters: JavaScript callers are not bound by the
+ * type, and a plain lookup would find inherited names like `'toString'` and
+ * hand a `Function` to the wire encoder instead of rejecting it here.
+ */
 export function encodeTypeCheckFormat(format: TypeCheckFormat): number {
-  const encoded = TYPE_CHECK_FORMATS[format]
+  const encoded = Object.hasOwn(TYPE_CHECK_FORMATS, format) ? TYPE_CHECK_FORMATS[format] : undefined
   if (encoded === undefined) {
     throw new RangeError(
       `unknown typeCheckFormat '${format}', expected one of: ${Object.keys(TYPE_CHECK_FORMATS).join(', ')}`,

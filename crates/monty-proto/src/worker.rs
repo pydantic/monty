@@ -300,10 +300,18 @@ impl Child {
             pb::parent_request::Kind::ResumeFutures(resume) => self.handle_resume_futures(resume, sink),
             pb::parent_request::Kind::Dump(_) => self.handle_dump(),
             pb::parent_request::Kind::Load(load) => self.handle_load(load),
-            pb::parent_request::Kind::Reset(_) => {
-                self.reset();
-                ok_event()
-            }
+            pb::parent_request::Kind::Reset(_) => match self.reset() {
+                Ok(()) => ok_event(),
+                // A failed scrub leaves the finished session's files in the
+                // type checker, so this worker must never serve another one:
+                // the next session could resolve the previous session's
+                // modules. Die with an explanation the parent can log rather
+                // than carry on — or panic, which it would only see as a crash.
+                Err(err) => {
+                    sink.send(&self.fatal_event(&format!("type-check cleanup failed: {err}")))?;
+                    return Ok(HandleOutcome::Fatal);
+                }
+            },
             pb::parent_request::Kind::Shutdown(_) => {
                 sink.send(&ok_event())?;
                 return Ok(HandleOutcome::Shutdown);
@@ -828,11 +836,14 @@ impl Child {
 
     /// Drops all session state, returning to the unconfigured state ready for
     /// the next `Configure` (or `Load`).
-    fn reset(&mut self) {
+    ///
+    /// `Err` means the type checker still holds this session's files, which is
+    /// terminal for the worker — see the `Reset` arm in [`Self::handle`].
+    fn reset(&mut self) -> Result<(), String> {
         self.state = SessionState::Configured(None);
         self.type_check = None;
         self.script_name = String::new();
-        self.type_checker.reset().unwrap();
+        self.type_checker.reset()
     }
 }
 
