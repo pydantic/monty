@@ -4,7 +4,6 @@
 //! constructor rules, aware/naive comparison semantics, and arithmetic on top.
 
 use std::{
-    collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
 };
@@ -19,7 +18,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    hash::HashValue,
+    hash::{HashValue, hash_one},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     types::{
@@ -761,7 +760,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::DateTime(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -777,9 +776,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        let mut hasher = DefaultHasher::new();
-        self.get(vm.heap).hash(&mut hasher);
-        Ok(Some(HashValue::new(hasher.finish())))
+        Ok(Some(hash_one(self.get(vm.heap))))
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
@@ -855,7 +852,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(py_add(&value, &other, vm.heap))
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&mut self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::DateTime(other)) => {
                 let value = self.get(vm.heap).clone();

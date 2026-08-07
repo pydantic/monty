@@ -281,7 +281,7 @@ impl ops::Deref for Bytes {
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
     /// One-sided implementation of Python membership (`__contains__`).
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         bytes_contains(self.get(vm.heap).as_slice(), item, vm).map(Some)
     }
 
@@ -301,7 +301,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Some(self.get(vm.heap).0.len())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
@@ -321,7 +321,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Ok(Value::Int(i64::from(byte)))
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // Heap bytes equal interned or heap bytes with the same content.
         Ok(eq_bytes(self.get(vm.heap).as_slice(), other, vm))
     }
@@ -2375,7 +2375,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BytesIterator> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

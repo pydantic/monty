@@ -860,7 +860,7 @@ fn counter_require_mapping(rhs: &Value, vm: &mut VM<'_>) -> RunResult<HeapId> {
 
 /// Returns the count for `key` in the Counter `id`, or `None` if absent.
 fn counter_lookup(id: HeapId, key: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
-    let HeapReadOutput::Dict(dict) = vm.heap.read(id) else {
+    let HeapReadOutput::Dict(mut dict) = vm.heap.read(id) else {
         unreachable!("counter_lookup on a non-dict heap entry");
     };
     dict.dict_get(key, vm)

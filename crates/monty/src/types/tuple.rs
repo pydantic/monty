@@ -1,12 +1,12 @@
 use std::{
     cell::Cell,
     cmp::Ordering,
-    collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
     mem,
 };
 
+use ahash::AHasher;
 /// Python tuple type using `SmallVec` for inline storage of small tuples.
 ///
 /// This type provides Python tuple semantics. Tuples are immutable sequences
@@ -287,7 +287,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     /// Linear search by equality, stored element on the left of `==` as CPython's
     /// `tuplecontains` does. `TupleIter` owns each yielded item, so a user
     /// `__eq__` re-entering the VM cannot invalidate the walk.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(el) = iter.next(vm)? {
@@ -310,7 +310,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Some(self.get(vm.heap).items.len())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(key_id) = key
             && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
@@ -334,7 +334,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(self.clone_item(idx, vm))
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // A tuple equals another tuple; `tuple == namedtuple` is handled by the
         // reflected pass via `NamedTuple::py_eq_impl`.
         let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
@@ -368,7 +368,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         if let Some(cached) = self.get(vm.heap).cached_hash.get() {
             return Ok(Some(cached));
         }
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = AHasher::default();
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(item) = iter.next(vm)? {
@@ -666,7 +666,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TupleIterator> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

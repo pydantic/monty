@@ -25,7 +25,7 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
 fn dump_header_rejects_incompatible_data() {
     let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let bytes = runner.dump().unwrap();
-    assert_eq!(&bytes[..9], b"MONTY\0\x04\x00\x00");
+    assert_eq!(&bytes[..9], b"MONTY\0\x05\x00\x00");
 
     let legacy = postcard::to_allocvec(&runner).unwrap();
     assert_eq!(
@@ -285,6 +285,81 @@ ext_fn(0)
     // itertools-specific (a plain `x = [1, 2]` global does it too).
     let original = progress.into_function_call().expect("should be at function call");
     assert_eq!(original.function_name, "ext_fn");
+    let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_original.into_complete().unwrap(), expected);
+
+    let loaded: RunProgress = RunProgress::load(&bytes).unwrap();
+    let call = loaded.into_function_call().expect("should be at function call");
+    let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_loaded.into_complete().unwrap(), expected);
+}
+
+/// Dicts and sets survive a dump/load even though their hashes and index
+/// tables are never serialized: lookups after restore trigger the lazy
+/// `ensure_indices` rebuild, and instance-attribute access exercises the
+/// VM-less `get_by_str` linear fallback. Covers str/int/tuple keys, both set
+/// types, post-restore mutation, equality, and set algebra.
+#[test]
+fn run_progress_dump_load_rebuilds_dict_and_set_indices() {
+    let code = r"
+class C:
+    def __init__(self):
+        self.x = 1
+        self.y = 2
+
+obj = C()
+d = {'a': 1, 2: 'two', (3, 'x'): 4}
+s = {1, 'two', (3, 'x')}
+fs = frozenset([7, 'eight'])
+ext_fn(0)
+d['new'] = 5
+s.add(99)
+[
+    d['a'], d[2], d[(3, 'x')], d['new'],
+    (3, 'x') in s, 'two' in s, 42 in s, 99 in s,
+    7 in fs, 'eight' in fs, 8 in fs,
+    d.pop(2),
+    len(d), len(s),
+    d == {'a': 1, (3, 'x'): 4, 'new': 5},
+    s | {100} == {1, 'two', (3, 'x'), 99, 100},
+    obj.x + obj.y,
+    list(d)[0],
+]
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+    // Suspend at `ext_fn` with the containers live on the heap.
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let bytes = progress.dump().unwrap();
+
+    let expected = MontyObject::List(vec![
+        MontyObject::Int(1),
+        MontyObject::String("two".to_owned()),
+        MontyObject::Int(4),
+        MontyObject::Int(5),
+        MontyObject::Bool(true),
+        MontyObject::Bool(true),
+        MontyObject::Bool(false),
+        MontyObject::Bool(true),
+        MontyObject::Bool(true),
+        MontyObject::Bool(true),
+        MontyObject::Bool(false),
+        MontyObject::String("two".to_owned()),
+        MontyObject::Int(3),
+        MontyObject::Int(4),
+        MontyObject::Bool(true),
+        MontyObject::Bool(true),
+        MontyObject::Int(3),
+        MontyObject::String("a".to_owned()),
+    ]);
+
+    // Resume both (an unresumed `RunProgress` leaves its globals' refs
+    // unreleased, aborting under `memory-model-checks`).
+    let original = progress.into_function_call().expect("should be at function call");
     let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
     assert_eq!(from_original.into_complete().unwrap(), expected);
 

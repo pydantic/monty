@@ -3,7 +3,6 @@
 //! Phase 1 intentionally supports only fixed offsets (no DST or IANA database).
 
 use std::{
-    collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
 };
@@ -13,7 +12,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    hash::HashValue,
+    hash::{HashValue, hash_one},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::Interns,
     types::{
@@ -225,7 +224,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::TimeZone(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -235,9 +234,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        let mut hasher = DefaultHasher::new();
-        self.get(vm.heap).hash(&mut hasher);
-        Ok(Some(HashValue::new(hasher.finish())))
+        Ok(Some(hash_one(self.get(vm.heap))))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {

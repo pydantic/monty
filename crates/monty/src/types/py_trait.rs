@@ -172,7 +172,9 @@ pub(crate) trait PyTrait<'h> {
     /// `Ok(None)` means the type has no containment logic of its own, so
     /// [`Value::py_contains`] falls back to iteration and then `TypeError`.
     /// `self_id` is only needed by types that re-enter the VM (`Instance`).
-    fn py_contains_impl(&self, _self_id: HeapId, _item: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    /// `&mut self` so dict/set lookups can lazily rebuild indices after a
+    /// dump/load (hashes are never serialized).
+    fn py_contains_impl(&mut self, _self_id: HeapId, _item: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
@@ -193,7 +195,10 @@ pub(crate) trait PyTrait<'h> {
     /// Heap-backed implementations receive `self_id`; immediate values receive
     /// `None`. Recursion depth is tracked via `vm.recursion_guard()`; returns
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>>;
+    ///
+    /// `&mut self` so dict/set comparisons can lazily rebuild indices after a
+    /// dump/load (hashes are never serialized).
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>>;
 
     /// Python comparison (`<`, `>`, etc.).
     ///
@@ -319,12 +324,12 @@ pub(crate) trait PyTrait<'h> {
 
     /// One-sided implementation of Python subtraction (`__sub__`).
     /// `self_id` carries this value's heap id, as for [`py_add_impl`](Self::py_add_impl).
-    fn py_sub_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&mut self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python subtraction (`__rsub__`).
-    fn py_rsub_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rsub_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -390,33 +395,33 @@ pub(crate) trait PyTrait<'h> {
 
     /// One-sided implementation of Python bitwise AND (`__and__`).
     /// `self_id` carries this value's heap id, as for [`py_add_impl`](Self::py_add_impl).
-    fn py_and_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&mut self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python bitwise AND (`__rand__`).
-    fn py_rand_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rand_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python bitwise OR (`__or__`).
     /// `self_id` carries this value's heap id, as for [`py_add_impl`](Self::py_add_impl).
-    fn py_or_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&mut self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python bitwise OR (`__ror__`).
-    fn py_ror_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_ror_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python bitwise XOR (`__xor__`).
-    fn py_xor_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_xor_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python bitwise XOR (`__rxor__`).
-    fn py_rxor_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rxor_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -593,7 +598,7 @@ pub(crate) trait PyTrait<'h> {
     /// and access to interned string content.
     ///
     /// Default implementation returns TypeError.
-    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         Err(ExcType::type_error_not_sub(&self.py_type(vm).name(vm.heap, vm.interns)))
     }
 

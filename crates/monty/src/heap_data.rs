@@ -1,11 +1,11 @@
 use std::{
-    collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
     mem,
     ops::Deref,
 };
 
+use ahash::AHasher;
 use monty_types::ExcType;
 
 use crate::{
@@ -540,7 +540,7 @@ pub(crate) fn heap_subscript(id: HeapId, key: &Value, vm: &mut VM<'_>) -> RunRes
         // dict — and `dec_ref` asserts that an entry has no active readers when it
         // is freed.
         let found = {
-            let HeapReadOutput::Dict(dict) = vm.heap.read(id) else {
+            let HeapReadOutput::Dict(mut dict) = vm.heap.read(id) else {
                 unreachable!("a defaultdict is a dict");
             };
             dict.dict_get(key, vm)?
@@ -550,14 +550,15 @@ pub(crate) fn heap_subscript(id: HeapId, key: &Value, vm: &mut VM<'_>) -> RunRes
             None => defaultdict_missing(id, key, vm),
         }
     } else {
-        vm.heap.read(id).py_getitem(key, vm)
+        let mut this = vm.heap.read(id);
+        this.py_getitem(key, vm)
     }
 }
 
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     /// Delegates to the types defining their own `in`; the rest keep the trait
     /// default (`None`), leaving `Value::py_contains` to iterate or raise.
-    fn py_contains_impl(&self, self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_contains_impl(self_id, item, vm), else Ok(None))
     }
 
@@ -586,7 +587,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_radd_impl(other, vm), else Ok(None))
     }
 
-    fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rsub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rsub_impl(other, vm), else Ok(None))
     }
 
@@ -634,27 +635,27 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rpow_impl(other, modulus, vm), else Ok(None))
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_and_impl(other, vm, self_id), else Ok(None))
     }
 
-    fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rand_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rand_impl(other, vm), else Ok(None))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_or_impl(other, vm, self_id), else Ok(None))
     }
 
-    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_ror_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_ror_impl(other, vm), else Ok(None))
     }
 
-    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_xor_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_xor_impl(other, vm), else Ok(None))
     }
 
-    fn py_rxor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rxor_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rxor_impl(other, vm), else Ok(None))
     }
 
@@ -759,7 +760,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_len(vm), else None)
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_eq_impl(other, vm),
@@ -798,12 +799,12 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             else {
                 match self {
                     Self::Closure(c) => {
-                        let mut hasher = DefaultHasher::new();
+                        let mut hasher = AHasher::default();
                         c.get(vm.heap).func_id.hash(&mut hasher);
                         Ok(Some(HashValue::new(hasher.finish())))
                     }
                     Self::FunctionDefaults(fd) => {
-                        let mut hasher = DefaultHasher::new();
+                        let mut hasher = AHasher::default();
                         fd.get(vm.heap).func_id.hash(&mut hasher);
                         Ok(Some(HashValue::new(hasher.finish())))
                     }
@@ -873,7 +874,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_add_impl(other, vm, self_id), else Ok(None))
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_sub_impl(other, vm, self_id), else Ok(None))
     }
 
@@ -915,7 +916,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_cmp_op(other, op, vm, self_id), else Ok(None))
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_getitem(key, vm),

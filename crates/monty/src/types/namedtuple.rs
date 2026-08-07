@@ -1,13 +1,13 @@
 use std::{
     cell::Cell,
     cmp::Ordering,
-    collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
     iter::once,
     mem,
 };
 
+use ahash::AHasher;
 /// Python named tuple type, combining tuple-like indexing with named attribute access.
 ///
 /// Named tuples are like regular tuples but with field names, providing two ways
@@ -342,7 +342,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
     /// tuple subclass in CPython and inherits `tuplecontains`. Without this, `in`
     /// falls back to iteration and allocates a heap `TupleIterator`, which can
     /// trip the allocation limit on a tight heap.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(el) = iter.next(vm)? {
@@ -368,7 +368,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // A slice degrades to a plain tuple, as in CPython — the field names
         // describe the original instance only, so they cannot survive a slice.
         if let Value::Ref(key_id) = key
@@ -444,7 +444,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         self.py_mul_impl(other, vm)
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // A namedtuple equals another namedtuple element-wise, and also equals a
         // plain tuple with the same elements (class name is ignored). Both
         // directions of the tuple case are covered here, so `Tuple::py_eq_impl`
@@ -478,7 +478,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         if let Some(cached) = self.get(vm.heap).cached_hash.get() {
             return Ok(Some(cached));
         }
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = AHasher::default();
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(item) = iter.next(vm)? {
@@ -843,7 +843,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTupleClass> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // Class objects compare by identity, resolved before reaching here.
         Ok(None)
     }

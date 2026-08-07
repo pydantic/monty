@@ -3,12 +3,12 @@
 //! Defines:
 //!
 //! * [`HashValue`] — a verified Python hash. Construction goes through
-//!   [`HashValue::from_raw`]; storing or comparing hashes anywhere in the
+//!   [`HashValue::new`]; storing or comparing hashes anywhere in the
 //!   runtime should use this type rather than a bare `u64` so the invariant
 //!   is enforced by the type system.
 //!
 //!   Internally backed by a [`NonZero<u64>`] holding the **bit-inverse** of
-//!   the raw hash. The inversion is invisible to callers (`from_raw` /
+//!   the raw hash. The inversion is invisible to callers (`new` /
 //!   `get` translate at the boundary) but means `Option<HashValue>` is
 //!   niche-packed into 8 bytes — `None` is the bit pattern `0`, the inverse
 //!   of the reserved `u64::MAX` sentinel.
@@ -24,13 +24,13 @@
 //!   time for any non-trivial program).
 
 use std::{
-    collections::hash_map::DefaultHasher,
     fmt,
     hash::{Hash, Hasher},
     num::NonZero,
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use ahash::AHasher;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use strum::EnumCount;
@@ -41,20 +41,22 @@ use crate::{heap::HeapId, intern::StaticStrings};
 ///
 /// Internally a [`NonZero<u64>`] holding the bit-inverse of the raw hash, so
 /// `Option<HashValue>` niche-packs into 8 bytes. Construct via
-/// [`HashValue::from_raw`]; extract via [`HashValue::get`] (both translate
+/// [`HashValue::new`]; extract via [`HashValue::raw`] (both translate
 /// the inversion at the boundary).
 ///
 /// The bit-inversion is purely an implementation detail of the niche
-/// packing — none of the public traits leak it. [`Hash`], [`fmt::Debug`],
-/// [`serde::Serialize`] and [`serde::Deserialize`] all hand-translate to/from
-/// the raw `u64` form, so:
+/// packing — none of the public traits leak it. [`Hash`] and [`fmt::Debug`]
+/// hand-translate to/from the raw `u64` form, so:
 ///
 /// * Composite hashes that fold a `HashValue` see the same bytes `get()`
 ///   returns (independent of storage layout — a future change to e.g.
 ///   `NonMaxU64` would leave tuple/dict hashes invariant).
 /// * Debug output shows the raw hash (`HashValue(5)`, not the inverted bits).
-/// * Snapshots store the raw hash, so the wire format is decoupled from the
-///   niche-packing representation.
+///
+/// Deliberately NOT `Serialize`/`Deserialize`: hashes are hasher- and
+/// build-specific derived data and must never cross the serialization
+/// boundary — dumps stay hash-free and every build recomputes with its own
+/// hasher (dict/set indices rebuild lazily, caches refill on first use).
 ///
 /// Stored in interner hash tables, returned by `Value::py_hash`, and used
 /// wherever a known-good hash needs to be passed around.
@@ -107,31 +109,17 @@ impl fmt::Debug for HashValue {
     }
 }
 
-impl serde::Serialize for HashValue {
-    /// Emits the raw hash so the wire format is decoupled from the
-    /// niche-packing representation.
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.raw().serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for HashValue {
-    /// Reads a raw `u64` and reconstructs via [`HashValue::from_raw`], so
-    /// even a pathological wire value of `u64::MAX` is handled by the same
-    /// sentinel-collision path as fresh hashes.
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self::new(u64::deserialize(deserializer)?))
-    }
-}
-
-/// Hashes any `Hash` value with a fresh [`DefaultHasher`].
+/// Hashes any `Hash` value with a fresh [`AHasher`].
 ///
 /// Keeps the hasher boilerplate in one place for the cold `Value::py_hash` arms
 /// (builtins, functions, markers, singletons), so the hot arms (int/str/ref)
 /// never pay for constructing a hasher they don't use.
+///
+/// `AHasher::default()` uses fixed keys, so hashes are deterministic within a
+/// build — required because dict snapshots store raw entry hashes.
 #[inline]
 pub(crate) fn hash_one(value: impl Hash) -> HashValue {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = AHasher::default();
     value.hash(&mut hasher);
     HashValue::new(hasher.finish())
 }
@@ -140,7 +128,7 @@ pub(crate) fn hash_one(value: impl Hash) -> HashValue {
 ///
 /// The canonical hash for objects that compare by identity — user classes,
 /// instances, bound methods, and cells (CPython's default for objects without
-/// a user `__hash__`). Keeps the `DefaultHasher` boilerplate in one place.
+/// a user `__hash__`). Keeps the hasher boilerplate in one place.
 #[inline]
 pub(crate) fn identity_hash(id: HeapId) -> HashValue {
     hash_one(id)
@@ -153,7 +141,7 @@ pub(crate) fn identity_hash(id: HeapId) -> HashValue {
 /// for dict-key consistency.
 #[inline]
 pub(crate) fn hash_python_str(s: &str) -> HashValue {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = AHasher::default();
     s.hash(&mut hasher);
     HashValue::new(hasher.finish())
 }
@@ -164,7 +152,7 @@ pub(crate) fn hash_python_str(s: &str) -> HashValue {
 /// and the interned bytes table.
 #[inline]
 pub(crate) fn hash_python_bytes(b: &[u8]) -> HashValue {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = AHasher::default();
     b.hash(&mut hasher);
     HashValue::new(hasher.finish())
 }
@@ -173,7 +161,7 @@ pub(crate) fn hash_python_bytes(b: &[u8]) -> HashValue {
 ///
 /// For values that fit in `i64`, returns `i.cast_unsigned()` so that
 /// `hash(LongInt(5)) == hash(Value::Int(5))`. For larger values, falls back
-/// to hashing `(sign, little-endian bytes)` via [`DefaultHasher`].
+/// to hashing `(sign, little-endian bytes)` via [`AHasher`].
 ///
 /// Used by heap `LongInt::py_hash` and by `Interns::long_int_hash` so that
 /// interned and heap-allocated long ints with equal value hash identically.
@@ -182,7 +170,7 @@ pub(crate) fn hash_python_long_int(bi: &BigInt) -> HashValue {
     if let Some(i) = bi.to_i64() {
         HashValue::new(i.cast_unsigned())
     } else {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = AHasher::default();
         let (sign, bytes) = bi.to_bytes_le();
         sign.hash(&mut hasher);
         bytes.hash(&mut hasher);

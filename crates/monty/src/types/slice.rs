@@ -3,12 +3,7 @@
 //! Provides a slice object representing start:stop:step indices for sequence slicing.
 //! Each field is optional (None in Python), where None means "use the default for that field".
 
-use std::{
-    collections::hash_map::DefaultHasher,
-    fmt,
-    fmt::Write,
-    hash::{Hash, Hasher},
-};
+use std::{fmt, fmt::Write};
 
 use super::LazyHeapSet;
 use crate::{
@@ -16,7 +11,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    hash::HashValue,
+    hash::{HashValue, hash_one},
     heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     types::{PyTrait, Type},
@@ -167,7 +162,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Slice(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -177,9 +172,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        let mut hasher = DefaultHasher::new();
-        self.get(vm.heap).hash(&mut hasher);
-        Ok(Some(HashValue::new(hasher.finish())))
+        Ok(Some(hash_one(self.get(vm.heap))))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {

@@ -88,7 +88,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
         Ok(())
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // Classes return `NotImplemented`; rich equality's final identity
         // fallback makes a class equal only to itself.
         Ok(None)

@@ -4,11 +4,11 @@
 //! with configurable start, stop, and step values.
 
 use std::{
-    collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
 };
 
+use ahash::AHasher;
 use num_integer::div_ceil;
 
 use crate::{
@@ -192,7 +192,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
 
     /// O(1) containment: bounds plus step alignment, no iteration. Non-integral
     /// items can never be members, matching CPython's fast path.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let range = self.get(vm.heap);
         let n = match item {
             Value::Int(i) => *i,
@@ -228,7 +228,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
@@ -265,7 +265,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         Ok(Value::Int(offset_i64))
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Range(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -297,7 +297,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         // and `range(0, 2, 2)`.
         let r = self.get(vm.heap);
         let len = r.len();
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = AHasher::default();
         len.hash(&mut hasher);
         if len > 0 {
             r.start.hash(&mut hasher);
@@ -369,7 +369,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RangeIterator> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

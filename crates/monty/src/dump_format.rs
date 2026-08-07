@@ -11,7 +11,10 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 ///
 /// Bump this whenever a serialized discriminant can shift, so older dumps are
 /// rejected instead of decoding as their neighbour.
-pub(crate) const VERSION: u16 = 4;
+///
+/// Version 5: dict/set entries no longer serialize per-entry hashes (rebuilt
+/// lazily on load), so dumps are stable across platforms and hasher changes.
+pub(crate) const VERSION: u16 = 5;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>() + size_of::<u8>();

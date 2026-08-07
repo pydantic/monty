@@ -267,7 +267,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
     }
 
     /// Substring search; `in` on a str requires a str on the left.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let container = self.get(vm.heap).as_str();
         str_contains(container, item, vm.heap, vm.interns).map(Some)
     }
@@ -289,7 +289,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Some(self.get(vm.heap).0.chars().count())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
@@ -306,7 +306,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(allocate_char(c, vm.heap))
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // A heap string equals an interned or heap string with the same content.
         Ok(eq_str(self.get(vm.heap).as_str(), other, vm))
     }
@@ -2119,7 +2119,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, StringIterator> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

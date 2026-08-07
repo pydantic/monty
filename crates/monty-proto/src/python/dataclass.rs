@@ -5,11 +5,9 @@
 //! - Converting `MontyObject::Dataclass` back to Python via `PyUnknownDataclass`
 //! - `PyUnknownDataclass`: A Python class that mimics dataclass behavior
 
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-};
+use std::hash::{Hash, Hasher};
 
+use ahash::AHasher;
 use monty_types::{DictPairs, MontyObject};
 use pyo3::{
     Bound,
@@ -394,7 +392,7 @@ impl PyUnknownDataclass {
             return Err(PyTypeError::new_err("unhashable type: 'UnknownDataclass'"));
         }
 
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = AHasher::default();
 
         let attrs = self.attrs.bind(py);
         for field_name in &self.field_names {

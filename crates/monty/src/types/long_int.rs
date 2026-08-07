@@ -388,7 +388,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         Ok(!self.get(vm.heap).is_zero())
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(eq_bigint(self.get(vm.heap).inner(), other, vm))
     }
 
@@ -441,7 +441,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         }))
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&mut self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let lhs = self.get(vm.heap);
         let result = match other {
             Value::Int(rhs) => lhs.inner() - rhs,
@@ -453,7 +453,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         Ok(Some(LongInt::new(result).into_value(vm.heap)))
     }
 
-    fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rsub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let rhs = self.get(vm.heap);
         let result = match other {
             Value::Int(lhs) => BigInt::from(*lhs) - rhs.inner(),
@@ -611,27 +611,27 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         }
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&mut self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| lhs & rhs))
     }
 
-    fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rand_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| rhs & lhs))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&mut self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| lhs | rhs))
     }
 
-    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_ror_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| rhs | lhs))
     }
 
-    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_xor_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| lhs ^ rhs))
     }
 
-    fn py_rxor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rxor_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| rhs ^ lhs))
     }
 

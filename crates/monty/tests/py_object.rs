@@ -1,13 +1,11 @@
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-};
+use std::hash::{Hash, Hasher};
 
+use ahash::AHasher;
 use monty_types::{DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
 
 /// Helper to compute a hash for a value.
 fn hash_of(obj: &MontyObject) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = AHasher::default();
     obj.hash(&mut hasher);
     hasher.finish()
 }

@@ -4,12 +4,7 @@
 //! (require `OsAccess` implementation). Pure methods are handled directly by the VM,
 //! while filesystem methods yield external function calls for the host to resolve.
 
-use std::{
-    cell::Cell,
-    collections::hash_map::DefaultHasher,
-    fmt::Write,
-    hash::{Hash, Hasher},
-};
+use std::{cell::Cell, fmt::Write};
 
 use monty_types::MontyPath;
 use smallvec::SmallVec;
@@ -20,7 +15,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    hash::HashValue,
+    hash::{HashValue, hash_one},
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     os_dispatch::{build_path_os_call, is_path_os_method},
@@ -445,7 +440,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Path(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -457,9 +452,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         if let Some(cached) = p.cached_hash.get() {
             return Ok(Some(cached));
         }
-        let mut hasher = DefaultHasher::new();
-        p.as_str().hash(&mut hasher);
-        let hash = HashValue::new(hasher.finish());
+        let hash = hash_one(p.as_str());
         p.cached_hash.set(Some(hash));
         Ok(Some(hash))
     }

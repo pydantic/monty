@@ -318,7 +318,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // Match objects use identity equality (handled before the heap read).
         Ok(None)
     }
@@ -387,7 +387,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         Ok(CallResult::Value(result))
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         match key {
             Value::Int(n) => self.get(vm.heap).get_group(*n, vm.heap),
             Value::Bool(b) => self.get(vm.heap).get_group(i64::from(*b), vm.heap),

@@ -3,11 +3,7 @@
 //! Monty stores dates with `chrono::NaiveDate` and keeps CPython-compatible
 //! constructor validation and arithmetic behavior.
 
-use std::{
-    collections::hash_map::DefaultHasher,
-    fmt::{self, Write},
-    hash::{Hash, Hasher},
-};
+use std::fmt::{self, Write};
 
 use chrono::{Datelike, NaiveDate, format::StrftimeItems};
 use monty_types::OsFunctionCall;
@@ -17,7 +13,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    hash::HashValue,
+    hash::{HashValue, hash_one},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     types::{
@@ -193,7 +189,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Date(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -201,9 +197,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        let mut hasher = DefaultHasher::new();
-        self.get(vm.heap).hash(&mut hasher);
-        Ok(Some(HashValue::new(hasher.finish())))
+        Ok(Some(hash_one(self.get(vm.heap))))
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
@@ -232,7 +226,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         Ok(py_add(*self.get(vm.heap), *other.get(vm.heap), vm.heap))
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&mut self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::Date(other)) => Ok(py_sub_date(*self.get(vm.heap), *other.get(vm.heap), vm.heap)),
             Some(HeapReadOutput::TimeDelta(other)) => {

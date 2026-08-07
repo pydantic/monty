@@ -80,7 +80,7 @@ impl<'h> HeapRead<'h, Instance> {
 impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
     /// The class's `__contains__`, or `None` when it defines none — `in` then
     /// falls back to iteration, matching CPython's `sq_contains` before `tp_iter`.
-    fn py_contains_impl(&self, self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         instance_contains(self_id, item, vm)
     }
 
@@ -103,7 +103,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
 
     /// Returns `NotImplemented`; comparisons dispatch at the `Value` level because
     /// user and synthesized dataclass equality require the instance's `HeapId`.
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
@@ -339,7 +339,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BoundMethod> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

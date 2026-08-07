@@ -308,7 +308,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // File objects use identity equality (handled before the heap read).
         Ok(None)
     }

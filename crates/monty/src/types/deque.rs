@@ -331,7 +331,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
     }
 
     /// `in` walks the deque comparing each item by `==`, like `list`.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let len = self.get(vm.heap).len();
         for i in 0..len {
             let el = self
@@ -379,7 +379,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         Ok(self.get(vm.heap).len() > 0)
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         let idx = self.resolve_index(key, vm)?;
         Ok(self.get(vm.heap).items[idx].clone_with_heap(vm))
     }
@@ -397,7 +397,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         Ok(())
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // A deque only ever equals another deque — unlike NamedTuple/tuple, there
         // is no cross-type equality with list. `maxlen` is not part of equality.
         let Some(HeapReadOutput::Deque(other)) = other.read_heap(vm) else {
@@ -642,7 +642,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DequeIterator> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

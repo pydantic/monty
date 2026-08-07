@@ -2458,6 +2458,7 @@ dependencies = [
 name = "monty-proto"
 version = "0.0.19"
 dependencies = [
+ "ahash",
  "monty",
  "monty-type-checking",
  "monty-types",

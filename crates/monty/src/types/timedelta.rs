@@ -4,12 +4,7 @@
 //! normalized `(days, seconds, microseconds)` semantics for constructors, arithmetic,
 //! and formatting.
 
-use std::{
-    cmp::Ordering,
-    collections::hash_map::DefaultHasher,
-    fmt::Write,
-    hash::{Hash, Hasher},
-};
+use std::{cmp::Ordering, fmt::Write};
 
 use chrono::TimeDelta as ChronoTimeDelta;
 
@@ -17,7 +12,7 @@ use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    hash::HashValue,
+    hash::{HashValue, hash_one},
     heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     types::{CmpOrder, LazyHeapSet, PyTrait, Type, date, datetime, str::allocate_string},
@@ -305,7 +300,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -315,9 +310,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        let mut hasher = DefaultHasher::new();
-        self.get(vm.heap).hash(&mut hasher);
-        Ok(Some(HashValue::new(hasher.finish())))
+        Ok(Some(hash_one(self.get(vm.heap))))
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
@@ -392,7 +385,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         }
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&mut self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
             return Ok(None);
         };

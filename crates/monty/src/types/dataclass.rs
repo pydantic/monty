@@ -1,8 +1,9 @@
 use std::{
     fmt::Write,
-    hash::{DefaultHasher, Hash, Hasher},
+    hash::{Hash, Hasher},
 };
 
+use ahash::AHasher;
 use serde::ser::SerializeStruct;
 
 use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value};
@@ -166,15 +167,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         Ok(())
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::Dataclass(other)) = other.read_heap(vm) else {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::Dataclass(mut other)) = other.read_heap(vm) else {
             return Ok(None);
         };
         // Dataclasses are equal only if they are the same class and have equal attrs.
         if self.get(vm.heap).type_id() != other.get(vm.heap).type_id() {
             return Ok(Some(false));
         }
-        Ok(Some(self.attrs().eq_dict(&other.attrs(), vm)?))
+        Ok(Some(self.attrs().eq_dict(&mut other.attrs_mut(), vm)?))
     }
 
     /// Hashes a frozen dataclass by its class name and the values of declared fields.
@@ -187,7 +188,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         }
         let mut guard = vm.recursion_guard()?;
         let vm = &mut *guard;
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = AHasher::default();
         // Hash the class name
         self.get(vm.heap).name.hash(&mut hasher);
         // Hash each declared field (name, value) pair in order

@@ -76,10 +76,24 @@ Possible security risks to consider:
 * subprocess/shell execution - os.system, subprocess, etc.
 * import system abuse - importing modules with side effects or accessing `__import__`
 * external function/callback misuse - callbacks run in host environment
-* deserialization attacks - loading untrusted serialized Monty/snapshot data
 * regex/string DoS - catastrophic backtracking or operations bypassing limits
 * information leakage via timing or error messages
 * Python/Javascript/Rust APIs that accidentally allow developers to expose their host to monty code
+
+### Dumps/snapshots are a TRUSTED boundary
+
+Serialized dumps (`ReplRun`/`RunSnapshot`/`RunProgress` `dump()`/`load()`) are
+NOT part of the sandbox threat model: the host is ALWAYS responsible for
+signing dumps it produces and verifying them before loading. Do not add
+validation passes, depth guards, or other hardening motivated by malformed or
+malicious dump content, and do not weigh hostile-dump scenarios in design
+trade-offs — loading an unverified dump is a host bug, like calling any other
+`unsafe`-adjacent API wrong.
+
+This is distinct from the boundaries that DO stay untrusted:
+* wire frames from a (possibly compromised) worker child — parents must
+  validate everything and never panic (see the subprocess isolation section)
+* code running inside the sandbox, always
 
 ## Filesystem Mounts (`crates/monty-fs/`)
 
