@@ -3,7 +3,7 @@
 //! must surface as a clean error and never poison the pool.
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::{
     env, fs,
     future::ready,
@@ -250,13 +250,7 @@ async fn non_utf8_mount_path_works() {
         .feed(
             "from pathlib import Path\nPath('/mnt/data/data.txt').read_text()",
             vec![],
-            vec![MountSpec {
-                virtual_path: "/mnt/data".to_owned(),
-                host_path: weird_dir,
-                mode: MountSpecMode::ReadOnly,
-                write_bytes_limit: None,
-                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-            }],
+            vec![MountSpec::new("/mnt/data", weird_dir, MountSpecMode::ReadOnly).unwrap()],
             false,
             &mut no_print,
         )
@@ -269,28 +263,16 @@ async fn non_utf8_mount_path_works() {
     session.finish().await.unwrap();
 }
 
-/// A mount whose host path does not exist fails at `feed()` — on the parent,
-/// before any frame is sent — as a session-preserving error.
+/// A mount whose host path does not exist is rejected where the directory is
+/// opened — building the [`MountSpec`] — so no feed inherits the failure.
 #[tokio::test]
 async fn invalid_mount_host_path_is_rejected_cleanly() {
-    let pool = Pool::new(config()).await.unwrap();
-    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
-    let err = session
-        .feed(
-            "1 + 1",
-            vec![],
-            vec![MountSpec {
-                virtual_path: "/mnt/data".to_owned(),
-                host_path: PathBuf::from("/nonexistent/monty/mount/dir"),
-                mode: MountSpecMode::ReadOnly,
-                write_bytes_limit: None,
-                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-            }],
-            false,
-            &mut no_print,
-        )
-        .await
-        .unwrap_err();
+    let err = MountSpec::new(
+        "/mnt/data",
+        PathBuf::from("/nonexistent/monty/mount/dir"),
+        MountSpecMode::ReadOnly,
+    )
+    .unwrap_err();
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };
@@ -299,7 +281,9 @@ async fn invalid_mount_host_path_is_rejected_cleanly() {
         "unexpected message: {:?}",
         exc.message()
     );
-    // nothing was sent, so the worker is still synced and the session usable
+
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let event = session
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
@@ -316,15 +300,7 @@ async fn mounted_filesystem_ops_are_serviced_by_the_parent() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("data.txt"), "mounted!").unwrap();
 
-    let mount = || {
-        vec![MountSpec {
-            virtual_path: "/mnt".to_owned(),
-            host_path: dir.path().to_path_buf(),
-            mode: MountSpecMode::ReadWrite,
-            write_bytes_limit: None,
-            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-        }]
-    };
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadWrite).unwrap()];
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
 
@@ -357,6 +333,52 @@ body";
     session.finish().await.unwrap();
 }
 
+/// A [`MountSpec`] reused across feeds stays bound to the directory it opened:
+/// the sandbox renaming a symlink over that directory's name, from inside a
+/// read-write mount of the parent, redirects the *path* and nothing else.
+///
+/// Unix-only because planting the link needs symlink creation; the confinement
+/// itself is not platform-specific.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_reused_mount_spec_survives_a_rename_of_its_host_directory() {
+    let base = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let shared = base.path().join("shared");
+    fs::create_dir(&shared).unwrap();
+    fs::write(shared.join("inside.txt"), "in-mount").unwrap();
+    fs::write(outside.path().join("secret.txt"), "HOST SECRET").unwrap();
+    // Host-planted link out of the tree; the sandbox only moves it.
+    symlink(outside.path(), base.path().join("prepared-link")).unwrap();
+
+    // Both built once, as a host holding long-lived mount objects would.
+    let child = MountSpec::new("/child", shared, MountSpecMode::ReadOnly).unwrap();
+    let parent = MountSpec::new("/parent", base.path(), MountSpecMode::ReadWrite).unwrap();
+
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+
+    // Feed 1: swap the real directory out and the link in, under one name.
+    let code = "\
+from pathlib import Path
+Path('/parent/shared').rename('/parent/old-shared')
+Path('/parent/prepared-link').rename('/parent/shared')
+'swapped'";
+    let result = session.feed(code, vec![], vec![parent], false, &mut no_print).await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("swapped".to_owned()));
+
+    // Feed 2: the child mount, rebuilt from the same spec, still serves the
+    // original directory and cannot see the one the name now points at.
+    let code = "\
+from pathlib import Path
+f\"{Path('/child/inside.txt').read_text()}:{Path('/child/secret.txt').exists()}\"";
+    let result = session.feed(code, vec![], vec![child], false, &mut no_print).await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("in-mount:False".to_owned()));
+    session.finish().await.unwrap();
+}
+
 /// A write through a read-only mount raises `PermissionError` inside the
 /// sandbox (catchable, session-preserving); overlay writes are visible within
 /// the feed, never reach the host, and are discarded when the feed ends.
@@ -365,15 +387,7 @@ async fn read_only_and_overlay_mount_semantics() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("data.txt"), "original").unwrap();
 
-    let mount = |mode| {
-        vec![MountSpec {
-            virtual_path: "/mnt".to_owned(),
-            host_path: dir.path().to_path_buf(),
-            mode,
-            write_bytes_limit: None,
-            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-        }]
-    };
+    let mount = |mode| vec![MountSpec::new("/mnt", dir.path(), mode).unwrap()];
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
 
@@ -435,12 +449,10 @@ msg";
         .feed(
             code,
             vec![],
-            vec![MountSpec {
-                virtual_path: "/mnt".to_owned(),
-                host_path: dir.path().to_path_buf(),
-                mode: MountSpecMode::ReadWrite,
-                write_bytes_limit: Some(10),
-                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+            vec![{
+                let mut spec = MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadWrite).unwrap();
+                spec.write_bytes_limit = Some(10);
+                spec
             }],
             false,
             &mut no_print,
@@ -472,7 +484,7 @@ try:
 except MemoryError as exc:
     msg = str(exc)
 msg";
-    let mut spec = MountSpec::new("/mnt".to_owned(), dir.path().to_path_buf(), MountSpecMode::Overlay);
+    let mut spec = MountSpec::new("/mnt", dir.path(), MountSpecMode::Overlay).unwrap();
     spec.memory_usage_limit = 1_000;
     let result = session.feed(code, vec![], vec![spec], false, &mut no_print).await;
     let event = feed_with_mounts(&mut session, result).await.unwrap();
@@ -500,13 +512,7 @@ covered + ':' + Path('/elsewhere/file.txt').read_text()";
         .feed(
             code,
             vec![],
-            vec![MountSpec {
-                virtual_path: "/mnt".to_owned(),
-                host_path: dir.path().to_path_buf(),
-                mode: MountSpecMode::ReadOnly,
-                write_bytes_limit: None,
-                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-            }],
+            vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()],
             false,
             &mut no_print,
         )
@@ -543,15 +549,7 @@ async fn suspended_feed_restores_with_mounts_re_supplied() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("data.txt"), "after resume").unwrap();
 
-    let mount = || {
-        vec![MountSpec {
-            virtual_path: "/mnt".to_owned(),
-            host_path: dir.path().to_path_buf(),
-            mode: MountSpecMode::ReadOnly,
-            write_bytes_limit: None,
-            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-        }]
-    };
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     // suspend on an *uncovered* call, dump, and restore into a fresh worker
@@ -624,13 +622,7 @@ async fn restored_os_call_is_serviced_by_restore_mounts() {
     let (event, _) = restored
         .restore(
             state,
-            vec![MountSpec {
-                virtual_path: "/mnt".to_owned(),
-                host_path: dir.path().to_path_buf(),
-                mode: MountSpecMode::ReadOnly,
-                write_bytes_limit: None,
-                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-            }],
+            vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()],
             &mut no_print,
         )
         .await
@@ -1213,13 +1205,7 @@ async fn special_files_in_mounts_are_rejected_without_blocking() {
         .feed(
             "from pathlib import Path\nPath('/mnt/pipe').read_text()",
             vec![],
-            vec![MountSpec {
-                virtual_path: "/mnt".to_owned(),
-                host_path: dir.path().to_path_buf(),
-                mode: MountSpecMode::ReadOnly,
-                write_bytes_limit: None,
-                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-            }],
+            vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()],
             false,
             &mut no_print,
         )

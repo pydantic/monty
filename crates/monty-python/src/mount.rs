@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use monty_fs::{Mount, MountMode};
+use monty_fs::{MountMode, MountRoot};
 use monty_pool::{MountSpec, MountSpecMode};
 use monty_proto::python::exc_monty_to_py;
 use pyo3::{exceptions::PyValueError, prelude::*};
@@ -67,33 +67,32 @@ impl PyMountDir {
         memory_usage_limit: u64,
     ) -> PyResult<Self> {
         let mount_mode = MountMode::from_mode_str(mode).map_err(PyValueError::new_err)?;
-        let mount = Mount::new(virtual_path, &host_path, mount_mode, write_bytes_limit)
-            .map_err(|e| exc_monty_to_py(py, e.into_exception()))?;
-        Ok(Self {
-            spec: MountSpec {
-                virtual_path: mount.virtual_path().to_owned(),
-                host_path: mount.host_path().to_path_buf(),
-                mode: match mount.mode() {
-                    MountMode::ReadOnly => MountSpecMode::ReadOnly,
-                    MountMode::ReadWrite => MountSpecMode::ReadWrite,
-                    MountMode::OverlayMemory(_) => MountSpecMode::Overlay,
-                },
-                write_bytes_limit: mount.write_bytes_limit(),
-                memory_usage_limit,
+        // Held for this object's lifetime: later feeds mount the descriptor
+        // rather than re-resolving `host_path`, which the sandbox can redirect.
+        let root = MountRoot::open(virtual_path, &host_path).map_err(|e| exc_monty_to_py(py, e.into_exception()))?;
+        let mut spec = MountSpec::from_root(
+            root,
+            match mount_mode {
+                MountMode::ReadOnly => MountSpecMode::ReadOnly,
+                MountMode::ReadWrite => MountSpecMode::ReadWrite,
+                MountMode::OverlayMemory(_) => MountSpecMode::Overlay,
             },
-        })
+        );
+        spec.write_bytes_limit = write_bytes_limit;
+        spec.memory_usage_limit = memory_usage_limit;
+        Ok(Self { spec })
     }
 
     /// The canonical host directory path.
     #[getter]
     fn host_path(&self) -> String {
-        self.spec.host_path.display().to_string()
+        self.spec.host_path().display().to_string()
     }
 
     /// The normalized virtual path prefix inside the sandbox.
     #[getter]
     fn virtual_path(&self) -> String {
-        self.spec.virtual_path.clone()
+        self.spec.virtual_path().to_owned()
     }
 
     /// The access mode: `"read-only"`, `"read-write"`, or `"overlay"`.
@@ -117,8 +116,8 @@ impl PyMountDir {
     fn __repr__(&self) -> String {
         format!(
             "MountDir(host_path='{}', virtual_path='{}', mode='{}')",
-            self.spec.host_path.display(),
-            self.spec.virtual_path,
+            self.spec.host_path().display(),
+            self.spec.virtual_path(),
             mount_mode_name(self.spec.mode)
         )
     }

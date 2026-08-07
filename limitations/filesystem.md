@@ -153,8 +153,17 @@ Windows refuses to rename or delete a directory while a handle to it is open,
 so the host cannot move or delete a directory for as long as it is mounted —
 the attempt fails with `ERROR_SHARING_VIOLATION`. Unix is unaffected. The
 window is the mount's lifetime, which for `pydantic_monty` and
-`@pydantic/monty` is one feed (see
+`@pydantic/monty` is the lifetime of the mount object, not one feed (see
 [pool-architecture.md](pool-architecture.md)).
+
+### A mount follows its directory, not its path
+
+The host directory is opened when the mount is created, and everything runs
+against that descriptor. Renaming or replacing the directory afterwards is
+therefore invisible to the mount: it keeps serving the same directory under
+whatever name it now has, and a *new* directory created at the original path
+is not picked up. CPython, resolving each path afresh, would see the
+replacement. Recreate the mount to follow a path.
 
 ### `OverlayMemory` writes refuse symlinks
 
