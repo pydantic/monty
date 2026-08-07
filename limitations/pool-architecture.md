@@ -240,8 +240,10 @@ properties that real CPython does not provide, per the caveat above.
 - **On Windows a mounted directory is locked for as long as the mount object
   lives.** It holds an open descriptor, and Windows refuses to rename or delete
   a directory while a handle to it is open, so the host gets
-  `ERROR_SHARING_VIOLATION` until the mount object is dropped — not just until
-  the feed ends. Unix is unaffected.
+  `ERROR_SHARING_VIOLATION` until the mount is closed — not just until the feed
+  ends. `MountDir.close()` releases it (also `with` in Python, `using` in
+  JavaScript); a feed already running keeps its own reference, and feeding a
+  closed mount raises. Unix is unaffected, and closing is optional there.
 - **Mounts only answer calls on the automatic path.** Every OS call the sandbox
   makes surfaces as a suspension; the pool consults the mount table only when
   the caller asks it to. `feed_run` (and the JS `feedRun`) asks on every OS

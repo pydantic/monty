@@ -153,7 +153,9 @@ Windows refuses to rename or delete a directory while a handle to it is open,
 so the host cannot move or delete a directory for as long as it is mounted —
 the attempt fails with `ERROR_SHARING_VIOLATION`. Unix is unaffected. The
 window is the mount's lifetime, which for `pydantic_monty` and
-`@pydantic/monty` is the lifetime of the mount object, not one feed (see
+`@pydantic/monty` is the lifetime of the mount object, not one feed — close it
+(`MountDir.close()`, or the `with` / `using` block) to release the directory
+before the host touches it (see
 [pool-architecture.md](pool-architecture.md)).
 
 ### A mount follows its directory, not its path

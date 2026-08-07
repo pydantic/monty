@@ -154,7 +154,9 @@ pub struct NativeMount {
 /// TypeScript `MountDir` — not part of the public API.
 #[napi(js_name = "NativeMountDir")]
 pub struct NativeMountDir {
-    spec: MountSpec,
+    /// `None` once closed: the open directory is released and no later feed
+    /// can mount it. A feed already running holds its own reference.
+    spec: Option<MountSpec>,
 }
 
 #[napi]
@@ -164,8 +166,14 @@ impl NativeMountDir {
     #[napi(constructor)]
     pub fn new(mount: NativeMount) -> Result<Self> {
         Ok(Self {
-            spec: MountSpec::try_from(mount)?,
+            spec: Some(MountSpec::try_from(mount)?),
         })
+    }
+
+    /// Releases the open directory. Idempotent.
+    #[napi]
+    pub fn close(&mut self) {
+        self.spec = None;
     }
 }
 
@@ -343,7 +351,7 @@ impl NativeSession {
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let inputs = convert_inputs(env, inputs)?;
-        let mounts = mount_specs(&mounts);
+        let mounts = mount_specs(&mounts)?;
         self.run_turn(
             env,
             on_print,
@@ -534,7 +542,7 @@ impl NativeSession {
         mounts: Vec<ClassInstance<'env, NativeMountDir>>,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
-        let mounts = mount_specs(&mounts);
+        let mounts = mount_specs(&mounts)?;
         let state = state.to_vec();
         self.run_outcome(
             env,
@@ -1013,8 +1021,20 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Clones each mount's opened configuration for one turn — the descriptor is
 /// shared, so nothing is reopened and no host path is resolved again.
-fn mount_specs(mounts: &[ClassInstance<'_, NativeMountDir>]) -> Vec<MountSpec> {
-    mounts.iter().map(|mount| mount.spec.clone()).collect()
+///
+/// # Errors
+///
+/// Rejects the turn if any mount has been closed.
+fn mount_specs(mounts: &[ClassInstance<'_, NativeMountDir>]) -> Result<Vec<MountSpec>> {
+    mounts
+        .iter()
+        .map(|mount| {
+            mount
+                .spec
+                .clone()
+                .ok_or_else(|| invalid("mount is closed: create a new MountDir"))
+        })
+        .collect()
 }
 
 fn pool_error(err: PoolError) -> napi::Error {

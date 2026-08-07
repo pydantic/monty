@@ -5,7 +5,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { MontyFileHandle, MontyRuntimeError, MountDir } from '@pydantic/monty/node'
+import { MontyFileHandle, MontyRuntimeError, MountDir, type MountDirOptions } from '@pydantic/monty/node'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -14,15 +14,32 @@ const { run, pool } = setupPool()
 // Helper: create a temporary directory with test files
 // =============================================================================
 
-function createTestDir(): { dir: string; cleanup: () => void } {
+function createTestDir(): {
+  dir: string
+  mount: (options: Omit<MountDirOptions, 'hostPath'>) => MountDir
+  cleanup: () => void
+} {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'monty-mount-test-'))
   fs.writeFileSync(path.join(dir, 'hello.txt'), 'hello world')
   fs.writeFileSync(path.join(dir, 'data.bin'), Buffer.from([0x00, 0x01, 0x02]))
   fs.mkdirSync(path.join(dir, 'subdir'))
   fs.writeFileSync(path.join(dir, 'subdir', 'nested.txt'), 'nested content')
+  const mounts: MountDir[] = []
   return {
     dir,
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    // Mounts made here are closed by `cleanup`: Windows will not remove a
+    // directory while a mount still holds it open.
+    mount: (options) => {
+      const md = new MountDir({ hostPath: dir, ...options })
+      mounts.push(md)
+      return md
+    },
+    cleanup: () => {
+      for (const md of mounts) {
+        md.close()
+      }
+      fs.rmSync(dir, { recursive: true, force: true })
+    },
   }
 }
 
@@ -57,17 +74,26 @@ test('a mount follows its directory across feeds, not its path', async (ctx) => 
       ctx.skip()
     }
 
-    const child = new MountDir({ hostPath: shared, virtualPath: '/child', mode: 'read-only' })
-    const parent = new MountDir({ hostPath: base, virtualPath: '/parent', mode: 'read-write' })
+    using child = new MountDir({ hostPath: shared, virtualPath: '/child', mode: 'read-only' })
+    using parent = new MountDir({ hostPath: base, virtualPath: '/parent', mode: 'read-write' })
     await using session = await pool().checkout()
 
     // Feed 1: swap the real directory out and the link in, under one name.
-    await session.feedRun(
-      `from pathlib import Path
+    // Windows refuses to rename a directory while a handle to it is open, and
+    // the child mount holds one, so the swap cannot be staged there at all.
+    try {
+      await session.feedRun(
+        `from pathlib import Path
 Path('/parent/shared').rename('/parent/old-shared')
 Path('/parent/prepared-link').rename('/parent/shared')`,
-      { mount: parent },
-    )
+        { mount: parent },
+      )
+    } catch (err) {
+      if (process.platform === 'win32') {
+        ctx.skip()
+      }
+      throw err
+    }
 
     // Feed 2: the same mount object, and the redirect has not reached it.
     const result = await session.feedRun(
@@ -84,9 +110,9 @@ f"{Path('/child/inside.txt').read_text()}:{Path('/child/secret.txt').exists()}"`
 
 test('MountDir repr', (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     t.is(md.repr(), `MountDir(host_path='${dir}', virtual_path='/data', mode='read-only')`)
   } finally {
     cleanup()
@@ -95,9 +121,9 @@ test('MountDir repr', (ctx) => {
 
 test('MountDir invalid mode', (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const error = t.throws(() => new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'invalid' as never }))
+    const error = t.throws(() => mount({ virtualPath: '/data', mode: 'invalid' as never }))
     t.is(error?.message, "invalid mount mode: 'invalid'. Expected 'read-only', 'read-write' or 'overlay'")
   } finally {
     cleanup()
@@ -106,15 +132,15 @@ test('MountDir invalid mode', (ctx) => {
 
 test('MountDir attributes', (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     t.is(md.virtualPath, '/data')
     t.is(md.hostPath, dir)
     t.is(md.mode, 'read-only')
     t.is(md.memoryUsageLimit, 100_000_000)
 
-    const limited = new MountDir({ hostPath: dir, virtualPath: '/limited', memoryUsageLimit: 1234 })
+    const limited = mount({ virtualPath: '/limited', memoryUsageLimit: 1234 })
     t.is(limited.memoryUsageLimit, 1234)
   } finally {
     cleanup()
@@ -133,10 +159,27 @@ test('MountDir nonexistent host path', (ctx) => {
 
 test('MountDir non-absolute virtual path', (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const error = t.throws(() => new MountDir({ hostPath: dir, virtualPath: 'relative' }))
+    const error = t.throws(() => mount({ virtualPath: 'relative' }))
     t.is(error.message, "TypeError: virtual path must be absolute, got: 'relative'")
+  } finally {
+    cleanup()
+  }
+})
+
+test('closing a mount releases it and later feeds are refused', async (ctx) => {
+  skipIfBrowser(ctx)
+  const { mount, cleanup } = createTestDir()
+  try {
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
+    t.is(await run("open('/data/hello.txt').read()", { mount: md }), 'hello world')
+
+    md.close()
+    md.close() // idempotent
+    await t.throwsAsync(() => run("open('/data/hello.txt').read()", { mount: md }))
+    // The configuration it reports outlives the descriptor.
+    t.is(md.virtualPath, '/data')
   } finally {
     cleanup()
   }
@@ -144,9 +187,9 @@ test('MountDir non-absolute virtual path', (ctx) => {
 
 test('MountDir default mode is overlay', (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data' })
+    const md = mount({ virtualPath: '/data' })
     t.is(md.mode, 'overlay')
   } finally {
     cleanup()
@@ -155,12 +198,12 @@ test('MountDir default mode is overlay', (ctx) => {
 
 test('MountDir write_bytes_limit', (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', writeBytesLimit: 1024 })
+    const md = mount({ virtualPath: '/data', writeBytesLimit: 1024 })
     t.is(md.writeBytesLimit, 1024)
 
-    const md2 = new MountDir({ hostPath: dir, virtualPath: '/data' })
+    const md2 = mount({ virtualPath: '/data' })
     t.is(md2.writeBytesLimit, null)
   } finally {
     cleanup()
@@ -257,9 +300,9 @@ test('MontyFileHandle rejects invalid arguments', () => {
 
 test('read_text via mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const result = await run("from pathlib import Path; Path('/data/hello.txt').read_text()", { mount: md })
     t.is(result, 'hello world')
   } finally {
@@ -269,9 +312,9 @@ test('read_text via mount', async (ctx) => {
 
 test('read_bytes via mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const result = await run("from pathlib import Path; Path('/data/data.bin').read_bytes()", { mount: md })
     t.deepEqual(result, Buffer.from([0x00, 0x01, 0x02]))
   } finally {
@@ -281,9 +324,9 @@ test('read_bytes via mount', async (ctx) => {
 
 test('path exists via mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const code = `
 from pathlib import Path
 exists_file = Path('/data/hello.txt').exists()
@@ -299,9 +342,9 @@ exists_missing = Path('/data/nope.txt').exists()
 
 test('is_file and is_dir via mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const code = `
 from pathlib import Path
 [Path('/data/hello.txt').is_file(), Path('/data/hello.txt').is_dir(),
@@ -315,9 +358,9 @@ from pathlib import Path
 
 test('iterdir via mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const code = `
 from pathlib import Path
 sorted([p.name for p in Path('/data').iterdir()])
@@ -330,9 +373,9 @@ sorted([p.name for p in Path('/data').iterdir()])
 
 test('stat via mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const code = `
 from pathlib import Path
 s = Path('/data/hello.txt').stat()
@@ -346,9 +389,9 @@ s.st_size
 
 test('read nested file via mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const result = await run("from pathlib import Path; Path('/data/subdir/nested.txt').read_text()", { mount: md })
     t.is(result, 'nested content')
   } finally {
@@ -362,9 +405,9 @@ test('read nested file via mount', async (ctx) => {
 
 test('write blocked on read-only mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const error = await t.throwsAsync(
       () => run("from pathlib import Path; Path('/data/new.txt').write_text('x')", { mount: md }),
       { instanceOf: MontyRuntimeError },
@@ -377,9 +420,9 @@ test('write blocked on read-only mount', async (ctx) => {
 
 test('write succeeds on read-write mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-write' })
+    const md = mount({ virtualPath: '/data', mode: 'read-write' })
     const code = `
 from pathlib import Path
 Path('/data/new.txt').write_text('written by monty')
@@ -395,9 +438,9 @@ Path('/data/new.txt').read_text()
 
 test('overlay write does not modify host', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'overlay' })
+    const md = mount({ virtualPath: '/data', mode: 'overlay' })
     const code = `
 from pathlib import Path
 Path('/data/overlay_file.txt').write_text('overlay content')
@@ -413,9 +456,9 @@ Path('/data/overlay_file.txt').read_text()
 
 test('overlay read falls through to host', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'overlay' })
+    const md = mount({ virtualPath: '/data', mode: 'overlay' })
     const result = await run("from pathlib import Path; Path('/data/hello.txt').read_text()", { mount: md })
     t.is(result, 'hello world')
   } finally {
@@ -427,9 +470,9 @@ test('overlay writes do not persist across runs', async (ctx) => {
   skipIfBrowser(ctx)
   // Overlay state lives in the pool's per-feed mount table, so unlike the old
   // in-process API it does NOT persist across runs sharing the same MountDir.
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'overlay' })
+    const md = mount({ virtualPath: '/data', mode: 'overlay' })
     await run("from pathlib import Path; Path('/data/persistent.txt').write_text('run1')", { mount: md })
     const error = await t.throwsAsync(
       () => run("from pathlib import Path; Path('/data/persistent.txt').read_text()", { mount: md }),
@@ -443,9 +486,9 @@ test('overlay writes do not persist across runs', async (ctx) => {
 
 test('overlay memory usage limit is aggregate', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'overlay', memoryUsageLimit: 1000 })
+    const md = mount({ virtualPath: '/data', mode: 'overlay', memoryUsageLimit: 1000 })
     const code = `
 from pathlib import Path
 p = Path('/data/retained.bin')
@@ -465,9 +508,9 @@ p.read_bytes()
 
 test('mkdir and rmdir via mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'overlay' })
+    const md = mount({ virtualPath: '/data', mode: 'overlay' })
     const code = `
 from pathlib import Path
 Path('/data/newdir').mkdir()
@@ -484,9 +527,9 @@ after = Path('/data/newdir').exists()
 
 test('unlink via mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'overlay' })
+    const md = mount({ virtualPath: '/data', mode: 'overlay' })
     const code = `
 from pathlib import Path
 Path('/data/hello.txt').unlink()
@@ -502,9 +545,9 @@ Path('/data/hello.txt').exists()
 
 test('rename via mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'overlay' })
+    const md = mount({ virtualPath: '/data', mode: 'overlay' })
     const code = `
 from pathlib import Path
 Path('/data/hello.txt').rename('/data/renamed.txt')
@@ -518,9 +561,9 @@ Path('/data/hello.txt').rename('/data/renamed.txt')
 
 test('resolve via mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const result = await run("from pathlib import Path; str(Path('/data/subdir/../hello.txt').resolve())", {
       mount: md,
     })
@@ -536,9 +579,9 @@ test('resolve via mount', async (ctx) => {
 
 test('path traversal blocked', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const error = await t.throwsAsync(
       () => run("from pathlib import Path; Path('/data/../../etc/passwd').read_text()", { mount: md }),
       { instanceOf: MontyRuntimeError },
@@ -551,9 +594,9 @@ test('path traversal blocked', async (ctx) => {
 
 test('unmounted path denied', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const error = await t.throwsAsync(
       () => run("from pathlib import Path; Path('/other/file.txt').exists()", { mount: md }),
       { instanceOf: MontyRuntimeError },
@@ -570,9 +613,9 @@ test('unmounted path denied', async (ctx) => {
 
 test('non-filesystem os call without fallback', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const error = await t.throwsAsync(() => run("import os; os.getenv('PATH')", { mount: md }), {
       instanceOf: MontyRuntimeError,
     })
@@ -615,9 +658,9 @@ b = Path('/rw/file2.txt').read_text()
 
 test('mount works with external functions', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const code = `
 from pathlib import Path
 content = Path('/data/hello.txt').read_text()
@@ -637,10 +680,10 @@ result + content
 
 test('session feed with mount read', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     await session.feedRun('from pathlib import Path', { mount: md })
     t.is(await session.feedRun("Path('/data/hello.txt').read_text()", { mount: md }), 'hello world')
   } finally {
@@ -656,10 +699,10 @@ test('session feed with mount read', async (ctx) => {
 
 test('session overlay write is discarded between feeds', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'overlay' })
+    const md = mount({ virtualPath: '/data', mode: 'overlay' })
     await session.feedRun('from pathlib import Path', { mount: md })
     await session.feedRun("Path('/data/new.txt').write_text('from repl')", { mount: md })
     const error = await t.throwsAsync(() => session.feedRun("Path('/data/new.txt').read_text()", { mount: md }), {
@@ -676,10 +719,10 @@ test('session overlay write is discarded between feeds', async (ctx) => {
 
 test('session overlay overwrite reverts between feeds', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'overlay' })
+    const md = mount({ virtualPath: '/data', mode: 'overlay' })
     await session.feedRun('from pathlib import Path', { mount: md })
     await session.feedRun("Path('/data/hello.txt').write_text('version1')", { mount: md })
     // The next feed sees the pristine host content again ...
@@ -694,10 +737,10 @@ test('session overlay overwrite reverts between feeds', async (ctx) => {
 
 test('session overlay delete reverts between feeds', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'overlay' })
+    const md = mount({ virtualPath: '/data', mode: 'overlay' })
     await session.feedRun('from pathlib import Path', { mount: md })
     await session.feedRun("Path('/data/hello.txt').unlink()", { mount: md })
     // The deletion only lived inside the previous feed's overlay.
@@ -711,9 +754,9 @@ test('session overlay delete reverts between feeds', async (ctx) => {
 
 test('overlay mkdir and nested write within one feed', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'overlay' })
+    const md = mount({ virtualPath: '/data', mode: 'overlay' })
     const code = `
 from pathlib import Path
 Path('/data/mydir').mkdir()
@@ -729,9 +772,9 @@ Path('/data/mydir/file.txt').read_text()
 
 test('overlay iterdir sees overlay files', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'overlay' })
+    const md = mount({ virtualPath: '/data', mode: 'overlay' })
     const code = `
 from pathlib import Path
 Path('/data/extra.txt').write_text('extra')
@@ -745,10 +788,10 @@ sorted([p.name for p in Path('/data').iterdir()])
 
 test('session read-write mount writes to host', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-write' })
+    const md = mount({ virtualPath: '/data', mode: 'read-write' })
     await session.feedRun('from pathlib import Path', { mount: md })
     await session.feedRun("Path('/data/rw_file.txt').write_text('written')", { mount: md })
     t.is(await session.feedRun("Path('/data/rw_file.txt').read_text()", { mount: md }), 'written')
@@ -762,10 +805,10 @@ test('session read-write mount writes to host', async (ctx) => {
 
 test('session read-only mount blocks write', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     await session.feedRun('from pathlib import Path', { mount: md })
     const error = await t.throwsAsync(() => session.feedRun("Path('/data/nope.txt').write_text('x')", { mount: md }), {
       instanceOf: MontyRuntimeError,
@@ -794,10 +837,10 @@ function makeSymlink(target: string, link: string): boolean {
 
 test('relative symlink inside a mount is followed', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
     if (!makeSymlink('hello.txt', path.join(dir, 'rel_link.txt'))) return
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
     const result = await run("from pathlib import Path; Path('/data/rel_link.txt').read_text()", { mount: md })
     t.is(result, 'hello world')
   } finally {
@@ -807,12 +850,12 @@ test('relative symlink inside a mount is followed', async (ctx) => {
 
 test('absolute symlink target is refused inside a mount', async (ctx) => {
   skipIfBrowser(ctx)
-  const { dir, cleanup } = createTestDir()
+  const { dir, mount, cleanup } = createTestDir()
   try {
     // Absolute even though it points back into the same mount: a descriptor has
     // no path of its own, so a leading '/' cannot be interpreted.
     if (!makeSymlink(path.join(dir, 'hello.txt'), path.join(dir, 'abs_link.txt'))) return
-    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
 
     const error = await t.throwsAsync(
       () => run("from pathlib import Path; Path('/data/abs_link.txt').read_text()", { mount: md }),

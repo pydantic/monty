@@ -1750,14 +1750,14 @@ fn extract_mount_specs(mount: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<MountSp
         return Ok(vec![]);
     };
     if let Ok(single) = mount.extract::<PyRef<'_, PyMountDir>>() {
-        return Ok(vec![single.spec()]);
+        return Ok(vec![single.spec()?]);
     }
     if let Ok(list) = mount.cast::<PyList>() {
         return list
             .iter()
             .map(|item| {
                 let dir = item.extract::<PyRef<'_, PyMountDir>>()?;
-                Ok(dir.spec())
+                dir.spec()
             })
             .collect();
     }

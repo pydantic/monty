@@ -54,6 +54,30 @@ def test_mount_directory_repr(test_dir: Path):
     assert '/data' in repr(md)
 
 
+def test_mount_close_releases_the_directory(monty_run: RunMonty, test_dir: Path):
+    md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
+    assert monty_run("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md) == snapshot(
+        'hello world'
+    )
+
+    md.close()
+    md.close()  # idempotent
+    with pytest.raises(ValueError) as exc_info:
+        monty_run("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md)
+    assert str(exc_info.value) == snapshot("mount '/data' is closed")
+    # The configuration it reports outlives the descriptor.
+    assert md.virtual_path == snapshot('/data')
+
+
+def test_mount_context_manager_closes(monty_run: RunMonty, test_dir: Path):
+    with MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only') as md:
+        assert monty_run("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md) == snapshot(
+            'hello world'
+        )
+    with pytest.raises(ValueError):
+        monty_run("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md)
+
+
 def test_mount_directory_invalid_mode():
     with pytest.raises(ValueError) as exc_info:
         MountDir(host_path='/tmp', virtual_path='/data', mode='invalid')  # pyright: ignore[reportArgumentType]
