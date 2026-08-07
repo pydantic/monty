@@ -125,8 +125,8 @@ impl FsRequest {
 ///
 /// This is a trivial 1:1 mapping — every field is already typed on the
 /// caller side (no `MontyObject` introspection, no kwarg walks, no mode
-/// reparse), so the function is infallible. Non-FS variants are filtered
-/// out by [`OsFunctionCall::is_filesystem`] before reaching here and panic
+/// reparse), so the function is infallible. Non-FS variants never reach here
+/// — they have no [`OsFunctionCall::fs_primary_path`] to route on — and panic
 /// the catch-all arm if they slip through.
 pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
     match call {

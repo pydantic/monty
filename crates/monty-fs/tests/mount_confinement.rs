@@ -530,10 +530,11 @@ fn overlay_rmdir_of_the_mount_root_leaves_the_host_directory() {
 
 /// `mkdir(parents=True)` through an escaping symlink cannot reach the host.
 ///
-/// Both modes refuse it with `PermissionError`: direct at the descriptor,
-/// overlay via `classify_write_target` — which used to treat the unobservable
-/// link as absent and build an in-memory shadow tree. Nothing may appear on
-/// the host and the link's real target must stay unreadable.
+/// Both modes refuse it with `PathEscape` (`PermissionError` in the sandbox):
+/// direct at the descriptor, overlay via `classify_write_target` — which used
+/// to treat the unobservable link as absent and build an in-memory shadow
+/// tree. Nothing may appear on the host and the link's real target must stay
+/// unreadable.
 #[test]
 fn mkdir_parents_under_an_escaping_symlink_cannot_reach_the_host() {
     if !symlinks_supported() {
