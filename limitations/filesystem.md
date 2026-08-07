@@ -116,6 +116,21 @@ the error is loud, and nothing returns wrong data. `exists()`, `is_file()` and
 `is_dir()` answer `False` rather than raising. To keep such links working,
 rewrite them as relative before mounting.
 
+### `OverlayMemory` writes refuse symlinks
+
+CPython (and a direct mount) writes *through* a symlink to its target. An
+overlay write never touches the host, so it cannot do that — recording the
+entry under the link's spelling instead would silently alias the two paths.
+Any write (`write_text`, `open('w'/'a')`, `mkdir`, rename destinations, …)
+whose path contains a symlink **anywhere** — as the final component or an
+intermediate directory, whether it resolves in-mount, dangles, is absolute,
+or escapes — raises `PermissionError`. The refusal is uniform on purpose:
+the link's target is never even resolved, so the error reveals nothing about
+it. Reads still follow relative in-mount links as before, and direct mounts
+still allow writes through them; only escaping/absolute links are refused
+there. `mkdir(parents=True)` through an escaping symlink raises
+`PermissionError` in every mode.
+
 ### `OverlayMemory` renames of real files
 
 A rename records a mount-relative reference to the existing file rather than

@@ -388,6 +388,113 @@ fn null_byte_overlay_memory() {
 mod symlink_tests {
     use super::*;
 
+    /// Overlay writes refuse to land on a symlink, even one resolving inside
+    /// the mount: a direct mount writes *through* the link to its target, and
+    /// shadowing the link name in memory instead would silently alias the two.
+    #[test]
+    fn overlay_write_over_inbound_symlink_is_refused() {
+        if !symlinks_supported() {
+            return;
+        }
+        let dir = create_test_dir();
+        symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+
+        let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+        let outcome = dispatch(
+            &mut mt,
+            OsFunctionCall::WriteText(PathStringDataArgs {
+                path: MontyPath::new("/mnt/link.txt".to_owned()),
+                data: "aliased".to_owned(),
+            }),
+        )
+        .unwrap();
+        assert!(
+            matches!(&outcome, Err(MountError::PathEscape { .. })),
+            "overlay write over an in-mount symlink must be refused, got {outcome:?}"
+        );
+
+        // The link's target must be untouched.
+        assert_eq!(
+            fs::read_to_string(dir.path().join("hello.txt")).unwrap(),
+            "hello world\n"
+        );
+    }
+
+    /// A dangling in-mount symlink gets the same refusal — writing "through" it
+    /// would create the target on a direct mount, which the overlay cannot do.
+    #[test]
+    fn overlay_write_over_dangling_symlink_is_refused() {
+        if !symlinks_supported() {
+            return;
+        }
+        let dir = create_test_dir();
+        symlink_file(dir.path().join("missing.txt"), dir.path().join("dangle.txt"));
+
+        let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+        let outcome = dispatch(
+            &mut mt,
+            OsFunctionCall::WriteText(PathStringDataArgs {
+                path: MontyPath::new("/mnt/dangle.txt".to_owned()),
+                data: "ghost".to_owned(),
+            }),
+        )
+        .unwrap();
+        assert!(
+            matches!(&outcome, Err(MountError::PathEscape { .. })),
+            "overlay write over a dangling symlink must be refused, got {outcome:?}"
+        );
+        assert!(
+            !dir.path().join("missing.txt").exists(),
+            "link target must not be created"
+        );
+    }
+
+    /// Even a symlink resolving to an in-mount directory blocks overlay writes
+    /// through it: entries would be keyed under the link's spelling, invisible
+    /// via the resolved name. Direct mode follows such links; the overlay
+    /// refuses, whether the link is the immediate parent or deeper in the path.
+    #[test]
+    fn overlay_write_through_inbound_symlink_dir_is_refused() {
+        if !symlinks_supported() {
+            return;
+        }
+        let dir = create_test_dir();
+        // A relative target — an absolute one is never followed, even in-mount
+        // (see `limitations/filesystem.md`).
+        symlink_dir("subdir", dir.path().join("link_dir"));
+
+        let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+        let outcome = dispatch(
+            &mut mt,
+            OsFunctionCall::Mkdir(MkdirCallArgs {
+                path: MontyPath::new("/mnt/link_dir/new".to_owned()),
+                parents: true,
+                exist_ok: false,
+            }),
+        )
+        .unwrap();
+        assert!(
+            matches!(&outcome, Err(MountError::PathEscape { .. })),
+            "overlay mkdir through an in-mount symlink dir must be refused, got {outcome:?}"
+        );
+
+        // The link as a non-immediate parent is caught by the component walk,
+        // not just the final-parent lookup ("subdir/deep" exists for real).
+        let outcome = dispatch(
+            &mut mt,
+            OsFunctionCall::WriteText(PathStringDataArgs {
+                path: MontyPath::new("/mnt/link_dir/deep/x.txt".to_owned()),
+                data: "aliased".to_owned(),
+            }),
+        )
+        .unwrap();
+        assert!(
+            matches!(&outcome, Err(MountError::PathEscape { .. })),
+            "overlay write below an in-mount symlink dir must be refused, got {outcome:?}"
+        );
+        assert!(!dir.path().join("subdir/deep/x.txt").exists(), "host must be untouched");
+    }
+
     #[test]
     fn symlink_to_outside_directory() {
         if !symlinks_supported() {
@@ -812,12 +919,12 @@ mod hard_link_tests {
         );
     }
 
-    /// Overlay mode writes to in-memory storage, never the real filesystem,
-    /// so a broken outbound symlink on the real FS is harmless — the overlay
-    /// simply stores the content in memory under the virtual path.
+    /// Overlay mode refuses to write over a symlink the descriptor cannot
+    /// follow — shadowing it in memory would alias the name, so the write
+    /// raises `PermissionError` instead, and the real target is never created.
     #[test]
     #[cfg(unix)]
-    fn broken_symlink_overlay_writes_to_memory_not_real_fs() {
+    fn broken_symlink_overlay_write_is_refused() {
         if !symlinks_supported() {
             return;
         }
@@ -829,17 +936,18 @@ mod hard_link_tests {
 
         let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
 
-        // Write succeeds (goes to overlay memory).
-        let result = dispatch(
+        let outcome = dispatch(
             &mut mt,
             OsFunctionCall::WriteText(PathStringDataArgs {
                 path: MontyPath::new("/mnt/broken_link.txt".to_owned()),
                 data: "safe".to_owned(),
             }),
         )
-        .unwrap()
         .unwrap();
-        assert_eq!(result, MontyObject::Int(4));
+        assert!(
+            matches!(&outcome, Err(MountError::PathEscape { .. })),
+            "overlay write over an outbound symlink must be refused, got {outcome:?}"
+        );
 
         // Real FS target was NOT created.
         assert!(!escape_target.exists());

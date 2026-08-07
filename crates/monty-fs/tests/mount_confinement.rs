@@ -530,10 +530,10 @@ fn overlay_rmdir_of_the_mount_root_leaves_the_host_directory() {
 
 /// `mkdir(parents=True)` through an escaping symlink cannot reach the host.
 ///
-/// Direct mode refuses it at the boundary. Overlay mode instead treats the
-/// (unobservable) link as absent and builds the tree in memory — consistent
-/// with its predicates answering `False` — but nothing may appear on the host
-/// and the link's real target must stay unreadable.
+/// Both modes refuse it with `PermissionError`: direct at the descriptor,
+/// overlay via `classify_write_target` — which used to treat the unobservable
+/// link as absent and build an in-memory shadow tree. Nothing may appear on
+/// the host and the link's real target must stay unreadable.
 #[test]
 fn mkdir_parents_under_an_escaping_symlink_cannot_reach_the_host() {
     if !symlinks_supported() {
@@ -572,13 +572,21 @@ fn mkdir_parents_under_an_escaping_symlink_cannot_reach_the_host() {
             None,
         )
         .expect("failed to mount");
-    let _ = dispatch(&mut overlay, mkdir_call());
-    let _ = dispatch(
+    let outcome = dispatch(&mut overlay, mkdir_call());
+    assert!(
+        matches!(&outcome, Err(MountError::PathEscape { .. })),
+        "overlay mkdir through an escaping symlink must be refused, got {outcome:?}"
+    );
+    let outcome = dispatch(
         &mut overlay,
         OsFunctionCall::WriteText(PathStringDataArgs {
             path: "/mnt/evil/foo/x.txt".into(),
             data: "data".to_owned(),
         }),
+    );
+    assert!(
+        matches!(&outcome, Err(MountError::PathEscape { .. })),
+        "overlay write under an escaping symlink must be refused, got {outcome:?}"
     );
     assert!(
         !outside.path().join("foo").exists(),

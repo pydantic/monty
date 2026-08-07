@@ -171,24 +171,28 @@ fn ensure_append_target_exists(
             )?;
             Ok(())
         }
-        None => match resolve_real_path_state(vpath, ctx, Follow::Yes, OnLookupFailure::Propagate)? {
-            RealPathState::Present(rel) if host_is_dir(ctx.mount_dir, &rel) => {
-                Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
+        None => {
+            let target = resolve_virtual_path(vpath, ctx.mount_virtual)?;
+            match classify_write_target(ctx.mount_dir, target.for_dir_op(), vpath)? {
+                RealTarget::Dir => Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath)),
+                RealTarget::Symlink => Err(MountError::PathEscape {
+                    virtual_path: vpath.to_owned(),
+                }),
+                RealTarget::File => Ok(()),
+                RealTarget::Absent => {
+                    ensure_parent_exists(state, &relative, ctx, vpath)?;
+                    state.insert(
+                        relative,
+                        OverlayEntry::File(OverlayFile {
+                            content: Vec::new(),
+                            mtime: current_timestamp(),
+                        }),
+                        ctx.memory_usage_limit,
+                    )?;
+                    Ok(())
+                }
             }
-            RealPathState::Present(_) => Ok(()),
-            RealPathState::Missing => {
-                ensure_parent_exists(state, &relative, ctx, vpath)?;
-                state.insert(
-                    relative,
-                    OverlayEntry::File(OverlayFile {
-                        content: Vec::new(),
-                        mtime: current_timestamp(),
-                    }),
-                    ctx.memory_usage_limit,
-                )?;
-                Ok(())
-            }
-        },
+        }
     }
 }
 
@@ -500,49 +504,81 @@ fn existing_file_bytes(
     }
 }
 
-/// Rejects writes when the target path is an existing directory.
+/// Rejects writes when the target path is an existing directory or a symlink.
 ///
-/// On real filesystems, writing to a directory path returns `EISDIR`.
-/// The overlay must enforce the same invariant to prevent silently
-/// overwriting a directory entry with a file.
+/// On real filesystems, writing to a directory returns `EISDIR`; the overlay
+/// enforces the same. A direct mount writes *through* a symlink to its target,
+/// which the overlay cannot replicate without aliasing the name, so writing
+/// over any symlink raises `PermissionError` instead of silently shadowing it.
 fn reject_directory_target(
     state: &OverlayState,
     relative: &str,
     ctx: &MountContext<'_>,
     vpath: &str,
 ) -> Result<(), MountError> {
-    if relative_dir_exists(state, relative, ctx) {
-        return Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath));
+    match state.get(relative) {
+        Some(OverlayEntry::Directory { .. }) => {
+            Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
+        }
+        // An overlay file, ref, or tombstone already shadows whatever is real.
+        Some(_) => Ok(()),
+        None => match resolve_virtual_path(vpath, ctx.mount_virtual) {
+            Ok(target) => match classify_write_target(ctx.mount_dir, target.for_dir_op(), vpath)? {
+                RealTarget::Dir => Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath)),
+                RealTarget::Symlink => Err(MountError::PathEscape {
+                    virtual_path: vpath.to_owned(),
+                }),
+                RealTarget::File | RealTarget::Absent => Ok(()),
+            },
+            Err(_) => Ok(()),
+        },
     }
-    Ok(())
 }
 
-/// Ensures the parent directory of `relative` exists in overlay or real storage.
+/// Ensures every component of `relative`'s parent chain is a directory the
+/// overlay may write beneath.
+///
+/// The chain is walked component by component because a single lookup of the
+/// immediate parent resolves *through* intermediate symlinks without seeing
+/// them — and overlay writes must refuse symlinks anywhere in the path, not
+/// just at its end (see `limitations/filesystem.md`).
 fn ensure_parent_exists(
     state: &OverlayState,
     relative: &str,
     ctx: &MountContext<'_>,
     vpath: &str,
 ) -> Result<(), MountError> {
-    if let Some((parent_rel, _)) = relative.rsplit_once('/')
-        && !relative_dir_exists(state, parent_rel, ctx)
-    {
-        return Err(MountError::not_found(vpath));
-    }
-    Ok(())
-}
-
-/// Returns whether `relative` exists as a directory in the overlay or real filesystem.
-fn relative_dir_exists(state: &OverlayState, relative: &str, ctx: &MountContext<'_>) -> bool {
-    match state.get(relative) {
-        Some(OverlayEntry::Directory { .. }) => true,
-        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) | OverlayEntry::Deleted) => false,
-        None => {
-            let parent_vpath = format!("{}/{relative}", ctx.mount_virtual);
-            resolve_virtual_path(&parent_vpath, ctx.mount_virtual)
-                .is_ok_and(|target| host_is_dir(ctx.mount_dir, target.for_dir_op()))
+    let Some((parents, _)) = relative.rsplit_once('/') else {
+        return Ok(());
+    };
+    let mut current = String::new();
+    for component in parents.split('/') {
+        if !current.is_empty() {
+            current.push('/');
+        }
+        current.push_str(component);
+        match state.get(&current) {
+            // Overlay directories are symlink-free by construction.
+            Some(OverlayEntry::Directory { .. }) => {}
+            Some(_) => return Err(MountError::not_found(vpath)),
+            None => {
+                let dir_vpath = format!("{}/{current}", ctx.mount_virtual);
+                let Ok(target) = resolve_virtual_path(&dir_vpath, ctx.mount_virtual) else {
+                    return Err(MountError::not_found(vpath));
+                };
+                match classify_write_target(ctx.mount_dir, target.for_dir_op(), vpath)? {
+                    RealTarget::Dir => {}
+                    RealTarget::Symlink => {
+                        return Err(MountError::PathEscape {
+                            virtual_path: vpath.to_owned(),
+                        });
+                    }
+                    RealTarget::File | RealTarget::Absent => return Err(MountError::not_found(vpath)),
+                }
+            }
         }
     }
+    Ok(())
 }
 
 /// Creates a directory inside the overlay.
@@ -582,10 +618,8 @@ fn mkdir(
 
     if parents {
         create_overlay_parents(state, relative, ctx)?;
-    } else if let Some((parent_rel, _)) = relative.rsplit_once('/')
-        && !relative_dir_exists(state, parent_rel, ctx)
-    {
-        return Err(MountError::not_found(vpath));
+    } else {
+        ensure_parent_exists(state, relative, ctx, vpath)?;
     }
 
     state.insert(
@@ -599,6 +633,10 @@ fn mkdir(
 }
 
 /// Creates parent directories for `mkdir(parents=True)` with overlay semantics.
+///
+/// Each component is classified through the descriptor: any symlink raises
+/// `PermissionError` instead of being shadowed by (or aliased under) an
+/// in-memory tree.
 fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountContext<'_>) -> Result<(), MountError> {
     let mut current = String::new();
 
@@ -630,15 +668,21 @@ fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountC
             None => {
                 let current_vpath = format!("{}/{current}", ctx.mount_virtual);
                 if let Ok(resolved) = resolve_virtual_path(&current_vpath, ctx.mount_virtual) {
-                    if host_is_file(ctx.mount_dir, resolved.for_dir_op()) {
-                        return Err(MountError::io_err(
-                            ErrorKind::NotADirectory,
-                            "Not a directory",
-                            &current_vpath,
-                        ));
-                    }
-                    if host_is_dir(ctx.mount_dir, resolved.for_dir_op()) {
-                        continue;
+                    match classify_write_target(ctx.mount_dir, resolved.for_dir_op(), &current_vpath)? {
+                        RealTarget::Dir => continue,
+                        RealTarget::Symlink => {
+                            return Err(MountError::PathEscape {
+                                virtual_path: current_vpath,
+                            });
+                        }
+                        RealTarget::File => {
+                            return Err(MountError::io_err(
+                                ErrorKind::NotADirectory,
+                                "Not a directory",
+                                &current_vpath,
+                            ));
+                        }
+                        RealTarget::Absent => {}
                     }
                 }
 
@@ -1282,6 +1326,38 @@ enum RealPathState {
     Present(String),
     /// The path should behave as nonexistent.
     Missing,
+}
+
+/// What a *write*-path lookup found on the real filesystem at a mount-relative
+/// path. Symlinks are surfaced, never resolved: overlay writes refuse them.
+enum RealTarget {
+    /// A directory.
+    Dir,
+    /// A non-directory, non-symlink entry.
+    File,
+    /// A symlink of any kind — its target is deliberately not examined.
+    Symlink,
+    /// Nothing there.
+    Absent,
+}
+
+/// Classifies what sits at `rel` for overlay write paths.
+///
+/// Overlay writes never touch symlinks: a direct mount writes *through* a link
+/// to its target, which the overlay cannot replicate without silently aliasing
+/// the two names, so callers refuse `Symlink` with `PermissionError` wherever
+/// it appears in a write path. The single `lstat` never resolves the target,
+/// so the refusal reveals nothing about where the link points.
+fn classify_write_target(dir: &Dir, rel: &str, vpath: &str) -> Result<RealTarget, MountError> {
+    match dir.symlink_metadata(rel) {
+        Ok(meta) if meta.is_symlink() => Ok(RealTarget::Symlink),
+        Ok(meta) if meta.is_dir() => Ok(RealTarget::Dir),
+        Ok(_) => Ok(RealTarget::File),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(RealTarget::Absent),
+        // An escaping symlink earlier in the walk fails here; `map_io` turns
+        // cap-std's synthetic denial into `PathEscape`.
+        Err(err) => Err(map_io(err, vpath)),
+    }
 }
 
 /// Returns the prefix used to scan direct children of `relative`.
