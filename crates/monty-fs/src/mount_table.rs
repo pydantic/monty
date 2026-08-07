@@ -156,7 +156,7 @@ impl MountTable {
 pub struct Mount {
     /// Virtual path prefix (absolute, normalized).
     virtual_path: String,
-    /// Canonical host directory path. Diagnostics only — see `dir`.
+    /// Best-effort canonical host directory path. Diagnostics only — see `dir`.
     host_path: PathBuf,
     /// Descriptor for the mounted directory, opened once here — the sandbox
     /// boundary. Resolution cannot leave it, and no rename can re-point a name
@@ -173,13 +173,13 @@ pub struct Mount {
 }
 
 impl Mount {
-    /// Creates a new mount point, canonicalizing the host path.
+    /// Creates a new mount point, opening a descriptor on the host directory.
     /// Mount memory defaults to [`DEFAULT_MEMORY_USAGE_LIMIT`].
     ///
     /// # Errors
     ///
     /// Returns [`MountError::InvalidMount`] if the virtual path is not absolute,
-    /// or the host path doesn't exist or isn't a directory.
+    /// or the host path cannot be opened as a directory.
     pub fn new(
         virtual_path: &str,
         host_path: impl AsRef<Path>,
@@ -196,21 +196,18 @@ impl Mount {
 
         let normalized_virtual = normalize_virtual_path(virtual_path);
 
-        let canonical_host = fs::canonicalize(host_path).map_err(|e| {
-            MountError::InvalidMount(format!("cannot canonicalize host path '{}': {e}", host_path.display()))
-        })?;
-
-        if !canonical_host.is_dir() {
-            return Err(MountError::InvalidMount(format!(
-                "host path is not a directory: '{}'",
-                host_path.display()
-            )));
-        }
-
-        // The only use of ambient authority: the host is trusted to name the
-        // directory it shares. Everything afterwards is relative to `dir`.
-        let dir = Dir::open_ambient_dir(&canonical_host, ambient_authority())
+        // The only use of ambient authority, and the mount's whole trust root.
+        // Deliberately first: resolving the name to a validated path and *then*
+        // opening that path would let whoever can rename in the parent swap a
+        // symlink into the gap. The directory check rides on the open itself
+        // (`O_DIRECTORY`, a handle `metadata()` on Windows), so it cannot.
+        let dir = Dir::open_ambient_dir(host_path, ambient_authority())
             .map_err(|e| MountError::InvalidMount(format!("cannot open host path '{}': {e}", host_path.display())))?;
+
+        // Diagnostics only, and best-effort: resolved after the open, so a host
+        // that raced it leaves a stale label on the right descriptor, never the
+        // reverse. Nothing resolves through this path.
+        let canonical_host = fs::canonicalize(host_path).unwrap_or_else(|_| host_path.to_path_buf());
 
         Ok(Self {
             virtual_path: normalized_virtual,
@@ -229,7 +226,7 @@ impl Mount {
         &self.virtual_path
     }
 
-    /// Returns the canonical host directory path. Diagnostics only.
+    /// Returns the best-effort canonical host directory path. Diagnostics only.
     #[must_use]
     pub fn host_path(&self) -> &Path {
         &self.host_path

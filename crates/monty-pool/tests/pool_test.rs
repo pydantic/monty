@@ -295,8 +295,7 @@ async fn invalid_mount_host_path_is_rejected_cleanly() {
         panic!("expected Runtime, got {err:?}");
     };
     assert!(
-        exc.message()
-            .is_some_and(|m| m.contains("cannot canonicalize host path")),
+        exc.message().is_some_and(|m| m.contains("cannot open host path")),
         "unexpected message: {:?}",
         exc.message()
     );

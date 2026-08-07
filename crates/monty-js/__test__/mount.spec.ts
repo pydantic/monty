@@ -85,7 +85,7 @@ test('MountDir nonexistent host path', async (ctx) => {
   // constructor). The OS-error suffix is platform specific.
   const md = new MountDir({ hostPath: '/nonexistent/path/that/does/not/exist', virtualPath: '/data' })
   const error = await t.throwsAsync(() => run('1 + 1', { mount: md }), { instanceOf: MontyRuntimeError })
-  t.true(error.message.startsWith("TypeError: cannot canonicalize host path '/nonexistent/path/that/does/not/exist':"))
+  t.true(error.message.startsWith("TypeError: cannot open host path '/nonexistent/path/that/does/not/exist':"))
 })
 
 test('MountDir non-absolute virtual path', async (ctx) => {

@@ -486,6 +486,40 @@ fn denied_write_is_not_reported_as_an_escape() {
     );
 }
 
+/// Mount construction resolves the host name exactly once, at the open.
+///
+/// Validating a path and then opening it would be a check-to-open race: a host
+/// able to rename in the parent could swap a symlink into the gap and hand the
+/// mount a descriptor on a directory it never shared. Nothing observes the name
+/// beforehand, so every rejection has to surface as a failure of the open — the
+/// symptom a reintroduced pre-check would change, since it would answer first.
+#[test]
+fn mount_construction_rejects_only_at_the_open() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("not-a-directory.txt");
+    fs::write(&file, "content").unwrap();
+
+    // A non-directory: rejected by `O_DIRECTORY` (a handle `metadata()` on
+    // Windows), not by a `is_dir()` stat on a path resolved separately.
+    let mut mounts = MountTable::new();
+    match mounts.mount("/mnt", &file, MountMode::ReadWrite, None) {
+        Err(MountError::InvalidMount(msg)) => assert!(
+            msg.starts_with("cannot open host path"),
+            "a pre-check answered before the open: {msg}"
+        ),
+        outcome => panic!("expected InvalidMount for a file, got {outcome:?}"),
+    }
+
+    let mut mounts = MountTable::new();
+    match mounts.mount("/mnt", dir.path().join("absent"), MountMode::ReadWrite, None) {
+        Err(MountError::InvalidMount(msg)) => assert!(
+            msg.starts_with("cannot open host path"),
+            "a pre-check answered before the open: {msg}"
+        ),
+        outcome => panic!("expected InvalidMount for a missing path, got {outcome:?}"),
+    }
+}
+
 /// Whether a search-only directory can be mounted is platform-specific: Linux
 /// opens directories with `O_PATH` and accepts one, macOS and the BSDs need
 /// read permission and reject it where the old canonicalize-and-stat did not.

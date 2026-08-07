@@ -95,7 +95,7 @@ def test_nonexistent_host_path():
     with pytest.raises(TypeError) as exc_info:
         MountDir(host_path='/nonexistent/path/that/does/not/exist', virtual_path='/data')
     assert str(exc_info.value) == snapshot(
-        "cannot canonicalize host path '/nonexistent/path/that/does/not/exist': No such file or directory (os error 2)"
+        "cannot open host path '/nonexistent/path/that/does/not/exist': No such file or directory (os error 2)"
     )
 
 
