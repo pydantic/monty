@@ -1454,11 +1454,10 @@ fn rename_traversal_src() {
             dst: MontyPath::new("/mnt/stolen.txt".to_owned()),
         }),
     );
+    // The src normalizes to `/etc/passwd`, under no mount, so the rename is
+    // refused outright rather than handed to the fallback with the mounted dst.
     match result {
-        Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_) | MountError::Io(_, _))) => {}
-        // If src doesn't match any mount, handle_rename returns None and normal dispatch
-        // handles it — that will also fail.
-        None => {}
+        Some(Err(MountError::CrossMountRename { .. })) => {}
         other => panic!("expected rename src traversal blocked, got {other:?}"),
     }
 }
@@ -1475,14 +1474,9 @@ fn rename_traversal_dst() {
             dst: MontyPath::new("/mnt/../escape.txt".to_owned()),
         }),
     );
+    // Likewise for a dst that normalizes out of the mount.
     match result {
-        Some(Err(
-            MountError::PathEscape { .. }
-            | MountError::NoMountPoint(_)
-            | MountError::Io(_, _)
-            | MountError::CrossMountRename { .. },
-        )) => {}
-        None => {} // Also acceptable — dst doesn't match any mount.
+        Some(Err(MountError::CrossMountRename { .. })) => {}
         other => panic!("expected rename dst traversal blocked, got {other:?}"),
     }
 }

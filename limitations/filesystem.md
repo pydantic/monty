@@ -90,6 +90,11 @@ root.
   the mount's own path raise `PermissionError` in every mode, where CPython on
   an ordinary empty directory would succeed (the root has no name inside the
   mount, so there is nothing to detach it from).
+- A rename is only serviced when source and destination land in the *same*
+  mount. Any other combination — different mounts, or one side under no mount
+  at all — raises `OSError` `[Errno 18] Invalid cross-device link`, including
+  where CPython would report `FileNotFoundError` for a missing destination
+  directory. Neither side moves.
 - Null bytes in any path component are rejected (`ValueError`).
 - Resolved paths returned to the sandbox (e.g. via `Path.resolve()`) are
   virtual paths, never host paths.
