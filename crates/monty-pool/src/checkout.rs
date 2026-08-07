@@ -174,6 +174,11 @@ pub type PrintFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// copies of whatever it needs (including the text, if consumed async).
 pub type OnPrint<'a> = &'a mut (dyn FnMut(PrintStream, &str) -> PrintFuture + Send);
 
+/// Callback for the events [`Checkout::turn_raw`] streams before the
+/// turn-ender — `Print`s today. Returns a future for the same reason
+/// [`OnPrint`] does.
+pub type OnRawEvent<'a> = &'a mut (dyn FnMut(&pb::ChildEvent) -> PrintFuture + Send);
+
 /// Adapts a synchronous print sink to the [`OnPrint`] callback shape.
 ///
 /// ```rust,no_run
@@ -730,6 +735,90 @@ impl Checkout {
         };
         self.turn_in_flight = false;
         outcome
+    }
+
+    /// Sends `request` and returns the child's turn-ending event as protobuf,
+    /// streaming the events before it to `on_event`.
+    ///
+    /// For callers that already speak the wire: rebuilding a `ChildEvent` from
+    /// a [`TurnEvent`] means hand-inverting the whole protocol, so a relay
+    /// bridging a remote client gets what the child actually sent instead.
+    ///
+    /// **Bypasses this checkout's suspension bookkeeping** (`pending`,
+    /// `feed_mounts`, `restored_script_name`), so a checkout driven this way
+    /// must never be interleaved with `feed`/`resume`/`restore`. Everything
+    /// else — lifecycle, poisoning, the `max_duration` backstop — is shared.
+    pub async fn turn_raw(
+        &mut self,
+        request: &pb::ParentRequest,
+        on_event: OnRawEvent<'_>,
+    ) -> Result<pb::ChildEvent, PoolError> {
+        self.ensure_ready()?;
+        self.turn_in_flight = true;
+        // as `expect_turn`: `request_timeout` alone would drop the `max_duration`
+        // backstop, which may be the only bound a session has
+        let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
+        self.armed_deadline = deadline;
+        let outcome = match deadline {
+            Some(limit) => match timeout(limit, self.turn_io_raw(request, on_event)).await {
+                Ok(outcome) => outcome,
+                Err(_elapsed) => Err(self.poison_timeout().await),
+            },
+            None => self.turn_io_raw(request, on_event).await,
+        };
+        self.turn_in_flight = false;
+        outcome
+    }
+
+    /// The body of [`Self::turn_raw`], mirroring `turn_io`'s failure handling —
+    /// the difference is only that events are returned rather than classified.
+    async fn turn_io_raw(
+        &mut self,
+        request: &pb::ParentRequest,
+        on_event: OnRawEvent<'_>,
+    ) -> Result<pb::ChildEvent, PoolError> {
+        let Some(worker) = self.worker.as_mut() else {
+            return Err(PoolError::Finished);
+        };
+        if let Err(err) = worker.send(request).await {
+            // an oversize frame leaves the worker synced — see `turn_io`
+            return Err(match err {
+                FrameError::FrameTooLarge { len, max } => PoolError::Runtime(MontyException::new(
+                    ExcType::RuntimeError,
+                    Some(format!(
+                        "request frame of {len} bytes exceeds the maximum of {max} bytes"
+                    )),
+                )),
+                _ => self.poison("sending a request").await,
+            });
+        }
+        loop {
+            let event = match self.worker.as_mut().expect("checked above").recv().await {
+                Ok(event) => event,
+                Err(FrameError::Decode(err)) => {
+                    return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                }
+                Err(_) => return Err(self.poison("waiting for a reply").await),
+            };
+            self.note_reported_time(&event);
+            // strict alternation: zero or more `Print`s, then the turn-ender
+            if matches!(event.kind, Some(pb::child_event::Kind::Print(_))) {
+                on_event(&event).await;
+            } else if matches!(event.kind, Some(pb::child_event::Kind::Shutdown(_)))
+                && !self.pool.config.transport.is_websocket()
+            {
+                // only a serving relay sends this, never a child — and a relay
+                // signs what it forwards, so accepting one would have it vouch
+                // for bytes its own child minted (`turn_io` refuses it too)
+                return Err(self.protocol_violation("subprocess worker sent a ShutdownDump"));
+            } else if event.kind.is_none() {
+                // every proto field is optional, so an unset oneof is reachable;
+                // it ends no turn, as `turn_io`'s "unexpected event" says too
+                return Err(self.protocol_violation("worker sent an event with no kind"));
+            } else {
+                return Ok(event);
+            }
+        }
     }
 
     /// Fails fast when the checkout cannot start protocol work: the worker is

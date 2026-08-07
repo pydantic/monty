@@ -306,6 +306,51 @@ async fn duration_backstop_kills_an_unresponsive_worker() {
     join_server(server).await;
 }
 
+/// The same backstop arms on the raw path a relay drives instead of `feed`.
+/// With `request_timeout` alone, a session bounded only by `max_duration` —
+/// the shape a relay configures, applying limits rather than client timeouts —
+/// would have no parent-side deadline at all.
+#[tokio::test]
+async fn duration_backstop_arms_on_the_raw_path() {
+    let (listener, mut config) = ws_pool_config();
+    config.duration_limit_grace = Some(Duration::from_millis(300));
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        // never reply; only the backstop can end this turn
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let request = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "while True:\n    pass".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let err = checkout.turn_raw(&request, &mut on_event).await.unwrap_err();
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    assert!(timeout <= Duration::from_millis(400), "deadline was {timeout:?}");
+    join_server(server).await;
+}
+
 /// A single turn is still bounded by `request_timeout` even when the worker is
 /// making mount-coverable calls: the OS call surfaces rather than being
 /// serviced inside the turn, so a worker that simply runs too long before

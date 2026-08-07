@@ -72,6 +72,20 @@ impl TelemetryAdapterHandle {
 }
 
 impl TelemetryContext {
+    /// Records the pool's spans straight into `logfire`, with no adapter.
+    ///
+    /// The rest of this module hands spans to a *foreign* SDK; a Rust host has
+    /// no such boundary to cross, and without this would need a
+    /// [`TelemetryAdapter`] plus a second OTLP exporter to receive its own
+    /// spans. Unparented like [`TelemetryAdapterHandle::unparented_context`],
+    /// since an in-process ambient span is reachable through `tracing`.
+    #[must_use]
+    pub fn for_logfire(logfire: Logfire) -> Self {
+        Self { parent: None, logfire }
+    }
+}
+
+impl TelemetryContext {
     /// Returns the isolated recorder installed while processing this checkout.
     pub(crate) fn logfire(&self) -> Logfire {
         self.logfire.clone()
