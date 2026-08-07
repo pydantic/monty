@@ -107,6 +107,17 @@ while Monty reads it as `sibling.txt` — each finds a file the other does not.
 The textual rule is what makes `..` unable to escape at all, so it is
 deliberate; only paths mixing `..` with symlinked directories are affected.
 
+### Path length is Linux's, measured before `..` collapses
+
+A path over 4096 bytes, or with a component over 255, raises `OSError`
+`[Errno 36] File name too long`. Both limits are Linux's and apply on every
+host, so a path macOS (`PATH_MAX` 1024) or Windows would reject is accepted,
+and a long one they would accept is not. The length counts the path as sent,
+before `.`/`..` are collapsed: `'/mnt/' + 'a/' * 5000 + '../' * 5000 + 'f.txt'`
+is refused even though it names `/mnt/f.txt`. CPython hands the uncollapsed
+bytes to the kernel and gets `ENAMETOOLONG` too, so this matches — but Monty
+applies it uniformly rather than deferring to the host filesystem.
+
 ### A search-only host directory may not be mountable
 
 Mounting opens a descriptor on the host directory. On macOS and the BSDs that
