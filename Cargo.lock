@@ -3257,7 +3257,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pydantic-monty"
+name = "pydantic-monty-client"
 version = "0.0.19"
 dependencies = [
  "ahash",

@@ -67,7 +67,7 @@ test-browser: install-js ## Browser (Vitest) test of the wasm path in a real hea
 dev-py-pgo: ## Install the python package for development with profile-guided optimization
 	$(eval PROFDATA := $(shell mktemp -d))
 	RUSTFLAGS='-Cprofile-generate=$(PROFDATA)' uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
-	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
+	uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
 	$(eval LLVM_PROFDATA := $(shell rustup run stable bash -c 'echo $$RUSTUP_HOME/toolchains/$$RUSTUP_TOOLCHAIN/lib/rustlib/$$(rustc -Vv | grep host | cut -d " " -f 2)/bin/llvm-profdata'))
 	$(LLVM_PROFDATA) merge -o $(PROFDATA)/merged.profdata $(PROFDATA)
 	RUSTFLAGS='-Cprofile-use=$(PROFDATA)/merged.profdata' $(uv-run-no-sync) maturin develop --uv -m crates/monty-python/Cargo.toml --release
@@ -165,14 +165,14 @@ test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
 
 .PHONY: pytest
 pytest: ## Run Python tests with pytest
-	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests
+	uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests
 
 .PHONY: test-py
 test-py: dev-py pytest ## Build the python package (debug profile) and run tests
 
 .PHONY: test-docs
 test-docs: dev-py ## Test docs examples only
-	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests/test_readme_examples.py
+	uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests/test_readme_examples.py
 	cargo test --doc -p monty
 
 .PHONY: test

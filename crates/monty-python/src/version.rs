@@ -10,9 +10,9 @@
 /// the rust spec and <https://peps.python.org/pep-0440/> for the python spec.
 ///
 /// Shared by `lib.rs` (for `pydantic_monty.__version__`) and `build.rs` (for the
-/// exact `pydantic-monty-runtime` pin), which `include!`s this file — the two
-/// must agree, since the pin has to match the version maturin builds the runtime
-/// wheel under.
+/// `pydantic-monty` metapackage's version and exact pins), which `include!`s
+/// this file — the two must agree, since the pins have to match the versions
+/// maturin builds the client and runtime wheels under.
 pub(crate) fn cargo_version_to_pep440(version: &str) -> String {
     version.replace("-alpha", "a").replace("-beta", "b")
 }

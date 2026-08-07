@@ -32,7 +32,7 @@ for the schema and the protocol rules documented alongside it.
   be deployed in lockstep.
 - `python` (cargo feature, off by default) — the `python` module: PyO3-based
   conversions between live Python objects and `MontyObject`/`MontyException`,
-  used by the `pydantic-monty` extension module. The feature pulls in `pyo3` (but never its
+  used by the `pydantic-monty-client` extension module. The feature pulls in `pyo3` (but never its
   `extension-module` feature — how libpython is linked stays the top crate's
   decision), so pure-Rust consumers pay nothing for it.
 

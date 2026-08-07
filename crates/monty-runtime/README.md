@@ -56,9 +56,9 @@ The binary is also packaged for PyPI as
 [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/), the same
 way `uv` and `ruff` package theirs: installing the wheel places the compiled
 binary in the environment's scripts directory. It exists so that
-`pydantic-monty` can find a `monty` binary without any manual setup, and is
-installed automatically as a dependency of that package — you normally don't
-install it directly.
+`pydantic-monty-client` can find a `monty` binary without any manual setup, and
+is pulled in automatically by the `pydantic-monty` metapackage — you normally
+don't install it directly.
 
 ## Monty crates
 

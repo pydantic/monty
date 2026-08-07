@@ -707,7 +707,18 @@ Workflow: write `assert_snapshot!(value, @"");`, then `cargo insta test --accept
 
 ## Python Package (`pydantic-monty`)
 
-The Python package provides Python bindings for the Monty interpreter, located in `crates/monty-python/`.
+Three PyPI distributions are built from this repo:
+
+- `pydantic-monty-client` (`crates/monty-python/`, Cargo package
+  `pydantic-monty-client`) — the PyO3 bindings, i.e. the `pydantic_monty`
+  module. It deliberately does **not** depend on the runtime, so it can be
+  installed where the `monty` binary comes from a base image or system package.
+- `pydantic-monty-runtime` (`crates/monty-runtime/`) — the `monty` worker binary.
+- `pydantic-monty` (`packages/pydantic-monty/`) — a hatchling metapackage with
+  no code, exactly pinning the other two. This is what users install. Its
+  version and both pins are rewritten from the Cargo workspace version by
+  `crates/monty-python/build.rs`; never edit them by hand.
+
 Execution always happens in `monty` worker subprocesses — there is no in-process execution API.
 The surface is `Monty` (sync pool) and `AsyncMonty` (async pool), each with
 `pool.checkout(...)` sessions driven by `feed_run` (a coroutine on async sessions).
@@ -717,6 +728,8 @@ The surface is `Monty` (sync pool) and `AsyncMonty` (async pool), each with
 - `crates/monty-python/src/` - Rust source for PyO3 bindings
 - `crates/monty-python/python/pydantic_monty/_monty.pyi` - Type stubs for the Python module
 - `crates/monty-python/tests/` - Python tests using pytest
+- `crates/monty-python/README.md` - the `pydantic-monty-client` readme (binary
+  resolution); the full user-facing docs live in `packages/pydantic-monty/README.md`
 
 ### Building and Testing
 

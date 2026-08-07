@@ -1,6 +1,6 @@
 [package]
-name = "pydantic-monty"
-description = "Python bindings for the Monty sandboxed Python interpreter"
+name = "pydantic-monty-client"
+description = "Python client for the Monty sandboxed Python interpreter"
 readme = "README.md"
 # Distributed as a PyO3 extension wheel on PyPI, not as a crate on crates.io.
 publish = false

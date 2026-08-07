@@ -1,5 +1,5 @@
 name: Build PGO wheel
-description: Builds a PGO-optimized wheel for pydantic-monty
+description: Builds a PGO-optimized wheel for pydantic-monty-client
 
 inputs:
   interpreter:
@@ -37,7 +37,7 @@ runs:
 
     # `exercise.py` drives `pydantic_monty.Monty()` which spawns the `monty`
     # worker subprocess — build an instrumented worker so PGO data covers
-    # both the parent (FFI/pool/proto in pydantic-monty) and the worker
+    # both the parent (FFI/pool/proto in pydantic-monty-client) and the worker
     # (bytecode interpreter in monty-runtime).
     - name: build instrumented monty binary
       shell: bash
@@ -55,7 +55,7 @@ runs:
         fi
         export MONTY_BIN
         pip install typing_extensions
-        pip install pydantic-monty --no-index --no-deps --find-links pgo-wheel --force-reinstall
+        pip install pydantic-monty-client --no-index --no-deps --find-links pgo-wheel --force-reinstall
         python exercise.py
         rustup run ${INPUTS_RUST_TOOLCHAIN} bash -c 'echo LLVM_PROFDATA=$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN/lib/rustlib/$RUST_HOST/bin/llvm-profdata >> "$GITHUB_ENV"'
       shell: bash

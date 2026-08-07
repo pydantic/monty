@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pydantic-monty"
+description = "The Monty sandboxed Python interpreter: bindings plus the worker binary"
+readme = "README.md"
+requires-python = ">=3.10"
+# SPDX expression only, no `license-files`: the maturin-built siblings carry the
+# licence the same way, from the Cargo workspace's `license` field
+license = "MIT"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "Operating System :: Unix",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Environment :: MacOS X",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Internet",
+    "Programming Language :: Python :: Implementation",
+]
+# version and both pins are rewritten from the Cargo workspace version by
+# `crates/monty-python/build.rs` — don't edit them by hand
+version = "0.0.19"
+dependencies = [
+    "pydantic-monty-client==0.0.19",
+    "pydantic-monty-runtime==0.0.19",
+]
+
+[project.urls]
+Homepage = "https://github.com/pydantic/monty"
+Source = "https://github.com/pydantic/monty"
+
+# a metapackage ships no modules; without this hatchling errors out looking for
+# a package directory to include in the wheel
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.uv.sources]
+# during development both halves are built from this workspace rather than
+# fetched from PyPI
+pydantic-monty-client = { workspace = true }
+pydantic-monty-runtime = { workspace = true }

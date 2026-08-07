@@ -76,6 +76,11 @@ uv add pydantic-monty
 
 (Or `pip install pydantic-monty` for the boomers)
 
+`pydantic-monty` is a metapackage pairing `pydantic-monty-client` (the
+`pydantic_monty` module) with `pydantic-monty-runtime` (the `monty` worker
+binary). Install `pydantic-monty-client` alone if the binary already comes from
+somewhere else.
+
 Usage:
 
 ```python

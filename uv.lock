@@ -14,6 +14,7 @@ exclude-newer-span = "P7D"
 members = [
     "monty-workspace",
     "pydantic-monty",
+    "pydantic-monty-client",
     "pydantic-monty-runtime",
 ]
 
@@ -1369,9 +1370,23 @@ wheels = [
 
 [[package]]
 name = "pydantic-monty"
+version = "0.0.19"
+source = { editable = "packages/pydantic-monty" }
+dependencies = [
+    { name = "pydantic-monty-client" },
+    { name = "pydantic-monty-runtime" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic-monty-client", editable = "crates/monty-python" },
+    { name = "pydantic-monty-runtime", editable = "crates/monty-runtime" },
+]
+
+[[package]]
+name = "pydantic-monty-client"
 source = { editable = "crates/monty-python" }
 dependencies = [
-    { name = "pydantic-monty-runtime" },
     { name = "typing-extensions" },
 ]
 
@@ -1387,10 +1402,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "pydantic-monty-runtime", editable = "crates/monty-runtime" },
-    { name = "typing-extensions", specifier = ">=4.5" },
-]
+requires-dist = [{ name = "typing-extensions", specifier = ">=4.5" }]
 
 [package.metadata.requires-dev]
 dev = [

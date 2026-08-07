@@ -11,7 +11,8 @@ make lint-rs
 ```
 
 This will update `Cargo.lock`, sync `package.json`/`package-lock.json` (via `crates/monty-js/build.rs`),
-and sync `pydantic-monty`'s exact pin on `pydantic-monty-runtime` (via `crates/monty-python/build.rs`).
+and sync the `pydantic-monty` metapackage's version and its exact pins on
+`pydantic-monty-client`/`pydantic-monty-runtime` (via `crates/monty-python/build.rs`).
 
 ## 2. Commit and Push
 
@@ -30,7 +31,8 @@ Once the PR is merged, create a release in the GitHub UI with a tag matching the
 
 Once the tag is pushed, CI will:
 - Build wheels for all platforms
-- Publish to PyPI (`pydantic-monty`)
+- Publish to PyPI (`pydantic-monty-client` wheels, `pydantic-monty-runtime` wheels,
+  and the `pydantic-monty` metapackage that pins both)
 - Publish to NPM (`@pydantic/monty` + the platform packages carrying the napi library, the `monty` binary, and the wasm build)
 - Publish the Rust crates to crates.io (`monty`, `monty-types`, `monty-alloc`, `monty-fs`, `monty-runtime`, `monty-macros`, `monty-proto`, `monty-pool`, `monty-type-checking`, `monty-typeshed`) via `cargo publish --workspace`
 
