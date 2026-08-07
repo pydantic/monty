@@ -1,0 +1,19 @@
+crates/monty-fs/src/dispatch.rs
+  s_a0fa6b7447fb63::t_fac392c34f1dfe 128-130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e5fc4bfe0aee626cb73e41dc801ff12674f39940",
+  "prompts": {},
+  "sessions": {
+    "s_a0fa6b7447fb63": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7fd8480f-f003-4eda-a8e3-57a2354d004b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
