@@ -138,12 +138,19 @@ rewrite them as relative before mounting.
 CPython (and a direct mount) writes *through* a symlink to its target. An
 overlay write never touches the host, so it cannot do that — recording the
 entry under the link's spelling instead would silently alias the two paths.
-Any write (`write_text`, `open('w'/'a')`, `mkdir`, rename destinations, …)
-whose path contains a symlink **anywhere** — as the final component or an
-intermediate directory, whether it resolves in-mount, dangles, is absolute,
-or escapes — raises `PermissionError`. The refusal is uniform on purpose:
-the link's target is never even resolved, so the error reveals nothing about
-it. Reads still follow relative in-mount links as before, and direct mounts
+Any write (`write_text`, `open('w'/'a')`, `mkdir`, `unlink`, `rmdir`, rename
+sources and destinations, …) whose path contains a symlink **anywhere** — as
+the final component or an intermediate directory, whether it resolves
+in-mount, dangles, is absolute, or escapes — raises `PermissionError`. The
+refusal is uniform on purpose: the link's target is never even resolved, so
+the error reveals nothing about it. Deletes are included because tombstoning
+a link's spelling would report it gone while its target stayed readable under
+the real name — the same aliasing, reached by deleting rather than writing.
+
+Renaming a **directory that contains a symlink** is refused for the same
+reason: the link cannot move with it (there is nothing to record) and cannot
+be left behind (it would stay readable inside a directory the overlay then
+reports as deleted). CPython moves the directory and the link together. Reads still follow relative in-mount links as before, and direct mounts
 still allow writes through them; only escaping/absolute links are refused
 there. `mkdir(parents=True)` through an escaping symlink raises
 `PermissionError` in every mode.

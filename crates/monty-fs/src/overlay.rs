@@ -720,14 +720,21 @@ fn unlink(
         }
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
+            // A delete is a write: the same symlink refusal applies. Tombstoning
+            // a link's spelling would leave its target readable under the real
+            // name — the aliasing the write policy exists to prevent.
+            ensure_parent_exists(state, relative, ctx, vpath)?;
             let resolved = resolve_virtual_path(vpath, ctx.mount_virtual)?;
-            if host_is_file(ctx.mount_dir, resolved.for_dir_op()) {
-                state.insert(relative.to_owned(), OverlayEntry::Deleted, ctx.memory_usage_limit)?;
-                Ok(MontyObject::None)
-            } else if host_is_dir(ctx.mount_dir, resolved.for_dir_op()) {
-                Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
-            } else {
-                Err(MountError::not_found(vpath))
+            match classify_write_target(ctx.mount_dir, resolved.for_dir_op(), vpath)? {
+                RealTarget::File => {
+                    state.insert(relative.to_owned(), OverlayEntry::Deleted, ctx.memory_usage_limit)?;
+                    Ok(MontyObject::None)
+                }
+                RealTarget::Dir => Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath)),
+                RealTarget::Symlink => Err(MountError::PathEscape {
+                    virtual_path: vpath.to_owned(),
+                }),
+                RealTarget::Absent => Err(MountError::not_found(vpath)),
             }
         }
     }
@@ -761,8 +768,16 @@ fn rmdir(
         }
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
+            ensure_parent_exists(state, relative, ctx, vpath)?;
             let resolved = resolve_virtual_path(vpath, ctx.mount_virtual)?;
             let rel = resolved.for_dir_op();
+            // A symlink is not a directory to remove — POSIX answers ENOTDIR —
+            // and tombstoning its name would alias it against its target.
+            if matches!(classify_write_target(ctx.mount_dir, rel, vpath)?, RealTarget::Symlink) {
+                return Err(MountError::PathEscape {
+                    virtual_path: vpath.to_owned(),
+                });
+            }
             if !host_is_dir(ctx.mount_dir, rel) {
                 // `resolve_virtual_path` never touches the filesystem, so a
                 // missing path arrives as `Ok` and must be told apart from one
@@ -953,6 +968,21 @@ fn rename(
 
     ensure_parent_exists(state, &dst_rel, ctx, dst_vpath)?;
 
+    // The destination's own name must not be a symlink either. An overlay entry
+    // under it would shadow the link and alias it against its target — exactly
+    // what `write_text` on the same path refuses.
+    if state.get(&dst_rel).is_none()
+        && let Ok(target) = resolve_virtual_path(dst_vpath, ctx.mount_virtual)
+        && matches!(
+            classify_write_target(ctx.mount_dir, target.for_dir_op(), dst_vpath)?,
+            RealTarget::Symlink
+        )
+    {
+        return Err(MountError::PathEscape {
+            virtual_path: dst_vpath.to_owned(),
+        });
+    }
+
     if matches!(state.get(&src_rel), Some(OverlayEntry::Deleted)) {
         return Err(MountError::not_found(src_vpath));
     }
@@ -1063,11 +1093,11 @@ fn rename(
             ) {
                 Ok(children) => children,
                 // Lookup failures degrade to "no real children" (the host may
-                // have removed them mid-plan), but resource errors and
-                // unrepresentable names must fail the rename rather than
+                // have removed them mid-plan), but resource errors, refusals
+                // and unrepresentable names must fail the rename rather than
                 // silently shrink it.
                 Err(error) => match &error {
-                    MountError::MemoryUsageLimitExceeded(_) => return Err(error),
+                    MountError::MemoryUsageLimitExceeded(_) | MountError::PathEscape { .. } => return Err(error),
                     MountError::Io(io_error, _) if io_error.kind() == ErrorKind::InvalidData => {
                         return Err(error);
                     }
@@ -1254,13 +1284,15 @@ fn collect_real_descendants(
             let file_type = entry
                 .file_type()
                 .map_err(|error| MountError::Io(error, vpath.to_owned()))?;
-            // Defense-in-depth: explicitly skip symlinks so that a symlink
-            // pointing outside the mount boundary cannot be captured as an
-            // OverlayFileRef during a directory rename. On Unix,
-            // DirEntry::file_type() already distinguishes symlinks from files
-            // and dirs, but Windows behavior may differ.
+            // A symlink can move neither way: capturing it as a file ref would
+            // resolve the target the overlay refuses to write through, and
+            // skipping it strands the link — unreachable at the new name, yet
+            // still live at the old one inside a directory the overlay now
+            // reports as deleted. Refuse the move, as for a non-UTF-8 name.
             if file_type.is_symlink() {
-                continue;
+                return Err(MountError::PathEscape {
+                    virtual_path: vpath.to_owned(),
+                });
             }
             let child_rel = join_mount_relative(&current_rel, name);
             if file_type.is_file() {
