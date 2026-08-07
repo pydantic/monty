@@ -1059,8 +1059,17 @@ fn rename(
                 remaining,
             ) {
                 Ok(children) => children,
-                Err(error @ MountError::MemoryUsageLimitExceeded(_)) => return Err(error),
-                Err(_) => Vec::new(),
+                // Lookup failures degrade to "no real children" (the host may
+                // have removed them mid-plan), but resource errors and
+                // unrepresentable names must fail the rename rather than
+                // silently shrink it.
+                Err(error) => match &error {
+                    MountError::MemoryUsageLimitExceeded(_) => return Err(error),
+                    MountError::Io(io_error, _) if io_error.kind() == ErrorKind::InvalidData => {
+                        return Err(error);
+                    }
+                    _ => Vec::new(),
+                },
             };
             for (old_rel, child_entry) in real_children {
                 let new_rel = format!("{dst_prefix}{}", old_rel.strip_prefix(&src_prefix).unwrap_or(&old_rel));
@@ -1201,6 +1210,9 @@ fn reject_rename_onto_nonempty_dir(
 ///
 /// Each captured entry is charged for its key, its relative path, and
 /// [`REAL_DESCENDANT_MEMORY_USAGE`] of container overhead against `budget`.
+/// A descendant whose name is not valid UTF-8 fails the collection (and so the
+/// rename) with `OSError`: overlay keys are `String`s, so such an entry cannot
+/// follow the move and must not be silently dropped.
 fn collect_real_descendants(
     dir: &Dir,
     root_rel: &str,
@@ -1219,7 +1231,17 @@ fn collect_real_descendants(
         for entry in entries {
             let entry = entry.map_err(|error| map_io(error, vpath))?;
             let name = entry.file_name();
-            let name = name.to_string_lossy();
+            // A non-UTF-8 name has no overlay-key representation, so the entry
+            // cannot follow the rename. Refuse the whole operation: a lossy key
+            // would look up a path that does not exist, silently leaving the
+            // file behind in a directory the overlay then claims is deleted.
+            let Some(name) = name.to_str() else {
+                return Err(MountError::io_err(
+                    ErrorKind::InvalidData,
+                    "directory contains an entry with a non-UTF-8 name",
+                    vpath,
+                ));
+            };
             let rel_key = format!("{rel_prefix}{name}");
 
             if state.get(&rel_key).is_some() || already_handled.contains(&rel_key) {
@@ -1237,7 +1259,7 @@ fn collect_real_descendants(
             if file_type.is_symlink() {
                 continue;
             }
-            let child_rel = join_mount_relative(&current_rel, &name);
+            let child_rel = join_mount_relative(&current_rel, name);
             if file_type.is_file() {
                 if let Some(file_ref) = OverlayFileRef::from_relative(dir, &child_rel) {
                     memory_usage = memory_usage

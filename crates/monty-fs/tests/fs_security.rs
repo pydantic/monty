@@ -6,7 +6,7 @@
 
 #[cfg(unix)]
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt, os::unix::fs::symlink};
-use std::{fmt, fs};
+use std::{fmt, fs, io::ErrorKind};
 
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{
@@ -1031,6 +1031,48 @@ mod hard_link_tests {
             names.contains(&lossy),
             "in-mount symlink with a non-UTF-8 name was dropped: {names:?}"
         );
+    }
+
+    /// Renaming a directory whose real contents include a non-UTF-8 name must
+    /// fail loudly and leave everything in place.
+    ///
+    /// Such a name cannot be an overlay key, so the rename plan cannot
+    /// represent the move. It used to be built from the lossy name instead,
+    /// which stats a path that does not exist — the file silently vanished
+    /// from the destination while the source read as deleted.
+    #[test]
+    #[cfg(unix)]
+    fn overlay_rename_of_dir_with_non_utf8_named_entry_is_refused() {
+        let dir = create_test_dir();
+        let raw_name = OsStr::from_bytes(b"nonutf8\xff.txt");
+        if fs::write(dir.path().join("subdir").join(raw_name), b"data").is_err() {
+            // APFS and friends reject non-UTF-8 filenames outright, so the bug
+            // this guards is unobservable there. ext4 exercises it.
+            eprintln!("skipped: filesystem rejects non-UTF-8 filenames");
+            return;
+        }
+
+        let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+        let outcome = dispatch(
+            &mut mt,
+            OsFunctionCall::Rename(monty_types::RenameCallArgs {
+                src: MontyPath::new("/mnt/subdir".to_owned()),
+                dst: MontyPath::new("/mnt/moved".to_owned()),
+            }),
+        )
+        .unwrap();
+        assert!(
+            matches!(&outcome, Err(MountError::Io(err, _)) if err.kind() == ErrorKind::InvalidData),
+            "rename over a non-UTF-8 name must fail with InvalidData, got {outcome:?}"
+        );
+
+        // The refusal must leave the source tree fully visible and create nothing.
+        let exists = call(&mut mt, PathOp::Exists, "/mnt/subdir/nested.txt")
+            .unwrap()
+            .unwrap();
+        assert_eq!(exists, MontyObject::Bool(true));
+        let moved = call(&mut mt, PathOp::Exists, "/mnt/moved").unwrap().unwrap();
+        assert_eq!(moved, MontyObject::Bool(false));
     }
 
     /// Overlay mode should expose the same visible real entries as direct mode:

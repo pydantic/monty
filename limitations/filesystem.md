@@ -139,6 +139,12 @@ the host replaces the underlying file before the read, the read sees whatever
 now occupies that path inside the mount; CPython, holding no such reference,
 would not find the renamed-away original.
 
+Renaming a directory that really contains an entry with a non-UTF-8 name
+raises `OSError` (`directory contains an entry with a non-UTF-8 name`):
+Monty's sandbox namespace is strictly UTF-8, so the entry cannot follow the
+move. CPython renames the directory inode and never looks at the names
+inside.
+
 ### Boolean predicates never raise
 
 `exists()`, `is_file()` and `is_dir()` answer `False` for any path leaving the
