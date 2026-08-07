@@ -710,6 +710,74 @@ fn type_check_format_selects_the_rendering() {
     child.shutdown();
 }
 
+/// Security-critical: `Reset` must scrub every file a session wrote into the
+/// type checker — its script (wherever `script_name` placed it, including
+/// nested directories and `..`/absolute forms) and its stubs — so the next
+/// session served by the SAME process cannot resolve any of them. This runs
+/// against one child by construction, so unlike a pool test it cannot pass
+/// vacuously on a fresh worker.
+#[test]
+fn reset_scrubs_type_check_state_from_the_next_session() {
+    // (script_name of session A, module path session B tries to import)
+    let cases = [
+        ("a.py", "a"),
+        ("sub/nested.py", "sub.nested"),
+        ("../escape.py", "escape"),
+        ("/abs.py", "abs"),
+    ];
+    let mut child = ChildProc::spawn();
+    for (script_name, module) in cases {
+        // Session A: commits one snippet and carries stubs.
+        child.create_repl_with(pb::Configure {
+            script_name: script_name.to_owned(),
+            type_check: true,
+            type_check_stubs: Some("STUB_SECRET: int = 0".to_owned()),
+            type_check_format: pb::TypeCheckFormat::Concise.into(),
+            monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+            ..Default::default()
+        });
+        assert_eq!(child.feed_complete("LEAKY = 'hunter2'"), MontyObject::None);
+
+        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+        let pb::child_event::Kind::Ok(_) = child.recv() else {
+            panic!("expected Ok for Reset");
+        };
+
+        // Session B, same process: everything session A wrote must be gone.
+        child.create_repl_with(pb::Configure {
+            script_name: "b.py".to_owned(),
+            type_check: true,
+            type_check_format: pb::TypeCheckFormat::Concise.into(),
+            monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+            ..Default::default()
+        });
+        let mut probe = |code: String| {
+            let (_, event) = child.feed(&code);
+            let pb::child_event::Kind::TypingError(typing) = event else {
+                panic!("expected TypingError for {code:?} after {script_name:?}, got {event:?}");
+            };
+            typing.diagnostics
+        };
+        assert_eq!(
+            probe(format!("from {module} import LEAKY")),
+            format!("b.py:1:6: error[unresolved-import] Cannot resolve imported module `{module}`\n"),
+        );
+        assert_eq!(
+            probe("from repl_type_stubs import STUB_SECRET".to_owned()),
+            "b.py:1:6: error[unresolved-import] Cannot resolve imported module `repl_type_stubs`\n",
+        );
+        // the scrub keeps SRC_ROOT itself intact — fresh checks still work
+        assert_eq!(child.feed_complete("x: int = 1\nx"), MontyObject::Int(1));
+
+        // back to unconfigured for the next case
+        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+        let pb::child_event::Kind::Ok(_) = child.recv() else {
+            panic!("expected Ok for the trailing Reset");
+        };
+    }
+    child.shutdown();
+}
+
 /// The rendering choice lives in the dump envelope, so a session restored into
 /// a fresh worker keeps reporting diagnostics the way its parent asked for.
 #[test]

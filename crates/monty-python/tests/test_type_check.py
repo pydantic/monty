@@ -49,36 +49,63 @@ error[unsupported-operator]: Unsupported `+` operation
 """)
 
 
-def test_type_check_no_cross_session_state_leak(pool: Monty):
-    """A later checkout must not see stale results from an earlier one."""
-    # Valid code first.
-    with pool.checkout(type_check=True) as session:
-        session.feed_run('x = 1')
-    # Invalid code — must produce a fresh error, not a cached pass.
-    with pool.checkout(type_check=True) as session:
-        with pytest.raises(MontyTypingError):
-            session.feed_run('"hello" + 1')
-    # Back to valid code — must pass again, not report a stale error.
-    with pool.checkout(type_check=True) as session:
-        session.feed_run('x = 1')
+def test_type_check_no_cross_session_state_leak():
+    """A later checkout must not see stale results from an earlier one.
+
+    Pinned to a single-worker pool so the later checkouts reuse the first
+    session's process — on the shared fixture a fresh worker could make this
+    pass vacuously. The deterministic same-process pins live in Rust
+    (`reset_scrubs_type_check_state_from_the_next_session` and the pool's
+    same-pid test); this covers the bindings surface.
+    """
+    with Monty(min_processes=1, max_processes=1) as pool:
+        # Valid code first.
+        with pool.checkout(type_check=True) as session:
+            session.feed_run('x = 1')
+        # Invalid code — must produce a fresh error, not a cached pass.
+        with pool.checkout(type_check=True) as session:
+            with pytest.raises(MontyTypingError):
+                session.feed_run('"hello" + 1')
+        # Back to valid code — must pass again, not report a stale error.
+        with pool.checkout(type_check=True) as session:
+            session.feed_run('x = 1')
 
 
-def test_type_check_stubs_not_leaked_to_later_session(pool: Monty):
-    """Stub declarations from one checkout must not be visible to a later one."""
-    with pool.checkout(type_check=True, type_check_stubs='call1_stub_var = 0') as session:
-        session.feed_run('result = call1_stub_var + 1', inputs={'call1_stub_var': 1})
-    with pool.checkout(type_check=True) as session:
-        with pytest.raises(MontyTypingError) as exc_info:
-            session.feed_run('result = call1_stub_var + 1')
-        assert str(exc_info.value) == snapshot("""\
-error[unresolved-reference]: Name `call1_stub_var` used when not defined
- --> main.py:1:10
-  |
-1 | result = call1_stub_var + 1
-  |          ^^^^^^^^^^^^^^
-  |
+def test_type_check_module_not_leaked_to_later_session():
+    """One session's script must not be importable by the next session's checks.
 
-""")
+    The reused checker retains the previous session's `a.py` until the
+    `Reset`-time scrub removes it; a broken scrub would let session B
+    type-check `from a import SECRET` clean and only fail at runtime.
+    """
+    with Monty(min_processes=1, max_processes=1) as pool:
+        with pool.checkout(type_check=True, script_name='a.py') as session:
+            session.feed_run('SECRET = "hunter2"')
+        with pool.checkout(type_check=True, script_name='b.py', type_check_format='concise') as session:
+            with pytest.raises(MontyTypingError) as exc_info:
+                session.feed_run('from a import SECRET')
+            assert str(exc_info.value) == snapshot(
+                'b.py:1:6: error[unresolved-import] Cannot resolve imported module `a`\n'
+            )
+
+
+def test_type_check_stubs_not_leaked_to_later_session():
+    """Stub declarations from one checkout must not be visible to a later one,
+    neither as bare names nor as the `repl_type_stubs` module itself."""
+    with Monty(min_processes=1, max_processes=1) as pool:
+        with pool.checkout(type_check=True, type_check_stubs='call1_stub_var = 0') as session:
+            session.feed_run('result = call1_stub_var + 1', inputs={'call1_stub_var': 1})
+        with pool.checkout(type_check=True, type_check_format='concise') as session:
+            with pytest.raises(MontyTypingError) as exc_info:
+                session.feed_run('result = call1_stub_var + 1')
+            assert str(exc_info.value) == snapshot(
+                'main.py:1:10: error[unresolved-reference] Name `call1_stub_var` used when not defined\n'
+            )
+            with pytest.raises(MontyTypingError) as exc_info:
+                session.feed_run('from repl_type_stubs import call1_stub_var')
+            assert str(exc_info.value) == snapshot(
+                'main.py:1:6: error[unresolved-import] Cannot resolve imported module `repl_type_stubs`\n'
+            )
 
 
 def test_type_check_function_return_type(tc_session: MontySession):

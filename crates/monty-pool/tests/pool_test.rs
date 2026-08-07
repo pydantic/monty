@@ -23,7 +23,7 @@ use monty_pool::{
     MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
     on_print_sync,
 };
-use monty_types::{MontyObject, PrintStream, ResourceLimits};
+use monty_types::{MontyObject, PrintStream, ResourceLimits, TypeCheckingConfig, TypeCheckingFormat};
 use tokio::time::sleep;
 
 /// Locates (building once if needed) the `monty` CLI binary for tests.
@@ -1423,6 +1423,79 @@ async fn typing_error_via_pool() {
         ),
         MontyObject::Int(2)
     );
+    session.finish().await.unwrap();
+}
+
+/// Security-critical: a reused worker's type checker must not let one
+/// session's files (script or stubs) influence the next session's checks.
+/// The same pid is asserted so this cannot pass vacuously on a fresh worker —
+/// the exact regression a broken `Reset`-time scrub would cause.
+#[tokio::test]
+async fn type_check_state_is_scrubbed_between_checkouts_on_the_same_worker() {
+    let concise = TypeCheckingConfig {
+        format: TypeCheckingFormat::Concise,
+        color: false,
+    };
+    let pool = Pool::new(config()).await.unwrap();
+
+    // Session A: commits a module-level name into `a.py` and carries stubs.
+    let mut session = pool
+        .checkout(&ReplConfig {
+            script_name: "a.py".to_owned(),
+            type_check: true,
+            type_check_stubs: Some("STUB_SECRET: str = 'from-stubs'".to_owned()),
+            type_check_config: concise,
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let first_pid = session.pid().unwrap();
+    let event = session
+        .feed("SECRET = 'hunter2'", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::None);
+    session.finish().await.unwrap();
+    assert_eq!(pool.idle_workers(), 1);
+
+    // Session B runs in the SAME process; A's files must be gone.
+    let mut session = pool
+        .checkout(&ReplConfig {
+            script_name: "b.py".to_owned(),
+            type_check: true,
+            type_check_config: concise,
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session.pid().unwrap(),
+        first_pid,
+        "worker was not reused — test is vacuous"
+    );
+
+    let mut probe = async |code: &str| match session.feed(code, vec![], vec![], false, &mut no_print).await {
+        Err(PoolError::Typing(diagnostics)) => diagnostics,
+        other => panic!("expected a typing rejection for {code:?}, got {other:?}"),
+    };
+    assert_eq!(
+        probe("from a import SECRET").await,
+        "b.py:1:6: error[unresolved-import] Cannot resolve imported module `a`\n"
+    );
+    assert_eq!(
+        probe("from repl_type_stubs import STUB_SECRET").await,
+        "b.py:1:6: error[unresolved-import] Cannot resolve imported module `repl_type_stubs`\n"
+    );
+    assert_eq!(
+        probe("x = STUB_SECRET").await,
+        "b.py:1:5: error[unresolved-reference] Name `STUB_SECRET` used when not defined\n"
+    );
+    // and the scrub did not damage the checker itself
+    let event = session
+        .feed("x: int = 1\nx", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(1));
     session.finish().await.unwrap();
 }
 
