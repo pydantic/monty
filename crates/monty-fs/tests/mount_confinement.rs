@@ -722,8 +722,11 @@ fn fifo_raced_into_place_between_check_and_open_is_refused() {
     let finished = rx.recv_timeout(Duration::from_secs(30)).is_ok();
     stop.store(true, Ordering::Relaxed);
     swapper.join().unwrap();
-    reader.join().unwrap();
+    // Assert before joining the reader: a read that blocked on the FIFO never
+    // returns, so joining first would hang the test binary rather than fail it
+    // — exactly the regression this test exists to catch.
     assert!(finished, "a read blocked on the raced-in FIFO");
+    reader.join().unwrap();
 }
 
 /// Creates a FIFO, the one special file a test can make portably across Unix.

@@ -146,9 +146,11 @@ CPython (and a direct mount) writes *through* a symlink to its target. An
 overlay write never touches the host, so it cannot do that — recording the
 entry under the link's spelling instead would silently alias the two paths.
 Any write (`write_text`, `open('w'/'a')`, `mkdir`, `unlink`, `rmdir`, rename
-sources and destinations, …) whose path contains a symlink **anywhere** — as
-the final component or an intermediate directory, whether it resolves
-in-mount, dangles, is absolute, or escapes — raises `PermissionError`. The
+destinations, …) whose path contains a symlink **anywhere** — as the final
+component or an intermediate directory, whether it resolves in-mount, dangles,
+is absolute, or escapes — raises `PermissionError`. A rename *source* is the
+exception: a symlink named as one is moved intact, recorded as itself rather
+than as its target. The
 refusal is uniform on purpose: the link's target is never even resolved, so
 the error reveals nothing about it. Deletes are included because tombstoning
 a link's spelling would report it gone while its target stayed readable under

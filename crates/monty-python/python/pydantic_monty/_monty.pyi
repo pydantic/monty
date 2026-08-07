@@ -107,9 +107,9 @@ class MountDir:
         Arguments:
             host_path: Real host directory to expose. Opened at construction;
                 raises if it doesn't exist, isn't a directory, or cannot be
-                opened — on macOS/BSD that includes a search-only (`0o111`)
-                directory, which Linux accepts. Sandbox code can never see this
-                path or reach outside it. The mount tracks the directory
+                opened — on macOS/BSD a search-only (`0o111`) directory is not
+                mountable, though Linux accepts one. Sandbox code can never see
+                this path or reach outside it. The mount tracks the directory
                 itself rather than its name, so renaming it on the host does
                 not detach the mount; on Windows the open handle prevents the
                 host renaming or deleting it at all while the mount lives.
