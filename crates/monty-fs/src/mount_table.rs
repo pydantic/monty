@@ -156,7 +156,7 @@ impl MountTable {
 pub struct Mount {
     /// Virtual path prefix (absolute, normalized).
     virtual_path: String,
-    /// Best-effort canonical host directory path. Diagnostics only — see `dir`.
+    /// Canonical host directory path. Diagnostics only — see `dir`.
     host_path: PathBuf,
     /// Descriptor for the mounted directory, opened once here — the sandbox
     /// boundary. Resolution cannot leave it, and no rename can re-point a name
@@ -179,7 +179,7 @@ impl Mount {
     /// # Errors
     ///
     /// Returns [`MountError::InvalidMount`] if the virtual path is not absolute,
-    /// or the host path cannot be opened as a directory.
+    /// or the host path cannot be opened as a directory or canonicalized.
     pub fn new(
         virtual_path: &str,
         host_path: impl AsRef<Path>,
@@ -204,10 +204,14 @@ impl Mount {
         let dir = Dir::open_ambient_dir(host_path, ambient_authority())
             .map_err(|e| MountError::InvalidMount(format!("cannot open host path '{}': {e}", host_path.display())))?;
 
-        // Diagnostics only, and best-effort: resolved after the open, so a host
-        // that raced it leaves a stale label on the right descriptor, never the
-        // reverse. Nothing resolves through this path.
-        let canonical_host = fs::canonicalize(host_path).unwrap_or_else(|_| host_path.to_path_buf());
+        // Diagnostics only — nothing resolves through this path. Resolved after
+        // the open, so a host racing it leaves a stale label on the right
+        // descriptor, never the reverse. Still fatal on failure: callers copy
+        // this out as a mount's durable identity, and a relative path would
+        // later re-resolve against the process CWD.
+        let canonical_host = fs::canonicalize(host_path).map_err(|e| {
+            MountError::InvalidMount(format!("cannot resolve host path '{}': {e}", host_path.display()))
+        })?;
 
         Ok(Self {
             virtual_path: normalized_virtual,
@@ -226,7 +230,7 @@ impl Mount {
         &self.virtual_path
     }
 
-    /// Returns the best-effort canonical host directory path. Diagnostics only.
+    /// Returns the canonical host directory path. Diagnostics only.
     #[must_use]
     pub fn host_path(&self) -> &Path {
         &self.host_path

@@ -486,15 +486,19 @@ fn denied_write_is_not_reported_as_an_escape() {
     );
 }
 
-/// Mount construction resolves the host name exactly once, at the open.
+/// The open is the first thing mount construction does with the host name.
 ///
 /// Validating a path and then opening it would be a check-to-open race: a host
 /// able to rename in the parent could swap a symlink into the gap and hand the
-/// mount a descriptor on a directory it never shared. Nothing observes the name
-/// beforehand, so every rejection has to surface as a failure of the open — the
-/// symptom a reintroduced pre-check would change, since it would answer first.
+/// mount a descriptor on a directory it never shared. Nothing may observe the
+/// name beforehand, so a rejection the open itself accounts for — a file, a
+/// missing path — has to arrive as a failure of the open. That is the symptom a
+/// reintroduced pre-check would change, since it would answer first.
+///
+/// Construction can still fail *after* the open, canonicalizing the diagnostic
+/// label; that ordering is the point, so those failures read differently.
 #[test]
-fn mount_construction_rejects_only_at_the_open() {
+fn mount_construction_rejects_at_the_open_first() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("not-a-directory.txt");
     fs::write(&file, "content").unwrap();
