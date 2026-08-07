@@ -100,6 +100,23 @@ root.
 `/tmp`, `/etc`, `/proc`, `/dev`, `~`, and the host current working
 directory are **not** available unless the host explicitly mounts them.
 
+### `..` is resolved in the virtual namespace, not through symlinks
+
+`..` is collapsed textually before anything touches the filesystem, so it
+always names the lexical parent. POSIX instead resolves it *after* following
+the preceding component, which differs whenever a symlink is involved: with
+`ld -> sub/deep`, CPython reads `ld/../sibling.txt` as `sub/sibling.txt`,
+while Monty reads it as `sibling.txt` — each finds a file the other does not.
+The textual rule is what makes `..` unable to escape at all, so it is
+deliberate; only paths mixing `..` with symlinked directories are affected.
+
+### A mount needs read permission on its host directory
+
+Mounting opens a descriptor, which requires read access. A search-only
+directory (mode `0o111`) is therefore not mountable — `MountDir` raises at
+construction — even though a host process can traverse it and read known
+paths inside. Grant `r-x` on the directory being mounted.
+
 ### Symlink targets must be relative
 
 **A symlink inside a mount is followed only if its target is relative; an

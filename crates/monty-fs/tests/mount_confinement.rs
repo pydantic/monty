@@ -483,6 +483,36 @@ fn denied_write_is_not_reported_as_an_escape() {
     );
 }
 
+/// A search-only directory cannot be mounted, because opening the descriptor
+/// needs read permission where the old canonicalize-and-stat did not.
+///
+/// Documented in `limitations/filesystem.md`; asserted here so the failure
+/// stays a clean `InvalidMount` at construction rather than a surprise later.
+#[test]
+#[cfg(unix)]
+fn search_only_directory_is_not_mountable() {
+    let base = TempDir::new().unwrap();
+    let target = base.path().join("searchonly");
+    fs::create_dir(&target).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o111)).unwrap();
+
+    let mut mounts = MountTable::new();
+    let outcome = mounts.mount("/mnt", &target, MountMode::ReadWrite, None);
+
+    // Restore before asserting so the temp dir can still be cleaned up.
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Root ignores mode bits, leaving nothing to assert.
+    if outcome.is_ok() {
+        eprintln!("skipped: host permits opening a search-only directory");
+        return;
+    }
+    assert!(
+        matches!(&outcome, Err(MountError::InvalidMount(msg)) if msg.contains("cannot open host path")),
+        "expected InvalidMount for a search-only directory, got {outcome:?}"
+    );
+}
+
 /// The mount root itself cannot be deleted through the mount.
 ///
 /// It has no name inside the mount, so there is nothing to unlink it from:

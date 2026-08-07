@@ -194,7 +194,7 @@ pub(super) fn execute(
 /// Builds the [`MontyObject::FileHandle`] an `Open` request resolves to.
 ///
 /// The handle carries the **virtual** (sandbox) path — never a host path — so
-/// subsequent `read`/`write` calls re-resolve it through `resolve_path`.
+/// subsequent `read`/`write` calls re-resolve it against the mount descriptor.
 pub(super) fn file_handle_result(path: &str, mode: FileMode) -> MontyObject {
     MontyObject::FileHandle(MontyFileHandle {
         path: normalize_virtual_path(path),

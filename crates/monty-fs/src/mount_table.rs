@@ -50,14 +50,18 @@ impl MountTable {
 
     /// Adds a mount point mapping a virtual path to a host directory.
     ///
-    /// The host path is canonicalized at mount time so that all subsequent
-    /// boundary checks compare canonical-to-canonical. Mount memory uses
-    /// [`DEFAULT_MEMORY_USAGE_LIMIT`] unless a pre-built [`Mount`] overrides it.
+    /// The host directory is opened once here, and every later operation runs
+    /// relative to that descriptor — so the mount stays attached to the
+    /// directory that was named, whatever the host does to the path afterwards.
+    /// Mount memory uses [`DEFAULT_MEMORY_USAGE_LIMIT`] unless a pre-built
+    /// [`Mount`] overrides it.
     ///
     /// # Errors
     ///
     /// Returns [`MountError::InvalidMount`] if the virtual path is not absolute,
-    /// or the host path doesn't exist or isn't a directory.
+    /// the host path doesn't exist or isn't a directory, or it cannot be opened.
+    /// The descriptor needs read permission, so a search-only (`0o111`)
+    /// directory is not mountable even though its contents are reachable.
     pub fn mount(
         &mut self,
         virtual_path: &str,
