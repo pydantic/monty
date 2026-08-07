@@ -10,9 +10,9 @@ use monty_types::{FileMode, MontyObject};
 
 use super::{
     common::{
-        MemoryBudget, MountContext, append_bytes_fs, append_text_fs, check_write_limit, commit_write_bytes, is_dir,
-        is_file, iterdir_fs, map_io, mkdir_fs, read_bytes_fs, read_text_fs, reject_non_regular, rmdir_fs, stat_fs,
-        unlink_fs, write_bytes_fs, write_text_fs,
+        MemoryBudget, MountContext, check_write_limit, commit_write_bytes, host_append_bytes, host_append_text,
+        host_is_dir, host_is_file, host_iterdir, host_mkdir, host_read_bytes, host_read_text, host_rmdir, host_stat,
+        host_unlink, host_write_bytes, host_write_text, map_io, reject_non_regular,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -26,14 +26,14 @@ use super::{
 pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     match request {
         FsRequest::Exists { path } => bool_query(&path, ctx, |dir, rel| dir.exists(rel)),
-        FsRequest::IsFile { path } => bool_query(&path, ctx, is_file),
-        FsRequest::IsDir { path } => bool_query(&path, ctx, is_dir),
+        FsRequest::IsFile { path } => bool_query(&path, ctx, host_is_file),
+        FsRequest::IsDir { path } => bool_query(&path, ctx, host_is_dir),
         FsRequest::IsSymlink { path } => bool_query(&path, ctx, |dir, rel| {
             dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_symlink())
         }),
         FsRequest::ReadText { path } => {
             let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
-            read_text_fs(
+            host_read_text(
                 ctx.mount_dir,
                 target.for_dir_op(),
                 &path,
@@ -42,7 +42,7 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
         }
         FsRequest::ReadBytes { path } => {
             let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
-            read_bytes_fs(
+            host_read_bytes(
                 ctx.mount_dir,
                 target.for_dir_op(),
                 &path,
@@ -60,15 +60,15 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
         } => mkdir(&path, parents, exist_ok, ctx),
         FsRequest::Unlink { path } => {
             let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
-            unlink_fs(ctx.mount_dir, target.for_dir_op(), &path)
+            host_unlink(ctx.mount_dir, target.for_dir_op(), &path)
         }
         FsRequest::Rmdir { path } => {
             let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
-            rmdir_fs(ctx.mount_dir, target.for_dir_op(), &path)
+            host_rmdir(ctx.mount_dir, target.for_dir_op(), &path)
         }
         FsRequest::Iterdir { path } => {
             let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
-            iterdir_fs(
+            host_iterdir(
                 ctx.mount_dir,
                 target.for_dir_op(),
                 &path,
@@ -77,7 +77,7 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
         }
         FsRequest::Stat { path } => {
             let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
-            stat_fs(ctx.mount_dir, target.for_dir_op(), &path)
+            host_stat(ctx.mount_dir, target.for_dir_op(), &path)
         }
         FsRequest::Rename { src, dst } => rename(&src, &dst, ctx),
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
@@ -105,11 +105,11 @@ fn open(path: &str, mode: FileMode, ctx: &mut MountContext<'_>) -> Result<MontyO
         }
         FileMode::Write(_) | FileMode::WriteUpdate(_) => {
             check_write_limit(0, ctx)?;
-            write_text_fs(ctx.mount_dir, rel, "", path)?;
+            host_write_text(ctx.mount_dir, rel, "", path)?;
             commit_write_bytes(0, ctx);
         }
         FileMode::Append(_) | FileMode::AppendUpdate(_) => {
-            append_bytes_fs(ctx.mount_dir, rel, &[], path)?;
+            host_append_bytes(ctx.mount_dir, rel, &[], path)?;
         }
     }
     Ok(file_handle_result(path, mode))
@@ -134,7 +134,7 @@ fn bool_query(
 fn write_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     check_write_limit(data.len(), ctx)?;
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
-    let result = write_text_fs(ctx.mount_dir, target.for_dir_op(), data, path)?;
+    let result = host_write_text(ctx.mount_dir, target.for_dir_op(), data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }
@@ -143,7 +143,7 @@ fn write_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<Mont
 fn write_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     check_write_limit(data.len(), ctx)?;
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
-    let result = write_bytes_fs(ctx.mount_dir, target.for_dir_op(), data, path)?;
+    let result = host_write_bytes(ctx.mount_dir, target.for_dir_op(), data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }
@@ -152,7 +152,7 @@ fn write_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<Mo
 fn append_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     check_write_limit(data.len(), ctx)?;
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
-    let result = append_text_fs(ctx.mount_dir, target.for_dir_op(), data, path)?;
+    let result = host_append_text(ctx.mount_dir, target.for_dir_op(), data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }
@@ -161,7 +161,7 @@ fn append_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<Mon
 fn append_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     check_write_limit(data.len(), ctx)?;
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
-    let result = append_bytes_fs(ctx.mount_dir, target.for_dir_op(), data, path)?;
+    let result = host_append_bytes(ctx.mount_dir, target.for_dir_op(), data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }
@@ -169,7 +169,7 @@ fn append_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<M
 /// Creates a directory, using `create_dir_all` only when `parents` is set.
 fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
-    mkdir_fs(ctx.mount_dir, target.for_dir_op(), parents, exist_ok, path)
+    host_mkdir(ctx.mount_dir, target.for_dir_op(), parents, exist_ok, path)
 }
 
 /// Renames an entry within the same mount.

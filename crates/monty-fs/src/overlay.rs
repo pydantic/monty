@@ -13,9 +13,8 @@ use monty_types::{FileMode, MontyObject, dir_stat, file_stat};
 use super::{
     common::{
         LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, as_u64, bytes_to_utf8, check_write_limit,
-        commit_write_bytes, current_timestamp, dir_mtime, format_child_path, is_dir as real_is_dir,
-        is_file as real_is_file, join_relative, list_visible_real_dir_entry_names, map_io, read_bytes_fs, read_text_fs,
-        stat_fs,
+        commit_write_bytes, current_timestamp, format_child_path, host_dir_mtime, host_is_dir, host_is_file,
+        host_list_visible_dir_entry_names, host_read_bytes, host_read_text, host_stat, join_mount_relative, map_io,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -116,7 +115,7 @@ fn open(
                 }
                 Some(OverlayEntry::Deleted) => return Err(MountError::not_found(path)),
                 None => match resolve_real_path_state(path, ctx, Follow::Yes, OnLookupFailure::Propagate)? {
-                    RealPathState::Present(rel) if real_is_dir(ctx.mount_dir, &rel) => {
+                    RealPathState::Present(rel) if host_is_dir(ctx.mount_dir, &rel) => {
                         return Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", path));
                     }
                     RealPathState::Present(_) => {}
@@ -173,7 +172,7 @@ fn ensure_append_target_exists(
             Ok(())
         }
         None => match resolve_real_path_state(vpath, ctx, Follow::Yes, OnLookupFailure::Propagate)? {
-            RealPathState::Present(rel) if real_is_dir(ctx.mount_dir, &rel) => {
+            RealPathState::Present(rel) if host_is_dir(ctx.mount_dir, &rel) => {
                 Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
             }
             RealPathState::Present(_) => Ok(()),
@@ -222,7 +221,7 @@ fn is_file(
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => true,
         Some(OverlayEntry::Directory { .. } | OverlayEntry::Deleted) => false,
         None => match resolve_real_path_state(vpath, ctx, Follow::Yes, OnLookupFailure::Missing)? {
-            RealPathState::Present(rel) => real_is_file(ctx.mount_dir, &rel),
+            RealPathState::Present(rel) => host_is_file(ctx.mount_dir, &rel),
             RealPathState::Missing => false,
         },
     };
@@ -240,7 +239,7 @@ fn is_dir(
         Some(OverlayEntry::Directory { .. }) => true,
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) | OverlayEntry::Deleted) => false,
         None => match resolve_real_path_state(vpath, ctx, Follow::Yes, OnLookupFailure::Missing)? {
-            RealPathState::Present(rel) => real_is_dir(ctx.mount_dir, &rel),
+            RealPathState::Present(rel) => host_is_dir(ctx.mount_dir, &rel),
             RealPathState::Missing => false,
         },
     };
@@ -277,7 +276,7 @@ fn read_text(
             Ok(MontyObject::String(bytes_to_utf8(file.content.clone())?))
         }
         Some(OverlayEntry::RealFileRef(file_ref)) => {
-            read_text_fs(ctx.mount_dir, &file_ref.relative, vpath, available_memory(state, ctx)?)
+            host_read_text(ctx.mount_dir, &file_ref.relative, vpath, available_memory(state, ctx)?)
         }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
@@ -285,7 +284,7 @@ fn read_text(
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let target = resolve_virtual_path(vpath, ctx.mount_virtual)?;
-            read_text_fs(ctx.mount_dir, target.for_dir_op(), vpath, available_memory(state, ctx)?)
+            host_read_text(ctx.mount_dir, target.for_dir_op(), vpath, available_memory(state, ctx)?)
         }
     }
 }
@@ -303,7 +302,7 @@ fn read_bytes(
             Ok(MontyObject::Bytes(file.content.clone()))
         }
         Some(OverlayEntry::RealFileRef(file_ref)) => {
-            read_bytes_fs(ctx.mount_dir, &file_ref.relative, vpath, available_memory(state, ctx)?)
+            host_read_bytes(ctx.mount_dir, &file_ref.relative, vpath, available_memory(state, ctx)?)
         }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
@@ -311,7 +310,7 @@ fn read_bytes(
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let target = resolve_virtual_path(vpath, ctx.mount_virtual)?;
-            read_bytes_fs(ctx.mount_dir, target.for_dir_op(), vpath, available_memory(state, ctx)?)
+            host_read_bytes(ctx.mount_dir, target.for_dir_op(), vpath, available_memory(state, ctx)?)
         }
     }
 }
@@ -483,18 +482,18 @@ fn existing_file_bytes(
         }
         Some(OverlayEntry::Deleted) => Ok(Vec::new()),
         Some(OverlayEntry::RealFileRef(file_ref)) => {
-            match read_bytes_fs(ctx.mount_dir, &file_ref.relative, vpath, budget)? {
+            match host_read_bytes(ctx.mount_dir, &file_ref.relative, vpath, budget)? {
                 MontyObject::Bytes(bytes) => Ok(bytes),
-                _ => unreachable!("read_bytes_fs should return bytes"),
+                _ => unreachable!("host_read_bytes should return bytes"),
             }
         }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
         }
         None => match resolve_real_path_state(vpath, ctx, Follow::Yes, OnLookupFailure::Propagate)? {
-            RealPathState::Present(rel) => match read_bytes_fs(ctx.mount_dir, &rel, vpath, budget)? {
+            RealPathState::Present(rel) => match host_read_bytes(ctx.mount_dir, &rel, vpath, budget)? {
                 MontyObject::Bytes(bytes) => Ok(bytes),
-                _ => unreachable!("read_bytes_fs should return bytes"),
+                _ => unreachable!("host_read_bytes should return bytes"),
             },
             RealPathState::Missing => Ok(Vec::new()),
         },
@@ -541,7 +540,7 @@ fn relative_dir_exists(state: &OverlayState, relative: &str, ctx: &MountContext<
         None => {
             let parent_vpath = format!("{}/{relative}", ctx.mount_virtual);
             resolve_virtual_path(&parent_vpath, ctx.mount_virtual)
-                .is_ok_and(|target| real_is_dir(ctx.mount_dir, target.for_dir_op()))
+                .is_ok_and(|target| host_is_dir(ctx.mount_dir, target.for_dir_op()))
         }
     }
 }
@@ -631,14 +630,14 @@ fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountC
             None => {
                 let current_vpath = format!("{}/{current}", ctx.mount_virtual);
                 if let Ok(resolved) = resolve_virtual_path(&current_vpath, ctx.mount_virtual) {
-                    if real_is_file(ctx.mount_dir, resolved.for_dir_op()) {
+                    if host_is_file(ctx.mount_dir, resolved.for_dir_op()) {
                         return Err(MountError::io_err(
                             ErrorKind::NotADirectory,
                             "Not a directory",
                             &current_vpath,
                         ));
                     }
-                    if real_is_dir(ctx.mount_dir, resolved.for_dir_op()) {
+                    if host_is_dir(ctx.mount_dir, resolved.for_dir_op()) {
                         continue;
                     }
                 }
@@ -675,10 +674,10 @@ fn unlink(
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let resolved = resolve_virtual_path(vpath, ctx.mount_virtual)?;
-            if real_is_file(ctx.mount_dir, resolved.for_dir_op()) {
+            if host_is_file(ctx.mount_dir, resolved.for_dir_op()) {
                 state.insert(relative.to_owned(), OverlayEntry::Deleted, ctx.memory_usage_limit)?;
                 Ok(MontyObject::None)
-            } else if real_is_dir(ctx.mount_dir, resolved.for_dir_op()) {
+            } else if host_is_dir(ctx.mount_dir, resolved.for_dir_op()) {
                 Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
             } else {
                 Err(MountError::not_found(vpath))
@@ -713,7 +712,7 @@ fn rmdir(
         None => {
             let resolved = resolve_virtual_path(vpath, ctx.mount_virtual)?;
             let rel = resolved.for_dir_op();
-            if !real_is_dir(ctx.mount_dir, rel) {
+            if !host_is_dir(ctx.mount_dir, rel) {
                 // `resolve_virtual_path` never touches the filesystem, so a
                 // missing path arrives as `Ok` and must be told apart from one
                 // that exists but is not a directory.
@@ -793,7 +792,7 @@ fn stat(state: &OverlayState, relative: &str, ctx: &MountContext<'_>, vpath: &st
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let target = resolve_virtual_path(vpath, ctx.mount_virtual)?;
-            stat_fs(ctx.mount_dir, target.for_dir_op(), vpath)
+            host_stat(ctx.mount_dir, target.for_dir_op(), vpath)
         }
     }
 }
@@ -812,7 +811,7 @@ fn iterdir(
         }
         Some(OverlayEntry::Deleted) => return Err(MountError::not_found(vpath)),
         None => match resolve_virtual_path(vpath, ctx.mount_virtual) {
-            Ok(target) if real_is_dir(ctx.mount_dir, target.for_dir_op()) => Some(target.for_dir_op().to_owned()),
+            Ok(target) if host_is_dir(ctx.mount_dir, target.for_dir_op()) => Some(target.for_dir_op().to_owned()),
             // `resolve_virtual_path` never touches the filesystem, so a missing
             // path arrives as `Ok` and must be told apart from a non-directory.
             Ok(target) if !ctx.mount_dir.exists(target.for_dir_op()) => return Err(MountError::not_found(vpath)),
@@ -853,7 +852,7 @@ fn iterdir(
 
     if let Some(host_dir) = host_dir_to_merge {
         let remaining = budget.shrink(transient_usage)?;
-        let names = match list_visible_real_dir_entry_names(ctx.mount_dir, &host_dir, vpath, remaining.halved()) {
+        let names = match host_list_visible_dir_entry_names(ctx.mount_dir, &host_dir, vpath, remaining.halved()) {
             Ok(names) => names,
             Err(error @ MountError::MemoryUsageLimitExceeded(_)) => return Err(error),
             Err(_) => Vec::new(),
@@ -914,7 +913,7 @@ fn rename(
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => false,
         Some(OverlayEntry::Deleted) => return Err(MountError::not_found(src_vpath)),
         None => resolve_virtual_path(src_vpath, ctx.mount_virtual)
-            .is_ok_and(|target| real_is_dir(ctx.mount_dir, target.for_dir_op())),
+            .is_ok_and(|target| host_is_dir(ctx.mount_dir, target.for_dir_op())),
     };
 
     reject_rename_type_mismatch(state, &dst_rel, src_is_dir, ctx, dst_vpath)?;
@@ -957,13 +956,13 @@ fn rename(
             OverlayFileRef::from_lstat(ctx.mount_dir, rel)
                 .map(OverlayEntry::RealFileRef)
                 .ok_or_else(|| MountError::not_found(src_vpath))?
-        } else if real_is_file(ctx.mount_dir, rel) {
+        } else if host_is_file(ctx.mount_dir, rel) {
             OverlayFileRef::from_relative(ctx.mount_dir, rel)
                 .map(OverlayEntry::RealFileRef)
                 .ok_or_else(|| MountError::not_found(src_vpath))?
-        } else if real_is_dir(ctx.mount_dir, rel) {
+        } else if host_is_dir(ctx.mount_dir, rel) {
             OverlayEntry::Directory {
-                mtime: dir_mtime(ctx.mount_dir, rel),
+                mtime: host_dir_mtime(ctx.mount_dir, rel),
             }
         } else {
             return Err(MountError::not_found(src_vpath));
@@ -1000,7 +999,7 @@ fn rename(
         }
 
         if let Ok(target) = resolve_virtual_path(src_vpath, ctx.mount_virtual)
-            && real_is_dir(ctx.mount_dir, target.for_dir_op())
+            && host_is_dir(ctx.mount_dir, target.for_dir_op())
         {
             let real_children = match collect_real_descendants(
                 ctx.mount_dir,
@@ -1086,7 +1085,7 @@ fn reject_rename_type_mismatch(
         Some(OverlayEntry::Directory { .. }) => Some(true),
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => Some(false),
         Some(OverlayEntry::Deleted) | None => match resolve_virtual_path(dst_vpath, ctx.mount_virtual) {
-            Ok(target) if real_is_dir(ctx.mount_dir, target.for_dir_op()) => Some(true),
+            Ok(target) if host_is_dir(ctx.mount_dir, target.for_dir_op()) => Some(true),
             Ok(target) if ctx.mount_dir.exists(target.for_dir_op()) => Some(false),
             _ => None,
         },
@@ -1118,7 +1117,7 @@ fn reject_rename_onto_nonempty_dir(
         Some(OverlayEntry::Directory { .. }) => true,
         Some(OverlayEntry::Deleted | OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => return Ok(()),
         None => match resolve_virtual_path(dst_vpath, ctx.mount_virtual) {
-            Ok(target) if real_is_dir(ctx.mount_dir, target.for_dir_op()) => true,
+            Ok(target) if host_is_dir(ctx.mount_dir, target.for_dir_op()) => true,
             _ => return Ok(()),
         },
     };
@@ -1135,7 +1134,7 @@ fn reject_rename_onto_nonempty_dir(
         ));
     }
     if let Ok(target) = resolve_virtual_path(dst_vpath, ctx.mount_virtual)
-        && real_is_dir(ctx.mount_dir, target.for_dir_op())
+        && host_is_dir(ctx.mount_dir, target.for_dir_op())
         && real_directory_has_visible_children(state, dst_rel, ctx.mount_dir, target.for_dir_op(), dst_vpath)?
     {
         return Err(MountError::io_err(
@@ -1188,7 +1187,7 @@ fn collect_real_descendants(
             if file_type.is_symlink() {
                 continue;
             }
-            let child_rel = join_relative(&current_rel, &name);
+            let child_rel = join_mount_relative(&current_rel, &name);
             if file_type.is_file() {
                 if let Some(file_ref) = OverlayFileRef::from_relative(dir, &child_rel) {
                     memory_usage = memory_usage
@@ -1209,7 +1208,7 @@ fn collect_real_descendants(
                 result.push((
                     rel_key.clone(),
                     OverlayEntry::Directory {
-                        mtime: dir_mtime(dir, &child_rel),
+                        mtime: host_dir_mtime(dir, &child_rel),
                     },
                 ));
                 dirs.push((child_rel, format!("{rel_key}/")));

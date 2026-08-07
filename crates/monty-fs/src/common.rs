@@ -103,7 +103,12 @@ pub(super) struct MountContext<'a> {
 ///
 /// Directory-read errors differ across platforms, so the target is checked
 /// explicitly before reading.
-pub(super) fn read_text_fs(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudget) -> Result<MontyObject, MountError> {
+pub(super) fn host_read_text(
+    dir: &Dir,
+    rel: &str,
+    vpath: &str,
+    budget: MemoryBudget,
+) -> Result<MontyObject, MountError> {
     let bytes = read_file_limited(dir, rel, vpath, budget)?;
     let content = bytes_to_utf8(bytes)?;
     Ok(MontyObject::String(content))
@@ -113,7 +118,7 @@ pub(super) fn read_text_fs(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudg
 ///
 /// Directory-read errors differ across platforms, so the target is checked
 /// explicitly before reading.
-pub(super) fn read_bytes_fs(
+pub(super) fn host_read_bytes(
     dir: &Dir,
     rel: &str,
     vpath: &str,
@@ -149,7 +154,7 @@ fn read_file_limited(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudget) ->
 ///
 /// On Windows, `fs::write()` on a directory returns `PermissionDenied` instead of
 /// `IsADirectory`, so we check explicitly before writing.
-pub(super) fn write_text_fs(dir: &Dir, rel: &str, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_write_text(dir: &Dir, rel: &str, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
     write_bytes_to_file(dir, rel, content.as_bytes(), vpath)?;
     Ok(MontyObject::Int(
         i64::try_from(content.chars().count()).unwrap_or(i64::MAX),
@@ -160,7 +165,7 @@ pub(super) fn write_text_fs(dir: &Dir, rel: &str, content: &str, vpath: &str) ->
 ///
 /// On Windows, `fs::write()` on a directory returns `PermissionDenied` instead of
 /// `IsADirectory`, so we check explicitly before writing.
-pub(super) fn write_bytes_fs(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_write_bytes(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
     write_bytes_to_file(dir, rel, content, vpath)?;
     Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
 }
@@ -178,7 +183,7 @@ fn write_bytes_to_file(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Res
 ///
 /// The host file is opened only for the duration of this call, preserving the
 /// sandbox invariant that Monty never keeps native file handles alive.
-pub(super) fn append_text_fs(dir: &Dir, rel: &str, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_append_text(dir: &Dir, rel: &str, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
     append_bytes_to_file(dir, rel, content.as_bytes(), vpath)?;
     Ok(MontyObject::Int(
         i64::try_from(content.chars().count()).unwrap_or(i64::MAX),
@@ -187,8 +192,8 @@ pub(super) fn append_text_fs(dir: &Dir, rel: &str, content: &str, vpath: &str) -
 
 /// Appends bytes to a file and returns the number of bytes written.
 ///
-/// This is the binary counterpart of [`append_text_fs`].
-pub(super) fn append_bytes_fs(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
+/// This is the binary counterpart of [`host_append_text`].
+pub(super) fn host_append_bytes(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
     append_bytes_to_file(dir, rel, content, vpath)?;
     Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
 }
@@ -208,7 +213,7 @@ fn append_bytes_to_file(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Re
 ///   (whether file or directory), even with `parents=True`.
 /// - `exist_ok=True`: silently succeeds only if the path is an existing **directory**.
 ///   If the path is an existing **file**, raises `FileExistsError` regardless.
-pub(super) fn mkdir_fs(
+pub(super) fn host_mkdir(
     dir: &Dir,
     rel: &str,
     parents: bool,
@@ -239,25 +244,27 @@ pub(super) fn mkdir_fs(
 
     match result {
         Ok(()) => Ok(MontyObject::None),
-        Err(err) if err.kind() == ErrorKind::AlreadyExists && exist_ok && is_dir(dir, rel) => Ok(MontyObject::None),
+        Err(err) if err.kind() == ErrorKind::AlreadyExists && exist_ok && host_is_dir(dir, rel) => {
+            Ok(MontyObject::None)
+        }
         Err(err) => Err(map_io(err, vpath)),
     }
 }
 
 /// Removes a file, or the symlink itself when `rel` names one.
-pub(super) fn unlink_fs(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_unlink(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject, MountError> {
     dir.remove_file(rel).map_err(|err| map_io(err, vpath))?;
     Ok(MontyObject::None)
 }
 
 /// Removes an empty directory.
-pub(super) fn rmdir_fs(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_rmdir(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject, MountError> {
     dir.remove_dir(rel).map_err(|err| map_io(err, vpath))?;
     Ok(MontyObject::None)
 }
 
 /// Returns a `stat_result`-shaped object for a file or directory.
-pub(super) fn stat_fs(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_stat(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject, MountError> {
     let metadata = dir.metadata(rel).map_err(|err| map_io(err, vpath))?;
     let mtime = mtime_secs(&metadata);
     let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
@@ -270,8 +277,8 @@ pub(super) fn stat_fs(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject, 
 }
 
 /// Lists visible directory entries within the mount memory budget.
-pub(super) fn iterdir_fs(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudget) -> Result<MontyObject, MountError> {
-    let names = list_visible_real_dir_entry_names(dir, rel, vpath, budget.halved())?;
+pub(super) fn host_iterdir(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudget) -> Result<MontyObject, MountError> {
+    let names = host_list_visible_dir_entry_names(dir, rel, vpath, budget.halved())?;
     let mut memory_usage = names.iter().fold(0_u64, |usage, name| {
         usage
             .saturating_add(as_u64(name.len()))
@@ -311,7 +318,7 @@ pub(super) fn commit_write_bytes(bytes: usize, ctx: &mut MountContext<'_>) {
 ///
 /// Symlinks are only exposed when they still resolve inside the mount, so
 /// iteration does not leak the existence of outbound or broken links.
-pub(super) fn list_visible_real_dir_entry_names(
+pub(super) fn host_list_visible_dir_entry_names(
     dir: &Dir,
     rel: &str,
     vpath: &str,
@@ -333,7 +340,7 @@ pub(super) fn list_visible_real_dir_entry_names(
             // different entry and silently drop this one. The lookup must stay
             // path-based so it runs through the descriptor's confinement check —
             // `entry.metadata()` resolves the link without one.
-            let child = join_relative_os(rel, &entry.file_name());
+            let child = join_mount_relative_os(rel, &entry.file_name());
             if dir.metadata(&child).is_err() {
                 continue;
             }
@@ -386,7 +393,7 @@ pub(super) fn mtime_secs(metadata: &Metadata) -> f64 {
 }
 
 /// Reads a directory modification time, falling back to `now` if needed.
-pub(super) fn dir_mtime(dir: &Dir, rel: &str) -> f64 {
+pub(super) fn host_dir_mtime(dir: &Dir, rel: &str) -> f64 {
     dir.metadata(rel)
         .and_then(|metadata| metadata.modified())
         .map_or_else(|_| SystemTime::now(), CapSystemTime::into_std)
@@ -394,10 +401,11 @@ pub(super) fn dir_mtime(dir: &Dir, rel: &str) -> f64 {
         .map_or(0.0, |duration| duration.as_secs_f64())
 }
 
-/// Joins a mount-relative directory path with a raw directory entry name.
-///
-/// Takes the name as an `OsStr` so a non-UTF-8 filename survives the join.
-pub(super) fn join_relative_os(rel: &str, child: &OsStr) -> PathBuf {
+/// [`join_mount_relative`] for a raw directory-entry name: the child stays an
+/// `OsStr` so a non-UTF-8 name survives the join and the resulting lookup
+/// names the entry itself — a lossy `String` round-trip would name a
+/// different path.
+pub(super) fn join_mount_relative_os(rel: &str, child: &OsStr) -> PathBuf {
     if rel.is_empty() || rel == "." {
         PathBuf::from(child)
     } else {
@@ -405,8 +413,10 @@ pub(super) fn join_relative_os(rel: &str, child: &OsStr) -> PathBuf {
     }
 }
 
-/// Joins a mount-relative directory path with a child name.
-pub(super) fn join_relative(rel: &str, child: &str) -> String {
+/// Joins a mount-relative directory path with a child name, yielding the
+/// child's own mount-relative path — the coordinate system `Dir` operations
+/// and overlay keys share. `""` and `"."` both mean the mount root.
+pub(super) fn join_mount_relative(rel: &str, child: &str) -> String {
     if rel.is_empty() || rel == "." {
         child.to_owned()
     } else {
@@ -415,12 +425,12 @@ pub(super) fn join_relative(rel: &str, child: &str) -> String {
 }
 
 /// Whether `rel` resolves to a directory inside the mount.
-pub(super) fn is_dir(dir: &Dir, rel: &str) -> bool {
+pub(super) fn host_is_dir(dir: &Dir, rel: &str) -> bool {
     dir.metadata(rel).is_ok_and(|meta| meta.is_dir())
 }
 
 /// Whether `rel` resolves to a regular file inside the mount.
-pub(super) fn is_file(dir: &Dir, rel: &str) -> bool {
+pub(super) fn host_is_file(dir: &Dir, rel: &str) -> bool {
     dir.metadata(rel).is_ok_and(|meta| meta.is_file())
 }
 
