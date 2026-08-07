@@ -19,7 +19,8 @@ import {
   ProtocolError,
 } from './errors.js'
 import { PYTHON_EXC_NAMES } from './errors.js'
-import { mountsToNative, type MountDir } from './mount.js'
+import { mountsToNative } from './mount.js'
+import type { MountDir } from './mountDir.js'
 import type {
   FunctionCallTurn,
   LoadedTurn,
