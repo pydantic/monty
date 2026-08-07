@@ -40,6 +40,48 @@ test('browser wasm reports mounts as unsupported', async (ctx) => {
   t.is(error.message, 'the wasm worker does not support filesystem mounts (browser has no host filesystem)')
 })
 
+test('a mount follows its directory across feeds, not its path', async (ctx) => {
+  skipIfBrowser(ctx)
+  if (process.platform === 'win32') {
+    // Planting the link needs symlink creation, which Windows gates behind a
+    // privilege; the confinement itself is not platform-specific.
+    ctx.skip()
+  }
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'monty-mount-pin-'))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'monty-mount-out-'))
+  try {
+    const shared = path.join(base, 'shared')
+    fs.mkdirSync(shared)
+    fs.writeFileSync(path.join(shared, 'inside.txt'), 'in-mount')
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'HOST SECRET')
+    // Host-planted link out of the tree; the sandbox only moves it.
+    fs.symlinkSync(outside, path.join(base, 'prepared-link'), 'dir')
+
+    const child = new MountDir({ hostPath: shared, virtualPath: '/child', mode: 'read-only' })
+    const parent = new MountDir({ hostPath: base, virtualPath: '/parent', mode: 'read-write' })
+    await using session = await pool().checkout()
+
+    // Feed 1: swap the real directory out and the link in, under one name.
+    await session.feedRun(
+      `from pathlib import Path
+Path('/parent/shared').rename('/parent/old-shared')
+Path('/parent/prepared-link').rename('/parent/shared')`,
+      { mount: parent },
+    )
+
+    // Feed 2: the same mount object, and the redirect has not reached it.
+    const result = await session.feedRun(
+      `from pathlib import Path
+f"{Path('/child/inside.txt').read_text()}:{Path('/child/secret.txt').exists()}"`,
+      { mount: child },
+    )
+    t.is(result, 'in-mount:False')
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
 test('MountDir repr', (ctx) => {
   skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
@@ -79,21 +121,21 @@ test('MountDir attributes', (ctx) => {
   }
 })
 
-test('MountDir nonexistent host path', async (ctx) => {
+test('MountDir nonexistent host path', (ctx) => {
   skipIfBrowser(ctx)
-  // Host paths are validated by the pool when the feed starts (not the
-  // constructor). The OS-error suffix is platform specific.
-  const md = new MountDir({ hostPath: '/nonexistent/path/that/does/not/exist', virtualPath: '/data' })
-  const error = await t.throwsAsync(() => run('1 + 1', { mount: md }), { instanceOf: MontyRuntimeError })
+  // The constructor opens the host directory, so a bad path fails there rather
+  // than at the first feed. The OS-error suffix is platform specific.
+  const error = t.throws(
+    () => new MountDir({ hostPath: '/nonexistent/path/that/does/not/exist', virtualPath: '/data' }),
+  )
   t.true(error.message.startsWith("TypeError: cannot open host path '/nonexistent/path/that/does/not/exist':"))
 })
 
-test('MountDir non-absolute virtual path', async (ctx) => {
+test('MountDir non-absolute virtual path', (ctx) => {
   skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
-    const md = new MountDir({ hostPath: dir, virtualPath: 'relative' })
-    const error = await t.throwsAsync(() => run('1 + 1', { mount: md }), { instanceOf: MontyRuntimeError })
+    const error = t.throws(() => new MountDir({ hostPath: dir, virtualPath: 'relative' }))
     t.is(error.message, "TypeError: virtual path must be absolute, got: 'relative'")
   } finally {
     cleanup()

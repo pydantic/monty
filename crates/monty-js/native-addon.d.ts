@@ -10,6 +10,10 @@ export interface NativeMount {
   memoryUsageLimit: number
 }
 
+export declare class NativeMountDir {
+  constructor(mount: NativeMount)
+}
+
 export declare class NativePool {
   constructor(options?: unknown)
   start(): Promise<void>

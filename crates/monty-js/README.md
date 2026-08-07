@@ -194,6 +194,10 @@ Modes: `'read-only'`, `'read-write'`, and `'overlay'` (default — writes are
 kept in memory and discarded at the end of the feed). Mount I/O is serviced
 on the host side of the pool, so mounts work even for remote workers.
 
+The constructor opens the host directory, so an unusable path throws there
+rather than at the first feed, and the mount then follows _that directory_ for
+its lifetime — renaming or replacing it afterwards changes nothing.
+
 `feedRun` answers every OS call automatically: mounts get first refusal, then
 the `os` callback. `feedStart` answers none — a mounted read surfaces as a
 `FunctionSnapshot` with `isOsFunction` set, and `resumeAuto()` is what consults

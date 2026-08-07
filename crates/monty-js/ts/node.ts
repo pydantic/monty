@@ -20,7 +20,8 @@ export {
   type Snapshot,
 } from './session.js'
 export { CollectString, CollectStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, type CollectedStreamEntry } from './print.js'
-export { MountDir, type MountDirMode, type MountDirOptions } from './mount.js'
+export { type MountDirMode, type MountDirOptions } from './mount.js'
+export { MountDir } from './mountDir.js'
 export {
   MontyCrashedError,
   MontyError,

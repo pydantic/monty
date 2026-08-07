@@ -40,7 +40,9 @@ use monty_types::{
     TypeCheckingFormat,
 };
 use napi::{
-    bindgen_prelude::{Array, Buffer, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw, Unknown},
+    bindgen_prelude::{
+        Array, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw, Unknown,
+    },
     threadsafe_function::UnknownReturnValue,
     Env, Error, Result,
 };
@@ -145,6 +147,26 @@ pub struct NativeMount {
     pub write_bytes_limit: Option<f64>,
     /// Aggregate budget for retained overlay data and transient results.
     pub memory_usage_limit: f64,
+}
+
+/// A mount whose host directory is opened here and held until this object is
+/// dropped, so every feed using it mounts that same directory. Wrapped by the
+/// TypeScript `MountDir` — not part of the public API.
+#[napi(js_name = "NativeMountDir")]
+pub struct NativeMountDir {
+    spec: MountSpec,
+}
+
+#[napi]
+impl NativeMountDir {
+    /// Opens the host directory, throwing if it is missing, is not a directory,
+    /// or the virtual path is not absolute.
+    #[napi(constructor)]
+    pub fn new(mount: NativeMount) -> Result<Self> {
+        Ok(Self {
+            spec: MountSpec::try_from(mount)?,
+        })
+    }
 }
 
 /// A pool of `monty` worker subprocesses. Wrapped by the TypeScript `Monty`
@@ -316,15 +338,12 @@ impl NativeSession {
         env: &'env Env,
         code: String,
         inputs: Option<Object<'env>>,
-        mounts: Vec<NativeMount>,
+        mounts: Vec<ClassInstance<'env, NativeMountDir>>,
         skip_type_check: bool,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let inputs = convert_inputs(env, inputs)?;
-        let mounts = mounts
-            .into_iter()
-            .map(MountSpec::try_from)
-            .collect::<Result<Vec<_>>>()?;
+        let mounts = mount_specs(&mounts);
         self.run_turn(
             env,
             on_print,
@@ -512,13 +531,10 @@ impl NativeSession {
         &self,
         env: &'env Env,
         state: Buffer,
-        mounts: Vec<NativeMount>,
+        mounts: Vec<ClassInstance<'env, NativeMountDir>>,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
-        let mounts = mounts
-            .into_iter()
-            .map(MountSpec::try_from)
-            .collect::<Result<Vec<_>>>()?;
+        let mounts = mount_specs(&mounts);
         let state = state.to_vec();
         self.run_outcome(
             env,
@@ -993,6 +1009,12 @@ fn duration_from_ms(ms: f64) -> Result<Duration> {
 /// `.lock().await` (or `try_lock` on the event-loop thread).
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Clones each mount's opened configuration for one turn — the descriptor is
+/// shared, so nothing is reopened and no host path is resolved again.
+fn mount_specs(mounts: &[ClassInstance<'_, NativeMountDir>]) -> Vec<MountSpec> {
+    mounts.iter().map(|mount| mount.spec.clone()).collect()
 }
 
 fn pool_error(err: PoolError) -> napi::Error {
