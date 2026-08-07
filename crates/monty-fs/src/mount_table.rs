@@ -122,20 +122,26 @@ impl MountTable {
     ///
     /// Rename requests require both source and destination to resolve to the
     /// same longest-prefix mount. Other requests only route on the primary path.
+    ///
+    /// A rename with one side covered and the other not is refused, never handed
+    /// on: passing it to the fallback would hand the *mounted* side to a handler
+    /// that answers on raw virtual paths, skipping the mount's access mode.
     fn route_call(&self, primary_path: &str, call: &OsFunctionCall) -> Option<Result<usize, MountError>> {
-        let src_mount_index = self.find_mount_index(primary_path)?;
+        let src_mount_index = self.find_mount_index(primary_path);
 
         if let Some(dst_path) = call.rename_destination() {
-            let dst_mount_index = self.find_mount_index(dst_path)?;
-            if src_mount_index != dst_mount_index {
-                return Some(Err(MountError::CrossMountRename {
+            match (src_mount_index, self.find_mount_index(dst_path)) {
+                // Neither side is ours; the whole call belongs to the fallback.
+                (None, None) => None,
+                (Some(src), Some(dst)) if src == dst => Some(Ok(src)),
+                _ => Some(Err(MountError::CrossMountRename {
                     src: primary_path.to_owned(),
                     dst: dst_path.to_owned(),
-                }));
+                })),
             }
+        } else {
+            src_mount_index.map(Ok)
         }
-
-        Some(Ok(src_mount_index))
     }
 
     /// Finds the longest-prefix mount index for `virtual_path`.

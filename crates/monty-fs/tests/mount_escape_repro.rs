@@ -74,11 +74,11 @@ fn mount_root_redirected_by_rename_between_rebuilds() {
     assert_eq!(leaked, MontyObject::String("HOST SECRET".to_owned()));
 }
 
-/// `route_call` looks the rename destination up with `?`, so an unmounted
-/// destination abandons routing and hands the mounted source to the host
-/// fallback — never reaching the mode check in `Mount::execute`.
+/// Once either side of a rename is covered, the table owns the call: handing it
+/// to the fallback would give a handler answering on raw virtual paths the
+/// mounted side, never reaching the mode check in `Mount::execute`.
 #[test]
-fn rename_out_of_mount_bypasses_the_mount_table() {
+fn rename_with_one_side_out_of_mount_is_refused() {
     let host = TempDir::new().unwrap();
     fs::write(host.path().join("source.txt"), "public").unwrap();
     let other = TempDir::new().unwrap();
@@ -87,18 +87,27 @@ fn rename_out_of_mount_bypasses_the_mount_table() {
     mt.mount("/data", host.path(), MountMode::ReadOnly, None).unwrap();
     mt.mount("/other", other.path(), MountMode::ReadOnly, None).unwrap();
 
-    // Control: a destination in a *different* mount is refused.
-    match mt.handle_os_call(rename("/data/source.txt", "/other/result.txt")) {
+    // A destination in a *different* mount is refused.
+    assert_cross_mount(&mut mt, rename("/data/source.txt", "/other/result.txt"));
+
+    // So is one under no mount at all, in either direction.
+    assert_cross_mount(&mut mt, rename("/data/source.txt", "/outside/result.txt"));
+    assert_cross_mount(&mut mt, rename("/outside/source.txt", "/data/result.txt"));
+    assert!(host.path().join("source.txt").exists());
+
+    // A rename with neither side mounted is still the fallback's to answer.
+    match mt.handle_os_call(rename("/outside/source.txt", "/elsewhere/result.txt")) {
+        MountCallOutcome::NotHandled(call) => assert_eq!(call.fs_primary_path(), Some("/outside/source.txt")),
+        outcome @ MountCallOutcome::Handled(_) => panic!("expected NotHandled, got {outcome:?}"),
+    }
+}
+
+/// Asserts `call` was refused as a cross-mount rename (`EXDEV`).
+fn assert_cross_mount(mt: &mut MountTable, call: OsFunctionCall) {
+    match mt.handle_os_call(call) {
         MountCallOutcome::Handled(Err(MountError::CrossMountRename { .. })) => {}
         outcome => panic!("expected CrossMountRename, got {outcome:?}"),
     }
-
-    // FIX: an unmounted destination must be refused too, not handed on.
-    match mt.handle_os_call(rename("/data/source.txt", "/outside/result.txt")) {
-        MountCallOutcome::NotHandled(call) => assert_eq!(call.fs_primary_path(), Some("/data/source.txt")),
-        outcome @ MountCallOutcome::Handled(_) => panic!("reproduction expects NotHandled, got {outcome:?}"),
-    }
-    assert!(host.path().join("source.txt").exists());
 }
 
 /// `PATH_MAX` bounds the bytes the sandbox sent, not the path they collapse to,
