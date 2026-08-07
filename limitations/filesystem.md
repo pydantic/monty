@@ -37,11 +37,10 @@ sandbox-reachable input. Directories raise `IsADirectoryError` as in CPython.
 Existence checks (`exists`, `is_file`, `is_dir`, `is_symlink`) and `stat()`
 still work on special files.
 
-The check runs before the open rather than on the handle, so a *host* process
-with write access to the mount could swap in a FIFO in between and block the
-servicing thread. Sandboxed code cannot — no mount mode creates special files
-or symlinks — so do not mount directories untrusted local processes can write
-to.
+The verdict is taken from the opened handle, not from a prior stat of the
+path, so swapping a FIFO in mid-operation cannot get one past the guard: the
+open itself is non-blocking and the descriptor it returns is bound to one
+inode. The path is still stat-ed first, but only to phrase the error.
 
 ## Mount memory limits
 

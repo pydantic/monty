@@ -105,9 +105,17 @@ class MountDir:
         names removes the ambiguity.
 
         Arguments:
-            host_path: Real host directory to expose. Canonicalized at
-                construction; raises if it doesn't exist or isn't a directory.
-                Sandbox code can never see this path or reach outside it.
+            host_path: Real host directory to expose. Opened at construction;
+                raises if it doesn't exist, isn't a directory, or cannot be
+                opened — it must be readable, so a search-only (`0o111`)
+                directory is not mountable. Sandbox code can never see this
+                path or reach outside it. The mount tracks the directory
+                itself rather than its name, so renaming it on the host does
+                not detach the mount; on Windows the open handle prevents the
+                host renaming or deleting it at all while the mount lives.
+                Symlinks inside it are followed only if their targets are
+                relative — an absolute target raises `PermissionError` in the
+                sandbox even when it points back into the same mount.
             virtual_path: Absolute POSIX-style path prefix inside the sandbox
                 (e.g. `'/data'`), regardless of host OS. Raises `ValueError`
                 if not absolute.

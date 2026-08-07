@@ -734,3 +734,58 @@ test('session read-only mount blocks write', async (ctx) => {
     cleanup()
   }
 })
+
+// =============================================================================
+// Symlinks inside a mount
+// =============================================================================
+
+/** Create a symlink, returning false where the host forbids it (Windows
+ *  without Developer Mode or elevation), so those tests skip rather than fail. */
+function makeSymlink(target: string, link: string): boolean {
+  try {
+    fs.symlinkSync(target, link)
+    return true
+  } catch {
+    return false
+  }
+}
+
+test('relative symlink inside a mount is followed', async (ctx) => {
+  skipIfBrowser(ctx)
+  const { dir, cleanup } = createTestDir()
+  try {
+    if (!makeSymlink('hello.txt', path.join(dir, 'rel_link.txt'))) return
+    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+    const result = await run("from pathlib import Path; Path('/data/rel_link.txt').read_text()", { mount: md })
+    t.is(result, 'hello world')
+  } finally {
+    cleanup()
+  }
+})
+
+test('absolute symlink target is refused inside a mount', async (ctx) => {
+  skipIfBrowser(ctx)
+  const { dir, cleanup } = createTestDir()
+  try {
+    // Absolute even though it points back into the same mount: a descriptor has
+    // no path of its own, so a leading '/' cannot be interpreted.
+    if (!makeSymlink(path.join(dir, 'hello.txt'), path.join(dir, 'abs_link.txt'))) return
+    const md = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
+
+    const error = await t.throwsAsync(
+      () => run("from pathlib import Path; Path('/data/abs_link.txt').read_text()", { mount: md }),
+      {
+        instanceOf: MontyRuntimeError,
+      },
+    )
+    t.is(error.message, "PermissionError: [Errno 13] Permission denied: '/data/abs_link.txt'")
+
+    // Predicates answer False rather than raising.
+    const seen = await run("from pathlib import Path; p = Path('/data/abs_link.txt'); (p.exists(), p.is_file())", {
+      mount: md,
+    })
+    t.deepEqual(seen, [false, false])
+  } finally {
+    cleanup()
+  }
+})

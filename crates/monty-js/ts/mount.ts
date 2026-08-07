@@ -18,7 +18,10 @@ export type MountDirMode = 'read-only' | 'read-write' | 'overlay'
  *  ambiguity. */
 export interface MountDirOptions {
   /** Real host directory to expose. Sandbox code can never see this path or
-   *  reach outside it. */
+   *  reach outside it. Opened once per mount, so it must be readable (a
+   *  search-only directory cannot be mounted) and, on Windows, cannot be
+   *  renamed or deleted by anyone while the mount lives. Symlinks inside it
+   *  are followed only if their targets are relative. */
   hostPath: string
   /** Absolute virtual POSIX path prefix inside the sandbox (e.g. `'/data'`),
    *  regardless of host OS. */
