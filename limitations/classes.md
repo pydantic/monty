@@ -212,6 +212,15 @@ first, e.g. return a `dict` of the fields.
   therefore raises at `slice(...)` rather than at use, and one that is neither
   `None`, an `int`, nor `__index__`-able is rejected up front instead of on
   first use.
+- **Slice bounds are stored saturated to `i64`.** Because bounds are coerced at
+  construction (above), one beyond `i64` is clamped to `i64::MIN`/`i64::MAX`
+  rather than kept exact: `slice(10**30).stop` is `9223372036854775807`, where
+  CPython reports `10**30`. *Slicing* with such a bound still matches CPython —
+  it clamps to the sequence either way, so `[1, 2, 3][10**30:]` is `[]` — the
+  divergence is only visible by reading the attribute back. This applies to
+  bounds written as literals and to those returned by `__index__` alike. Plain
+  indexing is unaffected: `[1, 2, 3][10**30]` raises `IndexError` as CPython
+  does.
 - `__iter__` / `__next__` / `__contains__` **are** dispatched, but like
   `__repr__`/`__str__` they run synchronously, so one that calls an external or
   OS function cannot suspend and raises `NotImplementedError`. Two related

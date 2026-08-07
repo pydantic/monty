@@ -17,6 +17,16 @@ class Negative:
         return -1
 
 
+class BigIdx:
+    def __index__(self):
+        return 10**30
+
+
+class NegBigIdx:
+    def __index__(self):
+        return -(10**30)
+
+
 i = Idx()
 
 # === subscripting ===
@@ -40,6 +50,21 @@ assert 'abcdef'[::i] == 'ace'
 assert [1, 2, 3, 4][i:] == [3, 4]
 assert [1, 2, 3, 4][Zero() : i] == [1, 2]
 assert b'abcdef'[i:] == b'cdef'
+
+# === slice bounds beyond i64 clamp, they do not raise ===
+# Both a bare int literal and an `__index__` returning one land in the same
+# conversion; unlike plain indexing, slicing clamps instead of raising.
+assert [1, 2, 3][10**30 :] == []
+assert [1, 2, 3][: 10**30] == [1, 2, 3]
+assert [1, 2, 3][-(10**30) :] == [1, 2, 3]
+assert [1, 2, 3][BigIdx() :] == []
+assert [1, 2, 3][: BigIdx()] == [1, 2, 3]
+assert [1, 2, 3][NegBigIdx() :] == [1, 2, 3]
+assert [1, 2, 3][slice(BigIdx(), None)] == []
+assert 'abc'[BigIdx() :] == ''
+assert 'abc'[: BigIdx()] == 'abc'
+assert [1, 2, 3][:: 10**30] == [1]
+assert [1, 2, 3][:: -(10**30)] == [3]
 
 # === integer arguments ===
 # NB sequence repetition (`'ab' * Idx()`) is NOT covered — each `py_mul_impl`

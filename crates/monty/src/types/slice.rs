@@ -140,11 +140,20 @@ impl Slice {
 /// Returns Ok(None) for Value::None, Ok(Some(i)) for integers/bools, a user
 /// `__index__` result for instances, or Err(TypeError) for other types — which
 /// is what the "or have an `__index__` method" in the error message promises.
+///
+/// Ints too large for `i64` saturate to `i64::MIN`/`i64::MAX` instead of
+/// raising, matching CPython's clamping of slice bounds — unlike plain indexing,
+/// which raises `IndexError` on the same input.
 pub(crate) fn value_to_option_i64(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<i64>> {
     match value {
         Value::None => Ok(None),
         Value::Int(i) => Ok(Some(*i)),
         Value::Bool(b) => Ok(Some(i64::from(*b))),
+        // Bounds beyond `i64` saturate rather than raise: CPython clamps slice
+        // bounds to the sequence, so `[1, 2, 3][10**30:]` is `[]`, not an error.
+        // This arm also catches an `__index__` that returns a `LongInt`, which
+        // the recursion below funnels back through here.
+        _ if let Some(index) = value.long_int_to_i64_saturating(vm) => Ok(Some(index)),
         _ => match value.try_index(vm)? {
             // Recurses exactly once: `try_index` validates an int result, so the
             // arms above take it on the way back in.

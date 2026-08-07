@@ -1881,6 +1881,26 @@ impl Value {
         }
     }
 
+    /// Saturating `i64` view of a `LongInt`-valued int (interned or
+    /// heap-allocated), for the consumers that clamp rather than raise on
+    /// overflow — slice bounds, where CPython clamps to the sequence so
+    /// `[1, 2, 3][10**30:]` is `[]` rather than an error.
+    ///
+    /// Returns `None` for every other value, `Int`/`Bool` included, so callers
+    /// keep their own fast paths for those. Do NOT use it for arguments that
+    /// must reject out-of-range ints — [`Self::as_int`] and [`Self::as_index`]
+    /// raise there instead.
+    pub(crate) fn long_int_to_i64_saturating(&self, vm: &VM<'_>) -> Option<i64> {
+        match self {
+            Self::InternLongInt(id) => Some(saturating_i64(vm.interns.get_long_int(*id))),
+            Self::Ref(id) => match vm.heap.get(*id) {
+                HeapData::LongInt(li) => Some(saturating_i64(li.inner())),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Performs Python `+` with reflected-operation fallback.
     pub(crate) fn py_add(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
         if let Some(result) = self.py_add_result(other, vm)? {
@@ -2421,6 +2441,18 @@ impl Marker {
         }
         Ok(())
     }
+}
+
+/// Clamps a `BigInt` to `i64`, pinning out-of-range values to the bound they
+/// overflowed past. Backs [`Value::long_int_to_i64_saturating`].
+fn saturating_i64(value: &BigInt) -> i64 {
+    value.to_i64().unwrap_or({
+        if value.sign() == Sign::Minus {
+            i64::MIN
+        } else {
+            i64::MAX
+        }
+    })
 }
 
 /// Extracts an immediate integer without promoting it to `BigInt`.
