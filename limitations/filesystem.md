@@ -79,9 +79,7 @@ root.
 
 - The mount is pinned to the **directory**, not its path: renaming the host
   directory does not detach the mount, and replacing it with a symlink does
-  not redirect reads. On Windows the open handle goes further and blocks the
-  rename outright — a mounted directory cannot be moved or deleted by anyone,
-  including the host, until the mount is dropped.
+  not redirect reads.
 - `..` cannot escape, and neither can a symlink or an intermediate directory
   swapped for one mid-operation; such paths raise `PermissionError`.
 - Path segments a host parser reads as absolute are rejected
@@ -133,6 +131,15 @@ the error is loud, and nothing returns wrong data. `exists()`, `is_file()` and
 `is_dir()` answer `False` rather than raising. To keep such links working,
 rewrite them as relative before mounting.
 
+### Windows locks a mounted directory against the host
+
+Windows refuses to rename or delete a directory while a handle to it is open,
+so the host cannot move or delete a directory for as long as it is mounted —
+the attempt fails with `ERROR_SHARING_VIOLATION`. Unix is unaffected. The
+window is the mount's lifetime, which for `pydantic_monty` and
+`@pydantic/monty` is one feed (see
+[pool-architecture.md](pool-architecture.md)).
+
 ### `OverlayMemory` writes refuse symlinks
 
 CPython (and a direct mount) writes *through* a symlink to its target. An
@@ -150,7 +157,9 @@ the real name — the same aliasing, reached by deleting rather than writing.
 Renaming a **directory that contains a symlink** is refused for the same
 reason: the link cannot move with it (there is nothing to record) and cannot
 be left behind (it would stay readable inside a directory the overlay then
-reports as deleted). CPython moves the directory and the link together. Reads still follow relative in-mount links as before, and direct mounts
+reports as deleted). CPython moves the directory and the link together.
+
+Reads still follow relative in-mount links as before, and direct mounts
 still allow writes through them; only escaping/absolute links are refused
 there. `mkdir(parents=True)` through an escaping symlink raises
 `PermissionError` in every mode.

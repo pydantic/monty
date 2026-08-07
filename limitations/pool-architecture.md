@@ -229,6 +229,11 @@ properties that real CPython does not provide, per the caveat above.
   `read-write` mounts write through to the real host directory as before. An
   invalid mount (host path missing / not a directory) raises at `feed` time,
   before the snippet runs, as a session-preserving error.
+- **On Windows a mounted directory is locked for the feed.** The per-feed mount
+  table holds an open descriptor on each host directory, and Windows refuses to
+  rename or delete a directory while a handle to it is open, so the host gets
+  `ERROR_SHARING_VIOLATION` until the feed ends and the table is dropped. Unix
+  is unaffected. Rotate mounted directories between feeds, not during one.
 - **Mounts only answer calls on the automatic path.** Every OS call the sandbox
   makes surfaces as a suspension; the pool consults the mount table only when
   the caller asks it to. `feed_run` (and the JS `feedRun`) asks on every OS
