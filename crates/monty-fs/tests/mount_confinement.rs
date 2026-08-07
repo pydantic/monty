@@ -24,12 +24,10 @@ use std::{
 };
 
 use common::{symlink_dir, symlink_file, symlinks_supported, try_rename_mount_root};
-#[cfg(unix)]
-use monty_fs::OverlayState;
-use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable};
+use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 #[cfg(unix)]
 use monty_types::{FileMode, OpenCallArgs};
-use monty_types::{MontyObject, OsFunctionCall, PathStringDataArgs};
+use monty_types::{MkdirCallArgs, MontyObject, OsFunctionCall, PathStringDataArgs};
 use tempfile::TempDir;
 
 mod common;
@@ -483,6 +481,111 @@ fn denied_write_is_not_reported_as_an_escape() {
         matches!(&outcome, Err(MountError::Io(err, _)) if err.kind() == ErrorKind::PermissionDenied),
         "expected a plain IO permission error, got {outcome:?}"
     );
+}
+
+/// The mount root itself cannot be deleted through the mount.
+///
+/// It has no name inside the mount, so the descriptor has nothing to unlink it
+/// from: `rmdir` and `unlink` on the root fail and the host directory survives.
+/// (Renaming the root is refused by both backends before any host I/O.)
+#[test]
+fn deleting_the_mount_root_is_refused() {
+    let mount_dir = TempDir::new().unwrap();
+    let mut mounts = mount_rw(mount_dir.path());
+
+    let rmdir = dispatch(&mut mounts, OsFunctionCall::Rmdir("/mnt".into()));
+    assert!(rmdir.is_err(), "rmdir of the mount root must fail, got {rmdir:?}");
+    assert!(mount_dir.path().exists(), "host directory must survive rmdir");
+
+    let unlink = dispatch(&mut mounts, OsFunctionCall::Unlink("/mnt".into()));
+    assert!(unlink.is_err(), "unlink of the mount root must fail, got {unlink:?}");
+    assert!(mount_dir.path().exists(), "host directory must survive unlink");
+}
+
+/// Overlay `rmdir` of the mount root must never touch the host directory.
+///
+/// The overlay currently accepts the call and tombstones the root in memory —
+/// a divergence from direct mode, which refuses it — so this pins only the
+/// host-side guarantee, not the in-memory answer.
+#[test]
+fn overlay_rmdir_of_the_mount_root_leaves_the_host_directory() {
+    let mount_dir = TempDir::new().unwrap();
+    let mut mounts = MountTable::new();
+    mounts
+        .mount(
+            "/mnt",
+            mount_dir.path(),
+            MountMode::OverlayMemory(OverlayState::new()),
+            None,
+        )
+        .expect("failed to mount");
+
+    let _ = dispatch(&mut mounts, OsFunctionCall::Rmdir("/mnt".into()));
+    assert!(mount_dir.path().exists(), "host directory must survive overlay rmdir");
+}
+
+/// `mkdir(parents=True)` through an escaping symlink cannot reach the host.
+///
+/// Direct mode refuses it at the boundary. Overlay mode instead treats the
+/// (unobservable) link as absent and builds the tree in memory — consistent
+/// with its predicates answering `False` — but nothing may appear on the host
+/// and the link's real target must stay unreadable.
+#[test]
+fn mkdir_parents_under_an_escaping_symlink_cannot_reach_the_host() {
+    if !symlinks_supported() {
+        return;
+    }
+    let mount_dir = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    fs::write(outside.path().join("secret.txt"), SECRET).unwrap();
+    symlink_dir(outside.path(), mount_dir.path().join("evil"));
+
+    let mkdir_call = || {
+        OsFunctionCall::Mkdir(MkdirCallArgs {
+            path: "/mnt/evil/foo".into(),
+            parents: true,
+            exist_ok: false,
+        })
+    };
+
+    let mut direct = mount_rw(mount_dir.path());
+    let outcome = dispatch(&mut direct, mkdir_call());
+    assert!(
+        matches!(&outcome, Err(MountError::PathEscape { .. })),
+        "direct mkdir through an escaping symlink must be refused, got {outcome:?}"
+    );
+    assert!(
+        !outside.path().join("foo").exists(),
+        "directory created outside the mount"
+    );
+
+    let mut overlay = MountTable::new();
+    overlay
+        .mount(
+            "/mnt",
+            mount_dir.path(),
+            MountMode::OverlayMemory(OverlayState::new()),
+            None,
+        )
+        .expect("failed to mount");
+    let _ = dispatch(&mut overlay, mkdir_call());
+    let _ = dispatch(
+        &mut overlay,
+        OsFunctionCall::WriteText(PathStringDataArgs {
+            path: "/mnt/evil/foo/x.txt".into(),
+            data: "data".to_owned(),
+        }),
+    );
+    assert!(
+        !outside.path().join("foo").exists(),
+        "directory created outside the mount"
+    );
+    assert!(!outside.path().join("x.txt").exists(), "file created outside the mount");
+
+    let outcome = read_text(&mut overlay, "/mnt/evil/secret.txt");
+    let leaked = matches!(&outcome, Ok(MontyObject::String(s)) if s.contains(SECRET));
+    assert!(!leaked, "HOST FILE DISCLOSURE: read followed the escaping symlink");
+    assert!(outcome.is_err(), "outside read must be refused, got {outcome:?}");
 }
 
 /// Toggles the read-only attribute (Windows) / write mode bits (Unix).
