@@ -12,6 +12,7 @@ export interface NativeMount {
 
 export declare class NativeMountDir {
   constructor(mount: NativeMount)
+  close(): void
 }
 
 export declare class NativePool {

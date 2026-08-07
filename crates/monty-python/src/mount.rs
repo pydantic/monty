@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use monty_fs::{MountMode, MountRoot};
 use monty_pool::{MountSpec, MountSpecMode};
 use monty_proto::python::exc_monty_to_py;
-use pyo3::{exceptions::PyValueError, prelude::*};
+use pyo3::{exceptions::PyValueError, prelude::*, types::PyTuple};
 
 // =============================================================================
 // MountDir — immutable mount configuration
@@ -28,8 +28,20 @@ use pyo3::{exceptions::PyValueError, prelude::*};
 /// - `'overlay'` — reads fall through to host; writes are captured in memory
 #[pyclass(name = "MountDir")]
 pub struct PyMountDir {
-    /// Validated configuration copied into each feed's mount table.
-    spec: MountSpec,
+    /// Validated configuration copied into each feed's mount table. `None`
+    /// once closed — the open directory is released, so nothing can mount it.
+    spec: Option<MountSpec>,
+    /// What the getters report, kept so they still answer after `close()`.
+    label: MountLabel,
+}
+
+/// The parts of a mount that outlive its descriptor.
+struct MountLabel {
+    virtual_path: String,
+    host_path: String,
+    mode: MountSpecMode,
+    write_bytes_limit: Option<u64>,
+    memory_usage_limit: u64,
 }
 
 #[pymethods]
@@ -80,53 +92,88 @@ impl PyMountDir {
         );
         spec.write_bytes_limit = write_bytes_limit;
         spec.memory_usage_limit = memory_usage_limit;
-        Ok(Self { spec })
+        Ok(Self {
+            label: MountLabel {
+                virtual_path: spec.virtual_path().to_owned(),
+                host_path: spec.host_path().display().to_string(),
+                mode: spec.mode,
+                write_bytes_limit,
+                memory_usage_limit,
+            },
+            spec: Some(spec),
+        })
+    }
+
+    /// Releases the open host directory. Later feeds using this mount raise
+    /// `ValueError`; the attributes below keep answering. Idempotent.
+    ///
+    /// Only Windows needs this: it refuses to rename or delete a directory
+    /// while a handle to it is open, so a mount left open blocks the host from
+    /// touching it. A feed already running keeps its own reference.
+    fn close(&mut self) {
+        self.spec = None;
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (*_args))]
+    fn __exit__(&mut self, _args: &Bound<'_, PyTuple>) -> bool {
+        self.close();
+        false
     }
 
     /// The canonical host directory path.
     #[getter]
     fn host_path(&self) -> String {
-        self.spec.host_path().display().to_string()
+        self.label.host_path.clone()
     }
 
     /// The normalized virtual path prefix inside the sandbox.
     #[getter]
     fn virtual_path(&self) -> String {
-        self.spec.virtual_path().to_owned()
+        self.label.virtual_path.clone()
     }
 
     /// The access mode: `"read-only"`, `"read-write"`, or `"overlay"`.
     #[getter]
     fn mode(&self) -> &'static str {
-        mount_mode_name(self.spec.mode)
+        mount_mode_name(self.label.mode)
     }
 
     /// The optional write bytes limit, or `None` if unlimited.
     #[getter]
     fn write_bytes_limit(&self) -> Option<u64> {
-        self.spec.write_bytes_limit
+        self.label.write_bytes_limit
     }
 
     /// The aggregate memory budget for this mount.
     #[getter]
     fn memory_usage_limit(&self) -> u64 {
-        self.spec.memory_usage_limit
+        self.label.memory_usage_limit
     }
 
     fn __repr__(&self) -> String {
         format!(
             "MountDir(host_path='{}', virtual_path='{}', mode='{}')",
-            self.spec.host_path().display(),
-            self.spec.virtual_path(),
-            mount_mode_name(self.spec.mode)
+            self.label.host_path,
+            self.label.virtual_path,
+            mount_mode_name(self.label.mode)
         )
     }
 }
 
 impl PyMountDir {
     /// Copies the validated configuration for a new parent-side mount table.
-    pub(crate) fn spec(&self) -> MountSpec {
-        self.spec.clone()
+    ///
+    /// # Errors
+    ///
+    /// Raises `ValueError` if the mount has been closed.
+    pub(crate) fn spec(&self) -> PyResult<MountSpec> {
+        self.spec
+            .clone()
+            .ok_or_else(|| PyValueError::new_err(format!("mount '{}' is closed", self.label.virtual_path)))
     }
 }
 

@@ -58,7 +58,19 @@ fn mount_root_stays_pinned_across_rebuilds() {
     writable
         .mount("/parent", base.path(), MountMode::ReadWrite, None)
         .unwrap();
-    handled(&mut writable, rename("/parent/shared", "/parent/old-shared")).unwrap();
+    // Windows refuses to rename a directory while a handle to it is open, and
+    // `configured` holds one — so there the swap cannot even be staged while a
+    // mount is alive, and the redirect this guards against is unreachable.
+    match handled(&mut writable, rename("/parent/shared", "/parent/old-shared")) {
+        Ok(_) => {}
+        // Windows refuses to rename a directory while a handle to it is open,
+        // and the mount above holds one, so the swap cannot even be staged
+        // there — the redirect this guards against is unreachable.
+        #[cfg(windows)]
+        Err(_) => return,
+        #[cfg(not(windows))]
+        Err(err) => panic!("staging the swap failed: {err:?}"),
+    }
     handled(&mut writable, rename("/parent/prepared-link", "/parent/shared")).unwrap();
 
     // Feed 2: the same configuration, rebuilt into a fresh table.

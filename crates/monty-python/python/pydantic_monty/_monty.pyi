@@ -132,6 +132,18 @@ class MountDir:
                 would exceed it raises `MemoryError` in the sandbox.
         """
 
+    def close(self) -> None:
+        """Release the open host directory. Idempotent.
+
+        Feeds passed this mount afterwards raise `ValueError`; the attributes
+        above keep answering. Only Windows needs this — it refuses to rename or
+        delete a directory while a handle to it is open — but `MountDir` also
+        works as a context manager, which closes on exit.
+        """
+
+    def __enter__(self) -> MountDir: ...
+    def __exit__(self, *args: object) -> bool: ...
+
 class MontyError(Exception):
     """Base exception for all Monty interpreter errors.
 

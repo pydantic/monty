@@ -51,6 +51,22 @@ export class MountDir {
     })
   }
 
+  /** Releases the open host directory. Later feeds using this mount throw;
+   *  the properties above keep answering. Idempotent.
+   *
+   *  Only Windows needs this: it refuses to rename or delete a directory while
+   *  a handle to it is open, so a mount left open blocks the host from touching
+   *  it, and JS has no deterministic drop. A feed already running is unaffected.
+   */
+  close(): void {
+    this.native.close()
+  }
+
+  /** Closes the mount at the end of a `using` block. */
+  [Symbol.dispose](): void {
+    this.close()
+  }
+
   /** Returns a string representation of the mount. */
   repr(): string {
     return `MountDir(host_path='${this.hostPath}', virtual_path='${this.virtualPath}', mode='${this.mode}')`

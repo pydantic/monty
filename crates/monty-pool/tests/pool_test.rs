@@ -377,8 +377,16 @@ Path('/parent/shared').rename('/parent/old-shared')
 Path('/parent/prepared-link').rename('/parent/shared')
 'swapped'";
     let result = session.feed(code, vec![], vec![parent], false, &mut no_print).await;
-    let event = feed_with_mounts(&mut session, result).await.unwrap();
-    assert_eq!(expect_complete(event), MontyObject::String("swapped".to_owned()));
+    match feed_with_mounts(&mut session, result).await {
+        Ok(event) => assert_eq!(expect_complete(event), MontyObject::String("swapped".to_owned())),
+        // Windows refuses to rename a directory while a handle to it is open,
+        // and the child mount holds one — so the swap cannot even be staged
+        // there while the mount is alive.
+        #[cfg(windows)]
+        Err(_) => return,
+        #[cfg(not(windows))]
+        Err(err) => panic!("staging the swap failed: {err:?}"),
+    }
 
     // Feed 2: the child mount, rebuilt from the same spec, still serves the
     // original directory and cannot see the one the name now points at.
