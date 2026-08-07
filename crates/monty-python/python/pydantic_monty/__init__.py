@@ -55,6 +55,7 @@ __all__ = (
     'ExternalFuture',
     'ExcType',
     'PrintCallback',
+    'TypeCheckFormat',
     'OsHandler',
     'SyncSnapshot',
     'AsyncSnapshot',
@@ -210,6 +211,15 @@ instance or by type name), or a pending `future`."""
 
 PrintCallback: TypeAlias = Callable[[Literal['stdout', 'stderr'], str], None] | CollectStreams | CollectString
 """Print sink accepted by `feed_run` / `feed_start` / `load_snapshot`."""
+
+TypeCheckFormat: TypeAlias = Literal[
+    'full', 'concise', 'azure', 'json', 'jsonlines', 'rdjson', 'pylint', 'gitlab', 'github'
+]
+"""How `MontyTypingError` diagnostics are rendered — ty's diagnostic formats.
+
+Picked by `checkout(type_check_format=...)`, not on the raised error: the type
+checker runs inside the worker and its structured diagnostics never leave it,
+so only the already-rendered text crosses the wire."""
 
 OsHandler: TypeAlias = Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS
 """OS-call handler shared by `feed_run` / `feed_start`."""

@@ -11,6 +11,7 @@ from . import (
     PrintCallback,
     ResourceLimits,
     SyncSnapshot,
+    TypeCheckFormat,
 )
 from .os_access import AbstractOS, OsFunction
 
@@ -410,9 +411,7 @@ class Monty:
         limits: ResourceLimits | None = None,
         type_check: bool = False,
         type_check_stubs: str | None = None,
-        type_check_format: Literal[
-            'full', 'concise', 'azure', 'json', 'jsonlines', 'rdjson', 'pylint', 'gitlab', 'github'
-        ] = ...,
+        type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         dataclass_registry: list[type] | None = None,
@@ -430,10 +429,10 @@ class Monty:
                 successfully executed snippet is appended to the accumulated
                 context used for type-checking subsequent snippets.
             type_check_stubs: Stub declarations made available to type checking.
-            type_check_format: How `MontyTypingError` diagnostics are rendered
-                (default `'full'`). Chosen here rather than on the error
-                because the checker's structured diagnostics never leave the
-                worker.
+            type_check_format: How `MontyTypingError` diagnostics are rendered;
+                `None` (the default) means `'full'`. Chosen here rather than on
+                the error because the checker's structured diagnostics never
+                leave the worker.
             type_check_color: Render diagnostics with ANSI colour escapes; only
                 `'full'` and `'concise'` carry colour.
             assert_message_annotations: Give failed `assert` statements
@@ -688,9 +687,7 @@ class AsyncMonty:
         limits: ResourceLimits | None = None,
         type_check: bool = False,
         type_check_stubs: str | None = None,
-        type_check_format: Literal[
-            'full', 'concise', 'azure', 'json', 'jsonlines', 'rdjson', 'pylint', 'gitlab', 'github'
-        ] = ...,
+        type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         dataclass_registry: list[type] | None = None,
@@ -772,9 +769,7 @@ class AsyncMontyWebsocket:
         limits: ResourceLimits | None = None,
         type_check: bool = False,
         type_check_stubs: str | None = None,
-        type_check_format: Literal[
-            'full', 'concise', 'azure', 'json', 'jsonlines', 'rdjson', 'pylint', 'gitlab', 'github'
-        ] = ...,
+        type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         dataclass_registry: list[type] | None = None,

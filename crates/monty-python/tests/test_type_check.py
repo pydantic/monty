@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from inline_snapshot import snapshot
 
-from pydantic_monty import Monty, MontyError, MontyRuntimeError, MontySession, MontyTypingError
+from pydantic_monty import Monty, MontyError, MontyRuntimeError, MontySession, MontyTypingError, TypeCheckFormat
 
 
 @pytest.fixture
@@ -228,6 +228,25 @@ def test_type_check_color(pool: Monty):
         with pytest.raises(MontyTypingError) as exc_info:
             session.feed_run('"hello" + 1')
     assert str(exc_info.value).startswith('\x1b[')
+
+
+def test_type_check_format_names_match_the_worker(pool: Monty):
+    """Every name `TypeCheckFormat` advertises is one the worker accepts, and vice versa.
+
+    The stub's list and Rust's `TypeCheckingFormat` are separate declarations;
+    this is what stops them drifting apart.
+    """
+    declared = list(get_args(TypeCheckFormat))
+    for fmt in declared:
+        with pool.checkout(type_check=True, type_check_format=fmt) as session:
+            with pytest.raises(MontyTypingError):
+                session.feed_run('"hello" + 1')
+
+    # the worker lists its own names when it rejects one, so compare against that
+    with pytest.raises(ValueError) as exc_info:
+        pool.checkout(type_check=True, type_check_format='nonsense')  # pyright: ignore[reportArgumentType]
+    _, _, accepted = exc_info.value.args[0].partition('expected one of: ')
+    assert accepted.split(', ') == declared
 
 
 def test_type_check_format_invalid(pool: Monty):

@@ -169,7 +169,7 @@ impl PyMonty {
         limits = None,
         type_check = false,
         type_check_stubs = None,
-        type_check_format = TypeCheckFormatArg::default(),
+        type_check_format = None,
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         dataclass_registry = None,
@@ -182,7 +182,7 @@ impl PyMonty {
         limits: Option<&Bound<'_, PyDict>>,
         type_check: bool,
         type_check_stubs: Option<&Bound<'_, PyString>>,
-        type_check_format: TypeCheckFormatArg,
+        type_check_format: Option<TypeCheckFormatArg>,
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         dataclass_registry: Option<&Bound<'_, PyList>>,
@@ -196,7 +196,7 @@ impl PyMonty {
                 type_check,
                 type_check_stubs,
                 TypeCheckingConfig {
-                    format: type_check_format.0,
+                    format: type_check_format.unwrap_or_default().0,
                     color: type_check_color,
                 },
                 assert_message_annotations,
@@ -546,7 +546,7 @@ impl PyAsyncMonty {
         limits = None,
         type_check = false,
         type_check_stubs = None,
-        type_check_format = TypeCheckFormatArg::default(),
+        type_check_format = None,
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         dataclass_registry = None,
@@ -559,7 +559,7 @@ impl PyAsyncMonty {
         limits: Option<&Bound<'_, PyDict>>,
         type_check: bool,
         type_check_stubs: Option<&Bound<'_, PyString>>,
-        type_check_format: TypeCheckFormatArg,
+        type_check_format: Option<TypeCheckFormatArg>,
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         dataclass_registry: Option<&Bound<'_, PyList>>,
@@ -573,7 +573,7 @@ impl PyAsyncMonty {
                 type_check,
                 type_check_stubs,
                 TypeCheckingConfig {
-                    format: type_check_format.0,
+                    format: type_check_format.unwrap_or_default().0,
                     color: type_check_color,
                 },
                 assert_message_annotations,
@@ -667,7 +667,7 @@ impl PyAsyncMontyWebsocket {
         limits = None,
         type_check = false,
         type_check_stubs = None,
-        type_check_format = TypeCheckFormatArg::default(),
+        type_check_format = None,
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         dataclass_registry = None,
@@ -680,7 +680,7 @@ impl PyAsyncMontyWebsocket {
         limits: Option<&Bound<'_, PyDict>>,
         type_check: bool,
         type_check_stubs: Option<&Bound<'_, PyString>>,
-        type_check_format: TypeCheckFormatArg,
+        type_check_format: Option<TypeCheckFormatArg>,
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         dataclass_registry: Option<&Bound<'_, PyList>>,
@@ -694,7 +694,7 @@ impl PyAsyncMontyWebsocket {
                 type_check,
                 type_check_stubs,
                 TypeCheckingConfig {
-                    format: type_check_format.0,
+                    format: type_check_format.unwrap_or_default().0,
                     color: type_check_color,
                 },
                 assert_message_annotations,
@@ -1112,7 +1112,8 @@ pub(crate) fn parse_repl_config(
 }
 
 /// The `type_check_format` checkout argument: the name of one of ty's
-/// diagnostic formats, e.g. `'full'` or `'concise'`.
+/// diagnostic formats, e.g. `'full'` or `'concise'`. Absent (`None`) means the
+/// default, `'full'`.
 ///
 /// A newtype (rather than a plain `&str` argument) so an unknown name is
 /// rejected at argument-extraction time with the list of valid names, instead
