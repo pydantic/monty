@@ -146,6 +146,11 @@ tempfile = "3"
 # relative to a directory descriptor opened at mount time, so path resolution
 # cannot escape the mount and there is no check-to-use window to race.
 cap-std = "4.0"
+# Unix `O_NONBLOCK` for monty-fs's special-file guard; already in the tree as
+# cap-std's own backend, so this adds no new crate.
+rustix = { version = "1.1", features = ["fs"] }
+# `mkfifo` for the tests behind that guard — rustix gates its own out on Apple.
+nix = { version = "0.31", features = ["fs"] }
 # Pulled in only to install a process-level rustls `CryptoProvider` before the
 # first `wss://` dial: rustls 0.23 panics on first TLS use when it can't pick a
 # provider automatically (both `aws-lc-rs` and `ring`, or neither, in the dep

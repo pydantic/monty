@@ -2464,6 +2464,8 @@ dependencies = [
  "ahash",
  "cap-std",
  "monty-types",
+ "nix 0.31.2",
+ "rustix",
  "tempfile",
 ]
 

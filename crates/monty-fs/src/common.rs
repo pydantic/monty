@@ -11,11 +11,15 @@ use std::{
     time::SystemTime,
 };
 
+#[cfg(unix)]
+use cap_std::fs::OpenOptionsExt;
 use cap_std::{
-    fs::{Dir, Metadata, OpenOptions},
+    fs::{Dir, File, Metadata, OpenOptions},
     time::SystemTime as CapSystemTime,
 };
 use monty_types::{MontyObject, UnicodeErrorData, dir_stat, file_stat, utf8_error_reason};
+#[cfg(unix)]
+use rustix::fs::OFlags;
 
 use super::error::MountError;
 
@@ -137,7 +141,7 @@ pub(super) fn host_read_bytes(
 /// count actually read, so lying or racing metadata cannot evade the limit.
 fn read_file_limited(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudget) -> Result<Vec<u8>, MountError> {
     reject_non_regular(dir, rel, vpath)?;
-    let file = dir.open(rel).map_err(|err| map_io(err, vpath))?;
+    let file = open_regular(dir, rel, vpath, OpenOptions::new().read(true))?;
     let meta_len = file.metadata().map_err(|err| map_io(err, vpath))?.len();
     budget.check(meta_len)?;
     // The check above bounds `meta_len` by the budget, so this pre-allocation
@@ -173,9 +177,12 @@ pub(super) fn host_write_bytes(dir: &Dir, rel: &str, content: &[u8], vpath: &str
 /// Truncates `rel` and writes `content` through the mount descriptor.
 fn write_bytes_to_file(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<(), MountError> {
     reject_non_regular(dir, rel, vpath)?;
-    let mut file = dir
-        .open_with(rel, OpenOptions::new().write(true).create(true).truncate(true))
-        .map_err(|err| map_io(err, vpath))?;
+    let mut file = open_regular(
+        dir,
+        rel,
+        vpath,
+        OpenOptions::new().write(true).create(true).truncate(true),
+    )?;
     file.write_all(content).map_err(|err| map_io(err, vpath))
 }
 
@@ -201,10 +208,43 @@ pub(super) fn host_append_bytes(dir: &Dir, rel: &str, content: &[u8], vpath: &st
 /// Opens `rel` in append mode, writes all bytes, and closes it before returning.
 fn append_bytes_to_file(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<(), MountError> {
     reject_non_regular(dir, rel, vpath)?;
-    let mut file = dir
-        .open_with(rel, OpenOptions::new().create(true).append(true))
-        .map_err(|err| map_io(err, vpath))?;
+    let mut file = open_regular(dir, rel, vpath, OpenOptions::new().create(true).append(true))?;
     file.write_all(content).map_err(|err| map_io(err, vpath))
+}
+
+/// Opens `rel` and rejects it unless the *handle* is a regular file — the
+/// authoritative special-file guard, since a handle is bound to one inode and
+/// cannot be raced the way [`reject_non_regular`]'s path check can.
+fn open_regular(dir: &Dir, rel: &str, vpath: &str, options: &mut OpenOptions) -> Result<File, MountError> {
+    let file = dir
+        .open_with(rel, non_blocking(options))
+        .map_err(|err| map_io(err, vpath))?;
+    let metadata = file.metadata().map_err(|err| map_io(err, vpath))?;
+    if metadata.is_file() {
+        Ok(file)
+    } else if metadata.is_dir() {
+        Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
+    } else {
+        Err(MountError::io_err(
+            ErrorKind::PermissionDenied,
+            "Permission denied",
+            vpath,
+        ))
+    }
+}
+
+/// Adds `O_NONBLOCK` so opening a FIFO returns instead of waiting for a peer,
+/// which is what lets the guard above run after the open. No-op on regular files.
+#[cfg(unix)]
+fn non_blocking(options: &mut OpenOptions) -> &mut OpenOptions {
+    options.custom_flags(OFlags::NONBLOCK.bits().cast_signed())
+}
+
+/// No-op: Windows named pipes aren't reachable through a `Dir`, so no open here
+/// can block on a peer.
+#[cfg(not(unix))]
+fn non_blocking(options: &mut OpenOptions) -> &mut OpenOptions {
+    options
 }
 
 /// Creates a directory, matching CPython `pathlib.Path.mkdir()` semantics:
@@ -454,17 +494,9 @@ pub(super) fn map_io(err: IoError, vpath: &str) -> MountError {
 /// `IsADirectory` error, and special files (FIFOs, sockets, devices) get
 /// `PermissionDenied`. A missing path passes — write/append create it.
 ///
-/// The directory check normalises Windows (where many `std::fs` operations on
-/// directories return `PermissionDenied` instead of `IsADirectory`). The
-/// special-file check is a hang guard: reading or writing a FIFO blocks until
-/// a peer appears, and mount I/O runs on the *host* thread servicing the
-/// sandbox, so it must never block on sandbox-reachable input.
-///
-/// TOCTOU caveat: this is a check-then-open, so another *host* process with
-/// write access to the mounted directory can swap a regular file for a FIFO
-/// between check and open and block the servicing thread. Sandbox code alone
-/// cannot exploit this — no mount mode can create special files or symlinks —
-/// so do not mount directories writable by untrusted local processes.
+/// A path check, so raceable — [`open_regular`] is the guard that decides. This
+/// only buys error quality: `IsADirectory` on every platform, where the
+/// post-open error depends on what the host's `open` made of the directory.
 pub(super) fn reject_non_regular(dir: &Dir, rel: &str, vpath: &str) -> Result<(), MountError> {
     match dir.metadata(rel) {
         Ok(meta) if meta.is_dir() => Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath)),

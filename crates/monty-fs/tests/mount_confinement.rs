@@ -18,6 +18,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU32, Ordering},
+        mpsc,
     },
     thread,
     time::{Duration, Instant},
@@ -28,6 +29,8 @@ use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState
 #[cfg(unix)]
 use monty_types::{FileMode, OpenCallArgs};
 use monty_types::{MkdirCallArgs, MontyObject, OsFunctionCall, PathStringDataArgs};
+#[cfg(unix)]
+use nix::{sys::stat::Mode, unistd::mkfifo};
 use tempfile::TempDir;
 
 mod common;
@@ -636,4 +639,94 @@ fn set_readonly(path: &Path, readonly: bool) {
     let mut perms = fs::metadata(path).expect("failed to stat").permissions();
     perms.set_readonly(readonly);
     fs::set_permissions(path, perms).expect("failed to set permissions");
+}
+
+/// A FIFO in the mount is refused, and refused *promptly*.
+///
+/// Reading one with no writer blocks forever, and mount I/O runs on the host
+/// thread servicing the sandbox, so a regression here hangs the host rather
+/// than failing. The dispatch runs on its own thread so that shows up as a
+/// failed assertion instead of a wedged test binary.
+#[test]
+#[cfg(unix)]
+fn fifo_in_the_mount_is_refused_promptly() {
+    let mount_dir = TempDir::new().unwrap();
+    make_fifo(&mount_dir.path().join("pipe"));
+
+    let (tx, rx) = mpsc::channel();
+    let host = mount_dir.path().to_path_buf();
+    thread::spawn(move || {
+        let mut mounts = mount_rw(&host);
+        tx.send(format!("{:?}", read_text(&mut mounts, "/mnt/pipe"))).ok();
+    });
+
+    let outcome = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("reading a FIFO blocked the servicing thread");
+    assert!(
+        outcome.contains("PermissionDenied"),
+        "expected a refusal, got {outcome}"
+    );
+}
+
+/// The guard holds when the FIFO arrives *after* the path check.
+///
+/// This is the race the pre-open check cannot win: a second session renames a
+/// host-planted FIFO over a regular file between the check and the open. The
+/// open is non-blocking and the handle is re-checked, so neither the hang nor a
+/// successful FIFO read is reachable. Verified red with either half removed.
+#[test]
+#[cfg(unix)]
+fn fifo_raced_into_place_between_check_and_open_is_refused() {
+    let mount_dir = TempDir::new().unwrap();
+    let target = mount_dir.path().join("file.txt");
+    let regular = mount_dir.path().join("regular");
+    let fifo = mount_dir.path().join("fifo");
+    fs::write(&target, "public").unwrap();
+    fs::write(&regular, "public").unwrap();
+    make_fifo(&fifo);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let swapper = {
+        let stop = Arc::clone(&stop);
+        thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                // Restore a known-good state first so one failed rename cannot
+                // wedge the loop and silently stop the race.
+                if !target.exists() {
+                    let _ = fs::rename(&regular, &target).or_else(|_| fs::rename(&fifo, &target));
+                }
+                let _ = fs::rename(&target, &regular).and_then(|()| fs::rename(&fifo, &target));
+                let _ = fs::rename(&target, &fifo).and_then(|()| fs::rename(&regular, &target));
+            }
+        })
+    };
+
+    let (tx, rx) = mpsc::channel();
+    let host = mount_dir.path().to_path_buf();
+    let reader = thread::spawn(move || {
+        let mut mounts = mount_rw(&host);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            match read_text(&mut mounts, "/mnt/file.txt") {
+                // The FIFO has no writer, so any success is a regular file.
+                Ok(MontyObject::String(s)) => assert_eq!(s, "public"),
+                Ok(other) => panic!("unexpected value: {other:?}"),
+                Err(_) => {} // Missing mid-swap, or refused as a FIFO: both fine.
+            }
+        }
+        tx.send(()).ok();
+    });
+
+    let finished = rx.recv_timeout(Duration::from_secs(30)).is_ok();
+    stop.store(true, Ordering::Relaxed);
+    swapper.join().unwrap();
+    reader.join().unwrap();
+    assert!(finished, "a read blocked on the raced-in FIFO");
+}
+
+/// Creates a FIFO, the one special file a test can make portably across Unix.
+#[cfg(unix)]
+fn make_fifo(path: &Path) {
+    mkfifo(path, Mode::from_bits_truncate(0o644)).expect("failed to create FIFO");
 }
