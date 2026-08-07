@@ -17,6 +17,11 @@ name = "monty"
 path = "src/main.rs"
 
 [dependencies]
+# Terminal styling for the CLI: `anstream` resolves NO_COLOR/CLICOLOR/tty and
+# enables virtual-terminal mode on Windows, `anstyle` builds the styles. Both
+# already ship inside clap's dependency tree.
+anstream = "0.6"
+anstyle = "1"
 clap = { workspace = true }
 # The standalone CLI owns process-level telemetry configuration.
 logfire = { version = "0.11", default-features = false, features = ["export-http-protobuf"] }

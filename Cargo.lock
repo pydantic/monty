@@ -2471,6 +2471,8 @@ dependencies = [
 name = "monty-runtime"
 version = "0.0.19"
 dependencies = [
+ "anstream 0.6.21",
+ "anstyle",
  "clap",
  "logfire",
  "monty",
