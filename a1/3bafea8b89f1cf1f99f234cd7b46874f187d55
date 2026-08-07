@@ -1,0 +1,24 @@
+crates/monty-runtime/tests/subprocess.rs
+  s_0539128433c978::t_cd2c7fd3ef8213 713-780
+crates/monty-python/tests/test_type_check.py
+  s_0539128433c978::t_1b0dc4b8b3979e 52-108
+crates/monty-pool/tests/pool_test.rs
+  s_0539128433c978::t_907699fb58f9f9 1429-1501
+  s_0539128433c978::t_36c5dd5d84119e 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a13bafea8b89f1cf1f99f234cd7b46874f187d55",
+  "prompts": {},
+  "sessions": {
+    "s_0539128433c978": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa6094af-9cb6-42d4-9abb-6eec1719c9ea",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
