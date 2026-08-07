@@ -1,0 +1,67 @@
+RELEASING.md
+  s_c7ce408c7dda41::t_9375d25d8633cc 34-35
+  s_c7ce408c7dda41::t_af6e44eb6baceb 14-15
+pyproject.toml
+  s_c7ce408c7dda41::t_41243daee0a320 7
+CLAUDE.md
+  s_c7ce408c7dda41::t_2ee9bb34bcbfdd 705-716,726-727
+packages/pydantic-monty/pyproject.toml
+  s_c7ce408c7dda41::t_ab250e7caebaa1 1-9,12-55
+  s_c7ce408c7dda41::t_0caa14d7c43095 10-11
+crates/monty-python/python/pydantic_monty/_binary.py
+  s_c7ce408c7dda41::t_aebae55c90edba 5-7
+  s_c7ce408c7dda41::t_6e464490836bbc 51
+README.md
+  s_c7ce408c7dda41::t_21a7ae283f4c56 79-83
+crates/monty-types/README.md
+  s_c7ce408c7dda41::t_45a61a7ee5f219 29
+packages/pydantic-monty/README.md
+  s_c7ce408c7dda41::t_dff11b9a7c9e04 17-28
+Makefile
+  s_c7ce408c7dda41::t_704e1011349a5e 70,168,175
+crates/monty-runtime/README.md
+  s_c7ce408c7dda41::t_37cd0fdcb4574a 59-61
+crates/monty-python/build.rs
+  s_c7ce408c7dda41::t_babffa498160cb 115-117
+  s_c7ce408c7dda41::t_694de7282924ae 1,3-6,9-11,17-18,20,25-26,28-32,36,39,41,45-47,50-51,55-58,69,71-80,82-85,89-90,94-104,106,113-114,123-126
+  s_c7ce408c7dda41::t_4e177271f6bb7b 133-134
+.github/workflows/ci.yml
+  s_c7ce408c7dda41::t_1eb95188080cd8 704
+  s_c7ce408c7dda41::t_3121632bf608d9 199-201
+  s_c7ce408c7dda41::t_3c306858a0f8b7 747
+  s_c7ce408c7dda41::t_f54a74d632e80b 869
+  s_c7ce408c7dda41::t_635ca882d2fe6c 210
+  s_c7ce408c7dda41::t_c686c440070f34 787
+crates/monty-python/README.md
+  s_c7ce408c7dda41::t_25f9381bd29b6e 1,5-10,13,16,18-22,24-28,30,34,41-42,45-48
+  s_c7ce408c7dda41::t_c2e45c9c984a93 31-32
+crates/monty-proto/README.md
+  s_c7ce408c7dda41::t_32c66ef6ee867d 35
+crates/monty-python/Cargo.toml
+  s_c7ce408c7dda41::t_a2554c4c3768cc 2
+crates/monty-python/src/version.rs
+  s_c7ce408c7dda41::t_db97b46f84fd64 13-15
+crates/monty-python/pyproject.toml
+  s_c7ce408c7dda41::t_8c110336b28606 6-8
+  s_c7ce408c7dda41::t_c3c27b45135424 35
+crates/monty-python/tests/test_readme_examples.py
+  s_c7ce408c7dda41::t_45ebc098744667 5
+.github/actions/build-pgo-wheel/action.yml
+  s_c7ce408c7dda41::t_2b3b95a08c9646 2,40,58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ac39fc0e422c15f0580d48c6a2a48e0e48ef6d85",
+  "prompts": {},
+  "sessions": {
+    "s_c7ce408c7dda41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9ed24940-c6cc-46be-9343-0235eb49b9c2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
