@@ -1,0 +1,25 @@
+crates/monty-python/python/pydantic_monty/__init__.py
+  s_0539128433c978::t_c344b0148f1c6f 58,215-222
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_0539128433c978::t_bbf781a1e774eb 14,414,432-435,690,772
+crates/monty-python/src/pool.rs
+  s_0539128433c978::t_75b183d789d95c 172,185,199,549,562,576,670,683,697,1115-1116
+crates/monty-python/tests/test_type_check.py
+  s_0539128433c978::t_f29ca918f79b6e 11,16,233-249
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "491ba44ec1921e69016f3711bc2a075e2d3cb0a9",
+  "prompts": {},
+  "sessions": {
+    "s_0539128433c978": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa6094af-9cb6-42d4-9abb-6eec1719c9ea",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
