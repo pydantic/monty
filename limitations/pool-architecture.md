@@ -227,13 +227,21 @@ properties that real CPython does not provide, per the caveat above.
   `mode='overlay'` writes live in that per-feed table and are discarded when
   the feed ends — the `MountDir` object's overlay state is never updated.
   `read-write` mounts write through to the real host directory as before. An
-  invalid mount (host path missing / not a directory) raises at `feed` time,
-  before the snippet runs, as a session-preserving error.
-- **On Windows a mounted directory is locked for the feed.** The per-feed mount
-  table holds an open descriptor on each host directory, and Windows refuses to
-  rename or delete a directory while a handle to it is open, so the host gets
-  `ERROR_SHARING_VIOLATION` until the feed ends and the table is dropped. Unix
-  is unaffected. Rotate mounted directories between feeds, not during one.
+  invalid mount (host path missing / not a directory) raises when the mount
+  object is *created*, not at `feed` time: constructing it opens the directory.
+- **A mount object is bound to a directory, not to a path.** `MountDir` opens
+  the host directory once and every feed mounts that descriptor, so renaming or
+  replacing the directory afterwards does not change what the mount serves —
+  the mount keeps following the original directory under its new name, and a
+  new directory at the old path is not picked up. Recreate the `MountDir` to
+  follow a path instead. (This is deliberate: the sandbox can rename inside a
+  `read-write` mount, so a path re-resolved each feed is a path the sandbox can
+  redirect.)
+- **On Windows a mounted directory is locked for as long as the mount object
+  lives.** It holds an open descriptor, and Windows refuses to rename or delete
+  a directory while a handle to it is open, so the host gets
+  `ERROR_SHARING_VIOLATION` until the mount object is dropped — not just until
+  the feed ends. Unix is unaffected.
 - **Mounts only answer calls on the automatic path.** Every OS call the sandbox
   makes surfaces as a suspension; the pool consults the mount table only when
   the caller asks it to. `feed_run` (and the JS `feedRun`) asks on every OS

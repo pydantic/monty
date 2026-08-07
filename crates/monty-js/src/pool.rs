@@ -961,13 +961,12 @@ impl TryFrom<NativeMount> for MountSpec {
             .map(|limit| bytes_limit(limit, "writeBytesLimit"))
             .transpose()?;
         let memory_usage_limit = bytes_limit(mount.memory_usage_limit, "memoryUsageLimit")?;
-        Ok(Self {
-            virtual_path: mount.virtual_path,
-            host_path: mount.host_path.into(),
-            mode,
-            write_bytes_limit,
-            memory_usage_limit,
-        })
+        // Opens the directory: the spec carries a descriptor from here on, so
+        // the host path is resolved once per mount object rather than per feed.
+        let mut spec = Self::new(&mount.virtual_path, &mount.host_path, mode).map_err(pool_error)?;
+        spec.write_bytes_limit = write_bytes_limit;
+        spec.memory_usage_limit = memory_usage_limit;
+        Ok(spec)
     }
 }
 

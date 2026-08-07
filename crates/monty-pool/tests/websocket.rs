@@ -181,13 +181,7 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
         .feed(
             "unused",
             vec![],
-            vec![MountSpec {
-                virtual_path: "/mnt".to_owned(),
-                host_path: dir.path().to_path_buf(),
-                mode: MountSpecMode::ReadOnly,
-                write_bytes_limit: None,
-                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-            }],
+            vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()],
             false,
             &mut no_print,
         )
@@ -247,13 +241,7 @@ async fn malformed_os_call_is_a_protocol_error() {
         .feed(
             "unused",
             vec![],
-            vec![MountSpec {
-                virtual_path: "/mnt".to_owned(),
-                host_path: dir.path().to_path_buf(),
-                mode: MountSpecMode::ReadOnly,
-                write_bytes_limit: None,
-                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-            }],
+            vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()],
             false,
             &mut no_print,
         )
@@ -339,11 +327,7 @@ async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
         .feed(
             "unused",
             vec![],
-            vec![MountSpec::new(
-                "/mnt".to_owned(),
-                dir.path().to_path_buf(),
-                MountSpecMode::ReadOnly,
-            )],
+            vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()],
             false,
             &mut no_print,
         )

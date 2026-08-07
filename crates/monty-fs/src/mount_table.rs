@@ -6,6 +6,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use cap_std::{ambient_authority, fs::Dir};
@@ -82,7 +83,7 @@ impl MountTable {
         // first match without re-sorting the whole table on every insertion.
         let insert_at = self
             .mounts
-            .partition_point(|existing| existing.virtual_path.len() > mount.virtual_path.len());
+            .partition_point(|existing| existing.virtual_path().len() > mount.virtual_path().len());
         self.mounts.insert(insert_at, mount);
     }
 
@@ -123,9 +124,8 @@ impl MountTable {
     /// Rename requests require both source and destination to resolve to the
     /// same longest-prefix mount. Other requests only route on the primary path.
     ///
-    /// A rename with one side covered and the other not is refused, never handed
-    /// on: passing it to the fallback would hand the *mounted* side to a handler
-    /// that answers on raw virtual paths, skipping the mount's access mode.
+    /// One side covered and the other not is refused rather than handed on: the
+    /// fallback answers on raw virtual paths, skipping the mount's access mode.
     fn route_call(&self, primary_path: &str, call: &OsFunctionCall) -> Option<Result<usize, MountError>> {
         let src_mount_index = self.find_mount_index(primary_path);
 
@@ -149,7 +149,7 @@ impl MountTable {
         let normalized = normalize_virtual_path(virtual_path);
         self.mounts
             .iter()
-            .position(|mount| path_matches_mount(&normalized, &mount.virtual_path))
+            .position(|mount| path_matches_mount(&normalized, mount.virtual_path()))
     }
 }
 
@@ -160,14 +160,8 @@ impl MountTable {
 /// and transferred into it with [`MountTable::push_mount`].
 #[derive(Debug)]
 pub struct Mount {
-    /// Virtual path prefix (absolute, normalized).
-    virtual_path: String,
-    /// Canonical host directory path. Diagnostics only — see `dir`.
-    host_path: PathBuf,
-    /// Descriptor for the mounted directory, opened once here — the sandbox
-    /// boundary. Resolution cannot leave it, and no rename can re-point a name
-    /// between a check and its use.
-    dir: Dir,
+    /// The opened directory this mount serves, and the virtual path it answers on.
+    root: MountRoot,
     /// Access mode (also owns overlay state for [`MountMode::OverlayMemory`]).
     mode: MountMode,
     /// Cumulative bytes written through this mount (monotonically increasing).
@@ -182,6 +176,9 @@ impl Mount {
     /// Creates a new mount point, opening a descriptor on the host directory.
     /// Mount memory defaults to [`DEFAULT_MEMORY_USAGE_LIMIT`].
     ///
+    /// A host mounting the same directory repeatedly should open a [`MountRoot`]
+    /// once and use [`Mount::with_root`], resolving the name only once.
+    ///
     /// # Errors
     ///
     /// Returns [`MountError::InvalidMount`] if the virtual path is not absolute,
@@ -192,54 +189,42 @@ impl Mount {
         mode: MountMode,
         write_bytes_limit: Option<u64>,
     ) -> Result<Self, MountError> {
-        let host_path = host_path.as_ref();
+        Ok(Self::with_root(
+            MountRoot::open(virtual_path, host_path)?,
+            mode,
+            write_bytes_limit,
+        ))
+    }
 
-        if !virtual_path.starts_with('/') {
-            return Err(MountError::InvalidMount(format!(
-                "virtual path must be absolute, got: '{virtual_path}'"
-            )));
-        }
-
-        let normalized_virtual = normalize_virtual_path(virtual_path);
-
-        // The only use of ambient authority, and the mount's whole trust root.
-        // Deliberately first: resolving the name to a validated path and *then*
-        // opening that path would let whoever can rename in the parent swap a
-        // symlink into the gap. The directory check rides on the open itself
-        // (`O_DIRECTORY`, a handle `metadata()` on Windows), so it cannot.
-        let dir = Dir::open_ambient_dir(host_path, ambient_authority())
-            .map_err(|e| MountError::InvalidMount(format!("cannot open host path '{}': {e}", host_path.display())))?;
-
-        // Diagnostics only — nothing resolves through this path. Resolved after
-        // the open, so a host racing it leaves a stale label on the right
-        // descriptor, never the reverse. Still fatal on failure: callers copy
-        // this out as a mount's durable identity, and a relative path would
-        // later re-resolve against the process CWD.
-        let canonical_host = fs::canonicalize(host_path).map_err(|e| {
-            MountError::InvalidMount(format!("cannot resolve host path '{}': {e}", host_path.display()))
-        })?;
-
-        Ok(Self {
-            virtual_path: normalized_virtual,
-            host_path: canonical_host,
-            dir,
+    /// Mounts an already-opened [`MountRoot`], touching no filesystem at all.
+    /// Mount memory defaults to [`DEFAULT_MEMORY_USAGE_LIMIT`].
+    #[must_use]
+    pub fn with_root(root: MountRoot, mode: MountMode, write_bytes_limit: Option<u64>) -> Self {
+        Self {
+            root,
             mode,
             write_bytes_used: 0,
             write_bytes_limit,
             memory_usage_limit: DEFAULT_MEMORY_USAGE_LIMIT,
-        })
+        }
+    }
+
+    /// Returns the opened root, to clone into a later mount of the same directory.
+    #[must_use]
+    pub fn root(&self) -> &MountRoot {
+        &self.root
     }
 
     /// Returns the normalized virtual path prefix for this mount.
     #[must_use]
     pub fn virtual_path(&self) -> &str {
-        &self.virtual_path
+        self.root.virtual_path()
     }
 
     /// Returns the canonical host directory path. Diagnostics only.
     #[must_use]
     pub fn host_path(&self) -> &Path {
-        &self.host_path
+        self.root.host_path()
     }
 
     /// Returns the access mode for this mount.
@@ -286,13 +271,86 @@ impl Mount {
     /// payloads move into the backend.
     fn execute(&mut self, call: OsFunctionCall) -> Result<MontyObject, MountError> {
         let mut ctx = MountContext {
-            mount_virtual: &self.virtual_path,
-            mount_dir: &self.dir,
+            mount_virtual: &self.root.virtual_path,
+            mount_dir: &self.root.dir,
             write_bytes_used: &mut self.write_bytes_used,
             write_bytes_limit: self.write_bytes_limit,
             memory_usage_limit: self.memory_usage_limit,
         };
         dispatch::execute(dispatch::fs_request_from_call(call), &mut ctx, &mut self.mode)
+    }
+}
+
+/// A host directory opened once, mountable as often as the host likes; cloning
+/// shares the descriptor.
+///
+/// Reuse one instead of re-deriving a mount from its path: sandbox code that
+/// can rename inside a parent mount redirects that name between rebuilds, and
+/// an open descriptor cannot be redirected.
+#[derive(Debug, Clone)]
+pub struct MountRoot {
+    /// Virtual path prefix (absolute, normalized).
+    virtual_path: String,
+    /// Canonical host directory path. Diagnostics only — see `dir`.
+    host_path: PathBuf,
+    /// Descriptor for the mounted directory — the sandbox boundary, which
+    /// resolution cannot leave. Shared, so every mount built from this root is
+    /// the same directory rather than the same name resolved again.
+    dir: Arc<Dir>,
+}
+
+impl MountRoot {
+    /// Opens `host_path`, pinning the root to the directory that is there now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MountError::InvalidMount`] if the virtual path is not absolute,
+    /// or the host path cannot be opened as a directory or canonicalized.
+    pub fn open(virtual_path: &str, host_path: impl AsRef<Path>) -> Result<Self, MountError> {
+        let host_path = host_path.as_ref();
+
+        if !virtual_path.starts_with('/') {
+            return Err(MountError::InvalidMount(format!(
+                "virtual path must be absolute, got: '{virtual_path}'"
+            )));
+        }
+
+        let normalized_virtual = normalize_virtual_path(virtual_path);
+
+        // The only use of ambient authority, and the mount's whole trust root.
+        // Deliberately first: resolving the name to a validated path and *then*
+        // opening that path would let whoever can rename in the parent swap a
+        // symlink into the gap. The directory check rides on the open itself
+        // (`O_DIRECTORY`, a handle `metadata()` on Windows), so it cannot.
+        let dir = Dir::open_ambient_dir(host_path, ambient_authority())
+            .map_err(|e| MountError::InvalidMount(format!("cannot open host path '{}': {e}", host_path.display())))?;
+
+        // Diagnostics only — nothing resolves through this path. Resolved after
+        // the open, so a host racing it leaves a stale label on the right
+        // descriptor, never the reverse. Still fatal on failure: callers copy
+        // this out as a mount's durable identity, and a relative path would
+        // later re-resolve against the process CWD.
+        let canonical_host = fs::canonicalize(host_path).map_err(|e| {
+            MountError::InvalidMount(format!("cannot resolve host path '{}': {e}", host_path.display()))
+        })?;
+
+        Ok(Self {
+            virtual_path: normalized_virtual,
+            host_path: canonical_host,
+            dir: Arc::new(dir),
+        })
+    }
+
+    /// Returns the normalized virtual path prefix this root answers on.
+    #[must_use]
+    pub fn virtual_path(&self) -> &str {
+        &self.virtual_path
+    }
+
+    /// Returns the canonical host directory path. Diagnostics only.
+    #[must_use]
+    pub fn host_path(&self) -> &Path {
+        &self.host_path
     }
 }
 

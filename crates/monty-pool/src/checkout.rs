@@ -3,13 +3,13 @@
 use std::{
     borrow::Cow,
     future::{Future, ready},
-    path::PathBuf,
+    path::Path,
     pin::Pin,
     sync::Arc,
     time::Duration,
 };
 
-use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
+use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{FrameError, MONTY_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 use monty_types::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
@@ -67,10 +67,10 @@ impl Default for ReplConfig {
 /// [`Checkout::resume_from_mounts`].
 #[derive(Debug, Clone)]
 pub struct MountSpec {
-    /// Absolute virtual POSIX path inside the sandbox, e.g. `/mnt/data`.
-    pub virtual_path: String,
-    /// Host directory to expose.
-    pub host_path: PathBuf,
+    /// The host directory, opened when this spec was built and shared by every
+    /// feed that reuses it. The path is never resolved again, so sandbox code
+    /// cannot make it name a different directory between feeds.
+    root: MountRoot,
     /// Access mode.
     pub mode: MountSpecMode,
     /// Cap on total bytes written through this mount.
@@ -80,17 +80,43 @@ pub struct MountSpec {
 }
 
 impl MountSpec {
-    /// Creates mount configuration with the default 100 MB memory budget and
-    /// no cumulative write limit.
+    /// Opens `host_path` and creates mount configuration with the default
+    /// 100 MB memory budget and no cumulative write limit.
+    ///
+    /// Build this once and reuse it; each call resolves the path afresh.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PoolError::Runtime`] if the virtual path is not absolute, or
+    /// the host path cannot be opened as a directory.
+    pub fn new(virtual_path: &str, host_path: impl AsRef<Path>, mode: MountSpecMode) -> Result<Self, PoolError> {
+        let root = MountRoot::open(virtual_path, host_path).map_err(|err| PoolError::Runtime(err.into_exception()))?;
+        Ok(Self::from_root(root, mode))
+    }
+
+    /// Creates mount configuration from an already-opened [`MountRoot`], for
+    /// hosts that open it themselves to map failures their own way.
     #[must_use]
-    pub fn new(virtual_path: String, host_path: PathBuf, mode: MountSpecMode) -> Self {
+    pub fn from_root(root: MountRoot, mode: MountSpecMode) -> Self {
         Self {
-            virtual_path,
-            host_path,
+            root,
             mode,
             write_bytes_limit: None,
             memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
         }
+    }
+
+    /// Returns the normalized virtual path this mount answers on.
+    #[must_use]
+    pub fn virtual_path(&self) -> &str {
+        self.root.virtual_path()
+    }
+
+    /// Returns the host directory path. Diagnostics only — operations run
+    /// against the descriptor, not this path.
+    #[must_use]
+    pub fn host_path(&self) -> &Path {
+        self.root.host_path()
     }
 }
 
@@ -324,11 +350,10 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
         self.ensure_ready()?;
-        // Build mounts before touching any state: this await is the only
-        // cancellation point before the Load turn, and a cancelled build must
-        // leave the checkout unchanged (notably `duration_budget`, whose loss
-        // would silently drop the parent-side backstop from later feeds).
-        let feed_mounts = self.build_feed_mounts(mounts).await?;
+        // Build mounts before touching any state, so a failure here leaves the
+        // checkout unchanged (notably `duration_budget`, whose loss would
+        // silently drop the parent-side backstop from later feeds).
+        let feed_mounts = Self::build_feed_mounts(mounts);
         // the dump carries its own limits/consumed time/script name — forget
         // what the worker's Configure established and re-adopt from the reply
         self.pending = None;
@@ -375,7 +400,7 @@ impl Checkout {
             ));
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
-        self.feed_mounts = self.build_feed_mounts(mounts).await?;
+        self.feed_mounts = Self::build_feed_mounts(mounts);
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
             inputs: inputs
@@ -939,16 +964,11 @@ impl Checkout {
         }
     }
 
-    /// Builds this feed's mount table on the blocking pool — mount validation
-    /// (existence checks, canonicalization) is host filesystem I/O. Skips the
-    /// dispatch entirely for the common mount-less feed. Cancel-safe: nothing
-    /// is mutated until the built table is returned.
-    async fn build_feed_mounts(&mut self, mounts: Vec<MountSpec>) -> Result<Option<MountTable>, PoolError> {
-        if mounts.is_empty() {
-            Ok(None)
-        } else {
-            self.run_blocking(move || build_mount_table(mounts)).await?.map(Some)
-        }
+    /// Builds this feed's mount table, or `None` for the common mount-less
+    /// feed. Runs inline: the specs' directories were opened when the caller
+    /// built them, so nothing here touches the host filesystem.
+    fn build_feed_mounts(mounts: Vec<MountSpec>) -> Option<MountTable> {
+        (!mounts.is_empty()).then(|| build_mount_table(mounts))
     }
 
     /// Runs blocking host mount work on tokio's blocking pool, so a stalled
@@ -1156,11 +1176,9 @@ fn min_deadline(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
 }
 
 /// Builds the parent-side [`MountTable`] for one feed from its (non-empty)
-/// specs. An invalid mount (host path missing, not a directory, relative
-/// virtual path, …) fails as a session-preserving [`PoolError::Runtime`] —
-/// [`Checkout::build_feed_mounts`] runs this on the blocking pool before any
-/// frame is sent, so the worker never sees a half-configured feed.
-fn build_mount_table(mounts: Vec<MountSpec>) -> Result<MountTable, PoolError> {
+/// specs. Infallible and free of filesystem I/O: each spec already carries its
+/// opened directory, so this only pairs those descriptors with a per-feed mode.
+fn build_mount_table(mounts: Vec<MountSpec>) -> MountTable {
     let mut table = MountTable::new();
     for mount in mounts {
         let mode = match mount.mode {
@@ -1170,10 +1188,10 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> Result<MountTable, PoolError> {
             // long as the feed and are discarded with it.
             MountSpecMode::Overlay => MountMode::OverlayMemory(OverlayState::new()),
         };
-        let mount = monty_fs::Mount::new(&mount.virtual_path, &mount.host_path, mode, mount.write_bytes_limit)
-            .map_err(|err| PoolError::Runtime(err.into_exception()))?
+        // No filesystem access: the root was opened when the spec was built.
+        let mount = monty_fs::Mount::with_root(mount.root, mode, mount.write_bytes_limit)
             .with_memory_usage_limit(mount.memory_usage_limit);
         table.push_mount(mount);
     }
-    Ok(table)
+    table
 }
