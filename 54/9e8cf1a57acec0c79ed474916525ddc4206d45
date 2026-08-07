@@ -1,0 +1,21 @@
+crates/monty-fs/tests/mount_confinement.rs
+  s_a0fa6b7447fb63::t_8472c220357df4 486-514,521-556,561-563,570-577,582-590
+  s_a0fa6b7447fb63::t_f02041d966c8ca 515-520,557-560,564-569,578-581
+  s_a0fa6b7447fb63::t_6f69da91e23cae 27,30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "549e8cf1a57acec0c79ed474916525ddc4206d45",
+  "prompts": {},
+  "sessions": {
+    "s_a0fa6b7447fb63": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7fd8480f-f003-4eda-a8e3-57a2354d004b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
