@@ -200,7 +200,6 @@ fn adjust_annotation_span(ann: &mut Annotation, main_file: File, offset: TextSiz
 /// why the format is chosen up front, in [`TypeChecker::run`], and why callers
 /// that outlive the checker (anything across a process boundary) must keep the
 /// rendered string rather than this.
-#[derive(Debug, Clone)]
 pub struct TypeCheckingDiagnostics<'a> {
     /// The actual diagnostic message
     diagnostics: Vec<Diagnostic>,

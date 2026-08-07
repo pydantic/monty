@@ -197,7 +197,7 @@ fn run_cli(cli: Cli) -> ExitCode {
     // `Some` enables the check and carries how its diagnostics are rendered.
     let type_check = cli.type_check.then(|| TypeCheckingConfig {
         format: cli.type_check_format.unwrap_or_default(),
-        color: false,
+        color: true,
     });
 
     let limits = match cli.resource_limits() {
