@@ -1767,10 +1767,11 @@ impl Value {
 
     /// Extracts an integer value from the Value.
     ///
-    /// Accepts `Int` and `LongInt` (if it fits in i64), and falls back to a user
-    /// `__index__` — CPython's `PyNumber_Index`, which is what every "cannot be
-    /// interpreted as an integer" consumer uses. Returns a `TypeError` for other
-    /// types and an `OverflowError` if the value is too large.
+    /// Accepts `Int`, `Bool` (True=1, False=0) and `LongInt` (if it fits in
+    /// i64), and falls back to a user `__index__` — CPython's `PyNumber_Index`,
+    /// which is what every "cannot be interpreted as an integer" consumer uses.
+    /// Returns a `TypeError` for other types and an `OverflowError` if the value
+    /// is too large.
     ///
     /// Takes `&mut VM` because `__index__` re-enters the interpreter; it runs
     /// synchronously, so one calling an external/OS function raises rather than
@@ -1783,6 +1784,10 @@ impl Value {
     pub fn as_int(&self, vm: &mut VM<'_>) -> RunResult<i64> {
         match self {
             Self::Int(i) => Ok(*i),
+            // `bool` is an `int` subclass in CPython, so it satisfies every
+            // integer argument directly rather than via `__index__` — which
+            // `try_index` below only dispatches for user instances.
+            Self::Bool(b) => Ok(i64::from(*b)),
             Self::Ref(heap_id) if let HeapData::LongInt(li) = vm.heap.get(*heap_id) => {
                 li.to_i64().ok_or_else(ExcType::overflow_c_ssize_t)
             }
