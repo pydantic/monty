@@ -89,6 +89,10 @@ root.
   containing a backslash or starting with `X:`. So names CPython allows on
   Unix — `a\b.txt`, `a:b.txt` — are refused there too, since Windows would
   read them as drive-relative. Colons elsewhere are fine (`note:2026.txt`).
+- The mount root itself cannot be renamed or removed: `rename` and `rmdir` on
+  the mount's own path raise `PermissionError` in every mode, where CPython on
+  an ordinary empty directory would succeed (the root has no name inside the
+  mount, so there is nothing to detach it from).
 - Null bytes in any path component are rejected (`ValueError`).
 - Resolved paths returned to the sandbox (e.g. via `Path.resolve()`) are
   virtual paths, never host paths.

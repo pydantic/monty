@@ -64,6 +64,7 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
         }
         FsRequest::Rmdir { path } => {
             let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
+            reject_mount_root(&target, &path)?;
             host_rmdir(ctx.mount_dir, target.for_dir_op(), &path)
         }
         FsRequest::Iterdir { path } => {
@@ -179,8 +180,8 @@ fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &MountContext<'_>) -> R
 fn rename(src: &str, dst: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
     let src_target = resolve_virtual_path(src, ctx.mount_virtual)?;
     let dst_target = resolve_virtual_path(dst, ctx.mount_virtual)?;
-    reject_mount_root_rename(&src_target, src)?;
-    reject_mount_root_rename(&dst_target, dst)?;
+    reject_mount_root(&src_target, src)?;
+    reject_mount_root(&dst_target, dst)?;
 
     ctx.mount_dir
         .rename(src_target.for_dir_op(), ctx.mount_dir, dst_target.for_dir_op())
@@ -188,8 +189,10 @@ fn rename(src: &str, dst: &str, ctx: &MountContext<'_>) -> Result<MontyObject, M
     Ok(MontyObject::None)
 }
 
-/// Refuses to rename the mount root itself, which has no name inside the mount.
-fn reject_mount_root_rename(target: &MountRelativePath, vpath: &str) -> Result<(), MountError> {
+/// Refuses to rename or remove the mount root itself, which has no name inside
+/// the mount. An explicit guard gives every platform and mount mode the same
+/// `PermissionError`, instead of whatever errno the OS picks for `"."`.
+fn reject_mount_root(target: &MountRelativePath, vpath: &str) -> Result<(), MountError> {
     if target.is_mount_root() {
         Err(MountError::PathEscape {
             virtual_path: vpath.to_owned(),

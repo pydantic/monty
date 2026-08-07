@@ -1033,6 +1033,36 @@ fn rename_of_mount_root_is_refused_in_both_modes() {
     }
 }
 
+/// `rmdir` of the mount root must be refused in every mode, like rename.
+///
+/// Without the guard, overlay mode tombstoned the root in memory while writes
+/// to its children kept succeeding, and direct mode surfaced whatever errno the
+/// OS picks for `rmdir(".")`. The explicit guard gives both modes the same
+/// `PermissionError` on every platform.
+#[test]
+fn rmdir_of_mount_root_is_refused_in_both_modes() {
+    for mode in [MountMode::ReadWrite, MountMode::OverlayMemory(OverlayState::new())] {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt(&dir, mode);
+
+        let err = call(&mut mt, &OsFunctionCall::Rmdir("/mnt".into()))
+            .unwrap()
+            .unwrap_err()
+            .into_exception();
+        assert_exc(&err, ExcType::PermissionError, "[Errno 13] Permission denied: '/mnt'");
+
+        // The refusal must leave the mount fully live, root included.
+        assert_eq!(
+            call_ok(&mut mt, &OsFunctionCall::Exists("/mnt".into())),
+            MontyObject::Bool(true)
+        );
+        assert_eq!(
+            call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
+            MontyObject::Bool(true)
+        );
+    }
+}
+
 /// A missing path must be `FileNotFoundError`, not `NotADirectoryError`.
 ///
 /// `resolve_virtual_path` never touches the filesystem, so "does not exist" and

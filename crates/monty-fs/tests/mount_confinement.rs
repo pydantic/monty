@@ -485,9 +485,9 @@ fn denied_write_is_not_reported_as_an_escape() {
 
 /// The mount root itself cannot be deleted through the mount.
 ///
-/// It has no name inside the mount, so the descriptor has nothing to unlink it
-/// from: `rmdir` and `unlink` on the root fail and the host directory survives.
-/// (Renaming the root is refused by both backends before any host I/O.)
+/// It has no name inside the mount, so there is nothing to unlink it from:
+/// `rmdir` is refused by the explicit guard (like rename), `unlink` fails at
+/// the OS, and the host directory survives both.
 #[test]
 fn deleting_the_mount_root_is_refused() {
     let mount_dir = TempDir::new().unwrap();
@@ -504,9 +504,9 @@ fn deleting_the_mount_root_is_refused() {
 
 /// Overlay `rmdir` of the mount root must never touch the host directory.
 ///
-/// The overlay currently accepts the call and tombstones the root in memory —
-/// a divergence from direct mode, which refuses it — so this pins only the
-/// host-side guarantee, not the in-memory answer.
+/// The overlay now refuses the call outright (see
+/// `rmdir_of_mount_root_is_refused_in_both_modes` in `fs.rs`); this pins the
+/// host-side guarantee that survives whatever the in-memory answer is.
 #[test]
 fn overlay_rmdir_of_the_mount_root_leaves_the_host_directory() {
     let mount_dir = TempDir::new().unwrap();
@@ -520,7 +520,11 @@ fn overlay_rmdir_of_the_mount_root_leaves_the_host_directory() {
         )
         .expect("failed to mount");
 
-    let _ = dispatch(&mut mounts, OsFunctionCall::Rmdir("/mnt".into()));
+    let rmdir = dispatch(&mut mounts, OsFunctionCall::Rmdir("/mnt".into()));
+    assert!(
+        rmdir.is_err(),
+        "overlay rmdir of the mount root must fail, got {rmdir:?}"
+    );
     assert!(mount_dir.path().exists(), "host directory must survive overlay rmdir");
 }
 

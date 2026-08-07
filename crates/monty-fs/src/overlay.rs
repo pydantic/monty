@@ -693,6 +693,10 @@ fn rmdir(
     ctx: &MountContext<'_>,
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
+    // Without this guard the root would tombstone in memory while writes to
+    // its children kept succeeding — self-contradictory state the direct
+    // backend refuses to enter.
+    reject_mount_root(relative, vpath)?;
     match state.get(relative) {
         Some(OverlayEntry::Directory { .. }) => {
             if overlay_directory_has_children(state, relative) {
@@ -897,8 +901,8 @@ fn rename(
     // The mount root has no name inside the mount. The descriptor would refuse,
     // but the overlay commits its in-memory plan first, so it has to refuse too
     // or the two backends disagree.
-    reject_mount_root_rename(&src_rel, src_vpath)?;
-    reject_mount_root_rename(&dst_rel, dst_vpath)?;
+    reject_mount_root(&src_rel, src_vpath)?;
+    reject_mount_root(&dst_rel, dst_vpath)?;
 
     ensure_parent_exists(state, &dst_rel, ctx, dst_vpath)?;
 
@@ -1058,8 +1062,10 @@ fn rename(
     Ok(MontyObject::None)
 }
 
-/// Refuses to rename the mount root, which has no name inside the mount.
-fn reject_mount_root_rename(relative: &str, vpath: &str) -> Result<(), MountError> {
+/// Refuses to rename or remove the mount root, which has no name inside the
+/// mount — matching the direct backend's guard, since the overlay commits its
+/// in-memory plan before any descriptor could refuse.
+fn reject_mount_root(relative: &str, vpath: &str) -> Result<(), MountError> {
     if relative.is_empty() {
         Err(MountError::PathEscape {
             virtual_path: vpath.to_owned(),
