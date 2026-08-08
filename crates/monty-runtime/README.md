@@ -24,10 +24,14 @@ hello world
 
 ## Observability
 
-Standalone CLI runs configure the Rust Logfire SDK when `LOGFIRE_TOKEN` is
-set. The SDK also honors standard OpenTelemetry exporter and resource
-environment variables. The CLI owns the SDK lifecycle and flushes it before
-exiting.
+Behind the `telemetry` feature, off by default because its exporter links MBs
+of TLS that `monty subprocess` — which never exports — would otherwise carry.
+Without it, `LOGFIRE_TOKEN` is ignored.
+
+Built with `--features telemetry`, standalone CLI runs configure the Rust
+Logfire SDK when `LOGFIRE_TOKEN` is set. The SDK also honors standard
+OpenTelemetry exporter and resource environment variables. The CLI owns the SDK
+lifecycle and flushes it before exiting.
 
 `monty subprocess` deliberately ignores telemetry environment configuration:
 worker processes are instrumented by their parent pool, avoiding duplicate
