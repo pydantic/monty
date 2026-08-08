@@ -16,7 +16,7 @@ use pyo3::{
     types::{PyBytes, PyString},
 };
 
-use super::dataclass::get_frozen_instance_error;
+use super::class_instance::get_frozen_instance_error;
 
 /// Converts Monty's `MontyException` to the matching Python exception value.
 /// Traceback info is folded into the message, since PyO3 doesn't expose direct

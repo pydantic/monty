@@ -223,16 +223,26 @@ fn file_handle_values_round_trip() {
 }
 
 #[test]
-fn dataclass_and_function_values_round_trip() {
-    assert_value_round_trip(&MontyObject::Dataclass {
+fn class_instance_and_function_values_round_trip() {
+    assert_value_round_trip(&MontyObject::ClassInstance {
         name: "Point".to_owned(),
+        instance_id: 0xFEED_FACE,
         type_id: 0xDEAD_BEEF,
-        field_names: vec!["x".to_owned(), "y".to_owned()],
         attrs: DictPairs::from(vec![
             (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
             (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
         ]),
         frozen: true,
+        is_dataclass: true,
+    });
+    // Sandbox-defined shape: zero ids, non-dataclass, mutable.
+    assert_value_round_trip(&MontyObject::ClassInstance {
+        name: "Widget".to_owned(),
+        instance_id: 0,
+        type_id: 0,
+        attrs: DictPairs::from(vec![]),
+        frozen: false,
+        is_dataclass: false,
     });
     assert_value_round_trip(&MontyObject::Function {
         name: "fetch".to_owned(),
@@ -604,15 +614,16 @@ fn nest_dict(depth: usize) -> MontyObject {
     })
 }
 
-/// `Int(1)` nested in `depth` levels of single-field dataclass (4 proto
-/// levels per level: `MontyObject` + `Dataclass` + `Dict` + `Pair`).
-fn nest_dataclass(depth: usize) -> MontyObject {
-    (0..depth).fold(MontyObject::Int(1), |inner, _| MontyObject::Dataclass {
+/// `Int(1)` nested in `depth` levels of single-attr class instance (4 proto
+/// levels per level: `MontyObject` + `ClassInstance` + `Dict` + `Pair`).
+fn nest_class_instance(depth: usize) -> MontyObject {
+    (0..depth).fold(MontyObject::Int(1), |inner, _| MontyObject::ClassInstance {
         name: "D".to_owned(),
+        instance_id: 1,
         type_id: 1,
-        field_names: vec!["f".to_owned()],
         attrs: DictPairs::from(vec![(MontyObject::String("f".to_owned()), inner)]),
         frozen: false,
+        is_dataclass: false,
     })
 }
 
@@ -643,9 +654,9 @@ fn depth_check_matches_frame_decodability() {
     /// One container shape: name, nesting builder, deepest depth that must pass.
     type DepthCase = (&'static str, fn(usize) -> MontyObject, usize);
     let cases: [DepthCase; 3] = [
-        ("list", nest_list, MAX_VALUE_DEPTH), // 48: 2 proto levels each
-        ("dict", nest_dict, 32),              // 3 proto levels each
-        ("dataclass", nest_dataclass, 24),    // 4 proto levels each
+        ("list", nest_list, MAX_VALUE_DEPTH),        // 48: 2 proto levels each
+        ("dict", nest_dict, 32),                     // 3 proto levels each
+        ("class_instance", nest_class_instance, 24), // 4 proto levels each
     ];
     for (shape, build, max_depth) in cases {
         let deepest = build(max_depth);

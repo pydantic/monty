@@ -132,8 +132,8 @@ function pushMarked(object: Record<string, unknown>, nodes: ValueNode[]): ValueN
           ...(typeof object.message === 'string' ? { message: object.message } : {}),
         },
       }
-    case 'Dataclass':
-      return pushDataclass(object, nodes)
+    case 'ClassInstance':
+      return pushClassInstance(object, nodes)
     case 'FileHandle':
       return pushFileHandle(object)
     case 'Type':
@@ -162,27 +162,43 @@ function timeZoneFields(
     : {}
 }
 
-/** Validates and converts a host dataclass marker. */
-function pushDataclass(object: Record<string, unknown>, nodes: ValueNode[]): ValueNode {
+/**
+ * Validates and converts a host `ClassInstance` marker (same shape the napi
+ * path produces: `attrs` as ordered `[name, value]` pairs, ids as BigInt).
+ * Validation messages mirror napi's so both transports fail malformed
+ * markers alike.
+ */
+function pushClassInstance(object: Record<string, unknown>, nodes: ValueNode[]): ValueNode {
+  if (typeof object.instanceId !== 'bigint') {
+    throw new TypeError(
+      `Object property 'instanceId' type mismatch. Expect value to be BigInt, but received ${jsType(object.instanceId)}`,
+    )
+  }
   if (typeof object.typeId !== 'bigint') {
     throw new TypeError(
       `Object property 'typeId' type mismatch. Expect value to be BigInt, but received ${jsType(object.typeId)}`,
     )
   }
-  if (!Array.isArray(object.fieldNames)) {
+  if (!Array.isArray(object.attrs)) {
     throw new TypeError(
-      `Object property 'fieldNames' type mismatch. Expect value to be Array, but received ${jsType(object.fieldNames)}`,
+      `Object property 'attrs' type mismatch. Expect value to be Array, but received ${jsType(object.attrs)}`,
     )
   }
-  const fields = (object.fields ?? {}) as Record<string, unknown>
+  const pairs: [unknown, unknown][] = []
+  for (const pair of object.attrs as unknown[]) {
+    if (!Array.isArray(pair)) throw new TypeError('ClassInstance attrs entries must be [name, value] pairs')
+    if (typeof pair[0] !== 'string') throw new TypeError('ClassInstance attr name must be a string')
+    pairs.push([pair[0], pair[1]])
+  }
   return {
-    tag: 'dataclass',
+    tag: 'class-instance',
     val: {
       name: String(object.name),
+      instanceId: object.instanceId,
       typeId: object.typeId,
-      fieldNames: object.fieldNames.map(String),
-      attrs: pushPairs(Object.entries(fields), nodes),
+      attrs: pushPairs(pairs, nodes),
       frozen: Boolean(object.frozen),
+      isDataclass: Boolean(object.isDataclass),
     },
   }
 }
@@ -286,8 +302,8 @@ function readValue(index: number, nodes: ValueNode[], visiting: Set<number>): un
       }
       value = new MontyFileHandle(node.val.path, node.val.mode, { position: Number(node.val.position) })
       break
-    case 'dataclass':
-      value = readDataclass(node.val, nodes, visiting)
+    case 'class-instance':
+      value = readClassInstance(node.val, nodes, visiting)
       break
     case 'function':
       value = node.val.name
@@ -310,26 +326,30 @@ function readPair(pair: NodePair, nodes: ValueNode[], visiting: Set<number>): [u
   return [readValue(pair.key, nodes, visiting), readValue(pair.value, nodes, visiting)]
 }
 
-/** Rebuilds the public dataclass marker without prototype-setting assignment. */
-function readDataclass(
-  dataclass: Extract<ValueNode, { tag: 'dataclass' }>['val'],
+/**
+ * Rebuilds the public `ClassInstance` marker in the shape the napi path
+ * produces: `attrs` as ordered `[name, value]` pairs (non-string keys
+ * skipped, matching convert.rs) and ids as BigInt. The session layer
+ * (`restore`) maps the marker to the original host object or a proxy.
+ */
+function readClassInstance(
+  instance: Extract<ValueNode, { tag: 'class-instance' }>['val'],
   nodes: ValueNode[],
   visiting: Set<number>,
 ): Record<string, unknown> {
-  const fields: Record<string, unknown> = {}
-  for (const pair of dataclass.attrs) {
+  const attrs: [string, unknown][] = []
+  for (const pair of instance.attrs) {
     const [key, value] = readPair(pair, nodes, visiting)
-    if (typeof key === 'string') {
-      Object.defineProperty(fields, key, { value, enumerable: true, writable: true, configurable: true })
-    }
+    if (typeof key === 'string') attrs.push([key, value])
   }
   return {
-    [TYPE_MARKER]: 'Dataclass',
-    name: dataclass.name,
-    typeId: dataclass.typeId,
-    fieldNames: dataclass.fieldNames,
-    fields,
-    frozen: dataclass.frozen,
+    [TYPE_MARKER]: 'ClassInstance',
+    name: instance.name,
+    instanceId: instance.instanceId,
+    typeId: instance.typeId,
+    attrs,
+    frozen: instance.frozen,
+    isDataclass: instance.isDataclass,
   }
 }
 

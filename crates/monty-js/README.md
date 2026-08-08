@@ -93,6 +93,44 @@ errors cross into the sandbox as Python exceptions (the error's `name` is used
 when it matches a Python exception type, e.g. `TypeError`, otherwise
 `RuntimeError`).
 
+## Class Instances
+
+Wrap a host object in `ClassInstance` to send it into the sandbox. The wrapper
+is a policy: it decides which attributes cross eagerly (`eagerAttrs`), which
+the sandbox may fetch lazily on demand (`lazyAttrs`), and which methods it may
+call (`allowedMethods`) — each an explicit list/`Set`, or `'all'`, which never
+exposes `_`-prefixed names. Method calls and lazy lookups route back to the
+real object, and when sandbox code returns the instance, the host receives the
+**original object** back (identity preserved):
+
+```ts
+import { ClassInstance } from '@pydantic/monty'
+
+class Wallet {
+  constructor(public balance: number) {}
+  pay(amount: number) {
+    return new Wallet(this.balance - amount)
+  }
+}
+
+const wallet = new Wallet(100)
+await session.feedRun('w.pay(30).balance', {
+  inputs: { w: new ClassInstance(wallet, { eagerAttrs: 'all', allowedMethods: 'all' }) },
+}) // 70
+```
+
+Methods may be sync or async (`await w.fetch()` in the sandbox). JS functions
+have no keyword arguments, so kwargs arrive as a trailing options-bag object.
+Names outside the policy raise `AttributeError` in the sandbox. A
+`convertValue` option hook transforms each value crossing to the sandbox
+(eager attrs, lazy lookup results, method returns); the default auto-wraps
+returned class instances with the same policies. Unwrapped class instances are
+rejected with a `TypeError` — wrapping is always explicit.
+
+Instances the host has no original for — defined inside the sandbox, or
+returned after a dump was restored into a fresh process — surface as read-only
+`MontyClassInstance` proxies (`name`, `attributes`, `isDataclass`).
+
 ## Snapshots: pausing and resuming
 
 `feedStart` is the suspendable counterpart of `feedRun`: instead of driving a
@@ -378,6 +416,6 @@ path.
 | `set`/`frozenset` | `Set`                                                   |
 | datetime types    | marker objects (`{ __monty_type__: 'DateTime', ... }`)  |
 | file handles      | `MontyFileHandle`                                       |
-| dataclasses       | marker objects (`{ __monty_type__: 'Dataclass', ... }`) |
+| class instances   | `ClassInstance` wrappers / `MontyClassInstance` proxies |
 
 Plain objects are accepted as dict inputs (string keys).

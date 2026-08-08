@@ -62,12 +62,13 @@ export interface FileHandleNode {
   mode: string
   position: bigint
 }
-export interface DataclassNode {
+export interface ClassInstanceNode {
   name: string
+  instanceId: bigint
   typeId: bigint
-  fieldNames: Array<string>
   attrs: Array<NodePair>
   frozen: boolean
+  isDataclass: boolean
 }
 export interface FunctionNode {
   name: string
@@ -104,7 +105,7 @@ export type ValueNode =
   | ValueNodeBuiltinFunction
   | ValueNodePath
   | ValueNodeFileHandle
-  | ValueNodeDataclass
+  | ValueNodeClassInstance
   | ValueNodeFunction
   | ValueNodeRepr
   | ValueNodeCycle
@@ -209,9 +210,9 @@ export interface ValueNodeFileHandle {
   tag: 'file-handle'
   val: FileHandleNode
 }
-export interface ValueNodeDataclass {
-  tag: 'dataclass'
-  val: DataclassNode
+export interface ValueNodeClassInstance {
+  tag: 'class-instance'
+  val: ClassInstanceNode
 }
 export interface ValueNodeFunction {
   tag: 'function'
@@ -398,7 +399,11 @@ export interface FunctionCallEvent {
   args: Array<Value>
   kwargs: Array<ValuePair>
   callId: number
-  methodCall: boolean
+  instanceId?: bigint
+}
+export interface NameLookupEvent {
+  name: string
+  instanceId?: bigint
 }
 export interface OsCallEvent {
   functionName: string
@@ -433,7 +438,7 @@ export interface EventOsCall {
 }
 export interface EventNameLookup {
   tag: 'name-lookup'
-  val: string
+  val: NameLookupEvent
 }
 export interface EventResolveFutures {
   tag: 'resolve-futures'

@@ -690,34 +690,35 @@ fn repl_start_runtime_error_during_external_call_preserves_repl_state() {
 }
 
 #[test]
-fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
-    // Create a REPL with a dataclass input and call a method on it.
+fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
+    // Create a REPL with a host class instance input and call a method on it.
     // This exercises the MethodCall path in repl.rs handle_repl_vm_result.
-    let point = MontyObject::Dataclass {
+    let point = MontyObject::ClassInstance {
         name: "Point".to_string(),
+        instance_id: 42,
         type_id: 0,
-        field_names: vec!["x".to_string(), "y".to_string()],
         attrs: vec![
             (MontyObject::String("x".to_string()), MontyObject::Int(1)),
             (MontyObject::String("y".to_string()), MontyObject::Int(2)),
         ]
         .into(),
         frozen: true,
+        is_dataclass: true,
     };
 
     let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
 
-    // Calling point.sum() should yield a FunctionCall with method_call=true.
-    // Pass the dataclass as an input to feed_start() so it gets a namespace slot.
+    // Calling point.sum() should yield a FunctionCall routed by instance_id.
+    // Pass the instance as an input to feed_start() so it gets a namespace slot.
     let progress = repl
         .feed_start("point.sum()", vec![("point".to_string(), point)], PrintWriter::Stdout)
         .unwrap();
     let call = progress.into_function_call().expect("expected method call");
 
     assert_eq!(call.function_name, "sum");
-    assert!(call.method_call, "should be a method call");
-    // First arg should be the dataclass instance (self)
-    assert!(matches!(&call.args[0], MontyObject::Dataclass { name, .. } if name == "Point"));
+    assert_eq!(call.instance_id, Some(42), "should be a method call on instance 42");
+    // The receiver is NOT smuggled into args anymore
+    assert!(call.args.is_empty(), "receiver must not be included in args");
 
     // Resume with a return value (sum of x + y = 3)
     let progress = call.resume(MontyObject::Int(3), PrintWriter::Stdout).unwrap();

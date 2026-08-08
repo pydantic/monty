@@ -287,7 +287,8 @@ export class WorkerTransport {
           args: event.val.args.map(decodeValue),
           kwargs: event.val.kwargs.map(({ key, value }) => [decodeValue(key), decodeValue(value)]),
           callId: event.val.callId,
-          methodCall: event.val.methodCall,
+          // null (not undefined) for plain calls, matching the napi turn shape
+          instanceId: event.val.instanceId ?? null,
         }
       case 'os-call':
         this.pendingCallId = event.val.callId
@@ -300,7 +301,7 @@ export class WorkerTransport {
           callId: event.val.callId,
         }
       case 'name-lookup':
-        return { kind: 'nameLookup', name: event.val }
+        return { kind: 'nameLookup', name: event.val.name, instanceId: event.val.instanceId ?? null }
       case 'resolve-futures':
         return { kind: 'resolveFutures', pendingCallIds: [...event.val] }
       case 'fatal-error':

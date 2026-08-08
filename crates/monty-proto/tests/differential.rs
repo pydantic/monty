@@ -178,22 +178,24 @@ fn corpus() -> Vec<MontyObject> {
             mode: "rb".parse().unwrap(),
             position: 0,
         }),
-        MontyObject::Dataclass {
+        MontyObject::ClassInstance {
             name: String::new(),
+            instance_id: 0,
             type_id: 0,
-            field_names: vec![],
             attrs: DictPairs::from(Vec::new()),
             frozen: false,
+            is_dataclass: false,
         },
-        MontyObject::Dataclass {
+        MontyObject::ClassInstance {
             name: "Point".to_owned(),
+            instance_id: 0xFEED_FACE,
             type_id: 0xDEAD_BEEF,
-            field_names: vec!["x".to_owned(), "y".to_owned()],
             attrs: DictPairs::from(vec![
                 (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
                 (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
             ]),
             frozen: true,
+            is_dataclass: true,
         },
         MontyObject::Function {
             name: "f".to_owned(),
@@ -291,18 +293,20 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             mode: fh.mode.as_str().to_owned(),
             position: fh.position,
         }),
-        MontyObject::Dataclass {
+        MontyObject::ClassInstance {
             name,
+            instance_id,
             type_id,
-            field_names,
             attrs,
             frozen,
-        } => Kind::Dataclass(oracle::Dataclass {
+            is_dataclass,
+        } => Kind::ClassInstance(oracle::ClassInstance {
             name: name.clone(),
+            instance_id: *instance_id,
             type_id: *type_id,
-            field_names: field_names.clone(),
             attrs: Some(oracle_dict(attrs)),
             frozen: *frozen,
+            is_dataclass: *is_dataclass,
         }),
         MontyObject::Function { name, docstring } => Kind::Function(oracle::Function {
             name: name.clone(),
@@ -394,31 +398,36 @@ fn hand_call_payloads_match_generated_encoding() {
         (MontyObject::String("count".to_owned()), MontyObject::Int(3)),
     ];
 
-    let hand_call = WireFunctionCall {
-        function_name: "external".to_owned(),
-        args: args.clone(),
-        kwargs: kwargs.clone(),
-        call_id: 42,
-        method_call: true,
-    };
-    let generated_call = oracle::FunctionCall {
-        function_name: "external".to_owned(),
-        args: args.iter().map(to_oracle).collect(),
-        kwargs: oracle_pairs(&kwargs),
-        call_id: 42,
-        method_call: true,
-    };
-    assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
-    assert_eq!(
-        WireFunctionCall::decode(generated_call.encode_to_vec().as_slice()).expect("generated function call decodes"),
-        hand_call
-    );
-    assert_eq!(
-        oracle::FunctionCall::decode(hand_call.encode_to_vec().as_slice())
-            .expect("hand function call decodes")
-            .encode_to_vec(),
-        generated_call.encode_to_vec()
-    );
+    // Both presence states of `instance_id`: a method call (Some, including
+    // the explicit-presence 0 case) and a plain external call (None).
+    for instance_id in [Some(7u64), Some(0), None] {
+        let hand_call = WireFunctionCall {
+            function_name: "external".to_owned(),
+            args: args.clone(),
+            kwargs: kwargs.clone(),
+            call_id: 42,
+            instance_id,
+        };
+        let generated_call = oracle::FunctionCall {
+            function_name: "external".to_owned(),
+            args: args.iter().map(to_oracle).collect(),
+            kwargs: oracle_pairs(&kwargs),
+            call_id: 42,
+            instance_id,
+        };
+        assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
+        assert_eq!(
+            WireFunctionCall::decode(generated_call.encode_to_vec().as_slice())
+                .expect("generated function call decodes"),
+            hand_call
+        );
+        assert_eq!(
+            oracle::FunctionCall::decode(hand_call.encode_to_vec().as_slice())
+                .expect("hand function call decodes")
+                .encode_to_vec(),
+            generated_call.encode_to_vec()
+        );
+    }
 
     // `OsCall` is fully generated, but its `Getenv.default` field embeds the
     // hand-written `WireObject` — check the embedding agrees with the oracle

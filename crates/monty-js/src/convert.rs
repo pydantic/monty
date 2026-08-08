@@ -22,13 +22,13 @@
 //! - `MontyObject::Exception` → `{ __monty_type__: 'Exception', excType, message }`
 //! - `MontyObject::Type` → `{ __monty_type__: 'Type', value }`
 //! - `MontyObject::BuiltinFunction` → `{ __monty_type__: 'BuiltinFunction', value }`
-//! - `MontyObject::Dataclass` → `{ __monty_type__: 'Dataclass', name, fields, ... }`
+//! - `MontyObject::ClassInstance` → `{ __monty_type__: 'ClassInstance', name, instanceId, typeId, attrs, frozen, isDataclass }`
 //! - `MontyObject::FileHandle` ↔ `{ __monty_type__: 'FileHandle', path, mode, position }`
 //! - `MontyObject::Repr` → plain `string`
 //! - `MontyObject::Cycle` → placeholder `string`
 #![expect(unsafe_code, reason = "napi API is unsafe")]
 
-use std::{borrow::Cow, collections::HashMap, ptr};
+use std::{borrow::Cow, ptr};
 
 use monty_types::{
     DictPairs, ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
@@ -82,13 +82,14 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
         MontyObject::TimeZone(timezone) => create_js_timezone(timezone, env)?,
         MontyObject::Type(t) => create_js_type_marker(&t.to_string(), env)?,
         MontyObject::BuiltinFunction(f) => create_js_builtin_function_marker(&f.to_string(), env)?,
-        MontyObject::Dataclass {
+        MontyObject::ClassInstance {
             name,
+            instance_id,
             type_id,
-            field_names,
             attrs,
             frozen,
-        } => create_js_dataclass(name, *type_id, field_names, attrs, *frozen, env)?,
+            is_dataclass,
+        } => create_js_class_instance(name, *instance_id, *type_id, attrs, *frozen, *is_dataclass, env)?,
         MontyObject::Path(p) => env.create_string(p)?.into_unknown(env)?,
         MontyObject::FileHandle(handle) => create_js_file_handle(handle, env)?,
         MontyObject::Repr(s) | MontyObject::Cycle(_, s) => env.create_string(s)?.into_unknown(env)?,
@@ -389,70 +390,49 @@ fn create_js_file_handle<'e>(handle: &MontyFileHandle, env: &'e Env) -> Result<U
     obj.into_unknown(env)
 }
 
-/// Creates a JS object representing a dataclass instance.
-fn create_js_dataclass<'e>(
+/// Creates the `ClassInstance` marker object for a class instance crossing
+/// out of the sandbox.
+///
+/// `attrs` crosses as an array of `[name, value]` pairs (order preserved,
+/// non-string keys skipped) rather than a plain object: attr names are
+/// sandbox-controlled, and pair entries cannot clobber a prototype the way
+/// `obj[k] = v` on a plain object could. The TS layer converts the marker to
+/// the original wrapped instance or a `MontyClassInstance` proxy.
+fn create_js_class_instance<'e>(
     name: &str,
+    instance_id: u64,
     type_id: u64,
-    field_names: &[String],
     attrs: &DictPairs,
     frozen: bool,
+    is_dataclass: bool,
     env: &'e Env,
 ) -> Result<Unknown<'e>> {
     let mut obj = Object::new(env)?;
-    obj.set_named_property("__monty_type__", "Dataclass")?;
+    obj.set_named_property("__monty_type__", "ClassInstance")?;
     obj.set_named_property("name", name)?;
 
-    // type_id as BigInt since it may exceed JS safe integer range
-    let type_id_bigint = BigInt::from(type_id);
-    obj.set_named_property("typeId", type_id_bigint)?;
+    // ids as BigInt since they may exceed the JS safe integer range
+    obj.set_named_property("instanceId", BigInt::from(instance_id))?;
+    obj.set_named_property("typeId", BigInt::from(type_id))?;
 
-    let mut field_names_arr =
-        env.create_array(field_names.len().try_into().expect("field_names size overflows u32"))?;
-    for (i, field_name) in field_names.iter().enumerate() {
-        field_names_arr.set(
-            i.try_into().expect("overflow on field_names index"),
-            env.create_string(field_name)?,
-        )?;
-    }
-    obj.set_named_property("fieldNames", field_names_arr)?;
-
-    let attrs_map: HashMap<&str, &MontyObject> = attrs
+    let string_pairs: Vec<(&String, &MontyObject)> = attrs
         .into_iter()
-        .filter_map(|(k, v)| {
-            if let MontyObject::String(key) = k {
-                Some((key.as_str(), v))
-            } else {
-                None
-            }
+        .filter_map(|(k, v)| match k {
+            MontyObject::String(key) => Some((key, v)),
+            _ => None,
         })
         .collect();
-
-    // Field names are sandbox-controlled: assigning them with plain `obj[k] =
-    // v` ([[Set]] semantics) would let a field named `__proto__` replace the
-    // object's prototype. `define_properties` uses [[DefineOwnProperty]],
-    // which always creates an own property instead.
-    let mut fields_obj = Object::new(env)?;
-    let mut field_values = Vec::with_capacity(field_names.len());
-    for field_name in field_names {
-        if let Some(value) = attrs_map.get(field_name.as_str()) {
-            field_values.push((field_name, monty_to_js(value, env)?));
-        }
+    let mut attrs_arr = env.create_array(string_pairs.len().try_into().expect("attrs size overflows u32"))?;
+    for (i, (key, value)) in string_pairs.into_iter().enumerate() {
+        let mut pair = env.create_array(2)?;
+        pair.set(0, env.create_string(key)?)?;
+        pair.set(1, monty_to_js(value, env)?)?;
+        attrs_arr.set(i.try_into().expect("overflow on attrs index"), pair)?;
     }
-    let properties = field_values
-        .iter()
-        .map(|(field_name, js_value)| {
-            Ok(Property::new()
-                .with_utf8_name(field_name)?
-                .with_value(&js_value.0)
-                .with_property_attributes(
-                    PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable,
-                ))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    fields_obj.define_properties(&properties)?;
-    obj.set_named_property("fields", fields_obj)?;
+    obj.set_named_property("attrs", attrs_arr)?;
 
     obj.set_named_property("frozen", frozen)?;
+    obj.set_named_property("isDataclass", is_dataclass)?;
 
     obj.into_unknown(env)
 }
@@ -722,47 +702,55 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
             let position = get_file_handle_position(obj)?;
             Ok(MontyObject::FileHandle(MontyFileHandle { path, mode, position }))
         }
-        "Dataclass" => {
+        "ClassInstance" => {
             let name: String = obj.get_named_property("name")?;
+            let instance_id = get_u64_bigint_property(obj, "instanceId", "ClassInstance")?;
+            let type_id = get_u64_bigint_property(obj, "typeId", "ClassInstance")?;
 
-            let type_id_bigint: BigInt = obj.get_named_property("typeId")?;
-            let type_id = if type_id_bigint.words.is_empty() {
-                0u64
-            } else if type_id_bigint.sign_bit {
-                return Err(Error::from_reason("Dataclass typeId cannot be negative"));
-            } else {
-                type_id_bigint.words[0]
-            };
-
-            let field_names_arr: Array = obj.get_named_property("fieldNames")?;
-            let field_names_len = field_names_arr.len();
-            let mut field_names = Vec::with_capacity(field_names_len as usize);
-            for i in 0..field_names_len {
-                let name: String = field_names_arr.get::<String>(i)?.unwrap_or_default();
-                field_names.push(name);
+            let attrs_arr: Array = obj.get_named_property("attrs")?;
+            let mut attrs_vec = Vec::with_capacity(attrs_arr.len() as usize);
+            for i in 0..attrs_arr.len() {
+                let Some(pair) = attrs_arr.get::<Array>(i)? else {
+                    return Err(Error::from_reason(
+                        "ClassInstance attrs entries must be [name, value] pairs",
+                    ));
+                };
+                let key: String = pair
+                    .get::<String>(0)?
+                    .ok_or_else(|| Error::from_reason("ClassInstance attr name must be a string"))?;
+                let value = pair
+                    .get::<Unknown>(1)?
+                    .ok_or_else(|| Error::from_reason("ClassInstance attr value missing"))?;
+                attrs_vec.push((MontyObject::String(key), js_to_monty(value, env)?));
             }
-
-            let fields_obj: Object = obj.get_named_property("fields")?;
-            let mut attrs_vec = Vec::new();
-            for field_name in &field_names {
-                if let Some(value) = fields_obj.get_named_property::<Option<Unknown>>(field_name.as_str())? {
-                    let monty_value = js_to_monty(value, env)?;
-                    attrs_vec.push((MontyObject::String(field_name.clone()), monty_value));
-                }
-            }
-            let attrs = DictPairs::from(attrs_vec);
 
             let frozen: bool = obj.get_named_property("frozen")?;
+            let is_dataclass: bool = obj.get_named_property("isDataclass")?;
 
-            Ok(MontyObject::Dataclass {
+            Ok(MontyObject::ClassInstance {
                 name,
+                instance_id,
                 type_id,
-                field_names,
-                attrs,
+                attrs: DictPairs::from(attrs_vec),
                 frozen,
+                is_dataclass,
             })
         }
         _ => Err(Error::from_reason(format!("Unknown Monty marker type: {monty_type}"))),
+    }
+}
+
+/// Reads a non-negative `u64` BigInt property (instance/type ids).
+fn get_u64_bigint_property(obj: &Object, key: &str, type_name: &str) -> Result<u64> {
+    let bigint: BigInt = obj.get_named_property(key)?;
+    if bigint.words.is_empty() {
+        Ok(0)
+    } else if bigint.sign_bit || bigint.words.len() > 1 {
+        Err(Error::from_reason(format!(
+            "{type_name} {key} must be a non-negative u64 BigInt"
+        )))
+    } else {
+        Ok(bigint.words[0])
     }
 }
 

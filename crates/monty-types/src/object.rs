@@ -121,22 +121,27 @@ pub enum MontyObject {
     Path(String),
     /// An open file object (the result of `open()`).
     FileHandle(MontyFileHandle),
-    /// A dataclass instance with class name, field names, attributes, and mutability.
+    /// A class instance crossing the sandbox boundary.
     ///
-    /// Method calls are detected lazily at runtime: when `call_attr` is invoked
-    /// on a dataclass and the attribute name is not found in `attrs`, it is
-    /// dispatched as a `MethodCall` to the host (provided the name is public).
-    Dataclass {
+    /// Host-backed instances carry the host's `id(obj)` as `instance_id`, so
+    /// method calls and lazy attribute lookups on names missing from `attrs`
+    /// suspend back to the host, routed by that id (public names only).
+    /// Sandbox-defined instances cross outward with `instance_id` 0.
+    ClassInstance {
         /// The class name (e.g., "Point", "User").
         name: String,
-        /// Identifier of the type, from `id(type(dc))` in python.
+        /// Identity of the instance, from `id(obj)` on the host; 0 when the
+        /// instance was defined inside the sandbox (not host-backed).
+        instance_id: u64,
+        /// Identity of the class, from `id(type(obj))` on the host; 0 for
+        /// sandbox-defined instances.
         type_id: u64,
-        /// Declared field names in definition order (for repr).
-        field_names: Vec<String>,
-        /// All attribute name -> value mapping (includes fields and extra attrs).
+        /// Eagerly-sent attribute name -> value mapping, in order.
         attrs: DictPairs,
-        /// Whether this dataclass instance is immutable.
+        /// Whether the instance rejects `setattr` with `FrozenInstanceError`.
         frozen: bool,
+        /// Whether `dataclasses.is_dataclass(obj)` is true on the origin side.
+        is_dataclass: bool,
     },
     /// An external function provided by the host.
     ///
@@ -232,7 +237,7 @@ impl MontyObject {
             Self::NamedTuple {
                 type_name, field_names, ..
             } => type_name.len() + names_len(field_names),
-            Self::Dataclass { name, field_names, .. } => name.len() + names_len(field_names),
+            Self::ClassInstance { name, .. } => name.len(),
             // A `Type::Instance` carries the resolved class name as an owned leaf
             // `String` (the other `MontyType`s are payload-free), so charge it here
             // like the `String`/`Function`/... names above.
@@ -263,7 +268,7 @@ impl MontyObject {
                     size = size.saturating_add(item.deep_host_size());
                 }
             }
-            Self::Dict(pairs) | Self::Dataclass { attrs: pairs, .. } => {
+            Self::Dict(pairs) | Self::ClassInstance { attrs: pairs, .. } => {
                 for (key, value) in pairs {
                     size = size
                         .saturating_add(key.deep_host_size())
@@ -489,31 +494,22 @@ impl MontyObject {
                 }
                 f.write_char(')')
             }
-            Self::Dataclass {
-                name,
-                field_names,
-                attrs,
-                ..
-            } => {
-                // Format: ClassName(field1=value1, field2=value2, ...)
-                // Only declared fields are shown, not extra attributes
+            Self::ClassInstance { name, attrs, .. } => {
+                // Format: ClassName(attr1=value1, attr2=value2, ...) over the
+                // eager attrs in order. Non-string keys are defensive: inputs
+                // are host-built, so render them via repr rather than panic.
                 f.write_str(name)?;
                 f.write_char('(')?;
-                let mut first = true;
-                for field_name in field_names {
-                    if !first {
+                for (i, (key, value)) in attrs.iter().enumerate() {
+                    if i > 0 {
                         f.write_str(", ")?;
                     }
-                    first = false;
-                    f.write_str(field_name)?;
-                    f.write_char('=')?;
-                    // Look up value in attrs
-                    let key = Self::String(field_name.clone());
-                    if let Some(value) = attrs.iter().find(|(k, _)| k == &key).map(|(_, v)| v) {
-                        value.repr_fmt(f)?;
-                    } else {
-                        f.write_str("<?>")?;
+                    match key {
+                        Self::String(key) => f.write_str(key)?,
+                        other => other.repr_fmt(f)?,
                     }
+                    f.write_char('=')?;
+                    value.repr_fmt(f)?;
                 }
                 f.write_char(')')
             }
@@ -559,9 +555,9 @@ impl MontyObject {
             Self::TimeDelta(delta) => delta.days != 0 || delta.seconds != 0 || delta.microseconds != 0,
             Self::TimeZone(_) => true,
             Self::Exception { .. } => true,
-            Self::Path(_) => true,           // Path instances are always truthy
-            Self::FileHandle { .. } => true, // File objects are always truthy
-            Self::Dataclass { .. } => true,  // Dataclass instances are always truthy
+            Self::Path(_) => true,              // Path instances are always truthy
+            Self::FileHandle { .. } => true,    // File objects are always truthy
+            Self::ClassInstance { .. } => true, // class instances are always truthy
             Self::Type(_) | Self::BuiltinFunction(_) | Self::Function { .. } | Self::Repr(_) | Self::Cycle(_, _) => {
                 true
             }
@@ -596,7 +592,7 @@ impl MontyObject {
             Self::Exception { .. } => "Exception",
             Self::Path(_) => "PosixPath",
             Self::FileHandle(handle) => handle.mode.type_name(),
-            Self::Dataclass { .. } => "dataclass",
+            Self::ClassInstance { .. } => "HostClass",
             Self::Type(_) => "type",
             Self::BuiltinFunction(_) => "builtin_function_or_method",
             Self::Function { .. } => "function",
@@ -703,26 +699,29 @@ impl PartialEq for MontyObject {
                 },
             ) => a_type == b_type && a_arg == b_arg,
             (
-                Self::Dataclass {
+                Self::ClassInstance {
                     name: a_name,
+                    instance_id: a_instance_id,
                     type_id: a_type_id,
-                    field_names: a_field_names,
                     attrs: a_attrs,
                     frozen: a_frozen,
+                    is_dataclass: a_is_dataclass,
                 },
-                Self::Dataclass {
+                Self::ClassInstance {
                     name: b_name,
+                    instance_id: b_instance_id,
                     type_id: b_type_id,
-                    field_names: b_field_names,
                     attrs: b_attrs,
                     frozen: b_frozen,
+                    is_dataclass: b_is_dataclass,
                 },
             ) => {
                 a_name == b_name
+                    && a_instance_id == b_instance_id
                     && a_type_id == b_type_id
-                    && a_field_names == b_field_names
                     && a_attrs == b_attrs
                     && a_frozen == b_frozen
+                    && a_is_dataclass == b_is_dataclass
             }
             (Self::Path(a), Self::Path(b)) => a == b,
             (
@@ -833,7 +832,11 @@ pub enum MontyType {
     DictValues,
     Set,
     FrozenSet,
-    Dataclass,
+    /// The type of a host-backed class instance ([`MontyObject::ClassInstance`]).
+    /// A static placeholder — the real class name appears in error messages and
+    /// reprs, but `type(x)` renders as `HostClass`.
+    #[strum(serialize = "HostClass")]
+    HostClass,
     /// An instance of a sandbox-defined class (`class Foo: ...`), carrying the
     /// resolved class name (e.g. `"Foo"`). Output-only — rejected as an input.
     ///

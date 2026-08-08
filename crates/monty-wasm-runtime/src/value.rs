@@ -13,8 +13,8 @@ use monty_types::{
 };
 
 use crate::bindings::exports::pydantic::monty::worker::{
-    CycleNode, DataclassNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode, FunctionNode, NamedTupleNode,
-    NodePair, TimeNode, TimedeltaNode, TimezoneNode, Value, ValueNode,
+    ClassInstanceNode, CycleNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode, FunctionNode,
+    NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, Value, ValueNode,
 };
 
 /// Remaining expanded-value allowance shared by every arena in one request.
@@ -83,7 +83,7 @@ fn node_host_size(node: &ValueNode) -> usize {
         ValueNode::Timezone(value) => value.name.as_ref().map_or(0, String::len),
         ValueNode::Exception(value) => value.message.as_ref().map_or(0, String::len),
         ValueNode::FileHandle(value) => value.path.len(),
-        ValueNode::Dataclass(value) => value.name.len().saturating_add(strings_size(&value.field_names)),
+        ValueNode::ClassInstance(value) => value.name.len(),
         ValueNode::Function(value) => value
             .name
             .len()
@@ -215,12 +215,13 @@ fn read_node(index: u32, nodes: &mut [Option<ValueNode>], depth: usize) -> Resul
             mode: value.mode.parse::<FileMode>().map_err(Cow::into_owned)?,
             position: value.position,
         }),
-        ValueNode::Dataclass(value) => MontyObject::Dataclass {
+        ValueNode::ClassInstance(value) => MontyObject::ClassInstance {
             name: value.name,
+            instance_id: value.instance_id,
             type_id: value.type_id,
-            field_names: value.field_names,
             attrs: read_pairs(value.attrs, nodes, depth)?.into(),
             frozen: value.frozen,
+            is_dataclass: value.is_dataclass,
         },
         ValueNode::Function(value) => MontyObject::Function {
             name: value.name,
@@ -417,18 +418,20 @@ fn push_node(object: MontyObject, nodes: &mut Vec<ValueNode>) -> u32 {
             mode: value.mode.as_str().to_owned(),
             position: value.position,
         }),
-        MontyObject::Dataclass {
+        MontyObject::ClassInstance {
             name,
+            instance_id,
             type_id,
-            field_names,
             attrs,
             frozen,
-        } => ValueNode::Dataclass(DataclassNode {
+            is_dataclass,
+        } => ValueNode::ClassInstance(ClassInstanceNode {
             name,
+            instance_id,
             type_id,
-            field_names,
             attrs: push_pairs(attrs, nodes),
             frozen,
+            is_dataclass,
         }),
         MontyObject::Function { name, docstring } => ValueNode::Function(FunctionNode { name, docstring }),
         MontyObject::Repr(value) => ValueNode::Repr(value),

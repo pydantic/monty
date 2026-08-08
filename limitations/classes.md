@@ -22,9 +22,11 @@ class Foo:
 
 See `test_cases/class__basic.py` and `test_cases/class__repr.py`.
 
-The host can also construct dataclass and namedtuple values (using the
-`MontyObject` API) and pass them in; those are a separate mechanism whose
-methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
+The host can also send its own class instances in (wrapped in a
+`ClassInstance` policy wrapper) and namedtuple values; those are a separate
+mechanism whose method calls and lazy attribute lookups dispatch back to the
+host, routed by the instance's host `id()` (see
+`test_cases/dataclass__basic.py` and "Host class instances" below).
 
 ## Supported surface
 
@@ -151,24 +153,52 @@ order and error wording, but with these divergences:
 
 ## Crossing the host boundary (`pydantic_monty` / `@pydantic/monty`)
 
-TODO: change dataclasses to `class` and use that.
-
-A user-defined **class object or instance has no faithful host representation**.
-When one is returned to a host caller as a run's result value, it is converted
-to its `repr()` **string**, not a proxy or a value that preserves attributes:
+A sandbox-defined class **instance** crosses out structurally: the host
+receives a read-only `MontyClassInstance` proxy with `.name`, `.is_dataclass`,
+and `.attributes` (the instance `__dict__`, converted). The host cannot call
+methods on it — the method code lives inside the sandbox, and the proxy holds
+no live object (`instance_id` 0 on the wire means "not host-backed").
 
 ```python
-result = session.feed_run('class A:\n    x = 1\nA()')
-# result is the str '<A object at 0x..>', NOT an object with `.x`
+result = session.feed_run('class A:\n    def __init__(self):\n        self.x = 1\nA()')
+# result is MontyClassInstance(name='A', attributes={'x': 1})
 ```
 
-`A` (the class) and `A()` (an instance) both surface as their repr text (e.g.
-`"<class 'A'>"` and `"<A object at 0x..>"`), so the host cannot read
-attributes, call methods, or reconstruct the object. Monty does round-trip
-other values structurally: numbers, str/bytes, list/tuple/dict/set,
-datetimes, and host-supplied dataclasses/namedtuples, which dispatch back to
-the host. To return class data to the host, convert it inside the sandbox
-first, e.g. return a `dict` of the fields.
+A sandbox-defined class **object** (`A` itself) still has no structural host
+representation and surfaces as its type text (e.g. `"<class 'A'>"`). A user
+`__repr__` is NOT consulted when an instance crosses the boundary — the host
+gets the structured proxy, not the repr string.
+
+## Host class instances (`ClassInstance` wrapper)
+
+Host objects enter the sandbox only when explicitly wrapped in the host
+package's `ClassInstance` policy wrapper (passing a bare dataclass or class
+instance as an input raises `TypeError`). Inside the sandbox they are proxies
+whose eager attrs were copied at send time; everything else routes back to the
+host by the instance's `id()`. Divergences from real CPython objects:
+
+- **`type(x)` reports the placeholder `HostClass`**, not the real class. The
+  real class name is used in `repr()` and attribute error messages, but
+  messages that name the *type* (e.g. `unhashable type: 'HostClass'`) show
+  the placeholder where CPython would show the class name.
+- **`repr()` shows all eager attrs in order** (`Point(x=1, y=2)`). After
+  sandbox code sets a new attribute, that attribute appears in the repr too —
+  CPython's dataclass repr shows declared fields only.
+- **Lazy attribute lookups suspend only for `obj.attr` syntax.** `getattr()`
+  and `hasattr()` resolve locally: a lazily-served attribute reads as absent
+  (`hasattr` → `False`, `getattr` raises/returns the default). Underscore-
+  prefixed names never consult the host (dunder probes stay local).
+- **Lazy lookups are not cached**: every access is a fresh host round trip,
+  and host-side mutations between accesses are visible. Eager attrs are a
+  snapshot — host-side mutations after send are NOT visible, and sandbox
+  `setattr` does not affect the host object.
+- **Equality and hashing use the eager attrs only** (same class + equal
+  attrs; frozen instances are hashable); methods like a custom `__eq__` are
+  not consulted.
+- **`dataclasses.fields()` / `asdict()` do not work on host instances**;
+  `dataclasses.is_dataclass(x)` returns the flag the host sent.
+- Returning a host-sent instance hands the host back the **original object**
+  (identity preserved), discarding any sandbox-side attr mutations.
 
 ## What does NOT exist for user code
 
@@ -307,8 +337,10 @@ type: Monty has no inheritance, so there is no base class for it to be.
 
 ## `FrozenInstanceError`
 
-Raised when assigning to a field of a frozen dataclass — host-supplied, or
-declared in the sandbox with `@dataclass(frozen=True)` (see ./dataclasses.md).
-Subclass of `AttributeError`, so `except AttributeError:` catches it, as in
-CPython's `dataclasses` module. A plain `class` is never frozen, and
+Raised when assigning to an attribute of a frozen host-supplied class
+instance (frozen dataclasses auto-detect; other objects opt in via the
+wrapper), or to a field of a dataclass declared in the sandbox with
+`@dataclass(frozen=True)` (see ./dataclasses.md). Subclass of
+`AttributeError`, so `except AttributeError:` catches it, as in CPython's
+`dataclasses` module. A plain `class` is never frozen, and
 `object.__setattr__` writes past the check either way.

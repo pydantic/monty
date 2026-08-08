@@ -16,8 +16,9 @@ use crate::{
     exception_private::{RunError, SimpleException},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapReadOutput},
     intern::Interns,
+    modules::dataclasses,
     types::{
-        Dataclass, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type, allocate_tuple,
+        HostClass, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type, allocate_tuple,
         bytes::Bytes,
         date as date_type, datetime as datetime_type,
         dict::Dict,
@@ -213,18 +214,24 @@ impl MontyObjectExt for MontyObject {
                 let exc = SimpleException::new(exc_type, arg);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(exc))))
             }
-            Self::Dataclass {
+            // Always allocated host-backed, even for instance_id 0 (a
+            // round-tripped sandbox instance): the interpreter cannot rebuild
+            // the original class binding, so method calls / lazy lookups on an
+            // id-0 instance surface with instance_id 0 and hosts answer
+            // Undefined, which raises AttributeError.
+            Self::ClassInstance {
                 name,
+                instance_id,
                 type_id,
-                field_names,
                 attrs,
                 frozen,
+                is_dataclass,
             } => {
                 let pairs = convert_pairs(attrs, vm)?;
                 let dict = Dict::from_pairs(pairs, vm)
-                    .map_err(|_| InvalidInputError::invalid_type("unhashable dataclass attr keys"))?;
-                let dc = Dataclass::new(name, type_id, field_names, dict, frozen);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Dataclass(Box::new(dc)))))
+                    .map_err(|_| InvalidInputError::invalid_type("unhashable class instance attr keys"))?;
+                let hc = HostClass::new(name, instance_id, type_id, dict, frozen, is_dataclass);
+                Ok(Value::Ref(vm.heap.allocate(HeapData::HostClass(Box::new(hc)))))
             }
             Self::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s))))),
             Self::FileHandle(handle) => {
@@ -472,25 +479,48 @@ impl MontyObjectExt for MontyObject {
                             arg: exc_ref.arg().map(ToString::to_string),
                         }
                     }
-                    HeapReadOutput::Dataclass(dc) => {
-                        let (name, type_id, field_names, frozen) = {
-                            let dc_ref = dc.get(vm.heap);
+                    HeapReadOutput::HostClass(hc) => {
+                        let (name, instance_id, type_id, frozen, is_dataclass) = {
+                            let hc_ref = hc.get(vm.heap);
                             (
-                                dc_ref.name(vm.interns).to_owned(),
-                                dc_ref.type_id(),
-                                dc_ref.field_names().to_vec(),
-                                dc_ref.is_frozen(),
+                                hc_ref.name(vm.interns).to_owned(),
+                                hc_ref.instance_id(),
+                                hc_ref.type_id(),
+                                hc_ref.is_frozen(),
+                                hc_ref.is_dataclass(),
                             )
                         };
                         // Snapshot before recursing: attrs are mutable via `setattr`.
-                        let children = snapshot_dict_pairs(dc.get(vm.heap).attrs(), vm.heap);
+                        let children = snapshot_dict_pairs(hc.get(vm.heap).attrs(), vm.heap);
                         defer_drop!(children, vm);
-                        Self::Dataclass {
+                        Self::ClassInstance {
                             name,
+                            instance_id,
                             type_id,
-                            field_names,
                             attrs: pairs_to_objects(children, vm, visited).into(),
                             frozen,
+                            is_dataclass,
+                        }
+                    }
+                    // Sandbox-defined class instances cross out structured
+                    // (instance_id/type_id 0 = not host-backed) rather than as a
+                    // repr string, so hosts get name + attrs + dataclass-ness.
+                    // Class *objects* keep their type representation.
+                    HeapReadOutput::Instance(inst) => {
+                        let class_id = inst.get(vm.heap).class();
+                        let name = class_name(class_id, vm.heap, vm.interns).into_owned();
+                        let is_dataclass = dataclasses::dataclass_fields(class_id, vm).is_some();
+                        // Snapshot before recursing: attrs are mutable via `setattr`.
+                        let children = snapshot_dict_pairs(inst.get(vm.heap).attrs(), vm.heap);
+                        defer_drop!(children, vm);
+                        Self::ClassInstance {
+                            name,
+                            instance_id: 0,
+                            type_id: 0,
+                            attrs: pairs_to_objects(children, vm, visited).into(),
+                            // native `@dataclass` does not support `frozen=True`
+                            frozen: false,
+                            is_dataclass,
                         }
                     }
                     // Iterators are internal objects — represent as a fixed type
@@ -629,7 +659,7 @@ impl MontyTypeExt for MontyType {
             Self::DictValues => Some(Type::DictValues),
             Self::Set => Some(Type::Set),
             Self::FrozenSet => Some(Type::FrozenSet),
-            Self::Dataclass => Some(Type::Dataclass),
+            Self::HostClass => Some(Type::HostClass),
             Self::Instance(_) => None,
             Self::Exception(exc_type) => Some(Type::Exception(*exc_type)),
             Self::Function => Some(Type::Function),
@@ -717,7 +747,7 @@ impl MontyTypeExt for MontyType {
             Type::DictValues => Self::DictValues,
             Type::Set => Self::Set,
             Type::FrozenSet => Self::FrozenSet,
-            Type::Dataclass => Self::Dataclass,
+            Type::HostClass => Self::HostClass,
             Type::Instance(_) => unreachable!("Type::Instance requires heap access — use MontyType::from_internal"),
             Type::Exception(exc_type) => Self::Exception(exc_type),
             Type::Function => Self::Function,

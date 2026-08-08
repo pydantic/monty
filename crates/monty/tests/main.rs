@@ -28,21 +28,22 @@ fn test_get_interned_string() {
     assert_eq!(int_value, "foobar");
 }
 
-/// Test that calling a method on a dataclass in standard execution mode
-/// (without iter/external function support) returns a NotImplementedError.
+/// Test that calling a method on a host class instance in standard execution
+/// mode (without iter/external function support) returns a NotImplementedError.
 /// This exercises the `FrameExit::MethodCall` path in `frame_exit_to_object`.
 #[test]
-fn dataclass_method_call_in_standard_mode_errors() {
-    let point = MontyObject::Dataclass {
+fn class_instance_method_call_in_standard_mode_errors() {
+    let point = MontyObject::ClassInstance {
         name: "Point".to_string(),
+        instance_id: 1,
         type_id: 0,
-        field_names: vec!["x".to_string(), "y".to_string()],
         attrs: vec![
             (MontyObject::String("x".to_string()), MontyObject::Int(1)),
             (MontyObject::String("y".to_string()), MontyObject::Int(2)),
         ]
         .into(),
         frozen: true,
+        is_dataclass: true,
     };
 
     let ex = MontyRun::new(
@@ -346,13 +347,26 @@ fn dynamic_type_with_non_string_key_raises_type_error() {
     );
 }
 
-// === Result-conversion reentrancy tests ===
-// Converting a result to `MontyObject` can run a user `__repr__` on nested
-// instances; a `__repr__` that mutates the containing collection must not
-// panic the conversion (children are snapshotted before recursing).
+// === Instance output-conversion tests ===
+// Sandbox-defined class instances convert structurally (ClassInstance with
+// instance_id 0), so a user `__repr__` — which used to run during conversion
+// and could mutate the containing collection — is no longer invoked at all.
+// These containers keep all elements, and `Evil.__repr__` never fires.
+
+/// Structured `ClassInstance` a sandbox `Evil()` instance converts to.
+fn evil_instance() -> MontyObject {
+    MontyObject::ClassInstance {
+        name: "Evil".to_owned(),
+        instance_id: 0,
+        type_id: 0,
+        attrs: vec![].into(),
+        frozen: false,
+        is_dataclass: false,
+    }
+}
 
 #[test]
-fn output_list_mutated_by_nested_repr() {
+fn output_list_with_nested_instance() {
     let code = "\
 class Evil:
     def __repr__(self):
@@ -365,16 +379,12 @@ lst";
     let result = ex.run_no_limits(vec![]).unwrap();
     assert_eq!(
         result,
-        MontyObject::List(vec![
-            MontyObject::Repr("evil".to_owned()),
-            MontyObject::Int(1),
-            MontyObject::Int(2),
-        ])
+        MontyObject::List(vec![evil_instance(), MontyObject::Int(1), MontyObject::Int(2)])
     );
 }
 
 #[test]
-fn output_dict_mutated_by_nested_repr() {
+fn output_dict_with_nested_instance() {
     let code = "\
 class Evil:
     def __repr__(self):
@@ -389,10 +399,7 @@ d";
         result,
         MontyObject::Dict(
             vec![
-                (
-                    MontyObject::String("k".to_owned()),
-                    MontyObject::Repr("evil".to_owned())
-                ),
+                (MontyObject::String("k".to_owned()), evil_instance()),
                 (MontyObject::String("a".to_owned()), MontyObject::Int(1)),
             ]
             .into()
@@ -401,7 +408,7 @@ d";
 }
 
 #[test]
-fn output_deque_mutated_by_nested_repr() {
+fn output_deque_with_nested_instance() {
     let code = "\
 from collections import deque
 
@@ -416,10 +423,6 @@ d";
     let result = ex.run_no_limits(vec![]).unwrap();
     assert_eq!(
         result,
-        MontyObject::List(vec![
-            MontyObject::Repr("evil".to_owned()),
-            MontyObject::Int(1),
-            MontyObject::Int(2),
-        ])
+        MontyObject::List(vec![evil_instance(), MontyObject::Int(1), MontyObject::Int(2)])
     );
 }

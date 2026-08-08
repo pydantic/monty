@@ -1,9 +1,15 @@
 # `dataclasses` module
 
 Native, in-sandbox `@dataclass`: sandboxed code can define its own dataclasses,
-executed entirely inside the sandbox. Host-supplied dataclasses are a separate
-mechanism, passed in and dispatching back to the host (see
-./classes.md).
+executed entirely inside the sandbox (unlike host-supplied class instances,
+which enter via the `ClassInstance` wrapper and dispatch back to the host —
+see [classes.md](classes.md)).
+
+Host-supplied instances and this module barely interact:
+`dataclasses.is_dataclass(x)` honours the flag the host sent, but `fields()`
+and `asdict()` do not work on host instances (they are not native
+dataclasses). Bare dataclasses are NOT accepted as inputs — the host must
+wrap them in `ClassInstance` explicitly.
 
 ## Unsupported
 

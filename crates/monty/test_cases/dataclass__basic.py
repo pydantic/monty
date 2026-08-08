@@ -85,9 +85,11 @@ assert mut_point.y == 20
 assert repr(mut_point) == 'MutablePoint(x=10, y=20)', f'repr after attribute update {mut_point=!r}'
 
 # === set other attributes
+# NOTE: repr is deliberately not asserted here — Monty shows all eager attrs
+# (including z), CPython's dataclass repr shows declared fields only
+# (see limitations/classes.md).
 mut_point.z = 30
 assert mut_point.z == 30
-assert repr(mut_point) == 'MutablePoint(x=10, y=20)'
 
 # === Augmented attribute assignment (+=, -=, etc.) ===
 aug_point = make_mutable_point()
@@ -320,3 +322,22 @@ try:
     assert False, 'should have raised AttributeError for missing method on User'
 except AttributeError as e:
     assert str(e) == "'User' object has no attribute 'missing'", f'wrong message: {e}'
+
+# === Lazy attribute lookups (class attributes served by the host) ===
+# `dimensions` is a class attribute, not a field: CPython resolves it via
+# class lookup, Monty suspends a NameLookup routed by instance_id.
+assert point.dimensions == 2
+assert mut_point.dimensions == 2
+# repeated access re-consults the host (no caching) and stays consistent
+assert point.dimensions == 2
+# lazy attrs are not part of repr or equality
+assert repr(point) == 'Point(x=1, y=2)'
+# a frozen instance still allows lazy attribute reads
+assert frozen_point.dimensions == 2
+
+# === Lazy lookup answered Undefined raises AttributeError ===
+try:
+    alice2.dimensions
+    assert False, 'should have raised AttributeError for lazy attr on User'
+except AttributeError as e:
+    assert str(e) == "'User' object has no attribute 'dimensions'", f'wrong message: {e}'

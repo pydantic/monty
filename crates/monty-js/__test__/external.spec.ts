@@ -399,11 +399,11 @@ except TypeError as exc:
     caught = str(exc)
 caught
 `
-  // a Dataclass marker without its fieldNames array
-  const bad = () => ({ __monty_type__: 'Dataclass', name: 'Broken' })
+  // a ClassInstance marker without its instanceId / typeId / attrs fields
+  const bad = () => ({ __monty_type__: 'ClassInstance', name: 'Broken' })
   t.is(
     await run(code, { externalLookup: { bad } }),
-    "Object property 'typeId' type mismatch. Expect value to be BigInt, but received Undefined",
+    "Object property 'instanceId' type mismatch. Expect value to be BigInt, but received Undefined",
   )
 })
 

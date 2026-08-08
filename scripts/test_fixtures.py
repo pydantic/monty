@@ -51,6 +51,10 @@ class Point:
     x: int
     y: int
 
+    # Class attribute (not a field): CPython resolves it via class lookup,
+    # Monty via a lazy instance NameLookup answered by the Rust runner.
+    dimensions = 2
+
     def sum(self) -> int:
         return self.x + self.y
 
@@ -72,6 +76,9 @@ def make_point() -> Point:
 class MutablePoint:
     x: int
     y: int
+
+    # Class attribute (not a field), see Point.dimensions.
+    dimensions = 2
 
     def sum(self) -> int:
         return self.x + self.y

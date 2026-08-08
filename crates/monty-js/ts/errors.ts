@@ -292,7 +292,7 @@ const MARKED_TYPE_NAMES: Readonly<Record<string, string>> = {
   TimeZone: 'timezone',
   Type: 'repr',
   BuiltinFunction: 'repr',
-  Dataclass: 'dataclass',
+  ClassInstance: 'HostClass',
 }
 
 /** Python type name the JS value converts to (mirrors the Rust `js_to_monty`). */

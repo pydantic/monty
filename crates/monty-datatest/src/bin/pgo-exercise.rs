@@ -90,7 +90,7 @@ async fn run_code(
                 Some(event) => event,
                 None => session.resume(ResumeValue::NotHandled, &mut *on_print).await?,
             },
-            TurnEvent::NameLookup { name } => {
+            TurnEvent::NameLookup { name, .. } => {
                 session
                     .resume_name_lookup(name_lookup_value(name), &mut *on_print)
                     .await?

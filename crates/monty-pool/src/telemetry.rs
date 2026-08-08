@@ -281,7 +281,7 @@ impl Recorder {
                     args = args,
                     kwargs = kwargs,
                     call_id = c.call_id,
-                    method_call = c.method_call,
+                    instance_id = c.instance_id,
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_duration_micros = max_duration,
@@ -1006,7 +1006,7 @@ mod tests {
             args: vec![MontyObject::Int(2)],
             kwargs: vec![],
             call_id: 1,
-            method_call: false,
+            instance_id: None,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
@@ -1059,6 +1059,7 @@ mod tests {
 
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "fetch".to_owned(),
+            instance_id: None,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
             pb::ResumeNameLookup {
@@ -1188,6 +1189,7 @@ mod tests {
         recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "value".to_owned(),
+            instance_id: None,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
             pb::ResumeNameLookup {

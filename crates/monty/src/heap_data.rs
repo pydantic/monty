@@ -63,8 +63,8 @@ macro_rules! heap_payloads {
             Slice(inline $crate::types::Slice),
             /// An exception instance such as `ValueError('message')`.
             Exception(inline $crate::exception_private::SimpleException),
-            /// A dataclass instance with fields and method references.
-            Dataclass(boxed $crate::types::Dataclass),
+            /// A host-backed class instance (the heap form of the wire `ClassInstance`).
+            HostClass(boxed $crate::types::HostClass),
             /// A user-defined class object created by a `class` statement.
             Class(boxed $crate::types::Class),
             /// An instance of a user-defined class.
@@ -193,7 +193,7 @@ impl HeapData {
             | Self::Closure(_)
             | Self::FunctionDefaults(_)
             | Self::Cell(_)
-            | Self::Dataclass(_)
+            | Self::HostClass(_)
             | Self::Class(_)
             | Self::Instance(_)
             | Self::BoundMethod(_)
@@ -279,7 +279,7 @@ impl HeapData {
             Self::Range(_) => Type::Range,
             Self::Slice(_) => Type::Slice,
             Self::Exception(e) => Type::Exception(e.exc_type()),
-            Self::Dataclass(_) => Type::Dataclass,
+            Self::HostClass(_) => Type::HostClass,
             // A class object's type is `type`; an instance's carries its class id.
             Self::Class(_) => Type::Type,
             Self::Instance(instance) => Type::Instance(instance.class()),
@@ -480,7 +480,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::FrozenSet($value) => $body,
             Self::Range($value) => $body,
             Self::Slice($value) => $body,
-            Self::Dataclass($value) => $body,
+            Self::HostClass($value) => $body,
             Self::Class($value) => $body,
             Self::Instance($value) => $body,
             Self::BoundMethod($value) => $body,
@@ -958,7 +958,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::FrozenSet(value) => value.py_iter(vm),
             Self::Range(value) => value.py_iter(vm),
             Self::Slice(value) => value.py_iter(vm),
-            Self::Dataclass(value) => value.py_iter(vm),
+            Self::HostClass(value) => value.py_iter(vm),
             Self::Class(value) => value.py_iter(vm),
             Self::Instance(value) => value.py_iter(vm),
             Self::BoundMethod(value) => value.py_iter(vm),
@@ -1017,7 +1017,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::FrozenSet(value) => value.py_next(vm),
             Self::Range(value) => value.py_next(vm),
             Self::Slice(value) => value.py_next(vm),
-            Self::Dataclass(value) => value.py_next(vm),
+            Self::HostClass(value) => value.py_next(vm),
             Self::Class(value) => value.py_next(vm),
             Self::Instance(value) => value.py_next(vm),
             Self::BoundMethod(value) => value.py_next(vm),

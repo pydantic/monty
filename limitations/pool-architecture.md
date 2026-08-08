@@ -161,8 +161,8 @@ properties that real CPython does not provide, per the caveat above.
   flat node arenas because WIT cannot express recursive types. Every
   `MontyObject` variant round-trips through either representation, with the
   same nesting bound: roughly 48 nested list-like containers, 32 nested dicts,
-  or 24 nested dataclasses. Deeper values fail the turn rather than crossing
-  the boundary.
+  or 24 nested class instances. Deeper values fail the turn rather than
+  crossing the boundary.
 - `Cycle` markers (self-referential containers) can be *received* from a
   worker but are rejected as inputs.
 - A sandbox value with no `MontyObject` equivalent — a class, a class
@@ -376,12 +376,16 @@ properties that real CPython does not provide, per the caveat above.
   dumped (`session.dump()` between feeds vs `snapshot.dump()`); using the wrong
   method raises. Both restore *into* a freshly checked-out worker, so they are
   rejected (`RuntimeError`) after any `feed_run` / `feed_start` / `load_session`
-  / `load_snapshot`, since restoring would otherwise discard work. The dump
-  restores its own `script_name` / limits / type-check state (the `checkout()`
-  config for those is not applied); the dataclass registry from `checkout()` is
-  reused. A *failed* load (wrong dump kind, or a protocol desync) poisons the
-  session: its worker is discarded, so every later feed fails too; the load is
-  not retryable and the caller must check out a fresh session.
+  / `load_snapshot` — restoring would otherwise discard work. The dump restores
+  its own `script_name` / limits / type-check state (the `checkout()` config
+  for those is not applied). The session's class-instance store is host-side
+  and NOT part of the dump: restoring into a fresh session/process starts with
+  an empty store, so a returned host instance becomes a `MontyClassInstance`
+  proxy, a method call on it raises `RuntimeError` ("no host instance
+  registered..."), and a lazy attribute lookup raises `AttributeError`.
+  A *failed* load (wrong dump kind, or a protocol desync) poisons the session
+  — its worker is discarded, so every later feed fails too; the load is not
+  retryable and the caller must check out a fresh session.
 - **`resume` takes no `mount=` or `os=`.** Mounts and the OS fallback are
   fixed for the whole feed (passed to `feed_start` / `load_snapshot`), and a
   plain `resume(...)` answers only the call in hand, consulting neither.
@@ -418,10 +422,6 @@ a napi-rs binding over `monty-pool`; platform npm packages ship both the native
 addon and the `monty` worker binary. The browser entry point implements the
 same protocol in TypeScript over a WASM worker. Everything above applies, plus:
 
-- **Dataclass method calls are unsupported.** JS has no dataclass registry,
-  so a sandbox call to a method on a host dataclass (`method_call` on the
-  wire) raises `RuntimeError: method calls on host objects are not
-  supported: <name>` instead of dispatching to a host method.
 - **Exception pass-through is by name.** A thrown JS error crosses into the
   sandbox using `error.name` when it matches one of monty's exception types
   (`TypeError`, `ValueError`, `KeyError`, ...); anything else becomes

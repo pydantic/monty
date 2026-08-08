@@ -21,66 +21,59 @@ use crate::{
     value::{EitherStr, Value},
 };
 
-/// Python dataclass instance type.
+/// A host-backed class instance (the heap form of the wire `ClassInstance`).
 ///
-/// Represents an instance of a dataclass with a class name, field values, and
-/// frozen/mutable semantics. Method calls on dataclasses are detected lazily:
-/// when `call_attr` is invoked on a dataclass and the attribute name is not found
-/// in `attrs`, it is dispatched as a `MethodCall` to the host (provided the name
-/// is public — no leading underscore).
+/// Represents an instance of a host-side class: a class name, host identities
+/// (`instance_id` = `id(obj)`, `type_id` = `id(type(obj))`), and the eagerly
+/// sent attributes. Names missing from `attrs` route back to the host:
+/// - calling a public missing attribute yields [`CallResult::MethodCall`]
+///   (routed by `instance_id`, the receiver is not passed as an argument);
+/// - reading a public missing attribute yields [`CallResult::AttrLookup`]
+///   (a lazy attribute lookup; an unanswered lookup raises `AttributeError`).
 ///
-/// # Fields
-/// - `name`: The class name (e.g., "Point", "User")
-/// - `field_names`: Declared field names in definition order (used for repr)
-/// - `attrs`: All attributes including declared fields and dynamically added ones
-/// - `frozen`: Whether the dataclass instance is immutable
+/// Underscore-prefixed names never suspend (dunder probes must stay local).
+/// Lazy lookups are NOT cached: every access is a fresh round trip to the
+/// host, so host-side mutations stay visible.
 ///
-/// # Hashability
-/// When `frozen` is true, the dataclass is immutable and hashable. The hash
-/// is computed from the class name and declared field values only.
-/// When `frozen` is false, the dataclass is mutable and unhashable.
-///
-/// # Reference Counting
-/// The `attrs` Dict contains Values that may be heap-allocated. The
-/// `py_dec_ref_ids` method properly handles decrementing refcounts for
-/// all attribute values when the dataclass instance is freed.
-///
-/// # Attribute Access
-/// - Getting: Looks up the attribute name in the attrs Dict
-/// - Setting: Updates or adds the attribute in attrs (only if not frozen)
-/// - Method calls: If the attribute is a public name not found in attrs, dispatched to host
-/// - repr: Only shows declared fields (from field_names), not extra attributes
+/// When `frozen` is true the instance rejects `setattr` with
+/// `FrozenInstanceError` and is hashable (over its eager attrs); otherwise it
+/// is mutable and unhashable, matching frozen-dataclass semantics.
 #[derive(Debug)]
-pub(crate) struct Dataclass {
+pub(crate) struct HostClass {
     /// The class name (e.g., "Point", "User")
     name: EitherStr,
-    /// Identifier of the type, from `id(type(dc))` in python.
+    /// Identity of the instance, from `id(obj)` on the host; 0 when the
+    /// instance was defined inside the sandbox (not host-backed).
+    instance_id: u64,
+    /// Identity of the class, from `id(type(obj))` on the host; 0 for
+    /// sandbox-defined instances.
     type_id: u64,
-    /// Declared field names in definition order (for repr and hashing)
-    field_names: Vec<String>,
-    /// All attributes (both declared fields and dynamically added)
+    /// Eagerly-sent attributes, in order (both fields and dynamically added)
     attrs: Dict,
-    /// Whether this dataclass instance is immutable (affects hashability)
+    /// Whether this instance is immutable (affects hashability)
     frozen: bool,
+    /// Whether `dataclasses.is_dataclass(obj)` is true on the host side.
+    is_dataclass: bool,
 }
 
-impl Dataclass {
-    /// Creates a new dataclass instance.
-    ///
-    /// # Arguments
-    /// * `name` - The class name
-    /// * `type_id` - The type ID of the dataclass
-    /// * `field_names` - Declared field names in definition order
-    /// * `attrs` - Dict of attribute name -> value pairs (ownership transferred)
-    /// * `frozen` - Whether this dataclass instance is immutable (affects hashability)
+impl HostClass {
+    /// Creates a new host class instance; ownership of `attrs` transfers.
     #[must_use]
-    pub fn new(name: impl Into<EitherStr>, type_id: u64, field_names: Vec<String>, attrs: Dict, frozen: bool) -> Self {
+    pub fn new(
+        name: impl Into<EitherStr>,
+        instance_id: u64,
+        type_id: u64,
+        attrs: Dict,
+        frozen: bool,
+        is_dataclass: bool,
+    ) -> Self {
         Self {
             name: name.into(),
+            instance_id,
             type_id,
-            field_names,
             attrs,
             frozen,
+            is_dataclass,
         }
     }
 
@@ -90,16 +83,16 @@ impl Dataclass {
         self.name.as_str(interns)
     }
 
-    /// Returns the type ID of the dataclass.
+    /// Returns the host identity of the instance (0 = sandbox-defined).
+    #[must_use]
+    pub fn instance_id(&self) -> u64 {
+        self.instance_id
+    }
+
+    /// Returns the host identity of the class (0 = sandbox-defined).
     #[must_use]
     pub fn type_id(&self) -> u64 {
         self.type_id
-    }
-
-    /// Returns a reference to the declared field names.
-    #[must_use]
-    pub fn field_names(&self) -> &[String] {
-        &self.field_names
     }
 
     /// Returns a reference to the attrs Dict.
@@ -108,21 +101,27 @@ impl Dataclass {
         &self.attrs
     }
 
-    /// Returns whether this dataclass instance is frozen (immutable).
+    /// Returns whether this instance is frozen (immutable).
     #[must_use]
     pub fn is_frozen(&self) -> bool {
         self.frozen
     }
+
+    /// Returns whether the host object is a dataclass instance.
+    #[must_use]
+    pub fn is_dataclass(&self) -> bool {
+        self.is_dataclass
+    }
 }
 
-impl<'h> HeapRead<'h, Dataclass> {
+impl<'h> HeapRead<'h, HostClass> {
     /// Sets an attribute value.
     ///
     /// The caller transfers ownership of both `name` and `value`. Returns the
     /// old value if the attribute existed (caller must drop it), or None if this
     /// is a new attribute.
     ///
-    /// Returns `FrozenInstanceError` if the dataclass is frozen.
+    /// Returns `FrozenInstanceError` if the instance is frozen.
     pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         if self.get(vm.heap).frozen {
             defer_drop!(name, vm);
@@ -139,21 +138,21 @@ impl<'h> HeapRead<'h, Dataclass> {
     }
 
     pub fn attrs(&self) -> BorrowedHeapRead<'_, 'h, Dict> {
-        heap_read_ref_as_field!(self, Dataclass, attrs)
+        heap_read_ref_as_field!(self, HostClass, attrs)
     }
 
     pub fn attrs_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
-        heap_read_ref_as_field_mut!(self, Dataclass, attrs)
+        heap_read_ref_as_field_mut!(self, HostClass, attrs)
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dataclass> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Dataclass
+        Type::HostClass
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        // Dataclasses don't have a length
+        // Host class instances don't have a length
         None
     }
 
@@ -167,21 +166,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dataclass> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::Dataclass(other)) = other.read_heap(vm) else {
+        let Some(HeapReadOutput::HostClass(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        // Dataclasses are equal only if they are the same class and have equal attrs.
-        if self.get(vm.heap).type_id() != other.get(vm.heap).type_id() {
+        // Equal only for the same class and equal attrs. The name gate matters
+        // for sandbox-origin instances, which all share type_id 0.
+        if self.get(vm.heap).type_id() != other.get(vm.heap).type_id()
+            || self.get(vm.heap).name(vm.interns) != other.get(vm.heap).name(vm.interns)
+        {
             return Ok(Some(false));
         }
         Ok(Some(self.attrs().eq_dict(&other.attrs(), vm)?))
     }
 
-    /// Hashes a frozen dataclass by its class name and the values of declared fields.
+    /// Hashes a frozen instance by its class name and eager attrs in order.
     ///
-    /// Mutable (non-frozen) dataclasses return `None` (unhashable).
+    /// Mutable (non-frozen) instances return `None` (unhashable).
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        // Only frozen (immutable) dataclasses are hashable
+        // Only frozen (immutable) instances are hashable
         if !self.get(vm.heap).frozen {
             return Ok(None);
         }
@@ -190,48 +192,61 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dataclass> {
         let mut hasher = DefaultHasher::new();
         // Hash the class name
         self.get(vm.heap).name.as_str(vm.interns).hash(&mut hasher);
-        // Hash each declared field (name, value) pair in order
-        let field_count = self.get(vm.heap).field_names.len();
-        for i in 0..field_count {
-            let field_name = &self.get(vm.heap).field_names[i];
-            field_name.hash(&mut hasher);
-            if let Some(value) = self.get(vm.heap).attrs.get_by_str(field_name, vm.heap, vm.interns) {
-                let value = value.clone_with_heap(vm.heap);
-                defer_drop!(value, vm);
-                match value.py_hash(vm)? {
-                    Some(h) => h.hash(&mut hasher),
-                    None => return Ok(None),
-                }
+        // Hash each (key, value) attr pair in order
+        let attr_count = self.get(vm.heap).attrs.len();
+        for i in 0..attr_count {
+            let Some((key, value)) = self.get(vm.heap).attrs.item_at(i) else {
+                break;
+            };
+            let key = key.clone_with_heap(vm.heap);
+            let value = value.clone_with_heap(vm.heap);
+            defer_drop!(key, vm);
+            defer_drop!(value, vm);
+            match key.py_hash(vm)? {
+                Some(h) => h.hash(&mut hasher),
+                None => return Ok(None),
+            }
+            match value.py_hash(vm)? {
+                Some(h) => h.hash(&mut hasher),
+                None => return Ok(None),
             }
         }
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
-        // Dataclass instances are always truthy (like Python objects)
+        // Host class instances are always truthy (like Python objects)
         Ok(true)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        // Only declared fields are shown, not dynamically added attributes.
+        // All eager attrs are shown, in order.
         let name = self.get(vm.heap).name(vm.interns).to_owned();
-        let field_count = self.get(vm.heap).field_names.len();
-        write_dataclass_repr(f, &name, field_count, vm, heap_ids, |i, vm| {
-            let dc = self.get(vm.heap);
-            let field_name = dc.field_names[i].clone();
-            let value = dc
-                .attrs
-                .get_by_str(&field_name, vm.heap, vm.interns)
-                .map(|v| v.clone_with_heap(vm.heap));
-            Ok((field_name, value))
+        let attr_count = self.get(vm.heap).attrs.len();
+        write_dataclass_repr(f, &name, attr_count, vm, heap_ids, |i, vm| {
+            let (key, value) = match self.get(vm.heap).attrs.item_at(i) {
+                Some((key, value)) => (key.clone_with_heap(vm.heap), Some(value.clone_with_heap(vm.heap))),
+                None => return Ok((String::new(), None)),
+            };
+            defer_drop!(key, vm);
+            // Keys are strings in practice; render a non-string key (possible
+            // in host-built attrs) via repr rather than fail.
+            let key_str = if let Ok(s) = key.to_str(vm) {
+                s.to_owned()
+            } else {
+                let repr = key.py_repr(vm)?;
+                defer_drop!(repr, vm);
+                repr.to_str(vm)?.to_owned()
+            };
+            Ok((key_str, value))
         })
     }
 
-    /// Performs lazy method detection for dataclass instances.
+    /// Performs lazy method detection for host class instances.
     ///
-    /// If the attribute is a public name (no leading underscore) not found in the
-    /// dataclass's attrs dict, returns `MethodCall` so the VM yields to the host.
-    /// Otherwise handles the call directly:
+    /// If the attribute is a public name (no leading underscore) not found in
+    /// the eager attrs, returns `MethodCall` (routed by `instance_id`) so the
+    /// VM yields to the host. Otherwise handles the call directly:
     /// - Attributes that exist in attrs but aren't callable produce `TypeError`
     /// - Private/dunder attributes that aren't in attrs produce `AttributeError`
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
@@ -244,11 +259,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dataclass> {
                 .get_by_str(attr_str, vm.heap, vm.interns)
                 .is_none()
         {
-            // Clone self and prepend to args for the method call
-            // inc_ref works even when data is taken out (refcount metadata is separate)
-            let self_arg = self.clone_value(vm.heap);
-            let args_with_self = args.prepend(self_arg);
-            Ok(CallResult::MethodCall(attr.clone(), args_with_self))
+            // The receiver is not passed along — the host resolves it by id.
+            let instance_id = self.get(vm.heap).instance_id();
+            Ok(CallResult::MethodCall {
+                name: attr.clone(),
+                args,
+                instance_id,
+            })
         } else {
             // Not a method call — handle directly
             let method_name = attr.as_str(vm.interns);
@@ -259,7 +276,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dataclass> {
                 let type_name = value.py_type_name(vm);
                 Err(ExcType::type_error_not_callable_object(&type_name))
             } else {
-                // Attribute doesn't exist — use the class name (e.g., "Point") not "Dataclass"
+                // Attribute doesn't exist — use the class name (e.g., "Point") not "HostClass"
                 Err(ExcType::attribute_error(
                     self.get(vm.heap).name(vm.interns),
                     method_name,
@@ -268,17 +285,27 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dataclass> {
         }
     }
 
+    /// Resolves `obj.attr`: eager attrs first, then a lazy host lookup.
+    ///
+    /// A public name missing from attrs suspends as [`CallResult::AttrLookup`]
+    /// so the host can serve it; underscore-prefixed names raise
+    /// `AttributeError` locally (dunder probes must never suspend).
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let attr_name = attr.as_str(vm.interns);
         match self.get(vm.heap).attrs.get_by_str(attr_name, vm.heap, vm.interns) {
             Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
+            None if !attr_name.starts_with('_') => Ok(Some(CallResult::AttrLookup {
+                name: attr.clone(),
+                class_name: self.get(vm.heap).name(vm.interns).to_owned(),
+                instance_id: self.get(vm.heap).instance_id(),
+            })),
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
             None => Err(ExcType::attribute_error(self.get(vm.heap).name(vm.interns), attr_name)),
         }
     }
 }
 
-/// Writes `ClassName(f1=v1, ...)`, shared by the host-supplied [`Dataclass`] and
+/// Writes `ClassName(f1=v1, ...)`, shared by the host-supplied [`HostClass`] and
 /// native `@dataclass` instances so the two renderings cannot drift.
 ///
 /// Each caller supplies its own field list via `field`, mapping an index to that
@@ -304,7 +331,7 @@ pub(crate) fn write_dataclass_repr<'h>(
     f.write_char('(')?;
     for i in 0..field_count {
         if i > 0 {
-            // Same between-item checkpoint as sequence repr, so a wide dataclass
+            // Same between-item checkpoint as sequence repr, so a wide instance
             // cannot outrun `max_duration`.
             if vm.heap.tracker.check_memory_time_every(i).is_err() {
                 f.write_str(", ...[timeout]")?;
@@ -326,44 +353,47 @@ pub(crate) fn write_dataclass_repr<'h>(
     Ok(f.write_char(')')?)
 }
 
-impl HeapItem for Dataclass {
+impl HeapItem for HostClass {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Delegate to the attrs Dict which handles all nested heap references
         self.attrs.py_dec_ref_ids(stack);
     }
 }
 
-// Custom serde implementation for Dataclass.
-// Serializes all five fields.
-impl serde::Serialize for Dataclass {
+// Custom serde implementation for HostClass; serializes all six fields so
+// suspended state (dumps) round-trips exactly.
+impl serde::Serialize for HostClass {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("Dataclass", 5)?;
+        let mut state = serializer.serialize_struct("HostClass", 6)?;
         state.serialize_field("name", &self.name)?;
+        state.serialize_field("instance_id", &self.instance_id)?;
         state.serialize_field("type_id", &self.type_id)?;
-        state.serialize_field("field_names", &self.field_names)?;
         state.serialize_field("attrs", &self.attrs)?;
         state.serialize_field("frozen", &self.frozen)?;
+        state.serialize_field("is_dataclass", &self.is_dataclass)?;
         state.end()
     }
 }
 
-impl<'de> serde::Deserialize<'de> for Dataclass {
+impl<'de> serde::Deserialize<'de> for HostClass {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
-        struct DataclassData {
+        struct HostClassData {
             name: EitherStr,
+            instance_id: u64,
             type_id: u64,
-            field_names: Vec<String>,
             attrs: Dict,
             frozen: bool,
+            is_dataclass: bool,
         }
-        let dc = DataclassData::deserialize(deserializer)?;
+        let hc = HostClassData::deserialize(deserializer)?;
         Ok(Self {
-            name: dc.name,
-            type_id: dc.type_id,
-            field_names: dc.field_names,
-            attrs: dc.attrs,
-            frozen: dc.frozen,
+            name: hc.name,
+            instance_id: hc.instance_id,
+            type_id: hc.type_id,
+            attrs: hc.attrs,
+            frozen: hc.frozen,
+            is_dataclass: hc.is_dataclass,
         })
     }
 }

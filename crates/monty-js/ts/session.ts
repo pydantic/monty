@@ -10,6 +10,7 @@
 // delivered when the worker reports everything is blocked (`resolveFutures`).
 
 import type { NativeSession } from '../native-addon.js'
+import { AttrNotExposed, attributeErrorMessage, InstanceStore, prepare, restore } from './classInstance.js'
 import {
   MontyCrashedError,
   MontyError,
@@ -157,6 +158,10 @@ export class MontySession {
   /** Set once the session has been fed or restored; `loadSession` /
    *  `loadSnapshot` are valid only while unset (a fresh session). */
   private driven = false
+  /** Session-scoped `ClassInstance` registry (mirrors pydantic_monty): every
+   *  wrapper sent through any boundary of this session lives here so method
+   *  calls, lazy lookups and returns route back to the original object. */
+  private readonly instances = new InstanceStore()
 
   /** @internal — sessions are created by `Monty.checkout`. */
   constructor(native: NativeSession) {
@@ -175,10 +180,10 @@ export class MontySession {
     const onPrint = printTarget.write.bind(printTarget)
     // A fresh answerer (and its pending-future map) per feed, so promises the
     // worker never asks about again cannot accumulate across feeds.
-    const answerer = new TurnAnswerer(this.native, options.externalLookup, options.os)
+    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os)
     let turn = (await this.native.feed(
       code,
-      options.inputs ?? null,
+      prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
       options.skipTypeCheck ?? false,
       onPrint,
@@ -187,7 +192,7 @@ export class MontySession {
       switch (turn.kind) {
         case 'complete':
           printTarget.throwIfFailed()
-          return turn.value
+          return restore(turn.value, this.instances)
         case 'error':
           printTarget.throwIfFailed()
           throw montyErrorFromNative(turn.exception)
@@ -247,7 +252,7 @@ export class MontySession {
     const driver = this.newDriver(options)
     const turn = (await this.native.feed(
       code,
-      options.inputs ?? null,
+      prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
       options.skipTypeCheck ?? false,
       driver.onPrint,
@@ -342,8 +347,8 @@ export class MontySession {
    *  captured `externalLookup` / `os` back `snapshot.resumeAuto()`. */
   private newDriver(options: FeedStartOptions): SnapshotDriver {
     const printTarget = new PrintTarget(options.printCallback)
-    const answerer = new TurnAnswerer(this.native, options.externalLookup, options.os)
-    return new SnapshotDriver(this.native, printTarget, answerer, (err) => this.poison(err))
+    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os)
+    return new SnapshotDriver(this.native, this.instances, printTarget, answerer, (err) => this.poison(err))
   }
 
   /**
@@ -446,6 +451,7 @@ class TurnAnswerer {
 
   constructor(
     private readonly native: NativeSession,
+    private readonly instances: InstanceStore,
     readonly externalLookup: Record<string, unknown> | undefined,
     readonly os: OsCallback | undefined,
   ) {}
@@ -464,6 +470,10 @@ class TurnAnswerer {
         next = this.answerOsCall(turn, onPrint)
         break
       case 'nameLookup': {
+        if (turn.instanceId !== undefined && turn.instanceId !== null) {
+          next = this.answerInstanceLookup(turn, turn.instanceId, onPrint)
+          break
+        }
         // A callable entry resolves to a host function (by display name); any
         // other value is converted and returned directly; an absent name is
         // left undefined so the sandbox raises NameError. Only own keys count
@@ -479,7 +489,7 @@ class TurnAnswerer {
           if (typeof v === 'function') {
             next = this.native.resumeNameLookup((v as ExternalFunction).name || '<anonymous>', null, onPrint)
           } else {
-            next = this.native.resumeNameLookup(null, { value: v }, onPrint)
+            next = this.native.resumeNameLookup(null, { value: prepare(v, this.instances) }, onPrint)
           }
         }
         break
@@ -493,14 +503,8 @@ class TurnAnswerer {
 
   /** Calls the matching external function and resumes with its result. */
   private answerFunctionCall(call: FunctionCallTurn, onPrint: PrintCallback): Promise<object> {
-    if (call.methodCall) {
-      // Dataclass method dispatch needs host-side class objects, which this
-      // package has no registry for (unlike pydantic_monty).
-      return this.native.resumeError(
-        'RuntimeError',
-        `method calls on host objects are not supported: ${call.functionName}`,
-        onPrint,
-      )
+    if (call.instanceId !== undefined && call.instanceId !== null) {
+      return this.answerMethodCall(call, call.instanceId, onPrint)
     }
     // Own keys only, as in the nameLookup branch: an inherited callable (e.g.
     // `Object.prototype.toString`) must never be dispatched as a host function.
@@ -518,7 +522,8 @@ class TurnAnswerer {
     const fn = entry as ExternalFunction
     let returned: unknown
     try {
-      returned = fn(...(buildCallArgs(call) as never[]))
+      const args = restoreValues(call.args, this.instances)
+      returned = fn(...(buildCallArgs(args, restoreKwargPairs(call.kwargs, this.instances)) as never[]))
     } catch (err) {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
@@ -527,7 +532,92 @@ class TurnAnswerer {
       this.registerFuture(call.callId, Promise.resolve(returned))
       return this.native.resumeFuture(onPrint)
     }
-    return this.native.resumeReturn(returned, onPrint)
+    return this.resumeWithValue(returned, onPrint)
+  }
+
+  /**
+   * Dispatches a method call on the host instance registered under
+   * `instanceId`, routing through the wrapper's `callMethod` policy check.
+   * Denied/absent names raise `AttributeError` in the sandbox; a
+   * promise-returning method is registered as a pending future.
+   */
+  private answerMethodCall(call: FunctionCallTurn, instanceId: bigint, onPrint: PrintCallback): Promise<object> {
+    const wrapper = this.instances.get(instanceId)
+    if (call.functionName.startsWith('_')) {
+      // Defensive re-check of the sandbox's underscore rule: wire frames from
+      // a (possibly compromised) worker are untrusted.
+      return this.native.resumeError(
+        'AttributeError',
+        attributeErrorMessage(wrapper?.getName() ?? 'object', call.functionName),
+        onPrint,
+      )
+    }
+    if (wrapper === undefined) {
+      // e.g. a session restored into a process that never sent the instance
+      return this.native.resumeError(
+        'RuntimeError',
+        `no host instance registered for method call '${call.functionName}' (id ${instanceId})`,
+        onPrint,
+      )
+    }
+    let returned: unknown
+    try {
+      const args = restoreValues(call.args, this.instances)
+      const kwargs = kwargsToRecord(restoreKwargPairs(call.kwargs, this.instances))
+      returned = wrapper.callMethod(call.functionName, args, kwargs)
+    } catch (err) {
+      if (err instanceof AttrNotExposed) {
+        return this.native.resumeError('AttributeError', err.message, onPrint)
+      }
+      const { excType, message } = jsErrorParts(err)
+      return this.native.resumeError(excType, message, onPrint)
+    }
+    if (isThenable(returned)) {
+      this.registerFuture(call.callId, Promise.resolve(returned))
+      return this.native.resumeFuture(onPrint)
+    }
+    return this.resumeWithValue(returned, onPrint)
+  }
+
+  /**
+   * Answers a lazy attribute lookup on the host instance registered under
+   * `instanceId`. An undefined answer (`resumeNameLookup(null, null, ...)`)
+   * makes the sandbox raise `AttributeError` — used for underscore names,
+   * store misses, and names the wrapper's policy denies.
+   */
+  private answerInstanceLookup(turn: NameLookupTurn, instanceId: bigint, onPrint: PrintCallback): Promise<object> {
+    const wrapper = this.instances.get(instanceId)
+    if (wrapper === undefined || turn.name.startsWith('_')) {
+      return this.native.resumeNameLookup(null, null, onPrint)
+    }
+    let value: unknown
+    try {
+      value = wrapper.lookupLazyAttr(turn.name)
+    } catch (err) {
+      if (err instanceof AttrNotExposed) {
+        return this.native.resumeNameLookup(null, null, onPrint)
+      }
+      // any other error (a throwing getter, a convertValue failure) fails the
+      // turn, matching the Python binding
+      throw err
+    }
+    return this.native.resumeNameLookup(null, { value: prepare(value, this.instances) }, onPrint)
+  }
+
+  /**
+   * Resumes with a host return value, mapping a `prepare` rejection (e.g. an
+   * unwrapped non-plain object) to an in-sandbox error — the same surface a
+   * native conversion failure has — instead of poisoning the session.
+   */
+  private resumeWithValue(value: unknown, onPrint: PrintCallback): Promise<object> {
+    let outbound: unknown
+    try {
+      outbound = prepare(value, this.instances)
+    } catch (err) {
+      const { excType, message } = jsErrorParts(err)
+      return this.native.resumeError(excType, message, onPrint)
+    }
+    return this.native.resumeReturn(outbound, onPrint)
   }
 
   /**
@@ -544,7 +634,8 @@ class TurnAnswerer {
     }
     let returned: unknown
     try {
-      returned = this.os(call.functionName, call.args, kwargsToRecord(call.kwargs))
+      const args = restoreValues(call.args, this.instances)
+      returned = this.os(call.functionName, args, kwargsToRecord(restoreKwargPairs(call.kwargs, this.instances)))
       if (isThenable(returned)) {
         returned = await returned
       }
@@ -555,7 +646,7 @@ class TurnAnswerer {
     if (returned === NOT_HANDLED) {
       return await this.native.resumeNotHandled(onPrint)
     }
-    return await this.native.resumeReturn(returned, onPrint)
+    return await this.resumeWithValue(returned, onPrint)
   }
 
   /** Tracks a promise so `resolveFutures` can later deliver its outcome. */
@@ -601,7 +692,14 @@ class TurnAnswerer {
         this.futures.delete(f.callId)
         const outcome = f.outcome!
         if ('ok' in outcome) {
-          return { callId: f.callId, ok: true, value: outcome.ok }
+          // a prepare rejection is delivered as the future's error, matching
+          // how a sync return value's conversion failure surfaces
+          try {
+            return { callId: f.callId, ok: true, value: prepare(outcome.ok, this.instances) }
+          } catch (err) {
+            const { excType, message } = jsErrorParts(err)
+            return { callId: f.callId, ok: false, excType, message }
+          }
         }
         const { excType, message } = jsErrorParts(outcome.err)
         return { callId: f.callId, ok: false, excType, message }
@@ -662,6 +760,9 @@ class SnapshotDriver {
 
   constructor(
     private readonly native: NativeSession,
+    /** The owning session's instance registry, shared so snapshot resumes see
+     *  wrappers sent by earlier feeds. Read by the snapshot classes. */
+    readonly instances: InstanceStore,
     private readonly printTarget: PrintTarget,
     private readonly answerer: TurnAnswerer,
     private readonly poison: (err: Error) => Error,
@@ -675,7 +776,7 @@ class SnapshotDriver {
       switch (turn.kind) {
         case 'complete':
           this.printTarget.throwIfFailed()
-          return new MontyComplete(turn.value)
+          return new MontyComplete(restore(turn.value, this.instances))
         case 'error':
           this.printTarget.throwIfFailed()
           throw montyErrorFromNative(turn.exception)
@@ -737,7 +838,15 @@ class SnapshotDriver {
   // resume primitives — each runs one turn, then advances to the next snapshot
 
   async resumeReturn(value: unknown): Promise<Snapshot> {
-    return this.advance((await this.native.resumeReturn(value, this.onPrint)) as NativeTurn)
+    // a prepare rejection surfaces as an in-sandbox error, like a native
+    // conversion failure would
+    let outbound: unknown
+    try {
+      outbound = prepare(value, this.instances)
+    } catch (err) {
+      return this.resumeError(err)
+    }
+    return this.advance((await this.native.resumeReturn(outbound, this.onPrint)) as NativeTurn)
   }
 
   async resumeError(err: unknown): Promise<Snapshot> {
@@ -795,7 +904,9 @@ export class FunctionSnapshot extends SingleUse {
   readonly kwargs: Record<string, unknown>
   readonly callId: number
   readonly isOsFunction: boolean
-  readonly isMethodCall: boolean
+  /** Set for method calls on a host-backed class instance: the receiver's
+   *  store id (the receiver is not in `args`). `null` for plain calls. */
+  readonly instanceId: bigint | null
 
   /** @internal */
   constructor(
@@ -805,11 +916,11 @@ export class FunctionSnapshot extends SingleUse {
   ) {
     super()
     this.functionName = turn.functionName
-    this.args = turn.args
-    this.kwargs = kwargsToRecord(turn.kwargs)
+    this.args = restoreValues(turn.args, driver.instances)
+    this.kwargs = kwargsToRecord(restoreKwargPairs(turn.kwargs, driver.instances))
     this.callId = turn.callId
     this.isOsFunction = isOsFunction
-    this.isMethodCall = 'methodCall' in turn ? turn.methodCall : false
+    this.instanceId = 'instanceId' in turn ? (turn.instanceId ?? null) : null
   }
 
   /** Resumes with the call's return value. */
@@ -867,6 +978,9 @@ export class FunctionSnapshot extends SingleUse {
 /** A paused execution waiting for the value of an undefined name. */
 export class NameLookupSnapshot extends SingleUse {
   readonly variableName: string
+  /** Set for lazy attribute lookups on a host-backed class instance: the
+   *  instance's store id. `null` for plain name lookups. */
+  readonly instanceId: bigint | null
 
   /** @internal */
   constructor(
@@ -875,6 +989,7 @@ export class NameLookupSnapshot extends SingleUse {
   ) {
     super()
     this.variableName = turn.name
+    this.instanceId = turn.instanceId ?? null
   }
 
   /** Resolves the name to an external function by name, or — with no argument
@@ -921,7 +1036,14 @@ export class FutureSnapshot extends SingleUse {
         const { excType, message } = jsErrorParts(result.error)
         return { callId: result.callId, ok: false, excType, message }
       }
-      return { callId: result.callId, ok: true, value: result.value }
+      // a prepare rejection is delivered as the future's error, like a sync
+      // return value's conversion failure
+      try {
+        return { callId: result.callId, ok: true, value: prepare(result.value, this.driver.instances) }
+      } catch (err) {
+        const { excType, message } = jsErrorParts(err)
+        return { callId: result.callId, ok: false, excType, message }
+      }
     })
     return this.driver.resolveFutures(native)
   }
@@ -950,12 +1072,40 @@ export class MontyComplete {
 }
 
 /** Positional args, with kwargs appended as an object when present. */
-function buildCallArgs(call: FunctionCallTurn): unknown[] {
-  const args = [...call.args]
-  if (call.kwargs.length > 0) {
-    args.push(kwargsToRecord(call.kwargs))
+function buildCallArgs(args: unknown[], kwargs: [unknown, unknown][]): unknown[] {
+  if (kwargs.length === 0) {
+    return args
   }
-  return args
+  return [...args, kwargsToRecord(kwargs)]
+}
+
+/** Prepares each input value for the wire (feed's `inputs` record). */
+function prepareInputs(
+  inputs: Record<string, unknown> | undefined,
+  store: InstanceStore,
+): Record<string, unknown> | null {
+  if (inputs === undefined) {
+    return null
+  }
+  // null prototype so an exotic input name (e.g. `__proto__`) stays a plain
+  // property of the rebuilt record
+  const prepared: Record<string, unknown> = Object.create(null)
+  let changed = false
+  for (const [name, value] of Object.entries(inputs)) {
+    prepared[name] = prepare(value, store)
+    changed ||= prepared[name] !== value
+  }
+  return changed ? prepared : inputs
+}
+
+/** Restores each element of a sandbox-produced args array. */
+function restoreValues(values: unknown[], store: InstanceStore): unknown[] {
+  return values.map((value) => restore(value, store))
+}
+
+/** Restores the values of sandbox-produced `[key, value]` kwarg pairs. */
+function restoreKwargPairs(pairs: [unknown, unknown][], store: InstanceStore): [unknown, unknown][] {
+  return pairs.map(([key, value]): [unknown, unknown] => [key, restore(value, store)])
 }
 
 /**

@@ -120,8 +120,10 @@ pub struct WireFunctionCall {
     pub kwargs: Vec<(MontyObject, MontyObject)>,
     /// Child-assigned call id used by the matching resume request.
     pub call_id: u32,
-    /// Whether the first argument is the method receiver.
-    pub method_call: bool,
+    /// Host id of the receiver for method calls on a host-backed class
+    /// instance; `None` for plain external function calls. The receiver is
+    /// never included in `args`.
+    pub instance_id: Option<u64>,
 }
 
 impl Message for WireFunctionCall {
@@ -130,8 +132,9 @@ impl Message for WireFunctionCall {
         encode_repeated_object(2, &self.args, buf);
         encode_repeated_pair(3, &self.kwargs, buf);
         encode_uint32(4, self.call_id, buf);
-        if self.method_call {
-            encoding::bool::encode(5, &self.method_call, buf);
+        // `optional uint64` — explicit presence, so 0 still encodes when Some.
+        if let Some(instance_id) = &self.instance_id {
+            encoding::uint64::encode(5, instance_id, buf);
         }
     }
 
@@ -140,11 +143,10 @@ impl Message for WireFunctionCall {
             + repeated_object_len(2, &self.args)
             + repeated_pair_len(3, &self.kwargs)
             + uint32_len(4, self.call_id)
-            + if self.method_call {
-                encoding::bool::encoded_len(5, &self.method_call)
-            } else {
-                0
-            }
+            + self
+                .instance_id
+                .as_ref()
+                .map_or(0, |id| encoding::uint64::encoded_len(5, id))
     }
 
     fn merge_field(
@@ -159,7 +161,7 @@ impl Message for WireFunctionCall {
             2 => merge_object_item(wire_type, buf, ctx, &mut self.args),
             3 => merge_pair_item(wire_type, buf, ctx, &mut self.kwargs),
             4 => encoding::uint32::merge(wire_type, &mut self.call_id, buf, ctx),
-            5 => encoding::bool::merge(wire_type, &mut self.method_call, buf, ctx),
+            5 => encoding::uint64::merge(wire_type, self.instance_id.get_or_insert(0), buf, ctx),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
@@ -169,7 +171,7 @@ impl Message for WireFunctionCall {
         self.args.clear();
         self.kwargs.clear();
         self.call_id = 0;
-        self.method_call = false;
+        self.instance_id = None;
     }
 }
 
@@ -199,7 +201,7 @@ mod tag {
     pub const BUILTIN_FUNCTION: u32 = 21;
     pub const PATH: u32 = 22;
     pub const FILE_HANDLE: u32 = 23;
-    pub const DATACLASS: u32 = 24;
+    pub const CLASS_INSTANCE: u32 = 24;
     pub const FUNCTION: u32 = 25;
     pub const REPR: u32 = 26;
     pub const CYCLE: u32 = 27;
@@ -294,27 +296,31 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
             encode_str(2, fh.mode.as_str(), buf);
             encode_uint64(3, fh.position, buf);
         }
-        MontyObject::Dataclass {
+        MontyObject::ClassInstance {
             name,
+            instance_id,
             type_id,
-            field_names,
             attrs,
             frozen,
+            is_dataclass,
         } => {
             encode_message_key(
-                tag::DATACLASS,
-                dataclass_len(name, *type_id, field_names, attrs, *frozen),
+                tag::CLASS_INSTANCE,
+                class_instance_len(name, *instance_id, *type_id, attrs, *frozen, *is_dataclass),
                 buf,
             );
             encode_str(1, name, buf);
-            encode_uint64(2, *type_id, buf);
-            encode_repeated_str(3, field_names, buf);
+            encode_uint64(2, *instance_id, buf);
+            encode_uint64(3, *type_id, buf);
             // attrs is a non-optional message field that senders always
             // populate, so it encodes even when empty (message presence)
             encode_message_key(4, dict_len(attrs), buf);
             encode_dict(attrs, buf);
             if *frozen {
                 encoding::bool::encode(5, frozen, buf);
+            }
+            if *is_dataclass {
+                encoding::bool::encode(6, is_dataclass, buf);
             }
         }
         MontyObject::Function { name, docstring } => {
@@ -375,15 +381,16 @@ fn object_len(obj: &MontyObject) -> usize {
         MontyObject::BuiltinFunction(bf) => encoding::string::encoded_len(tag::BUILTIN_FUNCTION, &bf.to_string()),
         MontyObject::Path(p) => encoding::string::encoded_len(tag::PATH, p),
         MontyObject::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
-        MontyObject::Dataclass {
+        MontyObject::ClassInstance {
             name,
+            instance_id,
             type_id,
-            field_names,
             attrs,
             frozen,
+            is_dataclass,
         } => submessage_len(
-            tag::DATACLASS,
-            dataclass_len(name, *type_id, field_names, attrs, *frozen),
+            tag::CLASS_INSTANCE,
+            class_instance_len(name, *instance_id, *type_id, attrs, *frozen, *is_dataclass),
         ),
         MontyObject::Function { name, docstring } => {
             submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
@@ -531,15 +538,27 @@ fn file_handle_len(fh: &MontyFileHandle) -> usize {
     str_len(1, &fh.path) + str_len(2, fh.mode.as_str()) + uint64_len(3, fh.position)
 }
 
-/// `Dataclass` body: `string name = 1; uint64 type_id = 2; repeated
-/// string field_names = 3; Dict attrs = 4; bool frozen = 5`.
-fn dataclass_len(name: &str, type_id: u64, field_names: &[String], attrs: &DictPairs, frozen: bool) -> usize {
+/// `ClassInstance` body: `string name = 1; uint64 instance_id = 2;
+/// uint64 type_id = 3; Dict attrs = 4; bool frozen = 5; bool is_dataclass = 6`.
+fn class_instance_len(
+    name: &str,
+    instance_id: u64,
+    type_id: u64,
+    attrs: &DictPairs,
+    frozen: bool,
+    is_dataclass: bool,
+) -> usize {
     str_len(1, name)
-        + uint64_len(2, type_id)
-        + repeated_str_len(3, field_names)
+        + uint64_len(2, instance_id)
+        + uint64_len(3, type_id)
         + submessage_len(4, dict_len(attrs))
         + if frozen {
             encoding::bool::encoded_len(5, &frozen)
+        } else {
+            0
+        }
+        + if is_dataclass {
+            encoding::bool::encoded_len(6, &is_dataclass)
         } else {
             0
         }
@@ -747,17 +766,18 @@ fn decode_field(
                 position: fh.position,
             })
         }
-        tag::DATACLASS => {
-            let dc: DataclassBody = merge_message(wire_type, buf, ctx)?;
-            let attrs = dc
+        tag::CLASS_INSTANCE => {
+            let ci: ClassInstanceBody = merge_message(wire_type, buf, ctx)?;
+            let attrs = ci
                 .attrs
-                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("Dataclass.attrs")))?;
-            MontyObject::Dataclass {
-                name: dc.name,
-                type_id: dc.type_id,
-                field_names: dc.field_names,
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.attrs")))?;
+            MontyObject::ClassInstance {
+                name: ci.name,
+                instance_id: ci.instance_id,
+                type_id: ci.type_id,
                 attrs: DictPairs::from(attrs.0),
-                frozen: dc.frozen,
+                frozen: ci.frozen,
+                is_dataclass: ci.is_dataclass,
             }
         }
         tag::FUNCTION => {
@@ -981,21 +1001,22 @@ impl Message for NamedTupleBody {
     }
 }
 
-/// Decode-only `prost::Message` for `Dataclass`, decoding the `attrs`
+/// Decode-only `prost::Message` for `ClassInstance`, decoding the `attrs`
 /// field (a `Dict`) straight into [`DictPairs`] via [`PairList`] rather
-/// than the `Vec<pb::Pair>` wrapper the generated `pb::Dataclass` would
+/// than the `Vec<pb::Pair>` wrapper the generated `pb::ClassInstance` would
 /// build and then unwrap. `attrs` stays `Option` so an absent message field is
 /// rejected by [`decode_field`] (presence, not a default). Decode-only.
 #[derive(Default)]
-struct DataclassBody {
+struct ClassInstanceBody {
     name: String,
+    instance_id: u64,
     type_id: u64,
-    field_names: Vec<String>,
     attrs: Option<PairList>,
     frozen: bool,
+    is_dataclass: bool,
 }
 
-impl Message for DataclassBody {
+impl Message for ClassInstanceBody {
     fn merge_field(
         &mut self,
         tag: u32,
@@ -1003,33 +1024,35 @@ impl Message for DataclassBody {
         buf: &mut impl Buf,
         ctx: DecodeContext,
     ) -> Result<(), DecodeError> {
-        // Field numbers from `Dataclass` in monty.proto; unknown → skip.
+        // Field numbers from `ClassInstance` in monty.proto; unknown → skip.
         match tag {
             1 => encoding::string::merge(wire_type, &mut self.name, buf, ctx),
-            2 => encoding::uint64::merge(wire_type, &mut self.type_id, buf, ctx),
-            3 => encoding::string::merge_repeated(wire_type, &mut self.field_names, buf, ctx),
+            2 => encoding::uint64::merge(wire_type, &mut self.instance_id, buf, ctx),
+            3 => encoding::uint64::merge(wire_type, &mut self.type_id, buf, ctx),
             // `get_or_insert` mirrors prost's message-field merge: repeated
             // occurrences accumulate `pairs` into the same `PairList`.
             4 => encoding::message::merge(wire_type, self.attrs.get_or_insert_with(PairList::default), buf, ctx),
             5 => encoding::bool::merge(wire_type, &mut self.frozen, buf, ctx),
+            6 => encoding::bool::merge(wire_type, &mut self.is_dataclass, buf, ctx),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
 
     fn encode_raw(&self, _buf: &mut impl BufMut) {
-        unreachable!("DataclassBody is decode-only")
+        unreachable!("ClassInstanceBody is decode-only")
     }
 
     fn encoded_len(&self) -> usize {
-        unreachable!("DataclassBody is decode-only")
+        unreachable!("ClassInstanceBody is decode-only")
     }
 
     fn clear(&mut self) {
         self.name.clear();
+        self.instance_id = 0;
         self.type_id = 0;
-        self.field_names.clear();
         self.attrs = None;
         self.frozen = false;
+        self.is_dataclass = false;
     }
 }
 

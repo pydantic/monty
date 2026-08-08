@@ -69,7 +69,7 @@ message MontyObject {
     // A pathlib.Path value (always a virtual POSIX path, never a host path).
     string path = 22;
     FileHandle file_handle = 23;
-    Dataclass dataclass = 24;
+    ClassInstance class_instance = 24;
     Function function = 25;
     // OUTPUT-ONLY fallback: repr() of a value with no other representation.
     string repr = 26;
@@ -188,16 +188,25 @@ message FileHandle {
   uint64 position = 3;
 }
 
-message Dataclass {
+// A class instance crossing the sandbox boundary. Host-backed instances carry
+// the host's `id(obj)` so method calls and lazy attribute lookups route back
+// to the real object (`FunctionCall.instance_id` / `NameLookup.instance_id`);
+// sandbox-defined instances cross outward with instance_id 0.
+message ClassInstance {
   // Class name, e.g. "Point".
   string name = 1;
-  // Host-side identity of the class, from `id(type(dc))`.
-  uint64 type_id = 2;
-  // Declared field names in definition order.
-  repeated string field_names = 3;
-  // All attributes (fields and extras), in order.
+  // Host-side identity of the instance, from `id(obj)`; 0 when the instance
+  // was defined inside the sandbox (not host-backed).
+  uint64 instance_id = 2;
+  // Host-side identity of the class, from `id(type(obj))`; 0 for
+  // sandbox-defined instances.
+  uint64 type_id = 3;
+  // Eagerly-sent attributes, in order.
   Dict attrs = 4;
+  // Frozen instances reject setattr with FrozenInstanceError in the sandbox.
   bool frozen = 5;
+  // Whether `dataclasses.is_dataclass(obj)` is true on the origin side.
+  bool is_dataclass = 6;
 }
 
 // An external (host-provided) function value, usually supplied by the parent
@@ -566,15 +575,18 @@ message Print {
   string text = 2;
 }
 
-// Suspension: the sandbox called an external function (or a dataclass method
-// when `method_call` is true — the instance is then the first arg). Answer
-// with `ResumeCall`.
+// Suspension: the sandbox called an external function, or — when
+// `instance_id` is set — a method on a host-backed class instance (the
+// instance is NOT included in `args`; the host routes by id). Answer with
+// `ResumeCall`.
 message FunctionCall {
   string function_name = 1;
   repeated MontyObject args = 2;
   repeated Pair kwargs = 3;
   uint32 call_id = 4;
-  bool method_call = 5;
+  // Set for method calls on a host-backed `ClassInstance`: the host id of the
+  // receiver. Absent for plain external function calls.
+  optional uint64 instance_id = 5;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent
@@ -660,9 +672,15 @@ message OsCall {
 }
 
 // Suspension: the sandbox read an undefined name — typically probing whether
-// the parent provides an external function. Answer with `ResumeNameLookup`.
+// the parent provides an external function — or, when `instance_id` is set, a
+// lazy attribute lookup on a host-backed `ClassInstance`. Answer with
+// `ResumeNameLookup`; for instance lookups an `undefined` answer raises
+// AttributeError (not NameError) inside the sandbox.
 message NameLookup {
   string name = 1;
+  // Set for attribute lookups on a host-backed `ClassInstance`: the host id
+  // of the instance whose attribute is being read.
+  optional uint64 instance_id = 2;
 }
 
 // Suspension: every sandbox task is blocked on external futures previously

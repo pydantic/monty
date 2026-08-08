@@ -138,7 +138,8 @@ macro_rules! handle_load_result {
 /// - `FramePushed`: Continue with the newly current frame
 /// - `External(ext_id, args)`: Return `FrameExit::ExternalCall` to yield to host
 /// - `OsCall(call)`: Return `FrameExit::OsCall` to yield to host
-/// - `MethodCall(name, args)`: Return `FrameExit::MethodCall` to yield to host
+/// - `MethodCall { .. }`: Return `FrameExit::MethodCall` to yield to host
+/// - `AttrLookup { .. }`: Return `FrameExit::AttrLookup` to yield to host
 /// - `AwaitValue(value)`: Push value, then implicitly await it via `exec_get_awaitable`
 /// - `Err(err)`: Handle the exception via `catch!`
 macro_rules! handle_call_result {
@@ -174,12 +175,28 @@ macro_rules! handle_call_result {
                     effect: Some(effect),
                 });
             }
-            Ok(CallResult::MethodCall(method_name, args)) => {
+            Ok(CallResult::MethodCall {
+                name,
+                args,
+                instance_id,
+            }) => {
                 let call_id = $self.allocate_call_id();
                 return Ok(FrameExit::MethodCall {
-                    method_name,
+                    method_name: name,
                     args,
                     call_id,
+                    instance_id,
+                });
+            }
+            Ok(CallResult::AttrLookup {
+                name,
+                class_name,
+                instance_id,
+            }) => {
+                return Ok(FrameExit::AttrLookup {
+                    name,
+                    class_name,
+                    instance_id,
                 });
             }
             Ok(CallResult::AwaitValue(value)) => {
@@ -243,19 +260,35 @@ pub enum FrameExit {
         effect: Option<PendingOsEffect>,
     },
 
-    /// Execution paused for a dataclass method call.
+    /// Execution paused for a method call on a host class instance.
     ///
-    /// The caller should invoke the method on the original Python dataclass and call
-    /// `resume()` with the result. The `method_name` is the attribute name (e.g.
-    /// `"distance"`) and `args` includes the dataclass instance as the first argument
-    /// (`self`).
+    /// The caller should invoke the method on the original host object
+    /// (routed by `instance_id`) and call `resume()` with the result. The
+    /// receiver is NOT included in `args`.
     MethodCall {
         /// Method name (e.g., "distance").
         method_name: EitherStr,
-        /// Arguments including the dataclass instance as the first positional arg.
+        /// Arguments for the method (the receiver is not among them).
         args: ArgValues,
         /// Unique ID for this call, used for async correlation.
         call_id: CallId,
+        /// Host identity of the receiver, from the instance's `instance_id`.
+        instance_id: u64,
+    },
+
+    /// Execution paused for a lazy attribute lookup on a host class instance.
+    ///
+    /// Produced by `obj.attr` when `attr` is public and missing from the
+    /// instance's eager attrs. Resumed by value like `NameLookup` (no
+    /// call_id); an "undefined" answer raises `AttributeError` naming
+    /// `class_name`. Carries no heap refs.
+    AttrLookup {
+        /// The attribute name being looked up.
+        name: EitherStr,
+        /// Class name of the instance, for the AttributeError message.
+        class_name: String,
+        /// Host identity of the instance whose attribute is read.
+        instance_id: u64,
     },
 
     /// All tasks are blocked waiting for external futures to resolve.
@@ -298,7 +331,7 @@ impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
                 // Never reached the host, so no `resume` will consume it.
                 release_pending_effect(effect, heap);
             }
-            Self::ResolveFutures(_) | Self::NameLookup { .. } => {}
+            Self::ResolveFutures(_) | Self::NameLookup { .. } | Self::AttrLookup { .. } => {}
         }
     }
 }

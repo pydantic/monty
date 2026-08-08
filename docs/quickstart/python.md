@@ -92,7 +92,9 @@ with Monty() as pool:
             session.feed_run('v', inputs={'v': Decimal('1.5')})
         except MontyConversionError as exc:
             print(exc)
-            #> Cannot convert decimal.Decimal to Monty value
+            """
+            Cannot convert decimal.Decimal to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)
+            """
 ```
 
 ## Async

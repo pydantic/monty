@@ -2,6 +2,7 @@
 // filesystem mounts, native-only helpers, and the shared error/value types.
 
 export { Monty, type CheckoutOptions, type MontyOptions, type ResourceLimits } from './pool.js'
+export { ClassInstance, MontyClassInstance, type AttrPolicy, type ClassInstanceOptions } from './classInstance.js'
 export {
   FunctionSnapshot,
   FutureSnapshot,

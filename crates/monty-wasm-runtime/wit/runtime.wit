@@ -85,13 +85,14 @@ interface worker {
         position: u64,
     }
 
-    /// A dataclass value and indexes of its attribute keys and values.
-    record dataclass-node {
+    /// A host-backed class instance and indexes of its attribute keys and values.
+    record class-instance-node {
         name: string,
+        instance-id: u64,
         type-id: u64,
-        field-names: list<string>,
         attrs: list<node-pair>,
         frozen: bool,
+        is-dataclass: bool,
     }
 
     /// An external function value.
@@ -137,7 +138,7 @@ interface worker {
         builtin-function(string),
         path(string),
         file-handle(file-handle-node),
-        dataclass(dataclass-node),
+        class-instance(class-instance-node),
         function(function-node),
         repr(string),
         cycle(cycle-node),
@@ -279,7 +280,16 @@ interface worker {
         args: list<value>,
         kwargs: list<value-pair>,
         call-id: u32,
-        method-call: bool,
+        /// Set for a method call on a host instance (`FunctionCall.instance_id`).
+        instance-id: option<u64>,
+    }
+
+    /// A suspended name or lazy-attribute lookup.
+    record name-lookup-event {
+        name: string,
+        /// Set for a lazy attribute lookup on a host instance
+        /// (`NameLookup.instance_id`).
+        instance-id: option<u64>,
     }
 
     /// A suspended OS call projected into the public callback shape.
@@ -295,7 +305,7 @@ interface worker {
         print(print-event),
         function-call(function-call-event),
         os-call(os-call-event),
-        name-lookup(string),
+        name-lookup(name-lookup-event),
         resolve-futures(list<u32>),
         complete(value),
         error(raised-exception),

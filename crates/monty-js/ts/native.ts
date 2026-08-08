@@ -46,7 +46,10 @@ export interface FunctionCallTurn {
    */
   kwargs: [unknown, unknown][]
   callId: number
-  methodCall: boolean
+  /** Set for method calls on a host-backed class instance: the id of the
+   *  receiver in the session's `InstanceStore` (the receiver is NOT in
+   *  `args`). Null/absent for plain external function calls. */
+  instanceId?: bigint | null
 }
 
 /** The sandbox performed an OS operation no mount handled. */
@@ -62,6 +65,10 @@ export interface OsCallTurn {
 export interface NameLookupTurn {
   kind: 'nameLookup'
   name: string
+  /** Set for lazy attribute lookups on a host-backed class instance: the
+   *  instance's id. Answering `resumeNameLookup(null, null, ...)` then makes
+   *  the sandbox raise `AttributeError` (not `NameError`). */
+  instanceId?: bigint | null
 }
 
 /** Every sandbox task is blocked on external futures. */

@@ -41,7 +41,8 @@ use monty_types::{
 };
 use napi::{
     bindgen_prelude::{
-        Array, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw, Unknown,
+        Array, BigInt, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw,
+        Unknown,
     },
     threadsafe_function::UnknownReturnValue,
     Env, Error, Result,
@@ -775,14 +776,15 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
             args,
             kwargs,
             call_id,
-            method_call,
+            instance_id,
         }) => {
             obj.set("kind", "functionCall")?;
             obj.set("functionName", function_name)?;
             obj.set("args", values_to_js(env, &args)?)?;
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
             obj.set("callId", call_id)?;
-            obj.set("methodCall", method_call)?;
+            // BigInt: instance ids are host `id()`s and can exceed 2^53
+            obj.set("instanceId", instance_id.map(BigInt::from))?;
         }
         TurnOutcome::Event(TurnEvent::OsCall {
             function_name,
@@ -796,9 +798,11 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
             obj.set("callId", call_id)?;
         }
-        TurnOutcome::Event(TurnEvent::NameLookup { name }) => {
+        TurnOutcome::Event(TurnEvent::NameLookup { name, instance_id }) => {
             obj.set("kind", "nameLookup")?;
             obj.set("name", name)?;
+            // BigInt: instance ids are host `id()`s and can exceed 2^53
+            obj.set("instanceId", instance_id.map(BigInt::from))?;
         }
         TurnOutcome::Event(TurnEvent::ResolveFutures { pending_call_ids }) => {
             obj.set("kind", "resolveFutures")?;

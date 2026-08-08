@@ -51,13 +51,31 @@ pub(crate) enum CallResult {
     /// The [`OsFunctionCall`] is a tagged enum whose variants carry their own
     /// typed args, so no separate `ArgValues` is needed at this layer.
     OsCall(OsFunctionCall),
-    /// Dataclass method call requested - VM should yield `FrameExit::MethodCall` to host.
+    /// Host-class method call requested - VM should yield `FrameExit::MethodCall` to host.
     ///
-    /// The method name (e.g. `"distance"`) and the args include the dataclass instance
-    /// as the first argument (`self`). Unlike `External`, this uses an `EitherStr` instead
-    /// of `StringId` because method names are only known at runtime when dataclass
-    /// inputs are provided.
-    MethodCall(EitherStr, ArgValues),
+    /// The receiver is NOT included in `args`: the host routes the call by
+    /// `instance_id` (the host's `id(obj)`, stored on the [`HostClass`]).
+    /// Unlike `External`, `name` is an `EitherStr` because method names are
+    /// only known at runtime when class-instance inputs are provided.
+    ///
+    /// [`HostClass`]: crate::types::HostClass
+    MethodCall {
+        name: EitherStr,
+        args: ArgValues,
+        instance_id: u64,
+    },
+    /// Lazy attribute lookup on a host class instance - VM should yield
+    /// `FrameExit::AttrLookup` to host.
+    ///
+    /// Produced by `obj.attr` when `attr` is public and missing from the
+    /// instance's eager attrs. `class_name` is captured at suspension so the
+    /// resume-undefined AttributeError names the real class without touching
+    /// the heap. Carries no heap refs, so dropping it is trivial.
+    AttrLookup {
+        name: EitherStr,
+        class_name: String,
+        instance_id: u64,
+    },
     /// The call returned a value that should be implicitly awaited.
     ///
     /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
@@ -80,11 +98,11 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
     fn drop_with(self, heap: &mut C) {
         match self {
             Self::Value(value) | Self::AwaitValue(value) => value.drop_with(heap),
-            Self::External(_, args) | Self::MethodCall(_, args) => {
+            Self::External(_, args) | Self::MethodCall { args, .. } => {
                 args.drop_with(heap);
             }
             Self::OsCall(call) => call.drop_with(heap),
-            Self::FramePushed => {}
+            Self::FramePushed | Self::AttrLookup { .. } => {}
             Self::OsCallWithEffect { call, effect } => {
                 call.drop_with(heap);
                 // Discarded before it ever became a `FrameExit`.
@@ -436,10 +454,17 @@ impl VM<'_> {
                 "{ctx}: OS function '{}' is not yet supported in this context",
                 call.name()
             )),
-            CallResult::MethodCall(method_name, _) => ExcType::not_implemented(format!(
+            CallResult::MethodCall { name, .. } => ExcType::not_implemented(format!(
                 "{ctx}: method call '{}' is not yet supported in this context",
-                method_name.as_str(self.interns)
+                name.as_str(self.interns)
             )),
+            // A lazy attribute lookup cannot suspend in a synchronous nested
+            // context; report the attribute as missing rather than a
+            // NotImplementedError, matching what an unanswered lookup raises.
+            // Carries no heap refs, so returning without drop_with is safe.
+            CallResult::AttrLookup { name, class_name, .. } => {
+                return ExcType::attribute_error(class_name, name.as_str(self.interns));
+            }
             CallResult::AwaitValue(_) => {
                 ExcType::not_implemented(format!("{ctx}: awaiting a value is not yet supported in this context"))
             }
@@ -466,6 +491,10 @@ impl VM<'_> {
                 "{ctx}: method call '{}' is not yet supported in this context",
                 method_name.as_str(self.interns)
             )),
+            // Same as the `CallResult::AttrLookup` arm above: no heap refs.
+            FrameExit::AttrLookup { name, class_name, .. } => {
+                return ExcType::attribute_error(class_name, name.as_str(self.interns));
+            }
             FrameExit::ResolveFutures(_) => ExcType::not_implemented(format!(
                 "{ctx}: resolving async futures is not yet supported in this context"
             )),

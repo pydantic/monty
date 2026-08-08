@@ -26,6 +26,7 @@ __all__ = [
     'CollectString',
     'Frame',
     'Monty',
+    'MontyClassInstance',
     'MontyConversionError',
     'MontyCrashedError',
     'MontyDisconnectError',
@@ -354,6 +355,31 @@ class MontyFileHandle:
         """`True` if the mode permits `write()` (`'w'`, `'a'`, `'r+'`, `'w+'`, `'a+'`, and binary variants)."""
 
 @final
+class MontyClassInstance:
+    """Read-only proxy for a class instance the host has no original object for.
+
+    Produced when the sandbox returns a sandbox-defined class instance, or a
+    host-sent instance after the session was restored into a fresh process
+    (the instance store is host-side and does not survive `load_session` /
+    `load_snapshot`). Plain data holder — there is no live object behind it.
+    """
+
+    @property
+    def name(self) -> str:
+        """Class name of the instance (e.g. `'Point'`)."""
+
+    @property
+    def is_dataclass(self) -> bool:
+        """Whether the instance was a dataclass on the side that produced it."""
+
+    @property
+    def attributes(self) -> dict[str, Any]:
+        """The instance's attributes as a plain dict."""
+
+    def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+
+@final
 class MontyCrashedError(MontyError):
     """Raised when the sandbox is gone and the session with it.
 
@@ -476,7 +502,6 @@ class Monty:
         type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
-        dataclass_registry: list[type] | None = None,
     ) -> MontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -503,8 +528,6 @@ class Monty:
                 CPython's empty `AssertionError`. On by default; set to `False`
                 to restore CPython's behavior, or to an int >= 1 to customize
                 the per-operand repr truncation length (default 120 bytes).
-            dataclass_registry: Dataclass types to register for proper
-                isinstance() support on output.
         """
 
 @final
@@ -642,7 +665,9 @@ class MontySession:
 
         The dump restores its own `script_name` /
         limits / type-check state (the `checkout()` config for those is not
-        applied); the dataclass registry from `checkout()` is reused. Raises if
+        applied). The class-instance store starts empty — it is host state and
+        never part of a dump, so restored `ClassInstance` values fall back to
+        `MontyClassInstance` proxies and method calls on them fail. Raises if
         the dump is actually a suspended snapshot.
         """
 
@@ -664,7 +689,8 @@ class MontySession:
         Valid only on a fresh session, before any feed or load; raises
         `RuntimeError` otherwise. The dump restores its own `script_name` /
         limits / type-check state (the `checkout()` config for those is not
-        applied); the dataclass registry from `checkout()` is reused. `mount`
+        applied). The class-instance store starts empty (host state is never
+        part of a dump). `mount`
         re-establishes the suspended feed's mounts, which are never part of the
         dump — pass the same mounts the original feed used, or its filesystem
         calls degrade into unhandled OS calls. `'overlay'` writes made before
@@ -752,7 +778,6 @@ class AsyncMonty:
         type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
-        dataclass_registry: list[type] | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -834,7 +859,6 @@ class AsyncMontyWebsocket:
         type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
-        dataclass_registry: list[type] | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated remote connection.
@@ -1025,8 +1049,10 @@ class FunctionSnapshot:
     @property
     def is_os_function(self) -> bool: ...
     @property
-    def is_method_call(self) -> bool:
-        """Whether this is a dataclass method call (the instance is `args[0]`)."""
+    def instance_id(self) -> int | None:
+        """Host `id()` of the receiver for a method call on a host class
+        instance sent via `ClassInstance`; `None` for plain external functions
+        and OS calls. The receiver is not included in `args`."""
 
     @property
     def function_name(self) -> str | OsFunction: ...
@@ -1065,12 +1091,19 @@ class FunctionSnapshot:
 
 @final
 class NameLookupSnapshot:
-    """A paused execution waiting for the value of an undefined name."""
+    """A paused execution waiting for the value of an undefined name, or —
+    when `instance_id` is set — a lazy attribute lookup on a host class
+    instance sent via `ClassInstance`."""
 
     @property
     def script_name(self) -> str: ...
     @property
     def variable_name(self) -> str: ...
+    @property
+    def instance_id(self) -> int | None:
+        """Host `id()` of the instance for a lazy attribute lookup; `None` for
+        a plain undefined-name lookup. An omitted-`value` resume raises
+        `AttributeError` (not `NameError`) for instance lookups."""
     def resume(self, *, value: Any = ...) -> SyncSnapshot:
         """Resume by binding the name to `value` (any value, including `None`), or
         omit `value` to leave the name undefined and raise `NameError`."""
@@ -1116,7 +1149,7 @@ class AsyncFunctionSnapshot:
     @property
     def is_os_function(self) -> bool: ...
     @property
-    def is_method_call(self) -> bool: ...
+    def instance_id(self) -> int | None: ...
     @property
     def function_name(self) -> str | OsFunction: ...
     @property
@@ -1143,6 +1176,8 @@ class AsyncNameLookupSnapshot:
     def script_name(self) -> str: ...
     @property
     def variable_name(self) -> str: ...
+    @property
+    def instance_id(self) -> int | None: ...
     async def resume(self, *, value: Any = ...) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
         """Async sibling of `NameLookupSnapshot.resume_auto`."""

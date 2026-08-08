@@ -10,7 +10,7 @@ use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
     bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
-    exception_private::{ExcTypeExt, RunResult},
+    exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{DropWithContext, Heap, HeapReader},
     intern::{InternerBuilder, Interns, StringId},
     name_map::NameMap,
@@ -463,6 +463,13 @@ impl Executor {
                     let err = ExcType::name_error(name);
                     frame_exit_result = vm.resume_with_exception(err.into());
                 }
+                // No host to serve a lazy attribute lookup — raise the
+                // AttributeError an unanswered lookup would produce, through
+                // the VM so the traceback is captured.
+                Ok(FrameExit::AttrLookup { name, class_name, .. }) => {
+                    let err = ExcType::attribute_error(&class_name, name.as_str(&self.interns));
+                    frame_exit_result = vm.resume_with_exception(err);
+                }
                 Ok(FrameExit::ExternalCall {
                     function_name,
                     args,
@@ -626,27 +633,32 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
         FrameExit::Return(return_value) => return Ok(MontyObject::new(return_value, vm)),
         exit => exit,
     };
-    let error = match &exit {
+    let error: RunError = match &exit {
         FrameExit::Return(_) => unreachable!("returns are handled above"),
         FrameExit::ExternalCall { function_name, .. } => {
             let function_name = function_name.as_str(vm.interns);
             ExcType::not_implemented(format!(
                 "External function '{function_name}' not implemented with standard execution"
             ))
+            .into()
         }
         FrameExit::OsCall { function_call, .. } => ExcType::not_implemented(format!(
             "OS function '{}' not implemented with standard execution",
             function_call.name()
-        )),
+        ))
+        .into(),
         FrameExit::MethodCall { method_name, .. } => {
             let name = method_name.as_str(vm.interns);
-            ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
+            ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution")).into()
         }
-        FrameExit::ResolveFutures(_) => ExcType::not_implemented("async futures not supported by standard execution."),
-        FrameExit::NameLookup { name_id, .. } => ExcType::name_error(vm.interns.get_str(*name_id)),
+        FrameExit::ResolveFutures(_) => {
+            ExcType::not_implemented("async futures not supported by standard execution.").into()
+        }
+        FrameExit::NameLookup { name_id, .. } => ExcType::name_error(vm.interns.get_str(*name_id)).into(),
+        FrameExit::AttrLookup { name, class_name, .. } => ExcType::attribute_error(class_name, name.as_str(vm.interns)),
     };
     exit.drop_with(vm);
-    Err(error.into())
+    Err(error)
 }
 
 /// Output from `run_ref_counts` containing reference count and heap information.

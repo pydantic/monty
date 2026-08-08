@@ -1855,8 +1855,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(*id);
             }
         }
-        HeapData::Dataclass(dc) => {
-            // Dataclass attrs are stored in a Dict - iterate through entries
+        HeapData::HostClass(dc) => {
+            // HostClass attrs are stored in a Dict - iterate through entries
             for (k, v) in dc.attrs() {
                 if let Value::Ref(id) = k {
                     on_child(*id);
@@ -2054,7 +2054,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             }
         }
         HeapData::Cell(cell) => cell.0.py_dec_ref_ids(stack),
-        HeapData::Dataclass(dc) => dc.py_dec_ref_ids(stack),
+        HeapData::HostClass(dc) => dc.py_dec_ref_ids(stack),
         HeapData::Class(class) => class.py_dec_ref_ids(stack),
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),

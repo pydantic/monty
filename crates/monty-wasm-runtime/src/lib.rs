@@ -25,8 +25,8 @@ mod bindings {
 mod value;
 
 use bindings::exports::pydantic::monty::worker::{
-    CallResult, ConfigureRequest, DispatchResult, Event, FunctionCallEvent, Guest, NameLookupResult, OsCallEvent,
-    PrintEvent, RaisedException, Request, StackFrame, Status, TypeCheckFormat, ValuePair,
+    CallResult, ConfigureRequest, DispatchResult, Event, FunctionCallEvent, Guest, NameLookupEvent, NameLookupResult,
+    OsCallEvent, PrintEvent, RaisedException, Request, StackFrame, Status, TypeCheckFormat, ValuePair,
 };
 
 thread_local! {
@@ -360,10 +360,13 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                 })
                 .collect(),
             call_id: call.call_id,
-            method_call: call.method_call,
+            instance_id: call.instance_id,
         }),
         Some(pb::child_event::Kind::OsCall(_)) => invalid_event("OsCall event bypassed component budget preparation"),
-        Some(pb::child_event::Kind::NameLookup(lookup)) => Event::NameLookup(lookup.name),
+        Some(pb::child_event::Kind::NameLookup(lookup)) => Event::NameLookup(NameLookupEvent {
+            name: lookup.name,
+            instance_id: lookup.instance_id,
+        }),
         Some(pb::child_event::Kind::ResolveFutures(futures)) => Event::ResolveFutures(futures.pending_call_ids),
         Some(pb::child_event::Kind::Complete(complete)) => complete
             .value

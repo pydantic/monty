@@ -85,7 +85,7 @@ pub mod monty_object {
         #[prost(message, tag = "23")]
         FileHandle(super::FileHandle),
         #[prost(message, tag = "24")]
-        Dataclass(super::Dataclass),
+        ClassInstance(super::ClassInstance),
         #[prost(message, tag = "25")]
         Function(super::Function),
         /// OUTPUT-ONLY fallback: repr() of a value with no other representation.
@@ -247,22 +247,32 @@ pub struct FileHandle {
     #[prost(uint64, tag = "3")]
     pub position: u64,
 }
+/// A class instance crossing the sandbox boundary. Host-backed instances carry
+/// the host's `id(obj)` so method calls and lazy attribute lookups route back
+/// to the real object (`FunctionCall.instance_id` / `NameLookup.instance_id`);
+/// sandbox-defined instances cross outward with instance_id 0.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Dataclass {
+pub struct ClassInstance {
     /// Class name, e.g. "Point".
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    /// Host-side identity of the class, from `id(type(dc))`.
+    /// Host-side identity of the instance, from `id(obj)`; 0 when the instance
+    /// was defined inside the sandbox (not host-backed).
     #[prost(uint64, tag = "2")]
+    pub instance_id: u64,
+    /// Host-side identity of the class, from `id(type(obj))`; 0 for
+    /// sandbox-defined instances.
+    #[prost(uint64, tag = "3")]
     pub type_id: u64,
-    /// Declared field names in definition order.
-    #[prost(string, repeated, tag = "3")]
-    pub field_names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// All attributes (fields and extras), in order.
+    /// Eagerly-sent attributes, in order.
     #[prost(message, optional, tag = "4")]
     pub attrs: ::core::option::Option<Dict>,
+    /// Frozen instances reject setattr with FrozenInstanceError in the sandbox.
     #[prost(bool, tag = "5")]
     pub frozen: bool,
+    /// Whether `dataclasses.is_dataclass(obj)` is true on the origin side.
+    #[prost(bool, tag = "6")]
+    pub is_dataclass: bool,
 }
 /// An external (host-provided) function value, usually supplied by the parent
 /// in response to a `NameLookup` event.
@@ -711,9 +721,10 @@ pub struct Print {
     #[prost(string, tag = "2")]
     pub text: ::prost::alloc::string::String,
 }
-/// Suspension: the sandbox called an external function (or a dataclass method
-/// when `method_call` is true — the instance is then the first arg). Answer
-/// with `ResumeCall`.
+/// Suspension: the sandbox called an external function, or — when
+/// `instance_id` is set — a method on a host-backed class instance (the
+/// instance is NOT included in `args`; the host routes by id). Answer with
+/// `ResumeCall`.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FunctionCall {
     #[prost(string, tag = "1")]
@@ -724,8 +735,10 @@ pub struct FunctionCall {
     pub kwargs: ::prost::alloc::vec::Vec<Pair>,
     #[prost(uint32, tag = "4")]
     pub call_id: u32,
-    #[prost(bool, tag = "5")]
-    pub method_call: bool,
+    /// Set for method calls on a host-backed `ClassInstance`: the host id of the
+    /// receiver. Absent for plain external function calls.
+    #[prost(uint64, optional, tag = "5")]
+    pub instance_id: ::core::option::Option<u64>,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the parent
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
@@ -882,11 +895,18 @@ pub mod os_call {
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
-/// the parent provides an external function. Answer with `ResumeNameLookup`.
+/// the parent provides an external function — or, when `instance_id` is set, a
+/// lazy attribute lookup on a host-backed `ClassInstance`. Answer with
+/// `ResumeNameLookup`; for instance lookups an `undefined` answer raises
+/// AttributeError (not NameError) inside the sandbox.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NameLookup {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
+    /// Set for attribute lookups on a host-backed `ClassInstance`: the host id
+    /// of the instance whose attribute is being read.
+    #[prost(uint64, optional, tag = "2")]
+    pub instance_id: ::core::option::Option<u64>,
 }
 /// Suspension: every sandbox task is blocked on external futures previously
 /// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.

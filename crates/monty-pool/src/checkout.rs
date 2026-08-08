@@ -146,14 +146,15 @@ pub enum MountSpecMode {
 #[derive(Debug)]
 pub enum TurnEvent {
     /// The sandbox called an external function — answer with
-    /// [`Checkout::resume`]. When `method_call` is true this is a dataclass
-    /// method call and the instance is the first argument.
+    /// [`Checkout::resume`]. When `instance_id` is set this is a method call
+    /// on the host class instance with that `id(obj)`; the receiver is NOT
+    /// included in `args`.
     FunctionCall {
         function_name: String,
         args: Vec<MontyObject>,
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
-        method_call: bool,
+        instance_id: Option<u64>,
     },
     /// The sandbox performed an OS operation (e.g. `"Path.read_text"`).
     /// Answer it from this feed's mounts with
@@ -167,9 +168,11 @@ pub enum TurnEvent {
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
     },
-    /// The sandbox read an undefined name — answer with
-    /// [`Checkout::resume_name_lookup`].
-    NameLookup { name: String },
+    /// The sandbox read an undefined name, or — when `instance_id` is set — a
+    /// lazy attribute on the host class instance with that `id(obj)` — answer
+    /// with [`Checkout::resume_name_lookup`]. A `None` answer raises
+    /// `NameError` for plain lookups, `AttributeError` for instance lookups.
+    NameLookup { name: String, instance_id: Option<u64> },
     /// Every sandbox task is blocked on external futures — answer with
     /// [`Checkout::resume_futures`].
     ResolveFutures { pending_call_ids: Vec<u32> },
@@ -1016,7 +1019,7 @@ impl Checkout {
                             args: call.args,
                             kwargs: call.kwargs,
                             call_id: call.call_id,
-                            method_call: call.method_call,
+                            instance_id: call.instance_id,
                         })
                     });
                 }
@@ -1056,7 +1059,10 @@ impl Checkout {
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {
                     self.pending = Some(Pending::NameLookup);
-                    return Ok(ControlEvent::Turn(TurnEvent::NameLookup { name: lookup.name }));
+                    return Ok(ControlEvent::Turn(TurnEvent::NameLookup {
+                        name: lookup.name,
+                        instance_id: lookup.instance_id,
+                    }));
                 }
                 Some(pb::child_event::Kind::ResolveFutures(futures)) => {
                     self.pending = Some(Pending::Futures);

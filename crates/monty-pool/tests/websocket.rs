@@ -704,7 +704,7 @@ fn function_call(call_id: u32) -> pb::child_event::Kind {
         args: vec![],
         kwargs: vec![],
         call_id,
-        method_call: false,
+        instance_id: None,
     })
 }
 

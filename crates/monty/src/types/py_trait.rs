@@ -516,7 +516,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// - `Ok(CallResult::Value(v))` - Method completed synchronously with value `v`
     /// - `Ok(CallResult::OsCall(func, args))` - Method needs OS operation; VM yields to host
     /// - `Ok(CallResult::External(name, args))` - Method needs external function call
-    /// - `Ok(CallResult::MethodCall(attr, args))` - Dataclass method call; VM yields to host
+    /// - `Ok(CallResult::MethodCall { .. })` - Host-class method call; VM yields to host
     /// - `Err(e)` - Method call failed with error
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         // `py_call_attr` takes ownership of the argument bundle. Implementations that
@@ -654,7 +654,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// `Err(AttributeError)` when an attribute is not found, not `Ok(None)`.
     ///
     /// The returned `Value` is always owned:
-    /// - For stored values (Dataclass, Module, NamedTuple fields): clone with `clone_with_heap`
+    /// - For stored values (HostClass, Module, NamedTuple fields): clone with `clone_with_heap`
     /// - For computed values (Exception.args, Slice.start, Path.name): return newly created value
     ///
     /// Takes `&mut VM` to allow:

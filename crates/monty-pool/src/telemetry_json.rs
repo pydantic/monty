@@ -10,18 +10,13 @@
 //! digit string rather than a raw JSON number.
 
 use std::{
-    collections::{HashMap, HashSet},
     fmt::Write as _,
     io::{self, Write},
-    mem::size_of,
 };
 
 use monty_types::{MontyDateTime, MontyObject, MontyTime, bytes_repr};
 use num_traits::ToPrimitive;
-use serde::ser::{Error as _, Serialize, SerializeMap, Serializer};
-
-/// Maximum attrs inspected while matching declared dataclass fields.
-const DATACLASS_ATTR_SCAN_LIMIT: usize = 64 * 1024;
+use serde::ser::{Serialize, SerializeMap, Serializer};
 
 /// Serializes `value` to logfire-style JSON (see the module docs), capped at
 /// `limit` bytes. The bool is true when the cap cut serialization short — the
@@ -149,52 +144,10 @@ impl Serialize for JsonEncoded<'_> {
             MontyObject::Dict(pairs) => {
                 serialize_pairs(pairs.into_iter().map(|(k, v)| (k, v)), pairs.len(), self.limit, s)
             }
-            // like logfire dataclasses: an object of the declared fields only
-            MontyObject::Dataclass { field_names, attrs, .. } => {
-                // Index the smaller attacker-controlled side. Normal
-                // dataclasses track declared names while scanning only a
-                // budget-sized prefix of unrelated extra attrs.
-                let index_limit = (self.limit / size_of::<(&str, &MontyObject)>()).max(1);
-                let scan_limit = self.limit.saturating_mul(16).clamp(1, DATACLASS_ATTR_SCAN_LIMIT);
-                let (by_name, index_cut) = if field_names.len() <= index_limit {
-                    let declared: HashSet<&str> = field_names.iter().map(String::as_str).collect();
-                    let mut by_name = HashMap::with_capacity(declared.len());
-                    let mut scanned = 0;
-                    for (key, value) in attrs.into_iter().take(scan_limit) {
-                        scanned += 1;
-                        if let MontyObject::String(key) = key
-                            && declared.contains(key.as_str())
-                        {
-                            by_name.entry(key.as_str()).or_insert(value);
-                            if by_name.len() == declared.len() {
-                                break;
-                            }
-                        }
-                    }
-                    let cut = scanned < attrs.len() && by_name.len() < declared.len();
-                    (by_name, cut)
-                } else {
-                    let indexed = attrs.len().min(index_limit);
-                    let mut by_name = HashMap::with_capacity(indexed);
-                    for (key, value) in attrs.into_iter().take(indexed) {
-                        if let MontyObject::String(key) = key {
-                            by_name.entry(key.as_str()).or_insert(value);
-                        }
-                    }
-                    (by_name, indexed < attrs.len())
-                };
-                let mut map = s.serialize_map(Some(field_names.len()))?;
-                for name in field_names {
-                    if let Some(value) = by_name.get(name.as_str()) {
-                        map.serialize_entry(name, &self.nested(value))?;
-                    }
-                }
-                let output = map.end()?;
-                if index_cut {
-                    Err(S::Error::custom("dataclass attribute index limit reached"))
-                } else {
-                    Ok(output)
-                }
+            // like logfire dataclasses: an object of the eager attrs, in order
+            // (there are no declared field names — attrs ARE the surface)
+            MontyObject::ClassInstance { attrs, .. } => {
+                serialize_pairs(attrs.into_iter().map(|(k, v)| (k, v)), attrs.len(), self.limit, s)
             }
             MontyObject::Date(d) => s.collect_str(&format_args!("{:04}-{:02}-{:02}", d.year, d.month, d.day)),
             MontyObject::DateTime(dt) => s.serialize_str(&datetime_isoformat(dt)),
@@ -504,49 +457,35 @@ mod tests {
     }
 
     #[test]
-    fn dataclass_is_an_object_of_declared_fields() {
-        let dc = MontyObject::Dataclass {
+    fn class_instance_is_an_object_of_its_attrs() {
+        let ci = MontyObject::ClassInstance {
             name: "Point".to_owned(),
+            instance_id: 7,
             type_id: 1,
-            field_names: vec!["x".to_owned(), "y".to_owned()],
             attrs: DictPairs::from(vec![
                 (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
                 (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
-                (MontyObject::String("extra".to_owned()), MontyObject::Int(9)),
             ]),
             frozen: false,
+            is_dataclass: true,
         };
-        assert_eq!(json(&dc), r#"{"x":1,"y":2}"#);
+        assert_eq!(json(&ci), r#"{"x":1,"y":2}"#);
     }
 
-    /// Extra dataclass attrs do not consume index capacity or hide a declared
-    /// field that appears late in the attacker-controlled mapping.
+    /// A wide attacker-controlled attrs mapping is cut by the byte cap rather
+    /// than serialized in full.
     #[test]
-    fn extra_dataclass_attributes_are_not_indexed() {
-        let attrs = (1..100)
-            .map(|index| (MontyObject::String(format!("field_{index}")), MontyObject::Int(index)))
-            .chain([(MontyObject::String("field_0".to_owned()), MontyObject::Int(0))])
-            .collect::<Vec<_>>();
-        let value = MontyObject::Dataclass {
-            name: "Large".to_owned(),
-            type_id: 1,
-            field_names: vec!["field_0".to_owned()],
-            attrs: DictPairs::from(attrs),
-            frozen: false,
-        };
-        let (json, cut) = serialize_capped(&value, 64);
-        assert!(!cut);
-        assert_eq!(json, r#"{"field_0":0}"#);
-
+    fn class_instance_attrs_are_capped() {
         let attrs = (0..2_000)
             .map(|index| (MontyObject::String(format!("extra_{index}")), MontyObject::None))
             .collect::<Vec<_>>();
-        let value = MontyObject::Dataclass {
+        let value = MontyObject::ClassInstance {
             name: "Large".to_owned(),
+            instance_id: 7,
             type_id: 1,
-            field_names: vec!["missing".to_owned()],
             attrs: DictPairs::from(attrs),
             frozen: false,
+            is_dataclass: false,
         };
         assert!(serialize_capped(&value, 64).1);
     }

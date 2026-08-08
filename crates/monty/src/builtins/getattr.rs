@@ -47,6 +47,14 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     match object.py_getattr(&attr, vm) {
         Ok(CallResult::Value(value)) => Ok(value),
+        // Builtins cannot suspend, so a lazy host attribute lookup degrades to
+        // "attribute missing": return the default or the AttributeError an
+        // unanswered lookup raises (documented divergence — only `obj.attr`
+        // syntax consults the host).
+        Ok(CallResult::AttrLookup { name, class_name, .. }) => match default {
+            Some(d) => Ok(d.clone_with_heap(vm)),
+            None => Err(ExcType::attribute_error(class_name, name.as_str(vm.interns))),
+        },
         Ok(other) => {
             other.drop_with(vm);
             // getattr() only retrieves attribute values — OS calls, external calls,

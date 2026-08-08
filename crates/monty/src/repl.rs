@@ -23,7 +23,10 @@ use crate::{
     name_map::NameMap,
     object_bridge::MontyObjectExt,
     run::{CompileOptions, Executor},
-    run_progress::{ConvertedExit, ExtFunctionResult, ExtFunctionResultExt, NameLookupResult, convert_frame_exit},
+    run_progress::{
+        ConvertedExit, ExtFunctionResult, ExtFunctionResultExt, LookupScope, NameLookupResult, convert_frame_exit,
+        undefined_lookup_error,
+    },
     types::tuple::allocate_tuple,
     value::Value,
 };
@@ -554,7 +557,7 @@ impl ReplProgress {
 // ReplFunctionCall
 // ---------------------------------------------------------------------------
 
-/// REPL execution paused at an external function call or dataclass method call.
+/// REPL execution paused at an external function call or host-class method call.
 ///
 /// Resume with `resume(result, print)` to provide the return value and continue,
 /// or `resume_pending(print)` to push an `ExternalFuture` for async resolution.
@@ -568,8 +571,10 @@ pub struct ReplFunctionCall {
     pub kwargs: Vec<(MontyObject, MontyObject)>,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
-    /// Whether this is a dataclass method call (first arg is `self`).
-    pub method_call: bool,
+    /// Host identity of the receiver for a method call on a host class
+    /// instance; `None` for plain external function calls. The receiver is
+    /// NOT included in `args`.
+    pub instance_id: Option<u64>,
     /// Internal REPL execution snapshot.
     snapshot: ReplSnapshot,
 }
@@ -652,19 +657,20 @@ impl ReplOsCall {
 // ReplNameLookup
 // ---------------------------------------------------------------------------
 
-/// REPL execution paused for an unresolved name lookup.
+/// REPL execution paused for an unresolved name lookup, or — when
+/// [`instance_id`](Self::instance_id) is set — a lazy attribute lookup on a
+/// host class instance.
 ///
-/// The host should check if the name corresponds to a known external function or
-/// value. Call `resume(result, print)` with the appropriate `NameLookupResult`.
-/// The namespace slot and scope are managed internally.
+/// The host should check if the name corresponds to a known external function,
+/// value, or instance attribute. Call `resume(result, print)` with the
+/// appropriate `NameLookupResult`. The namespace slot and scope are managed
+/// internally.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ReplNameLookup {
     /// The name being looked up.
     pub name: String,
-    /// The namespace slot where the resolved value should be cached.
-    namespace_slot: u16,
-    /// Whether this is a global slot or a local/function slot.
-    is_global: bool,
+    /// Where the resolved value lands (namespace slot or instance attribute).
+    scope: LookupScope,
     /// Internal REPL execution snapshot.
     snapshot: ReplSnapshot,
 }
@@ -678,17 +684,20 @@ impl ReplNameLookup {
         self.snapshot.into_repl()
     }
 
+    /// Host identity of the instance for a lazy attribute lookup; `None` for a
+    /// plain global/local name lookup.
+    #[must_use]
+    pub fn instance_id(&self) -> Option<u64> {
+        self.scope.instance_id()
+    }
+
     /// Resumes execution after name resolution.
     ///
-    /// Caches the resolved value in the namespace slot before restoring the VM,
-    /// then either pushes the value onto the stack or raises `NameError`.
+    /// For a plain lookup, caches the resolved value in the namespace slot and
+    /// `Undefined` raises `NameError`; for an instance attribute lookup the
+    /// value is pushed uncached and `Undefined` raises `AttributeError`.
     pub fn resume(self, result: NameLookupResult, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
-        let Self {
-            name,
-            namespace_slot,
-            is_global,
-            snapshot,
-        } = self;
+        let Self { name, scope, snapshot } = self;
 
         let ReplSnapshot {
             mut repl,
@@ -720,25 +729,28 @@ impl ReplNameLookup {
                         }
                     };
 
-                    // Cache the resolved value in the appropriate slot
-                    let slot_idx = namespace_slot as usize;
-                    let cloned = value.clone_with_heap(&vm);
-                    let slot = if is_global {
-                        &mut vm.globals[slot_idx]
-                    } else {
-                        let stack_base = vm.current_stack_base();
-                        &mut vm.stack[stack_base + slot_idx]
-                    };
-                    let old = mem::replace(slot, cloned);
-                    old.drop_with(&mut vm);
+                    if let LookupScope::Namespace {
+                        namespace_slot,
+                        is_global,
+                    } = &scope
+                    {
+                        // Cache the resolved value in the appropriate slot
+                        let slot_idx = *namespace_slot as usize;
+                        let cloned = value.clone_with_heap(&vm);
+                        let slot = if *is_global {
+                            &mut vm.globals[slot_idx]
+                        } else {
+                            let stack_base = vm.current_stack_base();
+                            &mut vm.stack[stack_base + slot_idx]
+                        };
+                        let old = mem::replace(slot, cloned);
+                        old.drop_with(&mut vm);
+                    }
 
                     vm.push(value);
                     vm.run_external()
                 }
-                NameLookupResult::Undefined => {
-                    let err: RunError = ExcType::name_error(&name).into();
-                    vm.resume_with_exception(err)
-                }
+                NameLookupResult::Undefined => vm.resume_with_exception(undefined_lookup_error(&scope, &name)),
             };
 
             // Convert while VM alive, then snapshot or reclaim globals
@@ -1084,13 +1096,13 @@ fn build_repl_progress(
             args,
             kwargs,
             call_id,
-            method_call,
+            instance_id,
         } => Ok(ReplProgress::FunctionCall(ReplFunctionCall {
             function_name,
             args,
             kwargs,
             call_id,
-            method_call,
+            instance_id,
             snapshot: new_repl_snapshot!(),
         })),
         ConvertedExit::OsCall { function_call, call_id } => Ok(ReplProgress::OsCall(ReplOsCall {
@@ -1104,14 +1116,9 @@ fn build_repl_progress(
             vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
             pending_call_ids,
         })),
-        ConvertedExit::NameLookup {
+        ConvertedExit::NameLookup { name, scope } => Ok(ReplProgress::NameLookup(ReplNameLookup {
             name,
-            namespace_slot,
-            is_global,
-        } => Ok(ReplProgress::NameLookup(ReplNameLookup {
-            name,
-            namespace_slot,
-            is_global,
+            scope,
             snapshot: new_repl_snapshot!(),
         })),
         ConvertedExit::Error(err) => {

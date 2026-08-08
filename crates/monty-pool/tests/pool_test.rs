@@ -185,7 +185,7 @@ async fn feed_and_finish_reuses_the_worker() {
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     assert_eq!(session.pid().unwrap(), first_pid);
     let event = session.feed("x", vec![], vec![], false, &mut no_print).await.unwrap();
-    assert!(matches!(event, TurnEvent::NameLookup { name } if name == "x"));
+    assert!(matches!(event, TurnEvent::NameLookup { name, .. } if name == "x"));
     let err = session.resume_name_lookup(None, &mut no_print).await.unwrap_err();
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
@@ -229,7 +229,7 @@ async fn name_lookup_value_too_deep_for_the_wire_is_rejected_cleanly() {
         .feed("missing", vec![], vec![], false, &mut no_print)
         .await
         .unwrap();
-    assert!(matches!(event, TurnEvent::NameLookup { ref name } if name == "missing"));
+    assert!(matches!(event, TurnEvent::NameLookup { ref name, .. } if name == "missing"));
     // a value nested past the wire depth bound would produce a frame the
     // worker cannot decode; it must fail as a session-preserving error
     let deep = (0..=monty_pool::MAX_VALUE_DEPTH).fold(MontyObject::Int(1), |inner, _| MontyObject::List(vec![inner]));
@@ -791,7 +791,7 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
         .feed("missing", vec![], vec![], false, &mut no_print)
         .await
         .unwrap();
-    assert!(matches!(event, TurnEvent::NameLookup { ref name } if name == "missing"));
+    assert!(matches!(event, TurnEvent::NameLookup { ref name, .. } if name == "missing"));
     let huge = MontyObject::String("x".repeat(OVERSIZE));
     let err = session.resume_name_lookup(Some(huge), &mut no_print).await.unwrap_err();
     let PoolError::Runtime(exc) = err else {

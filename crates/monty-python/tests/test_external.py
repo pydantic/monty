@@ -133,9 +133,24 @@ results
 @pytest.mark.parametrize(
     'factory, message',
     [
-        (lambda: re.compile('a'), snapshot('Cannot convert re.Pattern to Monty value')),
-        (lambda: re.match('a', 'a'), snapshot('Cannot convert re.Match to Monty value')),
-        (lambda: io.StringIO('x'), snapshot('Cannot convert _io.StringIO to Monty value')),
+        (
+            lambda: re.compile('a'),
+            snapshot(
+                'Cannot convert re.Pattern to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+            ),
+        ),
+        (
+            lambda: re.match('a', 'a'),
+            snapshot(
+                'Cannot convert re.Match to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+            ),
+        ),
+        (
+            lambda: io.StringIO('x'),
+            snapshot(
+                'Cannot convert _io.StringIO to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+            ),
+        ),
     ],
 )
 def test_external_function_returns_unconvertible_instance(monty_run: RunMonty, factory: Any, message: str):
@@ -665,9 +680,24 @@ def test_external_lookup_absent_name_raises(monty_run: RunMonty):
 @pytest.mark.parametrize(
     'value, message',
     [
-        (object(), snapshot('Cannot convert builtins.object to Monty value')),
-        (re.compile('a'), snapshot('Cannot convert re.Pattern to Monty value')),
-        (io.StringIO('x'), snapshot('Cannot convert _io.StringIO to Monty value')),
+        (
+            object(),
+            snapshot(
+                'Cannot convert builtins.object to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+            ),
+        ),
+        (
+            re.compile('a'),
+            snapshot(
+                'Cannot convert re.Pattern to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+            ),
+        ),
+        (
+            io.StringIO('x'),
+            snapshot(
+                'Cannot convert _io.StringIO to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+            ),
+        ),
     ],
 )
 def test_external_lookup_value_unconvertible_surfaces_error(monty_run: RunMonty, value: Any, message: str):
@@ -714,7 +744,9 @@ def test_external_lookup_name_conversion_error_discards_session(session: MontySe
     suspension the aborted feed never answered."""
     with pytest.raises(pydantic_monty.MontyConversionError) as exc_info:
         session.feed_run('x', external_lookup={'x': object()})
-    assert str(exc_info.value) == snapshot('Cannot convert builtins.object to Monty value')
+    assert str(exc_info.value) == snapshot(
+        'Cannot convert builtins.object to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+    )
     # the worker was discarded, so the session can no longer be fed
     with pytest.raises(RuntimeError) as exc_info2:
         session.feed_run('1 + 1')
