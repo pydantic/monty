@@ -216,6 +216,12 @@ unaffected and still follow relative in-mount links for reads and writes.
 `mkdir(parents=True)` through an escaping symlink raises `PermissionError` in
 every mode.
 
+The refusal is a coherence policy, not the sandbox boundary, and it is not
+atomic with the operation it guards: a host process that swaps a symlink into
+the path between the check and the read gets it followed. The descriptor still
+bounds the result to inside the mount, so this is the same window a host
+already has by replacing a file outright (above) — not a way out.
+
 ### `OverlayMemory` renames of real files
 
 A rename records a mount-relative reference to the existing file rather than

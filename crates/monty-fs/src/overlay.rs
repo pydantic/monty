@@ -49,10 +49,21 @@ fn relative_path(path: &str, ctx: &MountContext<'_>) -> Result<String, MountErro
 ///
 /// Every overlay operation that names a host path goes through here, so the
 /// mode's rule — it never follows a symlink — is enforced in one place rather
-/// than re-derived per operation. The `Symlink` arms that remain downstream
-/// are not redundant: this and a later `classify_target` are separate lookups,
-/// so a link swapped in between them must still land somewhere that refuses
-/// it rather than in a `File` arm.
+/// than re-derived per operation.
+///
+/// **This is a coherence policy, not the sandbox boundary, and it is not
+/// atomic with the operation that follows.** A host actor can swap a symlink
+/// into the path after the walk and before the read; the read then follows it.
+/// What bounds that is the descriptor: `Mount::dir` cannot resolve past the
+/// mount root and refuses an absolute target, so the worst case is in-mount
+/// content served under an aliased name — the same window the host already has
+/// by replacing a file outright (see `limitations/filesystem.md`). Closing it
+/// would need a per-component `openat` walk holding descriptors; `O_NOFOLLOW`
+/// would not, since it binds only the final component.
+///
+/// The `Symlink` arms downstream are therefore not redundant: where a caller
+/// does re-classify, a link swapped in mid-operation lands on a refusal rather
+/// than in a `File` arm.
 fn resolve_real(vpath: &str, ctx: &MountContext<'_>) -> Result<MountRelativePath, MountError> {
     let target = resolve_virtual_path(vpath, ctx.mount_virtual)?;
     reject_symlink_chain(ctx.mount_dir, target.for_dir_op(), vpath)?;
@@ -92,6 +103,22 @@ fn reject_symlink_chain(dir: &Dir, rel: &str, vpath: &str) -> Result<(), MountEr
         }
     }
     Ok(())
+}
+
+/// Re-checks a stored ref's path before dereferencing it.
+///
+/// The path was link-free when it was captured, but a lazy ref is precisely a
+/// path held across time, and the host can replace any component of it in the
+/// meantime. The descriptor still confines the read, so this is not what stops
+/// an escape — it is what keeps the mode's "never follow a symlink" rule true
+/// for refs, which would otherwise serve a different file under the old name.
+fn checked_ref_path<'r>(
+    file_ref: &'r OverlayFileRef,
+    ctx: &MountContext<'_>,
+    vpath: &str,
+) -> Result<&'r str, MountError> {
+    reject_symlink_chain(ctx.mount_dir, &file_ref.relative, vpath)?;
+    Ok(&file_ref.relative)
 }
 
 /// Returns budget available for a transient result alongside retained state.
@@ -336,7 +363,8 @@ fn read_text(
             Ok(MontyObject::String(bytes_to_utf8(file.content.clone())?))
         }
         Some(OverlayEntry::RealFileRef(file_ref)) => {
-            host_read_text(ctx.mount_dir, &file_ref.relative, vpath, available_memory(state, ctx)?)
+            let rel = checked_ref_path(file_ref, ctx, vpath)?;
+            host_read_text(ctx.mount_dir, rel, vpath, available_memory(state, ctx)?)
         }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
@@ -362,7 +390,8 @@ fn read_bytes(
             Ok(MontyObject::Bytes(file.content.clone()))
         }
         Some(OverlayEntry::RealFileRef(file_ref)) => {
-            host_read_bytes(ctx.mount_dir, &file_ref.relative, vpath, available_memory(state, ctx)?)
+            let rel = checked_ref_path(file_ref, ctx, vpath)?;
+            host_read_bytes(ctx.mount_dir, rel, vpath, available_memory(state, ctx)?)
         }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
@@ -507,7 +536,9 @@ fn existing_file_len(
     match state.get(relative) {
         Some(OverlayEntry::File(file)) => Ok(file.content.len()),
         Some(OverlayEntry::Deleted) => Ok(0),
-        Some(OverlayEntry::RealFileRef(file_ref)) => file_len(ctx.mount_dir, &file_ref.relative, vpath),
+        Some(OverlayEntry::RealFileRef(file_ref)) => {
+            file_len(ctx.mount_dir, checked_ref_path(file_ref, ctx, vpath)?, vpath)
+        }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
         }
@@ -542,7 +573,8 @@ fn existing_file_bytes(
         }
         Some(OverlayEntry::Deleted) => Ok(Vec::new()),
         Some(OverlayEntry::RealFileRef(file_ref)) => {
-            match host_read_bytes(ctx.mount_dir, &file_ref.relative, vpath, budget)? {
+            let rel = checked_ref_path(file_ref, ctx, vpath)?;
+            match host_read_bytes(ctx.mount_dir, rel, vpath, budget)? {
                 MontyObject::Bytes(bytes) => Ok(bytes),
                 _ => unreachable!("host_read_bytes should return bytes"),
             }

@@ -336,6 +336,13 @@ jobs:
       # pass on all three OSes (it has no memory-model-checks feature — the
       # mount table never touches the interpreter heap).
       - run: cargo test -p monty-fs
+      # The two race soaks are opt-in so a local `cargo test -p monty-fs` does
+      # not pay ~5s for them, but they are regression guards on the
+      # descriptor-relative open and the FIFO re-check, so CI must run them.
+      - name: Test monty-fs race soaks
+        run: cargo test -p monty-fs --test mount_confinement
+        env:
+          MONTY_FS_SOAK: '1'
       - run: cargo run -p monty-datatest --features memory-model-checks
       - run: cargo build -p monty-runtime
       - name: Test subprocess crates (Unix)

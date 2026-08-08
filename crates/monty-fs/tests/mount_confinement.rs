@@ -42,10 +42,10 @@ const SECRET: &str = "SECRET-HOST-CONTENT";
 
 /// Whether the multi-second race soaks in this file should run.
 ///
-/// They burn ~5s of wall clock on every `cargo test -p monty-fs` to prove very
-/// little: neither race was ever won on macOS/APFS, so a green run is a soak,
-/// not evidence. Set `MONTY_FS_SOAK=1` to run them — worth doing when changing
-/// the descriptor-relative open paths they cover.
+/// They burn ~5s of wall clock to prove very little: neither race was ever won
+/// on macOS/APFS, so a green run is a soak, not evidence. Gating them keeps a
+/// local `cargo test -p monty-fs` fast; CI runs them on every OS with
+/// `MONTY_FS_SOAK=1`, as should anyone changing the paths they cover.
 fn soak_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
