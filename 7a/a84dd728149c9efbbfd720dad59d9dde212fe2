@@ -1,0 +1,38 @@
+limitations/filesystem.md
+  s_609ec6c2788cd8::t_a50995e2cf0290 203-204
+  s_609ec6c2788cd8::t_32b180432a8c13 236-240
+  s_609ec6c2788cd8::t_96ab207466bf43 142,144-148
+crates/monty-fs/src/error.rs
+  s_609ec6c2788cd8::t_bcd51b2703d7f0 24-32
+  s_609ec6c2788cd8::t_9902903363774a 91-94
+  s_609ec6c2788cd8::t_52962a0ffc901d 184
+crates/monty-types/src/os.rs
+  s_609ec6c2788cd8::t_1731f6334a5452 187-214
+crates/monty-fs/src/path_security.rs
+  s_609ec6c2788cd8::t_7a8c55a2165953 134-142,145-149,151-152
+crates/monty-fs/src/mount_table.rs
+  s_609ec6c2788cd8::t_476de074ff2d42 20
+  s_609ec6c2788cd8::t_3f34f25ad8e990 102-104,107-110,113-116
+  s_609ec6c2788cd8::t_ff460ce9d99744 111-112
+  s_609ec6c2788cd8::t_4891ddd01382ff 158-160,164-165
+crates/monty-fs/tests/fs_security.rs
+  s_609ec6c2788cd8::t_e1b7c77d16ef57 1579-1580,1583,1595-1608
+  s_609ec6c2788cd8::t_4ed041736bb7db 358-366,369,371,374-381,384-386,388,391-401,403-416,418-434,437-438,440,442-447,450-452,454-456,458-459,461-462,464-486
+  s_609ec6c2788cd8::t_e2591b32b3e0f7 13,149-155,189-195,212-218
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7aa84dd728149c9efbbfd720dad59d9dde212fe2",
+  "prompts": {},
+  "sessions": {
+    "s_609ec6c2788cd8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa52751a-81e6-429a-a916-2a3eceacf077",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
