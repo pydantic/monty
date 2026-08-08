@@ -1,0 +1,19 @@
+crates/monty-python/build.rs
+  s_acf639b334aa88::t_92d26ea5d99cfb 103,107-109,111-112,118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "92d829a3cf9212b25cdf46bb370e033b264520ad",
+  "prompts": {},
+  "sessions": {
+    "s_acf639b334aa88": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7491f91f-c059-4b5f-8658-3c8cb818b679",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
