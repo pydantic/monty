@@ -1,16 +1,11 @@
 #![doc = include_str!("../README.md")]
 
-use std::{io, process::ExitCode, time::Duration};
+use std::process::ExitCode;
 
-// Shadows `std::eprintln!` on purpose: every diagnostic below goes to stderr
-// through `anstream`, which strips styling when stderr is not a terminal (or
-// `NO_COLOR` is set) and enables virtual-terminal mode on Windows. Sandbox
-// output keeps using `std::println!` — it is program data, not our styling.
-use anstream::{AutoStream, ColorChoice, eprintln};
-use anstyle::{AnsiColor, Color, Style};
 use clap::{Parser, Subcommand};
-use monty_types::{ResourceLimits, TypeCheckingFormat};
+use monty_types::TypeCheckingFormat;
 
+#[cfg(feature = "run-cli")]
 mod run;
 mod subprocess;
 
@@ -20,32 +15,6 @@ mod subprocess;
 /// mode, `subprocess` and CLI alike.
 #[global_allocator]
 static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
-
-/// Dim/gray text (timings). `{DIM}` opens the style, `{DIM:#}` closes it.
-pub(crate) const DIM: Style = Style::new().dimmed();
-/// Bold red text (errors).
-pub(crate) const BOLD_RED: Style = Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::Red)));
-/// Bold green text (success, headings).
-pub(crate) const BOLD_GREEN: Style = Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::Green)));
-/// Bold cyan text (commands, prompts).
-pub(crate) const BOLD_CYAN: Style = Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::Cyan)));
-pub(crate) const ARROW: &str = "❯";
-
-/// Whether stderr should carry ANSI styling.
-///
-/// Resolved by `anstream` from the signals its macros use — is stderr a
-/// terminal, `NO_COLOR`, `CLICOLOR{,_FORCE}`, `TERM` — so that what we render
-/// ourselves (the type checker's diagnostics) agrees with the styling
-/// `eprintln!` puts around it.
-pub(crate) fn stderr_styled() -> bool {
-    AutoStream::choice(&io::stderr()) != ColorChoice::Never
-}
-
-/// The same question for stdout, which is where rustyline writes the REPL
-/// prompt. Asking about stderr instead would put escapes in `monty -i > out`.
-pub(crate) fn stdout_styled() -> bool {
-    AutoStream::choice(&io::stdout()) != ColorChoice::Never
-}
 
 /// Monty — a sandboxed Python interpreter written in Rust.
 ///
@@ -139,7 +108,7 @@ impl Cli {
     /// Whether any resource-limit flag was *supplied* (regardless of whether its
     /// value is valid). Used for the `subprocess` conflict check: we must not go
     /// through `resource_limits()` there, because its parse errors (e.g. a
-    /// `--max-duration` that fails `Duration::try_from_secs_f64`) would be
+    /// `--max-duration` that fails `std::time::Duration::try_from_secs_f64`) would be
     /// swallowed and let an invalid flag slip past the conflict guard.
     fn any_resource_limit_flag(&self) -> bool {
         self.max_duration.is_some()
@@ -153,11 +122,13 @@ impl Cli {
     /// When no resource flags were provided, returns the default
     /// recursion-only limits (`ResourceLimits::default()`).
     /// Returns `Err` if a supplied flag cannot be converted into a valid limit.
-    fn resource_limits(&self) -> Result<ResourceLimits, String> {
-        let mut limits = ResourceLimits::default();
+    #[cfg(feature = "run-cli")]
+    fn resource_limits(&self) -> Result<monty_types::ResourceLimits, String> {
+        let mut limits = monty_types::ResourceLimits::default();
         if let Some(secs) = self.max_duration {
             limits = limits.max_duration(
-                Duration::try_from_secs_f64(secs).map_err(|err| format!("invalid --max-duration: {err}"))?,
+                #[expect(clippy::absolute_paths)]
+                std::time::Duration::try_from_secs_f64(secs).map_err(|err| format!("invalid --max-duration: {err}"))?,
             );
         }
         if let Some(bytes) = self.max_memory {
@@ -172,18 +143,37 @@ impl Cli {
         Ok(limits)
     }
 }
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
     if let Some(Command::Subprocess) = cli.subcommand {
         if let Some(flag) = cli.subprocess_conflict() {
-            eprintln!("{BOLD_RED}error{BOLD_RED:#}: `subprocess` cannot be combined with {flag}");
-            return ExitCode::FAILURE;
+            eprintln!("error: `subprocess` cannot be combined with {flag}");
+            ExitCode::FAILURE
+        } else {
+            subprocess::run()
         }
-        return subprocess::run();
+    } else {
+        run_standalone(cli)
     }
+}
 
+/// Hands a non-`subprocess` invocation to the standalone CLI.
+#[cfg(feature = "run-cli")]
+fn run_standalone(cli: Cli) -> ExitCode {
     run::run(cli)
+}
+
+/// Without `run-cli` this binary is a worker and nothing else. The flags still
+/// parse — the `subprocess` conflict check reads them — so the refusal has to
+/// happen here rather than in clap.
+#[cfg(not(feature = "run-cli"))]
+fn run_standalone(_cli: Cli) -> ExitCode {
+    eprintln!(
+        "error: this build runs `monty subprocess` only — rebuild with the `run-cli` feature for the standalone CLI"
+    );
+    ExitCode::FAILURE
 }
 
 /// Parses a memory size string with optional unit suffix.

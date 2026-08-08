@@ -1,3 +1,6 @@
+// every test here drives the standalone CLI, which a worker-only build refuses
+#![cfg(feature = "run-cli")]
+
 use std::{fs, process::Command};
 
 use tempfile::TempDir;

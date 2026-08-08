@@ -8,12 +8,17 @@
 #[cfg(feature = "telemetry")]
 use std::env;
 use std::{
-    fmt, fs,
+    fmt, fs, io,
     process::ExitCode,
     time::{Duration, Instant},
 };
 
-use anstream::eprintln;
+// Shadows `std::eprintln!` on purpose: every diagnostic here goes to stderr
+// through `anstream`, which strips styling when stderr is not a terminal (or
+// `NO_COLOR` is set) and enables virtual-terminal mode on Windows. Sandbox
+// output keeps using `std::println!` — it is program data, not our styling.
+use anstream::{AutoStream, ColorChoice, eprintln};
+use anstyle::{AnsiColor, Color, Style};
 use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
@@ -25,7 +30,17 @@ use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
 use tracing::field::Empty;
 
-use crate::{ARROW, BOLD_CYAN, BOLD_GREEN, BOLD_RED, Cli, DIM, stderr_styled, stdout_styled};
+use crate::Cli;
+
+/// Dim/gray text (timings). `{DIM}` opens the style, `{DIM:#}` closes it.
+const DIM: Style = Style::new().dimmed();
+/// Bold red text (errors).
+const BOLD_RED: Style = Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::Red)));
+/// Bold green text (success, headings).
+const BOLD_GREEN: Style = Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::Green)));
+/// Bold cyan text (commands, prompts).
+const BOLD_CYAN: Style = Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::Cyan)));
+const ARROW: &str = "❯";
 
 const EXT_FUNCTIONS: bool = false;
 
@@ -666,4 +681,24 @@ fn sig_digits_after_decimal(value: f64) -> usize {
         digits as usize
     };
     5usize.saturating_sub(before)
+}
+
+// =============================================================================
+// Terminal output
+// =============================================================================
+
+/// Whether stderr should carry ANSI styling.
+///
+/// Resolved by `anstream` from the signals its macros use — is stderr a
+/// terminal, `NO_COLOR`, `CLICOLOR{,_FORCE}`, `TERM` — so that what we render
+/// ourselves (the type checker's diagnostics) agrees with the styling
+/// `eprintln!` puts around it.
+fn stderr_styled() -> bool {
+    AutoStream::choice(&io::stderr()) != ColorChoice::Never
+}
+
+/// The same question for stdout, which is where rustyline writes the REPL
+/// prompt. Asking about stderr instead would put escapes in `monty -i > out`.
+fn stdout_styled() -> bool {
+    AutoStream::choice(&io::stdout()) != ColorChoice::Never
 }

@@ -22,6 +22,15 @@ hello world
 - `--max-memory 10MB`, `--max-duration 0.5`, `--max-recursion-depth`,
   `--gc-interval` — sandbox resource limits
 
+## Features
+
+- `run-cli` (default) — the standalone `monty <file>` / `-c` / REPL path and
+  its terminal stack (`rustyline`, `anstream`, `anstyle`). Without it the binary
+  serves `monty subprocess` alone, which is all a pool ever spawns; the flags
+  still parse, but anything other than `subprocess` is refused.
+- `telemetry` — see below. Implies `run-cli`, since it only instruments that
+  path.
+
 ## Observability
 
 Behind the `telemetry` feature, off by default because its exporter links MBs
