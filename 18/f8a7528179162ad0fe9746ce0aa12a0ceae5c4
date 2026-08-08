@@ -1,0 +1,19 @@
+crates/monty-server/Dockerfile.dockerignore
+  s_72108fa32981f0::t_dc2e0260c42451 39-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "18f8a7528179162ad0fe9746ce0aa12a0ceae5c4",
+  "prompts": {},
+  "sessions": {
+    "s_72108fa32981f0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1064fc43-8ec2-4446-9191-6d3f86b9b479",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
