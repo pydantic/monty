@@ -187,14 +187,26 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ItertoolsIter> {
     }
 
     fn py_next(&mut self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        match self.get(vm.heap).kind() {
+        let kind = self.get(vm.heap).kind();
+        match kind {
+            // Self-contained adaptors: neither drives a wrapped iterator.
             Kind::Count => count::next(self, vm),
             Kind::Repeat => repeat::next(self, vm),
-            Kind::Pairwise => pairwise::next(self, vm),
-            Kind::Compress => compress::next(self, vm),
-            Kind::Islice => islice::next(self, vm),
-            Kind::Chain => chain::next(self, vm),
-            Kind::Cycle => cycle::next(self, vm),
+            // Source-driving adaptors re-enter `py_next` on their wrapped
+            // iterator, recursing on the native Rust stack; charge a recursion
+            // level so deep nesting raises `RecursionError`, not a stack overflow.
+            Kind::Pairwise | Kind::Compress | Kind::Islice | Kind::Chain | Kind::Cycle => {
+                let mut guard = vm.recursion_guard()?;
+                let vm = &mut *guard;
+                match kind {
+                    Kind::Pairwise => pairwise::next(self, vm),
+                    Kind::Compress => compress::next(self, vm),
+                    Kind::Islice => islice::next(self, vm),
+                    Kind::Chain => chain::next(self, vm),
+                    Kind::Cycle => cycle::next(self, vm),
+                    Kind::Count | Kind::Repeat => unreachable!("handled above"),
+                }
+            }
         }
     }
 

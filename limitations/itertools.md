@@ -92,3 +92,9 @@ them, and that buffer is charged against `max_memory` as it grows — so cycling
 over a very long source raises `MemoryError` at the limit rather than at the
 point the source is exhausted. CPython buffers the same items with no such
 ceiling.
+
+Nesting the source-driving adaptors (`pairwise`, `compress`, `islice`, `chain`,
+`cycle`) is bounded by `max_recursion_depth`: each adaptor charges one recursion
+level while delegating `next()` to its wrapped iterator, so a nest deeper than
+the limit raises `RecursionError` when consumed. CPython imposes no comparable
+per-adaptor bound — deep nesting there is limited only by the C stack.
