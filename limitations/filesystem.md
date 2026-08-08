@@ -123,6 +123,22 @@ is refused even though it names `/mnt/f.txt`. CPython hands the uncollapsed
 bytes to the kernel and gets `ENAMETOOLONG` too, so this matches — but Monty
 applies it uniformly rather than deferring to the host filesystem.
 
+The check runs before anything else looks at the path, which has three visible
+consequences:
+
+- `resolve()` and `absolute()` raise, where CPython returns the path — they are
+  the only operations that would otherwise succeed on an over-long path, since
+  they never reach the filesystem. Collapsing a path costs memory proportional
+  to its length, so an unbounded one is refused rather than normalized.
+- The rejection applies even where no mount covers the path, so an over-long
+  path never reaches the `os` callback.
+- `exists()`, `is_file()`, `is_dir()` and `is_symlink()` answer `False`, as
+  CPython's do — `pathlib` swallows `ENAMETOOLONG` in the predicates.
+
+The error quotes the path with its middle elided — the first and last 20
+characters around a `…` — where CPython quotes it whole. An over-long path
+is by definition too big to repeat back.
+
 ### A search-only host directory may not be mountable
 
 Mounting opens a descriptor on the host directory. On macOS and the BSDs that

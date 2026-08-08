@@ -161,6 +161,96 @@ fn overlong_path_rejected_even_when_it_normalizes_short() {
     }
 }
 
+/// The length check runs before routing, so no path the sandbox sends is ever
+/// normalized — the step that allocates several times the path's own size.
+///
+/// Measured against the check-after-routing order, a 64 MiB `..`-padded path
+/// cost ~400ms of *host* CPU per call and produced a 112 MB exception message;
+/// sandboxed code spending the parent's memory that way is the point of this
+/// test, so it asserts both the elision and that no mount has to match.
+#[test]
+fn overlong_path_is_refused_before_it_is_normalized() {
+    let host = TempDir::new().unwrap();
+    let mut mt = MountTable::new();
+    mt.mount("/mnt", host.path(), MountMode::ReadOnly, None).unwrap();
+
+    let long = format!("/mnt/{}x", "a/".repeat(2_000_000));
+    assert!(long.len() > 4_000_000);
+
+    // The message keeps 20 characters from each end and nothing in between, so
+    // its size is fixed however large the offending path is.
+    let message = message_of(read_text(&mut mt, &long));
+    assert_eq!(
+        message,
+        "[Errno 36] File name too long: '/mnt/a/a/a/a/a/a/a/a…/a/a/a/a/a/a/a/a/a/x'"
+    );
+
+    // Refused whether or not a mount covers it: handing a path this long to the
+    // fallback handler would only move the cost, not remove it.
+    let unmounted = format!("/nowhere/{}x", "a/".repeat(2_000_000));
+    assert_too_long(read_text(&mut mt, &unmounted));
+
+    // A rename is refused on either side's length.
+    let call = rename("/mnt/hello.txt", &long);
+    assert_too_long(handled(&mut mt, call));
+
+    // Paths within the limit still route exactly as before.
+    assert!(matches!(
+        mt.handle_os_call(OsFunctionCall::Exists(MontyPath::new("/nowhere/short.txt".to_owned()))),
+        MountCallOutcome::NotHandled(_)
+    ));
+}
+
+/// Eliding the middle must cut on character boundaries, not byte offsets.
+///
+/// The path is sandbox-controlled, so a multi-byte character straddling the cut
+/// would panic the *host* — `String` slicing is checked.
+#[test]
+fn overlong_path_with_multibyte_characters_is_elided_safely() {
+    let host = TempDir::new().unwrap();
+    let mut mt = MountTable::new();
+    mt.mount("/mnt", host.path(), MountMode::ReadOnly, None).unwrap();
+
+    // 4-byte characters, so every candidate cut lands mid-character.
+    let long = format!("/mnt/{}", "🦀".repeat(2_000));
+    let message = message_of(read_text(&mut mt, &long));
+    assert_eq!(
+        message,
+        "[Errno 36] File name too long: '/mnt/🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀…🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀'"
+    );
+}
+
+/// `pathlib` predicates swallow `ENAMETOOLONG` and answer `False`; verified
+/// against CPython 3.13 for all four, on both a plain long path and one padded
+/// with `..`. Raising instead would be a divergence introduced by the length
+/// check, not by anything the sandbox did.
+#[test]
+fn overlong_path_predicates_answer_false() {
+    let host = TempDir::new().unwrap();
+    let mut mt = MountTable::new();
+    mt.mount("/mnt", host.path(), MountMode::ReadOnly, None).unwrap();
+
+    let plain = format!("/mnt/{}x", "a/".repeat(5_000));
+    let padded = format!("/mnt/{}{}x", "a/".repeat(5_000), "../".repeat(5_000));
+    let component = format!("/mnt/{}", "b".repeat(5_000));
+
+    for path in [&plain, &padded, &component] {
+        for call in [
+            OsFunctionCall::Exists(MontyPath::new(path.clone())),
+            OsFunctionCall::IsFile(MontyPath::new(path.clone())),
+            OsFunctionCall::IsDir(MontyPath::new(path.clone())),
+            OsFunctionCall::IsSymlink(MontyPath::new(path.clone())),
+        ] {
+            let name = call.name();
+            assert_eq!(
+                handled(&mut mt, call).unwrap(),
+                MontyObject::Bool(false),
+                "{name} on an overlong path must answer False, as CPython does"
+            );
+        }
+    }
+}
+
 /// Asserts an operation failed with the `ENAMETOOLONG` form of [`MountError`].
 fn assert_too_long(result: Result<MontyObject, MountError>) {
     match result {
@@ -170,4 +260,14 @@ fn assert_too_long(result: Result<MontyObject, MountError>) {
         }
         other => panic!("expected the overlong path to be rejected, got {other:?}"),
     }
+}
+
+/// The sandbox-visible exception message for a failed operation.
+fn message_of(result: Result<MontyObject, MountError>) -> String {
+    result
+        .expect_err("expected the operation to fail")
+        .into_exception()
+        .message()
+        .expect("expected a message")
+        .to_owned()
 }

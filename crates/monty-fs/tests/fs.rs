@@ -69,7 +69,7 @@ fn call(mt: &mut MountTable, c: &OsFunctionCall) -> Option<Result<MontyObject, M
 
 /// Shorthand: call and unwrap both the Option and Result.
 fn call_ok(mt: &mut MountTable, c: &OsFunctionCall) -> MontyObject {
-    call(mt, c).expect("expected Some").expect("expected Ok")
+    call(mt, c).expect("expected Some").unwrap()
 }
 
 /// Shorthand: call and unwrap Option, expect Err, convert to exception.
@@ -878,11 +878,17 @@ fn ovl_mem_path_component_too_long() {
     let long_name = "a".repeat(256);
     let path = format!("/mnt/{long_name}");
 
-    let err = call_err(&mut mt, &OsFunctionCall::Exists(path.as_str().into()));
+    // `exists()` answers False rather than raising, as CPython's does.
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists(path.as_str().into())),
+        MontyObject::Bool(false)
+    );
+    // An operation that does raise quotes the path with its middle elided.
+    let err = call_err(&mut mt, &OsFunctionCall::Stat(path.as_str().into()));
     assert_exc(
         &err,
         ExcType::OSError,
-        &format!("[Errno 36] File name too long: '{path}'"),
+        "[Errno 36] File name too long: '/mnt/aaaaaaaaaaaaaaa…aaaaaaaaaaaaaaaaaaaa'",
     );
 
     // 255-byte component is fine
@@ -904,11 +910,15 @@ fn ovl_mem_path_total_too_long() {
     let path = format!("/mnt/{}", segments.join("/"));
     assert!(path.len() > 4096);
 
-    let err = call_err(&mut mt, &OsFunctionCall::Exists(path.as_str().into()));
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists(path.as_str().into())),
+        MontyObject::Bool(false)
+    );
+    let err = call_err(&mut mt, &OsFunctionCall::Stat(path.as_str().into()));
     assert_exc(
         &err,
         ExcType::OSError,
-        &format!("[Errno 36] File name too long: '{path}'"),
+        "[Errno 36] File name too long: '/mnt/xxxxxxxxxxxxxxx…xxxxxxxxxxxxxxxxxxxx'",
     );
 }
 
@@ -924,7 +934,7 @@ fn rw_path_component_too_long() {
     assert_exc(
         &err,
         ExcType::OSError,
-        &format!("[Errno 36] File name too long: '{path}'"),
+        "[Errno 36] File name too long: '/mnt/aaaaaaaaaaaaaaa…aaaaaaaaaaaaaaaaaaaa'",
     );
 }
 

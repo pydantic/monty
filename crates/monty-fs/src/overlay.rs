@@ -19,10 +19,7 @@ use super::{
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
     overlay_state::{ENTRY_MEMORY_USAGE, OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
-    path_security::{
-        normalize_virtual_path, reject_drive_or_unc_segments, reject_overlong_path, resolve_virtual_path,
-        strip_mount_prefix,
-    },
+    path_security::{normalize_virtual_path, reject_drive_or_unc_segments, resolve_virtual_path, strip_mount_prefix},
 };
 
 /// Conservative per-entry charge while capturing a real directory tree for a
@@ -35,7 +32,6 @@ const REAL_DESCENDANT_MEMORY_USAGE: u64 = 512;
 /// Keys never reach a host path, but are rejected on the same grounds one
 /// would be — a name only this mode accepts is a divergence in itself.
 fn relative_path(path: &str, ctx: &MountContext<'_>) -> Result<String, MountError> {
-    reject_overlong_path(path)?;
     let normalized = normalize_virtual_path(path);
     let relative = strip_mount_prefix(&normalized, ctx.mount_virtual)
         .map(str::to_owned)

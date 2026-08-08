@@ -13,7 +13,11 @@ use cap_std::{ambient_authority, fs::Dir};
 use monty_types::{MontyObject, OsFunctionCall};
 
 use super::{
-    common::MountContext, dispatch, error::MountError, mount_mode::MountMode, path_security::normalize_virtual_path,
+    common::MountContext,
+    dispatch,
+    error::MountError,
+    mount_mode::MountMode,
+    path_security::{normalize_virtual_path, reject_overlong_path},
 };
 
 /// Default aggregate memory budget for one mount: 100 MB in decimal bytes.
@@ -94,12 +98,23 @@ impl MountTable {
     /// on a borrow first, so [`MountCallOutcome::NotHandled`] hands the call
     /// back untouched for the caller's fallback handler (a host callback or
     /// [`OsFunctionCall::on_no_handler`]).
+    ///
+    /// Path length is checked before anything else touches the path.
     pub fn handle_os_call(&mut self, call: OsFunctionCall) -> MountCallOutcome {
         if let Some(primary_path) = call.fs_primary_path() {
-            match self.route_call(primary_path, &call) {
-                Some(Ok(index)) => MountCallOutcome::Handled(self.mounts[index].execute(call)),
-                Some(Err(err)) => MountCallOutcome::Handled(Err(err)),
-                None => MountCallOutcome::NotHandled(call),
+            if let Err(e) = reject_overlong_path(primary_path) {
+                // existence checks return `false` on overlong paths in cpython
+                MountCallOutcome::Handled(if call.is_existence_check() {
+                    Ok(MontyObject::Bool(false))
+                } else {
+                    Err(e)
+                })
+            } else {
+                match self.route_call(primary_path, &call) {
+                    Some(Ok(index)) => MountCallOutcome::Handled(self.mounts[index].execute(call)),
+                    Some(Err(err)) => MountCallOutcome::Handled(Err(err)),
+                    None => MountCallOutcome::NotHandled(call),
+                }
             }
         } else {
             MountCallOutcome::NotHandled(call)
@@ -130,6 +145,10 @@ impl MountTable {
         let src_mount_index = self.find_mount_index(primary_path);
 
         if let Some(dst_path) = call.rename_destination() {
+            // we check the destination path length before routing, primary_path was checked above
+            if let Err(e) = reject_overlong_path(dst_path) {
+                return Some(Err(e));
+            }
             match (src_mount_index, self.find_mount_index(dst_path)) {
                 // Neither side is ours; the whole call belongs to the fallback.
                 (None, None) => None,
