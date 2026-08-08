@@ -126,14 +126,14 @@ impl PyMountDir {
 
     /// The canonical host directory path.
     #[getter]
-    fn host_path(&self) -> String {
-        self.label.host_path.clone()
+    fn host_path(&self) -> &str {
+        &self.label.host_path
     }
 
     /// The normalized virtual path prefix inside the sandbox.
     #[getter]
-    fn virtual_path(&self) -> String {
-        self.label.virtual_path.clone()
+    fn virtual_path(&self) -> &str {
+        &self.label.virtual_path
     }
 
     /// The access mode: `"read-only"`, `"read-write"`, or `"overlay"`.
