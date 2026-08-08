@@ -1,0 +1,32 @@
+crates/monty-server/CLAUDE.md
+  s_ed8f0b91982347::t_4216bf325221a2 60,63-64
+  s_ed8f0b91982347::t_5dca162753e683 56-59,61-62
+crates/monty-server/src/telemetry.rs
+  s_ed8f0b91982347::t_b9186d5be3274c 77-79,84,97-98
+  s_ed8f0b91982347::t_1916723ab5d410 11-13
+  s_ed8f0b91982347::t_eedb4d39665d92 75-76,80-83,85-93,104-115
+crates/monty-server/README.md
+  s_ed8f0b91982347::t_b57deccd7f9537 267,269-271,274-276
+  s_ed8f0b91982347::t_42becb5523eb72 352-355
+crates/monty-server/tests/telemetry_test.rs
+  s_ed8f0b91982347::t_6fd418e06212f8 87-88
+  s_ed8f0b91982347::t_791d9e54e26d1b 99-101,103-105,107,118-121,126-129,132,141-144,147-149,151-152,155
+  s_ed8f0b91982347::t_e2cf038b58f1f7 3-8
+  s_ed8f0b91982347::t_f16ead6e7cb541 113,131,133-140,145-146,150,153-154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "717c51ec654e84a7dc397fcc73a0046602666087",
+  "prompts": {},
+  "sessions": {
+    "s_ed8f0b91982347": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7056680e-56ee-4f86-a28f-cc37175891cf",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}
