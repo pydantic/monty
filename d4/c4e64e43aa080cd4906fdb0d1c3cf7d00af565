@@ -1,0 +1,24 @@
+crates/monty/src/types/namedtuple.rs
+  s_5e3f4154872c90::t_99ac58651499bf 973-977,984-990
+  s_5e3f4154872c90::t_9d24d0832aede3 1028
+  s_5e3f4154872c90::t_93eeb59c8d0936 978-980,982-983
+crates/monty/test_cases/recursion__deep_cmp.py
+  s_5e3f4154872c90::t_24a590360dfa27 22,35
+  s_5e3f4154872c90::t_2dcaefcfa5a9e3 1-21,23-34,36-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d4c4e64e43aa080cd4906fdb0d1c3cf7d00af565",
+  "prompts": {},
+  "sessions": {
+    "s_5e3f4154872c90": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eb6e3465-dc27-4696-9b1a-b0fa796ce998",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
