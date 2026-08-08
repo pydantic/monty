@@ -1,0 +1,31 @@
+crates/monty-js/ts/mountDir.ts
+  s_ae8fe07900251f::t_312040eee42384 51,68
+  s_ae8fe07900251f::t_2a1a179d9a9cab 6-12
+  s_ae8fe07900251f::t_a56f16ec915cbe 31-32
+crates/monty-js/__test__/mount.spec.ts
+  s_ae8fe07900251f::t_6d8fd060fa0bfa 150-153,155
+  s_ae8fe07900251f::t_67ce9f5ea81905 154
+crates/monty-pool/src/checkout.rs
+  s_ae8fe07900251f::t_8359b940f2dc69 86-91
+crates/monty-js/ts/mount.ts
+  s_ae8fe07900251f::t_5f36b4728951d0 54-63,70
+crates/monty-fs/tests/mount_escape_repro.rs
+  s_ae8fe07900251f::t_88405f076b3da0 9,12
+  s_ae8fe07900251f::t_c1d456e95baaf1 41-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d8ae4bb56b51d99c45226b15116e46fd84c198fa",
+  "prompts": {},
+  "sessions": {
+    "s_ae8fe07900251f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "11dc2b91-ff14-442c-a646-14cdf709e5ae",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
