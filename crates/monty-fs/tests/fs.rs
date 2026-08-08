@@ -2407,10 +2407,14 @@ fn ovl_mem_rename_overlay_file_onto_overlay_dir() {
 // Overlay rename: symlink preservation
 // =============================================================================
 
-/// Renaming a real symlink in overlay mode should preserve its symlink identity.
+/// Renaming a real symlink in overlay mode moves the link, not its target.
+///
+/// The link is recorded as a reference to itself, so the target keeps its own
+/// name and content. What the *new* name reports diverges from CPython — see
+/// the assertions at the end and `limitations/filesystem.md`.
 #[test]
 #[cfg(unix)]
-fn ovl_mem_rename_symlink_preserves_symlink() {
+fn ovl_mem_rename_symlink_moves_the_link_not_its_target() {
     if !symlinks_supported() {
         return;
     }
@@ -2439,6 +2443,11 @@ fn ovl_mem_rename_symlink_preserves_symlink() {
     // Original target should still exist
     let result = call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into()));
     assert_eq!(result, MontyObject::Bool(true));
+
+    // The divergence the docs record: no overlay entry is a symlink, so the
+    // moved name answers `False` where CPython answers `True`.
+    let result = call_ok(&mut mt, &OsFunctionCall::IsSymlink("/mnt/moved_link.txt".into()));
+    assert_eq!(result, MontyObject::Bool(false));
 }
 
 // =============================================================================
@@ -2485,6 +2494,121 @@ fn ovl_mem_rmdir_real_dir_with_overlay_children() {
         &OsFunctionCall::ReadText("/mnt/subdir/overlay_only.txt".into()),
     );
     assert_eq!(result, MontyObject::String("overlay".to_owned()));
+}
+
+// =============================================================================
+// mkdir on a symlink to a directory
+// =============================================================================
+
+/// `exist_ok=True` must succeed on a symlink to a directory whether or not
+/// `parents` is set — CPython succeeds for both, and the two arms used to
+/// disagree because only the `parents=True` pre-check refused to follow.
+#[test]
+#[cfg(unix)]
+fn mkdir_on_symlink_to_dir_follows_for_exist_ok() {
+    if !symlinks_supported() {
+        return;
+    }
+    for parents in [false, true] {
+        let dir = create_test_dir();
+        symlink_file("subdir", dir.path().join("link_dir"));
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+        assert_eq!(
+            call_ok(&mut mt, &mkdir("/mnt/link_dir", parents, true)),
+            MontyObject::None,
+            "exist_ok on a symlink to a directory must succeed (parents={parents})"
+        );
+        // Without `exist_ok` it is still `FileExistsError`, as in CPython.
+        let exc = call_err(&mut mt, &mkdir("/mnt/link_dir", parents, false));
+        assert_exc(
+            &exc,
+            ExcType::FileExistsError,
+            "[Errno 17] File exists: '/mnt/link_dir'",
+        );
+    }
+}
+
+/// A dangling symlink and a symlink to a *file* both stay `FileExistsError`
+/// even with `exist_ok=True`: following finds no directory. CPython agrees.
+#[test]
+#[cfg(unix)]
+fn mkdir_exist_ok_still_refuses_non_directory_symlinks() {
+    if !symlinks_supported() {
+        return;
+    }
+    for parents in [false, true] {
+        let dir = create_test_dir();
+        symlink_file("nowhere", dir.path().join("dangling"));
+        symlink_file("hello.txt", dir.path().join("link.txt"));
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+        for name in ["dangling", "link.txt"] {
+            let exc = call_err(&mut mt, &mkdir(&format!("/mnt/{name}"), parents, true));
+            assert_exc(
+                &exc,
+                ExcType::FileExistsError,
+                &format!("[Errno 17] File exists: '/mnt/{name}'"),
+            );
+        }
+    }
+}
+
+// =============================================================================
+// Overlay rename onto a tombstoned destination
+// =============================================================================
+
+/// After `rmdir`, the destination is gone as far as the sandbox is concerned,
+/// so a rename onto it must not be refused for what the host still has there.
+///
+/// The tombstone used to be read through to the real directory underneath,
+/// giving `IsADirectoryError` for a path `exists()` already reported as
+/// `False` — and disagreeing with the non-empty-directory check next to it.
+#[test]
+fn ovl_mem_rename_onto_tombstoned_dir_succeeds() {
+    let dir = create_test_dir();
+    fs::create_dir(dir.path().join("target")).unwrap();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_ok(&mut mt, &OsFunctionCall::Rmdir("/mnt/target".into()));
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/target".into())),
+        MontyObject::Bool(false)
+    );
+
+    call_ok(&mut mt, &rename("/mnt/hello.txt", "/mnt/target"));
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/target".into())),
+        MontyObject::String("hello world\n".to_owned())
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::IsFile("/mnt/target".into())),
+        MontyObject::Bool(true)
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
+        MontyObject::Bool(false)
+    );
+}
+
+/// The mirror case: a directory renamed onto a tombstoned *file* must not be
+/// refused with `NotADirectoryError` either.
+#[test]
+fn ovl_mem_rename_dir_onto_tombstoned_file_succeeds() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_ok(&mut mt, &OsFunctionCall::Unlink("/mnt/hello.txt".into()));
+    call_ok(&mut mt, &rename("/mnt/subdir", "/mnt/hello.txt"));
+
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::IsDir("/mnt/hello.txt".into())),
+        MontyObject::Bool(true)
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt/nested.txt".into())),
+        MontyObject::String("nested content".to_owned())
+    );
 }
 
 // =============================================================================

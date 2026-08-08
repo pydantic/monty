@@ -262,8 +262,10 @@ pub(super) fn host_mkdir(
 ) -> Result<MontyObject, MountError> {
     let result = if parents {
         // `create_dir_all` silently returns `Ok(())` when the directory already exists,
-        // so we must check for pre-existing paths ourselves.
-        match dir.symlink_metadata(rel) {
+        // so we must check for pre-existing paths ourselves. The lookup follows,
+        // matching both CPython and the `parents=false` recovery arm below: a
+        // symlink to a directory satisfies `exist_ok` either way.
+        match dir.metadata(rel) {
             Ok(meta) if meta.is_dir() => {
                 return if exist_ok {
                     Ok(MontyObject::None)
@@ -467,6 +469,15 @@ pub(super) fn join_mount_relative(rel: &str, child: &str) -> String {
 /// Whether `rel` resolves to a directory inside the mount.
 pub(super) fn host_is_dir(dir: &Dir, rel: &str) -> bool {
     dir.metadata(rel).is_ok_and(|meta| meta.is_dir())
+}
+
+/// Whether `rel` *is* a directory, without following a final symlink.
+///
+/// The overlay needs this to tell a real directory from a symlink pointing at
+/// one: the two take different rename paths, and [`host_is_dir`] cannot tell
+/// them apart.
+pub(super) fn host_lstat_is_dir(dir: &Dir, rel: &str) -> bool {
+    dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_dir())
 }
 
 /// Whether `rel` resolves to a regular file inside the mount.

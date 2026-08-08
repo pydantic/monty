@@ -132,7 +132,10 @@ fn is_windows_drive_prefix(segment: &str) -> bool {
 }
 
 /// Rejects embedded null bytes before any path manipulation occurs.
-fn reject_null_bytes(virtual_path: &str) -> Result<(), MountError> {
+///
+/// `OverlayMemory` needs it independently — its keys never reach a syscall, so
+/// nothing downstream would reject a name the kernel never sees.
+pub(super) fn reject_null_bytes(virtual_path: &str) -> Result<(), MountError> {
     if virtual_path.contains('\0') {
         Err(MountError::PathEscape {
             virtual_path: virtual_path.to_owned(),

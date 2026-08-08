@@ -226,8 +226,7 @@ impl OsFunctionCall {
     /// for FS ops (with the path), `RuntimeError` for non-FS ops.
     #[must_use]
     pub fn on_no_handler(&self) -> MontyException {
-        if self.fs_primary_path().is_some() {
-            let path = self.fs_primary_path().unwrap_or("<unknown>");
+        if let Some(path) = self.fs_primary_path() {
             MontyException::new(
                 ExcType::PermissionError,
                 Some(format!("Permission denied: {}", StringRepr(path))),

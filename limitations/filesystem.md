@@ -139,6 +139,14 @@ The error quotes the path with its middle elided — the first and last 20
 characters around a `…` — where CPython quotes it whole. An over-long path
 is by definition too big to repeat back.
 
+### A null byte raises `PermissionError`, not `ValueError`
+
+A path containing `\0` is refused before it reaches the filesystem, in every
+mount mode, for every operation. CPython raises `ValueError: embedded null
+byte` (the check is in `pathlib`/`os`, not the kernel); Monty raises
+`PermissionError`, because the refusal is part of the path boundary rather
+than argument validation.
+
 ### A search-only host directory may not be mountable
 
 Mounting opens a descriptor on the host directory. On macOS and the BSDs that
@@ -191,9 +199,10 @@ entry under the link's spelling instead would silently alias the two paths.
 Any write (`write_text`, `open('w'/'a')`, `mkdir`, `unlink`, `rmdir`, rename
 destinations, …) whose path contains a symlink **anywhere** — as the final
 component or an intermediate directory, whether it resolves in-mount, dangles,
-is absolute, or escapes — raises `PermissionError`. A rename *source* is the
-exception: a symlink named as one is moved intact, recorded as itself rather
-than as its target. The
+is absolute, or escapes — raises `PermissionError`. A rename *source*'s final
+component is the one exception: a symlink named there is moved as itself rather
+than as its target (see below). A symlink anywhere earlier in a rename source's
+path is refused like any other write, the same as `unlink` on that path. The
 refusal is uniform on purpose: the link's target is never even resolved, so
 the error reveals nothing about it. Deletes are included because tombstoning
 a link's spelling would report it gone while its target stayed readable under
@@ -222,6 +231,19 @@ raises `OSError` (`directory contains an entry with a non-UTF-8 name`):
 Monty's sandbox namespace is strictly UTF-8, so the entry cannot follow the
 move. CPython renames the directory inode and never looks at the names
 inside.
+
+### `OverlayMemory` renames of symlinks
+
+A symlink named as a rename source moves as a file reference to itself, which
+has two consequences at the new name, both divergent from CPython:
+
+- `is_symlink()` answers `False` there — no overlay entry is a symlink — while
+  `stat()` reports the link's own size and mtime rather than its target's.
+  Reads still follow through to the target's content.
+- A link to a **directory** does not carry that directory with it: the new name
+  is not a directory, `iterdir()` on it raises `NotADirectoryError`, and
+  nothing is reachable beneath it. CPython moves the link and keeps it usable
+  as a directory. The link's target is untouched under its real name.
 
 ### Boolean predicates never raise
 

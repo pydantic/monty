@@ -14,12 +14,16 @@ use super::{
     common::{
         LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, as_u64, bytes_to_utf8, check_write_limit,
         commit_write_bytes, current_timestamp, format_child_path, host_dir_mtime, host_is_dir, host_is_file,
-        host_list_visible_dir_entry_names, host_read_bytes, host_read_text, host_stat, join_mount_relative, map_io,
+        host_list_visible_dir_entry_names, host_lstat_is_dir, host_read_bytes, host_read_text, host_stat,
+        join_mount_relative, map_io,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
     overlay_state::{ENTRY_MEMORY_USAGE, OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
-    path_security::{normalize_virtual_path, reject_drive_or_unc_segments, resolve_virtual_path, strip_mount_prefix},
+    path_security::{
+        normalize_virtual_path, reject_drive_or_unc_segments, reject_null_bytes, resolve_virtual_path,
+        strip_mount_prefix,
+    },
 };
 
 /// Conservative per-entry charge while capturing a real directory tree for a
@@ -30,8 +34,10 @@ const REAL_DESCENDANT_MEMORY_USAGE: u64 = 512;
 /// Resolves a virtual path to the mount-relative overlay key.
 ///
 /// Keys never reach a host path, but are rejected on the same grounds one
-/// would be — a name only this mode accepts is a divergence in itself.
+/// would be — a name only this mode accepts is a divergence in itself. That
+/// includes null bytes, which no syscall is ever reached to refuse here.
 fn relative_path(path: &str, ctx: &MountContext<'_>) -> Result<String, MountError> {
+    reject_null_bytes(path)?;
     let normalized = normalize_virtual_path(path);
     let relative = strip_mount_prefix(&normalized, ctx.mount_virtual)
         .map(str::to_owned)
@@ -521,16 +527,19 @@ fn reject_directory_target(
         }
         // An overlay file, ref, or tombstone already shadows whatever is real.
         Some(_) => Ok(()),
-        None => match resolve_virtual_path(vpath, ctx.mount_virtual) {
-            Ok(target) => match classify_write_target(ctx.mount_dir, target.for_dir_op(), vpath)? {
+        None => {
+            // Propagated, not swallowed: a path policy rejection here is the
+            // same refusal a direct mount raises, and discarding it let names
+            // only this mode accepts (embedded nulls) through to a write.
+            let target = resolve_virtual_path(vpath, ctx.mount_virtual)?;
+            match classify_write_target(ctx.mount_dir, target.for_dir_op(), vpath)? {
                 RealTarget::Dir => Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath)),
                 RealTarget::Symlink => Err(MountError::PathEscape {
                     virtual_path: vpath.to_owned(),
                 }),
                 RealTarget::File | RealTarget::Absent => Ok(()),
-            },
-            Err(_) => Ok(()),
-        },
+            }
+        }
     }
 }
 
@@ -979,6 +988,12 @@ fn rename(
         });
     }
 
+    // The source is a write path too — it ends up tombstoned — so the same
+    // "no symlink anywhere in the chain" rule applies to it as to `unlink` on
+    // that path. Only the source's own final component may be a link, and that
+    // one moves intact rather than being followed.
+    ensure_parent_exists(state, &src_rel, ctx, src_vpath)?;
+
     if matches!(state.get(&src_rel), Some(OverlayEntry::Deleted)) {
         return Err(MountError::not_found(src_vpath));
     }
@@ -989,8 +1004,11 @@ fn rename(
         Some(OverlayEntry::Directory { .. }) => true,
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => false,
         Some(OverlayEntry::Deleted) => return Err(MountError::not_found(src_vpath)),
+        // `lstat`, not `stat`: a symlink to a directory is recorded as the link
+        // itself below, so it must not take the directory-move path as well —
+        // that would walk the target's children into a "file" entry.
         None => resolve_virtual_path(src_vpath, ctx.mount_virtual)
-            .is_ok_and(|target| host_is_dir(ctx.mount_dir, target.for_dir_op())),
+            .is_ok_and(|target| host_lstat_is_dir(ctx.mount_dir, target.for_dir_op())),
     };
 
     reject_rename_type_mismatch(state, &dst_rel, src_is_dir, ctx, dst_vpath)?;
@@ -1075,8 +1093,10 @@ fn rename(
             overlay_moves.push((key, new_key));
         }
 
+        // Same `lstat` as `src_is_dir`: only a real directory has children to
+        // capture, and following a link here would walk the target's.
         if let Ok(target) = resolve_virtual_path(src_vpath, ctx.mount_virtual)
-            && host_is_dir(ctx.mount_dir, target.for_dir_op())
+            && host_lstat_is_dir(ctx.mount_dir, target.for_dir_op())
         {
             let real_children = match collect_real_descendants(
                 ctx.mount_dir,
@@ -1172,7 +1192,11 @@ fn reject_rename_type_mismatch(
     let dst_is_dir = match state.get(dst_rel) {
         Some(OverlayEntry::Directory { .. }) => Some(true),
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => Some(false),
-        Some(OverlayEntry::Deleted) | None => match resolve_virtual_path(dst_vpath, ctx.mount_virtual) {
+        // A tombstone means the destination is gone, whatever the host still
+        // has beneath it — reading through it would refuse a rename onto a
+        // path `exists()` already reports as `False`.
+        Some(OverlayEntry::Deleted) => None,
+        None => match resolve_virtual_path(dst_vpath, ctx.mount_virtual) {
             Ok(target) if host_is_dir(ctx.mount_dir, target.for_dir_op()) => Some(true),
             Ok(target) if ctx.mount_dir.exists(target.for_dir_op()) => Some(false),
             _ => None,

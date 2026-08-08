@@ -5,18 +5,19 @@
 //! `mount_survives_host_directory_rename` distinguish this design from
 //! path-based resolution — verified red against it, on Unix; Windows refuses to
 //! rename a mounted directory at all, so it gets its own pair. The other escape
-//! tests pass under both, so they are regression guards, not evidence, and
-//! `concurrent_rename_cannot_redirect_a_read` is a soak: the race was never won
-//! on macOS/APFS, so a green run proves little on any one platform.
+//! tests pass under both, so they are regression guards, not evidence, and the
+//! two timed races are soaks: neither was ever won on macOS/APFS, so a green
+//! run proves little on any one platform. Those two skip unless `MONTY_FS_SOAK`
+//! is set (see [`soak_enabled`]); everything else runs by default.
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
-    fs,
+    env, fs,
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc,
     },
@@ -38,6 +39,23 @@ mod common;
 /// Marker written to the out-of-mount file; its appearance in any result is the
 /// disclosure these tests guard against.
 const SECRET: &str = "SECRET-HOST-CONTENT";
+
+/// Whether the multi-second race soaks in this file should run.
+///
+/// They burn ~5s of wall clock on every `cargo test -p monty-fs` to prove very
+/// little: neither race was ever won on macOS/APFS, so a green run is a soak,
+/// not evidence. Set `MONTY_FS_SOAK=1` to run them — worth doing when changing
+/// the descriptor-relative open paths they cover.
+fn soak_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let enabled = env::var_os("MONTY_FS_SOAK").is_some_and(|value| !value.is_empty() && value != "0");
+        if !enabled {
+            eprintln!("race soaks will skip: set MONTY_FS_SOAK=1 to run them");
+        }
+        enabled
+    })
+}
 
 /// Dispatches a call, panicking if the mount table declines to handle it.
 fn dispatch(mounts: &mut MountTable, call: OsFunctionCall) -> Result<MontyObject, MountError> {
@@ -172,10 +190,11 @@ fn read_through_swapped_intermediate_directory_is_rejected() {
 /// symlink to an out-of-mount file, so a read whose check and open disagree
 /// returns the secret. A descriptor-relative open has no window to lose — but
 /// this only ever *detects* the old failure when the race is won, which did not
-/// happen on macOS/APFS, so treat a green run as a soak rather than a proof.
+/// happen on macOS/APFS, so treat a green run as a soak rather than a proof —
+/// hence [`soak_enabled`].
 #[test]
 fn concurrent_rename_cannot_redirect_a_read() {
-    if !symlinks_supported() {
+    if !symlinks_supported() || !soak_enabled() {
         return;
     }
     let mount_dir = TempDir::new().unwrap();
@@ -714,9 +733,13 @@ fn fifo_in_the_mount_is_refused_promptly() {
 /// host-planted FIFO over a regular file between the check and the open. The
 /// open is non-blocking and the handle is re-checked, so neither the hang nor a
 /// successful FIFO read is reachable. Verified red with either half removed.
+/// A soak like the one above, so it is gated the same way.
 #[test]
 #[cfg(unix)]
 fn fifo_raced_into_place_between_check_and_open_is_refused() {
+    if !soak_enabled() {
+        return;
+    }
     let mount_dir = TempDir::new().unwrap();
     let target = mount_dir.path().join("file.txt");
     let regular = mount_dir.path().join("regular");

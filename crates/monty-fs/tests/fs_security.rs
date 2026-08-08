@@ -381,6 +381,40 @@ fn null_byte_overlay_memory() {
     assert_blocked(&mut mt, PathOp::Exists, "/mnt/\x00evil");
 }
 
+/// Overlay *writes* need the null-byte check independently: the key never
+/// reaches a syscall, so nothing downstream would reject a name only this mode
+/// accepts. A direct mount and CPython both raise here.
+#[test]
+fn null_byte_overlay_write_ops() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+    assert_write_blocked(&mut mt, PathOp::WriteText, "/mnt/evil\x00.txt");
+    assert_write_blocked(&mut mt, PathOp::WriteBytes, "/mnt/evil\x00.bin");
+    assert_blocked(&mut mt, PathOp::Mkdir, "/mnt/evil\x00dir");
+    assert_open_blocked(&mut mt, "/mnt/evil\x00.txt", "w");
+    assert_open_blocked(&mut mt, "/mnt/evil\x00.txt", "a");
+
+    let renamed = dispatch(
+        &mut mt,
+        OsFunctionCall::Rename(RenameCallArgs {
+            src: MontyPath::new("/mnt/hello.txt".to_owned()),
+            dst: MontyPath::new("/mnt/evil\x00.txt".to_owned()),
+        }),
+    );
+    assert!(
+        matches!(&renamed, Some(Err(MountError::PathEscape { .. })) | None),
+        "rename onto a null-byte name must be refused, got {renamed:?}"
+    );
+
+    // Nothing was recorded under any of those names, so the overlay agrees
+    // with the direct backend about what exists.
+    assert_blocked(&mut mt, PathOp::Exists, "/mnt/evil\x00.txt");
+    assert_eq!(
+        call(&mut mt, PathOp::ReadText, "/mnt/hello.txt").unwrap().unwrap(),
+        MontyObject::String("hello world\n".to_owned())
+    );
+}
+
 // =============================================================================
 // Symlink escape
 // =============================================================================
@@ -577,6 +611,104 @@ mod symlink_tests {
         assert_eq!(
             call(&mut mt, PathOp::Exists, "/mnt/src.txt").unwrap().unwrap(),
             MontyObject::Bool(true)
+        );
+    }
+
+    /// A rename *source* is a write path too — it gets tombstoned — so a
+    /// symlink in its parent chain is refused exactly as `unlink` on the
+    /// identical path is. Only the source's final component is exempt.
+    #[test]
+    fn overlay_rename_out_of_a_symlinked_directory_is_refused() {
+        if !symlinks_supported() {
+            return;
+        }
+        let dir = create_test_dir();
+        symlink_dir("subdir", dir.path().join("link_dir"));
+
+        let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+        let outcome = dispatch(
+            &mut mt,
+            OsFunctionCall::Rename(RenameCallArgs {
+                src: MontyPath::new("/mnt/link_dir/nested.txt".to_owned()),
+                dst: MontyPath::new("/mnt/moved.txt".to_owned()),
+            }),
+        )
+        .unwrap();
+        assert!(
+            matches!(&outcome, Err(MountError::PathEscape { .. })),
+            "renaming out of a symlinked directory must be refused, got {outcome:?}"
+        );
+
+        // `unlink` on that same path is refused identically — the consistency
+        // this test exists to pin.
+        let unlinked = call(&mut mt, PathOp::Unlink, "/mnt/link_dir/nested.txt").unwrap();
+        assert!(
+            matches!(&unlinked, Err(MountError::PathEscape { .. })),
+            "unlink must agree with rename, got {unlinked:?}"
+        );
+
+        // Neither spelling was shadowed, so both still agree with the host.
+        assert_eq!(
+            call(&mut mt, PathOp::ReadText, "/mnt/subdir/nested.txt")
+                .unwrap()
+                .unwrap(),
+            MontyObject::String("nested content".to_owned())
+        );
+        assert_eq!(
+            call(&mut mt, PathOp::Exists, "/mnt/moved.txt").unwrap().unwrap(),
+            MontyObject::Bool(false)
+        );
+    }
+
+    /// A symlink to a directory moves as the link, never as the directory.
+    ///
+    /// The source's type comes from `lstat`, so the move cannot both record the
+    /// link as a file *and* walk its target's children into the overlay — which
+    /// left the new name a "file" with readable children under it.
+    #[test]
+    fn overlay_rename_of_a_symlink_to_a_dir_does_not_move_its_children() {
+        if !symlinks_supported() {
+            return;
+        }
+        let dir = create_test_dir();
+        symlink_dir("subdir", dir.path().join("link_dir"));
+
+        let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+        dispatch(
+            &mut mt,
+            OsFunctionCall::Rename(RenameCallArgs {
+                src: MontyPath::new("/mnt/link_dir".to_owned()),
+                dst: MontyPath::new("/mnt/moved".to_owned()),
+            }),
+        )
+        .unwrap()
+        .expect("renaming a symlink source is allowed");
+
+        // The moved name is not a directory and has no children beneath it.
+        assert_eq!(
+            call(&mut mt, PathOp::IsDir, "/mnt/moved").unwrap().unwrap(),
+            MontyObject::Bool(false)
+        );
+        assert_eq!(
+            call(&mut mt, PathOp::Exists, "/mnt/moved/nested.txt").unwrap().unwrap(),
+            MontyObject::Bool(false)
+        );
+        let listed = call(&mut mt, PathOp::Iterdir, "/mnt/moved").unwrap();
+        assert!(
+            matches!(&listed, Err(MountError::Io(err, _)) if err.kind() == ErrorKind::NotADirectory),
+            "the moved link must not list as a directory, got {listed:?}"
+        );
+
+        // The link's target is untouched: the rename moved a name, not a tree.
+        assert_eq!(
+            call(&mut mt, PathOp::IsDir, "/mnt/subdir").unwrap().unwrap(),
+            MontyObject::Bool(true)
+        );
+        assert_eq!(
+            call(&mut mt, PathOp::ReadText, "/mnt/subdir/nested.txt")
+                .unwrap()
+                .unwrap(),
+            MontyObject::String("nested content".to_owned())
         );
     }
 
