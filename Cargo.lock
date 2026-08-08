@@ -2169,9 +2169,9 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "logfire"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b60ab073230edf8760a3565c315d6b058c74093070ca4168b78c230a0facb734"
+checksum = "32c1632fcb0c1257b14cdec68c1cdd262928a14eee111b0638f1727a0fe7efab"
 dependencies = [
  "chrono",
  "env_filter",
@@ -2192,9 +2192,9 @@ dependencies = [
 
 [[package]]
 name = "logfire-core"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "345c70b7197595007b1b9a4d71b25ee8f646759732995b4984adbf666f43e4b4"
+checksum = "067d61220d3bd337bc7a6e50dc5bc2c4f9e4b24f04b5c8e6e6b7746711c05656"
 
 [[package]]
 name = "logos"

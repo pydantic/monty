@@ -205,6 +205,11 @@ pub type PrintFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// copies of whatever it needs (including the text, if consumed async).
 pub type OnPrint<'a> = &'a mut (dyn FnMut(PrintStream, &str) -> PrintFuture + Send);
 
+/// Callback for the events a [`Checkout::turn_raw`] streams before the
+/// turn-ender — `Print`s today. Returns a future for the same reason
+/// [`OnPrint`] does: a slow sink backpressures the worker.
+pub type OnRawEvent<'a> = &'a mut (dyn FnMut(&pb::ChildEvent) -> PrintFuture + Send);
+
 /// Adapts a synchronous print sink to the [`OnPrint`] callback shape.
 ///
 /// ```rust,no_run
@@ -757,6 +762,113 @@ impl Checkout {
         };
         self.turn_in_flight = false;
         outcome
+    }
+
+    /// Sends `request` and returns the child's turn-ending event, as protobuf —
+    /// no conversion to [`TurnEvent`].
+    ///
+    /// For callers that already speak the wire: a relay or server bridging a
+    /// remote client has to hand the client a `ChildEvent` frame, and rebuilding
+    /// one from a [`TurnEvent`] means hand-inverting the whole protocol —
+    /// every arm of `OsFunctionCall` included. This hands back what the child
+    /// actually sent.
+    ///
+    /// `on_event` sees each streamed event (`Print`) before the turn-ender.
+    ///
+    /// **Bypasses this checkout's suspension bookkeeping.** `pending`,
+    /// `feed_mounts` and `restored_script_name` are not maintained, so a
+    /// checkout driven this way must be driven *only* this way — never
+    /// interleaved with `feed`/`resume`/`restore`. The lifecycle is shared:
+    /// `create`, `finish` and worker poisoning behave exactly as they do for a
+    /// typed checkout, and so are the duration bookkeeping and the deadline
+    /// derived from it — a raw-driven session keeps its `max_duration` backstop.
+    ///
+    /// # Errors
+    /// As [`Checkout::feed`]: a dead worker, a protocol violation, or a turn
+    /// that outlived `request_timeout` or the session's remaining
+    /// `max_duration` budget.
+    pub async fn turn_raw(
+        &mut self,
+        request: &pb::ParentRequest,
+        on_event: OnRawEvent<'_>,
+    ) -> Result<pb::ChildEvent, PoolError> {
+        self.ensure_ready()?;
+        self.turn_in_flight = true;
+        // as `expect_turn`: `request_timeout` alone would drop the `max_duration`
+        // backstop, leaving a wedged child bounded only by a timeout that may be
+        // longer or unset. `turn_io_raw` maintains the reported-time bookkeeping
+        // the backstop reads, so it is as accurate here as on the typed path.
+        let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
+        self.armed_deadline = deadline;
+        let outcome = match deadline {
+            Some(limit) => match timeout(limit, self.turn_io_raw(request, on_event)).await {
+                Ok(outcome) => outcome,
+                Err(_elapsed) => Err(self.poison_timeout().await),
+            },
+            None => self.turn_io_raw(request, on_event).await,
+        };
+        self.turn_in_flight = false;
+        outcome
+    }
+
+    /// The body of [`Self::turn_raw`]: send, stream, return the turn-ender.
+    ///
+    /// Mirrors `turn_io`'s failure handling exactly — the difference is only
+    /// that events are returned rather than classified.
+    async fn turn_io_raw(
+        &mut self,
+        request: &pb::ParentRequest,
+        on_event: OnRawEvent<'_>,
+    ) -> Result<pb::ChildEvent, PoolError> {
+        let Some(worker) = self.worker.as_mut() else {
+            return Err(PoolError::Finished);
+        };
+        if let Err(err) = worker.send(request).await {
+            // an oversize frame is rejected before any bytes are written, so
+            // the worker is still synced — see `turn_io`
+            return Err(match err {
+                FrameError::FrameTooLarge { len, max } => PoolError::Runtime(MontyException::new(
+                    ExcType::RuntimeError,
+                    Some(format!(
+                        "request frame of {len} bytes exceeds the maximum of {max} bytes"
+                    )),
+                )),
+                _ => self.poison("sending a request").await,
+            });
+        }
+        loop {
+            let event = match self.worker.as_mut().expect("checked above").recv().await {
+                Ok(event) => event,
+                Err(FrameError::Decode(err)) => {
+                    return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                }
+                Err(_) => return Err(self.poison("waiting for a reply").await),
+            };
+            self.note_reported_time(&event);
+            // strict alternation: zero or more `Print`s, then exactly one
+            // turn-ender — so anything that is not a print ends the turn
+            if matches!(event.kind, Some(pb::child_event::Kind::Print(_))) {
+                on_event(&event).await;
+            } else if matches!(event.kind, Some(pb::child_event::Kind::Shutdown(_)))
+                && !self.pool.config.transport.is_websocket()
+            {
+                // Only a serving relay sends this, never a child — `turn_io`
+                // refuses it for the same reason. It matters more here: a raw
+                // driver hands the turn-ender straight back to its own client,
+                // and a relay signs the dump on the way past, so accepting one
+                // would have the relay vouch for bytes its child minted.
+                return Err(self.protocol_violation("subprocess worker sent a ShutdownDump"));
+            } else if event.kind.is_none() {
+                // Every proto field is optional, so a broken or hostile worker
+                // can send an event whose oneof is unset. It ends no turn — the
+                // typed path calls the same frame an "unexpected event" — and a
+                // raw driver would otherwise forward it to its own client as a
+                // valid turn-ender and go back to idle.
+                return Err(self.protocol_violation("worker sent an event with no kind"));
+            } else {
+                return Ok(event);
+            }
+        }
     }
 
     /// Fails fast when the checkout cannot start protocol work: the worker is
