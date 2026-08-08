@@ -57,11 +57,15 @@ fn relative_path(path: &str, ctx: &MountContext<'_>) -> Result<String, MountErro
 /// What bounds that is the descriptor: `Mount::dir` cannot resolve past the
 /// mount root and refuses an absolute target, so the worst case is in-mount
 /// content served under an aliased name — the same window the host already has
-/// by replacing a file outright (see `limitations/filesystem.md`). The walk
-/// holds a descriptor per component, so it cannot itself be fooled mid-walk,
-/// but it hands back a path the operation re-resolves from the mount root.
-/// Closing the window would mean the operation running against the walk's final
-/// descriptor; `O_NOFOLLOW` would not, since it binds only the last component.
+/// by replacing a file outright (see `limitations/filesystem.md`). Nor is the
+/// walk itself atomic: each descent follows, so a component that is a directory
+/// when classified and a symlink when opened is descended through.
+///
+/// Both windows are the same size and end the same way, so narrowing one alone
+/// buys nothing: the walk hands back a *path*, which the operation re-resolves
+/// from the mount root whatever the walk held. Closing this would mean opening
+/// every component no-follow **and** running the operation against the
+/// descriptor the walk ends on.
 ///
 /// The `Symlink` arms downstream are therefore not redundant: where a caller
 /// does re-classify, a link swapped in mid-operation lands on a refusal rather
@@ -1481,11 +1485,6 @@ enum RealTarget {
     Absent,
 }
 
-/// Classifies what sits at `rel`, without ever resolving a symlink.
-///
-/// The overlay refuses symlinks outright (see [`reject_symlink_chain`]), so
-/// every caller treats `Symlink` as `PermissionError`. The single `lstat`
-/// never resolves the target, so the refusal reveals nothing about it.
 /// Classifies a mount-relative path one component at a time, descending a
 /// descriptor as it goes.
 ///
@@ -1520,6 +1519,10 @@ impl<'d> ComponentWalk<'d> {
     ///
     /// Only a directory continues the walk: nothing is reachable below a file,
     /// every caller refuses a symlink, and absence ends it.
+    ///
+    /// The descent follows, so a directory swapped to a symlink between the two
+    /// lookups is descended through rather than refused — a bounded in-mount
+    /// window, and the same one [`resolve_real`] documents and tolerates.
     fn step(&mut self, component: &str, vpath: &str) -> Result<RealTarget, MountError> {
         if self.exhausted {
             return Ok(RealTarget::Absent);
@@ -1546,6 +1549,8 @@ impl<'d> ComponentWalk<'d> {
     }
 }
 
+/// Classifies what sits at `rel` with one `lstat`, never resolving a symlink —
+/// so the `Symlink` every caller refuses leaks nothing about its target.
 fn classify_target(dir: &Dir, rel: &str, vpath: &str) -> Result<RealTarget, MountError> {
     match dir.symlink_metadata(rel) {
         Ok(meta) if meta.is_symlink() => Ok(RealTarget::Symlink),
