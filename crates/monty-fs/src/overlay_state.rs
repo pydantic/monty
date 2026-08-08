@@ -233,8 +233,8 @@ pub(super) struct OverlayFile {
 /// A lazy reference to a real file preserved during overlay rename.
 ///
 /// The path is *mount-relative*, so reads go back through the mount descriptor
-/// and the reference cannot come to name anything outside the mount however the
-/// host directory changes. That is what makes it safe to keep unvalidated.
+/// and cannot name anything outside the mount. Dereferences revalidate the path
+/// because a host actor can replace any component after capture.
 #[derive(Debug)]
 pub(super) struct OverlayFileRef {
     /// Path relative to the mount root.
@@ -246,12 +246,14 @@ pub(super) struct OverlayFileRef {
 }
 
 impl OverlayFileRef {
-    /// Builds a lazy reference to a real file. The overlay refuses symlinks,
-    /// so there is never a link here whose identity could be lost.
+    /// Builds a lazy reference only when the final component is a real file.
+    ///
+    /// The no-follow lookup closes the caller's final-component race without
+    /// resolving a link whose target identity the overlay cannot preserve.
     #[must_use]
     pub fn from_relative(dir: &Dir, relative: &str) -> Option<Self> {
-        let metadata = dir.metadata(relative).ok()?;
-        Some(Self {
+        let metadata = dir.symlink_metadata(relative).ok()?;
+        metadata.is_file().then(|| Self {
             relative: relative.to_owned(),
             mtime: mtime_secs(&metadata),
             size: i64::try_from(metadata.len()).unwrap_or(i64::MAX),

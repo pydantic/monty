@@ -227,8 +227,9 @@ already has by replacing a file outright (above) — not a way out.
 A rename records a mount-relative reference to the existing file rather than
 copying its bytes, so it cannot come to name anything outside the mount. If
 the host replaces the underlying file before the read, the read sees whatever
-now occupies that path inside the mount; CPython, holding no such reference,
-would not find the renamed-away original.
+now occupies that path inside the mount — unless that is a symlink, refused
+like any other; CPython, holding no such reference, would not find the
+renamed-away original.
 
 Renaming a directory that really contains an entry with a non-UTF-8 name
 raises `OSError` (`directory contains an entry with a non-UTF-8 name`):

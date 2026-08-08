@@ -2537,6 +2537,10 @@ fn ovl_mem_every_operation_on_a_symlink_is_refused() {
         sorted_names(&call_ok(&mut mt, &OsFunctionCall::Iterdir("/mnt/subdir".into()))),
         vec!["deep", "nested.txt"]
     );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::IsSymlink("/mnt/link_dir".into())),
+        MontyObject::Bool(true)
+    );
 }
 
 /// A directory symlink blocks everything under it, not just its own name — a

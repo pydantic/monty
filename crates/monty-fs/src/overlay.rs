@@ -703,8 +703,14 @@ fn mkdir(
                 RealTarget::Dir | RealTarget::File => {
                     return Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath));
                 }
-                // `resolve_real` already refused any symlink in the path.
-                RealTarget::Symlink | RealTarget::Absent => {}
+                // Re-classification closes the final-component window after
+                // `resolve_real`: a link swapped in there is still refused.
+                RealTarget::Symlink => {
+                    return Err(MountError::PathEscape {
+                        virtual_path: vpath.to_owned(),
+                    });
+                }
+                RealTarget::Absent => {}
             }
         }
     }
@@ -936,7 +942,10 @@ fn stat(state: &OverlayState, relative: &str, ctx: &MountContext<'_>, vpath: &st
             let size = i64::try_from(file.content.len()).unwrap_or(i64::MAX);
             Ok(file_stat(0o644, size, file.mtime))
         }
-        Some(OverlayEntry::RealFileRef(file_ref)) => Ok(file_stat(0o644, file_ref.size, file_ref.mtime)),
+        Some(OverlayEntry::RealFileRef(file_ref)) => {
+            checked_ref_path(file_ref, ctx, vpath)?;
+            Ok(file_stat(0o644, file_ref.size, file_ref.mtime))
+        }
         Some(OverlayEntry::Directory { mtime }) => Ok(dir_stat(0o755, *mtime)),
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
@@ -1057,10 +1066,9 @@ fn rename(
         resolve_real(dst_vpath, ctx)?;
     }
 
-    // The source is a write path too — it ends up tombstoned — so the same
-    // "no symlink anywhere in the chain" rule applies to it as to `unlink` on
-    // that path. Only the source's own final component may be a link, and that
-    // one moves intact rather than being followed.
+    // The source is a write path too — it ends up tombstoned — so its parent
+    // chain is checked here and its final component by `resolve_real` below.
+    // A symlink anywhere in either is refused, as it is for `unlink`.
     ensure_parent_exists(state, &src_rel, ctx, src_vpath)?;
 
     if matches!(state.get(&src_rel), Some(OverlayEntry::Deleted)) {
@@ -1105,16 +1113,23 @@ fn rename(
     } else {
         let target = resolve_real(src_vpath, ctx)?;
         let rel = target.for_dir_op();
-        let entry = if host_is_file(ctx.mount_dir, rel) {
-            OverlayFileRef::from_relative(ctx.mount_dir, rel)
+        let entry = match classify_target(ctx.mount_dir, rel, src_vpath)? {
+            // `None` here means it stopped being a plain file between the two
+            // lookups — a special file, or gone.
+            RealTarget::File => OverlayFileRef::from_relative(ctx.mount_dir, rel)
                 .map(OverlayEntry::RealFileRef)
-                .ok_or_else(|| MountError::not_found(src_vpath))?
-        } else if host_is_dir(ctx.mount_dir, rel) {
-            OverlayEntry::Directory {
+                .ok_or_else(|| MountError::not_found(src_vpath))?,
+            RealTarget::Dir => OverlayEntry::Directory {
                 mtime: host_dir_mtime(ctx.mount_dir, rel),
+            },
+            // A link raced in behind `resolve_real` gets the refusal it would
+            // have got there, not the `FileNotFoundError` of a missing path.
+            RealTarget::Symlink => {
+                return Err(MountError::PathEscape {
+                    virtual_path: src_vpath.to_owned(),
+                });
             }
-        } else {
-            return Err(MountError::not_found(src_vpath));
+            RealTarget::Absent => return Err(MountError::not_found(src_vpath)),
         };
         Some(entry)
     };
@@ -1356,11 +1371,9 @@ fn collect_real_descendants(
             let file_type = entry
                 .file_type()
                 .map_err(|error| MountError::Io(error, vpath.to_owned()))?;
-            // A symlink can move neither way: capturing it as a file ref would
-            // resolve the target the overlay refuses to write through, and
-            // skipping it strands the link — unreachable at the new name, yet
-            // still live at the old one inside a directory the overlay now
-            // reports as deleted. Refuse the move, as for a non-UTF-8 name.
+            // The mode refuses symlinks, so one here can be neither captured
+            // (that resolves the target) nor moved as itself. Refusing the
+            // whole rename is the coherent answer, as for a non-UTF-8 name.
             if file_type.is_symlink() {
                 return Err(MountError::PathEscape {
                     virtual_path: vpath.to_owned(),
@@ -1368,6 +1381,9 @@ fn collect_real_descendants(
             }
             let child_rel = join_mount_relative(&current_rel, name);
             if file_type.is_file() {
+                // `None` means it stopped being a plain file since the entry
+                // was read. Skipping is safe even if it became a link: reads
+                // through one are refused, so it is reachable by neither name.
                 if let Some(file_ref) = OverlayFileRef::from_relative(dir, &child_rel) {
                     memory_usage = memory_usage
                         .saturating_add(as_u64(rel_key.len()))

@@ -1,6 +1,6 @@
 //! An `OverlayMemory` rename records a `RealFileRef` instead of copying the
 //! bytes, and reads followed that cached host path unchecked. Every path that
-//! dereferences one is exercised here: `read_text`, `read_bytes`, and the
+//! consumes one is exercised here: `read_text`, `read_bytes`, `stat`, and the
 //! `existing_file_len` / `existing_file_bytes` pair an append goes through.
 
 #[cfg(unix)]
@@ -127,6 +127,16 @@ fn stale_ref_is_revalidated_on_read_bytes() {
         return;
     }
     StaleRef::new().assert_rejected(OsFunctionCall::ReadBytes("/mnt/moved.txt".into()));
+}
+
+/// `stat` must not expose metadata through a backing path that is now a
+/// symlink, even though it does not need to reopen the file for fresh metadata.
+#[test]
+fn stale_ref_is_revalidated_on_stat() {
+    if !symlinks_supported() {
+        return;
+    }
+    StaleRef::new().assert_rejected(OsFunctionCall::Stat("/mnt/moved.txt".into()));
 }
 
 /// Appending materializes the backing file into the overlay via
