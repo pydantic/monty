@@ -1,0 +1,47 @@
+crates/monty-fs/src/overlay_state.rs
+  s_609ec6c2788cd8::t_7b7eab561923ba 9,249-250,253-254,256,258
+crates/monty-fs/tests/overlay_stale_ref.rs
+  s_609ec6c2788cd8::t_9fe56799e646d8 218-219
+  s_609ec6c2788cd8::t_524c77dcb40be1 6-7
+  s_609ec6c2788cd8::t_c92af42ee1cec6 190,192-195,198
+crates/monty-fs/src/overlay.rs
+  s_609ec6c2788cd8::t_d329648b764fea 48-49,56-96
+  s_609ec6c2788cd8::t_84065af5a9b0e5 1383-1385
+  s_609ec6c2788cd8::t_8d117c86698193 167,261,279,297,514,553,1371-1373,1390-1392
+  s_609ec6c2788cd8::t_44c6ab32e202ec 665-672,674-675
+  s_609ec6c2788cd8::t_06184593e869da 312-321
+  s_609ec6c2788cd8::t_9edbcbd7bd5794 1434,1436-1439
+  s_609ec6c2788cd8::t_66fe7eb2a5659f 122,306-309,323
+  s_609ec6c2788cd8::t_47f1525ff8b8b4 23-24,346,372,911,930,1379
+  s_609ec6c2788cd8::t_c403158f60802b 50-55
+  s_609ec6c2788cd8::t_31b15bb1b78250 225-227,585,785,830,833-835,1022-1025
+  s_609ec6c2788cd8::t_3802060abf49d2 1381-1382,1386
+  s_609ec6c2788cd8::t_d05df0cc7ccce5 1118-1119
+  s_609ec6c2788cd8::t_cca8be8d99d08a 228,586,628,732,786
+  s_609ec6c2788cd8::t_92c71931e0aaeb 673,1044-1046,1074,1076
+  s_609ec6c2788cd8::t_524c77dcb40be1 17
+limitations/filesystem.md
+  s_609ec6c2788cd8::t_df41c4c11fe8b9 195-208,211,213-217
+  s_609ec6c2788cd8::t_e72294e93f4dfd 158,160-165
+crates/monty-fs/tests/fs.rs
+  s_609ec6c2788cd8::t_fedffb0c4c1c0c 2493-2541
+  s_609ec6c2788cd8::t_1a41cc9a360ddf 2407,2410,2412-2414,2417,2426-2431,2433-2438,2440-2449,2451-2461,2463-2464,2466-2492,2542-2567
+crates/monty-fs/tests/fs_security.rs
+  s_609ec6c2788cd8::t_b53d8d564dde7b 636-637,648,678-679,681,736-737,739,747,754-757,759-760,762
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4f58f1a69cdd3aeb7047629ad1e75be244bad7ec",
+  "prompts": {},
+  "sessions": {
+    "s_609ec6c2788cd8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa52751a-81e6-429a-a916-2a3eceacf077",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
