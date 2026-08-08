@@ -1533,8 +1533,14 @@ impl<'d> ComponentWalk<'d> {
             let opened = self.here().open_dir(component);
             match opened {
                 Ok(next) => self.current = Some(next),
-                // Raced away between the two lookups; nothing below it exists.
-                Err(err) if err.kind() == ErrorKind::NotFound => self.exhausted = true,
+                // Raced away between the two lookups. Reported as `Absent`,
+                // not the stale `Dir`: a caller told `Dir` records nothing
+                // for the component, and would then hang descendants under a
+                // parent that no longer exists anywhere.
+                Err(err) if err.kind() == ErrorKind::NotFound => {
+                    self.exhausted = true;
+                    return Ok(RealTarget::Absent);
+                }
                 Err(err) => return Err(map_io(err, vpath)),
             }
         } else {
