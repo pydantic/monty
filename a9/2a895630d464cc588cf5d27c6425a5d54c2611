@@ -1,0 +1,23 @@
+crates/monty/tests/resource_limits.rs
+  s_5e3f4154872c90::t_4c51524e23021d 887-915
+crates/monty/src/types/namedtuple.rs
+  s_5e3f4154872c90::t_93eeb59c8d0936 978-980,982-983
+  s_5e3f4154872c90::t_99ac58651499bf 973-977,984-990
+  s_5e3f4154872c90::t_9d24d0832aede3 1028
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a92a895630d464cc588cf5d27c6425a5d54c2611",
+  "prompts": {},
+  "sessions": {
+    "s_5e3f4154872c90": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eb6e3465-dc27-4696-9b1a-b0fa796ce998",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}
