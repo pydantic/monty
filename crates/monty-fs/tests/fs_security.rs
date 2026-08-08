@@ -483,6 +483,61 @@ fn overlong_path_outranks_a_null_byte() {
     }
 }
 
+/// A path may name at most 64 components, counted as sent.
+///
+/// The kernel's own `ENAMETOOLONG` never fires under descriptor-relative
+/// resolution, which walks a path component by component and so never hands
+/// the whole thing to a syscall. Without this limit `PATH_MAX` alone allowed
+/// ~2000 components, and every walker costs at least a lookup per level.
+#[test]
+fn too_many_components_is_refused() {
+    let dir = create_test_dir();
+    // "/mnt/<n>" splits to n + 2 components, the leading empty included.
+    let at_limit = format!("/mnt/{}", vec!["d"; 62].join("/"));
+    let over_limit = format!("/mnt/{}", vec!["d"; 63].join("/"));
+
+    for (_, mode) in all_modes() {
+        let mut mt = mount_at_mnt(&dir, mode);
+
+        // At the limit the path is merely missing, not refused.
+        assert_eq!(
+            call(&mut mt, PathOp::Exists, &at_limit).unwrap().unwrap(),
+            MontyObject::Bool(false)
+        );
+        let err = call(&mut mt, PathOp::Stat, &at_limit).unwrap().unwrap_err();
+        assert_eq!(err.into_exception().exc_type(), ExcType::FileNotFoundError);
+
+        // One deeper is refused, with the same wording an over-long path gets.
+        let exc = call(&mut mt, PathOp::Stat, &over_limit)
+            .unwrap()
+            .unwrap_err()
+            .into_exception();
+        assert_eq!(exc.exc_type(), ExcType::OSError);
+        assert!(
+            exc.message().unwrap_or("").starts_with("[Errno 36] File name too long"),
+            "got {:?}",
+            exc.message()
+        );
+        // Predicates swallow it, as they swallow every `OSError`.
+        assert_eq!(
+            call(&mut mt, PathOp::Exists, &over_limit).unwrap().unwrap(),
+            MontyObject::Bool(false)
+        );
+    }
+
+    // The rename destination is checked too, and neither side needs a mount.
+    let mut empty = MountTable::new();
+    let outcome = dispatch(
+        &mut empty,
+        OsFunctionCall::Rename(RenameCallArgs {
+            src: MontyPath::new("/nowhere/a.txt".to_owned()),
+            dst: MontyPath::new(over_limit),
+        }),
+    )
+    .expect("a too-deep destination is refused without a mount");
+    assert!(matches!(outcome, Err(MountError::Io(_, _))), "got {outcome:?}");
+}
+
 /// The predicates answer `False` instead of raising, as CPython's do —
 /// `pathlib` swallows `ValueError` there exactly as it swallows `OSError`.
 #[test]
@@ -1217,6 +1272,75 @@ mod symlink_tests {
         let result = call_mkdir(&mut mt, "/mnt/internal_link/new_child", true, true);
         assert!(result.unwrap().is_ok(), "mkdir through internal symlink should succeed");
         assert!(dir.path().join("subdir/new_child").exists());
+    }
+
+    /// Depth of the chain the walk is exercised against. Deep enough that a
+    /// walk re-spelling the whole prefix per component would be quadratic.
+    const DEEP_CHAIN: usize = 40;
+
+    /// The overlay's symlink refusal holds at every depth of a long chain.
+    ///
+    /// Guards the descriptor-descending walk in `reject_symlink_chain`: it looks
+    /// up one component at a time rather than a growing prefix, so a link that
+    /// used to be seen by a whole-path lookup must still be seen by a
+    /// single-component one — wherever in the chain it sits.
+    #[test]
+    fn overlay_symlink_is_refused_at_every_depth_of_a_deep_chain() {
+        if !symlinks_supported() {
+            return;
+        }
+        let names: Vec<String> = (0..DEEP_CHAIN).map(|i| format!("d{i}")).collect();
+        let chain = names.join("/");
+
+        // A link-free chain of the same depth still resolves, so the walk is
+        // being passed rather than short-circuited.
+        let dir = create_test_dir();
+        fs::create_dir_all(dir.path().join(&chain)).unwrap();
+        fs::write(dir.path().join(&chain).join("leaf.txt"), "deep").unwrap();
+        let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+        assert_eq!(
+            call(&mut mt, PathOp::ReadText, &format!("/mnt/{chain}/leaf.txt"))
+                .unwrap()
+                .unwrap(),
+            MontyObject::String("deep".to_owned())
+        );
+
+        // Now rebuild the chain with one component replaced by a symlink to a
+        // sibling directory of the same shape, at each depth in turn.
+        for swapped in 0..DEEP_CHAIN {
+            let dir = create_test_dir();
+            let prefix = names[..swapped].join("/");
+            let parent = if prefix.is_empty() {
+                dir.path().to_owned()
+            } else {
+                dir.path().join(&prefix)
+            };
+            // `real/<rest of chain>` holds the leaf; the swapped component is a
+            // link to `real`, so the path only resolves by following it.
+            fs::create_dir_all(parent.join("real").join(names[swapped + 1..].join("/"))).unwrap();
+            fs::write(
+                parent
+                    .join("real")
+                    .join(names[swapped + 1..].join("/"))
+                    .join("leaf.txt"),
+                "deep",
+            )
+            .unwrap();
+            symlink_dir("real", parent.join(&names[swapped]));
+
+            let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+            let vpath = format!("/mnt/{chain}/leaf.txt");
+            let outcome = call(&mut mt, PathOp::ReadText, &vpath).unwrap();
+            assert!(
+                matches!(&outcome, Err(MountError::PathEscape { .. })),
+                "a link at depth {swapped} must be refused, got {outcome:?}"
+            );
+            assert_eq!(
+                call(&mut mt, PathOp::Exists, &vpath).unwrap().unwrap(),
+                MontyObject::Bool(false),
+                "a link at depth {swapped} must make the path invisible"
+            );
+        }
     }
 }
 

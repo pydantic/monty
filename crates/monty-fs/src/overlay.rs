@@ -57,9 +57,11 @@ fn relative_path(path: &str, ctx: &MountContext<'_>) -> Result<String, MountErro
 /// What bounds that is the descriptor: `Mount::dir` cannot resolve past the
 /// mount root and refuses an absolute target, so the worst case is in-mount
 /// content served under an aliased name — the same window the host already has
-/// by replacing a file outright (see `limitations/filesystem.md`). Closing it
-/// would need a per-component `openat` walk holding descriptors; `O_NOFOLLOW`
-/// would not, since it binds only the final component.
+/// by replacing a file outright (see `limitations/filesystem.md`). The walk
+/// holds a descriptor per component, so it cannot itself be fooled mid-walk,
+/// but it hands back a path the operation re-resolves from the mount root.
+/// Closing the window would mean the operation running against the walk's final
+/// descriptor; `O_NOFOLLOW` would not, since it binds only the last component.
 ///
 /// The `Symlink` arms downstream are therefore not redundant: where a caller
 /// does re-classify, a link swapped in mid-operation lands on a refusal rather
@@ -84,22 +86,19 @@ fn reject_symlink_chain(dir: &Dir, rel: &str, vpath: &str) -> Result<(), MountEr
     if rel.is_empty() || rel == "." {
         return Ok(());
     }
-    let mut current = String::new();
+    let mut walk = ComponentWalk::new(dir);
     for component in rel.split('/') {
-        if !current.is_empty() {
-            current.push('/');
-        }
-        current.push_str(component);
-        match classify_target(dir, &current, vpath)? {
+        match walk.step(component, vpath)? {
             RealTarget::Symlink => {
                 return Err(MountError::PathEscape {
                     virtual_path: vpath.to_owned(),
                 });
             }
-            // Nothing below a missing component can exist, so there is no
-            // further link to find — and absence is not a refusal.
-            RealTarget::Absent => return Ok(()),
-            RealTarget::Dir | RealTarget::File => {}
+            // Nothing is reachable below a missing component or a plain file,
+            // so no deeper link can be followed either. The operation this
+            // guards still raises what a whole-path lookup would have.
+            RealTarget::Absent | RealTarget::File => return Ok(()),
+            RealTarget::Dir => {}
         }
     }
     Ok(())
@@ -642,31 +641,31 @@ fn ensure_parent_exists(
     let Some((parents, _)) = relative.rsplit_once('/') else {
         return Ok(());
     };
+    let mut walk = ComponentWalk::new(ctx.mount_dir);
     let mut current = String::new();
     for component in parents.split('/') {
         if !current.is_empty() {
             current.push('/');
         }
         current.push_str(component);
+        // Stepped even where the overlay answers, so the descriptor keeps pace
+        // with the key: a real directory below an overlay one is still reached
+        // by a single-component lookup. An overlay-only parent exhausts the
+        // walk at its first component, after which stepping is free.
+        let real = walk.step(component, vpath)?;
         match state.get(&current) {
             // Overlay directories are symlink-free by construction.
             Some(OverlayEntry::Directory { .. }) => {}
             Some(_) => return Err(MountError::not_found(vpath)),
-            None => {
-                let dir_vpath = format!("{}/{current}", ctx.mount_virtual);
-                let Ok(target) = resolve_virtual_path(&dir_vpath, ctx.mount_virtual) else {
-                    return Err(MountError::not_found(vpath));
-                };
-                match classify_target(ctx.mount_dir, target.for_dir_op(), vpath)? {
-                    RealTarget::Dir => {}
-                    RealTarget::Symlink => {
-                        return Err(MountError::PathEscape {
-                            virtual_path: vpath.to_owned(),
-                        });
-                    }
-                    RealTarget::File | RealTarget::Absent => return Err(MountError::not_found(vpath)),
+            None => match real {
+                RealTarget::Dir => {}
+                RealTarget::Symlink => {
+                    return Err(MountError::PathEscape {
+                        virtual_path: vpath.to_owned(),
+                    });
                 }
-            }
+                RealTarget::File | RealTarget::Absent => return Err(MountError::not_found(vpath)),
+            },
         }
     }
     Ok(())
@@ -737,6 +736,7 @@ fn mkdir(
 /// `PermissionError` instead of being shadowed by (or aliased under) an
 /// in-memory tree.
 fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountContext<'_>) -> Result<(), MountError> {
+    let mut walk = ComponentWalk::new(ctx.mount_dir);
     let mut current = String::new();
 
     for component in relative.split('/') {
@@ -745,10 +745,14 @@ fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountC
         }
         current.push_str(component);
 
+        let current_vpath = format_child_path(ctx.mount_virtual, &current);
+        // Stepped for every component, overlay-answered ones included, so the
+        // descriptor stays level with the key (see [`ComponentWalk`]).
+        let real = walk.step(component, &current_vpath)?;
+
         match state.get(&current) {
             Some(OverlayEntry::Directory { .. }) => {}
             Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
-                let current_vpath = format!("{}/{current}", ctx.mount_virtual);
                 return Err(MountError::io_err(
                     ErrorKind::NotADirectory,
                     "Not a directory",
@@ -765,24 +769,22 @@ fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountC
                 )?;
             }
             None => {
-                let current_vpath = format!("{}/{current}", ctx.mount_virtual);
-                if let Ok(resolved) = resolve_virtual_path(&current_vpath, ctx.mount_virtual) {
-                    match classify_target(ctx.mount_dir, resolved.for_dir_op(), &current_vpath)? {
-                        RealTarget::Dir => continue,
-                        RealTarget::Symlink => {
-                            return Err(MountError::PathEscape {
-                                virtual_path: current_vpath,
-                            });
-                        }
-                        RealTarget::File => {
-                            return Err(MountError::io_err(
-                                ErrorKind::NotADirectory,
-                                "Not a directory",
-                                &current_vpath,
-                            ));
-                        }
-                        RealTarget::Absent => {}
+                match real {
+                    // Already a real directory, so nothing to record.
+                    RealTarget::Dir => continue,
+                    RealTarget::Symlink => {
+                        return Err(MountError::PathEscape {
+                            virtual_path: current_vpath,
+                        });
                     }
+                    RealTarget::File => {
+                        return Err(MountError::io_err(
+                            ErrorKind::NotADirectory,
+                            "Not a directory",
+                            &current_vpath,
+                        ));
+                    }
+                    RealTarget::Absent => {}
                 }
 
                 state.insert(
@@ -1484,6 +1486,66 @@ enum RealTarget {
 /// The overlay refuses symlinks outright (see [`reject_symlink_chain`]), so
 /// every caller treats `Symlink` as `PermissionError`. The single `lstat`
 /// never resolves the target, so the refusal reveals nothing about it.
+/// Classifies a mount-relative path one component at a time, descending a
+/// descriptor as it goes.
+///
+/// Every lookup then names a single component, so a walk costs one resolution
+/// step per level. Re-spelling a longer prefix each time makes it quadratic
+/// wherever `cap-std` has no `openat2` and resolves component-by-component in
+/// userspace itself (macOS, Windows, pre-5.6 Linux) — at 300 levels, ~45k
+/// steps rather than ~600. Callers walking overlay keys alongside host state
+/// should [`step`](Self::step) every component, including ones the overlay
+/// already answers, so the descriptor stays level with the key.
+struct ComponentWalk<'d> {
+    /// The mount root, used until the first descent.
+    root: &'d Dir,
+    /// Deepest directory opened so far; `None` while still at the root.
+    current: Option<Dir>,
+    /// Set once a component is missing: nothing below one can exist, so every
+    /// remaining component answers `Absent` without a syscall.
+    exhausted: bool,
+}
+
+impl<'d> ComponentWalk<'d> {
+    fn new(root: &'d Dir) -> Self {
+        Self {
+            root,
+            current: None,
+            exhausted: false,
+        }
+    }
+
+    /// Classifies `component` where the walk stands, descending into it when it
+    /// is a directory so the next call is single-component too.
+    ///
+    /// Only a directory continues the walk: nothing is reachable below a file,
+    /// every caller refuses a symlink, and absence ends it.
+    fn step(&mut self, component: &str, vpath: &str) -> Result<RealTarget, MountError> {
+        if self.exhausted {
+            return Ok(RealTarget::Absent);
+        }
+        let target = classify_target(self.here(), component, vpath)?;
+        if matches!(target, RealTarget::Dir) {
+            // Bound before the match so the borrow of `self` ends here.
+            let opened = self.here().open_dir(component);
+            match opened {
+                Ok(next) => self.current = Some(next),
+                // Raced away between the two lookups; nothing below it exists.
+                Err(err) if err.kind() == ErrorKind::NotFound => self.exhausted = true,
+                Err(err) => return Err(map_io(err, vpath)),
+            }
+        } else {
+            self.exhausted = true;
+        }
+        Ok(target)
+    }
+
+    /// The directory the next lookup is relative to.
+    fn here(&self) -> &Dir {
+        self.current.as_ref().unwrap_or(self.root)
+    }
+}
+
 fn classify_target(dir: &Dir, rel: &str, vpath: &str) -> Result<RealTarget, MountError> {
     match dir.symlink_metadata(rel) {
         Ok(meta) if meta.is_symlink() => Ok(RealTarget::Symlink),

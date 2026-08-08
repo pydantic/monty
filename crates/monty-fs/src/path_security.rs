@@ -18,6 +18,18 @@ const PATH_MAX: usize = 4096;
 /// Maximum single path component length in bytes (universal `NAME_MAX`).
 const NAME_MAX: usize = 255;
 
+/// Maximum number of components in a path.
+///
+/// Monty's own limit, with no POSIX counterpart. Confinement resolves a path
+/// relative to a descriptor, which on every platform but Linux with `openat2`
+/// means walking it component by component in userspace — so the kernel never
+/// sees the whole path and its own `ENAMETOOLONG` never fires, leaving
+/// [`PATH_MAX`] as the only bound at ~2000 components. Since the walkers cost
+/// at least one step per level, that let a single call fan out into millions
+/// of lookups. 64 is far above real trees (the deepest path in this repo,
+/// nested `node_modules` included, is 20) and caps the fan-out at ~4k.
+const DEPTH_MAX: usize = 64;
+
 /// A virtual path checked against Monty's path policy and made relative to its
 /// mount, ready to hand to a [`Dir`](cap_std::fs::Dir) method.
 ///
@@ -155,7 +167,8 @@ pub(super) fn reject_null_bytes(virtual_path: &str) -> Result<(), MountError> {
     }
 }
 
-/// Rejects paths that exceed Linux filesystem length limits.
+/// Rejects paths that exceed Linux filesystem length limits, or [`DEPTH_MAX`]
+/// components.
 ///
 /// Applied regardless of host OS so the sandbox behaves identically everywhere,
 /// rather than inheriting whatever the host filesystem happens to allow. Measures
@@ -163,8 +176,19 @@ pub(super) fn reject_null_bytes(virtual_path: &str) -> Result<(), MountError> {
 /// short, and the kernel would reject the bytes handed to it, not the collapsed
 /// form. Checking first also keeps the per-segment normalization off oversized
 /// input.
+///
+/// The component count is measured the same way, which only ever over-counts:
+/// normalization drops `.` and empty segments and `..` removes a pair, so a
+/// path within the limit as sent is within it once collapsed too.
 pub(super) fn reject_overlong_path(path: &str) -> Result<(), MountError> {
-    let too_long = path.len() > PATH_MAX || path.split('/').any(|component| component.len() > NAME_MAX);
+    let mut components = path.split('/');
+    // `ENAMETOOLONG` for depth as well: it is the error a kernel that saw the
+    // whole path would raise, and the one every predicate already swallows.
+    // The per-component scan stops at the limit, since anything past it is
+    // refused on depth anyway — so no check here walks a hostile path whole.
+    let too_long = path.len() > PATH_MAX
+        || components.by_ref().take(DEPTH_MAX).any(|c| c.len() > NAME_MAX)
+        || components.next().is_some();
     if too_long {
         // Elided, because the error echoes the path back: quoting it whole would
         // make the largest input produce the largest allocation, on the cheapest

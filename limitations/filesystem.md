@@ -139,6 +139,27 @@ The error quotes the path with its middle elided — the first and last 20
 characters around a `…` — where CPython quotes it whole. An over-long path
 is by definition too big to repeat back.
 
+### At most 64 path components
+
+A path naming more than 64 components raises the same `OSError` `[Errno 36]
+File name too long`, with the same three consequences as the length limit
+above. CPython has no such limit: it hands the path to the kernel, which
+counts bytes, not levels.
+
+This one is Monty's own. Confinement resolves every path relative to the
+mount's descriptor, and outside Linux-with-`openat2` that means walking it
+component by component in userspace — so the kernel never sees the whole path
+and its `ENAMETOOLONG` never fires. A 4096-byte path can name ~2000
+components, and each level costs at least one lookup, so a single call could
+fan out into millions of them. Components are counted as sent, like the
+length, which can only over-count: `.` and empty segments are dropped by
+normalization and `..` removes a pair, so anything within the limit as sent is
+within it once collapsed.
+
+64 is far above real trees — the deepest path in this repository, nested
+`node_modules` included, is 20 — but code that builds paths by repeated
+`mkdir(parents=True)` on generated names can reach it where CPython would not.
+
 ### `absolute()` raises on a null byte
 
 Null bytes otherwise behave as CPython's do, message for message. Only
