@@ -1,0 +1,23 @@
+crates/monty-server/src/health.rs
+  s_72108fa32981f0::t_f590ed5e80ef13 3-6,8,10-11,13,32-35,37-38,42-51,53-60,63-69
+crates/monty-server/README.md
+  s_72108fa32981f0::t_fee1df8467a4d9 242
+crates/monty-server/CLAUDE.md
+  s_72108fa32981f0::t_4996f24054e3af 129-130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c6f9d9e788687319113277a35af108e1caeed423",
+  "prompts": {},
+  "sessions": {
+    "s_72108fa32981f0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1064fc43-8ec2-4446-9191-6d3f86b9b479",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
