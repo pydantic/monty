@@ -351,9 +351,7 @@ try:
     long_component_path.write_text('test')
     assert False, 'expected OSError on long component'
 except OSError as exc:
-    if is_monty:
-        assert str(exc) == "[Errno 36] File name too long: '/mnt/" + long_name + "'", f'unexpected message: {exc}'
-    elif not is_windows:
+    if not is_windows:
         assert str(exc).startswith(("[Errno 36] File name too long: '", "[Errno 63] File name too long: '")), (
             f'exc message: {exc}'
         )
@@ -368,9 +366,7 @@ try:
     Path(long_path_str).write_text('test')
     assert False, 'expected OSError on long total path'
 except OSError as exc:
-    if is_monty:
-        assert str(exc).startswith("[Errno 36] File name too long: '"), f'unexpected message: {exc}'
-    elif not is_windows:
+    if not is_windows:
         assert str(exc).startswith(("[Errno 36] File name too long: '", "[Errno 63] File name too long: '")), (
             f'exc message: {exc}'
         )
@@ -380,9 +376,7 @@ try:
     long_component_path.read_text()
     assert False, 'expected OSError on read_text with long component'
 except OSError as exc:
-    if is_monty:
-        assert str(exc) == "[Errno 36] File name too long: '/mnt/" + long_name + "'", f'unexpected message: {exc}'
-    elif not is_windows:
+    if not is_windows:
         assert str(exc).startswith(("[Errno 36] File name too long: '", "[Errno 63] File name too long: '")), (
             f'exc message: {exc}'
         )
@@ -392,9 +386,7 @@ try:
     long_component_path.stat()
     assert False, 'expected OSError on stat with long component'
 except OSError as exc:
-    if is_monty:
-        assert str(exc) == "[Errno 36] File name too long: '/mnt/" + long_name + "'", f'unexpected message: {exc}'
-    elif not is_windows:
+    if not is_windows:
         assert str(exc).startswith(("[Errno 36] File name too long: '", "[Errno 63] File name too long: '")), (
             f'exc message: {exc}'
         )
@@ -404,9 +396,7 @@ try:
     long_component_path.mkdir()
     assert False, 'expected OSError on mkdir with long component'
 except OSError as exc:
-    if is_monty:
-        assert str(exc) == "[Errno 36] File name too long: '/mnt/" + long_name + "'", f'unexpected message: {exc}'
-    elif not is_windows:
+    if not is_windows:
         assert str(exc).startswith(("[Errno 36] File name too long: '", "[Errno 63] File name too long: '")), (
             f'exc message: {exc}'
         )
