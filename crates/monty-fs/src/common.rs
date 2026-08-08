@@ -471,15 +471,6 @@ pub(super) fn host_is_dir(dir: &Dir, rel: &str) -> bool {
     dir.metadata(rel).is_ok_and(|meta| meta.is_dir())
 }
 
-/// Whether `rel` *is* a directory, without following a final symlink.
-///
-/// The overlay needs this to tell a real directory from a symlink pointing at
-/// one: the two take different rename paths, and [`host_is_dir`] cannot tell
-/// them apart.
-pub(super) fn host_lstat_is_dir(dir: &Dir, rel: &str) -> bool {
-    dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_dir())
-}
-
 /// Whether `rel` resolves to a regular file inside the mount.
 pub(super) fn host_is_file(dir: &Dir, rel: &str) -> bool {
     dir.metadata(rel).is_ok_and(|meta| meta.is_file())

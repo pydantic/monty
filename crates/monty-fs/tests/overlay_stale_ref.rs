@@ -3,14 +3,14 @@
 //! dereferences one is exercised here: `read_text`, `read_bytes`, and the
 //! `existing_file_len` / `existing_file_bytes` pair an append goes through.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 #[cfg(windows)]
 use std::process::Command;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-#[cfg(unix)]
-use std::{io::ErrorKind, os::unix::fs::PermissionsExt};
 
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{MontyObject, OsFunctionCall, PathStringDataArgs, RenameCallArgs};
@@ -187,14 +187,15 @@ fn mount_root_swap_does_not_redirect_a_cached_ref() {
     assert_eq!(outcome.unwrap(), MontyObject::String("public".to_owned()));
 }
 
-/// Renaming an in-mount symlink whose target is unreadable must report the I/O
-/// error, not a path escape.
+/// Renaming a symlink is refused without ever consulting its target.
 ///
-/// `PathEscape` means the boundary caught something; a permission failure on a
-/// target that is plainly inside the mount is not that.
+/// The target here is unreadable, so a refusal that had resolved it would
+/// surface as a permission error instead. `PathEscape` is the proof the
+/// overlay stopped at the link itself — which is what lets the docs say the
+/// refusal reveals nothing about where a link points.
 #[test]
 #[cfg(unix)]
-fn renaming_symlink_to_denied_target_reports_the_io_error() {
+fn renaming_a_symlink_never_resolves_its_target() {
     if !symlinks_supported() {
         return;
     }
@@ -214,8 +215,8 @@ fn renaming_symlink_to_denied_target_reports_the_io_error() {
 
     fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(
-        matches!(&outcome, Err(MountError::Io(err, _)) if err.kind() == ErrorKind::PermissionDenied),
-        "expected a permission error, got {outcome:?}"
+        matches!(&outcome, Err(MountError::PathEscape { .. })),
+        "expected the link itself to be refused, got {outcome:?}"
     );
 }
 

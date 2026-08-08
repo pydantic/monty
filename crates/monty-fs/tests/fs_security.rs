@@ -633,7 +633,8 @@ mod symlink_tests {
             "rmdir of a symlink must be refused, got {outcome:?}"
         );
 
-        // Nothing was shadowed, so both spellings still agree with the host.
+        // Nothing was shadowed: the real name still reads. The link's own
+        // spelling answers `False`, as any refused path does.
         assert_eq!(
             call(&mut mt, PathOp::ReadText, "/mnt/subdir/nested.txt")
                 .unwrap()
@@ -644,7 +645,7 @@ mod symlink_tests {
             call(&mut mt, PathOp::Exists, "/mnt/link_dir/nested.txt")
                 .unwrap()
                 .unwrap(),
-            MontyObject::Bool(true)
+            MontyObject::Bool(false)
         );
     }
 
@@ -674,9 +675,10 @@ mod symlink_tests {
             "renaming onto a symlink must be refused, got {outcome:?}"
         );
 
-        // The link still resolves to its own target, not the moved file.
+        // The link's target is untouched — read by its real name, since the
+        // link's own spelling is refused like every other.
         assert_eq!(
-            call(&mut mt, PathOp::ReadText, "/mnt/link.txt").unwrap().unwrap(),
+            call(&mut mt, PathOp::ReadText, "/mnt/hello.txt").unwrap().unwrap(),
             MontyObject::String("hello world\n".to_owned())
         );
         assert_eq!(
@@ -731,13 +733,10 @@ mod symlink_tests {
         );
     }
 
-    /// A symlink to a directory moves as the link, never as the directory.
-    ///
-    /// The source's type comes from `lstat`, so the move cannot both record the
-    /// link as a file *and* walk its target's children into the overlay — which
-    /// left the new name a "file" with readable children under it.
+    /// A symlink to a directory is refused like any other, so its target's
+    /// tree cannot be walked into the overlay under a new name.
     #[test]
-    fn overlay_rename_of_a_symlink_to_a_dir_does_not_move_its_children() {
+    fn overlay_rename_of_a_symlink_to_a_dir_is_refused() {
         if !symlinks_supported() {
             return;
         }
@@ -745,32 +744,24 @@ mod symlink_tests {
         symlink_dir("subdir", dir.path().join("link_dir"));
 
         let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
-        dispatch(
+        let outcome = dispatch(
             &mut mt,
             OsFunctionCall::Rename(RenameCallArgs {
                 src: MontyPath::new("/mnt/link_dir".to_owned()),
                 dst: MontyPath::new("/mnt/moved".to_owned()),
             }),
         )
-        .unwrap()
-        .expect("renaming a symlink source is allowed");
-
-        // The moved name is not a directory and has no children beneath it.
-        assert_eq!(
-            call(&mut mt, PathOp::IsDir, "/mnt/moved").unwrap().unwrap(),
-            MontyObject::Bool(false)
-        );
-        assert_eq!(
-            call(&mut mt, PathOp::Exists, "/mnt/moved/nested.txt").unwrap().unwrap(),
-            MontyObject::Bool(false)
-        );
-        let listed = call(&mut mt, PathOp::Iterdir, "/mnt/moved").unwrap();
+        .unwrap();
         assert!(
-            matches!(&listed, Err(MountError::Io(err, _)) if err.kind() == ErrorKind::NotADirectory),
-            "the moved link must not list as a directory, got {listed:?}"
+            matches!(&outcome, Err(MountError::PathEscape { .. })),
+            "renaming a symlink to a directory must be refused, got {outcome:?}"
         );
 
-        // The link's target is untouched: the rename moved a name, not a tree.
+        // Nothing moved, and the target keeps its own name and children.
+        assert_eq!(
+            call(&mut mt, PathOp::Exists, "/mnt/moved").unwrap().unwrap(),
+            MontyObject::Bool(false)
+        );
         assert_eq!(
             call(&mut mt, PathOp::IsDir, "/mnt/subdir").unwrap().unwrap(),
             MontyObject::Bool(true)

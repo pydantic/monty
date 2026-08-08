@@ -6,7 +6,7 @@
 
 use std::{collections::BTreeMap, mem, ops::Bound};
 
-use cap_std::fs::{Dir, Metadata};
+use cap_std::fs::Dir;
 
 use super::{
     MountError,
@@ -246,26 +246,15 @@ pub(super) struct OverlayFileRef {
 }
 
 impl OverlayFileRef {
-    /// Builds a lazy reference, following symlinks so size and mtime describe
-    /// the target. Use [`from_lstat`](Self::from_lstat) to preserve a symlink.
+    /// Builds a lazy reference to a real file. The overlay refuses symlinks,
+    /// so there is never a link here whose identity could be lost.
     #[must_use]
     pub fn from_relative(dir: &Dir, relative: &str) -> Option<Self> {
-        Some(Self::build(&dir.metadata(relative).ok()?, relative))
-    }
-
-    /// Builds a lazy reference without following the final component, so a
-    /// symlink keeps its own identity across the rename.
-    #[must_use]
-    pub fn from_lstat(dir: &Dir, relative: &str) -> Option<Self> {
-        Some(Self::build(&dir.symlink_metadata(relative).ok()?, relative))
-    }
-
-    /// Shared construction from whichever metadata the caller obtained.
-    fn build(metadata: &Metadata, relative: &str) -> Self {
-        Self {
+        let metadata = dir.metadata(relative).ok()?;
+        Some(Self {
             relative: relative.to_owned(),
-            mtime: mtime_secs(metadata),
+            mtime: mtime_secs(&metadata),
             size: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
-        }
+        })
     }
 }

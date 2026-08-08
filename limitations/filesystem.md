@@ -155,13 +155,14 @@ needs read permission, so a search-only directory (mode `0o111`) is refused —
 and read known paths inside. Linux opens directories with `O_PATH` and accepts
 it. Grant `r-x` on anything you intend to mount portably.
 
-### Symlink targets must be relative
+### Symlink targets must be relative (direct mounts)
 
-**A symlink inside a mount is followed only if its target is relative; an
-absolute target raises `PermissionError` even when it points back into the
-same mount.** CPython follows both. A descriptor has no path of its own, so a
-leading `/` cannot be interpreted and "absolute but inside" is
-indistinguishable from "absolute and outside".
+**A symlink inside a `ReadWrite` or `ReadOnly` mount is followed only if its
+target is relative; an absolute target raises `PermissionError` even when it
+points back into the same mount.** CPython follows both. A descriptor has no
+path of its own, so a leading `/` cannot be interpreted and "absolute but
+inside" is indistinguishable from "absolute and outside". `OverlayMemory`
+follows no link at all — see below.
 
 This is the one thing to check before mounting an existing directory.
 Sandboxed code cannot create symlinks, so only links **already present** are
@@ -191,31 +192,29 @@ whatever name it now has, and a *new* directory created at the original path
 is not picked up. CPython, resolving each path afresh, would see the
 replacement. Recreate the mount to follow a path.
 
-### `OverlayMemory` writes refuse symlinks
+### `OverlayMemory` refuses symlinks entirely
 
-CPython (and a direct mount) writes *through* a symlink to its target. An
-overlay write never touches the host, so it cannot do that — recording the
-entry under the link's spelling instead would silently alias the two paths.
-Any write (`write_text`, `open('w'/'a')`, `mkdir`, `unlink`, `rmdir`, rename
-destinations, …) whose path contains a symlink **anywhere** — as the final
-component or an intermediate directory, whether it resolves in-mount, dangles,
-is absolute, or escapes — raises `PermissionError`. A rename *source*'s final
-component is the one exception: the link itself moves (see below); anywhere
-earlier in the path it is refused like any other write. The
-refusal is uniform on purpose: the link's target is never even resolved, so
-the error reveals nothing about it. Deletes are included because tombstoning
-a link's spelling would report it gone while its target stayed readable under
-the real name — the same aliasing, reached by deleting rather than writing.
+**Any operation whose path contains a symlink — as the final component or an
+intermediate directory, whether it resolves in-mount, dangles, is absolute or
+escapes — raises `PermissionError`.** Reads, writes, deletes, `stat`,
+`iterdir` and both ends of a `rename` alike. CPython follows the link.
+
+An overlay entry is keyed by name, but a symlink resolves on the *host*, so it
+names a file the overlay only knows by its target's name. Following one would
+serve content the overlay has already replaced or deleted — write to
+`hello.txt`, then read `link.txt`, and CPython gives the new text while a
+following overlay would give the old. No in-memory representation fixes that,
+so the mode refuses links rather than answering wrongly. The target is never
+resolved, so the error reveals nothing about it.
 
 Renaming a **directory that contains a symlink** is refused for the same
-reason: the link cannot move with it (there is nothing to record) and cannot
-be left behind (it would stay readable inside a directory the overlay then
-reports as deleted). CPython moves the directory and the link together.
+reason: the link cannot move with it and cannot be left behind.
 
-Reads still follow relative in-mount links as before, and direct mounts
-still allow writes through them; only escaping/absolute links are refused
-there. `mkdir(parents=True)` through an escaping symlink raises
-`PermissionError` in every mode.
+`is_symlink()` still answers `True` — it reports only that the name is a link,
+as CPython does; the other predicates answer `False`. Direct mounts are
+unaffected and still follow relative in-mount links for reads and writes.
+`mkdir(parents=True)` through an escaping symlink raises `PermissionError` in
+every mode.
 
 ### `OverlayMemory` renames of real files
 
@@ -230,14 +229,6 @@ raises `OSError` (`directory contains an entry with a non-UTF-8 name`):
 Monty's sandbox namespace is strictly UTF-8, so the entry cannot follow the
 move. CPython renames the directory inode and never looks at the names
 inside.
-
-### `OverlayMemory` renames of symlinks
-
-A moved symlink becomes a reference to itself, so at the new name
-`is_symlink()` answers `False` and `stat()` reports the link's own size and
-mtime (reads still follow to the target). A link to a **directory** does not
-carry that directory with it: the new name is not a directory and nothing is
-reachable beneath it, where CPython keeps the link usable as one.
 
 ### Boolean predicates never raise
 
