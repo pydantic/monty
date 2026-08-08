@@ -835,11 +835,6 @@ jobs:
         with:
           version_file_path: 'Cargo.toml'
 
-      # the metapackage is published as committed — nothing in `build-sdist`
-      # runs Rust, so `crates/monty-python/build.rs`, which owns its version and
-      # its two `==` pins, cannot keep them current there. Checking the version
-      # against the tag covers the pins too: build.rs rewrites all three in one
-      # pass, so a version matching the tag means the file was regenerated here
       - name: check the pydantic-monty metapackage version
         uses: samuelcolvin/check-python-version@ee87cddb8049d2694cc03badc8569765a05cef00 # v5
         with:
