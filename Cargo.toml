@@ -159,6 +159,8 @@ rustls = { version = "0.23", features = ["aws_lc_rs"] }
 # Async runtime. Only the version is pinned here — tokio has no default
 # features and each consumer needs a very different slice of it.
 tokio = { version = "1" }
+# Feature-free: monty-pool builds spans only, while monty-runtime adds its exporter.
+logfire = { version = "0.12", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
