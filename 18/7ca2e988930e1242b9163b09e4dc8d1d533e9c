@@ -1,0 +1,19 @@
+.agents/skills/review-security/SKILL.md
+  s_609ec6c2788cd8::t_205839846f219a 14-17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "187ca2e988930e1242b9163b09e4dc8d1d533e9c",
+  "prompts": {},
+  "sessions": {
+    "s_609ec6c2788cd8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa52751a-81e6-429a-a916-2a3eceacf077",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
