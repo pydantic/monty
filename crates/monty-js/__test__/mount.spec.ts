@@ -147,6 +147,12 @@ test('MountDir attributes', (ctx) => {
 
     const limited = mount({ virtualPath: '/limited', memoryUsageLimit: 1234 })
     t.is(limited.memoryUsageLimit, 1234)
+
+    // The opened native handle is symbol-keyed, so it is not part of the
+    // public surface: no string key exposes it, and nothing reachable by name
+    // can close the directory out from under a feed.
+    t.deepEqual(Object.keys(md).sort(), ['hostPath', 'memoryUsageLimit', 'mode', 'virtualPath', 'writeBytesLimit'])
+    t.is((md as unknown as Record<string, unknown>).native, undefined)
   } finally {
     cleanup()
   }

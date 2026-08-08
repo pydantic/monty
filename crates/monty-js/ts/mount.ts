@@ -51,11 +51,21 @@ export const VALID_MODES: Record<MountDirMode, true> = {
   overlay: true,
 }
 
+/** Key under which a `MountDir` carries its opened native handle.
+ *
+ *  `private` is what `Monty` and `MontySession` use, but it would put the
+ *  handle out of reach of `mountsToNative` below, which lives in this module
+ *  so the wasm bundle can import it without loading the addon. A symbol keeps
+ *  the handle off the public surface — absent from `Object.keys`, JSON and
+ *  completions — while both modules can still reach it. Deliberately not
+ *  re-exported from `node.ts`. */
+export const NATIVE_MOUNT: unique symbol = Symbol('nativeMount')
+
 /** Collects the `mount` option (one or many) for the native binding. */
 export function mountsToNative(mount: MountDir | MountDir[] | undefined): NativeMountDir[] {
   if (mount === undefined) {
     return []
   }
   const mounts = Array.isArray(mount) ? mount : [mount]
-  return mounts.map((m) => m.native)
+  return mounts.map((m) => m[NATIVE_MOUNT])
 }

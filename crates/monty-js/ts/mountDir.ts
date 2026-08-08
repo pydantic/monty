@@ -3,7 +3,13 @@
 // wasm bundle imports `mount.ts` (via `session.ts`) but has no addon.
 
 import { NativeMountDir } from '../native-addon.js'
-import { DEFAULT_MEMORY_USAGE_LIMIT, VALID_MODES, type MountDirMode, type MountDirOptions } from './mount.js'
+import {
+  DEFAULT_MEMORY_USAGE_LIMIT,
+  NATIVE_MOUNT,
+  VALID_MODES,
+  type MountDirMode,
+  type MountDirOptions,
+} from './mount.js'
 
 /**
  * Mounts a real host directory into the sandbox at a virtual path.
@@ -22,8 +28,8 @@ export class MountDir {
   readonly writeBytesLimit: number | null
   readonly memoryUsageLimit: number
   /** The opened host directory, shared by every feed this mount is passed to.
-   *  @internal */
-  readonly native: NativeMountDir
+   *  Symbol-keyed, so it stays off the public surface — see [`NATIVE_MOUNT`]. */
+  readonly [NATIVE_MOUNT]: NativeMountDir
 
   constructor(options: MountDirOptions) {
     const mode = options.mode ?? 'overlay'
@@ -42,7 +48,7 @@ export class MountDir {
     // Opens the directory, so a bad host path throws here rather than at the
     // first feed — and every feed then mounts this descriptor, which no rename
     // of the host path can redirect.
-    this.native = new NativeMountDir({
+    this[NATIVE_MOUNT] = new NativeMountDir({
       virtualPath: this.virtualPath,
       hostPath: this.hostPath,
       mode: this.mode,
@@ -59,7 +65,7 @@ export class MountDir {
    *  it, and JS has no deterministic drop. A feed already running is unaffected.
    */
   close(): void {
-    this.native.close()
+    this[NATIVE_MOUNT].close()
   }
 
   /** Closes the mount at the end of a `using` block. */

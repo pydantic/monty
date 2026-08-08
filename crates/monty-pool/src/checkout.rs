@@ -83,7 +83,12 @@ impl MountSpec {
     /// Opens `host_path` and creates mount configuration with the default
     /// 100 MB memory budget and no cumulative write limit.
     ///
-    /// Build this once and reuse it; each call resolves the path afresh.
+    /// Build this once and reuse it; each call resolves the path afresh. The
+    /// open is blocking filesystem I/O, so an async caller opening a directory
+    /// that may stall (NFS, FUSE) should either build the spec before entering
+    /// the runtime or open the [`MountRoot`] under `spawn_blocking` and pass it
+    /// to [`Self::from_root`]. Feeds never reopen it, so this cost is paid once
+    /// per mount rather than once per feed.
     ///
     /// # Errors
     ///

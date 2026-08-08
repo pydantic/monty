@@ -6,10 +6,10 @@ use monty_fs::{Mount, MountCallOutcome, MountError, MountMode, MountTable, Overl
 use monty_types::{MontyObject, MontyPath, OsFunctionCall, RenameCallArgs};
 use tempfile::TempDir;
 
-// Only the directory helper is used here; the rest is shared with other tests.
+// Only the directory helpers are used here; the rest is shared with other tests.
 #[expect(dead_code)]
 mod common;
-use common::symlink_dir;
+use common::{symlink_dir, symlinks_supported};
 
 /// Dispatches `call`, panicking on the `NotHandled` these tests never expect.
 fn handled(mt: &mut MountTable, call: OsFunctionCall) -> Result<MontyObject, MountError> {
@@ -38,6 +38,12 @@ fn read_text(mt: &mut MountTable, path: &str) -> Result<MontyObject, MountError>
 /// a rename never dereferences.
 #[test]
 fn mount_root_stays_pinned_across_rebuilds() {
+    // Planting the escaping link is the whole scenario, so a host that refuses
+    // symlinks has nothing to test — skip rather than fail on `symlink_dir`'s
+    // `expect`, as every other symlink test in this crate does.
+    if !symlinks_supported() {
+        return;
+    }
     let base = TempDir::new().unwrap();
     let outside = TempDir::new().unwrap();
 
