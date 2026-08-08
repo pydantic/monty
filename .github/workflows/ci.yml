@@ -483,30 +483,14 @@ jobs:
           rust-toolchain: stable
           working-directory: crates/monty-runtime
 
-      - name: unpack the client sdist
-        run: |
-          mkdir sdist-check
-          tar -xzf crates/monty-python/dist/pydantic_monty_client-*.tar.gz -C sdist-check --strip-components=1
-
       # the sdist carries only the client crate and its Rust path dependencies,
       # so its build.rs must not reach for anything else in the workspace —
       # check that here rather than discovering it from a PyPI install
       - name: check the client sdist builds standalone
-        run: cargo check --manifest-path sdist-check/crates/monty-python/Cargo.toml
-
-      # the metapackage ships exactly as committed: `uv build` below runs no
-      # Rust, so `crates/monty-python/build.rs` — which owns its version and
-      # pins — never runs here. Check them against the version maturin just
-      # stamped into the client sdist, the same CARGO_PKG_VERSION build.rs uses
-      - name: check the metapackage version and pins are in sync
         run: |
-          version=$(sed -n 's/^Version: //p' sdist-check/PKG-INFO | head -1)
-          for expected in "version = \"$version\"" "\"pydantic-monty-client==$version\"" "\"pydantic-monty-runtime==$version\""; do
-            if ! grep -qF -- "$expected" packages/pydantic-monty/pyproject.toml; then
-              echo "::error::packages/pydantic-monty/pyproject.toml is stale, expected a line containing: $expected"
-              exit 1
-            fi
-          done
+          mkdir sdist-check
+          tar -xzf crates/monty-python/dist/pydantic_monty_client-*.tar.gz -C sdist-check --strip-components=1
+          cargo check --manifest-path sdist-check/crates/monty-python/Cargo.toml
 
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
         with:
@@ -850,6 +834,16 @@ jobs:
         uses: samuelcolvin/check-python-version@ee87cddb8049d2694cc03badc8569765a05cef00 # v5
         with:
           version_file_path: 'Cargo.toml'
+
+      # the metapackage is published as committed — nothing in `build-sdist`
+      # runs Rust, so `crates/monty-python/build.rs`, which owns its version and
+      # its two `==` pins, cannot keep them current there. Checking the version
+      # against the tag covers the pins too: build.rs rewrites all three in one
+      # pass, so a version matching the tag means the file was regenerated here
+      - name: check the pydantic-monty metapackage version
+        uses: samuelcolvin/check-python-version@ee87cddb8049d2694cc03badc8569765a05cef00 # v5
+        with:
+          version_file_path: 'packages/pydantic-monty/pyproject.toml'
 
       - run: ls -lhR dist/
 
