@@ -1,0 +1,30 @@
+crates/monty-server/tests/telemetry_test.rs
+  s_ed8f0b91982347::t_6fd418e06212f8 86-87
+  s_ed8f0b91982347::t_f68f690c71fee3 3-6
+  s_ed8f0b91982347::t_a663a785c61601 131-134
+  s_ed8f0b91982347::t_f16ead6e7cb541 98-100,102,107,110-130
+crates/monty-server/src/telemetry.rs
+  s_ed8f0b91982347::t_b9186d5be3274c 74-86,90-91,96
+  s_ed8f0b91982347::t_842e5642bf1cbe 11-12
+crates/monty-server/README.md
+  s_ed8f0b91982347::t_0eae38cff7e335 352-355
+  s_ed8f0b91982347::t_531d9768a76b8c 267,269-270,273-276
+crates/monty-server/CLAUDE.md
+  s_ed8f0b91982347::t_4216bf325221a2 56-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "285320e6e139bba73abf9ea7def25c76e478b6a6",
+  "prompts": {},
+  "sessions": {
+    "s_ed8f0b91982347": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7056680e-56ee-4f86-a28f-cc37175891cf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
