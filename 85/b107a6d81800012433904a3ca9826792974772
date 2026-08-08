@@ -1,0 +1,19 @@
+crates/monty-fs/src/overlay.rs
+  s_11dc0fbf0b4290::t_411ac23c6cefc9 1536-1543
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "85b107a6d81800012433904a3ca9826792974772",
+  "prompts": {},
+  "sessions": {
+    "s_11dc0fbf0b4290": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "024b8fa0-cc26-492a-a982-884cc47ed1a7",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
