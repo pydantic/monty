@@ -28,6 +28,14 @@ is in scope even if it isn't in the diff. Ask:
   dumps are trusted by contract — hosts sign and verify them.)
 - **Panics or aborts?** `unwrap`/`expect` reachable from sandboxed input, unbounded
   recursion hitting a stack-overflow abort.
+- **Mount escapes?** Any behaviour that allows sandbox code to escape a filesystem mount
+  and read or alter files outside the mount point. This is particularly severe since
+  mounts are run on the host/client connecting to a sandbox - accessing that environment
+  is a very serious breach of the sandbox and security issue.
+
+You should use a subagent to run `.agents/skills/fix-pr-comments/pr-threads.sh`
+from the `fix-pr-comments` skill to get any PR comments related to security, and make
+sure those points out are correctly addressed.
 
 Weight both classes by where they land. In a pool worker the process dies, the parent
 replaces the child and raises an exception — contained. Nothing else is: in host/parent
