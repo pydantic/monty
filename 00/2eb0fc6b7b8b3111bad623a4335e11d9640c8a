@@ -1,0 +1,41 @@
+crates/monty-fs/src/overlay_state.rs
+  s_853bf1c957124b::t_0898369ec89f90 236-237,249-252,255
+  s_853bf1c957124b::t_678d59ec373865 256
+crates/monty-fs/src/overlay.rs
+  s_609ec6c2788cd8::t_7117b04afbbc33 1116-1119,1121-1122,1124-1130,1132
+  s_853bf1c957124b::t_4f96b6951dffa1 706-713,1069-1071
+  s_609ec6c2788cd8::t_332b24e4ce6caa 1384-1386
+  s_609ec6c2788cd8::t_a3844905c237c2 1374-1376
+  s_853bf1c957124b::t_c5876b59fdce1c 945-948
+crates/monty-fs/tests/overlay_stale_ref.rs
+  s_853bf1c957124b::t_0898369ec89f90 3,132-139
+limitations/filesystem.md
+  s_609ec6c2788cd8::t_22d848438a7ca6 230-232
+crates/monty-fs/tests/fs.rs
+  s_853bf1c957124b::t_0898369ec89f90 2540-2541,2543
+  s_853bf1c957124b::t_4bec0ffe4aa1e7 2542
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "002eb0fc6b7b8b3111bad623a4335e11d9640c8a",
+  "prompts": {},
+  "sessions": {
+    "s_609ec6c2788cd8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa52751a-81e6-429a-a916-2a3eceacf077",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_853bf1c957124b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fe208-6e80-7e70-8d40-36996d5a06e7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
