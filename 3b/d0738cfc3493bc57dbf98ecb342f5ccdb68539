@@ -1,0 +1,31 @@
+limitations/filesystem.md
+  s_ae8fe07900251f::t_962152aef14457 126-138,140-141
+crates/monty-fs/tests/mount_escape_repro.rs
+  s_ae8fe07900251f::t_e22376e957b61e 164-253,264-272
+crates/monty-fs/src/overlay.rs
+  s_ae8fe07900251f::t_d210e7124214c6 22
+crates/monty-fs/src/path_security.rs
+  s_ae8fe07900251f::t_d1e422b05e94cb 156-158,171,173,175
+crates/monty-fs/tests/fs.rs
+  s_ae8fe07900251f::t_53f96d1a370408 913-917
+  s_ae8fe07900251f::t_f27081d95d5511 881-887
+crates/monty-fs/src/mount_table.rs
+  s_ae8fe07900251f::t_a3a0159c087555 16-20
+  s_ae8fe07900251f::t_6e41a0c03ef8d4 101-102,112-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3bd0738cfc3493bc57dbf98ecb342f5ccdb68539",
+  "prompts": {},
+  "sessions": {
+    "s_ae8fe07900251f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "11dc2b91-ff14-442c-a646-14cdf709e5ae",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
