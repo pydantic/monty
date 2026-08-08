@@ -1,0 +1,21 @@
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_ae8fe07900251f::t_7995aa32a9583f 84-106
+crates/monty-python/src/mount.rs
+  s_ae8fe07900251f::t_7995aa32a9583f 129-130,135-136
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5994822bae281eb44caa893fb6e7b223c3ac521d",
+  "prompts": {},
+  "sessions": {
+    "s_ae8fe07900251f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "11dc2b91-ff14-442c-a646-14cdf709e5ae",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
