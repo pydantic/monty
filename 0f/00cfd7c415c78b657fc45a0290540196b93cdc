@@ -1,0 +1,28 @@
+limitations/filesystem.md
+  s_609ec6c2788cd8::t_0e2d2bec80a197 219-224
+crates/monty-fs/tests/mount_confinement.rs
+  s_609ec6c2788cd8::t_3f513a985da8ee 45-48
+.github/workflows/ci.yml
+  s_609ec6c2788cd8::t_70b1a2db8014a2 339-345
+crates/monty-fs/tests/overlay_stale_ref.rs
+  s_609ec6c2788cd8::t_3822110f50c1e1 284-311
+crates/monty-fs/src/overlay.rs
+  s_609ec6c2788cd8::t_5140b11e82ef50 52-66
+  s_609ec6c2788cd8::t_e1a76e90663be8 108-123,366-367,393-394,539-541,576-577
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0f00cfd7c415c78b657fc45a0290540196b93cdc",
+  "prompts": {},
+  "sessions": {
+    "s_609ec6c2788cd8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa52751a-81e6-429a-a916-2a3eceacf077",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
