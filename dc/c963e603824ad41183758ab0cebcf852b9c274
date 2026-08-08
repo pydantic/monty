@@ -1,0 +1,30 @@
+crates/monty-fs/src/path_security.rs
+  s_ae4cef4a32b904::t_0af814900c91ae 170-171,179-182,184-186,189,191
+  s_ae4cef4a32b904::t_5b9a6cd5a84eb7 187-188,190
+  s_ae4cef4a32b904::t_92a3e752f08828 21-32
+crates/monty-fs/tests/fs_security.rs
+  s_ae4cef4a32b904::t_07308581a2cf0e 1322-1325
+  s_ae4cef4a32b904::t_cd5ccf4d25fc31 1276-1321,1326-1344
+  s_ae4cef4a32b904::t_61ef7b42070dfc 534
+  s_ae4cef4a32b904::t_74a6ed2866eac2 486-533,535-540
+crates/monty-fs/src/overlay.rs
+  s_ae4cef4a32b904::t_5fd5bb390b68a7 60-64,89,91,97-101,644,651-655,660-665,667-668,739,748-752,772-785,787,1489-1548
+limitations/filesystem.md
+  s_ae4cef4a32b904::t_8b3f625a1e49e4 142-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "dcc963e603824ad41183758ab0cebcf852b9c274",
+  "prompts": {},
+  "sessions": {
+    "s_ae4cef4a32b904": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c16b3a55-2bd5-4376-8585-15a53fb83d33",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
