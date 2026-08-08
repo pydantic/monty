@@ -24,7 +24,7 @@ is contained in a pool worker -- the child dies, the parent replaces it and
 raises -- so rank it lower; but in host or parent code (`monty-pool`,
 `monty-proto` decoding, `monty-fs`, the `monty-python`/`monty-js` bindings) or in
 the `monty` crate embedded in-process, it takes down the caller, so rank it
-high, and treat a genuine sandbox escape or a memory-safety defect (use-after-
+high, and treat a confirmed sandbox escape or a memory-safety defect (use-after-
 free, aliasing violation, out-of-bounds) as critical. `heap.rs` and
 `path_security.rs` are the load-bearing safety files; hold changes to them to
 that critical bar.
