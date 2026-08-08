@@ -1,0 +1,25 @@
+crates/monty-runtime/Cargo.toml
+  s_ed8f0b91982347::t_8b9e1f36b55279 22
+crates/monty-server/Cargo.toml
+  s_ed8f0b91982347::t_8b9e1f36b55279 35
+crates/monty-server-tests/Cargo.toml
+  s_ed8f0b91982347::t_8b9e1f36b55279 38
+crates/monty-pool/Cargo.toml
+  s_ed8f0b91982347::t_8b9e1f36b55279 48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "75a515a88f87eb84e13563cc39fbd8cf956d5f73",
+  "prompts": {},
+  "sessions": {
+    "s_ed8f0b91982347": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7056680e-56ee-4f86-a28f-cc37175891cf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
