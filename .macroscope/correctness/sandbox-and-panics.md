@@ -15,9 +15,11 @@ frame arriving from a child process (`monty-proto` proto->Rust conversion).
 Anything reachable from either must validate its input and cannot
 `unwrap`/`expect`/panic, index unchecked, or overflow an integer feeding a
 length or index; and it must not let sandboxed code reach the host filesystem
-outside a mount, the network, or a subprocess. Snapshots and dumps are the
-exception -- they are trusted by contract (host-signed and verified), so absent
-validation there is not a finding.
+outside a mount, the network, or a subprocess. A snapshot or dump the host loads
+through its own trusted, transport-verified path is trusted by contract, so
+absent validation there is not a finding -- but a dump or snapshot arriving from
+a subprocess child is hostile (a child can mint its own) and must be validated or
+rejected as a protocol violation like any other child frame.
 
 Calibrate severity by blast radius, not by the bug in isolation. The same panic
 is contained in a pool worker -- the child dies, the parent replaces it and

@@ -7,34 +7,39 @@ exclude:
 ---
 
 Sandboxed Python can drive allocation, so the model to apply is: any allocation
-whose size an attacker can influence must be bounded, and which mechanism bounds
-it depends on the shape of the allocation.
+whose size an attacker can influence must be preflighted, memory and time are
+guarded by different mechanisms, and a limit failure is terminal for the sandbox
+but not for Rust-side cleanup.
 
-- A single allocation sized from untrusted input -- one opcode computing a large
-  size and allocating it in one shot -- must be preflighted with an explicit
-  charge to the `ResourceTracker` before it allocates. `check_time()` cannot
-  cover this: it only probes memory *already* allocated, so a one-shot
-  allocation can overshoot `max_memory` or OOM before the next poll ever runs.
-- An incremental native loop that allocates a bounded amount per iteration must
-  call `check_time()` each iteration. The poll catches cumulative memory overage
-  (and elapsed time) within one iteration's worth of overshoot, which is the
-  correct and sufficient guard for that shape.
+- **Preflight attacker-influenceable sizes.** An allocation sized from untrusted
+  input must be charged to the `ResourceTracker` (`check_allocation`) before it
+  allocates, and the charged size must be the size actually allocated. A combined
+  allocation must preflight the *combined* size, not rely on its inputs having
+  been charged individually -- two separately-charged inputs can still sum past
+  `max_memory`, which is why `concat_bytes`, `concat_allocate_str`, and the
+  list/tuple/deque growth paths preflight the result. `check_time()` cannot stand
+  in here: it only probes memory already allocated, after the fact.
+- **`check_time()` guards time, not allocation size.** Call it in a native loop
+  that can run unboundedly long so a CPU limit can fire. Do not require a
+  per-iteration `check_time()` for memory's sake in a bounded loop -- AGENTS.md
+  explicitly discourages that, and an oversized case a preflight missed is the
+  allocator hard limit's job, not a per-iteration poll's.
 
-A preflight charge and the poll are therefore not interchangeable: the first
-bounds the size of a single allocation, the second bounds the accumulation of
-many small ones. And a resource limit is a terminal failure of the whole
-execution context, not a recoverable per-operation error.
+Flag an attacker-influenceable allocation (single or combined) that reaches the
+allocator with no `check_allocation` of its actual size -- an amplifying `String`
+built without `StringBuilder`, a buffer or collection reserved to an untrusted or
+combined count -- or a native loop that can run unboundedly with no
+`check_time()`. A resource-limit escape rates high.
 
-Flag allocations that escape this model: a one-shot allocation sized from
-untrusted input with no preflight charge (an amplifying `String` built without
-`StringBuilder`, a collection reserved to an untrusted count), or an unbounded
-native loop with no `check_time()`. A resource-limit escape rates high.
+Do not flag an allocation whose actual size is itself directly preflighted or is
+a small bounded result; a bounded native loop that leans on the hard-limit
+backstop instead of a per-iteration memory poll (that is the intended pattern);
+or a fine-grained charge a correct outer preflight already covers.
 
-Do not flag the mirror image, which is correct by design and whose reporting is
-noise: an allocation already bounded by inputs that are themselves charged; an
-incremental loop that already polls `check_time()` (do not also demand a
-per-element preflight there); a fine-grained charge a correct outer preflight
-already covers; or heap/refcount state observed after a terminal resource limit
--- the context is being torn down, so that state is out of scope, not a leak.
-When unsure whether a charge is redundant, prefer silence: a missed nit costs
-nothing, a false "unbounded allocation" trains the team to ignore the check.
+On a terminal limit the sandbox context is discarded, so the Python-visible heap
+state afterward carries no guarantee -- do not report that. But the error unwinds
+through Rust, where `Drop` still runs, so a Rust-side leak or refcount imbalance
+on the unwind path is a real defect (it matters for in-process embedders and is
+covered by memory-model tests) -- treat it under drop-discipline, not as out of
+scope. When unsure whether a charge is redundant, prefer silence: a missed nit
+costs nothing, a false "unbounded allocation" trains the team to ignore the check.
