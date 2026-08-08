@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use monty_types::TypeCheckingFormat;
 
-#[cfg(feature = "run-cli")]
+#[cfg(feature = "standalone")]
 mod run;
 mod subprocess;
 
@@ -122,7 +122,7 @@ impl Cli {
     /// When no resource flags were provided, returns the default
     /// recursion-only limits (`ResourceLimits::default()`).
     /// Returns `Err` if a supplied flag cannot be converted into a valid limit.
-    #[cfg(feature = "run-cli")]
+    #[cfg(feature = "standalone")]
     fn resource_limits(&self) -> Result<monty_types::ResourceLimits, String> {
         let mut limits = monty_types::ResourceLimits::default();
         if let Some(secs) = self.max_duration {
@@ -160,19 +160,17 @@ fn main() -> ExitCode {
 }
 
 /// Hands a non-`subprocess` invocation to the standalone CLI.
-#[cfg(feature = "run-cli")]
+#[cfg(feature = "standalone")]
 fn run_standalone(cli: Cli) -> ExitCode {
     run::run(cli)
 }
 
-/// Without `run-cli` this binary is a worker and nothing else. The flags still
+/// Without `standalone` this binary is a worker and nothing else. The flags still
 /// parse — the `subprocess` conflict check reads them — so the refusal has to
 /// happen here rather than in clap.
-#[cfg(not(feature = "run-cli"))]
+#[cfg(not(feature = "standalone"))]
 fn run_standalone(_cli: Cli) -> ExitCode {
-    eprintln!(
-        "error: this build runs `monty subprocess` only — rebuild with the `run-cli` feature for the standalone CLI"
-    );
+    eprintln!("error: this build runs `monty subprocess` only — rebuild with the `standalone` feature for the CLI");
     ExitCode::FAILURE
 }
 

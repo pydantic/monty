@@ -24,11 +24,11 @@ hello world
 
 ## Features
 
-- `run-cli` (default) — the standalone `monty <file>` / `-c` / REPL path and
-  its terminal stack (`rustyline`, `anstream`, `anstyle`). Without it the binary
+- `standalone` (default) — the `monty <file>` / `-c` / REPL path and its
+  terminal stack (`rustyline`, `anstream`, `anstyle`). Without it the binary
   serves `monty subprocess` alone, which is all a pool ever spawns; the flags
   still parse, but anything other than `subprocess` is refused.
-- `telemetry` — see below. Implies `run-cli`, since it only instruments that
+- `telemetry` — see below. Implies `standalone`, since it only instruments that
   path.
 
 ## Observability

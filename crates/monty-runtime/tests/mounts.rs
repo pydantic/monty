@@ -1,5 +1,5 @@
 // every test here drives the standalone CLI, which a worker-only build refuses
-#![cfg(feature = "run-cli")]
+#![cfg(feature = "standalone")]
 
 use std::{fs, process::Command};
 

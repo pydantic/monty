@@ -17,13 +17,13 @@ name = "monty"
 path = "src/main.rs"
 
 [features]
-default = ["run-cli"]
+default = ["standalone"]
 # The standalone CLI (`run.rs`) and its terminal stack. Drop it to build the
 # worker `monty subprocess` alone, which is all a pool ever spawns.
-run-cli = ["dep:anstream", "dep:anstyle", "dep:rustyline"]
+standalone = ["dep:anstream", "dep:anstyle", "dep:rustyline"]
 # CLI spans to Logfire. Off by default: its exporter links MBs of TLS that
 # `monty subprocess` — which never exports — would otherwise carry.
-telemetry = ["run-cli", "dep:logfire", "dep:tracing"]
+telemetry = ["standalone", "dep:logfire", "dep:tracing"]
 
 [dependencies]
 # Terminal styling for the CLI: `anstream` resolves NO_COLOR/CLICOLOR/tty and
