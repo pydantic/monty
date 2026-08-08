@@ -1,4 +1,8 @@
-use std::{borrow::Cow, env, fs, path::PathBuf};
+use std::{
+    borrow::Cow,
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 // `cargo_version_to_pep440`, shared verbatim with the library so that the
 // version and pins written below always match the version maturin builds the
@@ -6,18 +10,20 @@ use std::{borrow::Cow, env, fs, path::PathBuf};
 // own crate.
 include!("src/version.rs");
 
-/// Build script that configures pyo3 and keeps the `pydantic-monty`
-/// metapackage's version and dependency pins matching the Cargo workspace
-/// version.
+/// Build script that configures pyo3 and, when building from the monty
+/// workspace, keeps the `pydantic-monty` metapackage's version and dependency
+/// pins matching the Cargo workspace version.
 ///
 /// Cargo sets `CARGO_PKG_VERSION` in the environment when executing build
 /// scripts, so we use that as the single source of truth — the same approach
 /// `crates/monty-js/build.rs` takes for package.json.
 fn main() {
-    // Re-run when either input to the metapackage rewrite changes.
-    println!("cargo:rerun-if-changed={}", meta_pyproject_path().display());
-    println!("cargo:rerun-if-changed=src/version.rs");
-    sync_meta_pyproject();
+    if let Some(path) = meta_pyproject_path() {
+        // Re-run when either input to the metapackage rewrite changes.
+        println!("cargo:rerun-if-changed={}", path.display());
+        println!("cargo:rerun-if-changed=src/version.rs");
+        sync_meta_pyproject(&path);
+    }
     // see https://pyo3.rs/main/building-and-distribution/multiple-python-versions.html
     pyo3_build_config::use_pyo3_cfgs();
 }
@@ -33,12 +39,11 @@ fn main() {
 ///
 /// Uses the runtime `CARGO_PKG_VERSION` env var (not `env!()`) so that the build
 /// script picks up version changes without needing to be recompiled.
-fn sync_meta_pyproject() {
+fn sync_meta_pyproject(path: &Path) {
     let cargo_version = env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION not set");
     let pin_version = cargo_version_to_pep440(&cargo_version);
-    let path = meta_pyproject_path();
 
-    let contents = fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let contents = fs::read_to_string(path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
 
     let mut result = String::with_capacity(contents.len());
     let mut changed = false;
@@ -87,20 +92,26 @@ fn sync_meta_pyproject() {
 
     if changed {
         eprintln!("Updating {} to {pin_version}", path.display());
-        fs::write(&path, &result).unwrap_or_else(|e| panic!("failed to write {}: {e}", path.display()));
+        fs::write(path, &result).unwrap_or_else(|e| panic!("failed to write {}: {e}", path.display()));
     }
 }
 
 /// The PyPI distributions the metapackage pins exactly; see [`sync_meta_pyproject`].
 const PINNED_DISTS: [&str; 2] = ["pydantic-monty-client", "pydantic-monty-runtime"];
 
-/// The metapackage's pyproject.toml, which owns the `pydantic-monty` name on PyPI.
+/// The metapackage's pyproject.toml, which owns the `pydantic-monty` name on
+/// PyPI, or `None` when this build is not running from the monty workspace.
 ///
-/// It has no Cargo package of its own to carry the version, so this build
-/// script — the one belonging to the distribution it pins — maintains it.
-fn meta_pyproject_path() -> PathBuf {
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-    PathBuf::from(manifest_dir).join("../../packages/pydantic-monty/pyproject.toml")
+/// The metapackage has no Cargo package of its own to carry the version, so
+/// this build script — the one belonging to the distribution it pins —
+/// maintains it. maturin's sdist keeps this crate at `crates/monty-python/`
+/// but ships only its Rust path dependencies, so `packages/` is absent and
+/// there is nothing to sync; installing the sdist must not panic over that.
+/// The sdist root's `PKG-INFO`, which a checkout never has, marks that case —
+/// anywhere else a missing metapackage is a real error and must fail the build.
+fn meta_pyproject_path() -> Option<PathBuf> {
+    let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set")).join("../..");
+    (!root.join("PKG-INFO").is_file()).then(|| root.join("packages/pydantic-monty/pyproject.toml"))
 }
 
 /// The index in [`PINNED_DISTS`] of the distribution `line` pins, if any.
