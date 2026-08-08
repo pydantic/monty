@@ -1,0 +1,24 @@
+limitations/filesystem.md
+  s_ae4cef4a32b904::t_779fe16186dda2 147-150
+crates/monty-types/src/os.rs
+  s_ae4cef4a32b904::t_63abe880953d5e 205-211
+crates/monty-fs/tests/fs_security.rs
+  s_ae4cef4a32b904::t_a6772b7cff019e 437-480,482-485
+  s_ae4cef4a32b904::t_cb6b2c0116da7c 481
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "910a7cbd7aeb31279ffdd82886b6747b27e5c5aa",
+  "prompts": {},
+  "sessions": {
+    "s_ae4cef4a32b904": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c16b3a55-2bd5-4376-8585-15a53fb83d33",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
