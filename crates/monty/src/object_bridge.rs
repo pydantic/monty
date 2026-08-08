@@ -502,6 +502,13 @@ impl MontyObjectExt for MontyObject {
                             is_dataclass,
                         }
                     }
+                    // The type object of a host class renders like a class
+                    // object: `<class 'Point'>` via the resolved-name
+                    // `MontyType::Instance` output shape (output-only, like
+                    // sandbox class objects).
+                    HeapReadOutput::HostClassType(ty) => {
+                        Self::Type(MontyType::Instance(ty.get(vm.heap).name(vm.interns).to_owned()))
+                    }
                     // Sandbox-defined class instances cross out structured
                     // (instance_id/type_id 0 = not host-backed) rather than as a
                     // repr string, so hosts get name + attrs + dataclass-ness.

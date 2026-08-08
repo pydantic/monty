@@ -323,6 +323,27 @@ try:
 except AttributeError as e:
     assert str(e) == "'User' object has no attribute 'missing'", f'wrong message: {e}'
 
+# === type() of host class instances names the real class ===
+# NOTE: repr(type(x)) is deliberately not asserted — CPython qualifies it with
+# the defining module ("<class 'test_fixtures.Point'>"), Monty shows the bare
+# class name (see limitations/classes.md).
+type_pt = make_point()
+type_pt2 = make_point()
+type_mut = make_mutable_point()
+assert type(type_pt).__name__ == 'Point'
+assert type(type_pt) == type(type_pt2)
+assert type(type_pt) != type(type_mut)
+# equal type objects collide in sets (hash consistent with eq)
+assert len({type(type_pt), type(type_pt2)}) == 1
+assert len({type(type_pt), type(type_mut)}) == 2
+
+# === Error messages name the real class, not a placeholder ===
+try:
+    hash(type_mut)
+    assert False, 'should have raised TypeError for unhashable mutable instance'
+except TypeError as e:
+    assert str(e) == "unhashable type: 'MutablePoint'", f'wrong message: {e}'
+
 # === Lazy attribute lookups (class attributes served by the host) ===
 # `dimensions` is a class attribute, not a field: CPython resolves it via
 # class lookup, Monty suspends a NameLookup routed by instance_id.

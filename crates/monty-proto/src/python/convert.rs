@@ -500,9 +500,10 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         // the singletons (`type(None)` / `type(...)`).
         MontyType::NoneType => Ok(py.None().bind(py).get_type().into_any().unbind()),
         MontyType::Ellipsis => Ok(py.Ellipsis().bind(py).get_type().into_any().unbind()),
-        // A sandbox-defined class has no host type object to map to.
+        // A sandbox-defined class — or the `type(x)` of a host class instance,
+        // which shares this output shape — has no host type object to map to.
         MontyType::Instance(name) => Err(PyValueError::new_err(format!(
-            "cannot convert sandbox-defined class '{name}' to a host type object"
+            "cannot convert class '{name}' to a host type object"
         ))),
         _ => import_builtins(py)?.getattr(py, t.to_string()),
     }

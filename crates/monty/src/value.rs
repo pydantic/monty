@@ -1383,14 +1383,14 @@ impl Value {
     }
 
     /// Resolved display name of this value's type for error messages and
-    /// reprs — user-class instances render as their real class name rather
-    /// than the generic `"object"`.
+    /// reprs — user-class instances, named tuples, and host class instances
+    /// render as their real class name rather than a generic placeholder.
     ///
     /// The result borrows only `vm.interns` (never the heap), so it can be
     /// captured before `drop_with` cleanup and formatted after.
     #[must_use]
     pub(crate) fn py_type_name<'h>(&self, vm: &VM<'h>) -> Cow<'h, str> {
-        self.namedtuple_class_name(vm.heap, vm.interns)
+        self.dynamic_class_name(vm.heap, vm.interns)
             .unwrap_or_else(|| self.py_type(vm).name(vm.heap, vm.interns))
     }
 
@@ -1399,29 +1399,34 @@ impl Value {
     /// `heap` + `interns` instead (mirrors [`py_type_heap`](Self::py_type_heap)).
     #[must_use]
     pub(crate) fn py_type_name_heap<'i>(&self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
-        self.namedtuple_class_name(heap, interns)
+        self.dynamic_class_name(heap, interns)
             .unwrap_or_else(|| self.py_type_heap(heap).name(heap, interns))
     }
 
-    /// Class name of a named tuple, if this value is one.
+    /// Class name of a named tuple or host class instance, if this value is
+    /// one.
     ///
-    /// Named tuples keep their class name in the heap entry rather than in
-    /// [`Type`], which carries no identity for them. Error messages therefore
-    /// have to reach for it here to name the class (`'P'`) rather than the
-    /// generic `'namedtuple'`, matching CPython — including for structseqs,
-    /// whose stored name is already the qualified `sys.version_info`.
+    /// Both keep their class name in the heap entry rather than in [`Type`],
+    /// which carries no identity for them (unlike `Type::Instance`, whose
+    /// payload is the refcounted class object). Error messages therefore
+    /// reach for it here to name the class (`'P'`, `'Point'`) rather than the
+    /// generic `'namedtuple'` / `'HostClass'`, matching CPython — including
+    /// for structseqs, whose stored name is already the qualified
+    /// `sys.version_info`.
     #[must_use]
-    fn namedtuple_class_name<'i>(&self, heap: &Heap, interns: &'i Interns) -> Option<Cow<'i, str>> {
-        if let Self::Ref(heap_id) = self
-            && let HeapData::NamedTuple(nt) = heap.get(*heap_id)
-        {
-            Some(match nt.name_either() {
-                EitherStr::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
-                EitherStr::Heap(s) => Cow::Owned(s.clone()),
-            })
-        } else {
-            None
-        }
+    fn dynamic_class_name<'i>(&self, heap: &Heap, interns: &'i Interns) -> Option<Cow<'i, str>> {
+        let Self::Ref(heap_id) = self else {
+            return None;
+        };
+        let name = match heap.get(*heap_id) {
+            HeapData::NamedTuple(nt) => nt.name_either(),
+            HeapData::HostClass(hc) => hc.name_either(),
+            _ => return None,
+        };
+        Some(match name {
+            EitherStr::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
+            EitherStr::Heap(s) => Cow::Owned(s.clone()),
+        })
     }
 
     /// Returns the Python `Type` for immediate (non-heap) values without VM access.

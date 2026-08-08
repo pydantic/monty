@@ -400,9 +400,9 @@ def test_mutable_instances_unhashable(monty_run: RunMonty):
     p = Person(name='Alice', age=30)
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         monty_run('{x}', inputs={'x': ClassInstance(p, eager_attrs='all')})
-    # host-sent instances display as 'HostClass' in the sandbox, including in errors
+    # error messages name the real class, not the 'HostClass' placeholder
     assert str(exc_info.value) == snapshot(
-        "TypeError: cannot use 'HostClass' as a set element (unhashable type: 'HostClass')"
+        "TypeError: cannot use 'Person' as a set element (unhashable type: 'Person')"
     )
 
 
@@ -419,10 +419,13 @@ def test_is_dataclass_in_sandbox(monty_run: RunMonty):
     assert monty_run(code, inputs=inputs) == snapshot((True, False))
 
 
-def test_type_displays_host_class(monty_run: RunMonty):
+def test_type_names_the_real_class(monty_run: RunMonty):
     p = Person(name='Alice', age=30)
-    result = monty_run('repr(type(x))', inputs={'x': ClassInstance(p, eager_attrs='all')})
-    assert result == snapshot("<class 'HostClass'>")
+    inputs = {'x': ClassInstance(p, eager_attrs='all')}
+    assert monty_run('repr(type(x))', inputs=inputs) == snapshot("<class 'Person'>")
+    assert monty_run('type(x).__name__', inputs=inputs) == snapshot('Person')
+    # equal by class identity, though each type(x) call makes a fresh object
+    assert monty_run('type(x) == type(x)', inputs=inputs) == snapshot(True)
 
 
 # === Nesting in containers ===

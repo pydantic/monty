@@ -65,6 +65,10 @@ macro_rules! heap_payloads {
             Exception(inline $crate::exception_private::SimpleException),
             /// A host-backed class instance (the heap form of the wire `ClassInstance`).
             HostClass(boxed $crate::types::HostClass),
+            /// The lightweight type object `type(x)` materializes for a `HostClass`
+            /// instance — the real class lives on the host, so this is a named
+            /// stand-in (see `HostClassType`).
+            HostClassType(inline $crate::types::HostClassType),
             /// A user-defined class object created by a `class` statement.
             Class(boxed $crate::types::Class),
             /// An instance of a user-defined class.
@@ -228,6 +232,7 @@ impl HeapData {
             | Self::RePattern(_)
             | Self::ReMatch(_)
             | Self::ExtFunction(_)
+            | Self::HostClassType(_)
             | Self::Date(_)
             | Self::DateTime(_)
             | Self::Time(_)
@@ -280,6 +285,7 @@ impl HeapData {
             Self::Slice(_) => Type::Slice,
             Self::Exception(e) => Type::Exception(e.exc_type()),
             Self::HostClass(_) => Type::HostClass,
+            Self::HostClassType(_) => Type::Type,
             // A class object's type is `type`; an instance's carries its class id.
             Self::Class(_) => Type::Type,
             Self::Instance(instance) => Type::Instance(instance.class()),
@@ -481,6 +487,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Range($value) => $body,
             Self::Slice($value) => $body,
             Self::HostClass($value) => $body,
+            Self::HostClassType($value) => $body,
             Self::Class($value) => $body,
             Self::Instance($value) => $body,
             Self::BoundMethod($value) => $body,
@@ -959,6 +966,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Range(value) => value.py_iter(vm),
             Self::Slice(value) => value.py_iter(vm),
             Self::HostClass(value) => value.py_iter(vm),
+            Self::HostClassType(value) => value.py_iter(vm),
             Self::Class(value) => value.py_iter(vm),
             Self::Instance(value) => value.py_iter(vm),
             Self::BoundMethod(value) => value.py_iter(vm),
@@ -1018,6 +1026,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Range(value) => value.py_next(vm),
             Self::Slice(value) => value.py_next(vm),
             Self::HostClass(value) => value.py_next(vm),
+            Self::HostClassType(value) => value.py_next(vm),
             Self::Class(value) => value.py_next(vm),
             Self::Instance(value) => value.py_next(vm),
             Self::BoundMethod(value) => value.py_next(vm),

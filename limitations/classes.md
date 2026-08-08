@@ -177,10 +177,15 @@ instance as an input raises `TypeError`). Inside the sandbox they are proxies
 whose eager attrs were copied at send time; everything else routes back to the
 host by the instance's `id()`. Divergences from real CPython objects:
 
-- **`type(x)` reports the placeholder `HostClass`**, not the real class. The
-  real class name is used in `repr()` and attribute error messages, but
-  messages that name the *type* (e.g. `unhashable type: 'HostClass'`) show
-  the placeholder where CPython would show the class name.
+- **`type(x)` returns a lightweight stand-in for the real class**, since the
+  class itself lives on the host. It names the real class (`type(x).__name__`
+  is `'Point'`, repr is `<class 'Point'>` — without CPython's module
+  qualification like `<class 'mymod.Point'>`), and error messages name the
+  real class too (`unhashable type: 'Point'`). But it is not the class:
+  each `type(x)` call allocates a fresh object, so `type(a) is type(b)` is
+  `False` even for the same class (`==` compares class identity and works);
+  it is not callable; and it cannot be used as the second argument of
+  `isinstance()`.
 - **`repr()` shows all eager attrs in order** (`Point(x=1, y=2)`). After
   sandbox code sets a new attribute, that attribute appears in the repr too —
   CPython's dataclass repr shows declared fields only.

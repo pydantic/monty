@@ -46,7 +46,7 @@ pub(crate) use dict::{Dict, DictItemIterator, DictKeyIterator, DictValueIterator
 pub(crate) use dict_view::{DictItemsView, DictKeysView, DictValuesView};
 pub(crate) use ext_function::ExtFunction;
 pub(crate) use file::OpenFile;
-pub(crate) use host_class::HostClass;
+pub(crate) use host_class::{HostClass, HostClassType};
 pub(crate) use instance::{BoundMethod, Instance};
 pub(crate) use iter::{collect_iterable, collect_iterable_bounded};
 pub(crate) use itertools::ItertoolsIter;

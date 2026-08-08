@@ -5,7 +5,7 @@ use std::{
 
 use serde::ser::SerializeStruct;
 
-use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value};
+use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value, str::allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -81,6 +81,13 @@ impl HostClass {
     #[must_use]
     pub fn name<'a>(&'a self, interns: &'a Interns) -> &'a str {
         self.name.as_str(interns)
+    }
+
+    /// The class name as stored — for callers that need to branch on
+    /// interned-vs-heap without an `Interns` in hand.
+    #[must_use]
+    pub fn name_either(&self) -> &EitherStr {
+        &self.name
     }
 
     /// Returns the host identity of the instance (0 = sandbox-defined).
@@ -357,6 +364,96 @@ impl HeapItem for HostClass {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Delegate to the attrs Dict which handles all nested heap references
         self.attrs.py_dec_ref_ids(stack);
+    }
+}
+
+/// The type object `type(x)` returns for a [`HostClass`] instance.
+///
+/// Host classes have no real class object in the sandbox, so `type(x)`
+/// materializes this lightweight stand-in naming the real class (repr
+/// `<class 'Point'>`, equality by class identity). Each `type(x)` call
+/// allocates a fresh one, so `type(a) is type(b)` is `False` even for the
+/// same class (use `==`) — see `limitations/classes.md`. Not callable and
+/// not usable with `isinstance`, since the class itself lives on the host.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct HostClassType {
+    /// The class name (e.g. "Point").
+    name: EitherStr,
+    /// Host identity of the class, matching [`HostClass::type_id`].
+    type_id: u64,
+}
+
+impl HostClassType {
+    /// Creates the type object for a host class.
+    #[must_use]
+    pub fn new(name: EitherStr, type_id: u64) -> Self {
+        Self { name, type_id }
+    }
+
+    /// Returns the class name.
+    #[must_use]
+    pub fn name<'a>(&'a self, interns: &'a Interns) -> &'a str {
+        self.name.as_str(interns)
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
+        Type::Type
+    }
+
+    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
+        None
+    }
+
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::HostClassType(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        // Same class identity: type_id plus the name gate for sandbox-origin
+        // instances, which all share type_id 0 (mirrors HostClass::py_eq_impl).
+        Ok(Some(
+            self.get(vm.heap).type_id == other.get(vm.heap).type_id
+                && self.get(vm.heap).name(vm.interns) == other.get(vm.heap).name(vm.interns),
+        ))
+    }
+
+    /// Hashes by class identity, consistent with `py_eq_impl` — so equal type
+    /// objects collide in dicts/sets even though each `type(x)` call allocates
+    /// a fresh one.
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        let mut hasher = DefaultHasher::new();
+        self.get(vm.heap).name(vm.interns).hash(&mut hasher);
+        self.get(vm.heap).type_id.hash(&mut hasher);
+        Ok(Some(HashValue::new(hasher.finish())))
+    }
+
+    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(true)
+    }
+
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        Ok(write!(f, "<class '{}'>", self.get(vm.heap).name(vm.interns))?)
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let attr_name = attr.as_str(vm.interns);
+        if attr_name == "__name__" {
+            let name = self.get(vm.heap).name(vm.interns).to_owned();
+            Ok(Some(CallResult::Value(allocate_string(name, vm.heap))))
+        } else {
+            // CPython wording for missing attrs on a type object.
+            Err(ExcType::attribute_error_type(
+                self.get(vm.heap).name(vm.interns),
+                attr_name,
+            ))
+        }
+    }
+}
+
+impl HeapItem for HostClassType {
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+        // Name and type_id hold no heap references.
     }
 }
 

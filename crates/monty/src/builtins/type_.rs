@@ -8,7 +8,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
     intern::StaticStrings,
-    types::{Class, Dict, PyTrait},
+    types::{Class, Dict, HostClassType, PyTrait},
     value::Value,
 };
 
@@ -53,8 +53,10 @@ pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// The 1-arg `type(obj)` form.
 ///
 /// For an instance of a user-defined class the type *is* the class object
-/// itself, so `type(x) is Foo` holds via reference identity; for everything
-/// else it returns the builtin `Type` marker.
+/// itself, so `type(x) is Foo` holds via reference identity; a host class
+/// instance gets a fresh [`HostClassType`] naming the real class (no class
+/// object exists in the sandbox); everything else returns the builtin `Type`
+/// marker.
 fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
     defer_drop!(value, vm);
     if let Value::Ref(id) = &value
@@ -72,6 +74,13 @@ fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
         // tuples like `sys.version_info` have no class and fall through).
         vm.heap.inc_ref(class_id);
         Value::Ref(class_id)
+    } else if let Value::Ref(id) = &value
+        && let HeapData::HostClass(hc) = vm.heap.get(*id)
+    {
+        // Freshly allocated per call: equal (by class identity) but not
+        // identical across calls — see `limitations/classes.md`.
+        let ty = HostClassType::new(hc.name_either().clone(), hc.type_id());
+        Value::Ref(vm.heap.allocate(HeapData::HostClassType(ty)))
     } else {
         Value::Builtin(Builtins::Type(value.py_type(vm)))
     }
