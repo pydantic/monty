@@ -131,15 +131,25 @@ fn is_windows_drive_prefix(segment: &str) -> bool {
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
+/// Whether `virtual_path` contains a null byte, which no filesystem name may.
+///
+/// The mount table checks this per call so it can raise CPython's wording for
+/// the operation; the helpers below re-check it as defence in depth, since a
+/// path that never reaches a syscall has nothing else to refuse it.
+pub(super) fn contains_null_byte(virtual_path: &str) -> bool {
+    virtual_path.contains('\0')
+}
+
 /// Rejects embedded null bytes before any path manipulation occurs.
 ///
-/// `OverlayMemory` needs it independently — its keys never reach a syscall, so
-/// nothing downstream would reject a name the kernel never sees.
+/// Unreachable through [`MountTable::handle_os_call`], which rejects them
+/// first with a per-operation message; this is the backstop for the generic
+/// wording, matching what CPython's `open()` layer says.
+///
+/// [`MountTable::handle_os_call`]: super::MountTable::handle_os_call
 pub(super) fn reject_null_bytes(virtual_path: &str) -> Result<(), MountError> {
-    if virtual_path.contains('\0') {
-        Err(MountError::PathEscape {
-            virtual_path: virtual_path.to_owned(),
-        })
+    if contains_null_byte(virtual_path) {
+        Err(MountError::EmbeddedNullByte("embedded null byte"))
     } else {
         Ok(())
     }

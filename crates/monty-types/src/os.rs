@@ -184,6 +184,34 @@ impl OsFunctionCall {
         )
     }
 
+    /// CPython's `ValueError` message for a path containing a null byte.
+    ///
+    /// The wording is not uniform in CPython: it comes from whichever layer
+    /// first inspects the path, so the content operations go through `open()`
+    /// and say `embedded null byte`, while the metadata ones are named by the
+    /// syscall their `os` wrapper was about to make. `for_destination` picks
+    /// the rename argument that carried the byte.
+    #[must_use]
+    pub fn embedded_null_message(&self, for_destination: bool) -> &'static str {
+        match self {
+            Self::Mkdir(_) => "mkdir: embedded null character in path",
+            Self::Unlink(_) => "unlink: embedded null character in path",
+            Self::Rmdir(_) => "rmdir: embedded null character in path",
+            Self::Stat(_) => "stat: embedded null character in path",
+            // `pathlib.Path.iterdir` reaches `os.scandir`, not `os.listdir`.
+            Self::Iterdir(_) => "scandir: embedded null character in path",
+            Self::Rename(_) if for_destination => "rename: embedded null character in dst",
+            Self::Rename(_) => "rename: embedded null character in src",
+            // `resolve()` lstats each component; `absolute()` is pure string
+            // work in CPython and does not raise at all (see
+            // `limitations/filesystem.md`).
+            Self::Resolve(_) | Self::Absolute(_) => "lstat: embedded null character in path",
+            // Reads, writes, appends and `open` all land in `io.open`. The
+            // predicates never reach here — they answer `False`.
+            _ => "embedded null byte",
+        }
+    }
+
     /// The call's primary path if it's a FS operation, `None` otherwise.
     ///
     /// Used for routing and error reporting.

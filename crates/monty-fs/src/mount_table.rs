@@ -17,7 +17,7 @@ use super::{
     dispatch,
     error::MountError,
     mount_mode::MountMode,
-    path_security::{normalize_virtual_path, reject_overlong_path},
+    path_security::{contains_null_byte, normalize_virtual_path, reject_overlong_path},
 };
 
 /// Default aggregate memory budget for one mount: 100 MB in decimal bytes.
@@ -99,11 +99,21 @@ impl MountTable {
     /// back untouched for the caller's fallback handler (a host callback or
     /// [`OsFunctionCall::on_no_handler`]).
     ///
-    /// Path length is checked before anything else touches the path.
+    /// Path length and null bytes are checked before anything else touches the
+    /// path, so both apply whether or not a mount covers it — as in CPython,
+    /// where neither reaches a syscall.
     pub fn handle_os_call(&mut self, call: OsFunctionCall) -> MountCallOutcome {
         if let Some(primary_path) = call.fs_primary_path() {
-            if let Err(e) = reject_overlong_path(primary_path) {
-                // existence checks return `false` on overlong paths in cpython
+            // Length first: it is the only check that stays O(1) on a hostile
+            // path, so a null scan must not run ahead of it. A path that is
+            // both reports its length, where CPython reports the null byte.
+            let rejection = reject_overlong_path(primary_path).err().or_else(|| {
+                contains_null_byte(primary_path)
+                    .then(|| MountError::EmbeddedNullByte(call.embedded_null_message(false)))
+            });
+            if let Some(e) = rejection {
+                // Both make CPython's predicates answer `False` rather than
+                // raise — `pathlib` swallows `OSError` and `ValueError` alike.
                 MountCallOutcome::Handled(if call.is_existence_check() {
                     Ok(MontyObject::Bool(false))
                 } else {
@@ -145,9 +155,14 @@ impl MountTable {
         let src_mount_index = self.find_mount_index(primary_path);
 
         if let Some(dst_path) = call.rename_destination() {
-            // we check the destination path length before routing, primary_path was checked above
+            // The destination gets the same pre-routing checks the source had
+            // above, so an unusable name is refused even when neither side is
+            // mounted. `in dst` is what tells the two apart to the caller.
             if let Err(e) = reject_overlong_path(dst_path) {
                 return Some(Err(e));
+            }
+            if contains_null_byte(dst_path) {
+                return Some(Err(MountError::EmbeddedNullByte(call.embedded_null_message(true))));
             }
             match (src_mount_index, self.find_mount_index(dst_path)) {
                 // Neither side is ours; the whole call belongs to the fallback.

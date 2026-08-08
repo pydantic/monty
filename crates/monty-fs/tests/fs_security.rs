@@ -10,7 +10,7 @@ use std::{fmt, fs, io::ErrorKind};
 
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{
-    FileMode, MkdirCallArgs, MontyObject, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
+    ExcType, FileMode, MkdirCallArgs, MontyObject, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
     PathStringDataArgs, RenameCallArgs,
 };
 use tempfile::TempDir;
@@ -146,7 +146,13 @@ fn assert_blocked(mt: &mut MountTable, op: PathOp, path: &str) {
         _ => call(mt, op, path),
     };
     match result {
-        Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_) | MountError::Io(_, _))) | None => {}
+        Some(Err(
+            MountError::PathEscape { .. }
+            | MountError::NoMountPoint(_)
+            | MountError::Io(_, _)
+            | MountError::EmbeddedNullByte(_),
+        ))
+        | None => {}
         Some(Ok(val)) => panic!("expected blocked, got Ok({val:?}) for path: {path}"),
         Some(Err(other)) => panic!("unexpected error variant for {path}: {other}"),
     }
@@ -180,7 +186,13 @@ fn assert_write_blocked(mt: &mut MountTable, op: PathOp, path: &str) {
     };
     let result = dispatch(mt, call_variant);
     match result {
-        Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_) | MountError::Io(_, _))) | None => {}
+        Some(Err(
+            MountError::PathEscape { .. }
+            | MountError::NoMountPoint(_)
+            | MountError::Io(_, _)
+            | MountError::EmbeddedNullByte(_),
+        ))
+        | None => {}
         Some(Ok(val)) => panic!("expected write blocked, got Ok({val:?}) for path: {path}"),
         Some(Err(other)) => panic!("unexpected error variant for write to {path}: {other}"),
     }
@@ -197,7 +209,13 @@ fn assert_open_blocked(mt: &mut MountTable, path: &str, mode: &str) {
         }),
     );
     match result {
-        Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_) | MountError::Io(_, _))) | None => {}
+        Some(Err(
+            MountError::PathEscape { .. }
+            | MountError::NoMountPoint(_)
+            | MountError::Io(_, _)
+            | MountError::EmbeddedNullByte(_),
+        ))
+        | None => {}
         Some(Ok(val)) => panic!("expected open blocked, got Ok({val:?}) for path: {path} mode: {mode:?}"),
         Some(Err(other)) => panic!("unexpected error variant for open of {path}: {other}"),
     }
@@ -337,82 +355,135 @@ fn valid_dotdot_within_mount() {
 // Null byte injection
 // =============================================================================
 
+/// Asserts a call raises `ValueError` with exactly CPython's wording.
+#[track_caller]
+fn assert_null_byte_error(mt: &mut MountTable, call: OsFunctionCall, expected: &str) {
+    let exc = dispatch(mt, call)
+        .expect("a null byte is refused with or without a mount")
+        .expect_err("expected a ValueError")
+        .into_exception();
+    assert_eq!(exc.exc_type(), ExcType::ValueError);
+    assert_eq!(exc.message().unwrap_or(""), expected);
+}
+
+/// A null byte anywhere in the path raises, wherever it sits.
 #[test]
-fn null_byte_middle() {
+fn null_byte_position_does_not_matter() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
-    assert_blocked(&mut mt, PathOp::ReadText, "/mnt/hello\x00.txt");
+    for path in [
+        "/mnt/hello\x00.txt",
+        "/mnt/\x00hello.txt",
+        "/mnt/hello.txt\x00",
+        "/mnt/sub\x00dir/nested.txt",
+    ] {
+        assert_null_byte_error(&mut mt, PathOp::ReadText.build_path_only(path), "embedded null byte");
+    }
 }
 
+/// CPython's wording is not uniform: the content operations report the byte
+/// from `open()`, while the metadata ones name the syscall they were about to
+/// make. Each of these strings was taken from CPython 3.14.
 #[test]
-fn null_byte_start() {
+fn null_byte_messages_match_cpython_per_operation() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
-    assert_blocked(&mut mt, PathOp::Exists, "/mnt/\x00hello.txt");
-}
+    let bad = "/mnt/evil\x00.txt";
 
-#[test]
-fn null_byte_end() {
-    let dir = create_test_dir();
-    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
-    assert_blocked(&mut mt, PathOp::Exists, "/mnt/hello.txt\x00");
-}
+    for (op, expected) in [
+        (PathOp::ReadText, "embedded null byte"),
+        (PathOp::ReadBytes, "embedded null byte"),
+        (PathOp::Stat, "stat: embedded null character in path"),
+        (PathOp::Iterdir, "scandir: embedded null character in path"),
+        (PathOp::Unlink, "unlink: embedded null character in path"),
+    ] {
+        assert_null_byte_error(&mut mt, op.build_path_only(bad), expected);
+    }
 
-#[test]
-fn null_byte_in_directory() {
-    let dir = create_test_dir();
-    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
-    assert_blocked(&mut mt, PathOp::ReadText, "/mnt/sub\x00dir/nested.txt");
-}
+    assert_null_byte_error(
+        &mut mt,
+        OsFunctionCall::Rmdir(MontyPath::new(bad.to_owned())),
+        "rmdir: embedded null character in path",
+    );
+    assert_null_byte_error(
+        &mut mt,
+        OsFunctionCall::Mkdir(MkdirCallArgs {
+            path: MontyPath::new(bad.to_owned()),
+            parents: false,
+            exist_ok: false,
+        }),
+        "mkdir: embedded null character in path",
+    );
 
-#[test]
-fn null_byte_write_ops() {
-    let dir = create_test_dir();
-    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
-    assert_write_blocked(&mut mt, PathOp::WriteText, "/mnt/evil\x00.txt");
-    assert_write_blocked(&mut mt, PathOp::WriteBytes, "/mnt/evil\x00.bin");
-}
-
-#[test]
-fn null_byte_overlay_memory() {
-    let dir = create_test_dir();
-    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
-    assert_blocked(&mut mt, PathOp::ReadText, "/mnt/hello\x00.txt");
-    assert_blocked(&mut mt, PathOp::Exists, "/mnt/\x00evil");
-}
-
-/// Overlay *writes* need the null-byte check independently: the key never
-/// reaches a syscall, so nothing downstream would reject a name only this mode
-/// accepts. A direct mount and CPython both raise here.
-#[test]
-fn null_byte_overlay_write_ops() {
-    let dir = create_test_dir();
-    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
-    assert_write_blocked(&mut mt, PathOp::WriteText, "/mnt/evil\x00.txt");
-    assert_write_blocked(&mut mt, PathOp::WriteBytes, "/mnt/evil\x00.bin");
-    assert_blocked(&mut mt, PathOp::Mkdir, "/mnt/evil\x00dir");
-    assert_open_blocked(&mut mt, "/mnt/evil\x00.txt", "w");
-    assert_open_blocked(&mut mt, "/mnt/evil\x00.txt", "a");
-
-    let renamed = dispatch(
+    // A rename names the argument that carried the byte.
+    assert_null_byte_error(
+        &mut mt,
+        OsFunctionCall::Rename(RenameCallArgs {
+            src: MontyPath::new(bad.to_owned()),
+            dst: MontyPath::new("/mnt/ok.txt".to_owned()),
+        }),
+        "rename: embedded null character in src",
+    );
+    assert_null_byte_error(
         &mut mt,
         OsFunctionCall::Rename(RenameCallArgs {
             src: MontyPath::new("/mnt/hello.txt".to_owned()),
-            dst: MontyPath::new("/mnt/evil\x00.txt".to_owned()),
+            dst: MontyPath::new(bad.to_owned()),
         }),
+        "rename: embedded null character in dst",
     );
-    assert!(
-        matches!(&renamed, Some(Err(MountError::PathEscape { .. })) | None),
-        "rename onto a null-byte name must be refused, got {renamed:?}"
-    );
+}
 
-    // Nothing was recorded under any of those names, so the overlay agrees
-    // with the direct backend about what exists.
-    assert_blocked(&mut mt, PathOp::Exists, "/mnt/evil\x00.txt");
-    assert_eq!(
-        call(&mut mt, PathOp::ReadText, "/mnt/hello.txt").unwrap().unwrap(),
-        MontyObject::String("hello world\n".to_owned())
+/// The predicates answer `False` instead of raising, as CPython's do —
+/// `pathlib` swallows `ValueError` there exactly as it swallows `OSError`.
+#[test]
+fn null_byte_predicates_answer_false() {
+    let dir = create_test_dir();
+    for (_, mode) in all_modes() {
+        let mut mt = mount_at_mnt(&dir, mode);
+        for op in [PathOp::Exists, PathOp::IsFile, PathOp::IsDir, PathOp::IsSymlink] {
+            assert_invisible(&mut mt, op, "/mnt/hello\x00.txt");
+        }
+    }
+}
+
+/// The refusal precedes routing, so it does not depend on a mount covering
+/// the path — CPython raises before any syscall too, and a null byte must
+/// never reach the host's `os` callback.
+#[test]
+fn null_byte_is_refused_without_a_mount() {
+    let mut mt = MountTable::new();
+    assert_null_byte_error(
+        &mut mt,
+        PathOp::ReadText.build_path_only("/nowhere/evil\x00.txt"),
+        "embedded null byte",
     );
+    assert_invisible(&mut mt, PathOp::Exists, "/nowhere/evil\x00.txt");
+}
+
+/// Writes are refused in every mode, and nothing is recorded under the name.
+///
+/// `OverlayMemory` is the mode that needs its own check: the key never reaches
+/// a syscall, so without one it would accept a name no other mode does.
+#[test]
+fn null_byte_write_ops_in_every_mode() {
+    let dir = create_test_dir();
+    for (name, mode) in all_modes() {
+        let mut mt = mount_at_mnt(&dir, mode);
+        assert_write_blocked(&mut mt, PathOp::WriteText, "/mnt/evil\x00.txt");
+        assert_write_blocked(&mut mt, PathOp::WriteBytes, "/mnt/evil\x00.bin");
+        assert_blocked(&mut mt, PathOp::Mkdir, "/mnt/evil\x00dir");
+        assert_open_blocked(&mut mt, "/mnt/evil\x00.txt", "w");
+        assert_open_blocked(&mut mt, "/mnt/evil\x00.txt", "a");
+
+        // Nothing was created or shadowed under any of those names.
+        assert_invisible(&mut mt, PathOp::Exists, "/mnt/evil\x00.txt");
+        assert_eq!(
+            call(&mut mt, PathOp::ReadText, "/mnt/hello.txt").unwrap().unwrap(),
+            MontyObject::String("hello world\n".to_owned()),
+            "{name}: an unrelated read must still work"
+        );
+    }
 }
 
 // =============================================================================
@@ -1505,11 +1576,11 @@ fn path_escape_error_only_contains_virtual_path() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
-    // Null byte should trigger PathEscape.
-    let result = call(&mut mt, PathOp::Exists, "/mnt/file\x00evil");
+    // A drive-letter segment is refused as an escape on every host.
+    let result = call(&mut mt, PathOp::ReadText, "/mnt/C:/evil");
     match result {
         Some(Err(MountError::PathEscape { virtual_path })) => {
-            assert_eq!(virtual_path, "/mnt/file\x00evil");
+            assert_eq!(virtual_path, "/mnt/C:/evil");
             // Verify host path is not in the error.
             let host_str = dir.path().to_string_lossy();
             assert!(
@@ -1519,6 +1590,22 @@ fn path_escape_error_only_contains_virtual_path() {
         }
         other => panic!("expected PathEscape, got {other:?}"),
     }
+}
+
+/// The null-byte `ValueError` quotes no path at all, as CPython's does — it is
+/// raised from argument parsing, before anything echoes the path back.
+#[test]
+fn null_byte_error_quotes_no_path() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    let exc = dispatch(&mut mt, PathOp::ReadText.build_path_only("/mnt/evil\x00.txt"))
+        .expect("handled")
+        .expect_err("expected a ValueError")
+        .into_exception();
+    let msg = exc.message().expect("exception should have message");
+    assert_eq!(msg, "embedded null byte");
+    assert!(!msg.contains('\0'), "the message must not echo the path back");
 }
 
 #[test]

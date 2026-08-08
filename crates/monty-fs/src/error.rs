@@ -21,6 +21,15 @@ pub enum MountError {
         virtual_path: String,
     },
 
+    /// A path contained an embedded null byte, which no filesystem name may.
+    ///
+    /// Carries CPython's wording for the operation that saw it rather than a
+    /// path: CPython raises this from argument parsing, before the path is
+    /// echoed anywhere. See [`OsFunctionCall::embedded_null_message`].
+    ///
+    /// [`OsFunctionCall::embedded_null_message`]: monty_types::OsFunctionCall::embedded_null_message
+    EmbeddedNullByte(&'static str),
+
     /// A write operation was attempted on a read-only mount.
     ReadOnly(String),
 
@@ -79,6 +88,10 @@ impl MountError {
                 ExcType::PermissionError,
                 Some(format!("[Errno 13] Permission denied: {}", StringRepr(&virtual_path))),
             ),
+            // A `ValueError`, as in CPython: a null byte is a malformed
+            // argument, not a denied path, and answering `PermissionError`
+            // implied the sandbox had refused something it could have allowed.
+            Self::EmbeddedNullByte(message) => MontyException::new(ExcType::ValueError, Some(message.to_owned())),
             Self::ReadOnly(path) => MontyException::new(
                 ExcType::PermissionError,
                 Some(format!("[Errno 30] Read-only file system: {}", StringRepr(&path))),
@@ -168,6 +181,7 @@ impl fmt::Display for MountError {
         match self {
             Self::NoMountPoint(path) => write!(f, "no mount point for path: {path}"),
             Self::PathEscape { virtual_path } => write!(f, "path escape detected: {virtual_path}"),
+            Self::EmbeddedNullByte(message) => write!(f, "{message}"),
             Self::ReadOnly(path) => write!(f, "read-only mount: {path}"),
             Self::CrossMountRename { src, dst } => write!(f, "cross-mount rename: {src} -> {dst}"),
             Self::Io(err, path) => write!(f, "I/O error on {path}: {err}"),
