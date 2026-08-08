@@ -202,12 +202,13 @@ impl OsFunctionCall {
             Self::Iterdir(_) => "scandir: embedded null character in path",
             Self::Rename(_) if for_destination => "rename: embedded null character in dst",
             Self::Rename(_) => "rename: embedded null character in src",
-            // `resolve()` lstats each component; `absolute()` is pure string
-            // work in CPython and does not raise at all (see
-            // `limitations/filesystem.md`).
-            Self::Resolve(_) | Self::Absolute(_) => "lstat: embedded null character in path",
-            // Reads, writes, appends and `open` all land in `io.open`. The
-            // predicates never reach here — they answer `False`.
+            // `resolve()` lstats each component before returning.
+            Self::Resolve(_) => "lstat: embedded null character in path",
+            // Reads, writes, appends and `open` all land in `io.open`.
+            // `absolute()` shares that generic wording: it is pure string work
+            // that CPython never raises from, so naming a syscall would be a
+            // fiction (see `limitations/filesystem.md`). The predicates never
+            // reach here — they answer `False`.
             _ => "embedded null byte",
         }
     }

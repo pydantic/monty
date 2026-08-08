@@ -434,6 +434,55 @@ fn null_byte_messages_match_cpython_per_operation() {
     );
 }
 
+/// `resolve()` names the `lstat` it was about to make, as CPython's does.
+/// `absolute()` gets the generic wording instead: Monty raises where CPython
+/// returns the path untouched, so there is no syscall to name.
+#[test]
+fn null_byte_messages_for_resolve_and_absolute() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+    let bad = "/mnt/evil\x00.txt";
+
+    assert_null_byte_error(
+        &mut mt,
+        OsFunctionCall::Resolve(MontyPath::new(bad.to_owned())),
+        "lstat: embedded null character in path",
+    );
+    assert_null_byte_error(
+        &mut mt,
+        OsFunctionCall::Absolute(MontyPath::new(bad.to_owned())),
+        "embedded null byte",
+    );
+}
+
+/// A path that is both over-long and null-containing reports its length, where
+/// CPython reports the null byte: the length check is the one that stays O(1)
+/// on a hostile path, so it must not run behind a full scan for `\0`.
+#[test]
+fn overlong_path_outranks_a_null_byte() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+    let bad = format!("/mnt/{}\x00.txt", "a".repeat(256));
+
+    for call in [
+        PathOp::Stat.build_path_only(&bad),
+        OsFunctionCall::Rename(RenameCallArgs {
+            src: MontyPath::new("/mnt/hello.txt".to_owned()),
+            dst: MontyPath::new(bad.clone()),
+        }),
+    ] {
+        let exc = dispatch(&mut mt, call)
+            .expect("handled without routing")
+            .expect_err("expected an OSError")
+            .into_exception();
+        assert_eq!(exc.exc_type(), ExcType::OSError);
+        assert_eq!(
+            exc.message().unwrap_or(""),
+            r"[Errno 36] File name too long: '/mnt/aaaaaaaaaaaaaaa…aaaaaaaaaaaaaaa\x00.txt'"
+        );
+    }
+}
+
 /// The predicates answer `False` instead of raising, as CPython's do —
 /// `pathlib` swallows `ValueError` there exactly as it swallows `OSError`.
 #[test]

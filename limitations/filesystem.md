@@ -144,8 +144,10 @@ is by definition too big to repeat back.
 Null bytes otherwise behave as CPython's do, message for message. Only
 `absolute()` differs: CPython returns the path without inspecting it, while
 Monty refuses it at the boundary rather than carve out the one operation that
-never reaches a syscall. A path that is both over-long and null-containing
-reports the length error, where CPython reports the null byte.
+never reaches a syscall. It raises `ValueError: embedded null byte` — the
+generic wording, since no syscall is involved to name. A path that is both
+over-long and null-containing reports the length error, where CPython reports
+the null byte.
 
 ### A search-only host directory may not be mountable
 
