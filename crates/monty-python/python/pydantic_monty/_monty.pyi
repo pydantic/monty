@@ -359,9 +359,10 @@ class MontyClassInstance:
     """Read-only proxy for a class instance the host has no original object for.
 
     Produced when the sandbox returns a sandbox-defined class instance, or a
-    host-sent instance after the session was restored into a fresh process
-    (the instance store is host-side and does not survive `load_session` /
-    `load_snapshot`). Plain data holder — there is no live object behind it.
+    host-sent instance after any session restore (the per-session instance
+    store is host-side and does not survive `load_session` / `load_snapshot`,
+    even in the same process). Plain data holder — there is no live object
+    behind it.
     """
 
     @property
@@ -1106,12 +1107,17 @@ class NameLookupSnapshot:
         `AttributeError` (not `NameError`) for instance lookups."""
     def resume(self, *, value: Any = ...) -> SyncSnapshot:
         """Resume by binding the name to `value` (any value, including `None`), or
-        omit `value` to leave the name undefined and raise `NameError`."""
+        omit `value` to leave the name undefined — the sandbox then raises
+        `NameError`, or `AttributeError` when `instance_id` is set (a lazy
+        attribute lookup on a host class instance)."""
 
     def resume_auto(self) -> SyncSnapshot:
-        """Answer this name lookup automatically from the captured
-        `external_lookup=`, then return the next snapshot (or `MontyComplete`). A
-        name absent from the lookup makes the sandbox raise `NameError`."""
+        """Answer this name lookup automatically, then return the next snapshot
+        (or `MontyComplete`). A plain lookup resolves from the captured
+        `external_lookup=` (an absent name raises `NameError` in the sandbox);
+        an `instance_id` lookup resolves through the sending `ClassInstance`
+        wrapper's `lazy_attrs` policy (a denied or absent attribute raises
+        `AttributeError`)."""
 
     def dump(self) -> bytes:
         """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""

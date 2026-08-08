@@ -186,7 +186,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         Ok(Some(self.attrs().eq_dict(&other.attrs(), vm)?))
     }
 
-    /// Hashes a frozen instance by its class name and eager attrs in order.
+    /// Hashes a frozen instance by its class name and eager attrs.
+    ///
+    /// Per-pair hashes are folded with a wrapping sum so the result is
+    /// independent of attr insertion order — `py_eq_impl` compares via the
+    /// order-insensitive `eq_dict`, and equal values must hash equal even
+    /// when two wrappers sent the same attrs in different orders.
     ///
     /// Mutable (non-frozen) instances return `None` (unhashable).
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
@@ -199,7 +204,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         let mut hasher = DefaultHasher::new();
         // Hash the class name
         self.get(vm.heap).name.as_str(vm.interns).hash(&mut hasher);
-        // Hash each (key, value) attr pair in order
+        // Fold each (key, value) attr pair order-independently
+        let mut attrs_hash = 0u64;
         let attr_count = self.get(vm.heap).attrs.len();
         for i in 0..attr_count {
             let Some((key, value)) = self.get(vm.heap).attrs.item_at(i) else {
@@ -209,15 +215,18 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
             let value = value.clone_with_heap(vm.heap);
             defer_drop!(key, vm);
             defer_drop!(value, vm);
+            let mut pair_hasher = DefaultHasher::new();
             match key.py_hash(vm)? {
-                Some(h) => h.hash(&mut hasher),
+                Some(h) => h.hash(&mut pair_hasher),
                 None => return Ok(None),
             }
             match value.py_hash(vm)? {
-                Some(h) => h.hash(&mut hasher),
+                Some(h) => h.hash(&mut pair_hasher),
                 None => return Ok(None),
             }
+            attrs_hash = attrs_hash.wrapping_add(pair_hasher.finish());
         }
+        attrs_hash.hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
@@ -231,10 +240,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         let name = self.get(vm.heap).name(vm.interns).to_owned();
         let attr_count = self.get(vm.heap).attrs.len();
         write_dataclass_repr(f, &name, attr_count, vm, heap_ids, |i, vm| {
-            let (key, value) = match self.get(vm.heap).attrs.item_at(i) {
-                Some((key, value)) => (key.clone_with_heap(vm.heap), Some(value.clone_with_heap(vm.heap))),
-                None => return Ok((String::new(), None)),
+            let Some((key, _)) = self.get(vm.heap).attrs.item_at(i) else {
+                return Ok((String::new(), None));
             };
+            let key = key.clone_with_heap(vm.heap);
             defer_drop!(key, vm);
             // Keys are strings in practice; render a non-string key (possible
             // in host-built attrs) via repr rather than fail.
@@ -245,6 +254,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
                 defer_drop!(repr, vm);
                 repr.to_str(vm)?.to_owned()
             };
+            // The value is cloned only after the fallible key formatting, so a
+            // formatting error cannot strand an unguarded clone; re-reading at
+            // index `i` also observes any mutation a key `__repr__` performed,
+            // matching `write_dataclass_repr`'s resolve-just-before-write rule.
+            let value = self
+                .get(vm.heap)
+                .attrs
+                .item_at(i)
+                .map(|(_, v)| v.clone_with_heap(vm.heap));
             Ok((key_str, value))
         })
     }

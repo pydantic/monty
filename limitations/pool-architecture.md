@@ -383,6 +383,16 @@ properties that real CPython does not provide, per the caveat above.
   an empty store, so a returned host instance becomes a `MontyClassInstance`
   proxy, a method call on it raises `RuntimeError` ("no host instance
   registered..."), and a lazy attribute lookup raises `AttributeError`.
+- **The class-instance store retains every wrapper sent into the sandbox until
+  the session ends** — that retention is what makes method routing and
+  original-object return work, and it is not covered by the sandbox's
+  `max_memory` (it is host memory). Re-sending the same instance overwrites
+  its entry (last wrapper's policy wins), but distinct instances accumulate:
+  a method that returns a fresh auto-wrapped object per call grows the store
+  by one entry per call, and wrappers registered during a feed that later
+  fails conversion are kept too. Long-running sessions exposing
+  object-returning methods should bound what their methods hand out (or
+  recycle sessions periodically).
   A *failed* load (wrong dump kind, or a protocol desync) poisons the session
   — its worker is discarded, so every later feed fails too; the load is not
   retryable and the caller must check out a fresh session.

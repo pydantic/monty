@@ -516,7 +516,7 @@ impl MontyObjectExt for MontyObject {
                     HeapReadOutput::Instance(inst) => {
                         let class_id = inst.get(vm.heap).class();
                         let name = class_name(class_id, vm.heap, vm.interns).into_owned();
-                        let is_dataclass = dataclasses::dataclass_fields(class_id, vm).is_some();
+                        let is_dataclass = dataclasses::is_dataclass_class(class_id, vm);
                         // Snapshot before recursing: attrs are mutable via `setattr`.
                         let children = snapshot_dict_pairs(inst.get(vm.heap).attrs(), vm.heap);
                         defer_drop!(children, vm);

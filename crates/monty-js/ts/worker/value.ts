@@ -188,7 +188,17 @@ function pushClassInstance(object: Record<string, unknown>, nodes: ValueNode[]):
   for (const pair of object.attrs as unknown[]) {
     if (!Array.isArray(pair)) throw new TypeError('ClassInstance attrs entries must be [name, value] pairs')
     if (typeof pair[0] !== 'string') throw new TypeError('ClassInstance attr name must be a string')
+    if (!(1 in pair)) throw new TypeError('ClassInstance attr value missing')
     pairs.push([pair[0], pair[1]])
+  }
+  // match the native binding: ids must fit u64 rather than silently encoding
+  // an invalid value
+  const U64_MAX = 0xffff_ffff_ffff_ffffn
+  if (object.instanceId < 0n || object.instanceId > U64_MAX) {
+    throw new TypeError('ClassInstance instanceId must be a non-negative u64 BigInt')
+  }
+  if (object.typeId < 0n || object.typeId > U64_MAX) {
+    throw new TypeError('ClassInstance typeId must be a non-negative u64 BigInt')
   }
   return {
     tag: 'class-instance',

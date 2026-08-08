@@ -127,6 +127,12 @@ Names outside the policy raise `AttributeError` in the sandbox. A
 returned class instances with the same policies. Unwrapped class instances are
 rejected with a `TypeError` — wrapping is always explicit.
 
+Two more options: `name` overrides the class name the sandbox sees (default
+`instance.constructor.name`), and `frozen: true` makes in-sandbox `setattr`
+raise `FrozenInstanceError`. `frozen` defaults to `false`, so by default
+sandbox code may set attributes — on its own copy only: sandbox mutations
+never touch the wrapped host object.
+
 Instances the host has no original for — defined inside the sandbox, or
 returned after a dump was restored into a fresh process — surface as read-only
 `MontyClassInstance` proxies (`name`, `attributes`, `isDataclass`).

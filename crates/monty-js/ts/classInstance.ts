@@ -225,26 +225,40 @@ export function attributeErrorMessage(typeName: string, attrName: string): strin
  * identical reference — nothing is copied when there is nothing to do.
  */
 export function prepare(value: unknown, store: InstanceStore): unknown {
+  return prepareInner(value, store, 0)
+}
+
+/** Nesting bound for outbound walks — mirrors the wire decoder's limit, so a
+ *  too-deep value fails here with a catchable error instead of a stack
+ *  overflow (`RangeError`) partway through the recursion. */
+const MAX_INPUT_DEPTH = 48
+/** Backstop for inbound walks; wire values are already bounded well below. */
+const MAX_OUTPUT_DEPTH = 200
+
+function prepareInner(value: unknown, store: InstanceStore, depth: number): unknown {
+  if (depth > MAX_INPUT_DEPTH) {
+    throw new TypeError('Max input depth exceeded')
+  }
   if (typeof value !== 'object' || value === null) {
     return value
   }
   if (value instanceof ClassInstance) {
-    return wrapperToMarker(value, store)
+    return wrapperToMarker(value, store, depth)
   }
   if (Array.isArray(value)) {
-    return walkArray(value, store, prepare)
+    return walkArray(value, store, depth, prepareInner)
   }
   if (value instanceof Map) {
-    return walkMap(value, store, prepare)
+    return walkMap(value, store, depth, prepareInner)
   }
   if (value instanceof Set) {
-    return walkSet(value, store, prepare)
+    return walkSet(value, store, depth, prepareInner)
   }
   if (value instanceof Uint8Array || hasTypeMarker(value)) {
     return value
   }
   if (isPlainObject(value)) {
-    return walkPlainObject(value as Record<string, unknown>, store, prepare)
+    return walkPlainObject(value as Record<string, unknown>, store, depth, prepareInner)
   }
   throw new TypeError(
     `Cannot convert ${constructorName(value)} instance to a Monty value — wrap it in ClassInstance(...)`,
@@ -259,36 +273,45 @@ export function prepare(value: unknown, store: InstanceStore): unknown {
  * unchanged behaviour as [`prepare`].
  */
 export function restore(value: unknown, store: InstanceStore): unknown {
+  return restoreInner(value, store, 0)
+}
+
+function restoreInner(value: unknown, store: InstanceStore, depth: number): unknown {
+  if (depth > MAX_OUTPUT_DEPTH) {
+    throw new TypeError('Max output depth exceeded')
+  }
   if (typeof value !== 'object' || value === null) {
     return value
   }
   if (Array.isArray(value)) {
-    return walkArray(value, store, restore)
+    return walkArray(value, store, depth, restoreInner)
   }
   if (value instanceof Map) {
-    return walkMap(value, store, restore)
+    return walkMap(value, store, depth, restoreInner)
   }
   if (value instanceof Set) {
-    return walkSet(value, store, restore)
+    return walkSet(value, store, depth, restoreInner)
   }
   if (value instanceof Uint8Array) {
     return value
   }
   const marker = readTypeMarker(value)
   if (marker === 'ClassInstance') {
-    return markerToInstance(value as Record<string, unknown>, store)
+    return markerToInstance(value as Record<string, unknown>, store, depth)
   }
   if (marker === undefined && isPlainObject(value)) {
-    return walkPlainObject(value as Record<string, unknown>, store, restore)
+    return walkPlainObject(value as Record<string, unknown>, store, depth, restoreInner)
   }
   return value
 }
 
 /** Registers `wrapper` and builds its wire marker, preparing eager attrs
  *  recursively so nested wrappers register themselves too. */
-function wrapperToMarker(wrapper: ClassInstance, store: InstanceStore): Record<string, unknown> {
+function wrapperToMarker(wrapper: ClassInstance, store: InstanceStore, depth: number): Record<string, unknown> {
   const instanceId = store.register(wrapper)
-  const attrs = wrapper.getEagerAttrs().map(([name, value]): [string, unknown] => [name, prepare(value, store)])
+  const attrs = wrapper
+    .getEagerAttrs()
+    .map(([name, value]): [string, unknown] => [name, prepareInner(value, store, depth + 1)])
   return {
     __monty_type__: 'ClassInstance',
     name: wrapper.getName(),
@@ -302,7 +325,7 @@ function wrapperToMarker(wrapper: ClassInstance, store: InstanceStore): Record<s
 }
 
 /** Maps an inbound `ClassInstance` marker to the original instance or a proxy. */
-function markerToInstance(marker: Record<string, unknown>, store: InstanceStore): unknown {
+function markerToInstance(marker: Record<string, unknown>, store: InstanceStore, depth: number): unknown {
   const instanceId = typeof marker.instanceId === 'bigint' ? marker.instanceId : 0n
   if (instanceId !== 0n) {
     const wrapper = store.get(instanceId)
@@ -314,7 +337,7 @@ function markerToInstance(marker: Record<string, unknown>, store: InstanceStore)
   if (Array.isArray(marker.attrs)) {
     for (const pair of marker.attrs as unknown[]) {
       if (Array.isArray(pair) && typeof pair[0] === 'string') {
-        attrs.push([pair[0], restore(pair[1], store)])
+        attrs.push([pair[0], restoreInner(pair[1], store, depth + 1)])
       }
     }
   }
@@ -327,13 +350,13 @@ function markerToInstance(marker: Record<string, unknown>, store: InstanceStore)
 
 // === shared container walks (used by both prepare and restore) ===
 
-type Walk = (value: unknown, store: InstanceStore) => unknown
+type Walk = (value: unknown, store: InstanceStore, depth: number) => unknown
 
 /** Walks array items, preserving the `__tuple__` marker on a rebuilt array. */
-function walkArray(array: unknown[], store: InstanceStore, walk: Walk): unknown[] {
+function walkArray(array: unknown[], store: InstanceStore, depth: number, walk: Walk): unknown[] {
   let changed = false
   const items = array.map((item) => {
-    const out = walk(item, store)
+    const out = walk(item, store, depth + 1)
     changed ||= out !== item
     return out
   })
@@ -346,23 +369,23 @@ function walkArray(array: unknown[], store: InstanceStore, walk: Walk): unknown[
   return items
 }
 
-function walkMap(map: Map<unknown, unknown>, store: InstanceStore, walk: Walk): Map<unknown, unknown> {
+function walkMap(map: Map<unknown, unknown>, store: InstanceStore, depth: number, walk: Walk): Map<unknown, unknown> {
   let changed = false
   const out = new Map<unknown, unknown>()
   for (const [key, value] of map) {
-    const outKey = walk(key, store)
-    const outValue = walk(value, store)
+    const outKey = walk(key, store, depth + 1)
+    const outValue = walk(value, store, depth + 1)
     changed ||= outKey !== key || outValue !== value
     out.set(outKey, outValue)
   }
   return changed ? out : map
 }
 
-function walkSet(set: Set<unknown>, store: InstanceStore, walk: Walk): Set<unknown> {
+function walkSet(set: Set<unknown>, store: InstanceStore, depth: number, walk: Walk): Set<unknown> {
   let changed = false
   const out = new Set<unknown>()
   for (const item of set) {
-    const outItem = walk(item, store)
+    const outItem = walk(item, store, depth + 1)
     changed ||= outItem !== item
     out.add(outItem)
   }
@@ -371,11 +394,16 @@ function walkSet(set: Set<unknown>, store: InstanceStore, walk: Walk): Set<unkno
 
 /** Walks a plain object's own enumerable entries; a rebuilt object has a null
  *  prototype so no key can land on `Object.prototype`. */
-function walkPlainObject(obj: Record<string, unknown>, store: InstanceStore, walk: Walk): Record<string, unknown> {
+function walkPlainObject(
+  obj: Record<string, unknown>,
+  store: InstanceStore,
+  depth: number,
+  walk: Walk,
+): Record<string, unknown> {
   let changed = false
   const out: Record<string, unknown> = Object.create(null)
   for (const [key, value] of Object.entries(obj)) {
-    const outValue = walk(value, store)
+    const outValue = walk(value, store, depth + 1)
     changed ||= outValue !== value
     out[key] = outValue
   }
@@ -414,7 +442,11 @@ function policyAllows(policy: AttrPolicy | undefined, name: string): boolean {
   if (policy === 'all') {
     return !name.startsWith('_')
   }
-  return policy instanceof Set ? policy.has(name) : (policy as readonly string[]).includes(name)
+  // Duck-type on `.has` rather than `instanceof Set` so set-likes from
+  // another realm (iframe / VM context) work too.
+  return typeof (policy as { has?: unknown }).has === 'function'
+    ? (policy as ReadonlySet<string>).has(name)
+    : (policy as readonly string[]).includes(name)
 }
 
 /** True when the object's prototype is `Object.prototype` or `null`. */

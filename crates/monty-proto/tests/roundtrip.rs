@@ -645,10 +645,10 @@ fn decodes_in_frame(value: &MontyObject) -> bool {
 }
 
 /// The sender-side depth check must agree exactly with what the receiver can
-/// decode, for every container shape: dicts and dataclasses consume more of
-/// prost's recursion budget per level than lists, so a uniform per-container
-/// budget would pass values that then fail to decode (and kill the worker as
-/// a protocol failure instead of raising a clean depth error).
+/// decode, for every container shape: dicts and class instances consume more
+/// of prost's recursion budget per level than lists, so a uniform
+/// per-container budget would pass values that then fail to decode (and kill
+/// the worker as a protocol failure instead of raising a clean depth error).
 #[test]
 fn depth_check_matches_frame_decodability() {
     /// One container shape: name, nesting builder, deepest depth that must pass.

@@ -155,7 +155,8 @@ order and error wording, but with these divergences:
 
 A sandbox-defined class **instance** crosses out structurally: the host
 receives a read-only `MontyClassInstance` proxy with `.name`, `.is_dataclass`,
-and `.attributes` (the instance `__dict__`, converted). The host cannot call
+and `.attributes` (the instance `__dict__`, converted; the JS package spells
+these `.name` / `.isDataclass` / `.attributes`). The host cannot call
 methods on it — the method code lives inside the sandbox, and the proxy holds
 no live object (`instance_id` 0 on the wire means "not host-backed").
 
@@ -173,7 +174,8 @@ gets the structured proxy, not the repr string.
 
 Host objects enter the sandbox only when explicitly wrapped in the host
 package's `ClassInstance` policy wrapper (passing a bare dataclass or class
-instance as an input raises `TypeError`). Inside the sandbox they are proxies
+instance as an input raises `MontyConversionError` in Python, `TypeError` in
+JS). Inside the sandbox they are proxies
 whose eager attrs were copied at send time; everything else routes back to the
 host by the instance's `id()`. Divergences from real CPython objects:
 

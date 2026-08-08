@@ -396,6 +396,16 @@ def test_frozen_instances_hashable(monty_run: RunMonty):
     assert monty_run('len({a, b})', inputs=inputs) == snapshot(1)
 
 
+def test_hash_is_attr_order_independent(monty_run: RunMonty):
+    """Equal instances whose eager attrs were sent in different orders must
+    hash equal — eq compares attrs order-insensitively, so hash must too."""
+    inputs = {
+        'a': ClassInstance(FrozenPoint(x=1, y=2), eager_attrs=['x', 'y']),
+        'b': ClassInstance(FrozenPoint(x=1, y=2), eager_attrs=['y', 'x']),
+    }
+    assert monty_run('(a == b, hash(a) == hash(b), len({a, b}))', inputs=inputs) == snapshot((True, True, 1))
+
+
 def test_mutable_instances_unhashable(monty_run: RunMonty):
     p = Person(name='Alice', age=30)
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:

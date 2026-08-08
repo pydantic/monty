@@ -867,8 +867,13 @@ class SnapshotDriver {
   }
 
   async resumeNameLookup(functionName: string | null): Promise<Snapshot> {
-    // feedStart name-lookup snapshots only resolve to functions (by name).
     return this.advance((await this.native.resumeNameLookup(functionName, null, this.onPrint)) as NativeTurn)
+  }
+
+  async resumeNameLookupValue(value: unknown): Promise<Snapshot> {
+    return this.advance(
+      (await this.native.resumeNameLookup(null, { value: prepare(value, this.instances) }, this.onPrint)) as NativeTurn,
+    )
   }
 
   async resolveFutures(results: NativeFutureResult[]): Promise<Snapshot> {
@@ -992,11 +997,21 @@ export class NameLookupSnapshot extends SingleUse {
     this.instanceId = turn.instanceId ?? null
   }
 
-  /** Resolves the name to an external function by name, or — with no argument
-   *  — lets the sandbox raise `NameError`. */
+  /** Resolves the name to an external function by name, or — with no
+   *  argument — leaves it unresolved: the sandbox raises `NameError` for a
+   *  plain lookup, `AttributeError` when `instanceId` is set. */
   resume(functionName?: string): Promise<Snapshot> {
     this.claim()
     return this.driver.resumeNameLookup(functionName ?? null)
+  }
+
+  /** Resolves the lookup to `value` directly (any convertible value,
+   *  including `null`/`undefined` → `None`) — the way to answer a lazy
+   *  `instanceId` attribute lookup by hand, and the counterpart of
+   *  pydantic_monty's `resume(value=...)`. Resumes at most once. */
+  resumeValue(value: unknown): Promise<Snapshot> {
+    this.claim()
+    return this.driver.resumeNameLookupValue(value)
   }
 
   /**

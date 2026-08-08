@@ -5,7 +5,13 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
-import { ClassInstance, MontyClassInstance, MontyRuntimeError } from '@pydantic/monty'
+import {
+  ClassInstance,
+  MontyClassInstance,
+  MontyComplete,
+  MontyRuntimeError,
+  NameLookupSnapshot,
+} from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -291,4 +297,42 @@ test('an unwrapped instance returned from an external function raises in the san
   const code = "try:\n    bad()\n    r = 'unexpected'\nexcept TypeError as e:\n    r = str(e)\nr"
   const result = await run(code, { externalLookup: { bad: () => new Greeter('hi') } })
   t.is(result, 'Cannot convert Greeter instance to a Monty value — wrap it in ClassInstance(...)')
+})
+
+// =============================================================================
+// PR-review fixes: depth cap, realm-safe policies, snapshot resumeValue
+// =============================================================================
+
+test('a too-deep input fails with a conversion error, not a stack overflow', async () => {
+  let nested: unknown = 1
+  for (let i = 0; i < 60; i++) {
+    nested = [nested]
+  }
+  const error = await t.throwsAsync(() => run('x', { inputs: { x: nested } }), { instanceOf: TypeError })
+  t.is(error.message, 'Max input depth exceeded')
+})
+
+test('a set-like policy from another realm works (duck-typed .has)', async () => {
+  // simulate a cross-realm ReadonlySet: conforms to the interface but fails
+  // `instanceof Set` in this realm
+  const setLike = { has: (name: string) => name === 'greet' } as unknown as ReadonlySet<string>
+  const wrapper = new ClassInstance(new Greeter('hi'), { allowedMethods: setLike })
+  t.is(await run("g.greet('Sam')", { inputs: { g: wrapper } }), 'hi Sam')
+})
+
+test('NameLookupSnapshot.resumeValue answers a lazy attribute lookup by hand', async () => {
+  const session = await pool().checkout()
+  try {
+    const wrapper = new ClassInstance(new Greeter('hi'), { lazyAttrs: 'all' })
+    const snap = await session.feedStart('g.greeting + "!"', { inputs: { g: wrapper } })
+    t.true(snap instanceof NameLookupSnapshot)
+    const lookup = snap as NameLookupSnapshot
+    t.is(lookup.variableName, 'greeting')
+    t.not(lookup.instanceId, null)
+    const done = await lookup.resumeValue('manual')
+    t.true(done instanceof MontyComplete)
+    t.is((done as MontyComplete).output, 'manual!')
+  } finally {
+    await session.close()
+  }
 })
