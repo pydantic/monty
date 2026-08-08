@@ -1275,6 +1275,58 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     );
 }
 
+/// A `FatalError` ends a raw turn *and* the worker behind it.
+///
+/// The frame is handed back — a raw driver forwards the child's own account of
+/// its death to its client — but the child exits right after writing it, so the
+/// worker must be reaped and discarded exactly as on the typed path. It used to
+/// be kept, leaving a dead process holding its pool slot until the failure
+/// resurfaced as an unexplained crash on the next turn.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    // `Ok` answers the establishing `Configure`, then the fatal frame
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&child_event(pb::child_event::Kind::FatalError(
+        pb::FatalError {
+            message: "the child is done".to_owned(),
+        },
+    ))));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+
+    let fake = dir.path().join("monty");
+    fs::write(&fake, format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display())).unwrap();
+    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+
+    let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig::default())
+        .await
+        .expect("the stand-in answers Configure with Ok");
+    let request = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "1 + 1".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let event = checkout
+        .turn_raw(&request, &mut on_event)
+        .await
+        .expect("the fatal frame is the turn-ender");
+    let Some(pb::child_event::Kind::FatalError(fatal)) = event.kind else {
+        panic!("expected the FatalError frame back, got {:?}", event.kind);
+    };
+    assert_eq!(fatal.message, "the child is done");
+    // the worker was discarded with the frame, not kept until the next failure
+    let err = checkout.turn_raw(&request, &mut on_event).await.unwrap_err();
+    assert!(matches!(err, PoolError::Finished), "got {err:?}");
+}
+
 /// Length-prefixes one event exactly as a worker writes it.
 #[cfg(unix)]
 fn framed(event: &pb::ChildEvent) -> Vec<u8> {

@@ -342,6 +342,120 @@ async fn duration_backstop_arms_on_the_raw_path() {
     join_server(server).await;
 }
 
+/// A raw `Load` re-adopts the dump's duration budget, exactly as `restore`.
+///
+/// `turn_raw` used to keep the `Configure`-time budget across a `Load`, so a
+/// restored session's backstop measured it against the wrong limit — here the
+/// checkout's own 5s budget would have left a wedged post-restore turn running
+/// for 5.3s instead of being killed at the dump's 100ms + grace.
+#[tokio::test]
+async fn a_raw_load_adopts_the_dumps_duration_budget() {
+    let (listener, mut config) = ws_pool_config();
+    config.duration_limit_grace = Some(Duration::from_millis(300));
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
+        // an idle-dump `Load` reply, stamped with the dump's own limits
+        send_event(
+            &mut socket,
+            &pb::ChildEvent {
+                total_execution_micros: 0,
+                max_duration_micros: Some(100_000),
+                restored_script_name: None,
+                kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+            },
+        );
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        // never reply; only the backstop can end this turn
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_secs(5))),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let load = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        ..pb::ParentRequest::default()
+    };
+    checkout.turn_raw(&load, &mut on_event).await.expect("load");
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "while True:\n    pass".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let err = checkout.turn_raw(&feed, &mut on_event).await.unwrap_err();
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    // the dump's 100ms budget plus the grace — not the Configure-time 5s
+    assert_eq!(timeout, Duration::from_millis(400));
+    join_server(server).await;
+}
+
+/// A `ShutdownDump` ends a raw turn *and* the connection behind it.
+///
+/// The frame is handed back — the dump it carries is the driver's to forward —
+/// but the serving relay that sent it is gone, so the worker is discarded as on
+/// the typed path. It used to be kept, resurfacing later as an unexplained
+/// crash on the next turn.
+#[tokio::test]
+async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::Shutdown(pb::ShutdownDump {
+                dump: Some(b"relay-signed state".to_vec()),
+            })),
+        );
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let request = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "1 + 1".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let event = checkout
+        .turn_raw(&request, &mut on_event)
+        .await
+        .expect("the shutdown frame is the turn-ender");
+    let Some(pb::child_event::Kind::Shutdown(shutdown)) = event.kind else {
+        panic!("expected the ShutdownDump frame back, got {:?}", event.kind);
+    };
+    assert_eq!(shutdown.dump.as_deref(), Some(b"relay-signed state".as_slice()));
+    // the connection was discarded with the frame
+    let err = checkout.turn_raw(&request, &mut on_event).await.unwrap_err();
+    assert!(matches!(err, PoolError::Finished), "got {err:?}");
+    join_server(server).await;
+}
+
 /// A single turn is still bounded by `request_timeout` even when the worker is
 /// making mount-coverable calls: the OS call surfaces rather than being
 /// serviced inside the turn, so a worker that simply runs too long before

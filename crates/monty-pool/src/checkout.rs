@@ -5,6 +5,7 @@ use std::{
     future::{Future, ready},
     path::Path,
     pin::Pin,
+    process::ExitStatus,
     sync::Arc,
     time::Duration,
 };
@@ -781,7 +782,11 @@ impl Checkout {
     /// interleaved with `feed`/`resume`/`restore`. The lifecycle is shared:
     /// `create`, `finish` and worker poisoning behave exactly as they do for a
     /// typed checkout, and so are the duration bookkeeping and the deadline
-    /// derived from it — a raw-driven session keeps its `max_duration` backstop.
+    /// derived from it — a raw-driven session keeps its `max_duration` backstop,
+    /// and a raw `Load` re-adopts the dump's budget just as [`Checkout::restore`]
+    /// does. A `FatalError` (or, over WebSocket, `ShutdownDump`) turn-ender is
+    /// returned like any other so the driver can forward it, but the worker
+    /// behind it is discarded first — later calls report [`PoolError::Finished`].
     ///
     /// # Errors
     /// As [`Checkout::feed`]: a dead worker, a protocol violation, or a turn
@@ -793,6 +798,14 @@ impl Checkout {
         on_event: OnRawEvent<'_>,
     ) -> Result<pb::ChildEvent, PoolError> {
         self.ensure_ready()?;
+        // as `restore`: the dump carries its own limits and consumed time, so
+        // forget what `Configure` established and re-adopt both from the
+        // reply's timing fields — otherwise the backstop below would keep
+        // measuring the restored session against the wrong budget
+        if matches!(request.kind, Some(pb::parent_request::Kind::Load(_))) {
+            self.duration_budget = None;
+            self.reported_execution = Duration::ZERO;
+        }
         self.turn_in_flight = true;
         // as `expect_turn`: `request_timeout` alone would drop the `max_duration`
         // backstop, leaving a wedged child bounded only by a timeout that may be
@@ -849,15 +862,29 @@ impl Checkout {
             // turn-ender — so anything that is not a print ends the turn
             if matches!(event.kind, Some(pb::child_event::Kind::Print(_))) {
                 on_event(&event).await;
-            } else if matches!(event.kind, Some(pb::child_event::Kind::Shutdown(_)))
-                && !self.pool.config.transport.is_websocket()
-            {
-                // Only a serving relay sends this, never a child — `turn_io`
-                // refuses it for the same reason. It matters more here: a raw
-                // driver hands the turn-ender straight back to its own client,
-                // and a relay signs the dump on the way past, so accepting one
-                // would have the relay vouch for bytes its child minted.
-                return Err(self.protocol_violation("subprocess worker sent a ShutdownDump"));
+            } else if matches!(event.kind, Some(pb::child_event::Kind::FatalError(_))) {
+                // The far end is gone (see `fatal_error`): reap and discard
+                // the worker exactly as the typed path does — but still hand
+                // the frame back, since a raw driver forwards the child's own
+                // account of its death to its client.
+                self.reap_announced_exit().await;
+                return Ok(event);
+            } else if matches!(event.kind, Some(pb::child_event::Kind::Shutdown(_))) {
+                return if self.pool.config.transport.is_websocket() {
+                    // The serving relay is gone, and this checkout's
+                    // connection with it: discard the worker as `turn_io`
+                    // does, handing the frame (and the dump it carries) back
+                    // for the driver to forward.
+                    self.discard_worker();
+                    Ok(event)
+                } else {
+                    // Only a serving relay sends this, never a child — `turn_io`
+                    // refuses it for the same reason. It matters more here: a raw
+                    // driver hands the turn-ender straight back to its own client,
+                    // and a relay signs the dump on the way past, so accepting one
+                    // would have the relay vouch for bytes its child minted.
+                    Err(self.protocol_violation("subprocess worker sent a ShutdownDump"))
+                };
             } else if event.kind.is_none() {
                 // Every proto field is optional, so a broken or hostile worker
                 // can send an event whose oneof is unset. It ends no turn — the
@@ -1120,7 +1147,22 @@ impl Checkout {
     /// handles crashes by starting a new session needs no extra arm, and the
     /// worker's own account lands in [`CrashCause::Announced`].
     async fn fatal_error(&mut self, message: &str) -> PoolError {
-        let status = match self.worker.take() {
+        let status = self.reap_announced_exit().await;
+        self.pending = None;
+        self.feed_mounts = None;
+        PoolError::Crashed {
+            status,
+            cause: CrashCause::Announced {
+                reason: message.to_owned(),
+            },
+        }
+    }
+
+    /// Takes and reaps the worker behind a `FatalError` frame, returning its
+    /// exit status when one was observed. Shared by [`Self::fatal_error`] and
+    /// the raw path, which discards the worker but returns the frame itself.
+    async fn reap_announced_exit(&mut self) -> Option<ExitStatus> {
+        match self.worker.take() {
             // the child exits right after the frame, so give it a moment to do
             // so before killing: that is what surfaces e.g. the non-zero status
             // of a version-skew exit, which a SIGKILL would replace with the
@@ -1134,14 +1176,6 @@ impl Checkout {
                 status
             }
             None => None,
-        };
-        self.pending = None;
-        self.feed_mounts = None;
-        PoolError::Crashed {
-            status,
-            cause: CrashCause::Announced {
-                reason: message.to_owned(),
-            },
         }
     }
 
