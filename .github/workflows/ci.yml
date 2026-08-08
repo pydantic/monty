@@ -132,7 +132,11 @@ jobs:
       - run: cargo llvm-cov clean --workspace
 
       # coverage for `make test-no-features`
+      # `test-rust-os` has no Linux entry, so this is the only Linux run of
+      # monty-fs: its race soaks are enabled here or they never run on Linux.
       - run: cargo llvm-cov --no-report -p monty -p monty-fs
+        env:
+          MONTY_FS_SOAK: '1'
       - run: cargo llvm-cov run --no-report -p monty-datatest
       # coverage for `make test-memory-model-checks`
       - run: cargo llvm-cov --no-report -p monty --features memory-model-checks
