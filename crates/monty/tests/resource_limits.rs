@@ -884,3 +884,32 @@ list(source)
         MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)])
     );
 }
+
+/// Ordering deeply nested namedtuples must raise `RecursionError`, not overflow
+/// the native stack. Ordering compares detached item vecs via `cmp_item_seqs`
+/// rather than a token-bearing iterator, so it charges its own recursion level;
+/// without it, nested namedtuples aborted the process. Covers both the
+/// namedtuple-vs-namedtuple and mixed namedtuple-vs-tuple dispatch paths.
+#[test]
+fn nested_namedtuple_ordering_is_bounded_by_the_recursion_limit() {
+    for build in [
+        "a = NT(0)\nb = NT(0)\nfor _ in range(100):\n    a = NT(a)\n    b = NT(b)",
+        "a = NT(0)\nb = (0,)\nfor _ in range(100):\n    a = NT(a)\n    b = (b,)",
+    ] {
+        let code = format!(
+            r"
+from collections import namedtuple
+NT = namedtuple('NT', ['x'])
+{build}
+a < b
+"
+        );
+        let ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+        let limits = ResourceLimits::default().max_recursion_depth(10);
+        let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+        let exc = result.expect_err("nested namedtuple ordering should exceed the recursion limit");
+        assert_eq!(exc.exc_type(), ExcType::RecursionError, "build: {build}");
+    }
+}

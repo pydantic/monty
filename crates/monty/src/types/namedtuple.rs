@@ -970,7 +970,24 @@ impl HeapItem for NamedTupleClass {
 /// Element-level results propagate exactly as in [`Tuple::py_cmp`]: a `NaN`
 /// yields [`CmpOrder::Unordered`] rather than an error, while a genuinely
 /// type-mismatched pair yields [`CmpOrder::Incomparable`].
+///
+/// Charges one recursion level: unlike equality/repr, ordering does not walk a
+/// token-bearing `NamedTupleIter` (it compares detached item vecs), so nested
+/// namedtuples (`a < b` where each wraps the last) would otherwise recurse
+/// through here per level and overflow the host stack instead of raising
+/// `RecursionError`. A [`RecursionToken`] rather than a `recursion_guard()` is
+/// used because both vecs are still owned on the failure path — the token does
+/// not borrow the VM, so they can be dropped before returning the error.
 pub(crate) fn cmp_item_seqs(a: Vec<Value>, b: Vec<Value>, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
+    let token = match vm.recursion_token() {
+        Ok(token) => token,
+        Err(err) => {
+            a.drop_with(vm);
+            b.drop_with(vm);
+            return Err(err.into());
+        }
+    };
+
     let (a_len, b_len) = (a.len(), b.len());
     let mut result = None;
     for (av, bv) in a.iter().zip(b.iter()) {
@@ -1008,6 +1025,7 @@ pub(crate) fn cmp_item_seqs(a: Vec<Value>, b: Vec<Value>, vm: &mut VM<'_>) -> Ru
     }
     a.drop_with(vm);
     b.drop_with(vm);
+    token.drop_with(vm);
     // All compared pairs were equal, so the shorter sequence sorts first.
     result.unwrap_or_else(|| Ok(CmpOrder::Ordered(a_len.cmp(&b_len))))
 }
