@@ -186,8 +186,10 @@ host by the instance's `id()`. Divergences from real CPython objects:
   real class too (`unhashable type: 'Point'`). But it is not the class:
   each `type(x)` call allocates a fresh object, so `type(a) is type(b)` is
   `False` even for the same class (`==` compares class identity and works);
-  it is not callable; and it cannot be used as the second argument of
-  `isinstance()`.
+  it is not callable; it cannot be used as the second argument of
+  `isinstance()`; and — like Monty class objects generally — it exposes only
+  `__name__` (`__module__`, `__qualname__`, `__doc__`, `__mro__`,
+  `__bases__`, ... raise `AttributeError`).
 - **`repr()` shows all eager attrs in order** (`Point(x=1, y=2)`). After
   sandbox code sets a new attribute, that attribute appears in the repr too —
   CPython's dataclass repr shows declared fields only.
