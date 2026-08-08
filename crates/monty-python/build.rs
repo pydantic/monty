@@ -100,18 +100,22 @@ fn sync_meta_pyproject(path: &Path) {
 const PINNED_DISTS: [&str; 2] = ["pydantic-monty-client", "pydantic-monty-runtime"];
 
 /// The metapackage's pyproject.toml, which owns the `pydantic-monty` name on
-/// PyPI, or `None` when this build is not running from the monty workspace.
+/// PyPI, or `None` when there is nothing to sync.
 ///
 /// The metapackage has no Cargo package of its own to carry the version, so
 /// this build script — the one belonging to the distribution it pins —
-/// maintains it. maturin's sdist keeps this crate at `crates/monty-python/`
-/// but ships only its Rust path dependencies, so `packages/` is absent and
-/// there is nothing to sync; installing the sdist must not panic over that.
-/// The sdist root's `PKG-INFO`, which a checkout never has, marks that case —
-/// anywhere else a missing metapackage is a real error and must fail the build.
+/// maintains it. It lives outside this crate, and maturin's sdist ships only
+/// the crate and its Rust path dependencies, so a source install legitimately
+/// has no metapackage and must not panic over that.
 fn meta_pyproject_path() -> Option<PathBuf> {
-    let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set")).join("../..");
-    (!root.join("PKG-INFO").is_file()).then(|| root.join("packages/pydantic-monty/pyproject.toml"))
+    let path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"))
+        .join("../../packages/pydantic-monty/pyproject.toml");
+    if path.is_file() {
+        Some(path)
+    } else {
+        println!("cargo:warning=no file at {}, skipping version sync", path.display());
+        None
+    }
 }
 
 /// The index in [`PINNED_DISTS`] of the distribution `line` pins, if any.
