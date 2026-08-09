@@ -1,0 +1,23 @@
+crates/monty-proto/src/worker.rs
+  s_46822aee4e0d8e::t_2b0278b77e3cb9 417-418,425-431
+crates/monty-proto/src/lib.rs
+  s_46822aee4e0d8e::t_4e93582471f63c 20-21
+crates/monty-js/__test__/protocol_version.spec.ts
+  s_46822aee4e0d8e::t_169740e8c6e47e 1-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "17e4658ddb02dc7c62c82d9f92c69722573cb1f7",
+  "prompts": {},
+  "sessions": {
+    "s_46822aee4e0d8e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5d41f01-91cc-4f88-a793-2e04898c315e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
