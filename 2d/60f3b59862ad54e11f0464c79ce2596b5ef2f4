@@ -1,0 +1,96 @@
+crates/monty-proto/tests/dispatch.rs
+  s_46822aee4e0d8e::t_df40b4c2a2db18 8,179
+  s_46822aee4e0d8e::t_813c33204ed749 11
+  s_46822aee4e0d8e::t_7a1948a3836322 177-178,180-181,184,193-196
+  s_46822aee4e0d8e::t_f8da03023fc49f 173-174
+  s_46822aee4e0d8e::t_ecfaeffd43a889 217
+README.md
+  s_46822aee4e0d8e::t_0afb5e305e67cf 228,231-243,247
+crates/monty/src/dump_format.rs
+  s_46822aee4e0d8e::t_1978f5e36d5cd0 12,41,48
+  s_46822aee4e0d8e::t_67239d701cba19 2,23-25,30-38,40,42-47,49-50,80,82-83,107,169-171,198-201,203,205-219
+  s_46822aee4e0d8e::t_d4f887a1a10847 156
+  s_46822aee4e0d8e::t_0514a62aa5206f 84-87,133-139,141-152,155,157-160,166
+  s_46822aee4e0d8e::t_8a2b3190323e79 202
+  s_46822aee4e0d8e::t_4eb508af18c47e 39,52-56,59,81,88-98,100-106
+  s_46822aee4e0d8e::t_094a35a89df51f 26,172,177,187,192,197,204,220
+  s_46822aee4e0d8e::t_cd2aeb0dd7c65a 153-154
+  s_46822aee4e0d8e::t_b04943ec06d600 3-8,13,20,29
+  s_46822aee4e0d8e::t_b3f144e36cd77a 10
+  ai_agent 64-79,108-130
+  s_46822aee4e0d8e::t_d8387832ee0aa0 140
+  s_46822aee4e0d8e::t_9a2055ff1b2621 165
+  s_46822aee4e0d8e::t_28085fae3ea95e 15
+crates/monty-datatest/Cargo.toml
+  s_46822aee4e0d8e::t_6f81cd3a7c4599 19-20
+crates/monty/tests/binary_serde.rs
+  s_46822aee4e0d8e::t_ad644d29fbcaf1 34,44,62,74,111,123,144,178,218,237,262
+  s_46822aee4e0d8e::t_97144e6625eff3 53,66,90,114,132,193,204,269
+  s_46822aee4e0d8e::t_21610573304eb7 45,147,179,203,214
+  s_46822aee4e0d8e::t_875d7e564e20f7 164-165
+  s_46822aee4e0d8e::t_d73cefbafc6e45 31,35,37
+  s_46822aee4e0d8e::t_51db0a08ddcab4 12,15
+  s_46822aee4e0d8e::t_5dbb3c9fb36e32 1,3-8,13-14,16-17
+crates/monty/README.md
+  s_46822aee4e0d8e::t_89d1cc2db44d2a 92,95-96,98-100,102-103,105-106,110
+crates/monty-proto/src/generated/monty.v1.rs
+  s_46822aee4e0d8e::t_4d192b17ea2ac7 472-474
+crates/monty/src/lib.rs
+  s_46822aee4e0d8e::t_85653a20b19ae5 41
+limitations/pool-architecture.md
+  s_46822aee4e0d8e::t_7da56e2915fbbe 332-333,335-336
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_46822aee4e0d8e::t_4d192b17ea2ac7 571-573
+crates/monty/tests/external_function_identity.rs
+  s_46822aee4e0d8e::t_cada97b625ecd8 229,232
+crates/monty-datatest/src/main.rs
+  s_46822aee4e0d8e::t_82aa86dc8ed195 1803-1806,1809-1810
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_46822aee4e0d8e::t_8142af4405b517 446-448
+  ai_agent 568-579,582-585,591-593
+Cargo.lock
+  ai_agent 2454
+crates/monty-proto/src/worker.rs
+  s_46822aee4e0d8e::t_7a20a8649b107c 21
+  s_46822aee4e0d8e::t_87eb0cd640c52f 623,625,628,630-634,636-637
+  s_46822aee4e0d8e::t_346ebbb5be0a9b 635,638-641,649
+  s_46822aee4e0d8e::t_a3272b83fd3c80 261,617
+  s_46822aee4e0d8e::t_8967af7a7f1b48 589-590
+  s_46822aee4e0d8e::t_826beb1a614393 602,621-622,629
+  s_46822aee4e0d8e::t_8cb7f18b2f299b 25
+  s_46822aee4e0d8e::t_35781dcfca0231 597-599,603
+crates/monty-types/src/lib.rs
+  s_46822aee4e0d8e::t_adba5475519121 42
+crates/monty-types/src/type_checking.rs
+  s_46822aee4e0d8e::t_1c0ac00e18f66f 3
+  ai_agent 17-26,79-89
+  s_46822aee4e0d8e::t_aa1a291f825b68 71
+  s_46822aee4e0d8e::t_083f5041e8ccce 13-14,16,27-28
+  s_46822aee4e0d8e::t_c0f8a41f96d22e 12
+  s_46822aee4e0d8e::t_d752745ba1db19 15
+crates/monty/tests/repl.rs
+  s_46822aee4e0d8e::t_4238245459b358 45
+  s_46822aee4e0d8e::t_40a44cb403d989 265,278,352,383
+  s_46822aee4e0d8e::t_862c941e863008 50-58,68,85-86
+  s_46822aee4e0d8e::t_df40b4c2a2db18 9,43
+  s_46822aee4e0d8e::t_85ddd5c24a564a 59-67,69-84,87-92
+  s_46822aee4e0d8e::t_2c054827c398e4 8
+  s_46822aee4e0d8e::t_e1996d619dcd98 40-42,44,46-49,93-94
+  s_46822aee4e0d8e::t_d74ea938d5ec52 7,10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2d60f3b59862ad54e11f0464c79ce2596b5ef2f4",
+  "prompts": {},
+  "sessions": {
+    "s_46822aee4e0d8e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5d41f01-91cc-4f88-a793-2e04898c315e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
