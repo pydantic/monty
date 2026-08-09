@@ -1,0 +1,22 @@
+crates/monty-types/src/lib.rs
+  s_b79b4eb0d878f1::t_9c22e47271b88c 3-8
+crates/monty-proto/src/lib.rs
+  s_b79b4eb0d878f1::t_ee8a109b5ca04a 23
+  s_b79b4eb0d878f1::t_0e598225e90b0f 21-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2212422b4a8d6b69f2141986ec7ca5fab533a8b2",
+  "prompts": {},
+  "sessions": {
+    "s_b79b4eb0d878f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "21af03e9-efdb-42c5-a117-177dce75a38b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
