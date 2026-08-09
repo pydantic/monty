@@ -1970,7 +1970,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
 /// Gated behind `--cfg heap_reader_compile_fail_tests` so they are only compiled
 /// when the integration test harness runs `cargo check` with the appropriate flags.
 #[cfg(heap_reader_compile_fail_tests)]
-#[path = "../tests/heap_reader_compile_fail_cases/cases.rs"]
+#[path = "../../tests/heap_reader_compile_fail_cases/cases.rs"]
 mod heap_reader_compile_fail_cases;
 
 /// Cycle-collector unit tests.
