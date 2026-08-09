@@ -784,9 +784,13 @@ impl Checkout {
     /// typed checkout, and so are the duration bookkeeping and the deadline
     /// derived from it — a raw-driven session keeps its `max_duration` backstop,
     /// and a raw `Load` re-adopts the dump's budget just as [`Checkout::restore`]
-    /// does. A `FatalError` (or, over WebSocket, `ShutdownDump`) turn-ender is
-    /// returned like any other so the driver can forward it, but the worker
-    /// behind it is discarded first — later calls report [`PoolError::Finished`].
+    /// does. Lifecycle requests (`Configure`/`Reset`/`Shutdown`) are refused
+    /// without reaching the worker: they belong to the checkout, and forwarding
+    /// a client's would let it re-`Configure` its way out of the session's
+    /// resource limits. A `FatalError` (or, over WebSocket, `ShutdownDump`)
+    /// turn-ender is returned like any other so the driver can forward it, but
+    /// the worker behind it is discarded first — later calls report
+    /// [`PoolError::Finished`].
     ///
     /// # Errors
     /// As [`Checkout::feed`]: a dead worker, a protocol violation, or a turn
@@ -798,11 +802,33 @@ impl Checkout {
         on_event: OnRawEvent<'_>,
     ) -> Result<pb::ChildEvent, PoolError> {
         self.ensure_ready()?;
-        // as `restore`: the dump carries its own limits and consumed time, so
+        // Lifecycle requests are the checkout's own business — `create` sends
+        // `Configure`, `finish` sends `Reset`, the pool owns `Shutdown` — and
+        // forwarding a client's would let it disarm the operator-chosen limits:
+        // `Reset` returns the child to its default (unlimited) session budget,
+        // and a follow-up `Configure` re-establishes with limits of the
+        // client's choosing. Caller misuse, so the worker stays usable.
+        if matches!(
+            request.kind,
+            None | Some(
+                pb::parent_request::Kind::Configure(_)
+                    | pb::parent_request::Kind::Reset(_)
+                    | pb::parent_request::Kind::Shutdown(_)
+            )
+        ) {
+            return Err(PoolError::Protocol(
+                "lifecycle requests (Configure/Reset/Shutdown) cannot be driven through turn_raw".into(),
+            ));
+        }
+        // As `restore`: the dump carries its own limits and consumed time, so
         // forget what `Configure` established and re-adopt both from the
         // reply's timing fields — otherwise the backstop below would keep
-        // measuring the restored session against the wrong budget
-        if matches!(request.kind, Some(pb::parent_request::Kind::Load(_))) {
+        // measuring the restored session against the wrong budget. Snapshot
+        // first: the pre-send frame-size rejection leaves the worker synced
+        // and the session live, so the budget must survive it too.
+        let saved_timing = matches!(request.kind, Some(pb::parent_request::Kind::Load(_)))
+            .then(|| (self.duration_budget, self.reported_execution));
+        if saved_timing.is_some() {
             self.duration_budget = None;
             self.reported_execution = Duration::ZERO;
         }
@@ -821,6 +847,16 @@ impl Checkout {
             None => self.turn_io_raw(request, on_event).await,
         };
         self.turn_in_flight = false;
+        // a failure that left the worker alive means the `Load` never reached
+        // the child (an oversize frame, rejected before any bytes were
+        // written) — the session continues on its original budget
+        if let Some((budget, reported)) = saved_timing
+            && outcome.is_err()
+            && self.worker.is_some()
+        {
+            self.duration_budget = budget;
+            self.reported_execution = reported;
+        }
         outcome
     }
 
