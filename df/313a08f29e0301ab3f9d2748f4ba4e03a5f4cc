@@ -1,0 +1,19 @@
+crates/monty-js/vitest.browser.config.ts
+  s_46822aee4e0d8e::t_153f70695d1a2f 27-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "df313a08f29e0301ab3f9d2748f4ba4e03a5f4cc",
+  "prompts": {},
+  "sessions": {
+    "s_46822aee4e0d8e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5d41f01-91cc-4f88-a793-2e04898c315e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
