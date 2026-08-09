@@ -414,13 +414,21 @@ impl Child {
             return Err(Box::new(protocol_violation("session has not been configured")));
         };
         let type_check_config = TypeCheckingConfig::from(config.as_ref());
+        // Destructured exhaustively on purpose: a new `Configure` field must
+        // fail to compile here until the child decides what to do with it.
         let pb::Configure {
             script_name,
             limits,
             type_check,
             type_check_stubs,
             assert_message_annotations,
-            ..
+            // read above, through the accessor that validates the enum number
+            type_check_format: _,
+            type_check_color: _,
+            // range-checked when `Configure` arrived
+            protocol_version: _,
+            // informational only — reported, never checked
+            monty_version: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;

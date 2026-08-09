@@ -55,7 +55,6 @@ name = "dispatch"
 required-features = ["worker"]
 
 [dev-dependencies]
-insta = { workspace = true }
 monty = { workspace = true }
 
 [lints]

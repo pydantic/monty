@@ -17,9 +17,8 @@ pub mod worker;
 ///
 /// Bump on any change a peer at the previous version could mis-read: removing
 /// or repurposing a field, changing a field's meaning, or adding one the child
-/// requires. Purely additive changes a older peer can ignore do not need a
-/// bump — but see `protocol_version_matches_schema` for the guard that forces
-/// the decision to be made deliberately.
+/// requires. Purely additive changes an older peer can ignore do not need a
+/// bump.
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
