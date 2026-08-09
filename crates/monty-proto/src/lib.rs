@@ -12,18 +12,14 @@ mod wire;
 #[cfg(feature = "worker")]
 pub mod worker;
 
-/// The monty version this build speaks the wire protocol as, used for the
-/// `Configure.monty_version` skew check. Parent and child must be deployed in
-/// lockstep (the protocol has no in-band negotiation), so both sides compare
-/// against this single constant instead of each reading `CARGO_PKG_VERSION`
-/// independently. Equals the workspace version, since every crate shares it.
-pub const MONTY_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 pub use convert::{MAX_VALUE_DEPTH, ProtoConvertError, exceeds_max_value_depth, future_results_from_proto};
 pub use frame::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_framed_into,
     encode_to_capped_vec, exceeds_max_frame_len, write_frame,
 };
 pub use generated::pb;
+// Re-exported so wire-protocol users keep a single import for the
+// `Configure.monty_version` skew check; the constant lives in `monty-types`.
+pub use monty_types::MONTY_VERSION;
 pub use requirement::validate_requirement;
 pub use wire::{WireFunctionCall, WireObject, reset_decode_budget};

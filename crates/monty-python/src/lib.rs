@@ -43,7 +43,7 @@ use version::cargo_version_to_pep440;
 fn get_version() -> &'static str {
     static VERSION: OnceLock<String> = OnceLock::new();
 
-    VERSION.get_or_init(|| cargo_version_to_pep440(env!("CARGO_PKG_VERSION")))
+    VERSION.get_or_init(|| cargo_version_to_pep440(monty_types::MONTY_VERSION))
 }
 
 /// Private Python object type used for the public `NOT_HANDLED` singleton.

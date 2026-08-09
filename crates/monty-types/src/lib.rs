@@ -1,5 +1,11 @@
 #![doc = include_str!("../README.md")]
 
+/// The monty version this build was compiled as. Every crate shares the
+/// workspace version, so hosts and workers alike can compare against this
+/// single constant — notably the wire protocol's `Configure.monty_version`
+/// skew check, where parent and child must be deployed in lockstep.
+pub const MONTY_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod args;
 mod builtins;
 mod exceptions;
