@@ -1,0 +1,34 @@
+crates/monty-server/Dockerfile
+  s_2adb255bbe36f4::t_e444c22c41fc9d 49-55,65,69
+  s_2adb255bbe36f4::t_23ecb8a6e8a4ed 85
+Makefile
+  s_2adb255bbe36f4::t_0100bbd65a91b1 6
+  s_2adb255bbe36f4::t_e8490eea59c23a 3-5
+.github/workflows/ci.yml
+  s_2adb255bbe36f4::t_f25de5b84e83f0 122-123,125
+crates/monty-server/tests/request_span_test.rs
+  s_2adb255bbe36f4::t_d9dd5756e3a0a7 252-255
+  s_2adb255bbe36f4::t_7aba2a4ba148e5 251,256
+  s_2adb255bbe36f4::t_44a741f784d844 154-155,158,162,165,167
+  s_2adb255bbe36f4::t_79ede432534fd6 263,267,273-276,278
+crates/monty-server/Makefile
+  s_2adb255bbe36f4::t_37d1eb33bfad4d 36
+  s_2adb255bbe36f4::t_61bf6eebd664ae 43,46-47
+  s_2adb255bbe36f4::t_c8c81f953c40bb 18-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "699e76a684f96b96d651f4af6c2e9bf0281c92f1",
+  "prompts": {},
+  "sessions": {
+    "s_2adb255bbe36f4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c9366df0-106b-447f-aea2-cc72430d042a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
