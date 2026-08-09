@@ -7,11 +7,11 @@
 
 use monty::{MontyRepl, ReplProgress};
 use monty_proto::{
-    FrameReader, MONTY_VERSION, WireObject, pb,
+    FrameReader, WireObject, pb,
     worker::{Child, DUMP_VERSION, HandleOutcome, dispatch_frame},
     write_frame,
 };
-use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
+use monty_types::{CompileOptions, MONTY_VERSION, MontyObject, PrintWriter, ResourceTracker};
 
 /// Frames one request the way a host transport would before posting it.
 fn frame_request(kind: pb::parent_request::Kind) -> Vec<u8> {

@@ -18,8 +18,5 @@ pub use frame::{
     encode_to_capped_vec, exceeds_max_frame_len, write_frame,
 };
 pub use generated::pb;
-// Re-exported so wire-protocol users keep a single import for the
-// `Configure.monty_version` skew check; the constant lives in `monty-types`.
-pub use monty_types::MONTY_VERSION;
 pub use requirement::validate_requirement;
 pub use wire::{WireFunctionCall, WireObject, reset_decode_budget};

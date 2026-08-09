@@ -21,13 +21,13 @@ use std::{borrow::Cow, mem};
 use monty::{MontyRepl, ReplProgress, ReplStartError};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
-    PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MONTY_VERSION, MontyException, MontyObject,
+    OsFunctionCall, PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckingConfig, TypeCheckingFormat,
 };
 
 use super::{
-    FrameError, FrameReader, MAX_FRAME_LEN, MONTY_VERSION, WireFunctionCall, exceeds_max_frame_len,
-    exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
+    FrameError, FrameReader, MAX_FRAME_LEN, WireFunctionCall, exceeds_max_frame_len, exceeds_max_value_depth,
+    future_results_from_proto, pb, write_frame,
 };
 use crate::convert::usize_field;
 
