@@ -1,0 +1,26 @@
+crates/monty-proto/src/lib.rs
+  s_2f0a6f1d50974c::t_b6cf0d2d236fcf 3-4
+  s_2f0a6f1d50974c::t_b1c54b1f846abe 39-87
+crates/monty-proto/src/worker.rs
+  s_2f0a6f1d50974c::t_d1e15d799609e9 19
+  s_2f0a6f1d50974c::t_34e462f9cd2a22 29-30
+  s_2f0a6f1d50974c::t_b6da2b446e9734 231,235,237
+crates/monty-runtime/tests/subprocess.rs
+  s_2f0a6f1d50974c::t_752b6910b71e28 1069-1075,1077
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6625331d044d6f138762512801f3631ce40b16fb",
+  "prompts": {},
+  "sessions": {
+    "s_2f0a6f1d50974c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cffa5c66-2943-483b-8369-68c94cdec2e4",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
