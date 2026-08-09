@@ -1,5 +1,5 @@
 error[E0521]: borrowed data escapes outside of closure
-   --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:183:13
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:183:13
     |
 179 |         HeapReader::with(heap_b, reader_a, |reader_b, smuggled| {
     |                                             --------  -------- `smuggled` declared here, outside of the closure body

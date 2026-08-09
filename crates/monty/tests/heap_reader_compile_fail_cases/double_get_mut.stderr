@@ -1,5 +1,5 @@
 error[E0499]: cannot borrow `*heap` as mutable more than once at a time
-  --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:55:31
+  --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:55:31
    |
 54 |         let ref_a = a.get_mut(heap);
    |                               ---- first mutable borrow occurs here

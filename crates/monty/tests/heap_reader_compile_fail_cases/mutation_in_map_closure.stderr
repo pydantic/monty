@@ -1,5 +1,5 @@
 error[E0500]: closure requires unique access to `*heap` but it is already borrowed
-   --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:116:18
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:116:18
     |
 113 |             .get(heap)
     |                  ---- borrow occurs here

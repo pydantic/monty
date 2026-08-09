@@ -1,5 +1,5 @@
 error[E0502]: cannot borrow `*heap` as mutable because it is also borrowed as immutable
-  --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:32:41
+  --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:32:41
    |
 31 |         let slice = a.get(heap).as_slice();
    |                           ---- immutable borrow occurs here
