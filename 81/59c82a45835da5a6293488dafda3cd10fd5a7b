@@ -1,0 +1,19 @@
+pyproject.toml
+  s_de4f74ec615011::t_7276be21f75a42 26-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8159c82a45835da5a6293488dafda3cd10fd5a7b",
+  "prompts": {},
+  "sessions": {
+    "s_de4f74ec615011": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3efa4ae0-6cac-44d0-b53a-15a4af6b608e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
