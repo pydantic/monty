@@ -14,7 +14,7 @@ use std::{
 use monty_pool::{
     Checkout, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
-use monty_proto::{WireFunctionCall, decode_frame, encode_to_capped_vec, pb};
+use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb};
 use monty_types::{MontyObject, PrintStream, ResourceLimits};
 use tokio::task::spawn_blocking;
 use tungstenite::{Message, WebSocket};
@@ -291,6 +291,272 @@ async fn duration_backstop_kills_an_unresponsive_worker() {
     };
     // the armed deadline was the remaining budget (≤100ms) plus the grace
     assert!(timeout <= Duration::from_millis(400), "deadline was {timeout:?}");
+    join_server(server).await;
+}
+
+/// The same backstop arms on the raw path, which a relay drives instead of
+/// `feed`. `turn_raw` used to arm `request_timeout` alone, so a session whose
+/// only bound was `max_duration` had no parent-side deadline at all.
+#[tokio::test]
+async fn duration_backstop_arms_on_the_raw_path() {
+    let (listener, mut config) = ws_pool_config();
+    config.duration_limit_grace = Some(Duration::from_millis(300));
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        // never reply; only the backstop can end this turn
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let request = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "while True:\n    pass".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let err = checkout.turn_raw(&request, &mut on_event).await.unwrap_err();
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    assert!(timeout <= Duration::from_millis(400), "deadline was {timeout:?}");
+    join_server(server).await;
+}
+
+/// A raw `Load` re-adopts the dump's duration budget, exactly as `restore` —
+/// it used to keep the `Configure`-time budget, so a restored session's
+/// backstop measured turns against the wrong limit.
+#[tokio::test]
+async fn a_raw_load_adopts_the_dumps_duration_budget() {
+    let (listener, mut config) = ws_pool_config();
+    config.duration_limit_grace = Some(Duration::from_millis(300));
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
+        // an idle-dump `Load` reply, stamped with the dump's own limits
+        send_event(
+            &mut socket,
+            &pb::ChildEvent {
+                total_execution_micros: 0,
+                max_duration_micros: Some(100_000),
+                restored_script_name: None,
+                kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+            },
+        );
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        // never reply; only the backstop can end this turn
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_secs(5))),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let load = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        ..pb::ParentRequest::default()
+    };
+    checkout.turn_raw(&load, &mut on_event).await.expect("load");
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "while True:\n    pass".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let err = checkout.turn_raw(&feed, &mut on_event).await.unwrap_err();
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    // the dump's 100ms budget plus the grace — not the Configure-time 5s
+    assert_eq!(timeout, Duration::from_millis(400));
+    join_server(server).await;
+}
+
+/// Lifecycle requests are refused on the raw path without reaching the
+/// worker: forwarding a client's `Reset`/`Configure` would let it disarm the
+/// operator-chosen resource limits. The session stays live, which the mock
+/// server proves by seeing the `Feed` as its very next frame.
+#[tokio::test]
+async fn lifecycle_requests_are_refused_on_the_raw_path() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        // the refused requests never arrive: the next frame is the Feed
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::Complete(pb::Complete {
+                value: Some(MontyObject::Int(2).into()),
+            })),
+        );
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let lifecycle_kinds = [
+        None,
+        Some(pb::parent_request::Kind::Configure(pb::Configure::default())),
+        Some(pb::parent_request::Kind::Reset(pb::Reset {})),
+        Some(pb::parent_request::Kind::Shutdown(pb::Shutdown {})),
+    ];
+    for kind in lifecycle_kinds {
+        let request = pb::ParentRequest {
+            kind,
+            ..pb::ParentRequest::default()
+        };
+        let err = checkout.turn_raw(&request, &mut on_event).await.unwrap_err();
+        assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
+    }
+    // the session survived every refusal
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "1 + 1".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let event = checkout.turn_raw(&feed, &mut on_event).await.expect("feed");
+    assert!(
+        matches!(event.kind, Some(pb::child_event::Kind::Complete(_))),
+        "got {:?}",
+        event.kind
+    );
+    join_server(server).await;
+}
+
+/// An oversize raw `Load` keeps the session's duration budget: the frame is
+/// rejected pre-send with the session live, so the budget cleared in
+/// anticipation of the dump's limits must be put back.
+#[tokio::test]
+async fn an_oversize_raw_load_keeps_the_duration_budget() {
+    let (listener, mut config) = ws_pool_config();
+    config.duration_limit_grace = Some(Duration::from_millis(300));
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        // the oversize Load never arrives: the next frame is the Feed, which
+        // is never answered so only the backstop can end it
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let load = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![0; MAX_FRAME_LEN as usize + 1],
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let err = checkout.turn_raw(&load, &mut on_event).await.unwrap_err();
+    assert!(matches!(err, PoolError::Runtime(_)), "got {err:?}");
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "while True:\n    pass".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let err = checkout.turn_raw(&feed, &mut on_event).await.unwrap_err();
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    // the Configure-time budget plus the grace still arms — it was not lost
+    // to the rejected Load
+    assert_eq!(timeout, Duration::from_millis(400));
+    join_server(server).await;
+}
+
+/// A `ShutdownDump` ends a raw turn *and* the connection behind it: the frame
+/// (and its dump) is handed back for the driver to forward, but the gone
+/// relay's worker is discarded rather than kept until the next failure.
+#[tokio::test]
+async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::Shutdown(pb::ShutdownDump {
+                dump: Some(b"relay-signed state".to_vec()),
+            })),
+        );
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let request = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "1 + 1".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let event = checkout
+        .turn_raw(&request, &mut on_event)
+        .await
+        .expect("the shutdown frame is the turn-ender");
+    let Some(pb::child_event::Kind::Shutdown(shutdown)) = event.kind else {
+        panic!("expected the ShutdownDump frame back, got {:?}", event.kind);
+    };
+    assert_eq!(shutdown.dump.as_deref(), Some(b"relay-signed state".as_slice()));
+    // the connection was discarded with the frame
+    let err = checkout.turn_raw(&request, &mut on_event).await.unwrap_err();
+    assert!(matches!(err, PoolError::Finished), "got {err:?}");
     join_server(server).await;
 }
 

@@ -26,6 +26,9 @@ use monty_pool::{
     MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
     on_print_sync,
 };
+// only the unix-gated raw-path test forges worker frames
+#[cfg(unix)]
+use monty_proto::{encode_framed_into, pb};
 use monty_types::{MontyObject, PrintStream, ResourceLimits, TypeCheckingConfig, TypeCheckingFormat};
 use tokio::time::sleep;
 
@@ -1170,6 +1173,161 @@ async fn unrecognised_exit_code_stays_an_opaque_death() {
     // the message says only what the pool was doing and what it reaped — no
     // memory wording, which is what `OOM_EXIT_CODE` alone earns
     assert_snapshot!(err.to_string(), @"monty worker crashed while waiting for a reply (exit status: 64)");
+}
+
+/// A local child cannot pass a `ShutdownDump` off as a turn-ender on the raw
+/// path: only a serving relay sends one, and accepting it would let a
+/// compromised child hand a dump it minted itself out through a relay that
+/// signs whatever it forwards.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
+    let dir = tempfile::tempdir().unwrap();
+    // the two frames the stand-in replays, in order: `Ok` answers the
+    // `Configure` that establishes the session, then the forged dump
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&child_event(pb::child_event::Kind::Shutdown(
+        pb::ShutdownDump {
+            dump: Some(b"a dump the child minted itself".to_vec()),
+        },
+    ))));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+
+    let fake = dir.path().join("monty");
+    // both frames are written up front and the process stays alive; the parent
+    // reads them in turn as it sends `Configure` and then the raw request
+    fs::write(&fake, format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display())).unwrap();
+    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+
+    let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig::default())
+        .await
+        .expect("the stand-in answers Configure with Ok");
+    let request = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "1 + 1".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let err = checkout
+        .turn_raw(&request, &mut on_event)
+        .await
+        .expect_err("a subprocess ShutdownDump must not be accepted");
+    assert_snapshot!(
+        err.to_string(),
+        @"monty worker protocol error: subprocess worker sent a ShutdownDump"
+    );
+}
+
+/// An event with no `kind` ends no turn on the raw path. Every wire field is
+/// optional, so a hostile worker can send one whose oneof is unset — it must
+/// not reach the raw driver's client as a successful turn-ender.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
+    let dir = tempfile::tempdir().unwrap();
+    // `Ok` answers the establishing `Configure`, then the kindless frame
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&pb::ChildEvent::default()));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+
+    let fake = dir.path().join("monty");
+    fs::write(&fake, format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display())).unwrap();
+    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+
+    let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig::default())
+        .await
+        .expect("the stand-in answers Configure with Ok");
+    let request = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "1 + 1".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let err = checkout
+        .turn_raw(&request, &mut on_event)
+        .await
+        .expect_err("a kindless event must not be accepted as a turn-ender");
+    assert_snapshot!(
+        err.to_string(),
+        @"monty worker protocol error: worker sent an event with no kind"
+    );
+}
+
+/// A `FatalError` ends a raw turn *and* the worker behind it: the frame is
+/// handed back for the driver to forward, but the dead child is reaped and
+/// discarded rather than holding its pool slot until the next failure.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    // `Ok` answers the establishing `Configure`, then the fatal frame
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&child_event(pb::child_event::Kind::FatalError(
+        pb::FatalError {
+            message: "the child is done".to_owned(),
+        },
+    ))));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+
+    let fake = dir.path().join("monty");
+    fs::write(&fake, format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display())).unwrap();
+    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+
+    let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig::default())
+        .await
+        .expect("the stand-in answers Configure with Ok");
+    let request = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "1 + 1".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let event = checkout
+        .turn_raw(&request, &mut on_event)
+        .await
+        .expect("the fatal frame is the turn-ender");
+    let Some(pb::child_event::Kind::FatalError(fatal)) = event.kind else {
+        panic!("expected the FatalError frame back, got {:?}", event.kind);
+    };
+    assert_eq!(fatal.message, "the child is done");
+    // the worker was discarded with the frame, not kept until the next failure
+    let err = checkout.turn_raw(&request, &mut on_event).await.unwrap_err();
+    assert!(matches!(err, PoolError::Finished), "got {err:?}");
+}
+
+/// Length-prefixes one event exactly as a worker writes it.
+#[cfg(unix)]
+fn framed(event: &pb::ChildEvent) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_framed_into(event, &mut buf).expect("encode");
+    buf
+}
+
+/// A `ChildEvent` carrying `kind` and nothing else.
+#[cfg(unix)]
+fn child_event(kind: pb::child_event::Kind) -> pb::ChildEvent {
+    pb::ChildEvent {
+        kind: Some(kind),
+        ..pb::ChildEvent::default()
+    }
 }
 
 /// A refused allocation is the one `Runtime` error whose worker is already

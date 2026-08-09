@@ -45,7 +45,7 @@ futures-util = { workspace = true }
 # before the first `wss://` dial (see `install_crypto_provider` in worker.rs).
 rustls = { workspace = true }
 # Span construction only; applications choose and configure exporter features.
-logfire = { version = "0.11", default-features = false, optional = true }
+logfire = { workspace = true, optional = true }
 # telemetry_json's logfire-style value encoding
 num-traits = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }

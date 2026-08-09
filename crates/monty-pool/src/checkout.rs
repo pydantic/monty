@@ -5,6 +5,7 @@ use std::{
     future::{Future, ready},
     path::Path,
     pin::Pin,
+    process::ExitStatus,
     sync::Arc,
     time::Duration,
 };
@@ -204,6 +205,11 @@ pub type PrintFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// with [`on_print_sync`]. The future must be `'static`, so it captures owned
 /// copies of whatever it needs (including the text, if consumed async).
 pub type OnPrint<'a> = &'a mut (dyn FnMut(PrintStream, &str) -> PrintFuture + Send);
+
+/// Callback for the events a [`Checkout::turn_raw`] streams before the
+/// turn-ender — `Print`s today. Returns a future for the same reason
+/// [`OnPrint`] does: a slow sink backpressures the worker.
+pub type OnRawEvent<'a> = &'a mut (dyn FnMut(&pb::ChildEvent) -> PrintFuture + Send);
 
 /// Adapts a synchronous print sink to the [`OnPrint`] callback shape.
 ///
@@ -759,6 +765,159 @@ impl Checkout {
         outcome
     }
 
+    /// Sends `request` and returns the child's turn-ending event, as protobuf —
+    /// no conversion to [`TurnEvent`].
+    ///
+    /// For callers that already speak the wire (a relay bridging a remote
+    /// client): rebuilding a `ChildEvent` frame from a [`TurnEvent`] means
+    /// hand-inverting the whole protocol, so this hands back what the child
+    /// actually sent. `on_event` sees each streamed `Print` before the
+    /// turn-ender.
+    ///
+    /// **Bypasses this checkout's suspension bookkeeping** (`pending`,
+    /// `feed_mounts`, `restored_script_name`) — never interleave with
+    /// `feed`/`resume`/`restore`. Worker lifecycle, poisoning and the
+    /// `max_duration` backstop work as on the typed path; a raw `Load`
+    /// re-adopts the dump's budget like [`Checkout::restore`]. A `FatalError`
+    /// (or WebSocket `ShutdownDump`) turn-ender is returned so the driver can
+    /// forward it, but discards the worker first — later calls report
+    /// [`PoolError::Finished`].
+    ///
+    /// # Security
+    /// `request` is typically a remote client's, so it is treated as hostile:
+    /// `Configure`/`Reset`/`Shutdown` are refused here (a client could
+    /// otherwise `Reset` away the operator-chosen resource limits and
+    /// re-`Configure` its own). A `Load`'s bytes DO reach the worker's
+    /// deserialiser — the driver must verify a dump is one it issued
+    /// (monty-server signs and checks them) before passing it in.
+    ///
+    /// # Errors
+    /// As [`Checkout::feed`]: a dead worker, a protocol violation, or a turn
+    /// that outlived `request_timeout` or the remaining `max_duration` budget.
+    pub async fn turn_raw(
+        &mut self,
+        request: &pb::ParentRequest,
+        on_event: OnRawEvent<'_>,
+    ) -> Result<pb::ChildEvent, PoolError> {
+        self.ensure_ready()?;
+        // A raw client could otherwise `Reset` the child back to its default
+        // (unlimited) session budget and re-`Configure` with its own limits.
+        // Caller misuse, so the worker stays usable.
+        if matches!(
+            request.kind,
+            None | Some(
+                pb::parent_request::Kind::Configure(_)
+                    | pb::parent_request::Kind::Reset(_)
+                    | pb::parent_request::Kind::Shutdown(_)
+            )
+        ) {
+            return Err(PoolError::Protocol(
+                "lifecycle requests (Configure/Reset/Shutdown) cannot be driven through turn_raw".into(),
+            ));
+        }
+        // As `restore`: forget the Configure-time budget and re-adopt the
+        // dump's from the reply's timing fields. Snapshotted because the
+        // pre-send frame-size rejection leaves the session live.
+        let saved_timing = matches!(request.kind, Some(pb::parent_request::Kind::Load(_)))
+            .then(|| (self.duration_budget, self.reported_execution));
+        if saved_timing.is_some() {
+            self.duration_budget = None;
+            self.reported_execution = Duration::ZERO;
+        }
+        self.turn_in_flight = true;
+        // as `expect_turn`: `request_timeout` alone would drop the `max_duration`
+        // backstop, leaving a wedged child bounded by a timeout that may be unset
+        let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
+        self.armed_deadline = deadline;
+        let outcome = match deadline {
+            Some(limit) => match timeout(limit, self.turn_io_raw(request, on_event)).await {
+                Ok(outcome) => outcome,
+                Err(_elapsed) => Err(self.poison_timeout().await),
+            },
+            None => self.turn_io_raw(request, on_event).await,
+        };
+        self.turn_in_flight = false;
+        // an error with the worker still alive is the pre-send frame-size
+        // rejection: the `Load` never reached the child, put the budget back
+        if let Some((budget, reported)) = saved_timing
+            && outcome.is_err()
+            && self.worker.is_some()
+        {
+            self.duration_budget = budget;
+            self.reported_execution = reported;
+        }
+        outcome
+    }
+
+    /// The body of [`Self::turn_raw`]: send, stream, return the turn-ender.
+    ///
+    /// Mirrors `turn_io`'s failure handling, but events are returned rather
+    /// than classified — including `FatalError`/`Shutdown`, which discard the
+    /// worker yet still hand the frame back.
+    async fn turn_io_raw(
+        &mut self,
+        request: &pb::ParentRequest,
+        on_event: OnRawEvent<'_>,
+    ) -> Result<pb::ChildEvent, PoolError> {
+        let Some(worker) = self.worker.as_mut() else {
+            return Err(PoolError::Finished);
+        };
+        if let Err(err) = worker.send(request).await {
+            // an oversize frame is rejected before any bytes are written, so
+            // the worker is still synced — see `turn_io`
+            return Err(match err {
+                FrameError::FrameTooLarge { len, max } => PoolError::Runtime(MontyException::new(
+                    ExcType::RuntimeError,
+                    Some(format!(
+                        "request frame of {len} bytes exceeds the maximum of {max} bytes"
+                    )),
+                )),
+                _ => self.poison("sending a request").await,
+            });
+        }
+        loop {
+            let event = match self.worker.as_mut().expect("checked above").recv().await {
+                Ok(event) => event,
+                Err(FrameError::Decode(err)) => {
+                    return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                }
+                Err(_) => return Err(self.poison("waiting for a reply").await),
+            };
+            self.note_reported_time(&event);
+            // strict alternation: zero or more `Print`s, then exactly one
+            // turn-ender — so anything that is not a print ends the turn
+            if matches!(event.kind, Some(pb::child_event::Kind::Print(_))) {
+                on_event(&event).await;
+            } else if matches!(event.kind, Some(pb::child_event::Kind::FatalError(_))) {
+                // the far end is gone (see `fatal_error`): discard the worker
+                // as the typed path does, but still hand back the child's own
+                // account of its death for the driver to forward
+                self.reap_announced_exit().await;
+                return Ok(event);
+            } else if matches!(event.kind, Some(pb::child_event::Kind::Shutdown(_))) {
+                return if self.pool.config.transport.is_websocket() {
+                    // the serving relay is gone: discard as `turn_io` does,
+                    // handing the frame (and its dump) back to forward
+                    self.discard_worker();
+                    Ok(event)
+                } else {
+                    // Only a serving relay sends this, never a child — and a
+                    // raw driver's relay signs dumps on the way past, so
+                    // accepting one would have it vouch for bytes its child
+                    // minted.
+                    Err(self.protocol_violation("subprocess worker sent a ShutdownDump"))
+                };
+            } else if event.kind.is_none() {
+                // every proto field is optional, so a hostile worker can send
+                // an event with no kind set; it ends no turn and must not
+                // reach the driver's client as one
+                return Err(self.protocol_violation("worker sent an event with no kind"));
+            } else {
+                return Ok(event);
+            }
+        }
+    }
+
     /// Fails fast when the checkout cannot start protocol work: the worker is
     /// gone (`Finished`), or a previous turn / mount servicing was cancelled
     /// mid-flight — the worker can no longer be trusted, so it is discarded
@@ -1008,7 +1167,22 @@ impl Checkout {
     /// handles crashes by starting a new session needs no extra arm, and the
     /// worker's own account lands in [`CrashCause::Announced`].
     async fn fatal_error(&mut self, message: &str) -> PoolError {
-        let status = match self.worker.take() {
+        let status = self.reap_announced_exit().await;
+        self.pending = None;
+        self.feed_mounts = None;
+        PoolError::Crashed {
+            status,
+            cause: CrashCause::Announced {
+                reason: message.to_owned(),
+            },
+        }
+    }
+
+    /// Takes and reaps the worker behind a `FatalError` frame, returning its
+    /// exit status when one was observed. Shared by [`Self::fatal_error`] and
+    /// the raw path, which discards the worker but returns the frame itself.
+    async fn reap_announced_exit(&mut self) -> Option<ExitStatus> {
+        match self.worker.take() {
             // the child exits right after the frame, so give it a moment to do
             // so before killing: that is what surfaces e.g. the non-zero status
             // of a version-skew exit, which a SIGKILL would replace with the
@@ -1022,14 +1196,6 @@ impl Checkout {
                 status
             }
             None => None,
-        };
-        self.pending = None;
-        self.feed_mounts = None;
-        PoolError::Crashed {
-            status,
-            cause: CrashCause::Announced {
-                reason: message.to_owned(),
-            },
         }
     }
 
