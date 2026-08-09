@@ -3,11 +3,13 @@
 //! session. This exercises `Worker::websocket` (the async dial) and the WS
 //! send/recv path end-to-end without needing a real remote child.
 
+// only the windows-gated capacity test wedges a socket with a blocked channel
+#[cfg(not(windows))]
+use std::sync::mpsc;
 use std::{
     fs,
     future::ready,
     net::{TcpListener, TcpStream},
-    sync::mpsc,
     thread,
     time::Duration,
 };
@@ -17,7 +19,9 @@ use monty_pool::{
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb};
 use monty_types::{MontyObject, PrintStream, ResourceLimits};
-use tokio::{task::spawn_blocking, time::timeout};
+use tokio::task::spawn_blocking;
+#[cfg(not(windows))]
+use tokio::time::timeout;
 use tungstenite::{Message, WebSocket};
 
 /// A mock child: accepts one WebSocket connection and answers each request with
@@ -1000,6 +1004,14 @@ async fn a_timed_out_turn_sends_a_close_frame() {
 /// buffers, and every later write queues behind it. The worker is already out
 /// of the `Checkout` by then, so without a `CapacityGuard` across the await
 /// nothing releases its slot and the pool shrinks by one for good.
+///
+/// Not run on Windows: dynamic send buffering grows the loopback socket's
+/// kernel buffer past the wedge, the goodbye never pends, and the cancel
+/// window this test needs cannot be forced open (the client socket is dialled
+/// inside `connect_async`, so its `SO_SNDBUF` — the only way to disable the
+/// growth — is out of reach). The guarded logic is platform-independent; do
+/// not "fix" this by enlarging the wedge, which only moves the flake.
+#[cfg(not(windows))]
 #[tokio::test]
 async fn cancelling_finish_does_not_leak_capacity() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
