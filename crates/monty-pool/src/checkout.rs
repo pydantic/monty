@@ -768,46 +768,41 @@ impl Checkout {
     /// Sends `request` and returns the child's turn-ending event, as protobuf —
     /// no conversion to [`TurnEvent`].
     ///
-    /// For callers that already speak the wire: a relay or server bridging a
-    /// remote client has to hand the client a `ChildEvent` frame, and rebuilding
-    /// one from a [`TurnEvent`] means hand-inverting the whole protocol —
-    /// every arm of `OsFunctionCall` included. This hands back what the child
-    /// actually sent.
+    /// For callers that already speak the wire (a relay bridging a remote
+    /// client): rebuilding a `ChildEvent` frame from a [`TurnEvent`] means
+    /// hand-inverting the whole protocol, so this hands back what the child
+    /// actually sent. `on_event` sees each streamed `Print` before the
+    /// turn-ender.
     ///
-    /// `on_event` sees each streamed event (`Print`) before the turn-ender.
-    ///
-    /// **Bypasses this checkout's suspension bookkeeping.** `pending`,
-    /// `feed_mounts` and `restored_script_name` are not maintained, so a
-    /// checkout driven this way must be driven *only* this way — never
-    /// interleaved with `feed`/`resume`/`restore`. The lifecycle is shared:
-    /// `create`, `finish` and worker poisoning behave exactly as they do for a
-    /// typed checkout, and so are the duration bookkeeping and the deadline
-    /// derived from it — a raw-driven session keeps its `max_duration` backstop,
-    /// and a raw `Load` re-adopts the dump's budget just as [`Checkout::restore`]
-    /// does. Lifecycle requests (`Configure`/`Reset`/`Shutdown`) are refused
-    /// without reaching the worker: they belong to the checkout, and forwarding
-    /// a client's would let it re-`Configure` its way out of the session's
-    /// resource limits. A `FatalError` (or, over WebSocket, `ShutdownDump`)
-    /// turn-ender is returned like any other so the driver can forward it, but
-    /// the worker behind it is discarded first — later calls report
+    /// **Bypasses this checkout's suspension bookkeeping** (`pending`,
+    /// `feed_mounts`, `restored_script_name`) — never interleave with
+    /// `feed`/`resume`/`restore`. Worker lifecycle, poisoning and the
+    /// `max_duration` backstop work as on the typed path; a raw `Load`
+    /// re-adopts the dump's budget like [`Checkout::restore`]. A `FatalError`
+    /// (or WebSocket `ShutdownDump`) turn-ender is returned so the driver can
+    /// forward it, but discards the worker first — later calls report
     /// [`PoolError::Finished`].
+    ///
+    /// # Security
+    /// `request` is typically a remote client's, so it is treated as hostile:
+    /// `Configure`/`Reset`/`Shutdown` are refused here (a client could
+    /// otherwise `Reset` away the operator-chosen resource limits and
+    /// re-`Configure` its own). A `Load`'s bytes DO reach the worker's
+    /// deserialiser — the driver must verify a dump is one it issued
+    /// (monty-server signs and checks them) before passing it in.
     ///
     /// # Errors
     /// As [`Checkout::feed`]: a dead worker, a protocol violation, or a turn
-    /// that outlived `request_timeout` or the session's remaining
-    /// `max_duration` budget.
+    /// that outlived `request_timeout` or the remaining `max_duration` budget.
     pub async fn turn_raw(
         &mut self,
         request: &pb::ParentRequest,
         on_event: OnRawEvent<'_>,
     ) -> Result<pb::ChildEvent, PoolError> {
         self.ensure_ready()?;
-        // Lifecycle requests are the checkout's own business — `create` sends
-        // `Configure`, `finish` sends `Reset`, the pool owns `Shutdown` — and
-        // forwarding a client's would let it disarm the operator-chosen limits:
-        // `Reset` returns the child to its default (unlimited) session budget,
-        // and a follow-up `Configure` re-establishes with limits of the
-        // client's choosing. Caller misuse, so the worker stays usable.
+        // A raw client could otherwise `Reset` the child back to its default
+        // (unlimited) session budget and re-`Configure` with its own limits.
+        // Caller misuse, so the worker stays usable.
         if matches!(
             request.kind,
             None | Some(
@@ -820,12 +815,9 @@ impl Checkout {
                 "lifecycle requests (Configure/Reset/Shutdown) cannot be driven through turn_raw".into(),
             ));
         }
-        // As `restore`: the dump carries its own limits and consumed time, so
-        // forget what `Configure` established and re-adopt both from the
-        // reply's timing fields — otherwise the backstop below would keep
-        // measuring the restored session against the wrong budget. Snapshot
-        // first: the pre-send frame-size rejection leaves the worker synced
-        // and the session live, so the budget must survive it too.
+        // As `restore`: forget the Configure-time budget and re-adopt the
+        // dump's from the reply's timing fields. Snapshotted because the
+        // pre-send frame-size rejection leaves the session live.
         let saved_timing = matches!(request.kind, Some(pb::parent_request::Kind::Load(_)))
             .then(|| (self.duration_budget, self.reported_execution));
         if saved_timing.is_some() {
@@ -834,9 +826,7 @@ impl Checkout {
         }
         self.turn_in_flight = true;
         // as `expect_turn`: `request_timeout` alone would drop the `max_duration`
-        // backstop, leaving a wedged child bounded only by a timeout that may be
-        // longer or unset. `turn_io_raw` maintains the reported-time bookkeeping
-        // the backstop reads, so it is as accurate here as on the typed path.
+        // backstop, leaving a wedged child bounded by a timeout that may be unset
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
         self.armed_deadline = deadline;
         let outcome = match deadline {
@@ -847,9 +837,8 @@ impl Checkout {
             None => self.turn_io_raw(request, on_event).await,
         };
         self.turn_in_flight = false;
-        // a failure that left the worker alive means the `Load` never reached
-        // the child (an oversize frame, rejected before any bytes were
-        // written) — the session continues on its original budget
+        // an error with the worker still alive is the pre-send frame-size
+        // rejection: the `Load` never reached the child, put the budget back
         if let Some((budget, reported)) = saved_timing
             && outcome.is_err()
             && self.worker.is_some()
@@ -862,8 +851,9 @@ impl Checkout {
 
     /// The body of [`Self::turn_raw`]: send, stream, return the turn-ender.
     ///
-    /// Mirrors `turn_io`'s failure handling exactly — the difference is only
-    /// that events are returned rather than classified.
+    /// Mirrors `turn_io`'s failure handling, but events are returned rather
+    /// than classified — including `FatalError`/`Shutdown`, which discard the
+    /// worker yet still hand the frame back.
     async fn turn_io_raw(
         &mut self,
         request: &pb::ParentRequest,
@@ -899,34 +889,28 @@ impl Checkout {
             if matches!(event.kind, Some(pb::child_event::Kind::Print(_))) {
                 on_event(&event).await;
             } else if matches!(event.kind, Some(pb::child_event::Kind::FatalError(_))) {
-                // The far end is gone (see `fatal_error`): reap and discard
-                // the worker exactly as the typed path does — but still hand
-                // the frame back, since a raw driver forwards the child's own
-                // account of its death to its client.
+                // the far end is gone (see `fatal_error`): discard the worker
+                // as the typed path does, but still hand back the child's own
+                // account of its death for the driver to forward
                 self.reap_announced_exit().await;
                 return Ok(event);
             } else if matches!(event.kind, Some(pb::child_event::Kind::Shutdown(_))) {
                 return if self.pool.config.transport.is_websocket() {
-                    // The serving relay is gone, and this checkout's
-                    // connection with it: discard the worker as `turn_io`
-                    // does, handing the frame (and the dump it carries) back
-                    // for the driver to forward.
+                    // the serving relay is gone: discard as `turn_io` does,
+                    // handing the frame (and its dump) back to forward
                     self.discard_worker();
                     Ok(event)
                 } else {
-                    // Only a serving relay sends this, never a child — `turn_io`
-                    // refuses it for the same reason. It matters more here: a raw
-                    // driver hands the turn-ender straight back to its own client,
-                    // and a relay signs the dump on the way past, so accepting one
-                    // would have the relay vouch for bytes its child minted.
+                    // Only a serving relay sends this, never a child — and a
+                    // raw driver's relay signs dumps on the way past, so
+                    // accepting one would have it vouch for bytes its child
+                    // minted.
                     Err(self.protocol_violation("subprocess worker sent a ShutdownDump"))
                 };
             } else if event.kind.is_none() {
-                // Every proto field is optional, so a broken or hostile worker
-                // can send an event whose oneof is unset. It ends no turn — the
-                // typed path calls the same frame an "unexpected event" — and a
-                // raw driver would otherwise forward it to its own client as a
-                // valid turn-ender and go back to idle.
+                // every proto field is optional, so a hostile worker can send
+                // an event with no kind set; it ends no turn and must not
+                // reach the driver's client as one
                 return Err(self.protocol_violation("worker sent an event with no kind"));
             } else {
                 return Ok(event);

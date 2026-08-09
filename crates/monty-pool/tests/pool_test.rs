@@ -1176,14 +1176,9 @@ async fn unrecognised_exit_code_stays_an_opaque_death() {
 }
 
 /// A local child cannot pass a `ShutdownDump` off as a turn-ender on the raw
-/// path.
-///
-/// Only a serving relay sends one; a subprocess claiming to shut down is
-/// lying about what it is. `turn_io` has always refused it, but `turn_raw` —
-/// the API a relay drives — took any non-`Print` event as the turn-ender, so a
-/// compromised child could hand back a dump it minted itself. That dump would
-/// travel out through the relay, which signs whatever it forwards, and reach
-/// the relay's own client as trusted, server-vouched session state.
+/// path: only a serving relay sends one, and accepting it would let a
+/// compromised child hand a dump it minted itself out through a relay that
+/// signs whatever it forwards.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
@@ -1229,14 +1224,9 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     );
 }
 
-/// An event with no `kind` ends no turn on the raw path.
-///
-/// Every field of `ChildEvent` is optional on the wire, so a broken or hostile
-/// worker can send one whose oneof is simply unset. `turn_io` calls that an
-/// "unexpected event" and discards the worker, but `turn_raw` returned any
-/// non-`Print` event as the turn-ender — so the frame reached the raw driver's
-/// own client as a successful turn, and the session went back to idle on the
-/// strength of a frame that means nothing.
+/// An event with no `kind` ends no turn on the raw path. Every wire field is
+/// optional, so a hostile worker can send one whose oneof is unset — it must
+/// not reach the raw driver's client as a successful turn-ender.
 #[cfg(unix)]
 #[tokio::test]
 async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
@@ -1275,13 +1265,9 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     );
 }
 
-/// A `FatalError` ends a raw turn *and* the worker behind it.
-///
-/// The frame is handed back — a raw driver forwards the child's own account of
-/// its death to its client — but the child exits right after writing it, so the
-/// worker must be reaped and discarded exactly as on the typed path. It used to
-/// be kept, leaving a dead process holding its pool slot until the failure
-/// resurfaced as an unexplained crash on the next turn.
+/// A `FatalError` ends a raw turn *and* the worker behind it: the frame is
+/// handed back for the driver to forward, but the dead child is reaped and
+/// discarded rather than holding its pool slot until the next failure.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_fatal_error_on_the_raw_path_discards_the_worker() {

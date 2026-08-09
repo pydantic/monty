@@ -295,12 +295,8 @@ async fn duration_backstop_kills_an_unresponsive_worker() {
 }
 
 /// The same backstop arms on the raw path, which a relay drives instead of
-/// `feed`.
-///
-/// `turn_raw` used to arm `request_timeout` alone, so a session whose only
-/// bound was `max_duration` — the shape a serving relay configures, since it
-/// applies limits rather than client timeouts — had no parent-side deadline at
-/// all, and a wedged child held the turn indefinitely.
+/// `feed`. `turn_raw` used to arm `request_timeout` alone, so a session whose
+/// only bound was `max_duration` had no parent-side deadline at all.
 #[tokio::test]
 async fn duration_backstop_arms_on_the_raw_path() {
     let (listener, mut config) = ws_pool_config();
@@ -342,12 +338,9 @@ async fn duration_backstop_arms_on_the_raw_path() {
     join_server(server).await;
 }
 
-/// A raw `Load` re-adopts the dump's duration budget, exactly as `restore`.
-///
-/// `turn_raw` used to keep the `Configure`-time budget across a `Load`, so a
-/// restored session's backstop measured it against the wrong limit — here the
-/// checkout's own 5s budget would have left a wedged post-restore turn running
-/// for 5.3s instead of being killed at the dump's 100ms + grace.
+/// A raw `Load` re-adopts the dump's duration budget, exactly as `restore` —
+/// it used to keep the `Configure`-time budget, so a restored session's
+/// backstop measured turns against the wrong limit.
 #[tokio::test]
 async fn a_raw_load_adopts_the_dumps_duration_budget() {
     let (listener, mut config) = ws_pool_config();
@@ -406,14 +399,10 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
     join_server(server).await;
 }
 
-/// Lifecycle requests are refused on the raw path without reaching the worker.
-///
-/// `Configure`, `Reset` and `Shutdown` belong to the checkout (`create`,
-/// `finish`, the pool); forwarding a raw client's would let it `Reset` the
-/// child back to its default (unlimited) session budget and re-`Configure`
-/// with limits of its own choosing. The refusal is caller misuse, not worker
-/// misbehaviour — the session stays live, which the mock server proves by
-/// seeing the `Feed` as its very next frame.
+/// Lifecycle requests are refused on the raw path without reaching the
+/// worker: forwarding a client's `Reset`/`Configure` would let it disarm the
+/// operator-chosen resource limits. The session stays live, which the mock
+/// server proves by seeing the `Feed` as its very next frame.
 #[tokio::test]
 async fn lifecycle_requests_are_refused_on_the_raw_path() {
     let (listener, config) = ws_pool_config();
@@ -469,12 +458,9 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
     join_server(server).await;
 }
 
-/// An oversize raw `Load` keeps the session's duration budget.
-///
-/// The frame is rejected before any bytes are written, leaving the worker
-/// synced and the session live — so the budget cleared in anticipation of the
-/// dump's own limits must be put back, or the session would run on with no
-/// `max_duration` backstop at all.
+/// An oversize raw `Load` keeps the session's duration budget: the frame is
+/// rejected pre-send with the session live, so the budget cleared in
+/// anticipation of the dump's limits must be put back.
 #[tokio::test]
 async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let (listener, mut config) = ws_pool_config();
@@ -527,12 +513,9 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
     join_server(server).await;
 }
 
-/// A `ShutdownDump` ends a raw turn *and* the connection behind it.
-///
-/// The frame is handed back — the dump it carries is the driver's to forward —
-/// but the serving relay that sent it is gone, so the worker is discarded as on
-/// the typed path. It used to be kept, resurfacing later as an unexplained
-/// crash on the next turn.
+/// A `ShutdownDump` ends a raw turn *and* the connection behind it: the frame
+/// (and its dump) is handed back for the driver to forward, but the gone
+/// relay's worker is discarded rather than kept until the next failure.
 #[tokio::test]
 async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
     let (listener, config) = ws_pool_config();
