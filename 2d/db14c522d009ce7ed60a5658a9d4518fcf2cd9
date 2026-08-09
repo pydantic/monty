@@ -1,0 +1,31 @@
+crates/monty/tests/heap_reader_compile_fail_cases/smuggle_heap_read.stderr
+  s_0552ea365cedcb::t_5e4cf19e993448 2
+crates/monty/tests/heap_reader_compile_fail_cases/double_get_mut.stderr
+  s_0552ea365cedcb::t_5e4cf19e993448 2
+crates/monty/tests/heap_reader_compile_fail_cases/heap_mutation_while_reading.stderr
+  s_0552ea365cedcb::t_5e4cf19e993448 2
+crates/monty/tests/heap_reader_compile_fail_cases/smuggle_and_swap_reader.stderr
+  s_0552ea365cedcb::t_5e4cf19e993448 2
+crates/monty/tests/heap_reader_compile_fail_cases/dec_ref_while_reading.stderr
+  s_0552ea365cedcb::t_5e4cf19e993448 2
+crates/monty/tests/heap_reader_compile_fail_cases/mutation_in_map_closure.stderr
+  s_0552ea365cedcb::t_5e4cf19e993448 2
+crates/monty/tests/heap_reader_compile_fail_cases/smuggle_vm.stderr
+  s_0552ea365cedcb::t_5e4cf19e993448 2,14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2ddb14c522d009ce7ed60a5658a9d4518fcf2cd9",
+  "prompts": {},
+  "sessions": {
+    "s_0552ea365cedcb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1bc7f9e4-dcb0-42fb-84ca-0b1fe9e2666c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
