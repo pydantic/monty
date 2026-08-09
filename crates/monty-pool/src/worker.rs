@@ -12,14 +12,11 @@
 //! across polls, so a dropped `recv` future loses nothing and the next call
 //! resumes exactly where it stopped.
 //!
-//! The WebSocket transport *does* run a background reader task — not for
-//! cancel-safety but for liveness: tokio-tungstenite answers pings only while
-//! the stream is being polled, and an idle client (between feeds, or hosting
-//! a suspended external/`os` call) has no future of its own polling at all.
-//! Keepalive-pinging servers would drop such a session as vanished. The task
-//! owns the read half and polls it continuously; `recv` becomes a bounded
-//! channel read, which is cancel-safe, and partial-message state lives in the
-//! task, which is never cancelled mid-frame.
+//! The WebSocket transport runs a background reader task instead — not for
+//! cancel-safety but for liveness: tokio-tungstenite pongs only while the
+//! stream is polled, and an idle client polls nothing, so a keepalive server
+//! would drop the session as vanished. `recv` reads the task's channel, which
+//! is cancel-safe.
 
 use std::{
     env,
@@ -88,14 +85,9 @@ struct SubprocessWorker {
 }
 
 /// A remote child reached over a WebSocket. One binary message per protocol
-/// frame (no length prefix — the message boundary is the frame). The read
-/// half lives in a spawned reader task (see the module docs) so pings are
-/// answered while the worker is idle.
-///
-/// Teardown must *say goodbye* with a Close frame (see
-/// [`WebSocketWorker::close`]) — dropping alone is not enough through a proxy
-/// — then abort the reader and drop the sink, which is what actually closes
-/// the TCP connection: the async analogue of killing a child.
+/// frame (no length prefix — the message boundary is the frame). The read half
+/// lives in a spawned reader task (see the module docs), so teardown must
+/// release both halves — see [`WebSocketWorker::close`].
 struct WebSocketWorker {
     /// `send()` writes here; `None` after teardown (the closed-connection sentinel).
     sink: Option<SplitSink<WsStream, Message>>,
@@ -106,16 +98,13 @@ struct WebSocketWorker {
 }
 
 impl WebSocketWorker {
-    /// Ends the connection: a bounded, best-effort Close frame, then abort
-    /// the reader task and drop the sink — releasing both split halves is
-    /// what actually closes the socket.
+    /// Ends the connection: a bounded Close frame, then abort the reader and
+    /// drop the sink — releasing both halves is what closes the socket.
     ///
-    /// The frame is what a *proxied* peer sees — some load balancers forward a
-    /// Close frame but never propagate a bare TCP disconnect upstream, so
-    /// without it the far side keeps the session alive until its own idle
-    /// timeout, pinning a worker and a capacity slot. The write is bounded
-    /// because a peer that has stopped draining must not be able to hang
-    /// teardown, and the frame only has to reach the OS, not the peer.
+    /// The frame is what a *proxied* peer sees: some load balancers forward a
+    /// Close but never a bare TCP disconnect, leaving the session (and its
+    /// capacity slot) alive until the far side's own idle timeout. Bounded so
+    /// a peer that stopped draining cannot hang teardown.
     async fn close(&mut self) {
         if let Some(sink) = &mut self.sink {
             send_close(sink).await;
@@ -125,20 +114,13 @@ impl WebSocketWorker {
     }
 }
 
-/// Backstop for the teardown paths that are synchronous — an abandoned
-/// [`crate::Checkout`], a discarded worker — where [`WebSocketWorker::close`]
-/// cannot be awaited: hand the sink to a detached task that says goodbye and
-/// drops it.
+/// Backstop for the synchronous teardown paths — an abandoned
+/// [`crate::Checkout`], a discarded worker — where `close` cannot be awaited:
+/// a detached task says goodbye instead. Best-effort, since a runtime shutting
+/// down cancels it; it then degrades to the plain drop this replaced.
 ///
-/// Weaker than the awaited path, and deliberately so: the task only runs if the
-/// runtime outlives this drop, so a runtime shutting down (or a current-thread
-/// one no longer being polled) cancels it and the socket closes silently. With
-/// no runtime at all there is nothing to spawn onto. Both degrade to the plain
-/// drop this replaced, never to something worse.
-///
-/// The reader abort is unconditional: the reader task owns the read half, and
-/// on a quiet connection it never notices the worker is gone — left running it
-/// would hold the TCP connection (and the remote session slot) open forever.
+/// The reader abort is unconditional: on a quiet connection the task never
+/// notices the worker is gone, and would hold the socket open forever.
 impl Drop for WebSocketWorker {
     fn drop(&mut self) {
         self.reader.abort();
@@ -150,8 +132,7 @@ impl Drop for WebSocketWorker {
     }
 }
 
-/// Writes the goodbye frame, bounded so a peer that stopped draining cannot
-/// hang teardown. Shared by both paths above so they cannot drift apart.
+/// Writes the goodbye frame, shared by both paths above so they cannot drift.
 async fn send_close(sink: &mut SplitSink<WsStream, Message>) {
     let _ = timeout(CLOSE_WRITE_TIMEOUT, sink.close()).await;
 }
@@ -230,8 +211,7 @@ impl Worker {
             .await
             .map_err(|_| PoolError::Spawn(format!("{url}: connect timed out after {dial_timeout:?}")))?
             .map_err(|err| PoolError::Spawn(format!("{url}: {err}")))?;
-        // Split so a background task can poll (and thereby pong) the read
-        // half continuously, while `send` keeps synchronous errors on the sink.
+        // split so a background task can poll (and thereby pong) the read half
         let (sink, read_half) = stream.split();
         let (tx, events) = mpsc::channel(WS_EVENT_CHANNEL_DEPTH);
         let reader = tokio::spawn(read_ws_events(read_half, tx));
@@ -312,11 +292,9 @@ impl Worker {
                 None => Err(FrameError::Truncated), // clean EOF mid-checkout is still a vanished peer
             },
             WorkerKind::WebSocket(w) => {
-                // Frames come from the reader task; a channel recv is
-                // cancel-safe, preserving the deadline race. A closed channel
-                // (reader exited without a terminal error — can't happen
-                // today, but harmless) or a torn-down worker is `Truncated`,
-                // which the checkout classifies as `PoolError::Disconnected`.
+                // frames come from the reader task; a channel recv is
+                // cancel-safe, preserving the deadline race. A torn-down worker
+                // or closed channel is `Truncated` — a `PoolError::Disconnected`.
                 if w.sink.is_none() {
                     return Err(FrameError::Truncated);
                 }
@@ -387,8 +365,8 @@ impl Worker {
     }
 
     /// Ends the connection behind a worker the caller is *not* discarding as
-    /// dead — the single-use WebSocket worker of a cleanly finished checkout.
-    /// A no-op for subprocess workers, which the pool reuses or kills instead.
+    /// dead — a cleanly finished checkout's single-use WebSocket worker. A
+    /// no-op for subprocess workers, which the pool reuses or kills instead.
     pub(crate) async fn close_transport(&mut self) {
         if let WorkerKind::WebSocket(w) = &mut self.kind {
             w.close().await;
@@ -397,7 +375,7 @@ impl Worker {
 }
 
 /// How long teardown gives a WebSocket Close frame to reach the OS. Not a
-/// latency budget — the write awaits no ACK or Close echo — it only rides out
+/// latency budget (no ACK or Close echo is awaited) — it only rides out
 /// back-pressure from a peer that stopped reading.
 const CLOSE_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -524,33 +502,40 @@ fn decode_event(body: &[u8]) -> Result<pb::ChildEvent, FrameError> {
     }
 }
 
-/// Depth of the reader-task → `recv` channel. Mid-turn a full channel blocks
-/// the reader (which then stops answering pings), but servers only ping
-/// *idle* sessions, whose channel is empty — so this just reproduces TCP
-/// backpressure with a few frames of slack. Keep it shallow: the server's
-/// print backpressure design assumes the client's unread data accumulates in
-/// the socket, not in client memory.
-const WS_EVENT_CHANNEL_DEPTH: usize = 8;
+/// Depth of the reader-task → `recv` channel. One slot, reserved before the
+/// poll, bounds an untrusted peer to a single queued frame (≤
+/// [`MAX_FRAME_LEN`]) per worker — what the unsplit stream held. Deeper buys
+/// nothing: pongs need polling, not buffering, and the server's print
+/// backpressure assumes unread data sits in the socket, not in client memory.
+const WS_EVENT_CHANNEL_DEPTH: usize = 1;
 
 /// The WebSocket reader task: polls the read half continuously so
-/// tokio-tungstenite answers pings even while the worker is idle (see the
-/// module docs), forwarding each binary frame — or the terminal error — to
-/// the worker's `recv`.
+/// tokio-tungstenite pongs even while the worker is idle (see the module
+/// docs), forwarding each binary frame — or the terminal error — to `recv`.
+///
+/// Reserving the slot before polling keeps the reader polling (and ponging)
+/// rather than blocked holding a frame.
 async fn read_ws_events(mut read_half: SplitStream<WsStream>, events: mpsc::Sender<Result<Bytes, FrameError>>) {
-    loop {
-        let result = match read_half.next().await {
-            Some(Ok(Message::Binary(data))) => Ok(data),
-            // Polling is itself what answers a ping: tungstenite queues the
-            // pong on read and flushes it during read polling.
-            Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
-            // A clean close, or text/raw frames the protocol never uses.
-            Some(Ok(Message::Close(_) | Message::Text(_) | Message::Frame(_))) | None => Err(FrameError::Truncated),
-            Some(Err(WsError::Io(err))) => Err(FrameError::Io(err)),
-            Some(Err(_)) => Err(FrameError::Truncated),
+    // an Err from reserve means the receiver dropped: the worker is gone
+    while let Ok(permit) = events.reserve().await {
+        let result = loop {
+            match read_half.next().await {
+                Some(Ok(Message::Binary(data))) => break Ok(data),
+                // polling is itself what pongs: tungstenite queues the pong on
+                // read and flushes it during read polling
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                // a clean close, or text/raw frames the protocol never uses
+                Some(Ok(Message::Close(_) | Message::Text(_) | Message::Frame(_))) | None => {
+                    break Err(FrameError::Truncated);
+                }
+                Some(Err(WsError::Io(err))) => break Err(FrameError::Io(err)),
+                Some(Err(_)) => break Err(FrameError::Truncated),
+            }
         };
-        // Exit after any terminal error, or once the worker is gone.
+        // any error is terminal: deliver it and exit
         let stop = result.is_err();
-        if events.send(result).await.is_err() || stop {
+        permit.send(result);
+        if stop {
             return;
         }
     }
