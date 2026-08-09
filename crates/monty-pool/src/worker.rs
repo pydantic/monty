@@ -363,10 +363,10 @@ impl Worker {
     }
 }
 
-/// How long teardown gives a WebSocket Close frame to reach the OS before
-/// giving up and dropping the socket. Short: the frame is a courtesy, and the
-/// only thing that can delay it is a peer that stopped reading.
-const CLOSE_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+/// How long teardown gives a WebSocket Close frame to reach the OS. Not a
+/// latency budget — the write awaits no ACK or Close echo — it only rides out
+/// back-pressure from a peer that stopped reading.
+const CLOSE_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Chunk size for speculative frame reads: large enough that a typical
 /// prefix + body arrives in a single `read` syscall, small enough to sit
