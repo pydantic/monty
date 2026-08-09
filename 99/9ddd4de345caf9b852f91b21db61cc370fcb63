@@ -1,0 +1,27 @@
+crates/monty-pool/src/worker.rs
+  s_cb80ed558a9080::t_145cf59e49ee1c 101,110-116,122,127-130
+crates/monty-pool/src/checkout.rs
+  s_cb80ed558a9080::t_06e14e01d0a345 673-677,679
+crates/monty-pool/tests/websocket.rs
+  s_cb80ed558a9080::t_63d26928da5ee7 10,20
+  s_cb80ed558a9080::t_078a9b6fd734ba 1006-1008
+  s_cb80ed558a9080::t_8d8c88373931c1 964-989,992,994-1005,1009-1011
+  s_cb80ed558a9080::t_ddabd7c1a2c6fd 990-991
+  s_cb80ed558a9080::t_a2d2137e790aad 993
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "999ddd4de345caf9b852f91b21db61cc370fcb63",
+  "prompts": {},
+  "sessions": {
+    "s_cb80ed558a9080": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7d71d16e-e84d-4e12-b74a-08e2c8660d19",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
