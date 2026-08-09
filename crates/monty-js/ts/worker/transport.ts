@@ -21,7 +21,7 @@ import {
   encodeTypeCheckFormat,
 } from '../options.js'
 import type { Dispatcher } from './host.js'
-import { Reader, Wire, Writer, deframe, frame } from './proto.js'
+import { PROTOCOL_VERSION, Reader, Wire, Writer, deframe, frame } from './proto.js'
 import { decodeMontyObject, decodeTimeZone, encodeMontyObject } from './value.js'
 
 type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
@@ -105,14 +105,14 @@ export class WorkerTransport {
 
   private constructor(private readonly dispatcher: Dispatcher) {}
 
-  /** Creates the REPL session (`ReplCreate`) and returns the ready transport. */
+  /** Creates the REPL session (`Configure`) and returns the ready transport. */
   static async create(dispatcher: Dispatcher, config: WorkerSessionConfig = {}): Promise<WorkerTransport> {
     const transport = new WorkerTransport(dispatcher)
     const create = new Writer()
-    create.string(1, config.scriptName ?? 'main.py') // ReplCreate.script_name
-    if (config.limits) create.lengthDelimited(2, encodeLimits(config.limits)) // ReplCreate.limits
-    if (config.typeCheck) create.bool(3, true) // ReplCreate.type_check
-    if (config.typeCheckStubs !== undefined) create.string(4, config.typeCheckStubs) // ReplCreate.type_check_stubs
+    create.string(1, config.scriptName ?? 'main.py') // Configure.script_name
+    if (config.limits) create.lengthDelimited(2, encodeLimits(config.limits)) // Configure.limits
+    if (config.typeCheck) create.bool(3, true) // Configure.type_check
+    if (config.typeCheckStubs !== undefined) create.string(4, config.typeCheckStubs) // Configure.type_check_stubs
     // Configure.assert_message_annotations (field 6, optional uint32):
     // absent = child default (on, 120-byte truncation), 0 = off, n = custom.
     const assertAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
@@ -120,7 +120,10 @@ export class WorkerTransport {
     // Configure.type_check_format (field 7, enum) and .type_check_color (8).
     if (config.typeCheckFormat !== undefined) create.uint(7, encodeTypeCheckFormat(config.typeCheckFormat))
     if (config.typeCheckColor) create.bool(8, true)
-    await transport.control(Req.ReplCreate, create.finish(), Ev.Ok, 'ReplCreate')
+    // Configure.protocol_version (field 9): this codec is versioned with the
+    // schema, so the constant is compiled in rather than read from a build.
+    create.uint(9, PROTOCOL_VERSION)
+    await transport.control(Req.ReplCreate, create.finish(), Ev.Ok, 'Configure')
     return transport
   }
 

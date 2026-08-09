@@ -13,6 +13,15 @@
 // generated codec (ts-proto / protobuf-es) is the eventual home; this keeps the
 // spike dependency-free.
 
+/**
+ * Wire schema version this codec speaks, sent as `Configure.protocol_version`.
+ *
+ * Must track `PROTOCOL_VERSION` in `monty-proto/src/lib.rs`: the worker rejects
+ * a session whose version falls outside the range it serves. Safe to hardcode
+ * because this file ships in the same package as the `.wasm` it drives.
+ */
+export const PROTOCOL_VERSION = 1
+
 /** Protobuf wire types this codec handles. */
 export const Wire = {
   Varint: 0,

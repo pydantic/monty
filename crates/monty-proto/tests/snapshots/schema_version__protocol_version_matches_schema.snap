@@ -1,0 +1,354 @@
+---
+source: crates/monty-proto/tests/schema_version.rs
+expression: schema_structure()
+---
+syntax = "proto3";
+package monty.v1;
+message Unit {}
+message MontyObject {
+  oneof kind {
+    Unit ellipsis = 1;
+    Unit none = 2;
+    bool boolean = 3;
+    sint64 int = 4;
+    BigInt bigint = 5;
+    double float = 6;
+    string str = 7;
+    bytes bytes = 8;
+    ObjectList list = 9;
+    ObjectList tuple = 10;
+    NamedTuple named_tuple = 11;
+    Dict dict = 12;
+    ObjectList set = 13;
+    ObjectList frozen_set = 14;
+    Date date = 15;
+    DateTime datetime = 16;
+    TimeDelta timedelta = 17;
+    TimeZone timezone = 18;
+    Exception exception = 19;
+    string type = 20;
+    string builtin_function = 21;
+    string path = 22;
+    FileHandle file_handle = 23;
+    Dataclass dataclass = 24;
+    Function function = 25;
+    string repr = 26;
+    Cycle cycle = 27;
+    string instance_type = 28;
+    Unit not_implemented = 29;
+  }
+}
+message ObjectList {
+  repeated MontyObject items = 1;
+}
+message Pair {
+  MontyObject key = 1;
+  MontyObject value = 2;
+}
+message Dict {
+  repeated Pair pairs = 1;
+}
+message BigInt {
+  bool negative = 1;
+  bytes magnitude = 2;
+}
+message NamedTuple {
+  string type_name = 1;
+  repeated string field_names = 2;
+  repeated MontyObject values = 3;
+}
+message Date {
+  int32 year = 1;
+  uint32 month = 2;
+  uint32 day = 3;
+}
+message DateTime {
+  int32 year = 1;
+  uint32 month = 2;
+  uint32 day = 3;
+  uint32 hour = 4;
+  uint32 minute = 5;
+  uint32 second = 6;
+  uint32 microsecond = 7;
+  optional int32 offset_seconds = 8;
+  optional string timezone_name = 9;
+}
+message TimeDelta {
+  int32 days = 1;
+  int32 seconds = 2;
+  int32 microseconds = 3;
+}
+message TimeZone {
+  int32 offset_seconds = 1;
+  optional string name = 2;
+}
+message Exception {
+  string exc_type = 1;
+  optional string arg = 2;
+}
+message FileHandle {
+  string path = 1;
+  string mode = 2;
+  uint64 position = 3;
+}
+message Dataclass {
+  string name = 1;
+  uint64 type_id = 2;
+  repeated string field_names = 3;
+  Dict attrs = 4;
+  bool frozen = 5;
+}
+message Function {
+  string name = 1;
+  optional string docstring = 2;
+}
+message Cycle {
+  uint64 identity = 1;
+  string placeholder = 2;
+}
+message RaisedException {
+  string exc_type = 1;
+  optional string message = 2;
+  repeated StackFrame traceback = 3;
+  ExcData data = 4;
+}
+message ExcData {
+  oneof kind {
+    UnicodeErrorData unicode = 1;
+    JsonErrorData json = 2;
+  }
+}
+message UnicodeErrorData {
+  string encoding = 1;
+  oneof object {
+    bytes object_bytes = 2;
+    string object_str = 3;
+  }
+  uint64 start = 4;
+  uint64 end = 5;
+  string reason = 6;
+}
+message JsonErrorData {
+  string msg = 1;
+  optional string doc = 2;
+  uint64 pos = 3;
+  uint64 lineno = 4;
+  uint64 colno = 5;
+}
+message CodeLoc {
+  uint32 line = 1;
+  uint32 column = 2;
+}
+message StackFrame {
+  string filename = 1;
+  CodeLoc start = 2;
+  CodeLoc end = 3;
+  optional string frame_name = 4;
+  optional string preview_line = 5;
+  bool hide_caret = 6;
+  bool hide_frame_name = 7;
+}
+message ResourceLimits {
+  optional uint64 max_duration_micros = 1;
+  optional uint64 max_memory_bytes = 2;
+  optional uint64 gc_interval = 3;
+  optional uint64 max_recursion_depth = 4;
+}
+message ExtFunctionResult {
+  oneof kind {
+    MontyObject return_value = 1;
+    RaisedException error = 2;
+    uint32 future = 3;
+    string not_found = 4;
+    Unit not_handled = 5;
+  }
+}
+message FutureResult {
+  uint32 call_id = 1;
+  ExtFunctionResult result = 2;
+}
+message NamedValue {
+  string name = 1;
+  MontyObject value = 2;
+}
+message ParentRequest {
+  oneof kind {
+    Configure configure = 1;
+    InstallDependencies install_dependencies = 2;
+    Feed feed = 3;
+    ResumeCall resume_call = 4;
+    ResumeNameLookup resume_name_lookup = 5;
+    ResumeFutures resume_futures = 6;
+    Dump dump = 7;
+    Load load = 8;
+    Reset reset = 9;
+    Shutdown shutdown = 10;
+  }
+  optional string trace_parent = 20;
+}
+message Configure {
+  string script_name = 1;
+  ResourceLimits limits = 2;
+  bool type_check = 3;
+  optional string type_check_stubs = 4;
+  string monty_version = 5;
+  optional uint32 assert_message_annotations = 6;
+  TypeCheckFormat type_check_format = 7;
+  bool type_check_color = 8;
+  uint32 protocol_version = 9;
+}
+enum TypeCheckFormat {
+  TYPE_CHECK_FORMAT_UNSPECIFIED = 0;
+  TYPE_CHECK_FORMAT_FULL = 1;
+  TYPE_CHECK_FORMAT_CONCISE = 2;
+  TYPE_CHECK_FORMAT_AZURE = 3;
+  TYPE_CHECK_FORMAT_JSON = 4;
+  TYPE_CHECK_FORMAT_JSON_LINES = 5;
+  TYPE_CHECK_FORMAT_RDJSON = 6;
+  TYPE_CHECK_FORMAT_PYLINT = 7;
+  TYPE_CHECK_FORMAT_GITLAB = 8;
+  TYPE_CHECK_FORMAT_GITHUB = 9;
+}
+message Feed {
+  string code = 1;
+  repeated NamedValue inputs = 2;
+  bool skip_type_check = 3;
+}
+message ResumeCall {
+  uint32 call_id = 1;
+  ExtFunctionResult result = 2;
+}
+message ResumeNameLookup {
+  oneof kind {
+    MontyObject value = 1;
+    Unit undefined = 2;
+  }
+}
+message ResumeFutures {
+  repeated FutureResult results = 1;
+}
+message Dump {}
+message Load {
+  bytes state = 1;
+}
+message Reset {}
+message Shutdown {}
+message InstallDependencies {
+  repeated string requirements = 1;
+}
+message ChildEvent {
+  oneof kind {
+    Print print = 1;
+    FunctionCall function_call = 2;
+    OsCall os_call = 3;
+    NameLookup name_lookup = 4;
+    ResolveFutures resolve_futures = 5;
+    Complete complete = 6;
+    Error error = 7;
+    TypingError typing_error = 8;
+    DumpResult dump_result = 9;
+    Ok ok = 10;
+    FatalError fatal_error = 11;
+    ShutdownDump shutdown = 12;
+  }
+  uint64 total_execution_micros = 20;
+  optional uint64 max_duration_micros = 21;
+  optional string restored_script_name = 22;
+}
+enum PrintStream {
+  PRINT_STREAM_UNSPECIFIED = 0;
+  PRINT_STREAM_STDOUT = 1;
+  PRINT_STREAM_STDERR = 2;
+}
+message Print {
+  PrintStream stream = 1;
+  string text = 2;
+}
+message FunctionCall {
+  string function_name = 1;
+  repeated MontyObject args = 2;
+  repeated Pair kwargs = 3;
+  uint32 call_id = 4;
+  bool method_call = 5;
+}
+message OsCall {
+  uint32 call_id = 1;
+  oneof call {
+    string exists = 2;
+    string is_file = 3;
+    string is_dir = 4;
+    string is_symlink = 5;
+    string read_text = 6;
+    string read_bytes = 7;
+    string stat = 8;
+    string iterdir = 9;
+    string resolve = 10;
+    string absolute = 11;
+    string unlink = 12;
+    string rmdir = 13;
+    TextWrite write_text = 14;
+    TextWrite append_text = 15;
+    BytesWrite write_bytes = 16;
+    BytesWrite append_bytes = 17;
+    Open open = 18;
+    Mkdir mkdir = 19;
+    Rename rename = 20;
+    Getenv getenv = 21;
+    Unit get_environ = 22;
+    Unit date_today = 23;
+    DateTimeNow date_time_now = 24;
+  }
+  message TextWrite {
+    string path = 1;
+    string data = 2;
+  }
+  message BytesWrite {
+    string path = 1;
+    bytes data = 2;
+  }
+  message Open {
+    string path = 1;
+    string mode = 2;
+  }
+  message Mkdir {
+    string path = 1;
+    bool parents = 2;
+    bool exist_ok = 3;
+  }
+  message Rename {
+    string src = 1;
+    string dst = 2;
+  }
+  message Getenv {
+    string key = 1;
+    MontyObject default = 2;
+  }
+  message DateTimeNow {
+    optional TimeZone tz = 1;
+  }
+}
+message NameLookup {
+  string name = 1;
+}
+message ResolveFutures {
+  repeated uint32 pending_call_ids = 1;
+}
+message Complete {
+  MontyObject value = 1;
+}
+message Error {
+  RaisedException exception = 1;
+}
+message TypingError {
+  string diagnostics = 1;
+}
+message DumpResult {
+  bytes state = 1;
+}
+message Ok {}
+message FatalError {
+  string message = 1;
+}
+message ShutdownDump {
+  optional bytes dump = 1;
+}

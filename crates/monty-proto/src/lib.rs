@@ -12,6 +12,29 @@ mod wire;
 #[cfg(feature = "worker")]
 pub mod worker;
 
+/// Version of the wire schema this build speaks, sent in
+/// [`pb::Configure::protocol_version`] and range-checked by the child.
+///
+/// Bump on any change a peer at the previous version could mis-read: removing
+/// or repurposing a field, changing a field's meaning, or adding one the child
+/// requires. Purely additive changes a older peer can ignore do not need a
+/// bump — but see `protocol_version_matches_schema` for the guard that forces
+/// the decision to be made deliberately.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Oldest [`PROTOCOL_VERSION`] this build still serves.
+///
+/// The gap between this and `PROTOCOL_VERSION` is the migration window: how far
+/// a separately-deployed parent (a WebSocket client, say) may lag behind its
+/// worker before being rejected. Raise it only when supporting an old version
+/// becomes a real cost — every raise is a breaking change for lagging clients.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 1;
+
+// The supported range must be non-empty, and must exclude zero — which is what
+// a parent that declared no version sends, and must never be servable.
+const _: () = assert!(MIN_SUPPORTED_PROTOCOL_VERSION >= 1);
+const _: () = assert!(MIN_SUPPORTED_PROTOCOL_VERSION <= PROTOCOL_VERSION);
+
 pub use convert::{MAX_VALUE_DEPTH, ProtoConvertError, exceeds_max_value_depth, future_results_from_proto};
 pub use frame::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_framed_into,

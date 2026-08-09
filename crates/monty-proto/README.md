@@ -27,9 +27,12 @@ for the schema and the protocol rules documented alongside it.
   framing, with a hard cap on frame length.
 - Fallible conversions between `pb` types and Monty's public types
   (`MontyObject`, `MontyException`, mounts, resource limits, ...).
-- `MONTY_VERSION` — the version both sides compare in the `Configure`
-  handshake. The protocol has no in-band negotiation, so parent and child must
-  be deployed in lockstep.
+- `PROTOCOL_VERSION` / `MIN_SUPPORTED_PROTOCOL_VERSION` — the wire schema
+  version a parent declares in `Configure`, and the range a child serves.
+  Versioned independently of the monty package: peers on different releases
+  interoperate as long as their protocol versions overlap. There is no in-band
+  negotiation, so a child rejecting a version reports its range in the
+  `FatalError` for the parent to downgrade to.
 - `python` (cargo feature, off by default) — the `python` module: PyO3-based
   conversions between live Python objects and `MontyObject`/`MontyException`,
   used by the `pydantic-monty-client` extension module. The feature pulls in `pyo3` (but never its

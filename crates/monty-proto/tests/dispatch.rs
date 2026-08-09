@@ -7,7 +7,7 @@
 
 use monty::{DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
 use monty_proto::{
-    FrameReader, WireObject, pb,
+    FrameReader, PROTOCOL_VERSION, WireObject, pb,
     worker::{Child, HandleOutcome, dispatch_frame},
     write_frame,
 };
@@ -60,6 +60,7 @@ fn create_repl(child: &mut Child) {
         type_check_stubs: None,
         assert_message_annotations: None,
         monty_version: MONTY_VERSION.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         ..Default::default()
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);

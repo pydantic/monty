@@ -11,7 +11,7 @@ use std::{
 };
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
-use monty_proto::{FrameError, exceeds_max_value_depth, pb, validate_requirement};
+use monty_proto::{FrameError, PROTOCOL_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 use monty_types::{
     AssertMessageAnnotations, ExcType, MONTY_VERSION, MontyException, MontyObject, OsFunctionCall, PrintStream,
     ResourceLimits, TypeCheckingConfig,
@@ -306,10 +306,12 @@ impl Checkout {
             type_check_format: pb::TypeCheckFormat::from(repl.type_check_config.format).into(),
             type_check_color: repl.type_check_config.color,
             assert_message_annotations: Some(repl.assert_message_annotations.max_bytes()),
-            // This crate ships the matching `monty` binary, so our own
-            // version is always what the child expects. The child rejects a
-            // mismatch with a `FatalError` (relevant when a remote driver
-            // built against a different version reuses the wire format).
+            // What the child actually checks: it rejects a version outside the
+            // range it serves with a `FatalError`. Relevant whenever the worker
+            // is not the binary this crate ships — a system-packaged `monty`,
+            // or a remote worker reached over a socket.
+            protocol_version: PROTOCOL_VERSION,
+            // Diagnostic only, so a rejection can report both builds.
             monty_version: MONTY_VERSION.to_owned(),
         }));
         let mut this = Self {
