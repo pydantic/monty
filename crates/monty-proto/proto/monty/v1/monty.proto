@@ -10,12 +10,13 @@
 // followed by exactly one turn-ending event. There is no multiplexing, so a
 // parent can be implemented with a single blocking read loop in any language.
 //
-// Evolution rules: parent and child are deployed in lockstep (the packages
-// ship a matching `monty` binary) and the child rejects a mismatched
-// `Configure.monty_version` with a `FatalError`, so schema changes need not
-// be wire-compatible across versions. Once the protocol stabilizes, prefer
-// additive changes (fresh tag numbers, `reserved` removals) so third-party
-// transports have a migration window.
+// Evolution rules: the schema carries its own version, independent of the
+// monty package version. A parent declares it in `Configure.protocol_version`
+// and the child rejects anything outside the range it serves
+// (`MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION` in `monty-proto`).
+// Prefer additive changes (fresh tag numbers, `reserved` removals) so a
+// separately-deployed parent has a migration window; a change an older peer
+// could mis-read needs a `PROTOCOL_VERSION` bump instead.
 
 syntax = "proto3";
 
@@ -373,11 +374,10 @@ message Configure {
   bool type_check = 3;
   // Optional stub file contents used by type checking.
   optional string type_check_stubs = 4;
-  // The parent's monty version (e.g. "0.0.18"). The child rejects the
-  // session with a `FatalError` when this does not match its own version:
-  // the protocol has no in-band negotiation and parent and child must be
-  // deployed in lockstep, so a mismatch is a hard, fail-fast error rather
-  // than a silent source of frame desync.
+  // The parent's monty package version (e.g. "0.0.18"). INFORMATIONAL ONLY —
+  // it is never checked, only reported (in telemetry, and when diagnosing a
+  // rejected `protocol_version`). Parent and child may run different package
+  // versions as long as their protocol versions are compatible.
   string monty_version = 5;
   // Introspected `assert` failure messages (see limitations/assert.md).
   // Absent = on with the default 120-byte operand-repr truncation; 0 disables
@@ -392,6 +392,15 @@ message Configure {
   // Render typing diagnostics with ANSI colour escapes. Only `FULL` and
   // `CONCISE` carry colour; the machine-readable formats ignore it.
   bool type_check_color = 8;
+  // Version of the wire schema the parent speaks. The child rejects the
+  // session with a `FatalError` naming its own supported range when this
+  // falls outside it, so a parent deployed separately from its worker (over
+  // a websocket, say) learns what to downgrade to without a handshake.
+  //
+  // 0 means the parent declared nothing — either it predates this field or it
+  // is not a monty parent — and is always rejected. The protocol has no
+  // in-band negotiation, so an undeclared peer cannot be assumed compatible.
+  uint32 protocol_version = 9;
 }
 
 // Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's

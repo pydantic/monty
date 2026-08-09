@@ -39,7 +39,8 @@ properties that real CPython does not provide, per the caveat above.
   see the snapshot divergences below.
 - A session whose worker crashed is lost: subsequent calls raise
   `MontyCrashedError` — which also carries a worker's own account when it
-  announced a `FatalError` before exiting (e.g. version skew), plus the exit
+  announced a `FatalError` before exiting (e.g. an unsupported protocol
+  version), plus the exit
   status when the process could be reaped. The pool itself recovers by
   replacing the worker.
 - **WebSocket sessions are lost in two additional ways.** A connection that
@@ -55,16 +56,23 @@ properties that real CPython does not provide, per the caveat above.
   it runs twice unless the callback is idempotent. Neither error occurs on
   the local subprocess transport; a local child claiming shutdown is a
   protocol violation.
-- **The session `Configure` request carries the parent's `monty_version`, and
-  the worker rejects a mismatch.** The protocol has no in-band negotiation and
-  assumes parent and child are deployed in lockstep, so a child whose version
-  differs from the `monty_version` in `Configure` replies `FatalError` (with a
-  `version skew: parent=… child=…` message) and exits non-zero rather than
-  risk a frame desync. A local subprocess child is built in lockstep with the
-  parent, so this mostly matters for the WebSocket transport, where the remote
-  child is deployed separately — a remote child on a different version replies
-  `FatalError` and the pool surfaces it as a `MontyCrashedError` carrying the
-  child's version-skew message.
+- **The session `Configure` request carries the parent's `protocol_version`,
+  and the worker rejects one it does not serve.** The protocol has no in-band
+  negotiation, so a parent outside the child's supported range
+  (`MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION`) gets a `FatalError`
+  naming that range — enough to downgrade and retry — and the child exits
+  non-zero rather than risk a frame desync. A version of `0` means the parent
+  declared nothing and is always rejected. A local subprocess child ships with
+  its parent, so this mostly matters for the WebSocket transport, where the
+  remote child is deployed separately; the pool surfaces the rejection as a
+  `MontyCrashedError` carrying the message.
+- **The package version is not checked.** `Configure` also carries the
+  parent's `monty_version`, but only for telemetry and to make a rejection
+  legible. Parent and child may run different monty releases as long as their
+  protocol versions are compatible. Note this does *not* extend to dumps: the
+  dump envelope is versioned separately again, and restoring one still
+  requires a worker built from the same version (see the snapshot
+  divergences below).
 - Resource exhaustion (e.g. `max_duration_secs`) is terminal for the
   *session*: later feeds keep failing with the same resource error. The
   worker process is reused for the next checkout.

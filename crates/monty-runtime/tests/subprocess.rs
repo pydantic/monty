@@ -10,7 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use monty_proto::{FrameError, FrameReader, WireObject, pb, write_frame};
+use monty_proto::{
+    FrameError, FrameReader, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireObject, pb, write_frame,
+};
 use monty_types::MontyObject;
 
 /// How long a death-expecting helper waits for the child to exit. Generous:
@@ -90,6 +92,7 @@ impl ChildProc {
             type_check: false,
             type_check_stubs: None,
             monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+            protocol_version: PROTOCOL_VERSION,
             assert_message_annotations: None,
             ..Default::default()
         });
@@ -415,6 +418,7 @@ fn child_enforces_time_limit() {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         assert_message_annotations: None,
         ..Default::default()
     });
@@ -620,6 +624,7 @@ fn configure_with_max_memory(bytes: u64) -> pb::Configure {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         assert_message_annotations: None,
         ..Default::default()
     }
@@ -658,6 +663,7 @@ fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
         type_check: true,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         assert_message_annotations: None,
         ..Default::default()
     });
@@ -695,6 +701,7 @@ fn type_check_format_selects_the_rendering() {
         type_check: true,
         type_check_format: pb::TypeCheckFormat::Concise.into(),
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         ..Default::default()
     });
 
@@ -734,6 +741,7 @@ fn reset_scrubs_type_check_state_from_the_next_session() {
             type_check_stubs: Some("STUB_SECRET: int = 0".to_owned()),
             type_check_format: pb::TypeCheckFormat::Concise.into(),
             monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+            protocol_version: PROTOCOL_VERSION,
             ..Default::default()
         });
         assert_eq!(child.feed_complete("LEAKY = 'hunter2'"), MontyObject::None);
@@ -749,6 +757,7 @@ fn reset_scrubs_type_check_state_from_the_next_session() {
             type_check: true,
             type_check_format: pb::TypeCheckFormat::Concise.into(),
             monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+            protocol_version: PROTOCOL_VERSION,
             ..Default::default()
         });
         let mut probe = |code: String| {
@@ -788,6 +797,7 @@ fn type_check_format_survives_dump_and_load() {
         type_check: true,
         type_check_format: pb::TypeCheckFormat::Concise.into(),
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         ..Default::default()
     });
     assert_eq!(child.feed_complete("y = 1"), MontyObject::None);
@@ -867,6 +877,7 @@ fn type_check_state_survives_dump_and_load() {
         type_check: true,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         assert_message_annotations: None,
         ..Default::default()
     });
@@ -902,6 +913,7 @@ fn assert_annotation_option_survives_dump_and_load() {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         // 0 = annotations off on the wire.
         assert_message_annotations: Some(0),
         ..Default::default()
@@ -934,6 +946,7 @@ fn assert_annotation_custom_limit_survives_dump_and_load() {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         // Non-zero = annotations on, truncating operand reprs to N chars.
         assert_message_annotations: Some(6),
         ..Default::default()
@@ -981,6 +994,7 @@ fn protocol_violations_keep_the_child_alive() {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         assert_message_annotations: None,
         ..Default::default()
     }));
@@ -1008,29 +1022,88 @@ fn protocol_violations_keep_the_child_alive() {
     child.shutdown();
 }
 
-#[test]
-fn version_skew_on_create_is_a_fatal_error() {
-    let mut child = ChildProc::spawn();
-    // A parent built against a different monty version: the child must reject
-    // the session with a FatalError and exit non-zero rather than risk a wire
-    // desync from a mismatched frame layout.
-    child.send(pb::parent_request::Kind::Configure(pb::Configure {
+/// Builds a `Configure` with an explicit protocol version, for the version
+/// checks below.
+fn configure_with_protocol_version(protocol_version: u32, monty_version: &str) -> pb::Configure {
+    pb::Configure {
         script_name: "main.py".to_owned(),
         limits: None,
         type_check: false,
         type_check_stubs: None,
-        monty_version: "0.0.0-not-a-real-version".to_owned(),
+        monty_version: monty_version.to_owned(),
+        protocol_version,
         assert_message_annotations: None,
         ..Default::default()
-    }));
-    match child.recv() {
-        pb::child_event::Kind::FatalError(fatal) => assert!(fatal.message.contains("version skew")),
-        other => panic!("expected FatalError, got {other:?}"),
     }
+}
+
+/// Asserts the child rejected the session and exited non-zero, returning the
+/// fatal message.
+fn expect_fatal_exit(mut child: ChildProc) -> String {
+    let message = match child.recv() {
+        pb::child_event::Kind::FatalError(fatal) => fatal.message,
+        other => panic!("expected FatalError, got {other:?}"),
+    };
     let status = child.child.wait().expect("wait");
     assert_eq!(status.code(), Some(4));
     // disarm Drop's kill — already exited
     let _ = child.child.kill();
+    message
+}
+
+/// A parent speaking a protocol this build does not serve must be rejected
+/// before any session exists, and told the range so it can downgrade — there
+/// is no handshake to discover it from.
+#[test]
+fn unsupported_protocol_version_on_create_is_a_fatal_error() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+        PROTOCOL_VERSION + 1,
+        env!("CARGO_PKG_VERSION"),
+    )));
+    let message = expect_fatal_exit(child);
+    assert!(
+        message.contains(&format!("unsupported protocol version {}", PROTOCOL_VERSION + 1)),
+        "message should name the rejected version: {message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "this build serves {MIN_SUPPORTED_PROTOCOL_VERSION}..={PROTOCOL_VERSION}"
+        )),
+        "message should name the supported range: {message}"
+    );
+}
+
+/// Zero means the parent declared nothing — it predates the field, or is not a
+/// monty parent. Without in-band negotiation it cannot be assumed compatible.
+#[test]
+fn undeclared_protocol_version_is_a_fatal_error() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+        0,
+        env!("CARGO_PKG_VERSION"),
+    )));
+    let message = expect_fatal_exit(child);
+    assert!(
+        message.contains("unsupported protocol version 0"),
+        "message should name the rejected version: {message}"
+    );
+}
+
+/// The package version is informational: a parent from a different build is
+/// served as long as its protocol version is one this build speaks.
+#[test]
+fn differing_package_version_is_accepted() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+        PROTOCOL_VERSION,
+        "0.0.0-not-a-real-version",
+    )));
+    assert!(
+        matches!(child.recv(), pb::child_event::Kind::Ok(_)),
+        "a mismatched package version must not end the session"
+    );
+    child.shutdown();
 }
 
 #[test]

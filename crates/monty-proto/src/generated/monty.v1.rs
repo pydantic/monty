@@ -398,11 +398,10 @@ pub struct Configure {
     /// Optional stub file contents used by type checking.
     #[prost(string, optional, tag = "4")]
     pub type_check_stubs: ::core::option::Option<::prost::alloc::string::String>,
-    /// The parent's monty version (e.g. "0.0.18"). The child rejects the
-    /// session with a `FatalError` when this does not match its own version:
-    /// the protocol has no in-band negotiation and parent and child must be
-    /// deployed in lockstep, so a mismatch is a hard, fail-fast error rather
-    /// than a silent source of frame desync.
+    /// The parent's monty package version (e.g. "0.0.18"). INFORMATIONAL ONLY —
+    /// it is never checked, only reported (in telemetry, and when diagnosing a
+    /// rejected `protocol_version`). Parent and child may run different package
+    /// versions as long as their protocol versions are compatible.
     #[prost(string, tag = "5")]
     pub monty_version: ::prost::alloc::string::String,
     /// Introspected `assert` failure messages (see limitations/assert.md).
@@ -421,6 +420,16 @@ pub struct Configure {
     /// `CONCISE` carry colour; the machine-readable formats ignore it.
     #[prost(bool, tag = "8")]
     pub type_check_color: bool,
+    /// Version of the wire schema the parent speaks. The child rejects the
+    /// session with a `FatalError` naming its own supported range when this
+    /// falls outside it, so a parent deployed separately from its worker (over
+    /// a websocket, say) learns what to downgrade to without a handshake.
+    ///
+    /// 0 means the parent declared nothing — either it predates this field or it
+    /// is not a monty parent — and is always rejected. The protocol has no
+    /// in-band negotiation, so an undeclared peer cannot be assumed compatible.
+    #[prost(uint32, tag = "9")]
+    pub protocol_version: u32,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.

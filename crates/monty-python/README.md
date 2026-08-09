@@ -27,9 +27,10 @@ find that binary itself, in this order:
 4. a `monty` executable on `PATH`
 5. a cargo-built binary in the monty workspace, for editable installs of this repo
 
-If none match, constructing a pool raises `FileNotFoundError`. The binary must be
-the same version as this package — the worker rejects a version mismatch when a
-session is checked out.
+If none match, constructing a pool raises `FileNotFoundError`. The binary need not
+be the same release as this package, but it must speak a compatible wire protocol
+version — the worker rejects an incompatible one when a session is checked out,
+reporting the range it serves.
 
 ## Usage
 

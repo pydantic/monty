@@ -16,7 +16,7 @@
 //! the host transport surfaces that; it only ensures every *graceful* turn ends
 //! with exactly one turn-ending event.
 
-use std::{borrow::Cow, mem};
+use std::{borrow::Cow, mem, ops::RangeInclusive};
 
 use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump};
 use monty_type_checking::{SourceFile, TypeChecker};
@@ -26,9 +26,16 @@ use monty_types::{
 };
 
 use super::{
-    FrameError, FrameReader, MAX_FRAME_LEN, WireFunctionCall, exceeds_max_frame_len, exceeds_max_value_depth,
-    future_results_from_proto, pb, write_frame,
+    FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireFunctionCall,
+    exceeds_max_frame_len, exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
 };
+
+/// Protocol versions this build serves; a `Configure` outside it is fatal.
+///
+/// Zero is excluded by construction, so a parent that declared nothing — one
+/// predating `Configure.protocol_version`, or not a monty parent at all — is
+/// rejected rather than assumed compatible.
+const SUPPORTED_PROTOCOL_VERSIONS: RangeInclusive<u32> = MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -224,23 +231,22 @@ impl Child {
 
         let mut event = match kind {
             pb::parent_request::Kind::Configure(configure) => {
-                // Version skew is fatal. The protocol has no in-band
-                // negotiation and assumes parent and child are deployed in
-                // lockstep; a mismatched build can have a different frame
-                // layout, so we fail fast with a `FatalError` rather than risk
-                // a silent desync. Emit the fatal last gasp and stop the child.
+                // An unsupported protocol version is fatal: the parent may frame
+                // or interpret later messages differently, so serving it risks a
+                // silent desync. Emit the fatal last gasp and stop the child.
                 //
-                // An *empty* version opts out of skew detection: it marks a
-                // parent that ships in lockstep with the worker and so has no
-                // independent build version to compare — the bundled wasm
-                // worker, whose TypeScript driver is published together with the
-                // `.wasm` in one package. A separately-deployed parent (the
-                // subprocess pool) always sends its real version, so its skew
-                // check is unaffected.
-                if !configure.monty_version.is_empty() && configure.monty_version != MONTY_VERSION {
+                // The message names the range this build serves so a parent
+                // deployed separately from its worker can downgrade and retry —
+                // there is no handshake to discover it from. The package
+                // versions ride along purely as a diagnostic.
+                if !SUPPORTED_PROTOCOL_VERSIONS.contains(&configure.protocol_version) {
                     sink.send(&self.fatal_event(&format!(
-                        "version skew: parent={:?} child={MONTY_VERSION:?}",
-                        configure.monty_version
+                        "unsupported protocol version {} (this build serves {}..={}); \
+                         parent monty {:?}, child monty {MONTY_VERSION:?}",
+                        configure.protocol_version,
+                        MIN_SUPPORTED_PROTOCOL_VERSION,
+                        PROTOCOL_VERSION,
+                        configure.monty_version,
                     )))?;
                     return Ok(HandleOutcome::Fatal);
                 }
@@ -408,6 +414,8 @@ impl Child {
             return Err(Box::new(protocol_violation("session has not been configured")));
         };
         let type_check_config = TypeCheckingConfig::from(config.as_ref());
+        // Destructured exhaustively on purpose: a new `Configure` field must
+        // fail to compile here until the child decides what to do with it.
         let pb::Configure {
             script_name,
             limits,
@@ -417,7 +425,9 @@ impl Child {
             // read above, through the accessor that validates the enum number
             type_check_format: _,
             type_check_color: _,
-            // already validated against our own version when `Configure` arrived
+            // range-checked when `Configure` arrived
+            protocol_version: _,
+            // informational only — reported, never checked
             monty_version: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
