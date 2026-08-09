@@ -1066,10 +1066,15 @@ fn unsupported_protocol_version_on_create_is_a_fatal_error() {
         message.contains(&format!("unsupported protocol version {}", PROTOCOL_VERSION + 1)),
         "message should name the rejected version: {message}"
     );
+    // Spelled out rather than taken from `check_protocol_version`, so a reword
+    // fails the journey a parent actually reads the sentence through.
+    let supported = if MIN_SUPPORTED_PROTOCOL_VERSION == PROTOCOL_VERSION {
+        format!("this build supports protocol version {PROTOCOL_VERSION}")
+    } else {
+        format!("this build supports protocol versions {MIN_SUPPORTED_PROTOCOL_VERSION} to {PROTOCOL_VERSION}")
+    };
     assert!(
-        message.contains(&format!(
-            "this build serves {MIN_SUPPORTED_PROTOCOL_VERSION}..={PROTOCOL_VERSION}"
-        )),
+        message.contains(&supported),
         "message should name the supported range: {message}"
     );
 }
