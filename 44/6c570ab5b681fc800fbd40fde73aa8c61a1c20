@@ -1,0 +1,39 @@
+crates/monty-pool/README.md
+  s_93200dd7cdf189::t_d70cd471a647d6 97
+crates/monty-python/Cargo.toml
+  s_93200dd7cdf189::t_d70cd471a647d6 24
+Makefile
+  s_93200dd7cdf189::t_d70cd471a647d6 167
+crates/monty-pool/src/checkout.rs
+  s_93200dd7cdf189::t_d70cd471a647d6 3,23,284,333,676,712,1321
+crates/monty-pool/src/lib.rs
+  s_93200dd7cdf189::t_d70cd471a647d6 4,7,9,11,20,90,120
+crates/monty-js/Cargo.toml
+  s_93200dd7cdf189::t_d70cd471a647d6 25
+crates/monty-pool/src/pool.rs
+  s_93200dd7cdf189::t_d70cd471a647d6 17,101,176,182,270,274,283,287
+.github/workflows/ci.yml
+  s_93200dd7cdf189::t_d70cd471a647d6 153,354,359
+crates/monty-pool/tests/metrics.rs
+  s_93200dd7cdf189::t_d70cd471a647d6 8
+crates/monty-pool/Cargo.toml
+  s_93200dd7cdf189::t_d70cd471a647d6 19,29-31
+crates/monty-pool/src/worker.rs
+  s_93200dd7cdf189::t_d70cd471a647d6 16,43,61,65,99,109,117,167,169,195,197,236,256,302,306,311
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "446c570ab5b681fc800fbd40fde73aa8c61a1c20",
+  "prompts": {},
+  "sessions": {
+    "s_93200dd7cdf189": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e51a5b01-e78b-466a-a088-0686bd81de9f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
