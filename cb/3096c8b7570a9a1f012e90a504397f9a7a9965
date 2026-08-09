@@ -1,0 +1,19 @@
+crates/monty-pool/tests/websocket.rs
+  s_b5b85c9655a780::t_8c5a557051e16b 877-1043
+crates/monty-pool/src/worker.rs
+  s_b5b85c9655a780::t_4ad7aa65e3ab5a 270
+  s_b5b85c9655a780::t_06223a9673cef4 315-320,322-327
+  s_b5b85c9655a780::t_dbc4b32cbc59f3 32-35,43-44,49
+  s_b5b85c9655a780::t_80c4b02b988077 233-237,239-243
+  s_b5b85c9655a780::t_bc6d994e305237 271,547
+  s_b5b85c9655a780::t_772a5625e05e71 383
+  s_b5b85c9655a780::t_18892020bb0784 91-93,97-98,100-107,142-144,150
+  s_b5b85c9655a780::t_b7109243decc81 108-141,145-149,151-156,388-396,527-546,548-558
+  s_b5b85c9655a780::t_6ff225d04cf7ad 8-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cb3096c8b7570a9a1f012e90a504397f9a7a9965",
+  "prompts": {}
+}
