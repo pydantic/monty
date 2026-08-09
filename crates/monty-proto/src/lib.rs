@@ -3,7 +3,6 @@
 mod convert;
 mod frame;
 mod generated;
-pub mod peek;
 // Python ↔ MontyObject value conversion; opt-in because it links pyo3, which
 // pure-Rust consumers of the wire protocol must never pay for.
 #[cfg(feature = "python")]
