@@ -1,0 +1,19 @@
+crates/monty-server/README.md
+  s_45dbc9067fca83::t_1889b141148d65 126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "08e5784ce62056b87147a02874270bb233a25266",
+  "prompts": {},
+  "sessions": {
+    "s_45dbc9067fca83": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a66984f2-cd03-48ff-949a-cf0b1c2c86a7",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
