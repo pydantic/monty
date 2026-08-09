@@ -1,0 +1,20 @@
+crates/monty/tests/heap_reader_compile_fail.rs
+  s_67d1427f6b053a::t_763d0154e963e2 27-39,41
+  s_67d1427f6b053a::t_b6b075c1fba13c 40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9ebfee80dd26b4a2afe277eb982f0d92ecf6d16a",
+  "prompts": {},
+  "sessions": {
+    "s_67d1427f6b053a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6b9101b-aaa6-45bb-9b99-2cc4ffef7a58",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
