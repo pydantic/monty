@@ -63,7 +63,10 @@ fn round_trip_progress(progress: &ReplProgress) -> ReplProgress {
 fn dump_header_rejects_incompatible_data() {
     let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
     let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
-    assert_eq!(&bytes[..8], b"MONTY\0\x05\x00");
+    // pins the header layout (magic then little-endian version), not the version itself
+    let mut expected_header = b"MONTY\0".to_vec();
+    expected_header.extend_from_slice(&DUMP_VERSION.to_le_bytes());
+    assert_eq!(&bytes[..8], expected_header.as_slice());
 
     // too short to even hold a header
     assert_eq!(Dump::load(&bytes[..3]).unwrap_err(), DumpError::NotADump);

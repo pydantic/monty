@@ -16,8 +16,6 @@ pyo3 = { workspace = true, features = ["auto-initialize"] }
 ahash = { workspace = true }
 chrono = { workspace = true }
 datatest-stable = "0.2"
-# the per-step RunProgress serialization round-trip in `run_iterative`
-postcard = { workspace = true }
 similar = "2.7.0"
 tempfile = "3"
 

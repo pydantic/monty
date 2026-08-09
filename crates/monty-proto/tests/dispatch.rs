@@ -174,10 +174,10 @@ fn shutdown_request_reports_shutdown() {
 /// names both versions so a host can tell a stale snapshot from a corrupt one.
 #[test]
 fn load_rejects_old_dump_version() {
-    // a real dump with its version bumped, so only the version is wrong
+    // a real dump rewound to the previous version, so only the version is wrong
     let repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
     let mut state = dump("main.py", None, SessionRef::Idle(&repl)).expect("dumping an idle repl succeeds");
-    state[6..8].copy_from_slice(&(DUMP_VERSION + 1).to_le_bytes());
+    state[6..8].copy_from_slice(&(DUMP_VERSION - 1).to_le_bytes());
 
     let mut child = Child::default();
     create_repl(&mut child);
@@ -192,7 +192,7 @@ fn load_rejects_old_dump_version() {
         error.exception.unwrap().message.unwrap(),
         format!(
             "protocol violation: failed to load session: dump format version {}, this build reads {DUMP_VERSION}",
-            DUMP_VERSION + 1
+            DUMP_VERSION - 1
         )
     );
 }

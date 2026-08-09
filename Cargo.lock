@@ -2451,7 +2451,6 @@ dependencies = [
  "monty",
  "monty-fs",
  "monty-types",
- "postcard",
  "pyo3",
  "pyo3-build-config",
  "similar 2.7.0",
