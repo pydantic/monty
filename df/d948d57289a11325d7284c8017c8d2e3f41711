@@ -1,0 +1,21 @@
+crates/monty-server-tests/src/wire/client.rs
+  s_45dbc9067fca83::t_82e6d71de218a1 68-78
+crates/monty-server-tests/tests/wire/mid_turn.rs
+  s_45dbc9067fca83::t_ecc3c12ba3e418 178-182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "dfd948d57289a11325d7284c8017c8d2e3f41711",
+  "prompts": {},
+  "sessions": {
+    "s_45dbc9067fca83": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a66984f2-cd03-48ff-949a-cf0b1c2c86a7",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
