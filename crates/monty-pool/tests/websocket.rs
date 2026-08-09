@@ -7,6 +7,7 @@ use std::{
     fs,
     future::ready,
     net::{TcpListener, TcpStream},
+    sync::mpsc,
     thread,
     time::Duration,
 };
@@ -16,7 +17,7 @@ use monty_pool::{
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb};
 use monty_types::{MontyObject, PrintStream, ResourceLimits};
-use tokio::task::spawn_blocking;
+use tokio::{task::spawn_blocking, time::timeout};
 use tungstenite::{Message, WebSocket};
 
 /// A mock child: accepts one WebSocket connection and answers each request with
@@ -958,6 +959,54 @@ async fn a_timed_out_turn_sends_a_close_frame() {
         .expect_err("the turn must time out");
     assert!(matches!(err, PoolError::Timeout { .. }), "got {err:?}");
     join_server(server).await;
+}
+
+/// Cancelling `finish()` mid-goodbye must not leak the worker's capacity slot.
+///
+/// The goodbye only *pends* against a peer that stopped reading, so the socket
+/// is wedged first: one oversized feed the mock server never drains fills the
+/// buffers, and every later write queues behind it. The worker is already out
+/// of the `Checkout` by then, so without a `CapacityGuard` across the await
+/// nothing releases its slot and the pool shrinks by one for good.
+#[tokio::test]
+async fn cancelling_finish_does_not_leak_capacity() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let (release, wait_for_release) = mpsc::channel::<()>();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        // never read again: the client's writes now back up in the socket
+        wait_for_release.recv().expect("release");
+    });
+
+    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    config.max_processes = 1;
+    config.checkout_timeout = Some(Duration::from_millis(200));
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+
+    let wedge = "#".repeat(32 * 1024 * 1024);
+    let mut on_print = no_print;
+    let feed = checkout.feed(&wedge, vec![], vec![], false, &mut on_print);
+    assert!(
+        timeout(Duration::from_secs(1), feed).await.is_err(),
+        "the unread feed must block, wedging the socket"
+    );
+    assert!(
+        timeout(Duration::from_millis(200), checkout.finish()).await.is_err(),
+        "the goodbye must block behind the wedged socket, cancelling inside the window"
+    );
+
+    release.send(()).expect("release the server");
+    join_server(server).await;
+
+    // the slot came back: the next checkout gets as far as dialling (and fails
+    // to connect, the listener being gone) instead of reporting no capacity
+    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+        panic!("the listener is gone, so a checkout cannot succeed");
+    };
+    assert!(matches!(err, PoolError::Spawn(_)), "got {err:?}");
 }
 
 #[tokio::test]

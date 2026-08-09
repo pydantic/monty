@@ -98,7 +98,7 @@ impl WebSocketWorker {
     /// teardown, and the frame only has to reach the OS, not the peer.
     async fn close(&mut self) {
         if let Some(stream) = &mut self.stream {
-            let _ = timeout(CLOSE_WRITE_TIMEOUT, stream.close(None)).await;
+            send_close(stream).await;
         }
         self.stream = None;
     }
@@ -107,18 +107,27 @@ impl WebSocketWorker {
 /// Backstop for the teardown paths that are synchronous — an abandoned
 /// [`crate::Checkout`], a discarded worker — where [`WebSocketWorker::close`]
 /// cannot be awaited: hand the stream to a detached task that says goodbye and
-/// drops it. Outside a runtime there is nothing to spawn onto, so the stream is
-/// simply dropped, exactly as before.
+/// drops it.
+///
+/// Weaker than the awaited path, and deliberately so: the task only runs if the
+/// runtime outlives this drop, so a runtime shutting down (or a current-thread
+/// one no longer being polled) cancels it and the socket closes silently. With
+/// no runtime at all there is nothing to spawn onto. Both degrade to the plain
+/// drop this replaced, never to something worse.
 impl Drop for WebSocketWorker {
     fn drop(&mut self) {
         if let Some(mut stream) = self.stream.take()
             && let Ok(handle) = Handle::try_current()
         {
-            handle.spawn(async move {
-                let _ = timeout(CLOSE_WRITE_TIMEOUT, stream.close(None)).await;
-            });
+            handle.spawn(async move { send_close(&mut stream).await });
         }
     }
+}
+
+/// Writes the goodbye frame, bounded so a peer that stopped draining cannot
+/// hang teardown. Shared by both paths above so they cannot drift apart.
+async fn send_close(stream: &mut WsStream) {
+    let _ = timeout(CLOSE_WRITE_TIMEOUT, stream.close(None)).await;
 }
 
 impl Worker {
