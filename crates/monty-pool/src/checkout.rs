@@ -664,11 +664,13 @@ impl Checkout {
     pub async fn finish(mut self) -> Result<(), PoolError> {
         // A websocket worker is single-use — the pool discards it after every
         // checkout — so there is no point round-tripping a `Reset` to ready it
-        // for reuse. Dropping it closes the socket, which the child reads as a
-        // clean EOF and exits. Only subprocess workers are reset and returned to
-        // the idle pool for the next checkout.
+        // for reuse. Closing the connection (Close frame, then socket) is what
+        // ends the session; the child reads it as a clean EOF and exits. Only
+        // subprocess workers are reset and returned to the idle pool for the
+        // next checkout.
         if self.pool.config.transport.is_websocket() {
-            if let Some(worker) = self.worker.take() {
+            if let Some(mut worker) = self.worker.take() {
+                worker.close_transport().await;
                 self.pool.release_worker(worker);
             }
             return Ok(());

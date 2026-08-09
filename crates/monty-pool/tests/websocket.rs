@@ -873,6 +873,93 @@ async fn shutdown_without_a_session_carries_no_dump() {
     join_server(server).await;
 }
 
+// === teardown says goodbye ===
+
+/// Reads until the client's Close frame, panicking on anything else.
+///
+/// Behind a proxy this is the *only* signal the far side gets: some load
+/// balancers forward a Close frame but never propagate a bare TCP disconnect
+/// upstream, so a teardown that only drops the socket leaves the remote session
+/// alive until its own idle timeout.
+fn expect_close(socket: &mut WebSocket<TcpStream>) {
+    loop {
+        match socket.read() {
+            Ok(Message::Close(_)) => return,
+            Ok(Message::Ping(_) | Message::Pong(_)) => {}
+            other => panic!("expected a Close frame, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn finishing_a_checkout_sends_a_close_frame() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Complete(pb::Complete {
+                value: Some(MontyObject::Int(42).into()),
+            }),
+        );
+        expect_close(&mut socket);
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn an_abandoned_checkout_sends_a_close_frame() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_close(&mut socket);
+    });
+
+    let (_pool, checkout) = websocket_checkout(port).await;
+    // dropping a checkout is a synchronous teardown, so the goodbye is sent by
+    // a detached task rather than awaited here
+    drop(checkout);
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn a_timed_out_turn_sends_a_close_frame() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "while True:\n    pass");
+        // never reply: the client's deadline must end the session, and the
+        // abandoned-session case is exactly when the server most wants the slot
+        expect_close(&mut socket);
+    });
+
+    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    config.max_processes = 1;
+    config.request_timeout = Some(Duration::from_millis(200));
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let err = checkout
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the turn must time out");
+    assert!(matches!(err, PoolError::Timeout { .. }), "got {err:?}");
+    join_server(server).await;
+}
+
 #[tokio::test]
 async fn a_dropped_connection_is_a_disconnect() {
     // Every server policy action other than shutdown (idle/session/turn

@@ -79,8 +79,46 @@ struct SubprocessWorker {
 /// frame (no length prefix — the message boundary is the frame). `Option` so
 /// teardown can drop the stream in place: dropping it closes the TCP
 /// connection — the async analogue of killing a child.
+///
+/// Teardown must also *say goodbye* with a Close frame (see
+/// [`WebSocketWorker::close`]); dropping alone is not enough through a proxy.
 struct WebSocketWorker {
     stream: Option<WsStream>,
+}
+
+impl WebSocketWorker {
+    /// Ends the connection: a bounded, best-effort Close frame, then the drop
+    /// that actually closes the socket.
+    ///
+    /// The frame is what a *proxied* peer sees — some load balancers forward a
+    /// Close frame but never propagate a bare TCP disconnect upstream, so
+    /// without it the far side keeps the session alive until its own idle
+    /// timeout, pinning a worker and a capacity slot. The write is bounded
+    /// because a peer that has stopped draining must not be able to hang
+    /// teardown, and the frame only has to reach the OS, not the peer.
+    async fn close(&mut self) {
+        if let Some(stream) = &mut self.stream {
+            let _ = timeout(CLOSE_WRITE_TIMEOUT, stream.close(None)).await;
+        }
+        self.stream = None;
+    }
+}
+
+/// Backstop for the teardown paths that are synchronous — an abandoned
+/// [`crate::Checkout`], a discarded worker — where [`WebSocketWorker::close`]
+/// cannot be awaited: hand the stream to a detached task that says goodbye and
+/// drops it. Outside a runtime there is nothing to spawn onto, so the stream is
+/// simply dropped, exactly as before.
+impl Drop for WebSocketWorker {
+    fn drop(&mut self) {
+        if let Some(mut stream) = self.stream.take()
+            && let Ok(handle) = Handle::try_current()
+        {
+            handle.spawn(async move {
+                let _ = timeout(CLOSE_WRITE_TIMEOUT, stream.close(None)).await;
+            });
+        }
+    }
 }
 
 impl Worker {
@@ -309,17 +347,26 @@ impl Worker {
                 w.child.wait().await.ok()
             }
             WorkerKind::WebSocket(w) => {
-                // Drop the stream rather than sending a WebSocket Close frame:
-                // a peer that has stopped draining could block the close write
-                // indefinitely. With the stream gone the TCP socket closes; the
-                // child reads that as a clean EOF and exits, so the graceful
-                // Close frame buys nothing here.
-                w.stream = None;
+                w.close().await;
                 None
             }
         }
     }
+
+    /// Ends the connection behind a worker the caller is *not* discarding as
+    /// dead — the single-use WebSocket worker of a cleanly finished checkout.
+    /// A no-op for subprocess workers, which the pool reuses or kills instead.
+    pub(crate) async fn close_transport(&mut self) {
+        if let WorkerKind::WebSocket(w) = &mut self.kind {
+            w.close().await;
+        }
+    }
 }
+
+/// How long teardown gives a WebSocket Close frame to reach the OS before
+/// giving up and dropping the socket. Short: the frame is a courtesy, and the
+/// only thing that can delay it is a peer that stopped reading.
+const CLOSE_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Chunk size for speculative frame reads: large enough that a typical
 /// prefix + body arrives in a single `read` syscall, small enough to sit
