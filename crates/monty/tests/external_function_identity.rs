@@ -226,10 +226,10 @@ fn extfunction_cache_is_rebuilt_after_snapshot_load() {
             PrintWriter::Stdout,
         )
         .unwrap();
-    let bytes = progress.dump().unwrap();
+    let bytes = postcard::to_allocvec(&progress).unwrap();
     assert_eq!(resume_snapshot_identity_test(progress), MontyObject::Bool(true));
 
-    let progress = RunProgress::load(&bytes).unwrap();
+    let progress: RunProgress = postcard::from_bytes(&bytes).unwrap();
     assert_eq!(resume_snapshot_identity_test(progress), MontyObject::Bool(true));
 }
 

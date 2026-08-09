@@ -13,7 +13,6 @@ use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWri
 use crate::{
     asyncio::CallId,
     bytecode::{FrameExit, VM, VMSnapshot},
-    dump_format::{DumpKind, dump, load},
     exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{Heap, HeapReader},
     object_bridge::MontyObjectExt,
@@ -87,27 +86,6 @@ impl RunProgress {
             Self::NameLookup(lookup) => Some(lookup),
             _ => None,
         }
-    }
-}
-
-impl RunProgress {
-    /// Serializes the execution state to a versioned binary format.
-    ///
-    /// # Errors
-    /// Returns an error if serialization fails.
-    pub fn dump(&self) -> Result<Vec<u8>, postcard::Error> {
-        dump(self, DumpKind::RunProgress)
-    }
-}
-
-impl RunProgress {
-    /// Deserializes execution state from binary format.
-    ///
-    /// # Errors
-    /// Returns an error for an incompatible dump version or kind, or if
-    /// deserialization fails.
-    pub fn load(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        load(bytes, DumpKind::RunProgress)
     }
 }
 

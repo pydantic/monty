@@ -469,8 +469,9 @@ pub struct ResumeFutures {
     pub results: ::prost::alloc::vec::Vec<FutureResult>,
 }
 /// Requests an opaque serialized snapshot of the current session state
-/// (idle or suspended). The child stays usable afterwards. The bytes can only
-/// be restored by a monty child of the same version via `Load`.
+/// (idle or suspended). The child stays usable afterwards. The bytes carry
+/// monty's own dump format, versioned independently of this schema, and can
+/// only be restored via `Load` by a child built with the same dump version.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Dump {}
 /// Restores state produced by `Dump`. Valid only from no session. If

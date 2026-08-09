@@ -329,9 +329,11 @@ properties that real CPython does not provide, per the caveat above.
   as above) so the imports resolve — no protocol involvement, mirroring
   `uv run`. The Monty sandbox worker has no such behavior: a `# /// script`
   block is just a comment and its dependencies are never installed.
-- **`dump()`** bytes use a subprocess-specific envelope and can only be
-  restored into another subprocess worker of the same version, via
+- **`dump()`** bytes carry monty's own versioned session format and can only be
+  restored into a worker built with the same `DUMP_VERSION`, via
   `session.load_session` / `session.load_snapshot` (Rust `Checkout::restore`).
+  A version mismatch is reported as such — naming both versions — so a stale
+  snapshot is distinguishable from a corrupt one.
 - **`feed_start` snapshots are live cursors, not owned state.** The execution
   state lives in the worker, so only one suspension is live per session, each
   snapshot may be resumed at most once (a second resume raises

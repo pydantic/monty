@@ -1800,12 +1800,14 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
     let mut pending_results: Vec<(u32, ExtFunctionResult)> = Vec::new();
 
     loop {
-        // Test serialization round-trip at each step (skip when memory-model-checks is enabled
-        // since the old RunProgress would panic on drop without proper cleanup)
+        // Round-trip the suspended state through postcard at each step, so every
+        // test case's heap shape is exercised by the serde impls a session dump
+        // rests on. (Skipped under memory-model-checks: the discarded
+        // `RunProgress` would panic on drop without proper cleanup.)
         #[cfg(not(feature = "memory-model-checks"))]
         {
-            let bytes = progress.dump().expect("failed to dump RunProgress");
-            progress = RunProgress::load(&bytes).expect("failed to load RunProgress");
+            let bytes = postcard::to_allocvec(&progress).expect("failed to serialize RunProgress");
+            progress = postcard::from_bytes(&bytes).expect("failed to deserialize RunProgress");
         }
 
         match progress {

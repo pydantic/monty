@@ -4,7 +4,10 @@
 //! only the newly fed snippet each time.
 
 use insta::assert_snapshot;
-use monty::{MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, detect_repl_continuation_mode};
+use monty::{
+    DUMP_VERSION, Dump, DumpError, MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, Session, SessionRef,
+    detect_repl_continuation_mode, dump,
+};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, PrintWriter, ResourceTracker,
 };
@@ -32,6 +35,61 @@ fn init_repl(code: &str) -> (MontyRepl, MontyObject) {
     let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
     let output = feed_run_print(&mut repl, code).unwrap();
     (repl, output)
+}
+
+/// Round-trips an idle session through the dump format, asserting it comes back
+/// on the same [`Session`] arm it went out on.
+fn round_trip_repl(repl: &MontyRepl) -> MontyRepl {
+    let bytes = dump("repl.py", None, SessionRef::Idle(repl)).unwrap();
+    match Dump::load(&bytes).unwrap().state {
+        Session::Idle(repl) => *repl,
+        Session::Suspended(_) => panic!("dumped an idle session, loaded a suspended one"),
+    }
+}
+
+/// Round-trips a suspended session through the dump format.
+fn round_trip_progress(progress: &ReplProgress) -> ReplProgress {
+    let bytes = dump("repl.py", None, SessionRef::Suspended(progress)).unwrap();
+    match Dump::load(&bytes).unwrap().state {
+        Session::Suspended(progress) => *progress,
+        Session::Idle(_) => panic!("dumped a suspended session, loaded an idle one"),
+    }
+}
+
+/// The header must reject anything this build cannot read, and each rejection
+/// must say which of the three it was — a stale snapshot needs rebuilding, a
+/// corrupt one needs investigating.
+#[test]
+fn dump_header_rejects_incompatible_data() {
+    let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
+    assert_eq!(&bytes[..8], b"MONTY\0\x05\x00");
+
+    // too short to even hold a header
+    assert_eq!(Dump::load(&bytes[..3]).unwrap_err(), DumpError::NotADump);
+
+    let mut wrong_magic = bytes.clone();
+    wrong_magic[0] = b'X';
+    assert_eq!(Dump::load(&wrong_magic).unwrap_err(), DumpError::NotADump);
+
+    let mut wrong_version = bytes.clone();
+    wrong_version[6] = 1;
+    assert_eq!(
+        Dump::load(&wrong_version).unwrap_err(),
+        DumpError::VersionMismatch {
+            found: 1,
+            expected: DUMP_VERSION
+        }
+    );
+
+    // trailing bytes are rejected rather than ignored, so a padded dump cannot
+    // decode as the shorter valid one it starts with
+    let mut trailing_data = bytes;
+    trailing_data.push(0);
+    assert_eq!(
+        Dump::load(&trailing_data).unwrap_err(),
+        DumpError::Payload(postcard::Error::DeserializeBadEncoding)
+    );
 }
 
 #[test]
@@ -204,8 +262,7 @@ fn repl_dump_load_survives_between_snippets() {
     let (mut repl, _) = init_repl("total = 1");
     feed_run_print(&mut repl, "total = total + 1").unwrap();
 
-    let bytes = repl.dump().unwrap();
-    let mut loaded: MontyRepl = MontyRepl::load(&bytes).unwrap();
+    let mut loaded = round_trip_repl(&repl);
 
     feed_run_print(&mut loaded, "total = total * 21").unwrap();
     let output = feed_run_print(&mut loaded, "total").unwrap();
@@ -218,8 +275,7 @@ fn repl_dump_load_preserves_heap_aliasing() {
 
     feed_run_print(&mut repl, "a.append(1)").unwrap();
 
-    let bytes = repl.dump().unwrap();
-    let mut loaded: MontyRepl = MontyRepl::load(&bytes).unwrap();
+    let mut loaded = round_trip_repl(&repl);
 
     feed_run_print(&mut loaded, "b.append(2)").unwrap();
     assert_eq!(
@@ -293,8 +349,7 @@ fn repl_progress_dump_load_roundtrip() {
     // With LoadGlobalCallable, ext_fn goes directly to FunctionCall
     let progress = repl.feed_start("ext_fn(20) + 22", vec![], PrintWriter::Stdout).unwrap();
 
-    let bytes = progress.dump().unwrap();
-    let loaded: ReplProgress = ReplProgress::load(&bytes).unwrap();
+    let loaded = round_trip_progress(&progress);
 
     let call = loaded.into_function_call().expect("expected function call");
     assert_eq!(call.args, vec![MontyObject::Int(20)]);
@@ -325,8 +380,7 @@ async def main():
     let call_id = call.call_id;
 
     let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
-    let bytes = progress.dump().unwrap();
-    let loaded: ReplProgress = ReplProgress::load(&bytes).unwrap();
+    let loaded = round_trip_progress(&progress);
     let state = loaded.into_resolve_futures().expect("expected resolve futures");
     assert_eq!(state.pending_call_ids(), &[call_id]);
 

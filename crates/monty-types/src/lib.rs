@@ -39,5 +39,5 @@ pub use crate::{
     },
     results::{ExtFunctionResult, NameLookupResult},
     run_options::{AssertMessageAnnotations, CompileOptions},
-    type_checking::{TypeCheckingConfig, TypeCheckingFormat},
+    type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
 };

@@ -225,21 +225,26 @@ assert_eq!(result, MontyObject::Int(55));
 
 #### Serialization
 
-`MontyRun` and `RunProgress` can be serialized using the `dump()` and `load()` methods:
+A REPL session can be serialized with `dump()` and restored with `Dump::load()`. The dump carries the session metadata (script name, type-check stubs) alongside the interpreter state, behind a version the loading build checks:
 
 ```rust
-use monty::MontyRun;
-use monty_types::{CompileOptions, ResourceTracker, MontyObject, PrintWriter, ResourceLimits};
+use monty::{Dump, MontyRepl, Session, SessionRef, dump};
+use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 
-// Serialize parsed code
-let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
-let bytes = runner.dump().unwrap();
+// Snapshot a session between snippets
+let mut repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
+repl.feed_run("x = 41", vec![], PrintWriter::Stdout).unwrap();
+let bytes = dump("main.py", None, SessionRef::Idle(&repl)).unwrap();
 
-// Later, restore and run
-let runner2 = MontyRun::load(&bytes).unwrap();
-let result = runner2.run(vec![MontyObject::Int(41)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
+// Later, restore and carry on feeding
+let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+    panic!("dumped an idle session")
+};
+let result = restored.feed_run("x + 1", vec![], PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(42));
 ```
+
+`MontyRun` and `RunProgress` have no dump format of their own, but both implement `serde::Serialize`/`Deserialize`, so a host can serialize parsed code or a paused run with whatever format it already uses.
 
 ## Memory limits in workers
 
