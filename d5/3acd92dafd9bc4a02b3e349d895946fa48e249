@@ -1,0 +1,26 @@
+crates/monty-pool/src/pool.rs
+  s_93200dd7cdf189::t_592b58e6a994d5 350-353,357,359-382,394-396
+crates/monty-pool/src/checkout.rs
+  s_93200dd7cdf189::t_3e20da7b674c5c 677-684,711-718,1220-1221,1240,1242-1246,1256,1263,1284-1285,1303,1318,1321-1322
+crates/monty-pool/tests/metrics.rs
+  s_93200dd7cdf189::t_99ffed2d2a595b 24,221-255
+  s_93200dd7cdf189::t_691543b0378eb9 189-220,256-258
+packages/pydantic-monty/README.md
+  s_93200dd7cdf189::t_321faacf6c28f4 274-281
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d53acd92dafd9bc4a02b3e349d895946fa48e249",
+  "prompts": {},
+  "sessions": {
+    "s_93200dd7cdf189": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e51a5b01-e78b-466a-a088-0686bd81de9f",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}
