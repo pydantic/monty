@@ -1,0 +1,21 @@
+crates/monty-pool/tests/websocket.rs
+  s_b5b85c9655a780::t_58a0a2c8b28f3c 6-8
+  s_b5b85c9655a780::t_05a4762b4d0035 22-24
+  s_b5b85c9655a780::t_56d5b9fd411f6e 1007-1014
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "129a6116cca76d2bde88c388e7a8b4674d6c890b",
+  "prompts": {},
+  "sessions": {
+    "s_b5b85c9655a780": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "853ecc66-a63a-404c-b74a-f9dde5d6e7a8",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
