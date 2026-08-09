@@ -874,6 +874,38 @@ async fn shutdown_without_a_session_carries_no_dump() {
     join_server(server).await;
 }
 
+/// The load-bearing keepalive check: a ping sent while the client sits idle
+/// (no turn in flight, so no `recv` polling the stream) is still answered,
+/// because the background reader task polls the read half continuously.
+/// Without that task the pong only goes out on the next turn — and a
+/// keepalive server would have dropped the session as vanished long before.
+#[tokio::test]
+async fn pings_are_answered_while_idle() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        // the client is now idle: nothing in flight, nothing awaited
+        socket.send(Message::Ping(b"live".as_slice().into())).expect("ping");
+        // bound the wait so a missing pong fails the test rather than hanging it
+        socket
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        match socket.read() {
+            Ok(Message::Pong(payload)) => assert_eq!(payload.as_ref(), b"live"),
+            other => panic!("expected a Pong while the client is idle, got {other:?}"),
+        }
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    // go idle: hold the checkout without driving a turn while the server
+    // pings; joining the server is what proves the pong arrived
+    join_server(server).await;
+    drop(checkout);
+}
+
 // === teardown says goodbye ===
 
 /// Reads until the client's Close frame, panicking on anything else.
