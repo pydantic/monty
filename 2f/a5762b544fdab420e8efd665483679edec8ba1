@@ -1,0 +1,20 @@
+crates/monty-pool/src/worker.rs
+  s_cb80ed558a9080::t_5dc878403c200c 366-368
+  s_cb80ed558a9080::t_dcab300de8e0be 369
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2fa5762b544fdab420e8efd665483679edec8ba1",
+  "prompts": {},
+  "sessions": {
+    "s_cb80ed558a9080": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7d71d16e-e84d-4e12-b74a-08e2c8660d19",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
