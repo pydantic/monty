@@ -1,0 +1,43 @@
+crates/monty-pool/src/pool.rs
+  s_93200dd7cdf189::t_cdca2fe02a5f79 85,232,237,277-281,284,287,290-293,310,313,316,323,326,329
+crates/monty-pool/README.md
+  s_93200dd7cdf189::t_2626be1016d7e1 132-133
+  s_93200dd7cdf189::t_71c6a548bf382a 123-124,126-127,134-136
+packages/pydantic-monty/README.md
+  s_93200dd7cdf189::t_71c6a548bf382a 274-276
+  s_93200dd7cdf189::t_2626be1016d7e1 278-279
+crates/monty-pool/src/telemetry/metrics.rs
+  s_93200dd7cdf189::t_dbe2e5a89346e1 3-4,8-9,18-20,25-28,41-153,161-170,185,198-205,208,213-214,250-262,267,287-371,373-377,483,525,530,545,551,554,561,563,578,582,606-607,614-616,621,627-628,632-646,648-656,658,661,664,666,694,696-700,737-738,740-745
+  s_93200dd7cdf189::t_c09567a399afba 718-720,730
+  s_93200dd7cdf189::t_bf2897b20ebe27 749-750,752-754,756-779
+  s_93200dd7cdf189::t_42930f43de56e9 949,989,994,1155-1156
+  s_93200dd7cdf189::t_63d5b5f19746a1 647
+  s_93200dd7cdf189::t_9f3e7079db92f9 263-264,372,378-379,739,751
+  s_93200dd7cdf189::t_54514f6ca73094 1070-1072,1074,1076-1084,1086-1088,1090,1092-1095
+  s_93200dd7cdf189::t_f45697b5d23d3a 1001-1002,1004,1016-1021,1026,1028,1035,1049-1050,1052,1054-1062,1065-1066
+  s_93200dd7cdf189::t_bd4e4309f67fb9 948,950-954,962-969,971,973-982,984-987,990-993,995-998,1047-1048,1051,1053,1063
+  s_93200dd7cdf189::t_bc103479b1771e 13-17,624-626
+  s_93200dd7cdf189::t_87576935bdd9fa 577,579-580,608-611,613,619,710-715,717,721-722,725-729,731-733
+crates/monty-pool/tests/metrics.rs
+  s_93200dd7cdf189::t_4796240f58b7fc 90-98,122-125,134,137,181,213
+crates/monty-js/README.md
+  s_93200dd7cdf189::t_71c6a548bf382a 364-365
+crates/monty-pool/src/worker.rs
+  s_93200dd7cdf189::t_cdca2fe02a5f79 41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "fd2bccc7de615b9db83b4b23203dc318ca5bf201",
+  "prompts": {},
+  "sessions": {
+    "s_93200dd7cdf189": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e51a5b01-e78b-466a-a088-0686bd81de9f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
