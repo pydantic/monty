@@ -1,0 +1,47 @@
+crates/monty-pool/src/telemetry/metrics.rs
+  s_4b1a9dc57ca6fc::t_dd2f27da8b73d6 163,167,170-172
+  s_4b1a9dc57ca6fc::t_b06cc7138b0bcb 191-193,195-198,208,212-218
+  s_4b1a9dc57ca6fc::t_da08bce979daa1 291-331
+  s_4b1a9dc57ca6fc::t_dfd0a81b68deaf 27
+  s_4b1a9dc57ca6fc::t_2041d3c4570a13 1115-1137
+crates/monty-pool/README.md
+  s_4b1a9dc57ca6fc::t_649566be3dda4d 139-143
+crates/monty-pool/src/pool.rs
+  s_4b1a9dc57ca6fc::t_34c4f524e345df 49-52
+  s_4b1a9dc57ca6fc::t_575e952af6c85d 83
+  s_4b1a9dc57ca6fc::t_3b56cfbb25923b 18
+  s_4b1a9dc57ca6fc::t_85b8ae8dd18305 84
+  s_4b1a9dc57ca6fc::t_86cc0accf729d4 283-286,289-290
+crates/monty-python/tests/test_telemetry.py
+  s_4b1a9dc57ca6fc::t_af43e34718c36c 107
+crates/monty-js/__test__/telemetry.spec.ts
+  s_4b1a9dc57ca6fc::t_14643461f1a685 66
+.github/workflows/ci.yml
+  s_4b1a9dc57ca6fc::t_bb0e206b781799 89,91-95
+crates/monty-pool/src/lib.rs
+  s_4b1a9dc57ca6fc::t_76533e2201611e 14
+  s_4b1a9dc57ca6fc::t_8773841b502ce6 83-84
+crates/monty-pool/src/telemetry/mod.rs
+  s_4b1a9dc57ca6fc::t_a1ceeb1b909270 43-46
+  s_4b1a9dc57ca6fc::t_1225c04147e5d8 104-107
+  s_4b1a9dc57ca6fc::t_77aec1e3cddb56 93-96,99
+  s_4b1a9dc57ca6fc::t_f39a5ee0a3e2e5 164-167
+crates/monty-pool/src/worker.rs
+  s_4b1a9dc57ca6fc::t_f304f1b0b8b712 197-199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5c57b30f7c0f993829949ed5a9099de41ab71025",
+  "prompts": {},
+  "sessions": {
+    "s_4b1a9dc57ca6fc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0565c35-eea2-42ef-9d79-311d1f4889ce",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
