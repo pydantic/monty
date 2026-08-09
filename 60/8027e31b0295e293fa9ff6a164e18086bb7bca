@@ -1,0 +1,23 @@
+.gitignore
+  s_646ba8d140731e::t_8134dc9be44ad7 10
+pyproject.toml
+  s_646ba8d140731e::t_a5f9e4c7778f1e 39
+Makefile
+  s_646ba8d140731e::t_f129250eb20a78 57-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "608027e31b0295e293fa9ff6a164e18086bb7bca",
+  "prompts": {},
+  "sessions": {
+    "s_646ba8d140731e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "89ffe42a-5e65-45b7-91ec-1d50a7267a4d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
