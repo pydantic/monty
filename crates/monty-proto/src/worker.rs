@@ -21,8 +21,8 @@ use std::{borrow::Cow, mem};
 use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MONTY_VERSION, MontyException, MontyObject,
-    OsFunctionCall, PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckState, TypeCheckingConfig,
+    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
+    PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
@@ -227,16 +227,8 @@ impl Child {
                 // An unsupported protocol version is fatal: the parent may frame
                 // or interpret later messages differently, so serving it risks a
                 // silent desync. Emit the fatal last gasp and stop the child.
-                //
-                // The shared check names what this build serves, so a parent
-                // deployed separately from its worker can downgrade and retry —
-                // there is no handshake to discover it from. The package
-                // versions ride along purely as a diagnostic.
                 if let Err(refusal) = check_protocol_version(configure.protocol_version) {
-                    sink.send(&self.fatal_event(&format!(
-                        "{refusal}; parent monty {:?}, child monty {MONTY_VERSION:?}",
-                        configure.monty_version,
-                    )))?;
+                    sink.send(&self.fatal_event(&refusal))?;
                     return Ok(HandleOutcome::Fatal);
                 }
                 self.handle_configure(configure)
@@ -416,7 +408,7 @@ impl Child {
             type_check_color: _,
             // range-checked when `Configure` arrived
             protocol_version: _,
-            // informational only — reported, never checked
+            // informational only — never checked
             monty_version: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
