@@ -1,0 +1,36 @@
+crates/monty-proto/src/worker.rs
+  s_708df012c7731a::t_96814faab30829 286-295,301-330
+  s_708df012c7731a::t_933e338d5c9a3b 984
+  s_708df012c7731a::t_d576a5286e0f08 29-30
+  s_708df012c7731a::t_f79acb3735bea9 912,914-922,932-938,941
+  s_708df012c7731a::t_fe8a761496b2b9 756,763
+  s_708df012c7731a::t_cdd40e520e1841 786-787
+  s_708df012c7731a::t_f3e6e7c6df8287 925-926
+  s_708df012c7731a::t_f660d64e0bc67c 703,707
+  s_708df012c7731a::t_daa18119f82324 770,779
+crates/monty-runtime/tests/subprocess.rs
+  s_708df012c7731a::t_286df550664f4c 382-394,399-453
+  s_708df012c7731a::t_92acdbad19fee3 395-398
+  s_708df012c7731a::t_c9f6d6e2999146 587-610,615-628,632,635-637,639,650-664
+  s_708df012c7731a::t_1b948f9fe780da 611-614
+  s_708df012c7731a::t_6e640d04ec3dbe 638,640-649
+  s_708df012c7731a::t_e07eeaefedd44b 629-631,633-634
+limitations/resource_limits.md
+  s_708df012c7731a::t_14a55c0042b2f6 60-66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "711c4e8938cd189ec17905b1de9cb6813b2a30cd",
+  "prompts": {},
+  "sessions": {
+    "s_708df012c7731a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bdab134e-3960-4b6e-aa62-b7572231fe6f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
