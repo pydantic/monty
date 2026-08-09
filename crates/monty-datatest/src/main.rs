@@ -24,6 +24,9 @@ use std::{
 
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
+// only the dump round-trip needs these, and it is skipped under memory-model-checks
+#[cfg(not(feature = "memory-model-checks"))]
+use monty::{Dump, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
@@ -1800,14 +1803,13 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
     let mut pending_results: Vec<(u32, ExtFunctionResult)> = Vec::new();
 
     loop {
-        // Round-trip the suspended state through postcard at each step, so every
-        // test case's heap shape is exercised by the serde impls a session dump
-        // rests on. (Skipped under memory-model-checks: the discarded
-        // `RunProgress` would panic on drop without proper cleanup.)
+        // Dump and reload the suspended state at each step, so every test case's
+        // heap shape goes through the real dump format. (Skipped under
+        // memory-model-checks: the discarded `RunProgress` would panic on drop
+        // without proper cleanup.)
         #[cfg(not(feature = "memory-model-checks"))]
         {
-            let bytes = postcard::to_allocvec(&progress).expect("failed to serialize RunProgress");
-            progress = postcard::from_bytes(&bytes).expect("failed to deserialize RunProgress");
+            progress = dump_load_round_trip(&progress);
         }
 
         match progress {
@@ -1892,6 +1894,17 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                 progress = call.resume(result, PrintWriter::Stdout)?;
             }
         }
+    }
+}
+
+/// Dumps a suspended run and reloads it, so every test case exercises the real
+/// dump format rather than only the underlying serde impls.
+#[cfg(not(feature = "memory-model-checks"))]
+fn dump_load_round_trip(progress: &RunProgress) -> RunProgress {
+    let bytes = dump("test.py", None, SessionRef::Running(progress)).expect("failed to dump RunProgress");
+    match Dump::load(&bytes).expect("failed to load RunProgress").state {
+        Session::Running(progress) => *progress,
+        _ => panic!("dumped a running session, loaded something else"),
     }
 }
 

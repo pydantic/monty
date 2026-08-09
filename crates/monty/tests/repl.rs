@@ -43,7 +43,7 @@ fn round_trip_repl(repl: &MontyRepl) -> MontyRepl {
     let bytes = dump("repl.py", None, SessionRef::Idle(repl)).unwrap();
     match Dump::load(&bytes).unwrap().state {
         Session::Idle(repl) => *repl,
-        Session::Suspended(_) => panic!("dumped an idle session, loaded a suspended one"),
+        _ => panic!("dumped an idle session, loaded something else"),
     }
 }
 
@@ -52,7 +52,7 @@ fn round_trip_progress(progress: &ReplProgress) -> ReplProgress {
     let bytes = dump("repl.py", None, SessionRef::Suspended(progress)).unwrap();
     match Dump::load(&bytes).unwrap().state {
         Session::Suspended(progress) => *progress,
-        Session::Idle(_) => panic!("dumped a suspended session, loaded an idle one"),
+        _ => panic!("dumped a suspended session, loaded something else"),
     }
 }
 

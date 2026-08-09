@@ -635,6 +635,9 @@ impl Child {
                 self.state = SessionState::Ready(repl);
                 ok_event()
             }
+            // the protocol only ever serves repl sessions; a `MontyRun`
+            // execution has no way to accept further feeds
+            Session::Running(_) => protocol_violation("dump holds a one-shot run, not a repl session"),
             Session::Suspended(progress) => match *progress {
                 // a dump is never taken at Complete, but a forged one could
                 // contain it; surface the value rather than fail

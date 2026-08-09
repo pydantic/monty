@@ -4,7 +4,7 @@
 //! unavailable across the subprocess boundary, so live functions with the same name
 //! share sandbox identity regardless of which conversion path produced them.
 
-use monty::{MontyRepl, MontyRun, RunProgress};
+use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{CompileOptions, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
 
 /// Builds two `MontyObject::Function` inputs with the same `__name__` ("foo")
@@ -226,10 +226,13 @@ fn extfunction_cache_is_rebuilt_after_snapshot_load() {
             PrintWriter::Stdout,
         )
         .unwrap();
-    let bytes = postcard::to_allocvec(&progress).unwrap();
+    let bytes = dump("test.py", None, SessionRef::Running(&progress)).unwrap();
     assert_eq!(resume_snapshot_identity_test(progress), MontyObject::Bool(true));
 
-    let progress: RunProgress = postcard::from_bytes(&bytes).unwrap();
+    let Session::Running(progress) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped a running session")
+    };
+    let progress = *progress;
     assert_eq!(resume_snapshot_identity_test(progress), MontyObject::Bool(true));
 }
 

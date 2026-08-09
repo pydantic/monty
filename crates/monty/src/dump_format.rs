@@ -12,7 +12,10 @@ use std::{error::Error, fmt, mem::size_of};
 use monty_types::TypeCheckState;
 use serde::{Deserialize, Serialize};
 
-use crate::repl::{MontyRepl, ReplProgress};
+use crate::{
+    repl::{MontyRepl, ReplProgress},
+    run_progress::RunProgress,
+};
 
 /// Prefix distinguishing Monty dumps from unframed postcard data.
 const MAGIC: &[u8; 6] = b"MONTY\0";
@@ -118,6 +121,9 @@ pub enum Session {
     Idle(Box<MontyRepl>),
     /// Mid-feed, waiting on a resume.
     Suspended(Box<ReplProgress>),
+    /// A one-shot [`crate::MontyRun`] execution paused at a suspension. Not a
+    /// repl, so it cannot be fed further — only resumed to completion.
+    Running(Box<RunProgress>),
 }
 
 /// Borrowed counterpart of [`Session`] used when dumping, so a live session can
@@ -128,6 +134,8 @@ pub enum SessionRef<'a> {
     Idle(&'a MontyRepl),
     /// Mid-feed, waiting on a resume.
     Suspended(&'a ReplProgress),
+    /// A paused one-shot [`crate::MontyRun`] execution.
+    Running(&'a RunProgress),
 }
 
 /// Why a dump could not be restored.

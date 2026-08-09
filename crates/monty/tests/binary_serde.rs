@@ -1,19 +1,28 @@
-//! Tests that `MontyRun` and `RunProgress` survive a postcard round-trip.
+//! Tests that execution state survives serialization.
 //!
-//! Neither type has a dump API of its own — [`monty::dump`] snapshots REPL
-//! sessions only — but both are `Serialize`/`Deserialize`, and their serde impls
-//! are what a session dump ultimately rests on. Round-tripping them directly
-//! covers compiled code and a live heap without going through the session
-//! format, so a break in either shows up here rather than only as an opaque
-//! dump failure.
+//! A paused `RunProgress` goes through the real dump format ([`monty::dump`] /
+//! [`monty::Dump::load`]), which is how a host would actually snapshot it.
+//! `MontyRun` has no dump of its own — it is compiled code, not a session — but
+//! it is `Serialize`/`Deserialize`, so it is round-tripped through postcard
+//! directly to cover the serde impls a dump ultimately rests on.
 
-use monty::{MontyRun, RunProgress};
+use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{CompileOptions, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
 use serde::{Serialize, de::DeserializeOwned};
 
-/// Round-trips any serializable execution state through postcard.
+/// Round-trips compiled code through postcard.
 fn round_trip<T: Serialize + DeserializeOwned>(value: &T) -> T {
     postcard::from_bytes(&postcard::to_allocvec(value).unwrap()).unwrap()
+}
+
+/// Round-trips a paused run through the dump format, asserting it comes back on
+/// the arm it went out on.
+fn round_trip_progress(progress: &RunProgress) -> RunProgress {
+    let bytes = dump("test.py", None, SessionRef::Running(progress)).unwrap();
+    match Dump::load(&bytes).unwrap().state {
+        Session::Running(progress) => *progress,
+        _ => panic!("dumped a running session, loaded something else"),
+    }
 }
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
@@ -162,7 +171,7 @@ fn run_progress_round_trip_at_external_call() {
     let progress = resolve_name_lookups(progress).unwrap();
 
     // Round-trip the progress suspended at the external call
-    let loaded: RunProgress = round_trip(&progress);
+    let loaded: RunProgress = round_trip_progress(&progress);
 
     // Should still be at the external function call
     let call = loaded.into_function_call().expect("should be at function call");
@@ -190,7 +199,7 @@ fn run_progress_round_trip_multiple_calls() {
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
-    let loaded: RunProgress = round_trip(&progress);
+    let loaded: RunProgress = round_trip_progress(&progress);
     let call = loaded.into_function_call().unwrap();
     assert_eq!(call.function_name, "ext_fn");
     assert_eq!(call.args, vec![MontyObject::Int(1)]);
@@ -201,7 +210,7 @@ fn run_progress_round_trip_multiple_calls() {
     let progress = resolve_name_lookups(progress).unwrap();
 
     // Round-trip at second call
-    let loaded: RunProgress = round_trip(&progress);
+    let loaded: RunProgress = round_trip_progress(&progress);
     let call = loaded.into_function_call().unwrap();
     assert_eq!(call.function_name, "ext_fn");
     assert_eq!(call.args, vec![MontyObject::Int(2)]);
@@ -234,7 +243,7 @@ ext_fn(0)
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
-    let loaded: RunProgress = round_trip(&progress);
+    let loaded: RunProgress = round_trip_progress(&progress);
 
     // Both adaptors kept their position: the count carries `current`/`step`,
     // the repeat carries its object and remaining count.
@@ -266,7 +275,7 @@ fn run_progress_complete_round_trip() {
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
-    let loaded: RunProgress = round_trip(&progress);
+    let loaded: RunProgress = round_trip_progress(&progress);
 
     assert_eq!(loaded.into_complete().unwrap(), MontyObject::Int(3));
 }
