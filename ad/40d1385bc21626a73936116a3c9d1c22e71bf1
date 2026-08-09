@@ -1,0 +1,19 @@
+packages/pydantic-monty/README.md
+  s_93200dd7cdf189::t_321faacf6c28f4 274-281
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ad40d1385bc21626a73936116a3c9d1c22e71bf1",
+  "prompts": {},
+  "sessions": {
+    "s_93200dd7cdf189": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e51a5b01-e78b-466a-a088-0686bd81de9f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
