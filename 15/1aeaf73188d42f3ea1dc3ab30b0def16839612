@@ -1,0 +1,27 @@
+crates/monty-server/README.md
+  s_363d98113243ef::t_bae93c8092c248 52-54
+crates/monty-server/src/session.rs
+  s_363d98113243ef::t_2b8230bfdc0d72 211,213-219
+crates/monty-server-tests/tests/wire/keepalive.rs
+  s_363d98113243ef::t_823564e339d990 9-11
+crates/monty-server/src/lib.rs
+  s_363d98113243ef::t_bae93c8092c248 149-151
+render.yaml
+  s_363d98113243ef::t_bae93c8092c248 83-86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "151aeaf73188d42f3ea1dc3ab30b0def16839612",
+  "prompts": {},
+  "sessions": {
+    "s_363d98113243ef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15596ddc-913d-4426-9da0-ded7c51dec14",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
