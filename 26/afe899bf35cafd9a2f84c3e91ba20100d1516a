@@ -1,0 +1,43 @@
+crates/monty-proto/Cargo.toml
+  s_46822aee4e0d8e::t_0fd3ac50b3fbda 58
+crates/monty-proto/tests/schema_version.rs
+  s_46822aee4e0d8e::t_0fd3ac50b3fbda 1-38
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_46822aee4e0d8e::t_0fd3ac50b3fbda 500-503,522-531
+crates/monty-js/ts/worker/transport.ts
+  s_46822aee4e0d8e::t_0fd3ac50b3fbda 24,108,112-115,123-126
+crates/monty-runtime/tests/subprocess.rs
+  s_46822aee4e0d8e::t_0fd3ac50b3fbda 13-15,95,421,627,666,704,744,760,800,880,916,949,997,1025-1028,1033-1034,1038-1046,1051-1106
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_46822aee4e0d8e::t_0fd3ac50b3fbda 13-19,377-380,395-403
+crates/monty-pool/src/checkout.rs
+  s_46822aee4e0d8e::t_0fd3ac50b3fbda 14,309-314
+crates/monty-proto/README.md
+  s_46822aee4e0d8e::t_0fd3ac50b3fbda 30-35
+crates/monty-js/ts/worker/proto.ts
+  s_46822aee4e0d8e::t_0fd3ac50b3fbda 16-24
+crates/monty-python/README.md
+  s_46822aee4e0d8e::t_0fd3ac50b3fbda 30-33
+limitations/pool-architecture.md
+  s_46822aee4e0d8e::t_0fd3ac50b3fbda 42-43,59-75
+crates/monty-proto/src/generated/monty.v1.rs
+  s_46822aee4e0d8e::t_0fd3ac50b3fbda 401-404,423-432
+crates/monty-proto/src/lib.rs
+  s_46822aee4e0d8e::t_0fd3ac50b3fbda 15-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "26afe899bf35cafd9a2f84c3e91ba20100d1516a",
+  "prompts": {},
+  "sessions": {
+    "s_46822aee4e0d8e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5d41f01-91cc-4f88-a793-2e04898c315e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
