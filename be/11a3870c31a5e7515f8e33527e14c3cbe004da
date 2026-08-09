@@ -1,0 +1,24 @@
+.github/workflows/ci.yml
+  s_67d1427f6b053a::t_e15d4df2dceca1 496
+  s_67d1427f6b053a::t_c96342a11ca0c7 149-185,198,202-203
+  s_67d1427f6b053a::t_348fcb7b509d97 267
+  s_67d1427f6b053a::t_dca58bd66e255f 89-91
+  s_67d1427f6b053a::t_664ca18508e9ce 293
+  s_67d1427f6b053a::t_bd3a551b0ebcea 301
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "be11a3870c31a5e7515f8e33527e14c3cbe004da",
+  "prompts": {},
+  "sessions": {
+    "s_67d1427f6b053a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6b9101b-aaa6-45bb-9b99-2cc4ffef7a58",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
