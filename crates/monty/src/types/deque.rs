@@ -461,9 +461,20 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        let len = self.get(vm.heap).len();
+        // Format a snapshot of the items: CPython's deque repr copies to a list
+        // first, so a user `__repr__` mutating the deque mid-format changes
+        // nothing (and can't invalidate indices here).
+        let items = self.clone_all_items(vm)?;
+        defer_drop!(items, vm);
         f.write_str("deque(")?;
-        repr_sequence_fmt('[', ']', len, |heap, i| &self.get(heap).items[i], f, vm, heap_ids)?;
+        repr_sequence_fmt(
+            '[',
+            ']',
+            |heap, i| items.get(i).map(|v| v.clone_with_heap(heap)),
+            f,
+            vm,
+            heap_ids,
+        )?;
         // CPython only shows maxlen when the deque is bounded.
         if let Some(max) = self.get(vm.heap).maxlen() {
             write!(f, ", maxlen={max}")?;

@@ -491,8 +491,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        let len = self.get(vm.heap).len();
-        repr_sequence_fmt('[', ']', len, |heap, i| &self.get(heap).as_slice()[i], f, vm, heap_ids)
+        repr_sequence_fmt(
+            '[',
+            ']',
+            |heap, i| self.get(heap).as_slice().get(i).map(|v| v.clone_with_heap(heap)),
+            f,
+            vm,
+            heap_ids,
+        )
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
@@ -884,19 +890,24 @@ fn do_list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<
 /// This helper function is used to implement `__repr__` for sequence types like
 /// lists and tuples. It writes items as comma-separated repr interns.
 ///
+/// There is no length parameter: `get_item` is asked for indices from 0 until
+/// it returns `None`, so a user `__repr__` growing or shrinking the sequence
+/// mid-format is observed rather than panicking on a stale bound — CPython's
+/// list repr re-checks the live length the same way.
+///
 /// # Arguments
 /// * `start` - The opening character (e.g., '[' for lists, '(' for tuples)
 /// * `end` - The closing character (e.g., ']' for lists, ')' for tuples)
-/// * `len` - The number of items to format
-/// * `get_item` - Returns the i-th value via brief immutable heap access
+/// * `get_item` - Returns an owned clone of the i-th value (refcount bumped so
+///   a mutating `__repr__` can't free it mid-format), or `None` once `i` is
+///   out of range
 /// * `f` - The formatter to write to
 /// * `vm` - The VM for resolving value references and looking up interned strings
 /// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
 pub(crate) fn repr_sequence_fmt<'h>(
     start: char,
     end: char,
-    len: usize,
-    get_item: impl for<'r> Fn(&'r HeapReader<'h>, usize) -> &'r Value,
+    get_item: impl Fn(&HeapReader<'h>, usize) -> Option<Value>,
     f: &mut impl Write,
     vm: &mut VM<'h>,
     heap_ids: &mut LazyHeapSet,
@@ -908,7 +919,12 @@ pub(crate) fn repr_sequence_fmt<'h>(
     let vm = &mut *guard;
 
     f.write_char(start)?;
-    for i in 0..len {
+    // The item is fetched before the separator is written so nothing is emitted
+    // for an index that turned out to be out of range. `check_time` bounds
+    // reprs that keep growing the sequence from inside a user `__repr__`.
+    for i in 0.. {
+        let Some(item) = get_item(vm.heap, i) else { break };
+        defer_drop!(item, vm);
         if i > 0 {
             if vm.heap.check_time().is_err() {
                 f.write_str(", ...[timeout]")?;
@@ -916,8 +932,6 @@ pub(crate) fn repr_sequence_fmt<'h>(
             }
             f.write_str(", ")?;
         }
-        let item = get_item(vm.heap, i).clone_with_heap(vm.heap);
-        defer_drop!(item, vm);
         item.py_repr_fmt(f, vm, heap_ids)?;
     }
     f.write_char(end)?;
