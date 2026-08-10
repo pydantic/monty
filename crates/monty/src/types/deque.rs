@@ -461,14 +461,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        // Format a snapshot of the items: CPython's deque repr copies to a list
-        // first, so a user `__repr__` mutating the deque mid-format changes
-        // nothing (and can't invalidate indices here).
-        let items = self.clone_all_items(vm)?;
-        defer_drop!(items, vm);
         f.write_str("deque(")?;
         if let Ok(mut guard) = vm.recursion_guard() {
             let vm = &mut *guard;
+            // Format a snapshot of the items (taken only once the depth limit
+            // allows a body at all): CPython's deque repr copies to a list
+            // first, so a user `__repr__` mutating the deque mid-format
+            // changes nothing (and can't invalidate indices here).
+            let items = self.clone_all_items(vm)?;
+            defer_drop!(items, vm);
             f.write_char('[')?;
             repr_items_fmt(items, f, vm, heap_ids)?;
             f.write_char(']')?;
