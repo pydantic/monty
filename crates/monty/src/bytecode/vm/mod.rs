@@ -1320,7 +1320,7 @@ impl<'h> VM<'h> {
                     let depth = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.set_extend(depth));
                 }
-                // Comprehension Building - append/add/set items during iteration
+                // Collection mutation
                 Opcode::ListAppend => {
                     let depth = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.list_append(depth));
