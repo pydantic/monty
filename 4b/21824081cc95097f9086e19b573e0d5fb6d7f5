@@ -1,0 +1,20 @@
+crates/monty/src/types/dict.rs
+  s_e44ef515a1346b::t_cc125d170642c7 1084-1086
+  s_e44ef515a1346b::t_56c9d9ef51f6f1 1052-1054,1057-1062,1068-1071
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4b21824081cc95097f9086e19b573e0d5fb6d7f5",
+  "prompts": {},
+  "sessions": {
+    "s_e44ef515a1346b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97080406-d12e-48e2-a2b7-22ff5b889408",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
