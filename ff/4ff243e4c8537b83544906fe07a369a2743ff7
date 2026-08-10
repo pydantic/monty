@@ -1,0 +1,20 @@
+crates/monty-python/README.md
+  s_e44ef515a1346b::t_0583570297945e 11
+  s_e44ef515a1346b::t_7eb646fda2edcd 19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ff4ff243e4c8537b83544906fe07a369a2743ff7",
+  "prompts": {},
+  "sessions": {
+    "s_e44ef515a1346b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97080406-d12e-48e2-a2b7-22ff5b889408",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
