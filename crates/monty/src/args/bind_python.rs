@@ -125,6 +125,19 @@ enum BindMode {
 }
 
 impl Signature {
+    /// Returns whether an exact positional call can place arguments directly in local slots.
+    ///
+    /// With no defaults, variadic slots, or keyword-only parameters, positional
+    /// arguments already have the namespace layout produced by [`Self::bind`].
+    pub(crate) fn accepts_exact_positional(&self, count: usize) -> bool {
+        self.pos_defaults_count == 0
+            && self.arg_defaults_count == 0
+            && self.var_args.is_none()
+            && self.kwargs.is_none()
+            && self.var_kwargs.is_none()
+            && self.param_count() == count
+    }
+
     /// Creates a full signature with all parameter types.
     ///
     /// # Arguments
