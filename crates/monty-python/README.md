@@ -5,9 +5,10 @@ Python client for the Monty sandboxed Python interpreter.
 Most users want [`pydantic-monty`](https://pypi.org/project/pydantic-monty/)
 instead, which pulls in this package plus
 [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/) and
-is documented in full on its PyPI page. Install this one directly only when the
-`monty` binary is supplied some other way — a base image, a system package, or a
-build of this repository:
+is documented in full on its PyPI page.
+
+Install this package directly to use the websocket client alone,
+or if you're installing the  `monty` binary another way.
 
 ```bash
 uv add pydantic-monty-client

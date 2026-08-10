@@ -25,17 +25,17 @@ def main() -> int:
     except FileNotFoundError as exc:
         print(exc, file=sys.stderr)
         return 1
-
-    argv = [binary, *sys.argv[1:]]
-    if os.name == 'posix':
-        os.execv(binary, argv)  # never returns, so signals and the exit status are the binary's own
     else:
-        # Windows has no `exec`, so wait on a child instead. Ctrl-C reaches the
-        # whole console group, so ignore it here and let the binary decide whether
-        # a SIGINT ends the session — exiting early would orphan it on the terminal.
-        proc = subprocess.Popen(argv)
-        while True:
-            try:
-                return proc.wait()
-            except KeyboardInterrupt:
-                pass
+        argv = [binary, *sys.argv[1:]]
+        if os.name == 'posix':
+            os.execv(binary, argv)  # never returns, so signals and the exit status are the binary's own
+        else:
+            # Windows has no `exec`, so wait on a child instead. Ctrl-C reaches the
+            # whole console group, so ignore it here and let the binary decide whether
+            # a SIGINT ends the session — exiting early would orphan it on the terminal.
+            proc = subprocess.Popen(argv)
+            while True:
+                try:
+                    return proc.wait()
+                except KeyboardInterrupt:
+                    pass
