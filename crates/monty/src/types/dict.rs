@@ -1049,16 +1049,26 @@ impl<'h> HeapRead<'h, Dict> {
         };
         let vm = &mut *guard;
 
-        // Snapshot the entries BEFORE ordering: `counter_order` compares counts
-        // through the VM, so user `__lt__`/`__repr__` code can mutate the
-        // Counter — live indices would then panic or skew.
+        // Snapshot the entries BEFORE ordering: the reprs printed below run
+        // user `__repr__` code that can mutate the Counter, so the ordered
+        // indices must refer to the snapshot, not live entries.
         let pairs = self.clone_all_pairs(vm)?;
         defer_drop!(pairs, vm);
+        // The counts clone and the order indices live alongside the pair
+        // snapshot — preflight them too so an over-budget Counter raises a
+        // graceful `MemoryError` instead of hitting the allocator hard limit.
+        vm.heap
+            .tracker()
+            .check_allocation(pairs.len().saturating_mul(VALUE_SIZE + mem::size_of::<usize>()))?;
         let counts = pairs.iter().map(|(_, value)| value.clone_with_heap(vm.heap)).collect();
         let order = counter_order(counts, vm)?;
         f.write_char('{')?;
         for (n, &i) in order.iter().enumerate() {
             if n > 0 {
+                if repr_check_time(n, vm) {
+                    f.write_str(", ...[timeout]")?;
+                    break;
+                }
                 f.write_str(", ")?;
             }
             let (key, value) = &pairs[i];
@@ -1071,9 +1081,9 @@ impl<'h> HeapRead<'h, Dict> {
     }
 
     /// Clones every entry as a refcount-bumped `(key, value)` pair, for the
-    /// Counter repr: its ordering pass (`counter_order`) runs user comparison
-    /// code before anything is printed, so live indices would panic or skew —
-    /// and CPython's `most_common()` snapshots the same way.
+    /// Counter repr: printing runs user `__repr__` code against indices from
+    /// the ordering pass, so live indices would panic or skew once that code
+    /// mutates the Counter — and CPython's `most_common()` snapshots the same way.
     ///
     /// Preflights the slot bytes so an over-budget clone raises a graceful
     /// `MemoryError` instead of bursting past the allocator's hard limit.
