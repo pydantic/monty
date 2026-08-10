@@ -8,7 +8,7 @@ instead, which pulls in this package plus
 is documented in full on its PyPI page.
 
 Install this package directly to use the websocket client alone,
-or if you're installing the  `monty` binary another way.
+or if you're installing the `monty` binary another way.
 
 ```bash
 uv add pydantic-monty-client
@@ -16,7 +16,7 @@ uv add pydantic-monty-client
 pip install pydantic-monty-client
 ```
 
-# Usage with a remote monty server and websockets
+## Usage with a remote monty server and websockets
 
 You can use this library alone to connect to a remote monty server via websockets.
 

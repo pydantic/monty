@@ -13,7 +13,7 @@ to an existing [`pydantic-monty-client`](https://pypi.org/project/pydantic-monty
 install:
 
 ```bash
-uv tool install pydantic-monty-runtime
+uv add pydantic-monty-runtime
 # or
 pip install pydantic-monty-runtime
 ```
