@@ -505,14 +505,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
             return Ok(());
         }
 
-        repr_sequence_fmt(
-            '(',
-            ')',
-            |heap, i| self.get(heap).as_slice().get(i).map(|v| v.clone_with_heap(heap)),
-            f,
-            vm,
-            heap_ids,
-        )
+        repr_sequence_fmt('(', ')', |heap, i| self.get(heap).as_slice().get(i), f, vm, heap_ids)
     }
 }
 

@@ -9,7 +9,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource_checks::{check_estimated_size, check_repeat_size},
-    types::{LazyHeapSet, Type, list::repr_sequence_fmt, long_int::repeat_count},
+    types::{LazyHeapSet, Type, list::repr_items_fmt, long_int::repeat_count},
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -467,14 +467,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         let items = self.clone_all_items(vm)?;
         defer_drop!(items, vm);
         f.write_str("deque(")?;
-        repr_sequence_fmt(
-            '[',
-            ']',
-            |heap, i| items.get(i).map(|v| v.clone_with_heap(heap)),
-            f,
-            vm,
-            heap_ids,
-        )?;
+        if let Ok(mut guard) = vm.recursion_guard() {
+            let vm = &mut *guard;
+            f.write_char('[')?;
+            repr_items_fmt(items, f, vm, heap_ids)?;
+            f.write_char(']')?;
+        } else {
+            // Depth limit reached — same elision `repr_sequence_fmt` emits.
+            f.write_str("...")?;
+        }
         // CPython only shows maxlen when the deque is bounded.
         if let Some(max) = self.get(vm.heap).maxlen() {
             write!(f, ", maxlen={max}")?;

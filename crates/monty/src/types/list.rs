@@ -491,14 +491,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        repr_sequence_fmt(
-            '[',
-            ']',
-            |heap, i| self.get(heap).as_slice().get(i).map(|v| v.clone_with_heap(heap)),
-            f,
-            vm,
-            heap_ids,
-        )
+        repr_sequence_fmt('[', ']', |heap, i| self.get(heap).as_slice().get(i), f, vm, heap_ids)
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
@@ -891,23 +884,25 @@ fn do_list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<
 /// lists and tuples. It writes items as comma-separated repr interns.
 ///
 /// There is no length parameter: `get_item` is asked for indices from 0 until
-/// it returns `None`, so a user `__repr__` growing or shrinking the sequence
-/// mid-format is observed rather than panicking on a stale bound — CPython's
-/// list repr re-checks the live length the same way.
+/// it returns `None`. For an immutable sequence (tuple) that is simply its
+/// fixed end; for a mutable one (list) it means a user `__repr__` growing or
+/// shrinking the sequence mid-format is observed rather than panicking on a
+/// stale bound — CPython's list repr re-checks the live length the same way.
 ///
 /// # Arguments
 /// * `start` - The opening character (e.g., '[' for lists, '(' for tuples)
 /// * `end` - The closing character (e.g., ']' for lists, ')' for tuples)
-/// * `get_item` - Returns an owned clone of the i-th value (refcount bumped so
-///   a mutating `__repr__` can't free it mid-format), or `None` once `i` is
-///   out of range
+/// * `get_item` - Returns the i-th value via brief immutable heap access, or
+///   `None` once `i` is out of range. The `for<'r>` bound means only
+///   heap-derived borrows fit — containers whose repr snapshots up front
+///   (deque, set, dict) own their clones already and use [`repr_items_fmt`].
 /// * `f` - The formatter to write to
 /// * `vm` - The VM for resolving value references and looking up interned strings
 /// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
 pub(crate) fn repr_sequence_fmt<'h>(
     start: char,
     end: char,
-    get_item: impl Fn(&HeapReader<'h>, usize) -> Option<Value>,
+    get_item: impl for<'r> Fn(&'r HeapReader<'h>, usize) -> Option<&'r Value>,
     f: &mut impl Write,
     vm: &mut VM<'h>,
     heap_ids: &mut LazyHeapSet,
@@ -920,13 +915,18 @@ pub(crate) fn repr_sequence_fmt<'h>(
 
     f.write_char(start)?;
     // The item is fetched before the separator is written so nothing is emitted
-    // for an index that turned out to be out of range. `check_time` bounds
+    // for an index that turned out to be out of range. `repr_check_time` bounds
     // reprs that keep growing the sequence from inside a user `__repr__`.
     for i in 0.. {
         let Some(item) = get_item(vm.heap, i) else { break };
+        // The clone (a refcount bump, not a deep copy) is load-bearing: the
+        // recursion below runs user `__repr__` code that may drop the
+        // container's reference to this very item — CPython incref's the same
+        // way. It also releases the heap borrow the getter's reference holds.
+        let item = item.clone_with_heap(vm.heap);
         defer_drop!(item, vm);
         if i > 0 {
-            if vm.heap.check_time().is_err() {
+            if repr_check_time(i, vm) {
                 f.write_str(", ...[timeout]")?;
                 break;
             }
@@ -937,6 +937,39 @@ pub(crate) fn repr_sequence_fmt<'h>(
     f.write_char(end)?;
 
     Ok(())
+}
+
+/// Writes the comma-separated reprs of an already-snapshotted item slice.
+///
+/// The slice is a refcount-bumped snapshot owned by the caller (deque, set),
+/// so items are formatted by reference with no per-item clone; the caller owns
+/// the recursion guard and any surrounding brackets. Live containers must go
+/// through [`repr_sequence_fmt`] instead, which re-fetches (and clones) each
+/// item so a mutating user `__repr__` is observed safely.
+pub(crate) fn repr_items_fmt(
+    items: &[Value],
+    f: &mut impl Write,
+    vm: &mut VM<'_>,
+    heap_ids: &mut LazyHeapSet,
+) -> RunResult<()> {
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            if repr_check_time(i, vm) {
+                f.write_str(", ...[timeout]")?;
+                break;
+            }
+            f.write_str(", ")?;
+        }
+        item.py_repr_fmt(f, vm, heap_ids)?;
+    }
+    Ok(())
+}
+
+/// Polls the time/memory soft limits every 64th item rather than every item,
+/// keeping per-item overhead to one branch while still truncating huge reprs
+/// promptly with `", ...[timeout]"` (tested in `resource_limits.rs`).
+pub(crate) fn repr_check_time(i: usize, vm: &VM<'_>) -> bool {
+    i.is_multiple_of(64) && vm.heap.check_time().is_err()
 }
 
 /// Iterates over a list while observing changes to its current contents.

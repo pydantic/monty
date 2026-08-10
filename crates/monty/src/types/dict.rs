@@ -9,7 +9,7 @@ use hashbrown::HashTable;
 use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
 
-use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple};
+use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, list::repr_check_time};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -1021,7 +1021,7 @@ impl<'h> HeapRead<'h, Dict> {
         f.write_char('{')?;
         for (i, (key, value)) in pairs.iter().enumerate() {
             if i > 0 {
-                if vm.heap.check_time().is_err() {
+                if repr_check_time(i, vm) {
                     f.write_str(", ...[timeout]")?;
                     break;
                 }

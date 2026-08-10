@@ -16,7 +16,7 @@ use crate::{
         HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::StaticStrings,
-    types::{LazyHeapSet, Type},
+    types::{LazyHeapSet, Type, list::repr_items_fmt},
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -535,16 +535,7 @@ impl<'h> HeapRead<'h, SetStorage> {
         defer_drop!(items, vm);
 
         f.write_char('{')?;
-        for (i, value) in items.iter().enumerate() {
-            if i > 0 {
-                if vm.heap.check_time().is_err() {
-                    f.write_str(", ...[timeout]")?;
-                    break;
-                }
-                f.write_str(", ")?;
-            }
-            value.py_repr_fmt(f, vm, heap_ids)?;
-        }
+        repr_items_fmt(items, f, vm, heap_ids)?;
         f.write_char('}')?;
 
         if needs_prefix {
