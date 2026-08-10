@@ -1,0 +1,25 @@
+crates/monty/test_cases/repr__mutation.py
+  s_e44ef515a1346b::t_8d8b760e1e3c68 76-77,88-113,117-118
+limitations/builtins.md
+  s_e44ef515a1346b::t_1157911cd70e0a 40-48
+crates/monty/src/types/dict.rs
+  s_e44ef515a1346b::t_07b88fe26d08df 1022-1024
+  s_e44ef515a1346b::t_1cf6df3b1958b6 1014-1021,1025-1027
+  s_e44ef515a1346b::t_bb982af32a7a29 1073-1076
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c0da9f605696f73d9a8b08d06dfd70011c27f22b",
+  "prompts": {},
+  "sessions": {
+    "s_e44ef515a1346b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97080406-d12e-48e2-a2b7-22ff5b889408",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
