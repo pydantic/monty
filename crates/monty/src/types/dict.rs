@@ -1010,16 +1010,21 @@ impl<'h> HeapRead<'h, Dict> {
         };
         let vm = &mut *guard;
 
-        // Format a refcount-bumped snapshot of the entries: live indices would
-        // panic (or skew) if a user `__repr__` deleted entries mid-format. For
-        // deletions this prints what CPython's tombstone-stable iteration does;
-        // insertions during repr are the one divergence (see
-        // `limitations/builtins.md`).
-        let pairs = self.clone_all_pairs(vm)?;
-        defer_drop!(pairs, vm);
-
         f.write_char('{')?;
-        for (i, (key, value)) in pairs.iter().enumerate() {
+        // Iterate the live entries like CPython, cloning only the current pair
+        // (refcount bumps — required because the reprs below run user
+        // `__repr__` code that may drop the dict's references). Bounds are
+        // re-checked every index, so mid-repr mutation cannot panic: inserted
+        // entries append and are printed (matching CPython); a deletion shifts
+        // `entries` where CPython leaves a tombstone, so later entries can be
+        // skipped (see `limitations/builtins.md`).
+        for i in 0.. {
+            let Some((key, value)) = self.get(vm.heap).item_at(i) else {
+                break;
+            };
+            let pair = (key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap));
+            defer_drop!(pair, vm);
+            let (key, value) = pair;
             if i > 0 {
                 if repr_check_time(i, vm) {
                     f.write_str(", ...[timeout]")?;
@@ -1065,8 +1070,10 @@ impl<'h> HeapRead<'h, Dict> {
         Ok(())
     }
 
-    /// Clones every entry as a refcount-bumped `(key, value)` pair, for reprs
-    /// that must not hold live indices while user `__repr__` code runs.
+    /// Clones every entry as a refcount-bumped `(key, value)` pair, for the
+    /// Counter repr: its ordering pass (`counter_order`) runs user comparison
+    /// code before anything is printed, so live indices would panic or skew —
+    /// and CPython's `most_common()` snapshots the same way.
     ///
     /// Preflights the slot bytes so an over-budget clone raises a graceful
     /// `MemoryError` instead of bursting past the allocator's hard limit.

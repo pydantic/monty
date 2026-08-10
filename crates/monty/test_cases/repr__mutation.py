@@ -73,8 +73,8 @@ st2 = {SetAdder(1), SetAdder(2)}
 assert repr(st2) == '{A1, A2}'
 
 
-# === dict: keys deleted mid-repr still print all original entries ===
-class KeyPopper:
+# === dict: keys inserted mid-repr are appended and printed ===
+class KeyAdder:
     def __init__(self, n):
         self.n = n
 
@@ -85,12 +85,37 @@ class KeyPopper:
         return self is other
 
     def __repr__(self):
-        d.pop(next(iter(d)), None)
+        if self.n == 1:
+            d['new'] = 99
         return f'K{self.n}'
 
 
-d = {KeyPopper(1): 1, KeyPopper(2): 2, KeyPopper(3): 3}
-assert repr(d) == '{K1: 1, K2: 2, K3: 3}'
+d = {KeyAdder(1): 1, KeyAdder(2): 2}
+assert repr(d) == "{K1: 1, K2: 2, 'new': 99}"
+
+
+# === dict: a deletion after the affected entries have printed is harmless ===
+# (deleting an entry that has NOT yet printed diverges: Monty's dense storage
+# shifts where CPython leaves a tombstone — see limitations/builtins.md)
+class KeyPopper:
+    def __init__(self, n, mutate=False):
+        self.n = n
+        self.mutate = mutate
+
+    def __hash__(self):
+        return self.n
+
+    def __eq__(self, other):
+        return self is other
+
+    def __repr__(self):
+        if self.mutate:
+            d2.pop(next(iter(d2)), None)
+        return f'K{self.n}'
+
+
+d2 = {KeyPopper(1): 1, KeyPopper(2): 2, KeyPopper(3, mutate=True): 3}
+assert repr(d2) == '{K1: 1, K2: 2, K3: 3}'
 
 
 # === Counter: repr orders and prints a snapshot despite mid-repr pops ===
