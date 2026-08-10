@@ -17,8 +17,11 @@ use crate::{
 /// Result of handling an exception until execution can resume, it escapes, or
 /// it needs to be propagated in a waiting task.
 enum ExceptionHandlingResult {
+    /// Execution can resume without propagating an error to the caller.
     Caught,
+    /// The error should be returned to the VM caller.
     Unhandled(RunError),
+    /// The error should be handled in the waiting task.
     PropagateToWaiter(RunError),
 }
 

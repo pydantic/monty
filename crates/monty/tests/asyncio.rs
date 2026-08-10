@@ -994,8 +994,6 @@ caught
 
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
-    let result = runner
-        .run_no_limits(vec![])
-        .expect("the original exception should be caught");
+    let result = runner.run_no_limits(vec![]).expect("should complete");
     assert_eq!(result, MontyObject::Bool(true));
 }
