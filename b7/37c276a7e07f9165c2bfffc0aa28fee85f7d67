@@ -1,0 +1,24 @@
+crates/monty/src/types/deque.rs
+  s_e44ef515a1346b::t_7c48f7ed47eddd 467-472
+crates/monty/test_cases/repr__mutation.py
+  s_e44ef515a1346b::t_59eb44533b0a56 99
+  s_e44ef515a1346b::t_c44b48128eab05 1
+  s_e44ef515a1346b::t_198fd58972b1fd 121-158
+  s_e44ef515a1346b::t_52a9dfc0830f3b 159-186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b737c276a7e07f9165c2bfffc0aa28fee85f7d67",
+  "prompts": {},
+  "sessions": {
+    "s_e44ef515a1346b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97080406-d12e-48e2-a2b7-22ff5b889408",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
