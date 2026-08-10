@@ -1,0 +1,24 @@
+crates/monty-runtime/README-crate.md
+  s_e44ef515a1346b::t_344b87009e8ff2 80-81
+crates/monty-runtime/README.md
+  s_e44ef515a1346b::t_d349b517beff1b 14-15,19
+  s_e44ef515a1346b::t_bf4c4d6e78d4a1 50-51
+crates/monty-runtime/Cargo.toml
+  s_e44ef515a1346b::t_efa2c2229e91fc 3-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2ecbe16ead1ee338c6edd80522a039c17b2ef3da",
+  "prompts": {},
+  "sessions": {
+    "s_e44ef515a1346b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97080406-d12e-48e2-a2b7-22ff5b889408",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
