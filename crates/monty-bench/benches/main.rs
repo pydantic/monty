@@ -215,6 +215,28 @@ const EMPTY_TUPLES: &str = "len([() for _ in range(100_000)])";
 /// 2-tuple creation benchmark - creates 100,000 2-tuples in a list.
 const PAIR_TUPLES: &str = "len([(i, i + 1) for i in range(100_000)])";
 
+/// Container repr throughput over 1,000-element containers (half tracked
+/// strings, so per-item refcount bumps are priced). Guards the
+/// mutation-safe repr paths: live checked iteration for list/tuple/dict,
+/// snapshotting for deque/set/Counter, and the amortized time polls.
+const CONTAINER_REPR: &str = "
+from collections import Counter, deque
+
+words = [str(i) for i in range(500)]
+xs = words + list(range(500))
+tup = tuple(xs)
+d = {w: i for i, w in enumerate(words)}
+st = set(words)
+dq = deque(xs)
+c = Counter({w: i % 7 for i, w in enumerate(words)})
+
+n = 0
+for _ in range(20):
+    n += len(repr(xs)) + len(repr(tup)) + len(repr(d))
+    n += len(repr(st)) + len(repr(dq)) + len(repr(c))
+n
+";
+
 // --- Agent-workload benchmarks -------------------------------------------
 //
 // Monty's primary real-world use is "code mode" agents (pydantic-ai
@@ -502,6 +524,10 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("pair_tuples__monty", |b| run_monty(b, PAIR_TUPLES, 100_000));
     #[cfg(not(codspeed))]
     c.bench_function("pair_tuples__cpython", |b| run_cpython(b, PAIR_TUPLES, 100_000));
+
+    c.bench_function("container_repr__monty", |b| run_monty(b, CONTAINER_REPR, 628_320));
+    #[cfg(not(codspeed))]
+    c.bench_function("container_repr__cpython", |b| run_cpython(b, CONTAINER_REPR, 628_320));
 
     c.bench_function("json_loads__monty", |b| {
         run_monty_with_data(b, JSON_LOADS, JSON_MEDIUM, 2);
