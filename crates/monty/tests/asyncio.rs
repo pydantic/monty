@@ -968,3 +968,34 @@ await main()
     let result = progress.into_complete().expect("should complete");
     assert_eq!(result, MontyObject::Int(333));
 }
+
+/// Propagating a failure through deeply nested gather waiters must not recurse
+/// on the native Rust stack.
+#[test]
+fn deeply_nested_gather_failure_does_not_overflow_stack() {
+    let code = r"
+import asyncio
+
+async def leaf():
+    raise ValueError('boom')
+
+async def chain(n):
+    if n == 0:
+        return await asyncio.gather(leaf())
+    return await asyncio.gather(chain(n - 1))
+
+caught = False
+try:
+    await asyncio.gather(chain(4000))
+except ValueError:
+    caught = True
+caught
+";
+
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let result = runner
+        .run_no_limits(vec![])
+        .expect("the original exception should be caught");
+    assert_eq!(result, MontyObject::Bool(true));
+}
