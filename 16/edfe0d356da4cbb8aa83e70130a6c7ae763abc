@@ -1,0 +1,36 @@
+crates/monty-server/src/session.rs
+  s_363d98113243ef::t_5632d40b2822b2 757
+  s_363d98113243ef::t_2bc60513f1d31e 660-669
+  s_363d98113243ef::t_2dfe0621685cc0 85,87-88,90-92
+  s_363d98113243ef::t_6f0244d944b7d0 741
+  s_363d98113243ef::t_fe81bf3f21bb44 686
+crates/monty-server-tests/tests/wire/deadlines.rs
+  s_363d98113243ef::t_1cfbfb3beb0edc 1-48
+crates/monty-server-tests/tests/wire/main.rs
+  s_363d98113243ef::t_cf9710f3b1ae30 11
+crates/monty-server-tests/tests/wire/backpressure.rs
+  s_363d98113243ef::t_4490b3fe26e301 36-40
+crates/monty-server/CLAUDE.md
+  s_363d98113243ef::t_563fcc14608b60 81-86,88-90
+crates/monty-server/README.md
+  s_363d98113243ef::t_f725df62e98593 53-56
+crates/monty-server/src/translate.rs
+  s_363d98113243ef::t_81692d73a1a60b 206
+  s_363d98113243ef::t_b5f3ba651ee608 223-225
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "16edfe0d356da4cbb8aa83e70130a6c7ae763abc",
+  "prompts": {},
+  "sessions": {
+    "s_363d98113243ef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15596ddc-913d-4426-9da0-ded7c51dec14",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
