@@ -20,7 +20,7 @@ pip install pydantic-monty-client
 
 You can use this library alone to connect to a remote monty server via websockets.
 
-```python
+```python test="skip"
 from pydantic_monty import AsyncMontyWebsocket
 
 
@@ -34,6 +34,7 @@ async def main() -> None:
 
 if __name__ == '__main__':
     import asyncio
+
     asyncio.run(main())
 ```
 
@@ -62,10 +63,12 @@ async def main() -> None:
         async with pool.checkout() as session:
             output = await session.feed_run('1 + 1')
             print('output from local worker ->', output)
+            #> output from local worker -> 2
 
 
 if __name__ == '__main__':
     import asyncio
+
     asyncio.run(main())
 ```
 
