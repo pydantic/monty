@@ -1,0 +1,32 @@
+crates/monty-runtime/src/main.rs
+  s_e44ef515a1346b::t_a9d838fc5e5bff 26
+crates/monty-python/README.md
+  s_e44ef515a1346b::t_af808a72dbd1ad 35,53-62,64-70
+  s_e44ef515a1346b::t_c5ba0209453f5c 26-31,33-34,36-37,72
+packages/pydantic-monty/pyproject.toml
+  s_e44ef515a1346b::t_3aafd6b50fbcf5 43-47
+  s_e44ef515a1346b::t_544d61bd8a54a5 42,48
+packages/pydantic-monty/README.md
+  s_e44ef515a1346b::t_bfe51ddb6afdd7 54-56
+  s_e44ef515a1346b::t_fd4979569d996c 32-33,35-36,38-39,41
+crates/monty-python/python/pydantic_monty/__main__.py
+  s_e44ef515a1346b::t_4b02a81656575c 1-7
+crates/monty-python/python/pydantic_monty/_cli.py
+  s_e44ef515a1346b::t_5fe986beac41b6 1-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9c178f2aa0316febf47c5b6f4407106d2edd3024",
+  "prompts": {},
+  "sessions": {
+    "s_e44ef515a1346b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97080406-d12e-48e2-a2b7-22ff5b889408",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
