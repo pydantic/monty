@@ -313,7 +313,7 @@ pub(crate) fn write_dataclass_repr<'h>(
         if i > 0 {
             // Same between-item checkpoint as sequence repr, so a wide dataclass
             // cannot outrun `max_duration`.
-            if vm.heap.tracker.check_memory_time().is_err() {
+            if vm.heap.tracker.check_memory_time_every(i).is_err() {
                 f.write_str(", ...[timeout]")?;
                 break;
             }

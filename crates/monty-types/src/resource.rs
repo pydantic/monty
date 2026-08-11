@@ -313,7 +313,10 @@ impl ResourceTracker {
     }
 
     /// Items processed between full checks in amortized per-item Rust loops
-    /// (see [`check_time_every`](Self::check_time_every)).
+    /// (see [`check_time_every`](Self::check_time_every)). A limit can be
+    /// overshot by up to this many items' work before the next check — an
+    /// accepted trade for cheap loops; the process-level hard limits backstop
+    /// pathological cases.
     pub const LOOP_CHECK_INTERVAL: usize = 64;
 
     /// Amortized per-item time check for Rust-side loops: a full clock read

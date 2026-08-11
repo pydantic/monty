@@ -582,7 +582,7 @@ fn timeout_in_str_join() {
 /// Test that the insertion sort inner loop in `sorted()` respects the time limit.
 ///
 /// Uses reverse-sorted data to trigger worst-case O(n^2) insertion sort behavior.
-/// The sort comparison loop has an explicit `heap.check_time()` call.
+/// The sort comparison loop polls the time limit (amortized, every 64th comparison).
 #[test]
 fn timeout_in_sorted_comparison_loop() {
     // Build a reverse-sorted list, then sort it. Insertion sort on reverse-sorted

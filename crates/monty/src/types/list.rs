@@ -325,8 +325,8 @@ impl<'a, 'h> ListIter<'a, 'h> {
     /// until the iterator itself is dropped), at which point the held item
     /// is released.
     ///
-    /// Performs a time-limit check on every call so long
-    /// Rust-side loops cannot bypass the configured timeout.
+    /// Performs an amortized time-limit check (a clock read every 64th
+    /// call) so long Rust-side loops cannot bypass the configured timeout.
     pub(crate) fn next<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<&'i Value>> {
         // Drop the previously-yielded item (no-op when `current` is `Undefined`).
         mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);

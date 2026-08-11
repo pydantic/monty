@@ -968,7 +968,7 @@ impl<'a, 'h> DictIter<'a, 'h> {
     /// Shared step for the iterator's borrowed and owned yield modes.
     ///
     /// Releases the previously-yielded slot (no-op when each slot is
-    /// `Undefined`), runs the per-step time check and the dict mutation
+    /// `Undefined`), runs the amortized time check and the dict mutation
     /// guard, then returns the entry index to read at — or `Ok(None)` when
     /// the iterator is exhausted. Bumps `self.index` on success.
     fn advance(&mut self, vm: &mut VM<'h>) -> RunResult<Option<usize>> {
