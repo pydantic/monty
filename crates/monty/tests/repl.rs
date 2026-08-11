@@ -294,6 +294,29 @@ fn repl_dump_load_derives_exact_positional_call_plans() {
 }
 
 #[test]
+fn repl_dump_load_rejects_parameters_beyond_the_namespace() {
+    let (repl, _) = init_repl("def identity(value):\n    return value");
+    let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
+
+    // Postcard encodes both this one-parameter signature and its one-slot
+    // namespace as single-byte varints. Changing each candidate in turn finds
+    // the namespace field without coupling the test to the rest of the dump.
+    let rejected = bytes.iter().enumerate().any(|(index, byte)| {
+        if *byte == 1 {
+            let mut forged = bytes.clone();
+            forged[index] = 0;
+            matches!(
+                Dump::load(&forged),
+                Err(DumpError::Payload(postcard::Error::SerdeDeCustom))
+            )
+        } else {
+            false
+        }
+    });
+    assert!(rejected);
+}
+
+#[test]
 fn repl_dump_load_preserves_heap_aliasing() {
     let (mut repl, _) = init_repl("a = []\nb = a");
 

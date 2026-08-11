@@ -107,7 +107,7 @@ pub(crate) struct Signature {
     bind_mode: OnceCell<BindMode>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BindMode {
     /// If this is a simple signature (no defaults, no *args/**kwargs).
     ///
@@ -117,7 +117,6 @@ enum BindMode {
     /// - No defaults for any parameters
     /// - No *args or **kwargs
     /// - No keyword-only parameters
-    #[default]
     Simple,
     /// If this signature has only positional-or-keyword params with defaults.
     ///

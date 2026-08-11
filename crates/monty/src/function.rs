@@ -4,6 +4,8 @@ use std::{
     sync::Arc,
 };
 
+use serde::{Deserialize, Deserializer, de::Error as _};
+
 use crate::{args::Signature, bytecode::Code, expressions::Identifier, intern::Interns, namespace::NamespaceId};
 
 /// How an exact positional call can bypass argument binding.
@@ -41,7 +43,7 @@ pub(crate) enum ExactPositionalCall {
 ///   installed at call time (parallel to `free_var_enclosing_slots`).
 /// - `cell_var_slots[i]`: slot in this frame for an owned cell (a local captured
 ///   by a nested function); a fresh cell is created there at call time.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct Function {
     /// The function name (used for error messages and repr).
     pub name: Identifier,
@@ -88,6 +90,46 @@ pub(crate) struct Function {
     exact_positional_call: OnceCell<Option<ExactPositionalCall>>,
     /// Compiled bytecode for this function body. Wrapped in `Arc` to avoid deep clone.
     pub code: Arc<Code>,
+}
+
+/// Serialized fields for [`Function`], kept separate so untrusted dumps can be
+/// validated before constructing runtime metadata.
+#[derive(Deserialize)]
+struct FunctionFields {
+    name: Identifier,
+    signature: Signature,
+    namespace_size: usize,
+    free_var_enclosing_slots: Vec<NamespaceId>,
+    free_var_slots: Vec<NamespaceId>,
+    cell_var_slots: Vec<NamespaceId>,
+    cell_param_indices: Vec<Option<usize>>,
+    defaults_count: usize,
+    is_async: bool,
+    code: Arc<Code>,
+}
+
+impl<'de> Deserialize<'de> for Function {
+    /// Rejects forged function metadata that cannot satisfy the namespace layout.
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let fields = FunctionFields::deserialize(deserializer)?;
+        if fields.signature.param_count() > fields.namespace_size {
+            Err(D::Error::custom("function parameter count exceeds namespace size"))
+        } else {
+            Ok(Self {
+                name: fields.name,
+                signature: fields.signature,
+                namespace_size: fields.namespace_size,
+                free_var_enclosing_slots: fields.free_var_enclosing_slots,
+                free_var_slots: fields.free_var_slots,
+                cell_var_slots: fields.cell_var_slots,
+                cell_param_indices: fields.cell_param_indices,
+                defaults_count: fields.defaults_count,
+                is_async: fields.is_async,
+                exact_positional_call: OnceCell::new(),
+                code: fields.code,
+            })
+        }
+    }
 }
 
 impl Function {
