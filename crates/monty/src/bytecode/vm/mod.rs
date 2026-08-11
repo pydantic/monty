@@ -939,14 +939,29 @@ impl<'h> VM<'h> {
         self.heap.tracker().on_execution_start();
         let result = self.run();
         self.heap.tracker().on_execution_stop();
-        // Re-surface a timeout that a truncating caller (e.g. repr's
-        // `...[timeout]`) swallowed after the run loop's last amortized check
-        // — without this, a turn finishing within the check interval would
-        // return to the host normally despite being over budget.
-        if result.is_ok() {
-            self.heap.tracker.check_time()?;
+        self.finish_host_turn(result)
+    }
+
+    /// Epilogue for every host-boundary execution window (here and
+    /// `MontyRepl::call_function`): re-checks both resource limits so an
+    /// overshoot that arose after the run loop's last amortized check — or
+    /// was swallowed by a truncating caller (repr's `...[timeout]`) — cannot
+    /// escape as a successful result. Consumes a discarded success so its
+    /// heap refcounts are released rather than leaked.
+    pub(crate) fn finish_host_turn<T: DropWithContext<Self>>(
+        &mut self,
+        result: Result<T, RunError>,
+    ) -> Result<T, RunError> {
+        match result {
+            Ok(value) => match self.heap.tracker.check_memory_time() {
+                Ok(()) => Ok(value),
+                Err(e) => {
+                    value.drop_with(self);
+                    Err(e.into())
+                }
+            },
+            err => err,
         }
-        result
     }
 
     /// Main execution loop.

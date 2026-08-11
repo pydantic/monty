@@ -723,6 +723,28 @@ fn call_function_enforces_max_duration() {
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
 
+/// `call_function` applies the same host-boundary epilogue as `feed_run`: a
+/// call whose over-budget repr truncates (swallowing the timeout) must still
+/// fail rather than return the truncated value, and the discarded result's
+/// refcounts are released (verified under `memory-model-checks`).
+#[test]
+fn call_function_rechecks_limits_at_exit() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "x = ['abcdefghij'] * 100_000\ndef f():\n    return repr(x)",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    // Arm a budget only for the call: repr of 100K strings blows it mid-format
+    // and truncates, so only the exit re-check can surface the timeout.
+    repl.tracker_mut().set_max_duration(Duration::from_millis(10));
+    let exc = repl
+        .call_function("f", vec![], PrintWriter::Stdout)
+        .expect_err("over-budget repr must fail the call even though it truncates");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
 /// Helper: builds a large object without time limit, then runs `repr()` on it
 /// with a short time limit and asserts it produces a TimeoutError promptly.
 ///

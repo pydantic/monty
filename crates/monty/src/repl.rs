@@ -318,6 +318,10 @@ impl MontyRepl {
                 vm.heap.tracker().on_execution_start();
                 let eval_result = vm.evaluate_function("MontyRepl::call_function", callable, arg_values);
                 vm.heap.tracker().on_execution_stop();
+                // Same host-boundary epilogue as `run_external`: a limit
+                // overshoot the call swallowed must fail the call, not
+                // return a truncated value.
+                let eval_result = vm.finish_host_turn(eval_result);
 
                 let result = match eval_result {
                     Ok(value) => Ok(MontyObject::new(value, vm)),
