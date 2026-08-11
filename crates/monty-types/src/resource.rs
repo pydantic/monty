@@ -299,8 +299,8 @@ impl ResourceTracker {
         self.check_time()
     }
 
-    /// Called periodically to check the time limit. Latches on failure: once
-    /// the budget is exceeded every later call fails too (see `timed_out`).
+    /// Called periodically to check the time limit. Elapsed execution time is
+    /// monotonic, so once the budget is exceeded every later call fails too.
     #[inline]
     pub fn check_time(&self) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_duration {
@@ -318,8 +318,8 @@ impl ResourceTracker {
 
     /// Amortized per-item time check for Rust-side loops: a full clock read
     /// on every [`LOOP_CHECK_INTERVAL`](Self::LOOP_CHECK_INTERVAL)-th call,
-    /// a single-branch `timed_out` latch re-check otherwise. Key `i` on the
-    /// loop's index or a monotonically increasing counter.
+    /// free otherwise. Key `i` on the loop's index or a monotonically
+    /// increasing counter.
     #[inline]
     pub fn check_time_every(&self, i: usize) -> Result<(), ResourceError> {
         if i.is_multiple_of(Self::LOOP_CHECK_INTERVAL) {

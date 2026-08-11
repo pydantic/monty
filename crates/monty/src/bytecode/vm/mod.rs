@@ -939,6 +939,13 @@ impl<'h> VM<'h> {
         self.heap.tracker().on_execution_start();
         let result = self.run();
         self.heap.tracker().on_execution_stop();
+        // Re-surface a timeout that a truncating caller (e.g. repr's
+        // `...[timeout]`) swallowed after the run loop's last amortized check
+        // — without this, a turn finishing within the check interval would
+        // return to the host normally despite being over budget.
+        if result.is_ok() {
+            self.heap.tracker.check_time()?;
+        }
         result
     }
 
@@ -980,7 +987,7 @@ impl<'h> VM<'h> {
                     // Full memory + time check, amortized to every Nth
                     // instruction; a timeout swallowed by a truncating caller
                     // re-detects here (elapsed time is monotonic) or at the
-                    // `run_external` exit latch check.
+                    // `run_external` exit check.
                     self.heap.tracker.check_memory_time()?;
                 }
             }
