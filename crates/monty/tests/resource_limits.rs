@@ -767,6 +767,28 @@ fn call_function_rechecks_limits_at_exit() {
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
 
+/// The boundary limit check also covers turns ending in a Python exception:
+/// session state survives exceptions, so an allocate-then-raise turn must
+/// surface the uncatchable resource error, not its own exception, or repeated
+/// short erroring feeds could evade the limits entirely.
+#[test]
+fn erroring_turns_still_hit_limits_at_exit() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "x = ['abcdefghij'] * 100_000\ndef f():\n    s = repr(x)\n    raise ValueError(s[:3])",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    // The over-budget repr truncates (swallowing the timeout), then the raise
+    // ends the turn before any dispatch checkpoint can fire.
+    repl.tracker_mut().set_max_duration(Duration::from_millis(10));
+    let exc = repl
+        .call_function("f", vec![], PrintWriter::Stdout)
+        .expect_err("the call must fail");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
 /// Helper: builds a large object without time limit, then runs `repr()` on it
 /// with a short time limit and asserts it produces a TimeoutError promptly.
 ///

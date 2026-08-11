@@ -955,19 +955,25 @@ impl<'h> VM<'h> {
         // A turn shorter than the dispatch-checkpoint interval never probes
         // GC inside the run loop, so a stream of tiny feeds could otherwise
         // accumulate eligible cyclic garbage indefinitely — and the memory
-        // check below could trip on memory a collection would reclaim.
+        // check below could trip on memory a collection would reclaim. The
+        // collection is charged to the execution clock like dispatch-loop GC,
+        // so the limit check sees post-GC elapsed time as well as memory.
         if self.heap.should_gc() {
+            self.heap.tracker().on_execution_start();
             self.run_gc();
+            self.heap.tracker().on_execution_stop();
         }
-        match result {
-            Ok(value) => match self.heap.tracker.check_memory_time() {
-                Ok(()) => Ok(value),
-                Err(e) => {
+        // Checked for erroring turns too: session state survives Python
+        // exceptions, so allocate-then-raise feeds must not evade the limits.
+        // The uncatchable resource error out-ranks the turn's own error.
+        match self.heap.tracker.check_memory_time() {
+            Ok(()) => result,
+            Err(e) => {
+                if let Ok(value) = result {
                     value.drop_with(self);
-                    Err(e.into())
                 }
-            },
-            err => err,
+                Err(e.into())
+            }
         }
     }
 
