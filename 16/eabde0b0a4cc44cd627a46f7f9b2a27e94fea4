@@ -1,0 +1,21 @@
+crates/monty/src/bytecode/vm/mod.rs
+  s_e44ef515a1346b::t_5b1fdbf1c48fc4 958-960,962,964,966-972,975-976
+crates/monty/tests/resource_limits.rs
+  s_e44ef515a1346b::t_5c6a000bec11ce 770-791
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "16eabde0b0a4cc44cd627a46f7f9b2a27e94fea4",
+  "prompts": {},
+  "sessions": {
+    "s_e44ef515a1346b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97080406-d12e-48e2-a2b7-22ff5b889408",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
