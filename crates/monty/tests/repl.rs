@@ -273,6 +273,21 @@ fn repl_dump_load_survives_between_snippets() {
 }
 
 #[test]
+fn repl_dump_load_rebuilds_exact_positional_call_plans() {
+    let (repl, _) = init_repl("def add(a, b):\n    return a + b\n\nasync def async_add(a, b):\n    return a + b");
+    let mut loaded = round_trip_repl(&repl);
+
+    assert_eq!(
+        feed_run_print(&mut loaded, "add(20, 22)").unwrap(),
+        MontyObject::Int(42)
+    );
+    assert_eq!(
+        feed_run_print(&mut loaded, "await async_add(20, 22)").unwrap(),
+        MontyObject::Int(42)
+    );
+}
+
+#[test]
 fn repl_dump_load_preserves_heap_aliasing() {
     let (mut repl, _) = init_repl("a = []\nb = a");
 

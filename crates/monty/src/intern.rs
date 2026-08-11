@@ -1257,8 +1257,11 @@ impl From<Interns> for InternsWire {
 }
 
 impl From<InternsWire> for Interns {
-    fn from(wire: InternsWire) -> Self {
+    fn from(mut wire: InternsWire) -> Self {
         let string_id_by_name = build_string_id_by_name(&wire.strings);
+        for function in &mut wire.functions {
+            function.rebuild_derived_state();
+        }
         Self {
             strings: wire.strings,
             bytes: wire.bytes,

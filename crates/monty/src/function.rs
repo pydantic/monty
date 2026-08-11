@@ -5,6 +5,15 @@ use std::{
 
 use crate::{args::Signature, bytecode::Code, expressions::Identifier, intern::Interns, namespace::NamespaceId};
 
+/// How an exact positional call can bypass argument binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExactPositionalCall {
+    /// Arguments can remain on the VM stack as synchronous frame locals.
+    Sync(usize),
+    /// Arguments can move directly from the VM stack into a coroutine namespace.
+    Async(usize),
+}
+
 /// A defined function once compiled and ready for execution.
 ///
 /// This is created during the compilation phase from a `PreparedFunctionDef`.
@@ -67,6 +76,9 @@ pub(crate) struct Function {
     /// immediately pushing a frame. The coroutine captures the bound arguments
     /// and starts execution only when awaited.
     pub is_async: bool,
+    /// Cached binder-free call plan, rebuilt from the function metadata after loading.
+    #[serde(skip)]
+    pub exact_positional_call: Option<ExactPositionalCall>,
     /// Compiled bytecode for this function body. Wrapped in `Arc` to avoid deep clone.
     pub code: Arc<Code>,
 }
@@ -100,7 +112,7 @@ impl Function {
         is_async: bool,
         code: Code,
     ) -> Self {
-        Self {
+        let mut function = Self {
             name,
             signature,
             namespace_size,
@@ -110,7 +122,30 @@ impl Function {
             cell_param_indices,
             defaults_count,
             is_async,
+            exact_positional_call: None,
             code: Arc::new(code),
+        };
+        function.rebuild_derived_state();
+        function
+    }
+
+    /// Rebuilds optimization metadata omitted from the serialized representation.
+    pub(crate) fn rebuild_derived_state(&mut self) {
+        self.exact_positional_call = self.derive_exact_positional_call();
+    }
+
+    /// Derives the binder-free call plan from authoritative function metadata.
+    pub(crate) fn derive_exact_positional_call(&self) -> Option<ExactPositionalCall> {
+        if self.cell_var_slots.is_empty() && self.free_var_slots.is_empty() {
+            self.signature.exact_positional_count().map(|count| {
+                if self.is_async {
+                    ExactPositionalCall::Async(count)
+                } else {
+                    ExactPositionalCall::Sync(count)
+                }
+            })
+        } else {
+            None
         }
     }
 

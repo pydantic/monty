@@ -16,7 +16,7 @@ use crate::{
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
-    function::Function,
+    function::{ExactPositionalCall, Function},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
@@ -116,16 +116,16 @@ impl VM<'_> {
     pub(super) fn exec_call_function(&mut self, arg_count: usize) -> Result<CallResult, RunError> {
         let callable_index = self.stack.len() - arg_count - 1;
         if let Value::DefFunction(func_id) = self.stack[callable_index]
-            && self.can_call_exact_def_function(func_id, arg_count)
+            && let Some(result) = self.try_call_exact_def_function(func_id, callable_index, arg_count)
         {
-            return self.call_exact_def_function(func_id, callable_index);
+            result
+        } else {
+            let args = self.pop_n_args(arg_count);
+            let callable = self.pop();
+            let this = self;
+            defer_drop!(callable, this);
+            this.call_function(callable, args)
         }
-
-        let args = self.pop_n_args(arg_count);
-        let callable = self.pop();
-        let this = self;
-        defer_drop!(callable, this);
-        this.call_function(callable, args)
     }
 
     /// Executes `CallBuiltinFunction` opcode.
@@ -755,20 +755,31 @@ impl VM<'_> {
     // Frame Setup
     // ========================================================================
 
-    /// Checks whether a direct call's stack arguments are already valid local slots.
-    fn can_call_exact_def_function(&self, func_id: FunctionId, arg_count: usize) -> bool {
+    /// Bypasses argument binding when a direct call matches its cached call plan.
+    fn try_call_exact_def_function(
+        &mut self,
+        func_id: FunctionId,
+        callable_index: usize,
+        arg_count: usize,
+    ) -> Option<Result<CallResult, RunError>> {
         let func = self.interns.get_function(func_id);
-        !func.is_async
-            && func.cell_var_slots.is_empty()
-            && func.free_var_slots.is_empty()
-            && func.signature.accepts_exact_positional(arg_count)
+        debug_assert_eq!(func.exact_positional_call, func.derive_exact_positional_call());
+        match func.exact_positional_call {
+            Some(ExactPositionalCall::Sync(count)) if count == arg_count => {
+                Some(self.call_exact_sync_function(func_id, callable_index))
+            }
+            Some(ExactPositionalCall::Async(count)) if count == arg_count => {
+                Some(Ok(self.create_exact_coroutine(func_id, callable_index)))
+            }
+            _ => None,
+        }
     }
 
     /// Pushes a simple function frame using arguments already present on the VM stack.
     ///
     /// Removing the immediate callable shifts its arguments into the parameter
     /// slots, avoiding argument wrappers, binding, scratch storage, and a copy.
-    fn call_exact_def_function(&mut self, func_id: FunctionId, callable_index: usize) -> Result<CallResult, RunError> {
+    fn call_exact_sync_function(&mut self, func_id: FunctionId, callable_index: usize) -> Result<CallResult, RunError> {
         let call_offset = self.current_offset();
         let func = self.interns.get_function(func_id);
         let namespace_size = func.namespace_size;
@@ -791,6 +802,21 @@ impl VM<'_> {
         ))?;
 
         Ok(CallResult::FramePushed)
+    }
+
+    /// Creates a coroutine by moving exact positional arguments into its namespace.
+    fn create_exact_coroutine(&mut self, func_id: FunctionId, callable_index: usize) -> CallResult {
+        let func = self.interns.get_function(func_id);
+        let mut namespace = Vec::with_capacity(func.namespace_size);
+        namespace.extend(self.stack.drain(callable_index + 1..));
+        namespace.resize_with(func.namespace_size, || Value::Undefined);
+
+        let callable = self.pop();
+        debug_assert!(matches!(callable, Value::DefFunction(id) if id == func_id));
+
+        let coroutine = Coroutine::new(func_id, namespace);
+        let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine));
+        CallResult::Value(Value::Ref(coroutine_id))
     }
 
     /// Calls a defined function by pushing a new frame or creating a coroutine.
