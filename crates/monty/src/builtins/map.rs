@@ -67,7 +67,7 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     // Validate and clamp the iterator's hint before reserving native memory.
     let hint = first_iter.iter_size_hint(vm);
-    let capacity = checked_preallocation_hint(hint, mem::size_of::<Value>(), vm.heap.tracker())?;
+    let capacity = checked_preallocation_hint(hint, mem::size_of::<Value>(), &vm.heap.tracker)?;
     let mut out = Vec::with_capacity(capacity);
 
     // map function over iterables until the shortest iter is exhausted

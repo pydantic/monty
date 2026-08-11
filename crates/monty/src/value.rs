@@ -105,19 +105,30 @@ pub(crate) enum ValueRead<'h, 'v> {
         /// to drive a user-defined `__next__`.
         owner: &'v Value,
         value: HeapReadOutput<'h>,
+        /// `py_next` calls made through this view, keying its amortized
+        /// time check.
+        steps: usize,
     },
 }
 
 impl<'h> ValueRead<'h, '_> {
     /// Advances this value without reacquiring its heap entry.
     ///
-    /// This is the timeout boundary for Rust-side loops over retained iterators.
-    /// Bytecode iteration dispatches directly after the VM's per-opcode check.
+    /// This is the timeout boundary for Rust-side loops over retained iterators
+    /// (amortized on the view's step count). Bytecode iteration dispatches
+    /// directly after the VM's per-opcode check.
+    ///
+    /// The step count lives on the view, so a loop must hold one across its
+    /// iterations; rebuilding one per call (as `itertools.chain` does) never
+    /// polls, and is only safe under a caller whose own view counts.
     pub(crate) fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        vm.heap.check_time()?;
         match self {
             Self::Immediate(value) => Err(ExcType::type_error_not_iterator(&value.py_type_name(vm))),
-            Self::Heap { owner, value } => value.py_next(owner.ref_id(), vm),
+            Self::Heap { owner, value, steps } => {
+                vm.heap.tracker.check_memory_time_every(*steps)?;
+                *steps += 1;
+                value.py_next(owner.ref_id(), vm)
+            }
         }
     }
 
@@ -995,7 +1006,7 @@ impl<'h> PyTrait<'h> for Value {
                             } else if let Some(result) = i128::from(*base).checked_pow(exp_u32) {
                                 Ok(Some(wide_i128_into_value(result, vm.heap)))
                             } else {
-                                check_pow_size(i64_bits(*base), u64::from(exp_u32), vm.heap.tracker())?;
+                                check_pow_size(i64_bits(*base), u64::from(exp_u32), &vm.heap.tracker)?;
                                 let bi = BigInt::from(*base).pow(exp_u32);
                                 Ok(Some(LongInt::new(bi).into_value(vm.heap)))
                             }
@@ -1006,7 +1017,7 @@ impl<'h> PyTrait<'h> for Value {
                             #[expect(clippy::cast_sign_loss)]
                             let exp_u64 = *exp as u64;
                             // Check size before computing to prevent DoS
-                            check_pow_size(i64_bits(*base), exp_u64, vm.heap.tracker())?;
+                            check_pow_size(i64_bits(*base), exp_u64, &vm.heap.tracker)?;
                             let bi = bigint_pow(BigInt::from(*base), exp_u64);
                             Ok(Some(LongInt::new(bi).into_value(vm.heap)))
                         }
@@ -1589,6 +1600,7 @@ impl Value {
             Self::Ref(id) => ValueRead::Heap {
                 owner: self,
                 value: vm.heap.read(*id),
+                steps: 0,
             },
             _ => ValueRead::Immediate(self),
         }

@@ -56,7 +56,7 @@ impl<'h> VM<'h> {
     /// depth counter.
     #[inline]
     pub(crate) fn incr_recursion(&mut self) -> Result<(), ResourceError> {
-        self.heap.tracker().check_recursion_depth(self.recursion_depth)?;
+        self.heap.tracker.check_recursion_depth(self.recursion_depth)?;
         self.recursion_depth += 1;
         Ok(())
     }

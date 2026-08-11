@@ -936,10 +936,65 @@ impl<'h> VM<'h> {
     /// (task switches, `evaluate_function`) uses the raw private [`Self::run`]
     /// instead, whose time is already inside the enclosing window.
     pub(crate) fn run_external(&mut self) -> Result<FrameExit, RunError> {
-        self.heap.tracker().on_execution_start();
+        self.heap.tracker.on_execution_start();
         let result = self.run();
-        self.heap.tracker().on_execution_stop();
-        result
+        self.heap.tracker.on_execution_stop();
+        self.finish_host_turn(result)
+    }
+
+    /// Epilogue for every host-boundary execution window (here and
+    /// `MontyRepl::call_function`): re-checks both resource limits so an
+    /// overshoot that arose after the run loop's last amortized check — or
+    /// was swallowed by a truncating caller (repr's `...[timeout]`) — cannot
+    /// escape as a successful result. Consumes a discarded success so its
+    /// heap refcounts are released rather than leaked.
+    pub(crate) fn finish_host_turn<T: DropWithContext<Self>>(
+        &mut self,
+        result: Result<T, RunError>,
+    ) -> Result<T, RunError> {
+        // A turn shorter than the dispatch-checkpoint interval never probes
+        // GC inside the run loop, so a stream of tiny feeds could otherwise
+        // accumulate eligible cyclic garbage indefinitely — and the memory
+        // check below could trip on memory a collection would reclaim. The
+        // collection is charged to the execution clock like dispatch-loop GC,
+        // so the limit check sees post-GC elapsed time as well as memory.
+        // Skipped after a resource error, where refcounts are unreliable and
+        // trial deletion could free live entries; ordinary Python exceptions
+        // unwind through the drop machinery, so they still collect.
+        if !matches!(result, Err(RunError::UncatchableExc(_))) && self.heap.should_gc() {
+            self.heap.tracker.on_execution_start();
+            self.run_gc();
+            self.heap.tracker.on_execution_stop();
+        }
+        // Checked for erroring turns too: session state survives Python
+        // exceptions, so allocate-then-raise feeds must not evade the limits.
+        // The uncatchable resource error out-ranks the turn's own error.
+        match self.heap.tracker.check_memory_time() {
+            Ok(()) => result,
+            Err(e) => {
+                if let Ok(value) = result {
+                    value.drop_with(self);
+                }
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Periodic dispatch-loop work, outlined (`#[inline(never)]`) so the hot
+    /// loop stays small: the amortized memory + time check — where a timeout
+    /// swallowed by a truncating caller re-detects (elapsed time is
+    /// monotonic), backstopped by the `run_external` exit check — and the
+    /// GC-scheduling probe, with the frame IP synced before a collection.
+    #[inline(never)]
+    fn dispatch_checkpoint(&mut self, check_limits: bool, ip: usize) -> Result<(), RunError> {
+        if check_limits {
+            self.heap.tracker.check_memory_time()?;
+        }
+        if self.heap.should_gc() {
+            self.current_frame_mut().ip = ip;
+            self.run_gc();
+        }
+        Ok(())
     }
 
     /// Main execution loop.
@@ -957,19 +1012,40 @@ impl<'h> VM<'h> {
     /// `frames.last_mut().expect()` calls during operand fetching. The cache
     /// is reloaded after any operation that modifies the frame stack.
     fn run(&mut self) -> Result<FrameExit, RunError> {
+        /// How often (in instructions) the dispatch loop runs its periodic
+        /// work: the full `check_memory_time` and the GC-scheduling probe.
+        /// The checkpoint reads the clock when limits are armed, so this sets
+        /// the entire cost of limit enforcement — ~40% on tight loops at 10,
+        /// ~2% at u8::MAX (see the `_limits` benchmarks) — while detection
+        /// latency stays sub-µs. Native ops poll internally and the host-turn
+        /// epilogue re-checks, so only this dispatch cadence rides on it.
+        /// The countdown is per-`run()`, so `evaluate_function` re-entry
+        /// restarts it — a native loop calling a shorter callback reaches no
+        /// checkpoint at all and must poll the tracker itself.
+        const CHECK_INTERVAL: u8 = u8::MAX;
+
         // Cache frame state locally to avoid repeated frames.last_mut() calls.
         // The Code reference has lifetime 'h (lives in Interns), independent of frame borrow.
         let mut cached_frame: CachedFrame<'h> = self.new_cached_frame();
 
-        loop {
-            // Check time limit and trigger GC if needed at each instruction.
-            // With no limits configured these reduce to a single branch each.
-            self.heap.check_time()?;
+        // Limits cannot change mid-run (`set_max_duration` needs `&mut` at the
+        // host boundary), so with none configured the whole checkpoint reduces
+        // to this one hoisted, well-predicted branch per instruction.
+        let check_limits = self.heap.tracker.has_memory_time_limit();
 
-            if self.heap.should_gc() {
-                // Sync IP before GC for safety
-                self.current_frame_mut().ip = cached_frame.ip;
-                self.run_gc();
+        let mut countdown = CHECK_INTERVAL;
+
+        loop {
+            // One decrement-and-branch per instruction; the periodic work
+            // runs every `CHECK_INTERVAL`-th, outlined to keep the hot loop
+            // small. GC triggering is allocation-count-based (intervals in
+            // the hundreds), so probing it a few instructions late is
+            // immaterial.
+            if let Some(c) = countdown.checked_sub(1) {
+                countdown = c;
+            } else {
+                countdown = CHECK_INTERVAL;
+                self.dispatch_checkpoint(check_limits, cached_frame.ip)?;
             }
 
             // Track instruction IP for exception table lookup

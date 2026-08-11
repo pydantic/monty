@@ -449,7 +449,7 @@ pub(crate) fn counter_elements(dict_id: HeapId, args: ArgValues, vm: &mut VM<'_>
     // large count (e.g. `c['a'] = 10**18`) would otherwise attempt to build a
     // multi-exabyte Rust-heap `Vec` before returning a graceful error.
     let total = lengths.iter().fold(0usize, |acc, len| acc.saturating_add(*len));
-    check_repeat_size(VALUE_SIZE, total, vm.heap.tracker())?;
+    check_repeat_size(VALUE_SIZE, total, &vm.heap.tracker)?;
 
     // `Vec::new()` (not `with_capacity(total)`): `total` is attacker-controlled,
     // and `check_repeat_size` above is the real guard (it fires before this loop

@@ -248,7 +248,7 @@ impl<'h> HeapRead<'h, List> {
     /// `MemoryError` instead of bursting past the allocator's hard limit.
     fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
         let len = self.get(vm.heap).items.len();
-        vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let mut result = Vec::with_capacity(len);
         for i in 0..len {
             result.push(self.clone_item(i, vm));
@@ -325,12 +325,12 @@ impl<'a, 'h> ListIter<'a, 'h> {
     /// until the iterator itself is dropped), at which point the held item
     /// is released.
     ///
-    /// Performs a [`check_time`](Heap::check_time) on every call so long
-    /// Rust-side loops cannot bypass the configured timeout.
+    /// Performs an amortized time-limit check (a clock read every 64th
+    /// call) so long Rust-side loops cannot bypass the configured timeout.
     pub(crate) fn next<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<&'i Value>> {
         // Drop the previously-yielded item (no-op when `current` is `Undefined`).
         mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_time_every(self.index)?;
         if self.index >= self.list.get(vm.heap).len() {
             return Ok(None);
         }
@@ -509,11 +509,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
             return Ok(None);
         };
         let value = self.get(vm.heap);
-        check_repeat_size(value.len().saturating_mul(VALUE_SIZE), count, vm.heap.tracker())?;
+        check_repeat_size(value.len().saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
         let mut result = Vec::with_capacity(value.len() * count);
-        for _ in 0..count {
+        for rep in 0..count {
             result.extend(value.as_slice().iter().map(|value| value.clone_with_heap(vm.heap)));
-            vm.heap.check_time()?;
+            vm.heap.tracker.check_time_every(rep)?;
         }
         Ok(Some(Value::Ref(vm.heap.allocate(HeapData::List(List::new(result))))))
     }
@@ -532,7 +532,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
             // at 2× — the temporary clone plus the equal-sized target growth —
             // up front, while no owned values need releasing on failure.
             let len = self.get(vm.heap).items.len();
-            vm.heap.tracker().check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
+            vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
             let items = self.clone_all_items(vm)?;
             self.get_mut(vm.heap).items.extend(items);
         } else {
@@ -544,7 +544,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
             };
             let source_len = source_list.get(vm.heap).len();
             vm.heap
-                .tracker()
+                .tracker
                 .check_allocation(source_len.saturating_mul(2 * VALUE_SIZE))?;
             let source_items = source_list.clone_all_items(vm)?;
             // Check if new items contain refs
@@ -758,7 +758,7 @@ fn list_clear<'h>(list: &mut HeapRead<'h, List>, vm: &mut VM<'h>) {
 /// Returns a shallow copy of the list, preflighting the slot bytes like
 /// `clone_all_items` so a huge copy fails with a graceful `MemoryError`.
 fn list_copy(list: &List, heap: &Heap) -> RunResult<Value> {
-    heap.tracker()
+    heap.tracker
         .check_allocation(list.items.len().saturating_mul(VALUE_SIZE))?;
     let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
     let heap_id = heap.allocate(HeapData::List(List::new(items)));
@@ -969,7 +969,7 @@ pub(crate) fn repr_items_fmt(
 /// keeping per-item overhead to one branch while still truncating huge reprs
 /// promptly with `", ...[timeout]"` (tested in `resource_limits.rs`).
 pub(crate) fn repr_check_time(i: usize, vm: &VM<'_>) -> bool {
-    i.is_multiple_of(64) && vm.heap.check_time().is_err()
+    vm.heap.tracker.check_memory_time_every(i).is_err()
 }
 
 /// Iterates over a list while observing changes to its current contents.

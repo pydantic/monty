@@ -260,8 +260,10 @@ pub(crate) fn slice_collect_iterator<Iter: DoubleEndedIterator + Clone, U, T: Fr
     let length = iter.clone().count();
     let (start, stop, step) = slice.indices(length)?;
 
+    let mut i = 0usize;
     let final_collect_op = |item| -> RunResult<U> {
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_time_every(i)?;
+        i += 1;
         Ok(collect_map(item))
     };
 

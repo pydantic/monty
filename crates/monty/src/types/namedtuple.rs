@@ -229,7 +229,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// `MemoryError` instead of bursting past the allocator's hard limit.
     pub(crate) fn cloned_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
         let len = self.get(vm.heap).len();
-        vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         Ok((0..len).map(|i| self.clone_item(i, vm)).collect())
     }
 
@@ -300,12 +300,12 @@ impl<'a, 'h> NamedTupleIter<'a, 'h> {
     /// The returned reference is valid until the next call to `next` (or
     /// until the iterator itself is dropped).
     ///
-    /// Performs a [`check_time`](Heap::check_time) on every call so long
-    /// Rust-side loops cannot bypass the configured timeout.
+    /// Performs an amortized time-limit check (a clock read every 64th
+    /// call) so long Rust-side loops cannot bypass the configured timeout.
     pub(crate) fn next<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<&'i Value>> {
         // Drop the previously-yielded item (no-op when `current` is `Undefined`).
         mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_time_every(self.index)?;
         let items = &self.tuple.get(vm.heap).items;
         if self.index >= items.len() {
             return Ok(None);
@@ -428,14 +428,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         if count == 0 || len == 0 {
             return Ok(Some(vm.heap.get_empty_tuple()));
         }
-        check_repeat_size(len.saturating_mul(mem::size_of::<Value>()), count, vm.heap.tracker())?;
+        check_repeat_size(len.saturating_mul(mem::size_of::<Value>()), count, &vm.heap.tracker)?;
         let mut result: TupleVec = SmallVec::with_capacity(len * count);
-        for _ in 0..count {
+        for rep in 0..count {
             for i in 0..len {
                 let item = self.get(vm.heap).as_vec()[i].clone_with_heap(vm.heap);
                 result.push(item);
             }
-            vm.heap.check_time()?;
+            vm.heap.tracker.check_time_every(rep)?;
         }
         Ok(Some(allocate_tuple(result, vm.heap)))
     }
@@ -1046,7 +1046,7 @@ fn cloned_tuple_like_items(value: &Value, vm: &VM<'_>) -> RunResult<Option<Vec<V
         HeapData::NamedTuple(nt) => nt.as_vec().len(),
         _ => return Ok(None),
     };
-    vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
+    vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
     let mut items = Vec::with_capacity(len);
     for i in 0..len {
         let item = match vm.heap.get(id) {

@@ -48,7 +48,7 @@ use crate::{exception_private::RunResult, heap::Heap, types::str::allocate_strin
 /// Typical use:
 ///
 /// ```ignore
-/// let mut builder = StringBuilder::with_capacity(cap, vm.heap.tracker())?;
+/// let mut builder = StringBuilder::with_capacity(cap, &vm.heap.tracker)?;
 /// builder.push_str(prefix)?;
 /// for _ in 0..pad { builder.push(fill)?; }
 /// builder.finish(vm.heap)

@@ -200,7 +200,7 @@ pub fn allocate_string_no_interning(s: impl Into<Box<str>>, heap: &Heap) -> Valu
 
 /// Repeats a string after validating the allocation against resource limits.
 pub(crate) fn repeat_str(value: &str, count: usize, heap: &Heap) -> Result<Value, ResourceError> {
-    check_repeat_size(value.len(), count, heap.tracker())?;
+    check_repeat_size(value.len(), count, &heap.tracker)?;
     Ok(allocate_string(value.repeat(count), heap))
 }
 
@@ -227,7 +227,7 @@ pub fn allocate_char(c: char, heap: &Heap) -> Value {
 /// is fine per the `StringBuilder` rule.
 pub(crate) fn concat_allocate_str(a: &str, b: &str, heap: &Heap) -> Result<Value, ResourceError> {
     let result_len = a.len().saturating_add(b.len());
-    check_repeat_size(result_len, 1, heap.tracker())?;
+    check_repeat_size(result_len, 1, &heap.tracker)?;
     let mut concat = String::with_capacity(result_len);
     concat.push_str(a);
     concat.push_str(b);
@@ -1361,8 +1361,8 @@ fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
 
     // Convert to list of strings (using interned empty string when applicable)
     let mut list_items = Vec::with_capacity(parts.len());
-    for part in parts {
-        vm.heap.check_time()?;
+    for (i, part) in parts.into_iter().enumerate() {
+        vm.heap.tracker.check_memory_time_every(i)?;
         list_items.push(allocate_string(part, vm.heap));
     }
 
@@ -1410,8 +1410,8 @@ fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
 
     // Convert to list of strings (using interned empty string when applicable)
     let mut list_items = Vec::with_capacity(parts.len());
-    for part in parts {
-        vm.heap.check_time()?;
+    for (i, part) in parts.into_iter().enumerate() {
+        vm.heap.tracker.check_memory_time_every(i)?;
         list_items.push(allocate_string(part, vm.heap));
     }
 
@@ -1520,7 +1520,7 @@ fn str_splitlines<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
     let len = bytes.len();
 
     while start < len {
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_memory_time_every(lines.len())?;
 
         // Find the next line ending
         let mut end = start;
@@ -1661,7 +1661,7 @@ fn str_replace<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> R
     let (old, new, count) = parse_replace_args("str.replace", args, vm)?;
     let s = s.get(vm.heap);
 
-    check_replace_size(s.len(), old.len(), new.len(), count, vm.heap.tracker())?;
+    check_replace_size(s.len(), old.len(), new.len(), count, &vm.heap.tracker)?;
 
     let result = if count < 0 {
         s.replace(&old, &new)
@@ -1724,7 +1724,7 @@ fn str_center<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
         // `width * fillchar.len_utf8()` would mis-charge the `s`-slot bytes.
         let total_pad = width - len;
         let capacity = s.len().saturating_add(total_pad.saturating_mul(fillchar.len_utf8()));
-        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
+        let mut builder = StringBuilder::with_capacity(capacity, &vm.heap.tracker)?;
         let left_pad = total_pad / 2;
         let right_pad = total_pad - left_pad;
         for _ in 0..left_pad {
@@ -1751,7 +1751,7 @@ fn str_ljust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
     } else {
         let pad = width - len;
         let capacity = s.len().saturating_add(pad.saturating_mul(fillchar.len_utf8()));
-        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
+        let mut builder = StringBuilder::with_capacity(capacity, &vm.heap.tracker)?;
         builder.push_str(s)?;
         for _ in 0..pad {
             builder.push(fillchar)?;
@@ -1773,7 +1773,7 @@ fn str_rjust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
     } else {
         let pad = width - len;
         let capacity = s.len().saturating_add(pad.saturating_mul(fillchar.len_utf8()));
-        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
+        let mut builder = StringBuilder::with_capacity(capacity, &vm.heap.tracker)?;
         for _ in 0..pad {
             builder.push(fillchar)?;
         }
@@ -1841,7 +1841,7 @@ fn str_zfill<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
         // rather than `width` (character count).
         let pad = width - len;
         let capacity = s.len().saturating_add(pad);
-        let mut builder = StringBuilder::with_capacity(capacity, vm.heap.tracker())?;
+        let mut builder = StringBuilder::with_capacity(capacity, &vm.heap.tracker)?;
         let mut chars = s.chars();
         let first = chars.next();
 
@@ -1888,7 +1888,7 @@ fn str_expandtabs<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
     // know the result size up front, so use the unbounded builder — its 2×
     // growth policy rejects the build at the first push that would exceed the
     // memory limit, capping wasted intermediate allocation to `O(limit)`.
-    let mut builder = StringBuilder::new(vm.heap.tracker());
+    let mut builder = StringBuilder::new(&vm.heap.tracker);
     let mut column = 0;
 
     for c in s.chars() {
@@ -1939,7 +1939,7 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
     let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
 
     let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
-    let bytes = codec.encode(s.get(vm.heap), errors, vm.heap.tracker())?;
+    let bytes = codec.encode(s.get(vm.heap), errors, &vm.heap.tracker)?;
     let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
     Ok(Value::Ref(heap_id))
 }
