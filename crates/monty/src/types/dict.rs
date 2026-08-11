@@ -974,7 +974,7 @@ impl<'a, 'h> DictIter<'a, 'h> {
     fn advance(&mut self, vm: &mut VM<'h>) -> RunResult<Option<usize>> {
         mem::replace(&mut self.current_key, Value::Undefined).drop_with(vm.heap);
         mem::replace(&mut self.current_value, Value::Undefined).drop_with(vm.heap);
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_time_every(self.index)?;
         let current = self.dict.get(vm.heap);
         if current.entries.len() != self.expected_len {
             return Err(ExcType::runtime_error_dict_changed_size());

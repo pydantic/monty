@@ -663,7 +663,7 @@ fn dict_keys_eq_set_like<'h>(
     let vm = &mut *guard;
     let len = dict.get(vm.heap).len();
     for i in 0..len {
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_time_every(i)?;
         let key = dict.get(vm.heap).key_at(i).unwrap().clone_with_heap(vm);
         defer_drop!(key, vm);
         if !contains(key, vm)? {
@@ -688,7 +688,7 @@ fn dict_items_eq_set_like<'h>(
     let vm = &mut *guard;
     let len = dict.get(vm.heap).len();
     for i in 0..len {
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_time_every(i)?;
         let (key, value) = dict.get(vm.heap).item_at(i).unwrap();
         let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap);
         defer_drop!(item, vm);

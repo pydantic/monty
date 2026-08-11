@@ -17,7 +17,7 @@ use std::{
     sync::Arc,
 };
 
-use monty_types::{ResourceError, ResourceTracker};
+use monty_types::ResourceTracker;
 use serde::ser::SerializeStruct;
 
 // Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
@@ -803,7 +803,7 @@ pub(crate) struct Heap {
     /// Paged storage for heap entries with integrated free list.
     entries: StableHeap<HeapEntry>,
     /// Resource tracker for enforcing limits and scheduling GC.
-    tracker: ResourceTracker,
+    pub tracker: ResourceTracker,
     /// Number of entries currently flagged [`Purple`](CcColor::Purple) — i.e.,
     /// suspected cycle roots awaiting collection.
     ///
@@ -950,20 +950,6 @@ impl Heap {
     /// Returns a mutable reference to the resource tracker.
     pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
         &mut self.tracker
-    }
-
-    /// Checks whether a configured time or memory limit has been exceeded.
-    ///
-    /// Delegates to the resource tracker's `check_time()`, which polls
-    /// allocator-backed usage against `max_memory` and elapsed execution time
-    /// against `max_duration` (each a no-op when unset).
-    ///
-    /// Call this inside Rust-side loops (builtins, sort, iterator collection)
-    /// that execute within a single bytecode instruction and would otherwise
-    /// bypass the VM's per-instruction checkpoint.
-    #[inline]
-    pub fn check_time(&self) -> Result<(), ResourceError> {
-        self.tracker.check_time()
     }
 
     /// Number of entries in the heap (including freed slots).

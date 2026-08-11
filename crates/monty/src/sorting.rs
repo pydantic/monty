@@ -76,7 +76,11 @@ pub fn sort_values(values: &mut [Value], key_fn: Option<&Value>, reverse: bool, 
     } else {
         // With no key function can sort directly on the original array
         let mut sort_result: RunResult<()> = Ok(());
-        values.sort_by(|a, b| compare_values(a, b, reverse, &mut sort_result, vm));
+        let mut n = 0usize;
+        values.sort_by(|a, b| {
+            n += 1;
+            compare_values(n, a, b, reverse, &mut sort_result, vm)
+        });
         sort_result
     }
 }
@@ -91,7 +95,11 @@ pub fn sort_values(values: &mut [Value], key_fn: Option<&Value>, reverse: bool, 
 /// or the pre-computed key values.
 pub fn sort_indices(indices: &mut [usize], values: &[Value], reverse: bool, vm: &mut VM<'_>) -> Result<(), RunError> {
     let mut sort_result: RunResult<()> = Ok(());
-    indices.sort_by(|&a, &b| compare_values(&values[a], &values[b], reverse, &mut sort_result, vm));
+    let mut n = 0usize;
+    indices.sort_by(|&a, &b| {
+        n += 1;
+        compare_values(n, &values[a], &values[b], reverse, &mut sort_result, vm)
+    });
     sort_result
 }
 
@@ -125,12 +133,20 @@ pub fn apply_permutation<T>(items: &mut [T], indices: &mut [usize]) {
 }
 
 /// Helper for the sort functions which compares two values, handling any exceptions and timeouts.
-fn compare_values(a: &Value, b: &Value, reverse: bool, sort_result: &mut RunResult<()>, vm: &mut VM<'_>) -> Ordering {
+/// `n` is the caller's running comparison count, keying the amortized time check.
+fn compare_values(
+    n: usize,
+    a: &Value,
+    b: &Value,
+    reverse: bool,
+    sort_result: &mut RunResult<()>,
+    vm: &mut VM<'_>,
+) -> Ordering {
     if sort_result.is_err() {
         // short-circuit if we've already encountered an error in a previous comparison
         return Ordering::Equal;
     }
-    if let Err(e) = vm.heap.check_time() {
+    if let Err(e) = vm.heap.tracker.check_time_every(n) {
         *sort_result = Err(e.into());
         return Ordering::Equal;
     }

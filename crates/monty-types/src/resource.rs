@@ -144,14 +144,6 @@ impl ResourceLimits {
     }
 }
 
-/// How often to actually check `Instant::elapsed()` in `check_time`.
-///
-/// Calling `Instant::elapsed()` on every `check_time` invocation adds measurable
-/// overhead in tight loops (the VM calls `check_time` on every instruction).
-/// By only checking every N calls, we reduce this overhead while still catching
-/// timeouts promptly.
-const TIME_CHECK_INTERVAL: u16 = 10;
-
 /// A resource tracker that enforces configurable limits.
 ///
 /// Checks allocator-backed memory usage and tracks execution time, returning
@@ -180,8 +172,6 @@ pub struct ResourceTracker {
     /// executing.
     #[serde(skip)]
     running_since: Cell<Option<Instant>>,
-    /// Counter for rate-limiting `Instant::elapsed()` calls in `check_time`.
-    check_counter: Cell<u16>,
     /// Optional override applied on top of `limits.max_recursion_depth`.
     ///
     /// `None` (the default — also the value any pre-`test-hooks` snapshot
@@ -220,7 +210,6 @@ impl ResourceTracker {
             limits,
             total_execution_time: Cell::new(Duration::ZERO),
             running_since: Cell::new(None),
-            check_counter: Cell::new(0),
             recursion_limit_override: Cell::new(None),
         }
     }
@@ -257,6 +246,12 @@ impl ResourceTracker {
         self.limits.max_memory
     }
 
+    /// Returns whether the VM has a memory or time limit configured.
+    #[must_use]
+    pub fn has_memory_time_limit(&self) -> bool {
+        self.limits.max_memory.is_some() || self.limits.max_duration.is_some()
+    }
+
     /// Sets the maximum execution duration as a fresh budget from now,
     /// resetting the accumulated execution time to zero.
     ///
@@ -284,7 +279,7 @@ impl ResourceTracker {
         Ok(())
     }
 
-    /// Called periodically to check time and allocator-backed memory limits.
+    /// Called periodically to check allocator-backed memory and time limits.
     ///
     /// Returns `Ok(())` while configured limits are respected, or the relevant
     /// resource error once either limit is exceeded.
@@ -293,7 +288,7 @@ impl ResourceTracker {
     /// read-only operation. This allows time checks in contexts that only have
     /// an immutable heap reference, such as `py_repr_fmt`.
     #[inline]
-    pub fn check_time(&self) -> Result<(), ResourceError> {
+    pub fn check_memory_time(&self) -> Result<(), ResourceError> {
         if let Some(limit) = self.limits.max_memory {
             let used = probe_memory();
             if used > limit {
@@ -301,22 +296,50 @@ impl ResourceTracker {
             }
         }
 
+        self.check_time()
+    }
+
+    /// Called periodically to check the time limit. Latches on failure: once
+    /// the budget is exceeded every later call fails too (see `timed_out`).
+    #[inline]
+    pub fn check_time(&self) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_duration {
-            self.check_counter.update(|c| c.wrapping_add(1));
-            if self.check_counter.get().is_multiple_of(TIME_CHECK_INTERVAL) {
-                // Only call Instant::elapsed() every TIME_CHECK_INTERVAL calls
-                let elapsed = self.elapsed();
-                if elapsed > max {
-                    // Reset counter so the very next check_time call also triggers
-                    // an elapsed check. This is important because some callers
-                    // (e.g. repr_sequence_fmt) catch the error and return normally,
-                    // and we need the VM loop's next check_time to re-detect timeout.
-                    self.check_counter.set(TIME_CHECK_INTERVAL.wrapping_sub(1));
-                    return Err(ResourceError::Time { limit: max, elapsed });
-                }
+            let elapsed = self.elapsed();
+            if elapsed > max {
+                return Err(ResourceError::Time { limit: max, elapsed });
             }
         }
         Ok(())
+    }
+
+    /// Items processed between full checks in amortized per-item Rust loops
+    /// (see [`check_time_every`](Self::check_time_every)).
+    pub const LOOP_CHECK_INTERVAL: usize = 64;
+
+    /// Amortized per-item time check for Rust-side loops: a full clock read
+    /// on every [`LOOP_CHECK_INTERVAL`](Self::LOOP_CHECK_INTERVAL)-th call,
+    /// a single-branch `timed_out` latch re-check otherwise. Key `i` on the
+    /// loop's index or a monotonically increasing counter.
+    #[inline]
+    pub fn check_time_every(&self, i: usize) -> Result<(), ResourceError> {
+        if i.is_multiple_of(Self::LOOP_CHECK_INTERVAL) {
+            self.check_time()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Amortized per-item memory + time check; the memory-probing sibling of
+    /// [`check_time_every`](Self::check_time_every), for loops that allocate
+    /// per item. Between full checks the allocator's hard limit still bounds
+    /// runaway growth.
+    #[inline]
+    pub fn check_memory_time_every(&self, i: usize) -> Result<(), ResourceError> {
+        if i.is_multiple_of(Self::LOOP_CHECK_INTERVAL) {
+            self.check_memory_time()
+        } else {
+            Ok(())
+        }
     }
 
     /// Called before pushing a new call frame to check recursion depth.

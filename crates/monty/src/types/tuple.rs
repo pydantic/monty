@@ -246,12 +246,12 @@ impl<'a, 'h> TupleIter<'a, 'h> {
     /// until the iterator itself is dropped), at which point the held item
     /// is released.
     ///
-    /// Performs a [`check_time`](Heap::check_time) on every call so long
+    /// Performs a time-limit check on every call so long
     /// Rust-side loops cannot bypass the configured timeout.
     pub(crate) fn next<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<&'i Value>> {
         // Drop the previously-yielded item (no-op when `current` is `Undefined`).
         mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_time_every(self.index)?;
         let items = &self.tuple.get(vm.heap).items;
         if self.index >= items.len() {
             return Ok(None);
@@ -453,9 +453,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
             vm.heap.tracker(),
         )?;
         let mut result = SmallVec::with_capacity(value.as_slice().len() * count);
-        for _ in 0..count {
+        for rep in 0..count {
             result.extend(value.as_slice().iter().map(|value| value.clone_with_heap(vm.heap)));
-            vm.heap.check_time()?;
+            vm.heap.tracker.check_time_every(rep)?;
         }
         Ok(Some(allocate_tuple(result, vm.heap)))
     }

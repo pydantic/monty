@@ -1066,20 +1066,17 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
             for i in 0..kept {
                 let (items, vm) = result.as_parts_mut();
                 items.push(source[(start + i % len) % len].clone_with_heap(vm.heap));
-                // Poll once per notional copy.
-                if i % len == 0 {
-                    vm.heap.check_time()?;
-                }
+                vm.heap.tracker.check_time_every(i)?;
             }
         }
         result.into_inner()
     } else {
         check_repeat_size(len.saturating_mul(mem::size_of::<Value>()), count, vm.heap.tracker())?;
         let mut result = DropGuard::new(Vec::with_capacity(len * count), vm);
-        for _ in 0..count {
+        for rep in 0..count {
             let (items, vm) = result.as_parts_mut();
             items.extend(source.iter().map(|v| v.clone_with_heap(vm.heap)));
-            vm.heap.check_time()?;
+            vm.heap.tracker.check_time_every(rep)?;
         }
         result.into_inner()
     };

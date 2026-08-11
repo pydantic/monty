@@ -325,12 +325,12 @@ impl<'a, 'h> ListIter<'a, 'h> {
     /// until the iterator itself is dropped), at which point the held item
     /// is released.
     ///
-    /// Performs a [`check_time`](Heap::check_time) on every call so long
+    /// Performs a time-limit check on every call so long
     /// Rust-side loops cannot bypass the configured timeout.
     pub(crate) fn next<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<&'i Value>> {
         // Drop the previously-yielded item (no-op when `current` is `Undefined`).
         mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_time_every(self.index)?;
         if self.index >= self.list.get(vm.heap).len() {
             return Ok(None);
         }
@@ -511,9 +511,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         let value = self.get(vm.heap);
         check_repeat_size(value.len().saturating_mul(VALUE_SIZE), count, vm.heap.tracker())?;
         let mut result = Vec::with_capacity(value.len() * count);
-        for _ in 0..count {
+        for rep in 0..count {
             result.extend(value.as_slice().iter().map(|value| value.clone_with_heap(vm.heap)));
-            vm.heap.check_time()?;
+            vm.heap.tracker.check_time_every(rep)?;
         }
         Ok(Some(Value::Ref(vm.heap.allocate(HeapData::List(List::new(result))))))
     }
@@ -969,7 +969,7 @@ pub(crate) fn repr_items_fmt(
 /// keeping per-item overhead to one branch while still truncating huge reprs
 /// promptly with `", ...[timeout]"` (tested in `resource_limits.rs`).
 pub(crate) fn repr_check_time(i: usize, vm: &VM<'_>) -> bool {
-    i.is_multiple_of(64) && vm.heap.check_time().is_err()
+    vm.heap.tracker.check_memory_time_every(i).is_err()
 }
 
 /// Iterates over a list while observing changes to its current contents.

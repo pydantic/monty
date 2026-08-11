@@ -957,14 +957,29 @@ impl<'h> VM<'h> {
     /// `frames.last_mut().expect()` calls during operand fetching. The cache
     /// is reloaded after any operation that modifies the frame stack.
     fn run(&mut self) -> Result<FrameExit, RunError> {
+        /// How often the VM's dispatch loop runs a full `check_memory_time`
+        const CHECK_INTERVAL: u8 = 10;
+
         // Cache frame state locally to avoid repeated frames.last_mut() calls.
         // The Code reference has lifetime 'h (lives in Interns), independent of frame borrow.
         let mut cached_frame: CachedFrame<'h> = self.new_cached_frame();
 
+        // Limits cannot change mid-run (`set_max_duration` needs `&mut` at the
+        // host boundary), so with none configured the whole checkpoint reduces
+        // to this one hoisted, well-predicted branch per instruction.
+        let check_limits = self.heap.tracker.has_memory_time_limit();
+
+        let mut countdown = CHECK_INTERVAL;
+
         loop {
-            // Check time limit and trigger GC if needed at each instruction.
-            // With no limits configured these reduce to a single branch each.
-            self.heap.check_time()?;
+            if check_limits && countdown.checked_sub(1).is_none() {
+                countdown = CHECK_INTERVAL;
+                // Full memory + time check, amortized to every Nth
+                // instruction; a timeout swallowed by a truncating caller
+                // re-detects here (elapsed time is monotonic) or at the
+                // `run_external` exit latch check.
+                self.heap.tracker.check_memory_time()?;
+            }
 
             if self.heap.should_gc() {
                 // Sync IP before GC for safety

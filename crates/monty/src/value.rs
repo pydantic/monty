@@ -105,19 +105,26 @@ pub(crate) enum ValueRead<'h, 'v> {
         /// to drive a user-defined `__next__`.
         owner: &'v Value,
         value: HeapReadOutput<'h>,
+        /// `py_next` calls made through this view, keying its amortized
+        /// time check.
+        steps: usize,
     },
 }
 
 impl<'h> ValueRead<'h, '_> {
     /// Advances this value without reacquiring its heap entry.
     ///
-    /// This is the timeout boundary for Rust-side loops over retained iterators.
-    /// Bytecode iteration dispatches directly after the VM's per-opcode check.
+    /// This is the timeout boundary for Rust-side loops over retained iterators
+    /// (amortized on the view's step count). Bytecode iteration dispatches
+    /// directly after the VM's per-opcode check.
     pub(crate) fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        vm.heap.check_time()?;
         match self {
             Self::Immediate(value) => Err(ExcType::type_error_not_iterator(&value.py_type_name(vm))),
-            Self::Heap { owner, value } => value.py_next(owner.ref_id(), vm),
+            Self::Heap { owner, value, steps } => {
+                vm.heap.tracker.check_time_every(*steps)?;
+                *steps += 1;
+                value.py_next(owner.ref_id(), vm)
+            }
         }
     }
 
@@ -1589,6 +1596,7 @@ impl Value {
             Self::Ref(id) => ValueRead::Heap {
                 owner: self,
                 value: vm.heap.read(*id),
+                steps: 0,
             },
             _ => ValueRead::Immediate(self),
         }

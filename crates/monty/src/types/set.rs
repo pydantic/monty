@@ -354,7 +354,7 @@ impl<'a, 'h> SetIter<'a, 'h> {
     pub(crate) fn next<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<&'i Value>> {
         // Drop the previously-yielded element (no-op when `current` is `Undefined`).
         mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_time_every(self.index)?;
         let current = self.storage.get(vm.heap);
         if current.entries.len() != self.expected_len {
             return Err(ExcType::runtime_error_set_changed_size());
