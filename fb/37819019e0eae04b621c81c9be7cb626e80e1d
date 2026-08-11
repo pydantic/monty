@@ -1,0 +1,24 @@
+crates/monty/src/bytecode/vm/mod.rs
+  s_e44ef515a1346b::t_0c5f70efad17a4 1008
+  s_e44ef515a1346b::t_3d92e8fde5d3dc 1009-1013
+crates/monty-bench/benches/main.rs
+  s_e44ef515a1346b::t_b8a4375f59c51d 69
+  s_e44ef515a1346b::t_0c5f70efad17a4 4
+  s_e44ef515a1346b::t_072657037c53c2 11,63-68,70-81,496,506
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "fb37819019e0eae04b621c81c9be7cb626e80e1d",
+  "prompts": {},
+  "sessions": {
+    "s_e44ef515a1346b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97080406-d12e-48e2-a2b7-22ff5b889408",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
