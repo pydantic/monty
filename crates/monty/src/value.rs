@@ -121,7 +121,7 @@ impl<'h> ValueRead<'h, '_> {
         match self {
             Self::Immediate(value) => Err(ExcType::type_error_not_iterator(&value.py_type_name(vm))),
             Self::Heap { owner, value, steps } => {
-                vm.heap.tracker.check_time_every(*steps)?;
+                vm.heap.tracker.check_memory_time_every(*steps)?;
                 *steps += 1;
                 value.py_next(owner.ref_id(), vm)
             }
