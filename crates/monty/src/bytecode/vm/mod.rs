@@ -1005,7 +1005,12 @@ impl<'h> VM<'h> {
     fn run(&mut self) -> Result<FrameExit, RunError> {
         /// How often (in instructions) the dispatch loop runs its periodic
         /// work: the full `check_memory_time` and the GC-scheduling probe.
-        const CHECK_INTERVAL: u8 = 10;
+        /// The checkpoint reads the clock when limits are armed, so this sets
+        /// the entire cost of limit enforcement — ~40% on tight loops at 10,
+        /// ~2% at u8::MAX (see the `_limits` benchmarks) — while detection
+        /// latency stays sub-µs. Native ops poll internally and the host-turn
+        /// epilogue re-checks, so only this dispatch cadence rides on it.
+        const CHECK_INTERVAL: u8 = u8::MAX;
 
         // Cache frame state locally to avoid repeated frames.last_mut() calls.
         // The Code reference has lifetime 'h (lives in Interns), independent of frame borrow.

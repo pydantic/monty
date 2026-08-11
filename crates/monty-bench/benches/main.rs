@@ -1,13 +1,14 @@
 // Use codspeed-criterion-compat when running on CodSpeed (CI), real criterion otherwise (for flamegraphs)
 #[cfg(not(codspeed))]
 use std::ffi::CString;
+use std::time::Duration;
 
 #[cfg(codspeed)]
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty::MontyRun;
-use monty_types::{CompileOptions, MontyObject};
+use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 // CPython benchmarks are only run locally, not on CodSpeed CI (requires Python + pyo3 setup)
@@ -57,6 +58,25 @@ fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i6
         let int_value: i64 = r.as_ref().try_into().unwrap();
         black_box(int_value);
     });
+}
+
+/// Runs a benchmark with production-shaped resource limits armed (generous
+/// budgets that never trip), measuring the amortized limit-checking path
+/// sandboxes actually run rather than the no-limits fast path.
+fn run_monty_limits(bench: &mut Bencher, code: &str, expected: i64) {
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default()
+        .max_duration(Duration::from_mins(10))
+        .max_memory(1 << 40);
+    let run = |limits: &ResourceLimits| {
+        let r = ex
+            .run(vec![], ResourceTracker::new(limits.clone()), PrintWriter::Stdout)
+            .unwrap();
+        let int_value: i64 = r.as_ref().try_into().unwrap();
+        int_value
+    };
+    assert_eq!(run(&limits), expected);
+    bench.iter(|| black_box(run(&limits)));
 }
 
 /// Runs a benchmark using CPython.
@@ -473,6 +493,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("add_two__cpython", |b| run_cpython(b, ADD_TWO, 3));
 
     c.bench_function("loop_mod_13__monty", |b| run_monty(b, LOOP_MOD_13, 77));
+    c.bench_function("loop_mod_13_limits__monty", |b| run_monty_limits(b, LOOP_MOD_13, 77));
     #[cfg(not(codspeed))]
     c.bench_function("loop_mod_13__cpython", |b| run_cpython(b, LOOP_MOD_13, 77));
 
@@ -482,6 +503,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("end_to_end__cpython", end_to_end_cpython);
 
     c.bench_function("kitchen_sink__monty", |b| run_monty(b, KITCHEN_SINK, 373));
+    c.bench_function("kitchen_sink_limits__monty", |b| run_monty_limits(b, KITCHEN_SINK, 373));
     #[cfg(not(codspeed))]
     c.bench_function("kitchen_sink__cpython", |b| run_cpython(b, KITCHEN_SINK, 373));
 
