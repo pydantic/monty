@@ -182,7 +182,7 @@ impl Bytes {
             let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
             let encoding = encoding.as_str(vm);
             let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
-            let encoded = codec.encode(s, errors, vm.heap.tracker())?;
+            let encoded = codec.encode(s, errors, &vm.heap.tracker)?;
             let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(encoded)));
             return Ok(Value::Ref(heap_id));
         }
@@ -204,7 +204,7 @@ impl Bytes {
                 // very large `n` would attempt the native allocation directly
                 // and abort the host on failure rather than raising MemoryError.
                 // Mirrors the guard already used by `bytes.ljust`/`zfill`/`*`.
-                check_repeat_size(size, 1, vm.heap.tracker())?;
+                check_repeat_size(size, 1, &vm.heap.tracker)?;
                 vec![0u8; size]
             }
             Some(Value::InternBytes(bytes_id)) => {
@@ -240,7 +240,7 @@ struct BytesInitArgs {
 /// Concatenates two byte strings into a tracked heap value.
 pub(crate) fn concat_bytes(lhs: &[u8], rhs: &[u8], heap: &Heap) -> Result<Value, ResourceError> {
     let result_len = lhs.len().saturating_add(rhs.len());
-    check_repeat_size(result_len, 1, heap.tracker())?;
+    check_repeat_size(result_len, 1, &heap.tracker)?;
     let mut result = Vec::with_capacity(result_len);
     result.extend_from_slice(lhs);
     result.extend_from_slice(rhs);
@@ -249,7 +249,7 @@ pub(crate) fn concat_bytes(lhs: &[u8], rhs: &[u8], heap: &Heap) -> Result<Value,
 
 /// Repeats bytes after validating the allocation against resource limits.
 pub(crate) fn repeat_bytes(value: &[u8], count: usize, heap: &Heap) -> Result<Value, ResourceError> {
-    check_repeat_size(value.len(), count, heap.tracker())?;
+    check_repeat_size(value.len(), count, &heap.tracker)?;
     Ok(Value::Ref(heap.allocate(HeapData::Bytes(value.repeat(count).into()))))
 }
 
@@ -1716,7 +1716,7 @@ fn bytes_replace<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h
 
     let bytes = bytes.get(vm.heap);
 
-    check_replace_size(bytes.len(), old.len(), new.len(), count, vm.heap.tracker())?;
+    check_replace_size(bytes.len(), old.len(), new.len(), count, &vm.heap.tracker)?;
 
     let result = if count < 0 {
         bytes_replace_all(bytes, &old, &new, vm.heap)?
@@ -1854,7 +1854,7 @@ fn bytes_center<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>
     let result = if width <= len {
         bytes.to_vec()
     } else {
-        check_repeat_size(width, 1, vm.heap.tracker())?;
+        check_repeat_size(width, 1, &vm.heap.tracker)?;
         let total_pad = width - len;
         let left_pad = total_pad / 2;
         let right_pad = total_pad - left_pad;
@@ -1884,7 +1884,7 @@ fn bytes_ljust<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
     let result = if width <= len {
         bytes.to_vec()
     } else {
-        check_repeat_size(width, 1, vm.heap.tracker())?;
+        check_repeat_size(width, 1, &vm.heap.tracker)?;
         let pad = width - len;
         let mut result = Vec::with_capacity(width);
         result.extend_from_slice(bytes);
@@ -1909,7 +1909,7 @@ fn bytes_rjust<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
     let result = if width <= len {
         bytes.to_vec()
     } else {
-        check_repeat_size(width, 1, vm.heap.tracker())?;
+        check_repeat_size(width, 1, &vm.heap.tracker)?;
         let pad = width - len;
         let mut result = Vec::with_capacity(width);
         for _ in 0..pad {
@@ -1975,7 +1975,7 @@ fn bytes_zfill<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
     let result = if width <= len {
         bytes.to_vec()
     } else {
-        check_repeat_size(width, 1, vm.heap.tracker())?;
+        check_repeat_size(width, 1, &vm.heap.tracker)?;
         let pad = width - len;
         let mut result = Vec::with_capacity(width);
 

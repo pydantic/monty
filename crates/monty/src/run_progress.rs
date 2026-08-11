@@ -145,13 +145,13 @@ impl FunctionCall {
     /// This allows modifying resource limits between execution phases,
     /// e.g. setting a time limit before resuming after an external function call.
     pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
-        self.snapshot.heap.tracker_mut()
+        &mut self.snapshot.heap.tracker
     }
 
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        self.snapshot.heap.tracker()
+        &self.snapshot.heap.tracker
     }
 
     /// Resumes execution with the return value or exception from the external function.
@@ -251,7 +251,7 @@ impl OsCall {
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        self.snapshot.heap.tracker()
+        &self.snapshot.heap.tracker
     }
 }
 
@@ -294,7 +294,7 @@ impl NameLookup {
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        self.snapshot.heap.tracker()
+        &self.snapshot.heap.tracker
     }
 
     /// Resumes execution after name resolution.
@@ -413,7 +413,7 @@ impl ResolveFutures {
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        self.heap.tracker()
+        &self.heap.tracker
     }
 
     /// Forces a GC cycle against the exact root walk used by the live VM.

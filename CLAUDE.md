@@ -308,13 +308,13 @@ Any code that builds a `String` whose final size is not already bounded by an ex
 
 ```rust
 // Bounded size known up front (padding to a given width):
-let mut builder = StringBuilder::with_capacity(width * fillchar.len_utf8(), vm.heap.tracker())?;
+let mut builder = StringBuilder::with_capacity(width * fillchar.len_utf8(), &vm.heap.tracker)?;
 builder.push_str(s)?;
 for _ in 0..pad { builder.push(fillchar)?; }
 builder.finish(vm.heap)
 
 // Size not bounded up front (e.g. attacker-controlled multiplier):
-let mut builder = StringBuilder::new(vm.heap.tracker());
+let mut builder = StringBuilder::new(&vm.heap.tracker);
 for c in input.chars() { builder.push(c)?; }
 builder.finish(vm.heap)
 ```
@@ -336,7 +336,7 @@ sprinkle them everywhere — every check is code noise and hot-path cost.
 Add a check only where ordinary code commonly allocates a multi-MiB burst
 inside a single builtin call (i.e. before the next instruction checkpoint):
 
-- Known-size bulk allocation: one up-front `tracker().check_allocation(n * VALUE_SIZE)`
+- Known-size bulk allocation: one up-front `tracker.check_allocation(n * VALUE_SIZE)`
   (container clone/copy, e.g. `clone_all_items`, `list_copy`) or
   `check_repeat_size`-style estimate (`resource_checks.rs`).
 - Iterator collection: `collect_python_iterator` / `checked_preallocation_hint`

@@ -229,7 +229,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// `MemoryError` instead of bursting past the allocator's hard limit.
     pub(crate) fn cloned_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
         let len = self.get(vm.heap).len();
-        vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         Ok((0..len).map(|i| self.clone_item(i, vm)).collect())
     }
 
@@ -428,7 +428,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         if count == 0 || len == 0 {
             return Ok(Some(vm.heap.get_empty_tuple()));
         }
-        check_repeat_size(len.saturating_mul(mem::size_of::<Value>()), count, vm.heap.tracker())?;
+        check_repeat_size(len.saturating_mul(mem::size_of::<Value>()), count, &vm.heap.tracker)?;
         let mut result: TupleVec = SmallVec::with_capacity(len * count);
         for rep in 0..count {
             for i in 0..len {
@@ -1046,7 +1046,7 @@ fn cloned_tuple_like_items(value: &Value, vm: &VM<'_>) -> RunResult<Option<Vec<V
         HeapData::NamedTuple(nt) => nt.as_vec().len(),
         _ => return Ok(None),
     };
-    vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
+    vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
     let mut items = Vec::with_capacity(len);
     for i in 0..len {
         let item = match vm.heap.get(id) {

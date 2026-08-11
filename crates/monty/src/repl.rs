@@ -95,7 +95,7 @@ impl MontyRepl {
     /// This is primarily intended for host integrations that need to attach
     /// per-execution state, such as cancellation markers, to an existing REPL.
     pub fn tracker(&self) -> &ResourceTracker {
-        self.heap.tracker()
+        &self.heap.tracker
     }
 
     /// Returns mutable access to the resource tracker for the next snippet.
@@ -103,7 +103,7 @@ impl MontyRepl {
     /// REPL hosts use this to install ephemeral execution controls, such as
     /// async cancellation flags, before calling `feed_start()`.
     pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
-        self.heap.tracker_mut()
+        &mut self.heap.tracker
     }
 
     /// Number of live heap entries (excluding the empty-tuple singleton) —
@@ -323,9 +323,9 @@ impl MontyRepl {
                 // advances (and accumulates) during the call. This cannot go
                 // through `VM::run_external` because `evaluate_function` must
                 // push and run a single function frame itself.
-                vm.heap.tracker().on_execution_start();
+                vm.heap.tracker.on_execution_start();
                 let eval_result = vm.evaluate_function("MontyRepl::call_function", callable, arg_values);
-                vm.heap.tracker().on_execution_stop();
+                vm.heap.tracker.on_execution_stop();
                 // Same host-boundary epilogue as `run_external`: a limit
                 // overshoot the call swallowed must fail the call, not
                 // return a truncated value.

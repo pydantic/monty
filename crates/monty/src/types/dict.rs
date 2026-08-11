@@ -1058,7 +1058,7 @@ impl<'h> HeapRead<'h, Dict> {
         // snapshot — preflight them too so an over-budget Counter raises a
         // graceful `MemoryError` instead of hitting the allocator hard limit.
         vm.heap
-            .tracker()
+            .tracker
             .check_allocation(pairs.len().saturating_mul(VALUE_SIZE + mem::size_of::<usize>()))?;
         let counts = pairs.iter().map(|(_, value)| value.clone_with_heap(vm.heap)).collect();
         let order = counter_order(counts, vm)?;
@@ -1089,7 +1089,7 @@ impl<'h> HeapRead<'h, Dict> {
     /// `MemoryError` instead of bursting past the allocator's hard limit.
     fn clone_all_pairs(&self, vm: &mut VM<'h>) -> RunResult<Vec<(Value, Value)>> {
         let len = self.get(vm.heap).len();
-        vm.heap.tracker().check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
+        vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
         let mut pairs = Vec::with_capacity(len);
         // No user code runs during the snapshot, so `len` stays current and
         // the `expect`s cannot fire.

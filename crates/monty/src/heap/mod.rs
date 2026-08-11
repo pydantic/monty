@@ -942,16 +942,6 @@ impl Heap {
         this
     }
 
-    /// Returns a reference to the resource tracker.
-    pub fn tracker(&self) -> &ResourceTracker {
-        &self.tracker
-    }
-
-    /// Returns a mutable reference to the resource tracker.
-    pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
-        &mut self.tracker
-    }
-
     /// Number of entries in the heap (including freed slots).
     pub fn size(&self) -> usize {
         self.entries.len()

@@ -525,7 +525,7 @@ impl<'h> HeapRead<'h, SetStorage> {
         // Format a refcount-bumped snapshot of the elements: CPython's set repr
         // copies to a list first, so a user `__repr__` mutating the set
         // mid-format changes nothing (and can't invalidate indices here).
-        vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let mut items = Vec::with_capacity(len);
         for i in 0..len {
             // No user code runs during the snapshot, so `len` is still current.
@@ -678,7 +678,7 @@ impl Set {
         defer_drop!(iterator, vm);
         let mut iterator = iterator.read(vm);
         let hint = iterator.iter_size_hint(vm);
-        let capacity = checked_preallocation_hint(hint, mem::size_of::<SetEntry>(), vm.heap.tracker())?;
+        let capacity = checked_preallocation_hint(hint, mem::size_of::<SetEntry>(), &vm.heap.tracker)?;
         let mut set = Self::with_capacity(capacity);
         while let Some(item) = iterator.py_next(vm)? {
             set.add(item, vm)?;

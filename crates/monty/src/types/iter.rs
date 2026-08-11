@@ -85,7 +85,7 @@ impl<'h, I: CollectIter<'h>> Iterator for HeapedIterator<'_, 'h, I> {
             Ok(Some(value)) => {
                 self.yielded += 1;
                 let estimated = self.yielded.saturating_mul(VALUE_SIZE);
-                match check_estimated_size(estimated, self.vm.heap.tracker()) {
+                match check_estimated_size(estimated, &self.vm.heap.tracker) {
                     Ok(()) => Some(value),
                     Err(error) => {
                         *self.error = Some(error.into());
@@ -144,7 +144,7 @@ where
 {
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
-    let preallocation_hint = checked_preallocation_hint(iterator.iter_size_hint(vm), VALUE_SIZE, vm.heap.tracker())?;
+    let preallocation_hint = checked_preallocation_hint(iterator.iter_size_hint(vm), VALUE_SIZE, &vm.heap.tracker)?;
     let mut values_guard = DropGuard::new(T::default(), vm);
     let (values, vm) = values_guard.as_parts_mut();
     let mut error = None;

@@ -193,7 +193,7 @@ impl LongInt {
     /// Left-shifts an immediate integer, promoting only when the result requires it.
     pub(crate) fn left_shift_i64(value: i64, shift: u64, vm: &mut VM<'_>) -> RunResult<Value> {
         let bits = u64::from(i64::BITS - value.unsigned_abs().leading_zeros());
-        check_lshift_size(bits, shift, vm.heap.tracker())?;
+        check_lshift_size(bits, shift, &vm.heap.tracker)?;
         if value == 0 {
             Ok(Value::Int(0))
         } else if let Ok(shift) = u32::try_from(shift)
@@ -500,7 +500,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         let lhs = self.get(vm.heap);
         let result = match other {
             Value::Int(rhs) => {
-                check_mult_size(lhs.bits(), i64_bits(*rhs), vm.heap.tracker())?;
+                check_mult_size(lhs.bits(), i64_bits(*rhs), &vm.heap.tracker)?;
                 Some(LongInt::new(lhs.inner() * rhs).into_value(vm.heap))
             }
             Value::Bool(rhs) => Some(if *rhs {
@@ -510,7 +510,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
             }),
             Value::Float(rhs) => Some(Value::Float(long_int_to_f64(lhs) * rhs)),
             Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => {
-                check_mult_size(lhs.bits(), rhs.bits(), vm.heap.tracker())?;
+                check_mult_size(lhs.bits(), rhs.bits(), &vm.heap.tracker)?;
                 Some(LongInt::new(lhs.inner() * rhs.inner()).into_value(vm.heap))
             }
             _ => None,
@@ -560,7 +560,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         let result = match other {
             Value::Int(0) | Value::Bool(false) => return Err(ExcType::zero_division().into()),
             Value::Int(rhs) => {
-                check_div_size(lhs.bits(), vm.heap.tracker())?;
+                check_div_size(lhs.bits(), &vm.heap.tracker)?;
                 lhs.inner().div_floor(&BigInt::from(*rhs))
             }
             Value::Bool(true) => lhs.inner().clone(),
@@ -568,7 +568,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
                 if rhs.is_zero() {
                     return Err(ExcType::zero_division().into());
                 }
-                check_div_size(lhs.bits(), vm.heap.tracker())?;
+                check_div_size(lhs.bits(), &vm.heap.tracker)?;
                 lhs.inner().div_floor(rhs.inner())
             }
             _ => return Ok(None),
@@ -586,7 +586,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
             Value::Bool(lhs) => i64::from(*lhs),
             _ => return Ok(None),
         };
-        check_div_size(i64_bits(lhs), vm.heap.tracker())?;
+        check_div_size(i64_bits(lhs), &vm.heap.tracker)?;
         let result = BigInt::from(lhs).div_floor(rhs.inner());
         Ok(Some(LongInt::new(result).into_value(vm.heap)))
     }
@@ -640,7 +640,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
             return Ok(None);
         };
         let value = self.get(vm.heap);
-        check_lshift_size(value.bits(), shift, vm.heap.tracker())?;
+        check_lshift_size(value.bits(), shift, &vm.heap.tracker)?;
         Ok(Some(LongInt::new(value.inner() << shift).into_value(vm.heap)))
     }
 
@@ -762,7 +762,7 @@ fn long_int_pow_value(base: &BigInt, exponent: &BigInt, heap: &Heap) -> RunResul
     } else if *base == BigInt::from(-1) {
         Ok(Some(Value::Int(if (exponent % 2i32).is_zero() { 1 } else { -1 })))
     } else if let Some(exponent) = exponent.to_u64() {
-        check_pow_size(base.bits(), exponent, heap.tracker())?;
+        check_pow_size(base.bits(), exponent, &heap.tracker)?;
         Ok(Some(LongInt::new(bigint_pow(base.clone(), exponent)).into_value(heap)))
     } else {
         Err(ExcType::overflow_exponent_too_large())

@@ -34,7 +34,7 @@ pub fn builtin_divmod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 Ok(allocate_tuple(smallvec![Value::Int(quot), Value::Int(rem)], vm.heap))
             } else {
                 // Overflow - promote to BigInt
-                check_div_size(64, vm.heap.tracker())?;
+                check_div_size(64, &vm.heap.tracker)?;
                 let (quot, rem) = bigint_floor_divmod(&BigInt::from(*x), &BigInt::from(*y));
                 let quot_val = LongInt::new(quot).into_value(vm.heap);
                 let rem_val = LongInt::new(rem).into_value(vm.heap);

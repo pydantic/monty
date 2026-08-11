@@ -936,9 +936,9 @@ impl<'h> VM<'h> {
     /// (task switches, `evaluate_function`) uses the raw private [`Self::run`]
     /// instead, whose time is already inside the enclosing window.
     pub(crate) fn run_external(&mut self) -> Result<FrameExit, RunError> {
-        self.heap.tracker().on_execution_start();
+        self.heap.tracker.on_execution_start();
         let result = self.run();
-        self.heap.tracker().on_execution_stop();
+        self.heap.tracker.on_execution_stop();
         self.finish_host_turn(result)
     }
 
@@ -959,9 +959,9 @@ impl<'h> VM<'h> {
         // collection is charged to the execution clock like dispatch-loop GC,
         // so the limit check sees post-GC elapsed time as well as memory.
         if self.heap.should_gc() {
-            self.heap.tracker().on_execution_start();
+            self.heap.tracker.on_execution_start();
             self.run_gc();
-            self.heap.tracker().on_execution_stop();
+            self.heap.tracker.on_execution_stop();
         }
         // Checked for erroring turns too: session state survives Python
         // exceptions, so allocate-then-raise feeds must not evade the limits.

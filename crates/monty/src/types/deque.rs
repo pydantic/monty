@@ -273,7 +273,7 @@ impl<'h> HeapRead<'h, Deque> {
     /// Clones every item, incrementing refcounts — used by `copy`, `+` and `*`.
     fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
         let len = self.get(vm.heap).len();
-        vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let mut out = Vec::with_capacity(len);
         for i in 0..len {
             let item = self.get(vm.heap).items[i].clone_with_heap(vm.heap);
@@ -999,7 +999,7 @@ pub(crate) fn deque_extend(deque_id: HeapId, iterable: Value, end: ExtendEnd, vm
         // the estimate at what it can actually keep.
         let hint = iter.iter_size_hint(vm);
         let retained = deque_maxlen(deque_id, vm).map_or(hint, |maxlen| hint.min(maxlen));
-        check_estimated_size(retained.saturating_mul(VALUE_SIZE), vm.heap.tracker())?;
+        check_estimated_size(retained.saturating_mul(VALUE_SIZE), &vm.heap.tracker)?;
         while let Some(item) = iter.py_next(vm)? {
             deque_push(deque_id, item, end, vm);
         }
@@ -1056,7 +1056,7 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
         // `Value` slots against the tracker and poll the time limit while building
         // — else the suffix could allocate/spin before the final `allocate` checks.
         let kept = len.saturating_mul(count).min(max);
-        check_repeat_size(mem::size_of::<Value>(), kept, vm.heap.tracker())?;
+        check_repeat_size(mem::size_of::<Value>(), kept, &vm.heap.tracker)?;
         // `Vec::new()` (not `with_capacity(kept)`): the check above is the real
         // guard, and reserving an attacker-sized capacity would itself abort.
         // The guard releases the clones built so far if the time poll trips.
@@ -1071,7 +1071,7 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
         }
         result.into_inner()
     } else {
-        check_repeat_size(len.saturating_mul(mem::size_of::<Value>()), count, vm.heap.tracker())?;
+        check_repeat_size(len.saturating_mul(mem::size_of::<Value>()), count, &vm.heap.tracker)?;
         let mut result = DropGuard::new(Vec::with_capacity(len * count), vm);
         for rep in 0..count {
             let (items, vm) = result.as_parts_mut();

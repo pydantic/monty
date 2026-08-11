@@ -633,7 +633,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
     // check, OOM-ing or aborting the host. Reject an over-budget width here,
     // up front, using the same guard sequence repeats and `str.ljust`/`zfill`
     // already use. The check is free below `LARGE_RESULT_THRESHOLD`.
-    check_repeat_size(spec.fill.len_utf8(), spec.width, vm.heap.tracker())?;
+    check_repeat_size(spec.fill.len_utf8(), spec.width, &vm.heap.tracker)?;
 
     // `spec.precision` on the float formats is rendered as that many decimal
     // digits. `fmt_float_fixed` / `fmt_float_exp` synthesise the digits beyond
@@ -672,7 +672,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
             // three emitted digits, so the native string reaches ~4/3 × precision
             // before `allocate_string` accounts for it; budget the separators too.
             let separators = if spec.frac_grouping.is_some() { precision / 3 } else { 0 };
-            check_repeat_size(precision.saturating_add(separators), 1, vm.heap.tracker())?;
+            check_repeat_size(precision.saturating_add(separators), 1, &vm.heap.tracker)?;
         }
     }
 
@@ -774,7 +774,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
     if let Value::Ref(id) = value
         && let HeapData::LongInt(li) = vm.heap.get(*id)
     {
-        return format_long_int(li, &value_type.name(vm.heap, vm.interns), spec, vm.heap.tracker());
+        return format_long_int(li, &value_type.name(vm.heap, vm.interns), spec, &vm.heap.tracker);
     }
 
     match (value, spec.type_char) {

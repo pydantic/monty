@@ -177,7 +177,7 @@ impl<'h> HeapRead<'h, Tuple> {
     /// `MemoryError` instead of bursting past the allocator's hard limit.
     fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<TupleVec> {
         let len = self.get(vm.heap).items.len();
-        vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let mut result = TupleVec::with_capacity(len);
         for i in 0..len {
             result.push(self.clone_item(i, vm));
@@ -450,7 +450,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         check_repeat_size(
             value.as_slice().len().saturating_mul(mem::size_of::<Value>()),
             count,
-            vm.heap.tracker(),
+            &vm.heap.tracker,
         )?;
         let mut result = SmallVec::with_capacity(value.as_slice().len() * count);
         for rep in 0..count {

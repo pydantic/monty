@@ -95,7 +95,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
     /// and for `isdisjoint(...)`.
     pub(crate) fn to_set(&self, vm: &mut VM<'h>) -> RunResult<Set> {
         let dict = self.dict(vm);
-        let capacity = Set::preallocation_capacity(dict.get(vm.heap).len(), vm.heap.tracker())?;
+        let capacity = Set::preallocation_capacity(dict.get(vm.heap).len(), &vm.heap.tracker)?;
         let iter = dict.iter(vm)?;
         defer_drop_mut!(iter, vm);
         let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
@@ -111,7 +111,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
     fn intersection(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let other = collect_iterable_to_set(other.clone_with_heap(vm), vm)?;
         defer_drop!(other, vm);
-        let capacity = Set::preallocation_capacity(other.len(), vm.heap.tracker())?;
+        let capacity = Set::preallocation_capacity(other.len(), &vm.heap.tracker)?;
         let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
         let (result, vm) = result_guard.as_parts_mut();
         let dict = self.dict(vm);
@@ -328,7 +328,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
     /// membership checks observe standard Python tuple semantics.
     pub(crate) fn to_set(&self, vm: &mut VM<'h>) -> RunResult<Set> {
         let dict = self.dict(vm);
-        let capacity = Set::preallocation_capacity(dict.get(vm.heap).len(), vm.heap.tracker())?;
+        let capacity = Set::preallocation_capacity(dict.get(vm.heap).len(), &vm.heap.tracker)?;
         let iter = dict.iter(vm)?;
         defer_drop_mut!(iter, vm);
         let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
@@ -371,7 +371,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
 
     /// Intersects without hashing item tuples whose values are unhashable.
     fn intersect_unhashable_items(&self, other: &Set, vm: &mut VM<'h>) -> RunResult<Set> {
-        let capacity = Set::preallocation_capacity(other.len(), vm.heap.tracker())?;
+        let capacity = Set::preallocation_capacity(other.len(), &vm.heap.tracker)?;
         let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
         let (result, vm) = result_guard.as_parts_mut();
         for candidate in other.iter() {
@@ -781,7 +781,7 @@ fn dict_view_binary_op_value(
 
 /// Computes dictionary-view intersection.
 fn apply_dict_view_and(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> {
-    let capacity = Set::preallocation_capacity(lhs.len().min(rhs.len()), vm.heap.tracker())?;
+    let capacity = Set::preallocation_capacity(lhs.len().min(rhs.len()), &vm.heap.tracker)?;
     let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
     let (result, vm) = result_guard.as_parts_mut();
     let (smaller, larger) = if lhs.len() <= rhs.len() { (lhs, rhs) } else { (rhs, lhs) };
@@ -795,7 +795,7 @@ fn apply_dict_view_and(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> 
 
 /// Computes dictionary-view union.
 fn apply_dict_view_or(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> {
-    let capacity = Set::preallocation_capacity(lhs.len().saturating_add(rhs.len()), vm.heap.tracker())?;
+    let capacity = Set::preallocation_capacity(lhs.len().saturating_add(rhs.len()), &vm.heap.tracker)?;
     let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
     let (result, vm) = result_guard.as_parts_mut();
     for value in lhs.iter().chain(rhs.iter()) {
@@ -806,7 +806,7 @@ fn apply_dict_view_or(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> {
 
 /// Computes dictionary-view symmetric difference.
 fn apply_dict_view_xor(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> {
-    let capacity = Set::preallocation_capacity(lhs.len().saturating_add(rhs.len()), vm.heap.tracker())?;
+    let capacity = Set::preallocation_capacity(lhs.len().saturating_add(rhs.len()), &vm.heap.tracker)?;
     let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
     let (result, vm) = result_guard.as_parts_mut();
     for value in lhs.iter() {
@@ -824,7 +824,7 @@ fn apply_dict_view_xor(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> 
 
 /// Computes dictionary-view difference.
 fn apply_dict_view_sub(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> {
-    let capacity = Set::preallocation_capacity(lhs.len(), vm.heap.tracker())?;
+    let capacity = Set::preallocation_capacity(lhs.len(), &vm.heap.tracker)?;
     let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
     let (result, vm) = result_guard.as_parts_mut();
     for value in lhs.iter() {
@@ -845,7 +845,7 @@ pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_>) -> Result<S
     let iter = value.py_iter(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
-    let cap = checked_preallocation_hint(iter.iter_size_hint(vm), mem::size_of::<Value>() * 2, vm.heap.tracker())?;
+    let cap = checked_preallocation_hint(iter.iter_size_hint(vm), mem::size_of::<Value>() * 2, &vm.heap.tracker)?;
     let mut set_guard = DropGuard::new(Set::with_capacity(cap), vm);
     let (set, vm) = set_guard.as_parts_mut();
     while let Some(item) = iter.py_next(vm)? {

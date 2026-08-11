@@ -1002,7 +1002,7 @@ impl<'h> PyTrait<'h> for Value {
                             } else if let Some(result) = i128::from(*base).checked_pow(exp_u32) {
                                 Ok(Some(wide_i128_into_value(result, vm.heap)))
                             } else {
-                                check_pow_size(i64_bits(*base), u64::from(exp_u32), vm.heap.tracker())?;
+                                check_pow_size(i64_bits(*base), u64::from(exp_u32), &vm.heap.tracker)?;
                                 let bi = BigInt::from(*base).pow(exp_u32);
                                 Ok(Some(LongInt::new(bi).into_value(vm.heap)))
                             }
@@ -1013,7 +1013,7 @@ impl<'h> PyTrait<'h> for Value {
                             #[expect(clippy::cast_sign_loss)]
                             let exp_u64 = *exp as u64;
                             // Check size before computing to prevent DoS
-                            check_pow_size(i64_bits(*base), exp_u64, vm.heap.tracker())?;
+                            check_pow_size(i64_bits(*base), exp_u64, &vm.heap.tracker)?;
                             let bi = bigint_pow(BigInt::from(*base), exp_u64);
                             Ok(Some(LongInt::new(bi).into_value(vm.heap)))
                         }

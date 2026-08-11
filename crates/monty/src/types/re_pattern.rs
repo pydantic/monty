@@ -298,7 +298,7 @@ impl RePattern {
             caps.expand(rust_repl.as_ref(), &mut result);
             last_end = m.end();
             // Check running size: current result + remaining unprocessed text.
-            check_estimated_size(result.len() + (text.len() - last_end), heap.tracker())?;
+            check_estimated_size(result.len() + (text.len() - last_end), &heap.tracker)?;
         }
 
         result.push_str(&text[last_end..]);
