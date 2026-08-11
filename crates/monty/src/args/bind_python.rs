@@ -107,7 +107,7 @@ pub(crate) struct Signature {
     bind_mode: OnceCell<BindMode>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BindMode {
     /// If this is a simple signature (no defaults, no *args/**kwargs).
     ///
