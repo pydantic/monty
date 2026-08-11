@@ -1,0 +1,63 @@
+Makefile
+  s_d55e965870ba86::t_9da7232e93e90d 81
+  s_d55e965870ba86::t_b57a2279e4b703 75
+.github/workflows/ci.yml
+  s_d55e965870ba86::t_a2c4d6154110d7 51,54-56,58-64
+  s_d55e965870ba86::t_a8d37033a3db9e 52-53,57
+  s_d55e965870ba86::t_61d0a69aa8bea6 119-121
+crates/monty-server/src/index.rs
+  s_d55e965870ba86::t_ccaab59be7e1b8 193-195
+  s_d55e965870ba86::t_af1f652f3d9ce8 196-207
+  s_d55e965870ba86::t_42d53614ee52c5 142,147
+  s_d55e965870ba86::t_7974389363dd38 10-13,23
+  s_d55e965870ba86::t_f82bc6b301336c 148,178
+  s_d55e965870ba86::t_f3a504bad1aa4c 61-67,70-80,82,88-91,94-95
+  s_beca3145fe690d::t_a9641c31ed26dc 30
+  s_d55e965870ba86::t_4f22f7b906d81a 174-177,179-192,208-209
+  s_d55e965870ba86::t_1b2264e85026c9 122
+  s_d55e965870ba86::t_be6183756757c6 81,83-87,92-93,96-112
+crates/monty-server-tests/python/test_monty_server.py
+  s_d55e965870ba86::t_ab7120e64aa82f 99-103,109,116
+  s_d55e965870ba86::t_9e4cf6fc952289 9-14
+  s_d55e965870ba86::t_b0095a8ae9ad99 31
+  s_d55e965870ba86::t_5df2c071d1fa42 111-115
+CLAUDE.md
+  s_d55e965870ba86::t_c006e82ecb552d 20
+  s_d55e965870ba86::t_a425084fec3248 39-43
+  s_d55e965870ba86::t_62a50ebe4b8106 55-56
+crates/monty-server/tests/server_test.rs
+  s_d55e965870ba86::t_a4fa166e63b561 538-541
+  s_d55e965870ba86::t_6585fc1a42c5fd 431
+  s_d55e965870ba86::t_3c8c2f375402ee 447-448,456-507
+  s_d55e965870ba86::t_eb95a92618caaa 549-554
+crates/monty-server/CLAUDE.md
+  s_d55e965870ba86::t_c10af6913ea8ad 173-174
+crates/monty-server/src/lib.rs
+  s_d55e965870ba86::t_35f3bf624aadde 646-648
+pyproject.toml
+  s_d55e965870ba86::t_c71b043fc4a66d 10-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "172bf004450ec3f8569e7a54e68b6a078e083d74",
+  "prompts": {},
+  "sessions": {
+    "s_beca3145fe690d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "40ff9b1a-3610-4349-a98d-74d8dcb23d3d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_d55e965870ba86": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1265b403-bac4-4251-91f5-715620f3628f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
