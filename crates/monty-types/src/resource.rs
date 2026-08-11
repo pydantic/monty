@@ -320,12 +320,14 @@ impl ResourceTracker {
     pub const LOOP_CHECK_INTERVAL: usize = 64;
 
     /// Amortized per-item time check for Rust-side loops: a full clock read
-    /// on every [`LOOP_CHECK_INTERVAL`](Self::LOOP_CHECK_INTERVAL)-th call,
+    /// once per [`LOOP_CHECK_INTERVAL`](Self::LOOP_CHECK_INTERVAL) calls,
     /// free otherwise. Key `i` on the loop's index or a monotonically
-    /// increasing counter.
+    /// increasing counter. Fires at the *end* of each block (`i % N == N-1`)
+    /// so loops shorter than the interval pay no clock read at all — the VM
+    /// dispatch checkpoint covers cadence between short calls.
     #[inline]
     pub fn check_time_every(&self, i: usize) -> Result<(), ResourceError> {
-        if i.is_multiple_of(Self::LOOP_CHECK_INTERVAL) {
+        if i % Self::LOOP_CHECK_INTERVAL == Self::LOOP_CHECK_INTERVAL - 1 {
             self.check_time()
         } else {
             Ok(())
@@ -338,7 +340,7 @@ impl ResourceTracker {
     /// runaway growth.
     #[inline]
     pub fn check_memory_time_every(&self, i: usize) -> Result<(), ResourceError> {
-        if i.is_multiple_of(Self::LOOP_CHECK_INTERVAL) {
+        if i % Self::LOOP_CHECK_INTERVAL == Self::LOOP_CHECK_INTERVAL - 1 {
             self.check_memory_time()
         } else {
             Ok(())

@@ -964,6 +964,23 @@ impl<'h> VM<'h> {
         }
     }
 
+    /// Periodic dispatch-loop work, outlined (`#[inline(never)]`) so the hot
+    /// loop stays small: the amortized memory + time check — where a timeout
+    /// swallowed by a truncating caller re-detects (elapsed time is
+    /// monotonic), backstopped by the `run_external` exit check — and the
+    /// GC-scheduling probe, with the frame IP synced before a collection.
+    #[inline(never)]
+    fn dispatch_checkpoint(&mut self, check_limits: bool, ip: usize) -> Result<(), RunError> {
+        if check_limits {
+            self.heap.tracker.check_memory_time()?;
+        }
+        if self.heap.should_gc() {
+            self.current_frame_mut().ip = ip;
+            self.run_gc();
+        }
+        Ok(())
+    }
+
     /// Main execution loop.
     ///
     /// Fetches opcodes from the current frame's bytecode and executes them.
@@ -979,7 +996,8 @@ impl<'h> VM<'h> {
     /// `frames.last_mut().expect()` calls during operand fetching. The cache
     /// is reloaded after any operation that modifies the frame stack.
     fn run(&mut self) -> Result<FrameExit, RunError> {
-        /// How often the VM's dispatch loop runs a full `check_memory_time`
+        /// How often (in instructions) the dispatch loop runs its periodic
+        /// work: the full `check_memory_time` and the GC-scheduling probe.
         const CHECK_INTERVAL: u8 = 10;
 
         // Cache frame state locally to avoid repeated frames.last_mut() calls.
@@ -994,23 +1012,16 @@ impl<'h> VM<'h> {
         let mut countdown = CHECK_INTERVAL;
 
         loop {
-            if check_limits {
-                if let Some(c) = countdown.checked_sub(1) {
-                    countdown = c;
-                } else {
-                    countdown = CHECK_INTERVAL;
-                    // Full memory + time check, amortized to every Nth
-                    // instruction; a timeout swallowed by a truncating caller
-                    // re-detects here (elapsed time is monotonic) or at the
-                    // `run_external` exit check.
-                    self.heap.tracker.check_memory_time()?;
-                }
-            }
-
-            if self.heap.should_gc() {
-                // Sync IP before GC for safety
-                self.current_frame_mut().ip = cached_frame.ip;
-                self.run_gc();
+            // One decrement-and-branch per instruction; the periodic work
+            // runs every `CHECK_INTERVAL`-th, outlined to keep the hot loop
+            // small. GC triggering is allocation-count-based (intervals in
+            // the hundreds), so probing it a few instructions late is
+            // immaterial.
+            if let Some(c) = countdown.checked_sub(1) {
+                countdown = c;
+            } else {
+                countdown = CHECK_INTERVAL;
+                self.dispatch_checkpoint(check_limits, cached_frame.ip)?;
             }
 
             // Track instruction IP for exception table lookup
