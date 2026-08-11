@@ -365,10 +365,11 @@ result
 
 // === Timeout enforcement in builtin iteration loops ===
 // These tests verify that `max_duration_secs` is enforced inside Rust-side loops
-// within builtin functions. Previously, builtins like sum(), sorted(), min(), max()
-// ran Rust loops entirely within a single bytecode instruction, bypassing the VM's
-// per-instruction timeout check. The fix adds `heap.check_time()` calls inside
-// Python iterator advancement and other non-iterator loops.
+// within builtin functions. Builtins like sum(), sorted(), min(), max() run Rust
+// loops entirely within a single bytecode instruction, so they would otherwise
+// bypass the VM's dispatch checkpoint entirely. Python iterator advancement and
+// the other non-iterator loops therefore poll the tracker themselves, amortized
+// via `check_time_every` / `check_memory_time_every`.
 
 /// Helper: runs code with a short time limit and asserts it produces a TimeoutError promptly.
 fn assert_timeout_in_builtin(code: &str, label: &str) {
@@ -394,7 +395,7 @@ fn assert_timeout_in_builtin(code: &str, label: &str) {
 
 /// Test that `sum(range(huge))` respects the time limit.
 ///
-/// `sum()` iterates via `for_next()` which now calls `heap.check_time()`.
+/// `sum()` iterates via `for_next()`, which polls the time limit every 64th step.
 #[test]
 fn timeout_in_sum_builtin() {
     assert_timeout_in_builtin("sum(range(10**18))", "sum(range(10**18))");
@@ -596,8 +597,8 @@ sorted(x)
 
 /// Test that `[1] * 10_000_000` (list repetition) respects the time limit.
 ///
-/// The sequence-repetition copy loop in `py_mult` now calls `heap.check_time()`
-/// on each repetition to prevent large sequence multiplications from bypassing timeout.
+/// The sequence-repetition copy loop in `py_mult` polls the time limit every
+/// 64th repetition, so a large multiplication cannot bypass the timeout.
 #[test]
 fn timeout_in_list_repetition() {
     assert_timeout_in_builtin("[1, 2, 3] * 10_000_000", "list repetition");
@@ -643,7 +644,7 @@ a == b
 /// Test that `str.splitlines()` on a large string respects the time limit.
 ///
 /// `str_splitlines()` scans the entire string for line endings in a while loop
-/// that now calls `heap.check_time()` on each iteration.
+/// that polls the limits every 64th line.
 #[test]
 fn timeout_in_str_splitlines() {
     let code = r"
@@ -668,8 +669,8 @@ s.splitlines()
 // === Timeout truncation in repr ===
 // These tests verify that `repr()` on large containers respects the time limit
 // and terminates promptly instead of hanging indefinitely. The repr methods
-// (`repr_sequence_fmt`, `Dict::py_repr_fmt`, `SetInner::repr_fmt`) call
-// `heap.check_time()` on each iteration and write `...[timeout]` when the
+// (`repr_sequence_fmt`, `Dict::py_repr_fmt`, `SetInner::repr_fmt`) poll the
+// limits every 64th item via `repr_check_time` and write `...[timeout]` when the
 // time limit is exceeded, returning normally instead of propagating an error.
 //
 // Each test uses the external function "interrupt" pattern: the large object is
@@ -721,6 +722,34 @@ fn call_function_enforces_max_duration() {
         .call_function("spin", vec![], PrintWriter::Stdout)
         .expect_err("infinite loop must hit the time limit");
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+/// The key pass computes every key before the first comparison, and a key
+/// shorter than the dispatch interval reaches no checkpoint — so the key
+/// loop's own poll is all that bounds it. `sort`, not `sorted`, so no
+/// collection phase polls first.
+#[test]
+fn timeout_in_sort_key_loop() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "x = [0] * 4_000_000\ndef f(v):\n    return v",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    repl.tracker_mut().set_max_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("x.sort(key=f)", vec![], PrintWriter::Stdout)
+        .expect_err("the key loop must hit the time limit");
+    let elapsed = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    // Polled, this stops one budget in at any machine speed; unpolled it runs
+    // all 4M key calls before anything re-checks, which takes seconds.
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "should stop promptly, took {elapsed:?}"
+    );
 }
 
 /// Feeds shorter than the dispatch-checkpoint interval never probe GC inside

@@ -958,7 +958,10 @@ impl<'h> VM<'h> {
         // check below could trip on memory a collection would reclaim. The
         // collection is charged to the execution clock like dispatch-loop GC,
         // so the limit check sees post-GC elapsed time as well as memory.
-        if self.heap.should_gc() {
+        // Skipped after a resource error, where refcounts are unreliable and
+        // trial deletion could free live entries; ordinary Python exceptions
+        // unwind through the drop machinery, so they still collect.
+        if !matches!(result, Err(RunError::UncatchableExc(_))) && self.heap.should_gc() {
             self.heap.tracker.on_execution_start();
             self.run_gc();
             self.heap.tracker.on_execution_stop();
@@ -1016,6 +1019,9 @@ impl<'h> VM<'h> {
         /// ~2% at u8::MAX (see the `_limits` benchmarks) — while detection
         /// latency stays sub-µs. Native ops poll internally and the host-turn
         /// epilogue re-checks, so only this dispatch cadence rides on it.
+        /// The countdown is per-`run()`, so `evaluate_function` re-entry
+        /// restarts it — a native loop calling a shorter callback reaches no
+        /// checkpoint at all and must poll the tracker itself.
         const CHECK_INTERVAL: u8 = u8::MAX;
 
         // Cache frame state locally to avoid repeated frames.last_mut() calls.

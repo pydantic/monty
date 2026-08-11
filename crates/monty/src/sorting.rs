@@ -61,7 +61,10 @@ pub fn sort_values(values: &mut [Value], key_fn: Option<&Value>, reverse: bool, 
         let keys: Vec<Value> = Vec::with_capacity(values.len());
         defer_drop_mut!(keys, vm);
 
-        for item in values.iter() {
+        // Each key call re-enters `run()` with a fresh dispatch countdown, so a
+        // short key reaches no checkpoint: this is the pass's only clock poll.
+        for (i, item) in values.iter().enumerate() {
+            vm.heap.tracker.check_time_every(i)?;
             let item = item.clone_with_heap(vm);
             keys.push(vm.evaluate_function("sorted() key argument", f, ArgValues::One(item))?);
         }

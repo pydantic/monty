@@ -117,6 +117,10 @@ impl<'h> ValueRead<'h, '_> {
     /// This is the timeout boundary for Rust-side loops over retained iterators
     /// (amortized on the view's step count). Bytecode iteration dispatches
     /// directly after the VM's per-opcode check.
+    ///
+    /// The step count lives on the view, so a loop must hold one across its
+    /// iterations; rebuilding one per call (as `itertools.chain` does) never
+    /// polls, and is only safe under a caller whose own view counts.
     pub(crate) fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         match self {
             Self::Immediate(value) => Err(ExcType::type_error_not_iterator(&value.py_type_name(vm))),

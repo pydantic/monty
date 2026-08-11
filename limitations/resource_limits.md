@@ -133,12 +133,23 @@ overflow, which is why the sandbox exits deliberately instead.)
 
 ## Time
 
-- The host can set a `max_duration` budget; if exceeded the VM stops on
-  the next bytecode boundary with `ResourceError`.
+- The host can set a `max_duration` budget; if exceeded the VM stops with a
+  `ResourceError` at its next checkpoint.
 - Enforcement is polled, not preemptive: a single bytecode instruction may
   run a long native operation (a `bytes` substring scan, a sort, an iterator
   drain), and those poll the clock at a coarse granularity. A run can
   therefore overshoot `max_duration` before stopping.
+- Checkpoints are amortized rather than per-instruction: the dispatch loop
+  reads the clock every 256th instruction, and the native loops that poll for
+  themselves (iterator advancement, sequence repeats, comparisons, `repr`)
+  do so every 64th item. Both are unconditional overshoots of ordinary
+  `max_duration` enforcement, on top of the per-operation cases below.
+- Every host turn re-checks both limits as it returns, so a turn that
+  finished without reaching a checkpoint still fails rather than returning
+  its result. Two consequences: a turn whose Python code raised an exception
+  reports the resource error instead of that exception, and an operation
+  that swallows a timeout internally (`repr` truncating with `...[timeout]`)
+  still fails the turn that contained it.
 - `bytes` operations that search for a sub-sequence (`in` with a bytes-like
   probe, `find`, `count`, `split`, `partition`, `replace` and their
   variants) poll the clock every 64KiB, or every two lengths of the
