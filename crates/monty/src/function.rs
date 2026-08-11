@@ -17,6 +17,27 @@ pub(crate) enum ExactPositionalCall {
     Async(usize),
 }
 
+/// Metadata faults injected by dump boundary tests.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub enum FunctionMetadataFault {
+    /// Makes the signature require more slots than its namespace.
+    SignatureSlotsBeyondNamespace,
+    /// Makes the namespace impossible to represent in a frame.
+    NamespaceTooLarge,
+    /// Breaks the parallel free-variable vectors.
+    FreeVarLengthMismatch,
+    /// Breaks the parallel owned-cell vectors.
+    CellVarLengthMismatch,
+    /// Points a free-variable slot beyond the namespace.
+    FreeVarSlotOutOfRange,
+    /// Points an owned-cell slot beyond the namespace.
+    CellVarSlotOutOfRange,
+    /// Points an owned cell at a nonexistent parameter slot.
+    CellParamIndexOutOfRange,
+}
+
 /// A defined function once compiled and ready for execution.
 ///
 /// This is created during the compilation phase from a `PreparedFunctionDef`.
@@ -96,39 +117,84 @@ pub(crate) struct Function {
 /// validated before constructing runtime metadata.
 #[derive(Deserialize)]
 struct FunctionFields {
+    /// Function name used by diagnostics and repr.
     name: Identifier,
+    /// Parameter layout consumed by the binder.
     signature: Signature,
+    /// Number of local slots reserved by each frame.
     namespace_size: usize,
+    /// Enclosing slots read when a closure is created.
     free_var_enclosing_slots: Vec<NamespaceId>,
+    /// Local slots receiving captured free-variable cells.
     free_var_slots: Vec<NamespaceId>,
+    /// Local slots receiving freshly allocated owned cells.
     cell_var_slots: Vec<NamespaceId>,
+    /// Parameter slots copied into owned cells, when applicable.
     cell_param_indices: Vec<Option<usize>>,
+    /// Number of default values evaluated at function creation.
     defaults_count: usize,
+    /// Whether calls create a coroutine rather than a frame.
     is_async: bool,
+    /// Compiled function body.
     code: Arc<Code>,
 }
 
+impl FunctionFields {
+    /// Validates compiler-established invariants before metadata reaches the VM.
+    fn validate(&self) -> Result<(), &'static str> {
+        if u16::try_from(self.namespace_size).is_err() {
+            return Err("function namespace size exceeds frame limit");
+        }
+
+        let signature_slots = self.signature.total_slots();
+        if signature_slots > self.namespace_size {
+            return Err("function signature slots exceed namespace size");
+        }
+        if self.free_var_enclosing_slots.len() != self.free_var_slots.len() {
+            return Err("function free-variable metadata has different lengths");
+        }
+        if self.cell_var_slots.len() != self.cell_param_indices.len() {
+            return Err("function cell-variable metadata has different lengths");
+        }
+
+        for slot in self.cell_var_slots.iter().chain(&self.free_var_slots) {
+            let slot = slot.index();
+            if !(signature_slots..self.namespace_size).contains(&slot) {
+                return Err("function closure slot is outside the locals region");
+            }
+        }
+
+        if self
+            .cell_param_indices
+            .iter()
+            .flatten()
+            .any(|&index| index >= signature_slots)
+        {
+            return Err("function cell parameter index is out of range");
+        }
+
+        Ok(())
+    }
+}
+
 impl<'de> Deserialize<'de> for Function {
-    /// Rejects forged function metadata that cannot satisfy the namespace layout.
+    /// Rejects metadata that violates compiler-established function invariants.
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let fields = FunctionFields::deserialize(deserializer)?;
-        if fields.signature.param_count() > fields.namespace_size {
-            Err(D::Error::custom("function parameter count exceeds namespace size"))
-        } else {
-            Ok(Self {
-                name: fields.name,
-                signature: fields.signature,
-                namespace_size: fields.namespace_size,
-                free_var_enclosing_slots: fields.free_var_enclosing_slots,
-                free_var_slots: fields.free_var_slots,
-                cell_var_slots: fields.cell_var_slots,
-                cell_param_indices: fields.cell_param_indices,
-                defaults_count: fields.defaults_count,
-                is_async: fields.is_async,
-                exact_positional_call: OnceCell::new(),
-                code: fields.code,
-            })
-        }
+        fields.validate().map_err(D::Error::custom)?;
+        Ok(Self {
+            name: fields.name,
+            signature: fields.signature,
+            namespace_size: fields.namespace_size,
+            free_var_enclosing_slots: fields.free_var_enclosing_slots,
+            free_var_slots: fields.free_var_slots,
+            cell_var_slots: fields.cell_var_slots,
+            cell_param_indices: fields.cell_param_indices,
+            defaults_count: fields.defaults_count,
+            is_async: fields.is_async,
+            exact_positional_call: OnceCell::new(),
+            code: fields.code,
+        })
     }
 }
 
@@ -196,6 +262,45 @@ impl Function {
             })
         } else {
             None
+        }
+    }
+
+    /// Injects a metadata fault for dump validation tests.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn corrupt_metadata_for_tests(&mut self, fault: FunctionMetadataFault) {
+        match fault {
+            FunctionMetadataFault::SignatureSlotsBeyondNamespace => {
+                self.namespace_size = self.signature.total_slots() - 1;
+            }
+            FunctionMetadataFault::NamespaceTooLarge => {
+                self.namespace_size = usize::from(u16::MAX) + 1;
+            }
+            FunctionMetadataFault::FreeVarLengthMismatch => {
+                self.free_var_slots.pop().expect("test function has a free variable");
+            }
+            FunctionMetadataFault::CellVarLengthMismatch => {
+                self.cell_param_indices.pop().expect("test function has an owned cell");
+            }
+            FunctionMetadataFault::FreeVarSlotOutOfRange => {
+                let slot = NamespaceId::new(self.namespace_size).expect("test namespace fits in u16");
+                *self
+                    .free_var_slots
+                    .first_mut()
+                    .expect("test function has a free variable") = slot;
+            }
+            FunctionMetadataFault::CellVarSlotOutOfRange => {
+                let slot = NamespaceId::new(self.namespace_size).expect("test namespace fits in u16");
+                *self
+                    .cell_var_slots
+                    .first_mut()
+                    .expect("test function has an owned cell") = slot;
+            }
+            FunctionMetadataFault::CellParamIndexOutOfRange => {
+                *self
+                    .cell_param_indices
+                    .first_mut()
+                    .expect("test function has an owned cell") = Some(self.signature.total_slots());
+            }
         }
     }
 

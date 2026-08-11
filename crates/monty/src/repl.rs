@@ -11,6 +11,8 @@ use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWri
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
 
+#[cfg(feature = "test-hooks")]
+use crate::function::FunctionMetadataFault;
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::CallId,
@@ -88,6 +90,17 @@ impl MontyRepl {
             heap,
             globals: Vec::new(),
         }
+    }
+
+    /// Injects `fault` into a compiled function's metadata.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` does not identify a function suitable for `fault`.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn __corrupt_function_metadata_for_tests(&mut self, name: &str, fault: FunctionMetadataFault) {
+        self.interns.corrupt_function_metadata_for_tests(name, fault);
     }
 
     /// Returns the resource tracker that will be used for the next snippet.

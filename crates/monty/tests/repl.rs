@@ -4,6 +4,8 @@
 //! only the newly fed snippet each time.
 
 use insta::assert_snapshot;
+#[cfg(feature = "test-hooks")]
+use monty::FunctionMetadataFault;
 use monty::{
     DUMP_VERSION, Dump, DumpError, MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, Session, SessionRef,
     detect_repl_continuation_mode, dump,
@@ -293,27 +295,28 @@ fn repl_dump_load_derives_exact_positional_call_plans() {
     assert_eq!(err.message(), Some("add() missing 1 required positional argument: 'b'"));
 }
 
+#[cfg(feature = "test-hooks")]
 #[test]
-fn repl_dump_load_rejects_parameters_beyond_the_namespace() {
-    let (repl, _) = init_repl("def identity(value):\n    return value");
-    let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
+fn repl_dump_load_rejects_invalid_function_metadata() {
+    /// Checks forged function metadata is rejected at dump load.
+    fn assert_rejected(function: &str, fault: FunctionMetadataFault) {
+        let code = "def variadic(*args, **kwargs):\n    return args, kwargs\n\ndef outer(value):\n    def inner():\n        return value\n    return inner";
+        let (mut repl, _) = init_repl(code);
+        repl.__corrupt_function_metadata_for_tests(function, fault);
+        let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
+        assert_eq!(
+            Dump::load(&bytes).unwrap_err(),
+            DumpError::Payload(postcard::Error::SerdeDeCustom)
+        );
+    }
 
-    // Postcard encodes both this one-parameter signature and its one-slot
-    // namespace as single-byte varints. Changing each candidate in turn finds
-    // the namespace field without coupling the test to the rest of the dump.
-    let rejected = bytes.iter().enumerate().any(|(index, byte)| {
-        if *byte == 1 {
-            let mut forged = bytes.clone();
-            forged[index] = 0;
-            matches!(
-                Dump::load(&forged),
-                Err(DumpError::Payload(postcard::Error::SerdeDeCustom))
-            )
-        } else {
-            false
-        }
-    });
-    assert!(rejected);
+    assert_rejected("variadic", FunctionMetadataFault::SignatureSlotsBeyondNamespace);
+    assert_rejected("variadic", FunctionMetadataFault::NamespaceTooLarge);
+    assert_rejected("inner", FunctionMetadataFault::FreeVarLengthMismatch);
+    assert_rejected("outer", FunctionMetadataFault::CellVarLengthMismatch);
+    assert_rejected("inner", FunctionMetadataFault::FreeVarSlotOutOfRange);
+    assert_rejected("outer", FunctionMetadataFault::CellVarSlotOutOfRange);
+    assert_rejected("outer", FunctionMetadataFault::CellParamIndexOutOfRange);
 }
 
 #[test]
