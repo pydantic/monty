@@ -9,7 +9,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource_checks::{check_estimated_size, check_repeat_size},
-    types::{LazyHeapSet, Type, list::repr_sequence_fmt, long_int::repeat_count},
+    types::{LazyHeapSet, Type, list::repr_items_fmt, long_int::repeat_count},
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -461,9 +461,22 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        let len = self.get(vm.heap).len();
         f.write_str("deque(")?;
-        repr_sequence_fmt('[', ']', len, |heap, i| &self.get(heap).items[i], f, vm, heap_ids)?;
+        if let Ok(mut guard) = vm.recursion_guard() {
+            let vm = &mut *guard;
+            // Format a snapshot of the items (taken only once the depth limit
+            // allows a body at all): CPython's deque repr copies to a list
+            // first, so a user `__repr__` mutating the deque mid-format
+            // changes nothing (and can't invalidate indices here).
+            let items = self.clone_all_items(vm)?;
+            defer_drop!(items, vm);
+            f.write_char('[')?;
+            repr_items_fmt(items, f, vm, heap_ids)?;
+            f.write_char(']')?;
+        } else {
+            // Depth limit reached — same elision `repr_sequence_fmt` emits.
+            f.write_str("...")?;
+        }
         // CPython only shows maxlen when the deque is bounded.
         if let Some(max) = self.get(vm.heap).maxlen() {
             write!(f, ", maxlen={max}")?;

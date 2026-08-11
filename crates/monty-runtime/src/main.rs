@@ -23,7 +23,7 @@ static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 #[derive(Parser)]
 #[command(version)]
 pub(crate) struct Cli {
-    /// Start interactive REPL mode.
+    /// Start interactive REPL mode, this is the default if no file or command is provided.
     #[arg(short = 'i', long = "interactive")]
     interactive: bool,
 
