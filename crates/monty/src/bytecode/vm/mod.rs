@@ -972,13 +972,17 @@ impl<'h> VM<'h> {
         let mut countdown = CHECK_INTERVAL;
 
         loop {
-            if check_limits && countdown.checked_sub(1).is_none() {
-                countdown = CHECK_INTERVAL;
-                // Full memory + time check, amortized to every Nth
-                // instruction; a timeout swallowed by a truncating caller
-                // re-detects here (elapsed time is monotonic) or at the
-                // `run_external` exit latch check.
-                self.heap.tracker.check_memory_time()?;
+            if check_limits {
+                if let Some(c) = countdown.checked_sub(1) {
+                    countdown = c;
+                } else {
+                    countdown = CHECK_INTERVAL;
+                    // Full memory + time check, amortized to every Nth
+                    // instruction; a timeout swallowed by a truncating caller
+                    // re-detects here (elapsed time is monotonic) or at the
+                    // `run_external` exit latch check.
+                    self.heap.tracker.check_memory_time()?;
+                }
             }
 
             if self.heap.should_gc() {
