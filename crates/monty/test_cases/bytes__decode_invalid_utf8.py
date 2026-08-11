@@ -7,7 +7,7 @@ try:
     b'\xff'.decode()
 except UnicodeDecodeError:
     raised_decode_error = True
-assert raised_decode_error, 'should raise UnicodeDecodeError for invalid UTF-8'
+assert raised_decode_error
 
 # Test it can be caught by ValueError (since UnicodeDecodeError is a subclass)
 caught_by_value_error = False
@@ -15,4 +15,4 @@ try:
     b'\x80\x81'.decode()
 except ValueError:
     caught_by_value_error = True
-assert caught_by_value_error, 'UnicodeDecodeError should be caught by except ValueError'
+assert caught_by_value_error

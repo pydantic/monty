@@ -1,25 +1,23 @@
-import multiprocessing
-import os
-import signal
-import threading
+"""Resource-limit tests: limits are a `pool.checkout(limits=...)` argument enforced in the worker."""
+
+from __future__ import annotations
+
 import time
-from types import FrameType
 
 import pytest
+from conftest import RunMonty
 from inline_snapshot import snapshot
 
-import pydantic_monty
+from pydantic_monty import Monty, MontyRuntimeError, ResourceLimits
 
 
-def test_resource_limits_custom():
-    limits = pydantic_monty.ResourceLimits(
-        max_allocations=100,
+def test_resource_limits_typed_dict():
+    limits = ResourceLimits(
         max_duration_secs=5.0,
         max_memory=1024,
         gc_interval=10,
         max_recursion_depth=500,
     )
-    assert limits.get('max_allocations') == snapshot(100)
     assert limits.get('max_duration_secs') == snapshot(5.0)
     assert limits.get('max_memory') == snapshot(1024)
     assert limits.get('gc_interval') == snapshot(10)
@@ -27,17 +25,15 @@ def test_resource_limits_custom():
 
 
 def test_resource_limits_repr():
-    limits = pydantic_monty.ResourceLimits(max_duration_secs=1.0)
+    limits = ResourceLimits(max_duration_secs=1.0)
     assert repr(limits) == snapshot("{'max_duration_secs': 1.0}")
 
 
-def test_run_with_limits():
-    m = pydantic_monty.Monty('1 + 1')
-    limits = pydantic_monty.ResourceLimits(max_duration_secs=5.0)
-    assert m.run(limits=limits) == snapshot(2)
+def test_run_with_limits(monty_run: RunMonty):
+    assert monty_run('1 + 1', limits={'max_duration_secs': 5.0}) == snapshot(2)
 
 
-def test_recursion_limit():
+def test_recursion_limit(monty_run: RunMonty):
     code = """
 def recurse(n):
     if n <= 0:
@@ -46,14 +42,12 @@ def recurse(n):
 
 recurse(10)
 """
-    m = pydantic_monty.Monty(code)
-    limits = pydantic_monty.ResourceLimits(max_recursion_depth=5)
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(limits=limits)
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code, limits={'max_recursion_depth': 5})
     assert isinstance(exc_info.value.exception(), RecursionError)
 
 
-def test_recursion_limit_ok():
+def test_recursion_limit_ok(monty_run: RunMonty):
     code = """
 def recurse(n):
     if n <= 0:
@@ -62,169 +56,88 @@ def recurse(n):
 
 recurse(5)
 """
-    m = pydantic_monty.Monty(code)
-    limits = pydantic_monty.ResourceLimits(max_recursion_depth=100)
-    assert m.run(limits=limits) == snapshot(5)
+    assert monty_run(code, limits={'max_recursion_depth': 100}) == snapshot(5)
 
 
-def test_allocation_limit():
-    # Note: allocation counting may not trigger on all operations
-    # Use a more aggressive allocation pattern
-    code = """
-result = []
-for i in range(10000):
-    result.append([i])  # Each append creates a new list
-len(result)
-"""
-    m = pydantic_monty.Monty(code)
-    limits = pydantic_monty.ResourceLimits(max_allocations=5)
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(limits=limits)
-    assert isinstance(exc_info.value.exception(), MemoryError)
-
-
-def test_memory_limit():
+def test_memory_limit(monty_run: RunMonty):
     code = """
 result = []
 for i in range(1000):
     result.append('x' * 100)
 len(result)
 """
-    m = pydantic_monty.Monty(code)
-    limits = pydantic_monty.ResourceLimits(max_memory=100)
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(limits=limits)
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code, limits={'max_memory': 100})
     assert isinstance(exc_info.value.exception(), MemoryError)
 
 
-def test_limits_with_inputs():
-    m = pydantic_monty.Monty('x * 2', inputs=['x'])
-    limits = pydantic_monty.ResourceLimits(max_duration_secs=5.0)
-    assert m.run(inputs={'x': 21}, limits=limits) == snapshot(42)
+def test_timeout_limit(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('while True:\n    pass', limits={'max_duration_secs': 0.1})
+    inner = exc_info.value.exception()
+    assert isinstance(inner, TimeoutError)
+    assert exc_info.value.display(format='type-msg').startswith('TimeoutError: time limit exceeded')
 
 
-def test_limits_wrong_type_raises_error():
-    m = pydantic_monty.Monty('1 + 1')
+def test_session_exhausted_after_resource_error_but_worker_reusable(pool: Monty):
+    """A resource error leaves the session exhausted (later feeds keep failing),
+    but the worker is reusable once the session exits."""
+    with pool.checkout(limits={'max_duration_secs': 0.1}) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('while True:\n    pass')
+        assert isinstance(exc_info.value.exception(), TimeoutError)
+        # the session stays exhausted after a resource error
+        with pytest.raises(MontyRuntimeError):
+            session.feed_run('1 + 1')
+    # a new session reuses the worker without issue
+    with pool.checkout() as session:
+        assert session.feed_run('1 + 1') == snapshot(2)
+
+
+def test_limits_with_inputs(monty_run: RunMonty):
+    assert monty_run('x * 2', inputs={'x': 21}, limits={'max_duration_secs': 5.0}) == snapshot(42)
+
+
+def test_limits_wrong_type_raises_error(pool: Monty):
     with pytest.raises(TypeError):
-        m.run(limits={'max_allocations': 'not an int'})  # pyright: ignore[reportArgumentType]
+        with pool.checkout(limits={'max_memory': 'not an int'}):  # pyright: ignore[reportArgumentType]
+            pass
 
 
-def test_limits_none_value_allowed():
-    m = pydantic_monty.Monty('1 + 1')
+def test_limits_none_value_allowed(monty_run: RunMonty):
     # None is valid to explicitly disable a limit
-    assert m.run(limits={'max_allocations': None}) == snapshot(2)  # pyright: ignore[reportArgumentType]
+    assert monty_run('1 + 1', limits={'max_memory': None}) == snapshot(2)
 
 
-def test_signal_alarm_custom_error():
-    """Test that custom signal handlers work during execution.
-
-    The idea here is we run another thread which sends a signal to the current process after a delay
-    then set up a signal handler to catch that signal and raise a custom exception.
-
-    So while monty is running, we have to run the code to catch the signal, and propagate that exception.
-    """
-    code = """
-def fib(n):
-    if n <= 1:
-        return n
-    return fib(n - 1) + fib(n - 2)
-
-fib(35)
-"""
-    m = pydantic_monty.Monty(code)
-
-    def send_signal():
-        time.sleep(0.1)
-        os.kill(os.getpid(), signal.SIGINT)
-
-    def raise_potato(signum: int, frame: FrameType | None) -> None:
-        raise ValueError('potato')
-
-    thread = threading.Thread(target=send_signal)
-    thread.start()
-    old_handler = signal.signal(signal.SIGINT, raise_potato)
-    try:
-        with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-            m.run()
-        inner = exc_info.value.exception()
-        assert isinstance(inner, ValueError)
-        assert inner.args[0] == snapshot('potato')
-    finally:
-        thread.join()
-        signal.signal(signal.SIGINT, old_handler)
-
-
-def _send_sigint_after_delay(pid: int, delay: float) -> None:
-    """Helper function to send SIGINT to a process after a delay."""
-    time.sleep(delay)
-    os.kill(pid, signal.SIGINT)
-
-
-def test_keyboard_interrupt():
-    """Test that KeyboardInterrupt is raised when SIGINT is sent during execution."""
-    code = """
-def fib(n):
-    if n <= 1:
-        return n
-    return fib(n - 1) + fib(n - 2)
-
-fib(35)
-"""
-    m = pydantic_monty.Monty(code)
-
-    # Send SIGINT after a short delay using a separate process
-    proc = multiprocessing.Process(target=_send_sigint_after_delay, args=(os.getpid(), 0.05))
-    proc.start()
-    try:
-        raised_keyboard_interrupt = False
-        try:
-            m.run()
-        except pydantic_monty.MontyRuntimeError as e:
-            if isinstance(e.exception(), KeyboardInterrupt):
-                raised_keyboard_interrupt = True
-
-        assert raised_keyboard_interrupt, 'Expected KeyboardInterrupt to be raised'
-    finally:
-        proc.join()
-
-
-def test_pow_memory_limit():
+def test_pow_memory_limit(monty_run: RunMonty):
     """Large pow should fail when memory limit is set."""
-    m = pydantic_monty.Monty('2 ** 10000000')
-    limits = pydantic_monty.ResourceLimits(max_memory=1_000_000)
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(limits=limits)
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('2 ** 10000000', limits={'max_memory': 1_000_000})
     assert isinstance(exc_info.value.exception(), MemoryError)
 
 
-def test_lshift_memory_limit():
+def test_lshift_memory_limit(monty_run: RunMonty):
     """Large left shift should fail when memory limit is set."""
-    m = pydantic_monty.Monty('1 << 10000000')
-    limits = pydantic_monty.ResourceLimits(max_memory=1_000_000)
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(limits=limits)
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('1 << 10000000', limits={'max_memory': 1_000_000})
     assert isinstance(exc_info.value.exception(), MemoryError)
 
 
-def test_mult_memory_limit():
+def test_mult_memory_limit(monty_run: RunMonty):
     """Large multiplication should fail when memory limit is set."""
     # First create a large number, then try to square it
     code = """
 big = 2 ** 4000000
 result = big * big
 """
-    m = pydantic_monty.Monty(code)
-    limits = pydantic_monty.ResourceLimits(max_memory=1_000_000)
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(limits=limits)
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code, limits={'max_memory': 1_000_000})
     assert isinstance(exc_info.value.exception(), MemoryError)
 
 
-def test_small_operations_within_limit():
+def test_small_operations_within_limit(monty_run: RunMonty):
     """Smaller operations should succeed even with limits."""
-    m = pydantic_monty.Monty('2 ** 1000')
-    limits = pydantic_monty.ResourceLimits(max_memory=1_000_000)
-    result = m.run(limits=limits)
+    result = monty_run('2 ** 1000', limits={'max_memory': 1_000_000})
     assert result > 0
 
 
@@ -239,18 +152,16 @@ def test_small_operations_within_limit():
     ],
     ids=['sum', 'list', 'sorted', 'min', 'max'],
 )
-def test_timeout_enforced_in_builtin_loops(code: str):
+def test_timeout_enforced_in_builtin_loops(monty_run: RunMonty, code: str):
     """Timeout must be enforced inside Rust-side builtin iteration loops.
 
     Previously, builtins like sum(), sorted(), min(), max() ran Rust-side loops
     entirely within a single bytecode instruction, bypassing the VM's
     per-instruction timeout check.
     """
-    m = pydantic_monty.Monty(code)
-    limits = pydantic_monty.ResourceLimits(max_duration_secs=0.1)
     start = time.monotonic()
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(limits=limits)
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code, limits={'max_duration_secs': 0.1})
     elapsed = time.monotonic() - start
     assert isinstance(exc_info.value.exception(), TimeoutError)
     # Should terminate promptly - well under 2 seconds

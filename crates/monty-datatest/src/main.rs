@@ -1,3 +1,8 @@
+//! Data-driven test harness: runs every Python file in
+//! `crates/monty/test_cases/` against both Monty and CPython (via pyo3) and
+//! diffs the results, so any behavioural divergence fails the suite. Run via
+//! `make test-cases`; see CLAUDE.md for the test-case file conventions.
+
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -19,11 +24,15 @@ use std::{
 
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
-use monty::{
-    ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
-    MontyObject, MontyRun, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, RunProgress, dir_stat,
-    file_stat,
-    fs::{MountMode, MountTable, OverlayState},
+// only the dump round-trip needs these, and it is skipped under memory-model-checks
+#[cfg(not(feature = "memory-model-checks"))]
+use monty::{Dump, Session, SessionRef, dump};
+use monty::{MontyRun, RunProgress};
+use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
+use monty_types::{
+    CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
+    MontyObject, MontyTimeZone, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker,
+    dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -59,7 +68,15 @@ const TEST_RECURSION_LIMIT: usize = 50;
 /// 100_000 otherwise — tests that need a larger value to stay within the
 /// timeout opt into it via `# gc-interval=<N>`.
 fn default_test_limits() -> ResourceLimits {
-    ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT))
+    ResourceLimits::default().max_recursion_depth(TEST_RECURSION_LIMIT)
+}
+
+/// Builds a `MontyRun` with production-default [`CompileOptions`] so fixtures
+/// exercise the same bytecode real embedders run. Fixtures with a *failing*
+/// assert whose message diverges from CPython can't live in `test_cases/` —
+/// they belong in `crates/monty/tests/assert_messages.rs`.
+fn new_monty_run(code: &str, test_name: &str) -> Result<MontyRun, MontyException> {
+    MontyRun::new(code.to_owned(), test_name, vec![], CompileOptions::default())
 }
 
 /// Test configuration parsed from directive comments.
@@ -75,6 +92,8 @@ fn default_test_limits() -> ResourceLimits {
 /// - `skip-cpython-windows` - Skip CPython test on Windows (Monty test still runs).
 ///   Used for tests that rely on POSIX path semantics which Monty's sandbox always
 ///   provides but Windows CPython does not.
+/// - `cpython-main-module` - Set `__name__ = '__main__'` for CPython only,
+///   matching script-style module globals for tests that directly inspect it.
 /// - `xfail=monty,cpython` - Expected to fail on both interpreters
 #[derive(Debug, Clone)]
 #[expect(clippy::struct_excessive_bools)]
@@ -96,6 +115,10 @@ struct TestConfig {
     /// path semantics (e.g. pathlib tests using `/` paths) which are correct for
     /// Monty's always-POSIX sandbox but behave differently on Windows CPython.
     skip_cpython_windows: bool,
+    /// When true, seed CPython globals with script-style `__name__ = '__main__'`.
+    /// This is intentionally opt-in because doing it globally changes CPython's
+    /// function error messages to include `__main__.` qualifiers.
+    cpython_main_module: bool,
     /// Resource limits applied to this test's Monty run. Defaults to
     /// `default_test_limits()`; the `# gc-interval=<N>` directive mutates
     /// this in `parse_fixture`. The recursion ceiling is tightened from the
@@ -114,6 +137,7 @@ impl Default for TestConfig {
             async_mode: false,
             mount_fs: false,
             skip_cpython_windows: false,
+            cpython_main_module: false,
             limits: default_test_limits(),
         }
     }
@@ -195,6 +219,7 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
         skip_cpython_windows: comment_lines
             .iter()
             .any(|line| line.starts_with("skip-cpython-windows")),
+        cpython_main_module: comment_lines.iter().any(|line| line.starts_with("cpython-main-module")),
         ..Default::default()
     };
     // Check for "xfail=" directive
@@ -328,8 +353,7 @@ fn parse_ref_counts(s: &str) -> AHashMap<String, usize> {
 }
 
 // Shared CPython-side fixtures (external function implementations for iter
-// mode tests, plus the `_test_cm` synthetic context-manager shim) live in
-// `scripts/test_fixtures.py`. The module is imported once via pyo3
+// mode tests) live in `scripts/test_fixtures.py`. The module is imported once via pyo3
 // (cached in `sys.modules`) and its `exported_globals` dict is merged into
 // each CPython test's globals — see `import_shared_test_globals`.
 
@@ -462,7 +486,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Sync(
                 MontyObject::Dataclass {
                     name: "Point".to_string(),
-                    type_id: 0, // Test fixture has no real Python type
+                    type_id: 1, // distinct per fixture class (real hosts pass the Python type id)
                     field_names: vec!["x".to_string(), "y".to_string()],
                     attrs: vec![
                         (MontyObject::String("x".to_string()), MontyObject::Int(1)),
@@ -481,7 +505,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Sync(
                 MontyObject::Dataclass {
                     name: "MutablePoint".to_string(),
-                    type_id: 0, // Test fixture has no real Python type
+                    type_id: 2, // distinct per fixture class (real hosts pass the Python type id)
                     field_names: vec!["x".to_string(), "y".to_string()],
                     attrs: vec![
                         (MontyObject::String("x".to_string()), MontyObject::Int(1)),
@@ -501,7 +525,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Sync(
                 MontyObject::Dataclass {
                     name: "User".to_string(),
-                    type_id: 0, // Test fixture has no real Python type
+                    type_id: 3, // distinct per fixture class (real hosts pass the Python type id)
                     field_names: vec!["name".to_string(), "active".to_string()],
                     attrs: vec![
                         (MontyObject::String("name".to_string()), MontyObject::String(name)),
@@ -520,7 +544,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Sync(
                 MontyObject::Dataclass {
                     name: "Empty".to_string(),
-                    type_id: 0, // Test fixture has no real Python type
+                    type_id: 4, // distinct per fixture class (real hosts pass the Python type id)
                     field_names: vec![],
                     attrs: vec![].into(),
 
@@ -583,7 +607,7 @@ fn dispatch_method_call(
             let dy = i64::try_from(&args[2]).expect("dy must be int");
             MontyObject::Dataclass {
                 name: "Point".to_string(),
-                type_id: 0,
+                type_id: 1, // same class as `make_point`'s Point
                 field_names: vec!["x".to_string(), "y".to_string()],
                 attrs: vec![
                     (MontyObject::String("x".to_string()), MontyObject::Int(x + dx)),
@@ -601,7 +625,7 @@ fn dispatch_method_call(
             let factor = i64::try_from(&args[1]).expect("factor must be int");
             MontyObject::Dataclass {
                 name: "Point".to_string(),
-                type_id: 0,
+                type_id: 1, // same class as `make_point`'s Point
                 field_names: vec!["x".to_string(), "y".to_string()],
                 attrs: vec![
                     (MontyObject::String("x".to_string()), MontyObject::Int(x * factor)),
@@ -919,7 +943,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
             day: 15,
         })
         .into(),
-        OsFunctionCall::DateTimeNow(tz) => dispatch_datetime_now(tz).into(),
+        OsFunctionCall::DateTimeNow(tz) => dispatch_datetime_now(tz.as_ref()).into(),
         OsFunctionCall::GetEnviron => {
             let env_dict = vec![
                 (
@@ -1203,7 +1227,6 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 .into()
             }
         }
-        OsFunctionCall::Used => unreachable!("OsFunctionCall::Used dispatched"),
     }
 }
 
@@ -1215,9 +1238,9 @@ const DATETIME_FIXTURE_TIMESTAMP: i64 = 1_700_000_000;
 /// The `tz` argument determines whether a naive or aware datetime is returned.
 /// The deterministic timestamp is 1_700_000_000 UTC (2023-11-14 22:13:20 UTC).
 /// For naive datetimes the virtual local offset is UTC+02:00.
-fn dispatch_datetime_now(tz: &MontyObject) -> MontyObject {
+fn dispatch_datetime_now(tz: Option<&MontyTimeZone>) -> MontyObject {
     match tz {
-        MontyObject::None => {
+        None => {
             // Naive datetime: apply local offset to get local wall-clock time
             // 1_700_000_000 UTC + 7200 = 2023-11-15 00:13:20 local
             MontyObject::DateTime(MontyDateTime {
@@ -1232,7 +1255,7 @@ fn dispatch_datetime_now(tz: &MontyObject) -> MontyObject {
                 timezone_name: None,
             })
         }
-        MontyObject::TimeZone(tz) => {
+        Some(tz) => {
             // Aware datetime: convert UTC timestamp to the requested timezone
             let offset_delta = chrono::TimeDelta::try_seconds(i64::from(tz.offset_seconds)).expect("valid offset");
             let utc = chrono::DateTime::from_timestamp(DATETIME_FIXTURE_TIMESTAMP, 0).expect("valid timestamp");
@@ -1249,7 +1272,6 @@ fn dispatch_datetime_now(tz: &MontyObject) -> MontyObject {
                 timezone_name: tz.name.clone(),
             })
         }
-        _ => panic!("DateTimeNow: tz argument must be None or TimeZone, got {tz:?}"),
     }
 }
 
@@ -1313,23 +1335,22 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
     // Handle ref-count-return tests separately since they need run_ref_counts()
     #[cfg(feature = "ref-count-return")]
     if let Expectation::RefCounts(expected) = expectation {
-        match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+        match new_monty_run(code, &test_name) {
             Ok(ex) => {
                 let result = ex.run_ref_counts(vec![]);
                 match result {
                     Ok(monty::RefCountOutput {
-                        counts,
-                        unique_refs,
-                        heap_count,
-                        ..
+                        counts, unreachable, ..
                     }) => {
-                        // Strict matching: verify all heap objects are accounted for by variables
-                        if unique_refs != heap_count {
+                        // Strict matching: every live heap object must be reachable from a
+                        // named variable, transitively. Leftovers are leaks — a missed
+                        // `drop_with` — and are named here so the culprit is identifiable.
+                        if !unreachable.is_empty() {
                             return Err(TestFailure {
                                 test_name,
                                 kind: "Strict matching".to_string(),
-                                expected: format!("{heap_count} heap objects"),
-                                actual: format!("{unique_refs} referenced by variables, counts: {counts:?}"),
+                                expected: "no unreachable heap objects".to_string(),
+                                actual: format!("leaked {}: {}", unreachable.len(), unreachable.join(", ")),
                             });
                         }
                         if &counts != expected {
@@ -1363,9 +1384,9 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
         }
     }
 
-    match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+    match new_monty_run(code, &test_name) {
         Ok(ex) => {
-            let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+            let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
             match result {
                 Ok(obj) => match expectation {
                     Expectation::ReturnStr(expected) => {
@@ -1515,7 +1536,7 @@ fn try_run_iter_test(
         });
     }
 
-    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+    let exec = match new_monty_run(code, &test_name) {
         Ok(e) => e,
         Err(parse_err) => {
             if let Expectation::Raise(expected) = expectation {
@@ -1661,7 +1682,7 @@ fn try_run_mount_fs_test(
         )
         .expect("failed to mount temp dir for mount-fs test");
 
-    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+    let exec = match new_monty_run(code, &test_name) {
         Ok(e) => e,
         Err(parse_err) => {
             return Err(TestFailure {
@@ -1731,7 +1752,7 @@ fn run_mount_fs_iter_loop(
     mount_table: &mut MountTable,
     limits: ResourceLimits,
 ) -> Result<MontyObject, MontyException> {
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
+    let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
 
     loop {
         match progress {
@@ -1752,16 +1773,12 @@ fn run_mount_fs_iter_loop(
             }
             RunProgress::OsCall(call) => {
                 // Dispatch through the mount table first.
-                let result = mount_table.handle_os_call(&call.function_call);
-                let ext_result = match result {
-                    Some(Ok(obj)) => ExtFunctionResult::Return(obj),
-                    Some(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
-                    None => {
-                        // Non-filesystem operation — dispatch to the regular handler.
-                        dispatch_os_call(&call.function_call)
-                    }
-                };
-                progress = call.resume(ext_result, PrintWriter::Stdout)?;
+                progress = call.resume_with(PrintWriter::Stdout, |fc| match mount_table.handle_os_call(fc) {
+                    MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj),
+                    MountCallOutcome::Handled(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
+                    // Non-filesystem operation — dispatch to the regular handler.
+                    MountCallOutcome::NotHandled(function_call) => dispatch_os_call(&function_call),
+                })?;
             }
         }
     }
@@ -1777,7 +1794,7 @@ fn run_mount_fs_iter_loop(
 /// - Sync functions: result is passed immediately via `state.run()`
 /// - Async functions: `state.run_pending()` creates a future, resolved via `ResolveFutures`
 fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, MontyException> {
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
+    let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
 
     // Track pending async calls: (call_id, pre-built ExtFunctionResult).
     // Successful async calls produce `Return(value)`; `async_fail` produces
@@ -1786,12 +1803,13 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
     let mut pending_results: Vec<(u32, ExtFunctionResult)> = Vec::new();
 
     loop {
-        // Test serialization round-trip at each step (skip when memory-model-checks is enabled
-        // since the old RunProgress would panic on drop without proper cleanup)
+        // Dump and reload the suspended state at each step, so every test case's
+        // heap shape goes through the real dump format. (Skipped under
+        // memory-model-checks: the discarded `RunProgress` would panic on drop
+        // without proper cleanup.)
         #[cfg(not(feature = "memory-model-checks"))]
         {
-            let bytes = progress.dump().expect("failed to dump RunProgress");
-            progress = RunProgress::load(&bytes).expect("failed to load RunProgress");
+            progress = dump_load_round_trip(&progress);
         }
 
         match progress {
@@ -1876,6 +1894,17 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                 progress = call.resume(result, PrintWriter::Stdout)?;
             }
         }
+    }
+}
+
+/// Dumps a suspended run and reloads it, so every test case exercises the real
+/// dump format rather than only the underlying serde impls.
+#[cfg(not(feature = "memory-model-checks"))]
+fn dump_load_round_trip(progress: &RunProgress) -> RunProgress {
+    let bytes = dump("test.py", None, SessionRef::Running(progress)).expect("failed to dump RunProgress");
+    match Dump::load(&bytes).expect("failed to load RunProgress").state {
+        Session::Running(progress) => *progress,
+        _ => panic!("dumped a running session, loaded something else"),
     }
 }
 
@@ -2131,6 +2160,7 @@ enum CpythonResult {
 ///
 /// RefCounts tests are skipped as they're Monty-specific.
 /// Traceback tests use scripts/run_traceback.py for reliable caret line support.
+#[expect(clippy::fn_params_excessive_bools)]
 fn try_run_cpython_test(
     path: &Path,
     code: &str,
@@ -2138,6 +2168,7 @@ fn try_run_cpython_test(
     iter_mode: bool,
     async_mode: bool,
     mount_fs: bool,
+    cpython_main_module: bool,
 ) -> Result<(), TestFailure> {
     // Ensure Python modules are imported before parallel tests access them.
     // This prevents race conditions during module initialization.
@@ -2203,7 +2234,7 @@ fn try_run_cpython_test(
         let globals = PyDict::new(py);
 
         // Inject the shared CPython-side fixtures (iter-mode external
-        // functions and `_test_cm`) into every test's globals from the
+        // functions) into every test's globals from the
         // single `exported_globals` dict in `test_fixtures.py`. The
         // module is imported once and cached, so this is just an
         // `update()` of a small dict — no re-exec per test.
@@ -2214,6 +2245,16 @@ fn try_run_cpython_test(
         globals
             .call_method1("update", (exported,))
             .expect("Failed to merge shared test globals");
+
+        // NOTE: we deliberately do NOT set `__name__ = '__main__'` by default.
+        // Doing so makes CPython qualify function names in some error messages
+        // (`__main__.f() argument ...`), which Monty does not, breaking
+        // exception-message parity for several `function__err_*` cases.
+        if cpython_main_module {
+            globals
+                .set_item("__name__", "__main__")
+                .expect("Failed to seed __name__ for CPython");
+        }
 
         // For mount-fs tests, inject `root` variable pointing to real temp directory.
         if let Some(ref setup_code) = mount_root_setup {
@@ -2351,11 +2392,11 @@ fn format_cpython_exception(py: Python<'_>, e: &PyErr) -> String {
 ///
 /// Tests that exceed this duration are considered to be hanging (infinite loop)
 /// and will fail with a timeout error. Disabled under miri since the interpreter
-/// overhead makes normal tests exceed the 2s limit.
+/// overhead makes normal tests exceed the 4s limit.
 const TEST_TIMEOUT: Duration = if cfg!(miri) {
     Duration::from_mins(10)
 } else {
-    Duration::from_secs(2)
+    Duration::from_secs(4)
 };
 
 /// Result from running a test with a timeout.
@@ -2509,6 +2550,7 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
         config.iter_mode,
         config.async_mode,
         config.mount_fs,
+        config.cpython_main_module,
     );
 
     if config.xfail_cpython {

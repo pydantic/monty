@@ -20,12 +20,13 @@ one-shot OS call that the host opens, acts on, and closes again. The Monty
 heap stores only path, mode, and small Python-visible state — no OS
 handle, no buffered data, no descriptor number.
 
-This is the property that makes snapshotting safe: a `MontySnapshot` can
-be serialized at any pause point and resumed later (potentially in a
-different process or on a different host) without dangling references to
-host resources. It also means external processes can observe partial state
-between calls, and that there is no protection against the underlying file
-being changed or removed between calls — both documented further down.
+This is the property that makes subprocess `dump()` / `load()` safe: a
+session can be serialized at a pause point and resumed later without
+dangling references to host resources. The wasm in-process API exposes the
+same idea as `MontySnapshot`. It also means external processes can observe
+partial state between calls, and that there is no protection against the
+underlying file being changed or removed between calls — both documented
+further down.
 
 ## Mode strings
 
@@ -36,9 +37,13 @@ being changed or removed between calls — both documented further down.
 - Exclusive creation mode (`x`) is rejected with `ValueError: exclusive
   creation mode is not supported`; it would need a dedicated race-free
   mount-table operation.
-- The mode string is normalized to CPython's canonical form
-  (`'rt'` → `'r'`, `'r+b'` → `'rb+'`); the original raw input is not
-  preserved.
+- The mode string is normalized to a canonical form at parse time
+  (`'rt'` → `'r'`, `'br'` → `'rb'`); the original raw input is not
+  preserved, and `file.mode` reports the canonical form. For *text* modes
+  this diverges from CPython, whose `TextIOWrapper` preserves the string
+  as passed: `open(p, 'rt').mode` is `'rt'` in CPython but `'r'` in Monty.
+  Binary modes match, because CPython's buffered classes normalize too
+  (`open(p, 'br').mode` is `'rb'` in both).
 
 ## `open()` arguments
 
@@ -112,15 +117,12 @@ protocol (`__iter__`/`__next__`, including `for line in f:`).
   `seek()` share a single heap-resident buffer populated on the first such
   call. The host serves only one full-file `ReadText`/`ReadBytes` per
   file; everything after is sliced in pure Monty. Memory cost: the whole
-  file lives in the heap and counts against the configured `max_memory`
-  via `heap.allocate` tracking — the same path every other heap entry
-  takes. The buffer is **never invalidated** — external modifications to
+  file remains allocated and counts against the worker's allocator-backed
+  `max_memory`. The buffer is **never invalidated** — external modifications to
   the underlying file after the first read are not visible to subsequent
   reads.
-- `close()` releases the cached buffer (matching CPython), so
-  `current_memory()` drops by the buffer size as soon as `close()`
-  returns. Other holders of the buffer (e.g. a `data = f.read()`
-  reference) keep it alive via their own refcounts.
+- `close()` releases the cached buffer (matching CPython), returning its memory
+  when no other value, such as `data = f.read()`, retains it.
 - A read that *fails* in the host leaves the file in a retry-safe state:
   `pending_read` is cleared, the buffer stays empty, and `eof` is not
   flipped. A user-caught exception followed by a retry will re-attempt

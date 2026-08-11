@@ -16,28 +16,28 @@
 
 # === Text write with explicit utf-8 encoding ===
 writer = open(root / 'open_write.txt', 'w', encoding='utf-8')
-assert str(type(writer)) == "<class '_io.TextIOWrapper'>", 'text write returns TextIOWrapper'
-assert writer.readable() == False, 'w text file is not readable'
-assert writer.writable() == True, 'w text file is writable'
-assert writer.write('alpha') == 5, 'text write returns character count'
-assert writer.write('β') == 1, 'second text write appends after initial truncate'
+assert str(type(writer)) == "<class '_io.TextIOWrapper'>"
+assert writer.readable() == False
+assert writer.writable() == True
+assert writer.write('alpha') == 5
+assert writer.write('β') == 1
 writer.flush()
 writer.close()
 
 reader = open(root / 'open_write.txt', 'r', encoding='utf-8')
-assert reader.read() == 'alphaβ', 'text writes are committed'
+assert reader.read() == 'alphaβ'
 reader.close()
 
 # === Text append with explicit utf-8 encoding ===
 append_writer = open(root / 'open_write.txt', 'a', encoding='utf-8')
-assert append_writer.write('!') == 1, 'append text returns character count'
+assert append_writer.write('!') == 1
 append_writer.close()
 
 reader = open(root / 'open_write.txt', 'r', encoding='utf-8')
-assert reader.read() == 'alphaβ!', 'text append extends file'
+assert reader.read() == 'alphaβ!'
 reader.close()
 
 # === Bytes on disk match utf-8 encoding of β ===
 # β encodes as 0xCE 0xB2 in UTF-8 — verifies the file really was written as UTF-8
 # rather than the host's default text encoding.
-assert (root / 'open_write.txt').read_bytes() == b'alpha\xce\xb2!', 'file bytes are utf-8 encoded'
+assert (root / 'open_write.txt').read_bytes() == b'alpha\xce\xb2!'

@@ -3,21 +3,21 @@
 //! `open()` itself allocates no heap object. It validates its arguments and
 //! yields an [`OsFunction::Open`] OS call; the host performs the open-time
 //! effect (truncate / create / existence-check) and returns a
-//! [`MontyObject::FileHandle`](crate::MontyObject::FileHandle), which the
+//! [`MontyObject::FileHandle`](monty_types::MontyObject::FileHandle), which the
 //! generic resume path converts into the heap [`OpenFile`](crate::types::OpenFile)
 //! wrapper. `read()`/`write()` then delegate to full-file OS calls, so all
 //! filesystem access remains behind `OsFunction`.
 
 use std::str;
 
+use monty_types::{MontyPath, OpenCallArgs, OsFunctionCall};
+
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{HeapData, HeapGuard},
-    os::{MontyPath, OpenCallArgs, OsFunctionCall},
-    resource::ResourceTracker,
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    heap::HeapData,
     types::{PyTrait, file::FileMode},
     value::Value,
 };
@@ -31,7 +31,7 @@ use crate::{
 /// `FileNotFoundError`) for `r`/`r+` — and returns a `MontyObject::FileHandle`.
 /// The generic resume path converts that into the `OpenFile` heap wrapper, so
 /// `open()` needs no special resume handling.
-pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let OpenArgs {
         file,
         mode,
@@ -43,10 +43,10 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
         opener,
     } = OpenArgs::from_args(args, vm)?;
 
-    // `mode` is already a `String` from the macro (default `"r"`); `file`
-    // and the unsupported kwargs are still raw `Value`s and need cleanup.
-    let mut file = HeapGuard::new(file, vm);
-    let (file, vm) = file.as_parts_mut();
+    // `file` and the unsupported kwargs are raw `Value`s; `mode` holds a
+    // borrowed str — all need cleanup on every path.
+    defer_drop!(file, vm);
+    defer_drop!(mode, vm);
     defer_drop!(buffering, vm);
     defer_drop!(encoding, vm);
     defer_drop!(errors, vm);
@@ -67,6 +67,8 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
     // Parse here purely to reject malformed modes before the OS round-trip;
     // the file wrapper itself is built from the host's returned FileHandle.
     let file_mode = mode
+        .as_ref()
+        .map_or("r", |m| m.as_str(vm))
         .parse::<FileMode>()
         .map_err(|e| RunError::from(SimpleException::new_msg(ExcType::ValueError, e)))?;
 
@@ -79,9 +81,10 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
 /// Argument shape for `open(file, mode='r', buffering=-1, encoding=None,
 /// errors=None, newline=None, closefd=True, opener=None)`.
 ///
-/// `mode` is taken as `String` so wrong-type errors flow through the macro's
-/// `bad_arg_named` path and match CPython's `open() argument 'mode' must be
-/// str, not …` wording verbatim. The other kwargs stay as raw `Value`
+/// `mode` is a zero-copy [`StrArg`] (absent → `"r"`) so wrong-type errors
+/// flow through the macro's `bad_arg_named` path and match CPython's
+/// `open() argument 'mode' must be str, not …` wording verbatim, without
+/// copying the mode string. The other kwargs stay as raw `Value`
 /// because they have monty-specific validation (`validate_ignored_open_kwarg`)
 /// that the macro doesn't model — Monty rejects any *non-default* value to
 /// avoid silently dropping semantics it doesn't honour (e.g. `buffering=0`,
@@ -92,8 +95,8 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
 #[from_args(name = "open", bad_arg_named)]
 struct OpenArgs {
     file: Value,
-    #[from_args(default = "r".to_owned())]
-    mode: String,
+    #[from_args(default)]
+    mode: Option<StrArg>,
     #[from_args(default = Value::Int(-1))]
     buffering: Value,
     #[from_args(default = Value::None)]
@@ -114,7 +117,7 @@ struct OpenArgs {
 /// `PurePosixPath`. The error message mentions `os.PathLike` to match
 /// CPython, even though full PathLike support is limited to the variants
 /// listed above.
-fn extract_path_string<'a>(value: &Value, vm: &'a VM<'_, impl ResourceTracker>) -> RunResult<&'a str> {
+fn extract_path_string<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
     let opt = match value {
         Value::InternString(string_id) => Some(vm.interns.get_str(*string_id)),
         Value::InternBytes(bytes_id) => decode_utf8_path(vm.interns.get_bytes(*bytes_id))?,
@@ -175,7 +178,7 @@ fn decode_utf8_path(bytes: &[u8]) -> RunResult<Option<&str>> {
 /// Non-default values raise `TypeError` ("'<name>' argument is not yet
 /// supported"). A wrong *type* (e.g. `encoding=123`) is reported as a
 /// dedicated type error so it remains diagnosable.
-fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl ResourceTracker>) -> Result<(), RunError> {
+fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result<(), RunError> {
     let is_default = match name {
         // CPython default is -1 (sentinel for "interpreter picks the
         // buffer size"). Monty has no buffering layer to tune.
@@ -198,7 +201,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl Resou
             } else {
                 return Err(ExcType::type_error(format!(
                     "open() argument '{name}' must be str or None, not {}",
-                    value.py_type(vm).cpython_arg_name()
+                    value.py_type(vm).cpython_arg_name(vm.heap, vm.interns)
                 )));
             }
         }
@@ -212,7 +215,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl Resou
             } else {
                 return Err(ExcType::type_error(format!(
                     "open() argument '{name}' must be str or None, not {}",
-                    value.py_type(vm).cpython_arg_name()
+                    value.py_type(vm).cpython_arg_name(vm.heap, vm.interns)
                 )));
             }
         }
@@ -232,9 +235,6 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl Resou
 }
 
 /// Creates the path type error used by `open()`.
-fn path_type_error(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunError {
-    ExcType::type_error(format!(
-        "expected str, bytes or os.PathLike object, not {}",
-        value.py_type(vm)
-    ))
+fn path_type_error(value: &Value, vm: &VM<'_>) -> RunError {
+    ExcType::type_error_fspath(&value.py_type_name(vm))
 }

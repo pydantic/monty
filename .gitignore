@@ -17,7 +17,15 @@
 /.playwright-mcp/
 /crates/fuzz/artifacts/
 /crates/fuzz/corpus/
+/crates/monty-js/test-results/
 /.worktrees/
 /.zed/
 /scripts/json_files/
 .DS_Store
+/.codex/
+
+# Python virtualenvs
+.venv/
+
+# Local perf planning notes
+/perf-plan.md

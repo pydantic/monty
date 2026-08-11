@@ -1,179 +1,23 @@
-//! Off-GIL construction of [`PyMonty`] instances.
+//! Extraction of untrusted Python arguments into owned Rust values.
 //!
-//! This module hosts everything that can run without holding the GIL when a
-//! `Monty` is being parsed and (optionally) type-checked: the Rust-only error
-//! types ([`TypeCheckErr`], [`BuildErr`]), the type-check entry points
-//! ([`run_type_check_off_gil`], [`py_type_check`]), and the [`ConstructInputs`]
-//! bundle that the sync `Monty::__new__` (via `py.detach`) and the async
-//! `Monty.acreate` (via `tokio::task::spawn_blocking`) both consume.
-//!
-//! Keeping these together lets both constructors share a single code path while
-//! also serving the standalone type-check entry points used elsewhere
-//! (`Monty::type_check`, `MontyRepl::type_check`, `MontyRepl::feed_*`).
+//! Everything here converts host-supplied Python objects (source code, type
+//! stubs, REPL inputs) into the owned values that get shipped to a `monty`
+//! worker subprocess, turning conversion failures (lone surrogates,
+//! unconvertible values) into the matching `MontyError` subclasses rather
+//! than leaking raw PyO3 errors.
 
-use ::monty::{ExcType, MontyException, MontyRun};
-use monty_type_checking::{SourceFile, TypeCheckingDiagnostics, type_check};
+use monty_proto::python::{DcRegistry, exc_py_to_monty, py_to_monty_value};
+use monty_types::{ExcType, MontyException, MontyObject};
 use pyo3::{
-    exceptions::{PyRuntimeError, PyTypeError},
     prelude::*,
-    types::{PyList, PyString},
+    types::{PyDict, PyString},
 };
 
-use crate::{
-    dataclass::DcRegistry,
-    exceptions::{MontyError, MontyTypingError},
-    monty_cls::PyMonty,
-};
+use crate::exceptions::{MontyConversionError, MontyError};
 
-/// The result of running [`run_type_check_off_gil`] without holding the GIL.
-///
-/// The two failure modes are kept separate so the GIL-side conversion can raise
-/// [`MontyTypingError`] for diagnostic findings and [`PyRuntimeError`] for
-/// internal type-checker failures, matching the behavior of [`py_type_check`].
-pub(crate) enum TypeCheckErr {
-    /// The type checker reported diagnostic errors in the user code.
-    Diagnostics(TypeCheckingDiagnostics),
-    /// The type checker itself failed (infrastructure error, not a user error).
-    Internal(String),
-}
-
-impl TypeCheckErr {
-    /// Converts this error into the appropriate Python exception.
-    ///
-    /// Must be called while holding the GIL. Diagnostic errors become
-    /// [`MontyTypingError`]; infrastructure errors become [`PyRuntimeError`].
-    pub(crate) fn into_pyerr(self, py: Python<'_>) -> PyErr {
-        match self {
-            Self::Diagnostics(diag) => MontyTypingError::new_err(py, diag),
-            Self::Internal(msg) => PyRuntimeError::new_err(msg),
-        }
-    }
-}
-
-/// Runs the static type checker without touching Python — safe to call inside
-/// `py.detach(...)` or a `tokio::task::spawn_blocking` worker.
-///
-/// This is the building block shared by [`py_type_check`] (sync GIL-aware
-/// wrapper) and [`ConstructInputs::build`] (used by both the sync `__new__`
-/// constructor and the async `Monty.acreate` classmethod).
-pub(crate) fn run_type_check_off_gil(
-    code: &str,
-    script_name: &str,
-    type_stubs: Option<&str>,
-    stubs_name: &str,
-) -> Result<(), TypeCheckErr> {
-    let type_stubs = type_stubs.map(|s| SourceFile::new(s, stubs_name));
-    match type_check(&SourceFile::new(code, script_name), type_stubs.as_ref()) {
-        Ok(None) => Ok(()),
-        Ok(Some(diag)) => Err(TypeCheckErr::Diagnostics(diag)),
-        Err(msg) => Err(TypeCheckErr::Internal(msg)),
-    }
-}
-
-/// GIL-aware wrapper around [`run_type_check_off_gil`] that releases the GIL
-/// for the duration of the type-check work and converts errors to `PyErr`.
-pub(crate) fn py_type_check(
-    py: Python<'_>,
-    code: &str,
-    script_name: &str,
-    type_stubs: Option<&str>,
-    stubs_name: &str,
-) -> PyResult<()> {
-    py.detach(|| run_type_check_off_gil(code, script_name, type_stubs, stubs_name))
-        .map_err(|e| e.into_pyerr(py))
-}
-
-/// Errors that can occur while assembling a [`PyMonty`] in [`ConstructInputs::build`].
-///
-/// Carries a Rust-only payload so the build can run inside `py.detach` or a
-/// `spawn_blocking` worker; the GIL-side wrapper converts to the matching
-/// `PyErr` afterwards via [`Self::into_pyerr`].
-pub(crate) enum BuildErr {
-    /// Type checking found a problem (diagnostics or infrastructure failure).
-    TypeCheck(TypeCheckErr),
-    /// Parsing the user code failed (raised as `MontySyntaxError` etc).
-    Parse(MontyException),
-}
-
-impl BuildErr {
-    /// Converts this error into the appropriate Python exception.
-    ///
-    /// Must be called while holding the GIL.
-    pub(crate) fn into_pyerr(self, py: Python<'_>) -> PyErr {
-        match self {
-            Self::TypeCheck(e) => e.into_pyerr(py),
-            Self::Parse(e) => MontyError::new_err(py, e),
-        }
-    }
-}
-
-/// All owned inputs needed to construct a [`PyMonty`].
-///
-/// Built on the GIL by [`ConstructInputs::from_py`] from the Python-side
-/// arguments shared by `Monty::__new__` and `Monty.acreate`, then consumed
-/// off-GIL via [`ConstructInputs::build`] so the heavy parse + type-check
-/// work never blocks the caller.
-pub(crate) struct ConstructInputs {
-    code: String,
-    script_name: String,
-    input_names: Vec<String>,
-    do_type_check: bool,
-    type_check_stubs: Option<String>,
-    dc_registry: DcRegistry,
-}
-
-impl ConstructInputs {
-    /// Reads everything from the Python arguments while holding the GIL,
-    /// returning an owned bundle that is `Send` for the async path.
-    pub(crate) fn from_py(
-        py: Python<'_>,
-        code: &Bound<'_, PyString>,
-        script_name: &str,
-        inputs: Option<&Bound<'_, PyList>>,
-        do_type_check: bool,
-        type_check_stubs: Option<&Bound<'_, PyString>>,
-        dataclass_registry: Option<&Bound<'_, PyList>>,
-    ) -> PyResult<Self> {
-        Ok(Self {
-            input_names: list_str(py, inputs, "inputs")?,
-            code: extract_source_code(py, code)?,
-            script_name: script_name.to_string(),
-            do_type_check,
-            type_check_stubs: extract_type_check_stubs(py, type_check_stubs)?,
-            dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
-        })
-    }
-
-    /// Off-GIL parse + assembly of the `PyMonty` instance. Safe to call from
-    /// `py.detach` (sync `__new__`) or `tokio::task::spawn_blocking` (`acreate`).
-    pub(crate) fn build(self) -> Result<PyMonty, BuildErr> {
-        let Self {
-            code,
-            script_name,
-            input_names,
-            do_type_check,
-            type_check_stubs,
-            dc_registry,
-        } = self;
-
-        if do_type_check {
-            run_type_check_off_gil(&code, &script_name, type_check_stubs.as_deref(), "type_stubs.pyi")
-                .map_err(BuildErr::TypeCheck)?;
-        }
-        // `MontyRun::new` consumes the input-name vec, so clone for storage in
-        // `PyMonty` (one cheap allocation, off-GIL).
-        let runner = MontyRun::new(code, &script_name, input_names.clone()).map_err(BuildErr::Parse)?;
-        Ok(PyMonty::from_parts(runner, script_name, input_names, dc_registry))
-    }
-}
-
-/// Extracts Python source code from a `PyString`, converting encoding failures
-/// into a `MontySyntaxError` rather than letting the raw `UnicodeEncodeError`
-/// bubble up.
-///
-/// Python strings may contain lone surrogates (e.g. `'\ud83d'`) that cannot be
-/// encoded as UTF-8. Such strings are not valid Python source, so we report
-/// them as a syntax error instead of an encoding error.
+/// Extracts source code, converting invalid UTF-8 (lone surrogates) into a
+/// `MontySyntaxError` — text that cannot be decoded is not valid Python
+/// source, so a syntax error is the honest classification.
 pub(crate) fn extract_source_code(py: Python<'_>, code: &Bound<'_, PyString>) -> PyResult<String> {
     match code.to_str() {
         Ok(s) => Ok(s.to_owned()),
@@ -187,13 +31,9 @@ pub(crate) fn extract_source_code(py: Python<'_>, code: &Bound<'_, PyString>) ->
     }
 }
 
-/// Extracts the optional `type_check_stubs` argument, converting invalid UTF-8
-/// (lone surrogates) into a `MontySyntaxError`.
-///
-/// Stubs are Python source that gets parsed before type checking runs; text
-/// that can't even be decoded as UTF-8 is not valid Python source, so we
-/// classify it as a syntax error (same rationale as [`extract_source_code`])
-/// rather than leaking PyO3's raw `UnicodeEncodeError`.
+/// Extracts the optional `type_check_stubs` argument, converting invalid
+/// UTF-8 into a `MontySyntaxError` (same rationale as
+/// [`extract_source_code`]).
 pub(crate) fn extract_type_check_stubs(
     py: Python<'_>,
     type_check_stubs: Option<&Bound<'_, PyString>>,
@@ -213,36 +53,36 @@ pub(crate) fn extract_type_check_stubs(
     }
 }
 
-/// Extracts a list of strings from an optional Python list argument.
-///
-/// Distinguishes two failure modes so callers get precise errors:
-/// - a non-string element raises `TypeError` (wrong argument shape — no Monty
-///   equivalent makes sense, so a plain Python `TypeError` is appropriate)
-/// - a string with a lone surrogate raises [`MontySyntaxError`], matching how
-///   [`extract_source_code`] handles the same condition on the source-code
-///   argument: input names become Python identifiers, so unencodable text is
-///   not valid source and is reported as a syntax error rather than leaking
-///   PyO3's raw `UnicodeEncodeError` wrapped in a misleading `TypeError`.
-fn list_str(py: Python<'_>, arg: Option<&Bound<'_, PyList>>, name: &str) -> PyResult<Vec<String>> {
-    if let Some(names) = arg {
-        names
-            .iter()
-            .map(|item| {
-                let s = item
-                    .cast::<PyString>()
-                    .map_err(|e| PyTypeError::new_err(format!("{name}: {e}")))?;
-                s.to_str().map(str::to_owned).map_err(|_| {
-                    MontyError::new_err(
-                        py,
-                        MontyException::new(
-                            ExcType::SyntaxError,
-                            Some(format!("{name} entry is not valid UTF-8 (contains lone surrogates)")),
-                        ),
-                    )
-                })
-            })
-            .collect()
-    } else {
-        Ok(vec![])
-    }
+/// Extracts the `inputs` dict into `(name, value)` pairs for a feed.
+pub(crate) fn extract_repl_inputs(
+    inputs: Option<&Bound<'_, PyDict>>,
+    dc_registry: &DcRegistry,
+) -> PyResult<Vec<(String, MontyObject)>> {
+    let Some(inputs) = inputs else {
+        return Ok(vec![]);
+    };
+    // Keys and values are untrusted host input. A key problem is a
+    // `MontyRuntimeError` — a non-string key (`TypeError`) or a string key that
+    // fails UTF-8 conversion (the lone-surrogate `ValueError` its `extract`
+    // produces). A value that fails to convert goes through
+    // `MontyConversionError::value_conversion_err`: an unrepresentable *type*
+    // surfaces as `MontyConversionError` (a `MontyError`), exactly as an
+    // `external_lookup` value does, while a depth-limit `RuntimeError` keeps its
+    // type.
+    inputs
+        .iter()
+        .map(|(key, value)| {
+            let py = key.py();
+            let Ok(key_str) = key.cast::<PyString>() else {
+                let exc = MontyException::new(ExcType::TypeError, Some("inputs keys must be str".to_string()));
+                return Err(MontyError::new_err(py, exc));
+            };
+            let name = key_str
+                .extract::<String>()
+                .map_err(|e| MontyError::new_err(py, exc_py_to_monty(py, &e)))?;
+            let obj = py_to_monty_value(&value, dc_registry)
+                .map_err(|e| MontyConversionError::value_conversion_err(py, e))?;
+            Ok((name, obj))
+        })
+        .collect::<PyResult<_>>()
 }

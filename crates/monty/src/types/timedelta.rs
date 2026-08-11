@@ -5,26 +5,22 @@
 //! and formatting.
 
 use std::{
-    borrow::Cow,
     cmp::Ordering,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem,
 };
 
-use ahash::AHashSet;
 use chrono::TimeDelta as ChronoTimeDelta;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{HeapData, HeapId, HeapItem, HeapRead},
+    heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    resource::ResourceTracker,
-    types::{PyTrait, Type},
+    types::{CmpOrder, LazyHeapSet, PyTrait, Type, date, datetime, str::allocate_string},
     value::{EitherStr, Value},
 };
 
@@ -179,7 +175,7 @@ pub(crate) fn from_total_microseconds(total_microseconds: i128) -> RunResult<Tim
 ///
 /// Supports positional `(days, seconds, microseconds)` and keyword arguments
 /// `days`, `seconds`, `microseconds`, `milliseconds`, `minutes`, `hours`, `weeks`.
-pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let TimedeltaArgs {
         days,
         seconds,
@@ -196,10 +192,10 @@ pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         + checked_component(minutes, MINUTE_MICROSECONDS)?
         + checked_component(seconds, MICROSECONDS_PER_SECOND)?
         + checked_component(milliseconds, MILLISECONDS_PER_SECOND)?
-        + microseconds;
+        + microseconds.0;
 
     let delta = from_total_microseconds(total_microseconds)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))))
 }
 
 /// Argument shape for `timedelta(days=0, seconds=0, microseconds=0, *, milliseconds=0, minutes=0, hours=0, weeks=0)`.
@@ -209,24 +205,54 @@ pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
 #[derive(FromArgs)]
 #[from_args(name = "timedelta")]
 struct TimedeltaArgs {
-    #[from_args(default = 0)]
-    days: i128,
-    #[from_args(default = 0)]
-    seconds: i128,
-    #[from_args(default = 0)]
-    microseconds: i128,
-    #[from_args(kw_only, default = 0)]
-    milliseconds: i128,
-    #[from_args(kw_only, default = 0)]
-    minutes: i128,
-    #[from_args(kw_only, default = 0)]
-    hours: i128,
-    #[from_args(kw_only, default = 0)]
-    weeks: i128,
+    #[from_args(default)]
+    days: DeltaComponent,
+    #[from_args(default)]
+    seconds: DeltaComponent,
+    #[from_args(default)]
+    microseconds: DeltaComponent,
+    #[from_args(kw_only, default)]
+    milliseconds: DeltaComponent,
+    #[from_args(kw_only, default)]
+    minutes: DeltaComponent,
+    #[from_args(kw_only, default)]
+    hours: DeltaComponent,
+    #[from_args(kw_only, default)]
+    weeks: DeltaComponent,
 }
 
-fn checked_component(value: i128, unit_microseconds: i128) -> RunResult<i128> {
-    value.checked_mul(unit_microseconds).ok_or_else(|| {
+/// One `timedelta(...)` constructor component, held as `i128` so the
+/// microsecond-normalisation arithmetic in [`init`] cannot wrap.
+///
+/// Carries its own `FromValue` impl (rather than a generic `i128` one)
+/// because the overflow semantics are timedelta-specific: CPython's
+/// accumulator converts each component through C int, so ints wider than
+/// i64 raise `OverflowError: Python int too large to convert to C int`
+/// even though they would fit in i128.
+#[derive(Clone, Copy, Default)]
+struct DeltaComponent(i128);
+
+impl FromValue for DeltaComponent {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
+
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let result = match value {
+            Value::Bool(b) => Ok(Self(i128::from(b))),
+            Value::Int(i) => Ok(Self(i128::from(i))),
+            _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_int())),
+            _ => Err(FromValueFail::WrongType),
+        };
+        value.drop_with(vm);
+        result
+    }
+
+    fn type_error(got: &str) -> RunError {
+        ExcType::type_error_not_integer(got)
+    }
+}
+
+fn checked_component(value: DeltaComponent, unit_microseconds: i128) -> RunResult<i128> {
+    value.0.checked_mul(unit_microseconds).ok_or_else(|| {
         SimpleException::new_msg(ExcType::OverflowError, "timedelta argument overflow while normalizing").into()
     })
 }
@@ -265,53 +291,51 @@ pub(crate) fn format_repr(delta: &TimeDelta) -> String {
 }
 
 impl HeapItem for TimeDelta {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}
 }
 
 /// `HeapRead`-based dispatch for `TimeDelta`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident timedeltas.
 impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::TimeDelta
     }
 
-    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        Ok(total_microseconds(self.get(vm.heap)) == total_microseconds(other.get(vm.heap)))
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        Ok(Some(
+            total_microseconds(self.get(vm.heap)) == total_microseconds(other.get(vm.heap)),
+        ))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
-        Ok(total_microseconds(self.get(vm.heap)).partial_cmp(&total_microseconds(other.get(vm.heap))))
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
+        Ok(CmpOrder::Ordered(
+            total_microseconds(self.get(vm.heap)).cmp(&total_microseconds(other.get(vm.heap))),
+        ))
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        total_microseconds(self.get(vm.heap)) != 0
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(total_microseconds(self.get(vm.heap)) != 0)
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         f.write_str(&format_repr(self.get(vm.heap)))?;
         Ok(())
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let (days, seconds, microseconds) = components(self.get(vm.heap));
         let hours = seconds / SECONDS_PER_HOUR;
         let minutes = (seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE;
@@ -322,18 +346,110 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
             format!("{hours}:{minutes:02}:{second:02}.{microseconds:06}")
         };
 
-        if days == 0 {
-            return Ok(Cow::Owned(time));
-        }
+        let s = if days == 0 {
+            time
+        } else {
+            let day_word = if days.abs() == 1 { "day" } else { "days" };
+            format!("{days} {day_word}, {time}")
+        };
+        Ok(allocate_string(s, vm.heap))
+    }
 
-        let day_word = if days.abs() == 1 { "day" } else { "days" };
-        Ok(Cow::Owned(format!("{days} {day_word}, {time}")))
+    /// `-delta` — `from_total_microseconds` is fallible, though no in-range
+    /// value can overflow it here: the bounds are `±999999999` days, so every
+    /// negation lands back inside them.
+    fn py_neg_impl(&self, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        let negated = from_total_microseconds(-total_microseconds(self.get(vm.heap)))?;
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(negated)))))
+    }
+
+    /// `+delta` is the identity, so hand back this same immutable value. The
+    /// caller owns the result, hence the extra reference.
+    fn py_pos_impl(&self, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        Ok(self_id.map(|id| {
+            vm.heap.inc_ref(id);
+            Value::Ref(id)
+        }))
+    }
+
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::Date(other)) => Ok(date::py_add(*other.get(vm.heap), *self.get(vm.heap), vm.heap)),
+            Some(HeapReadOutput::DateTime(other)) => {
+                let other = other.get(vm.heap).clone();
+                let value = *self.get(vm.heap);
+                Ok(datetime::py_add(&other, &value, vm.heap))
+            }
+            Some(HeapReadOutput::TimeDelta(other)) => {
+                let total = total_microseconds(self.get(vm.heap)).checked_add(total_microseconds(other.get(vm.heap)));
+                let Some(total) = total else { return Ok(None) };
+                let Ok(result) = from_total_microseconds(total) else {
+                    return Ok(None);
+                };
+                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result)))))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        let total = total_microseconds(self.get(vm.heap)).checked_sub(total_microseconds(other.get(vm.heap)));
+        let Some(total) = total else { return Ok(None) };
+        let Ok(result) = from_total_microseconds(total) else {
+            return Ok(None);
+        };
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result)))))
+    }
+
+    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let multiplier = match other {
+            Value::Int(value) => i128::from(*value),
+            Value::Bool(value) => i128::from(*value),
+            _ => return Ok(None),
+        };
+        let total = total_microseconds(self.get(vm.heap))
+            .checked_mul(multiplier)
+            .ok_or_else(|| SimpleException::new_msg(ExcType::OverflowError, "timedelta multiplication overflow"))?;
+        let result = from_total_microseconds(total)?;
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result)))))
+    }
+
+    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.py_mul_impl(other, vm)
+    }
+
+    fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let divisor = match other {
+            Value::Int(0) | Value::Bool(false) => return Err(ExcType::zero_division().into()),
+            Value::Int(value) => i128::from(*value),
+            Value::Bool(true) => 1,
+            _ => return Ok(None),
+        };
+        let total = total_microseconds(self.get(vm.heap));
+        let result = div_microseconds_round_ties_even(total, divisor);
+        let result = from_total_microseconds(result)?;
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result)))))
+    }
+
+    fn py_floordiv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let divisor = match other {
+            Value::Int(0) | Value::Bool(false) => return Err(ExcType::zero_division().into()),
+            Value::Int(value) => i128::from(*value),
+            Value::Bool(true) => 1,
+            _ => return Ok(None),
+        };
+        let total = total_microseconds(self.get(vm.heap));
+        let result = from_total_microseconds(total.div_euclid(divisor))?;
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result)))))
     }
 
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
+        vm: &mut VM<'h>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -346,7 +462,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         Err(ExcType::attribute_error(Type::TimeDelta, attr.as_str(vm.interns)))
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (days, seconds, microseconds) = components(self.get(vm.heap));
         match attr.string_id() {
             Some(id) if id == StaticStrings::Days => Ok(Some(CallResult::Value(Value::Int(i64::from(days))))),

@@ -1,5 +1,11 @@
 .DEFAULT_GOAL := main
 
+ifeq ($(OS),Windows_NT)
+EXE_EXT := .exe
+else
+EXE_EXT :=
+endif
+
 .PHONY: .cargo
 .cargo: ## Check that cargo is installed
 	@cargo --version || echo 'Please install cargo: https://github.com/rust-lang/cargo'
@@ -10,8 +16,8 @@
 
 .PHONY: install-py
 install-py: .uv ## Install python dependencies
-	# --only-dev to avoid building the python package, use make dev-py for that
-	uv sync --all-packages --only-dev
+	# --only-dev avoids building the python packages; --inexact preserves builds installed by make dev-py
+	uv sync --all-packages --only-dev --inexact
 
 .PHONY: install-js
 install-js: ## Install JS package dependencies
@@ -23,11 +29,17 @@ install: .cargo install-py install-js ## Install the package, dependencies, and 
 	uvx prek install --install-hooks
 
 .PHONY: dev-py
-dev-py: ## Install the python package for development
+dev-py: install-py ## Install python packages for development
+	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
 
-.PHONY: dev-js
-dev-js: ## Build the JS package (debug)
+.PHONY: dev-py-release
+dev-py-release: install-py ## Install python packages for development with a release build
+	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml --release
+	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
+
+.PHONY: build-js
+build-js: install-js ## Build the JS package (napi debug build + TypeScript)
 	cd crates/monty-js && npm run build:debug
 
 .PHONY: lint-js
@@ -35,26 +47,30 @@ lint-js: install-js ## Lint JS code with oxlint
 	cd crates/monty-js && npm run lint
 
 .PHONY: test-js
-test-js: dev-js ## Build and test the JS package
-	cd crates/monty-js && npm test
+test-js: build-js ## Test the JS package (builds the monty binary the workers run)
+	cargo build -p monty-runtime
+	cd crates/monty-js && MONTY_BIN="$${CARGO_TARGET_DIR:-../../target}/debug/monty$(EXE_EXT)" npm test
 
-.PHONY: smoke-test-js
-smoke-test-js: ## Run smoke test for JS package (builds, packs, and tests installation)
-	cd crates/monty-js && npm run smoke-test
+.PHONY: build-wasm
+build-wasm: install-js ## Build the lean wasm worker module (requires the wasm32-wasip1 target)
+	cd crates/monty-js && npm run build:wasm && npm run build:ts
 
-.PHONY: dev-py-release
-dev-py-release: ## Install the python package for development with a release build
-	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
+.PHONY: test-wasm
+test-wasm: install-js ## Test the wasm worker module from node, with no browser
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && npm run test:wasm
 
-.PHONY: dev-js-release
-dev-js-release: ## Build the JS package (release)
-	cd crates/monty-js && npm run build
+.PHONY: test-browser
+test-browser: install-js ## Browser (Vitest) test of the wasm path in a real headless browser
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && npx playwright install chromium && npm run test:browser
 
 .PHONY: dev-py-pgo
-dev-py-pgo: ## Install the python package for development with profile-guided optimization
+dev-py-pgo: install-py ## Install the python package for development with profile-guided optimization
 	$(eval PROFDATA := $(shell mktemp -d))
+	# the profiling run below spawns `monty` workers; build the runtime outside
+	# the instrumented build so only the client extension is profiled
+	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml --release
 	RUSTFLAGS='-Cprofile-generate=$(PROFDATA)' uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
-	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
+	uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
 	$(eval LLVM_PROFDATA := $(shell rustup run stable bash -c 'echo $$RUSTUP_HOME/toolchains/$$RUSTUP_TOOLCHAIN/lib/rustlib/$$(rustc -Vv | grep host | cut -d " " -f 2)/bin/llvm-profdata'))
 	$(LLVM_PROFDATA) merge -o $(PROFDATA)/merged.profdata $(PROFDATA)
 	RUSTFLAGS='-Cprofile-use=$(PROFDATA)/merged.profdata' $(uv-run-no-sync) maturin develop --uv -m crates/monty-python/Cargo.toml --release
@@ -72,7 +88,7 @@ format-py: ## Format Python code - WARNING be careful about this command as it m
 
 .PHONY: format-js
 format-js: install-js ## Format JS code with prettier
-	cd crates/monty-js && npm run format:prettier
+	cd crates/monty-js && npm run format
 
 .PHONY: format
 format: format-rs format-py format-js ## Format Rust code, this does not format Python code as we have to be careful with that
@@ -80,13 +96,22 @@ format: format-rs format-py format-js ## Format Rust code, this does not format 
 .PHONY: lint-rs
 lint-rs:  ## Lint Rust code with clippy and import checks
 	@cargo clippy --version
-	cargo clippy --workspace --tests -p monty-bench --bench main -- -D warnings
+	cargo clippy --workspace --tests -p monty-bench --benches -- -D warnings
 	cargo clippy --workspace --tests --all-features -- -D warnings
 	./scripts/check_imports.py
 
 .PHONY: clippy-fix
 clippy-fix: ## Fix Rust code with clippy
-	cargo clippy --workspace --tests -p monty-bench --bench main --all-features --fix --allow-dirty
+	cargo clippy --workspace --tests -p monty-bench --benches --all-features --fix --allow-dirty
+
+.PHONY: generate-proto
+generate-proto: ## Regenerate monty-proto's checked-in code from the .proto schema
+	cargo run -p monty-proto --features generate --bin generate-proto
+	cargo +nightly fmt -p monty-proto
+
+.PHONY: check-proto
+check-proto: generate-proto ## Verify monty-proto's checked-in code matches the .proto schema
+	git diff --exit-code crates/monty-proto/src/generated crates/monty-proto/tests/oracle
 
 .PHONY: lint-py
 lint-py: dev-py ## Lint Python code with ruff
@@ -107,7 +132,7 @@ format-lint-py: format-py lint-py ## Format and lint Python code with ruff
 
 .PHONY: test-no-features
 test-no-features: ## Run rust tests without any features enabled
-	cargo test -p monty
+	cargo test -p monty -p monty-fs
 	cargo run -p monty-datatest
 
 .PHONY: test-memory-model-checks
@@ -133,23 +158,28 @@ miri-test-cases: ## Run library inline tests under miri (particularly relevant f
 	MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri run -p monty-datatest -- run_test_cases_monty
 
 .PHONY: test-type-checking
-test-type-checking: ## Run rust tests on monty_type_checking
-	cargo test -p monty_type_checking -p monty_typeshed
+test-type-checking: ## Run rust tests on monty-type-checking
+	cargo test -p monty-type-checking -p monty-typeshed
+
+.PHONY: test-subprocess
+test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
+	cargo build -p monty-runtime
+	cargo test -p monty-proto -p monty-runtime -p monty-pool
 
 .PHONY: pytest
 pytest: ## Run Python tests with pytest
-	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests
+	uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests
 
 .PHONY: test-py
 test-py: dev-py pytest ## Build the python package (debug profile) and run tests
 
 .PHONY: test-docs
 test-docs: dev-py ## Test docs examples only
-	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests/test_readme_examples.py
+	uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests/test_readme_examples.py
 	cargo test --doc -p monty
 
 .PHONY: test
-test: test-memory-model-checks test-ref-count-return test-no-features test-type-checking test-py miri ## Run rust tests
+test: test-memory-model-checks test-ref-count-return test-no-features test-type-checking test-subprocess test-py miri ## Run rust tests
 
 .PHONY: testcov
 testcov: ## Run Rust tests with coverage, print table, and generate HTML report
@@ -165,7 +195,7 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 	cargo llvm-cov --no-report -p monty --features ref-count-return
 	cargo llvm-cov run --no-report -p monty-datatest --features ref-count-return
 	echo "coverage for `make test-type-checking`"
-	cargo llvm-cov --no-report -p monty_type_checking -p monty_typeshed
+	cargo llvm-cov --no-report -p monty-type-checking -p monty-typeshed
 	echo "Generating reports:"
 	cargo llvm-cov report --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
 	cargo llvm-cov report --html --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
@@ -182,9 +212,22 @@ update-typeshed: ## Update vendored typeshed from upstream
 	uv run ruff format
 	uv run ruff check --fix --fix-only --silent
 
+.PHONY: check-typeshed
+check-typeshed: ## Check vendored typeshed stubs are in sync with upstream
+	uv run crates/monty-typeshed/check.py
+
 .PHONY: bench
 bench: ## Run benchmarks
 	cargo bench -p monty-bench --bench main
+
+.PHONY: bench-pool
+bench-pool: ## Run subprocess pool benchmarks (spawn, checkout, wire round-trips)
+	cargo build -p monty-runtime --release
+	MONTY_TEST_BIN=$(CURDIR)/target/release/monty cargo bench -p monty-bench --bench pool
+
+.PHONY: bench-decode
+bench-decode: ## Run child-frame protobuf decode benchmarks
+	cargo bench -p monty-bench --bench decode
 
 .PHONY: dev-bench
 dev-bench: ## Run benchmarks to test with dev profile
@@ -209,7 +252,7 @@ fuzz-tokens_input_panic: ## Run the `tokens_input_panic` fuzz target (structured
 	cargo +nightly fuzz run --fuzz-dir crates/fuzz tokens_input_panic
 
 .PHONY: main
-main: lint test-memory-model-checks test-py ## run linting and the most important tests
+main: lint test-memory-model-checks test-subprocess test-py ## run linting and the most important tests
 
 # (must stay last!)
 .PHONY: help

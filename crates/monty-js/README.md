@@ -1,6 +1,22 @@
 # @pydantic/monty
 
-JavaScript/TypeScript bindings for the Monty sandboxed Python interpreter.
+Run untrusted Python safely from JavaScript. In Node.js this uses a pool of
+crash-isolated `monty` interpreter subprocesses; browser bundlers resolve the
+same public API to a Web Worker pool backed by a lean wasm build.
+
+[Monty](https://github.com/pydantic/monty) is a sandboxed Python interpreter
+written in Rust. A sandbox process can never be made fully crash-proof against
+memory errors (stack overflow, allocator aborts), so this package _only_ runs
+the interpreter in worker subprocesses: a worker that crashes raises
+`MontyCrashedError`, is replaced by the pool, and your Node.js process is
+never at risk.
+
+The native binding and the `monty` binary ship together via platform-specific
+npm packages installed automatically (like esbuild). Browser builds use the
+package `browser` export and never import the napi loader; they run the sandbox
+in a Web Worker (`wasm32-wasip1`) with the same pool/session API. Advanced
+Node-only helpers are available from `@pydantic/monty/node`, and wasm-specific
+factories from `@pydantic/monty/wasm`.
 
 ## Installation
 
@@ -13,196 +29,353 @@ npm install @pydantic/monty
 ```ts
 import { Monty } from '@pydantic/monty'
 
-// Create interpreter and run code
-const m = new Monty('1 + 2')
-const result = m.run() // returns 3
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+
+const result = await session.feedRun('1 + 2') // 3
 ```
 
-## Input Variables
+A session is a REPL in a dedicated worker — state persists across feeds:
 
 ```ts
-const m = new Monty('x + y', { inputs: ['x', 'y'] })
-const result = m.run({ inputs: { x: 10, y: 20 } }) // returns 30
+await session.feedRun('x = 21')
+await session.feedRun('x * 2') // 42
 ```
 
-## External Functions
+Without `await using`, call `session.close()` (returns the worker to the pool)
+and `pool.close()` explicitly.
 
-For synchronous external functions, pass them directly to `run()`:
+## Inputs
+
+Pass values as globals for a feed:
 
 ```ts
-const m = new Monty('add(2, 3)')
-
-const result = m.run({
-  externalFunctions: {
-    add: (a: number, b: number) => a + b,
-  },
-}) // returns 5
+await session.feedRun('x + y', { inputs: { x: 10, y: 20 } }) // 30
 ```
 
-For async external functions, use `runMontyAsync()`:
+## External Lookup
+
+`externalLookup` resolves names a snippet leaves undefined, lazily and on
+demand. A **function** entry becomes a host function the sandbox can call by
+name — sync or async (async functions are awaited while other sandbox tasks
+keep running). Any **other value** is converted and returned directly when the
+name is read. An absent name raises `NameError`.
 
 ```ts
-import { Monty, runMontyAsync } from '@pydantic/monty'
+await session.feedRun('add(2, 3)', {
+  externalLookup: { add: (a: number, b: number) => a + b },
+}) // 5
 
-const m = new Monty('await fetch_data(url)', {
-  inputs: ['url'],
-})
-
-const result = await runMontyAsync(m, {
+await session.feedRun('await fetch_data(url)', {
   inputs: { url: 'https://example.com' },
-  externalFunctions: {
+  externalLookup: {
     fetch_data: async (url: string) => {
       const response = await fetch(url)
       return response.text()
     },
   },
 })
+
+await session.feedRun('greeting + name', {
+  inputs: { name: 'Ada' },
+  externalLookup: { greeting: 'hello ' },
+}) // 'hello Ada'
 ```
 
-## Iterative Execution
+`externalLookup` is the lazy counterpart to `inputs`, which eagerly binds every
+entry as a global whether or not it is referenced; a name in both is served by
+the eager `inputs` binding.
 
-For fine-grained control over external function calls, use `start()`, `resume()`,
-`resumePending()`, and `MontyResolveFutures.resume()`:
+For function entries, keyword arguments arrive as a trailing object; thrown
+errors cross into the sandbox as Python exceptions (the error's `name` is used
+when it matches a Python exception type, e.g. `TypeError`, otherwise
+`RuntimeError`).
+
+## Snapshots: pausing and resuming
+
+`feedStart` is the suspendable counterpart of `feedRun`: instead of driving a
+snippet to completion, it returns a snapshot at each external call, OS call, or
+name lookup. Answer it with `snapshot.resume(...)`, which resolves to the next
+snapshot or a `MontyComplete`.
 
 ```ts
-const m = new Monty('a() + b()')
+import { FunctionSnapshot, MontyComplete } from '@pydantic/monty'
 
-let progress = m.start()
-while (progress instanceof MontySnapshot) {
-  console.log(`Calling: ${progress.functionName}`)
-  console.log(`Args: ${progress.args}`)
-  // Provide the return value and resume
-  progress = progress.resume({ returnValue: 10 })
+const snap = await session.feedStart('greet(name) + "!"', { inputs: { name: 'Ada' } })
+if (snap instanceof FunctionSnapshot) {
+  // snap.functionName === 'greet', snap.args === ['Ada']
+  const done = await snap.resume('hello Ada')
+  if (done instanceof MontyComplete) console.log(done.output) // 'hello Ada!'
 }
-// progress is now MontyComplete
-console.log(progress.output) // 20
 ```
 
-## Error Handling
+To iterate a snippet to completion without answering each suspension by hand,
+pass an `externalLookup` (and/or `os`) to `feedStart` and drive with
+`snapshot.resumeAuto()`, which resolves each external call and name lookup from
+them automatically — the same resolution `feedRun` performs, but one step at a
+time so you can inspect or `dump()` each snapshot along the way. A
+promise-returning external is awaited concurrently (surfacing as an intermediate
+`FutureSnapshot`), exactly as under `feedRun`:
 
 ```ts
-import { Monty, MontySyntaxError, MontyRuntimeError, MontyTypingError } from '@pydantic/monty'
-
-try {
-  const m = new Monty('1 / 0')
-  m.run()
-} catch (error) {
-  if (error instanceof MontySyntaxError) {
-    console.log('Syntax error:', error.message)
-  } else if (error instanceof MontyRuntimeError) {
-    console.log('Runtime error:', error.message)
-    console.log('Traceback:', error.traceback())
-  } else if (error instanceof MontyTypingError) {
-    console.log('Type error:', error.displayDiagnostics())
-  }
+let snap = await session.feedStart('greet(name) + "!"', {
+  inputs: { name: 'Ada' },
+  externalLookup: { greet: (n: string) => `hello ${n}` },
+})
+while (!(snap instanceof MontyComplete)) {
+  snap = await snap.resumeAuto()
 }
+console.log(snap.output) // 'hello Ada!'
+```
+
+`snapshot.dump()` serializes the paused worker to bytes; a fresh session's
+`loadSnapshot` restores it and returns the snapshot to resume. Re-supply the
+same `mount`s the paused feed used — their host paths are not stored in the
+dump.
+
+```ts
+const blob = await snap.dump()
+// ...later, in a fresh session:
+const restored = await session.loadSnapshot(blob)
+if (restored instanceof FunctionSnapshot) await restored.resume('value')
+```
+
+`session.dump()` between feeds serializes an idle session instead; restore it
+with `await session.loadSession(blob)` (which resolves to `void`) and keep
+feeding. Both `loadSession` and `loadSnapshot` are valid only on a fresh
+session, before any feed; using the wrong one for a dump's kind throws.
+
+## Print Output
+
+`printCallback` accepts a function or a host collector (`PrintTargetInput` in
+TypeScript). Output is line-buffered; without a callback it goes to the host
+process stdout/stderr.
+
+```ts
+// Function form
+await session.feedRun('print("hello")', {
+  printCallback: (stream, text) => console.log(`[${stream}] ${text}`),
+})
+
+// Collectors — accumulate on the host (not covered by ResourceLimits.maxMemory)
+import { CollectString, CollectStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES } from '@pydantic/monty'
+
+const text = new CollectString()
+await session.feedRun('print("hello")', { printCallback: text })
+text.output // 'hello\n'
+
+const streams = new CollectStreams()
+await session.feedRun('print("hello")', { printCallback: streams })
+streams.output // [{ stream: 'stdout', text: 'hello\n' }]
+```
+
+Both collectors default to a **10 MiB** cap (`DEFAULT_MAX_PRINT_COLLECT_BYTES`).
+Pass `maxBytes: null` to disable (trusted hosts only). `maxBytes` must be a
+finite non-negative number or `null` (constructors throw `TypeError` otherwise).
+Exceeding the cap rejects the feed with `MontyRuntimeError` / `MemoryError`
+(`memory limit exceeded: …`).
+
+## Filesystem Mounts
+
+Mount host directories into the sandbox at virtual POSIX paths:
+
+```ts
+import { MountDir } from '@pydantic/monty'
+
+const mount = new MountDir({ hostPath: '/path/on/host', virtualPath: '/mnt/data', mode: 'read-only' })
+await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
+```
+
+Each mount has a 100 MB aggregate memory budget by default. Configure it with
+`memoryUsageLimit`; retained overlay data and filesystem results share it, and
+operations that exceed it raise a `MontyRuntimeError` wrapping `MemoryError`.
+
+Modes: `'read-only'`, `'read-write'`, and `'overlay'` (default — writes are
+kept in memory and discarded at the end of the feed). Mount I/O is serviced
+on the host side of the pool, so mounts work even for remote workers.
+
+The constructor opens the host directory, so an unusable path throws there
+rather than at the first feed, and the mount then follows _that directory_ for
+its lifetime — renaming or replacing it afterwards changes nothing.
+
+`feedRun` answers every OS call automatically: mounts get first refusal, then
+the `os` callback. `feedStart` answers none — a mounted read surfaces as a
+`FunctionSnapshot` with `isOsFunction` set, and `resumeAuto()` is what consults
+the mounts and `os`. OS calls mounts don't cover reach the `os` callback:
+
+```ts
+import { NOT_HANDLED } from '@pydantic/monty'
+
+await session.feedRun('import os\nos.getenv("HOME")', {
+  os: (name, args) => (name === 'os.getenv' && args[0] === 'HOME' ? '/home/user' : NOT_HANDLED),
+})
+```
+
+Callback-backed virtual files return a `MontyFileHandle` marker from the
+open-time call. Paths are virtual POSIX sandbox paths and `position` defaults
+to zero:
+
+```ts
+import { MontyFileHandle, NOT_HANDLED } from '@pydantic/monty'
+
+const files = new Map([['/data/message.txt', 'hello from the host']])
+await session.feedRun("open('/data/message.txt').read()", {
+  os: (name, args) => {
+    const path = args[0] as string
+    if (name === 'open') {
+      return new MontyFileHandle(path, args[1] as string)
+    }
+    if (name === 'Path.read_text') return files.get(path) ?? NOT_HANDLED
+    return NOT_HANDLED
+  },
+})
+```
+
+`MontyFileHandle` canonicalizes `mode` and exposes the same file metadata as
+the Python host API: `path`, `mode`, `position`, `binary`, `readable`, and
+`writable`. Pass a nonzero initial position with
+`new MontyFileHandle(path, mode, { position: 42 })`.
+
+Returning the handle resolves only `open()` itself. Reads and writes are
+separate OS callbacks whose first argument is the handle's virtual path; the
+host never receives or exposes a live file descriptor.
+
+## Resource Limits
+
+Enforced inside the worker, configured per session:
+
+```ts
+const limited = await pool.checkout({
+  limits: { maxMemory: 100 * 1024 * 1024, maxDurationSecs: 5, maxRecursionDepth: 100 },
+})
+```
+
+`requestTimeout` on the pool is the backstop for code that wedges the
+interpreter itself: the worker is killed and the session fails with
+`MontyCrashedError` (`timedOut: true`).
+
+`maxDurationSecs` limits cumulative _execution_ time: the sandbox clock runs
+only while the interpreter executes, never while suspended waiting on an
+external function or between feeds. Sessions with the limit also get an
+automatic backstop: the worker reports its execution time on every protocol
+turn and the host kills it `durationLimitGrace` (default 1s) after the
+remaining budget expires, covering cases where the in-sandbox limit cannot
+fire (its check only runs at interpreter checkpoints). Set
+`durationLimitGrace: null` to disable it.
+
+## Assert message annotations
+
+Failed `assert` statements carry a pytest-style introspected message by
+default (`AssertionError: assert 2 == 5`) — a deliberate divergence from
+CPython's empty `AssertionError`. Each operand's repr is truncated to 120
+characters by default. Disable the messages per session to restore CPython's
+behavior, or pass an integer to customize the truncation length:
+
+```ts
+const session = await pool.checkout({ assertMessageAnnotations: false })
+const verbose = await pool.checkout({ assertMessageAnnotations: 1000 })
 ```
 
 ## Type Checking
 
 ```ts
-const m = new Monty('"hello" + 1')
+import { MontyTypingError } from '@pydantic/monty'
+
+const session = await pool.checkout({ typeCheck: true, typeCheckStubs: 'def fetch(url: str) -> str: ...' })
 try {
-  m.typeCheck()
-} catch (error) {
-  if (error instanceof MontyTypingError) {
-    console.log(error.displayDiagnostics('concise'))
+  await session.feedRun('fetch(123)')
+} catch (err) {
+  if (err instanceof MontyTypingError) {
+    console.log(err.display()) // rendered diagnostics
   }
 }
-
-// Or enable during construction
-const m2 = new Monty('1 + 1', { typeCheck: true })
 ```
 
-## Resource Limits
+A snippet that fails type checking does not run; the session survives.
+
+`typeCheckFormat` picks the rendering — ty's `'full'` (the default: source
+snippet and carets), `'concise'`, `'azure'`, `'json'`, `'jsonlines'`,
+`'rdjson'`, `'pylint'`, `'gitlab'` or `'github'` — and `typeCheckColor` adds
+ANSI colour to `'full'` and `'concise'`. Both are checkout options rather than
+`display()` arguments because the diagnostics are rendered inside the worker:
+ty's structured diagnostics resolve their spans against the type checker's
+database, so only the rendered text crosses the wire.
 
 ```ts
-const m = new Monty('1 + 1')
-const result = m.run({
-  limits: {
-    maxAllocations: 10000,
-    maxDurationSecs: 5,
-    maxMemory: 1024 * 1024, // 1MB
-    maxRecursionDepth: 100,
-  },
+const session = await pool.checkout({ typeCheck: true, typeCheckFormat: 'json' })
+```
+
+## Error Handling
+
+```ts
+import { MontyError, MontySyntaxError, MontyRuntimeError, MontyCrashedError } from '@pydantic/monty'
+
+try {
+  await session.feedRun('1 / 0')
+} catch (err) {
+  if (err instanceof MontyRuntimeError) {
+    console.log(err.exception.typeName) // 'ZeroDivisionError'
+    console.log(err.display('traceback')) // full Python-style traceback
+  }
+}
+```
+
+`MontyError` is the base class; `MontyCrashedError` means the worker process
+died (the session is lost, the pool recovers).
+
+## Pool Configuration
+
+```ts
+const pool = await Monty.create({
+  minProcesses: 1, // prewarmed workers
+  maxProcesses: 8, // cap; checkouts beyond it wait (default: CPU count)
+  checkoutTimeout: 10, // seconds to wait for a free worker
+  requestTimeout: 30, // hard per-turn deadline (seconds)
+  durationLimitGrace: 1, // maxDurationSecs backstop grace (seconds, null disables)
+  maxCheckoutsPerWorker: 100, // recycle workers after this many sessions
+  binaryPath: '/path/to/monty', // explicit binary (default: auto-resolved)
 })
 ```
 
-## Serialization
+A session's `maxMemory` is enforced in the worker's own allocator too (the
+[`monty-alloc`](https://crates.io/crates/monty-alloc) crate), which bounds the
+bytes the worker holds at once — allocated minus freed, plus headroom — instead
+of letting it grow the host without bound. A
+worker that cannot honour the limit raises `MontyRuntimeError` wrapping
+`MemoryError` — but unlike other runtime errors it takes the worker with it, so
+the session is finished (the pool recovers). The wasm worker applies the same
+limit to what it allocates, but a trapped module has no exit status to classify,
+so there it raises `MontyCrashedError`.
 
-```ts
-// Save parsed code to avoid re-parsing
-const m = new Monty('complex_code()')
-const data = m.dump()
+The `monty` binary resolves from: explicit `binaryPath` → the `MONTY_BIN`
+environment variable → the installed platform package → `PATH` → a cargo
+workspace `target/` build (development).
 
-// Later, restore without re-parsing
-const m2 = Monty.load(data)
-const result = m2.run()
+The Node-only Logfire integration installs a version-1 adapter through
+`_installTelemetryAdapter(1, adapter)`. At checkout it propagates the active
+host trace context into Monty's exporter-free Rust spans, then reconstructs
+those records through the host SDK, which owns credentials, export, and
+shutdown. Delivery uses a bounded non-blocking queue; overflow permanently
+disables the adapter and sends one global cleanup notification rather than
+risking unbounded host memory. Browser/WASM does not yet implement this adapter
+path.
 
-// Snapshots can also be serialized
-const snapshot = m.start()
-if (snapshot instanceof MontySnapshot) {
-  const snapshotData = snapshot.dump()
-  // Later, restore and resume
-  const restored = MontySnapshot.load(snapshotData)
-  const result = restored.resume({ returnValue: 42 })
-}
-```
+## Value Conversion
 
-## API Reference
+| Python            | JavaScript                                              |
+| ----------------- | ------------------------------------------------------- |
+| `None`            | `null`                                                  |
+| `bool`            | `boolean`                                               |
+| `int`             | `number` (±2^53) or `BigInt`                            |
+| `float`           | `number`                                                |
+| `str`             | `string`                                                |
+| `bytes`           | `Buffer`                                                |
+| `list`            | `Array`                                                 |
+| `tuple`           | `Array` with non-enumerable `__tuple__: true`           |
+| `dict`            | `Map` (preserves key types and order)                   |
+| `set`/`frozenset` | `Set`                                                   |
+| datetime types    | marker objects (`{ __monty_type__: 'DateTime', ... }`)  |
+| file handles      | `MontyFileHandle`                                       |
+| dataclasses       | marker objects (`{ __monty_type__: 'Dataclass', ... }`) |
 
-### `Monty` Class
-
-- `constructor(code: string, options?: MontyOptions)` - Parse Python code
-- `run(options?: RunOptions)` - Execute and return the result
-- `start(options?: StartOptions)` - Start iterative execution
-- `typeCheck(prefixCode?: string)` - Perform static type checking
-- `dump()` - Serialize to binary format
-- `Monty.load(data)` - Deserialize from binary format
-- `scriptName` - The script name (default: `'main.py'`)
-- `inputs` - Declared input variable names
-
-### `MontyOptions`
-
-- `scriptName?: string` - Name used in tracebacks (default: `'main.py'`)
-- `inputs?: string[]` - Input variable names
-- `typeCheck?: boolean` - Enable type checking on construction
-- `typeCheckPrefixCode?: string` - Code to prepend for type checking
-
-### `RunOptions`
-
-- `inputs?: object` - Input variable values
-- `limits?: ResourceLimits` - Resource limits
-- `externalFunctions?: object` - External function callbacks
-
-### `ResourceLimits`
-
-- `maxAllocations?: number` - Maximum heap allocations
-- `maxDurationSecs?: number` - Maximum execution time in seconds
-- `maxMemory?: number` - Maximum heap memory in bytes
-- `gcInterval?: number` - Run GC every N allocations
-- `maxRecursionDepth?: number` - Maximum call stack depth (default: 1000)
-
-### `MontySnapshot` Class
-
-Returned by `start()` when execution pauses at an external function call.
-
-- `scriptName` - The script being executed
-- `functionName` - The external function being called
-- `args` - Positional arguments
-- `kwargs` - Keyword arguments
-- `resume(options: ResumeOptions)` - Resume with return value or exception
-- `dump()` / `MontySnapshot.load(data)` - Serialization
-
-### `MontyComplete` Class
-
-Returned by `start()` or `resume()` when execution completes.
-
-- `output` - The final result value
-
-### Error Classes
-
-- `MontyError` - Base class for all Monty errors
-- `MontySyntaxError` - Syntax/parsing errors
-- `MontyRuntimeError` - Runtime exceptions (with `traceback()`)
-- `MontyTypingError` - Type checking errors (with `displayDiagnostics()`)
+Plain objects are accepted as dict inputs (string keys).

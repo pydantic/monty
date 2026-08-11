@@ -16,7 +16,7 @@
 
 ---
 
-**Experimental** - This project is still in development, and not ready for the prime time.
+**Experimental** - This project is still in development, and not ready for prime time.
 
 A minimal, secure Python interpreter written in Rust for use by AI.
 
@@ -33,7 +33,7 @@ What Monty **can** do:
 - Be snapshotted to bytes at external function calls, meaning you can store the interpreter state in a file or database, and resume later
 - Startup extremely fast (<1μs to go from code to execution result), and has runtime performance that is similar to CPython (generally between 5x faster and 5x slower)
 - Be called from Rust, Python, or Javascript - because Monty has no dependencies on cpython, you can use it anywhere you can run Rust
-- Control resource usage - Monty can track memory usage, allocations, stack depth, and execution time and cancel execution if it exceeds preset limits
+- Control resource usage - Monty can track memory usage, stack depth, and execution time and cancel execution if it exceeds preset limits
 - Collect stdout and stderr and return it to the caller
 - Run async or sync code on the host via async or sync code on the host
 - Use a small subset of the standard library: `sys`, `os`, `typing`, `asyncio`, `re`, `datetime`, `json`, `dataclasses` (soon)
@@ -76,6 +76,11 @@ uv add pydantic-monty
 
 (Or `pip install pydantic-monty` for the boomers)
 
+`pydantic-monty` is a metapackage pairing `pydantic-monty-client` (the
+`pydantic_monty` module) with `pydantic-monty-runtime` (the `monty` worker
+binary). Install `pydantic-monty-client` alone if the binary already comes from
+somewhere else.
+
 Usage:
 
 ```python
@@ -106,14 +111,6 @@ async def call_llm(prompt: str, messages: Messages) -> str | Messages:
 prompt: str = ''
 """
 
-m = pydantic_monty.Monty(
-    code,
-    inputs=['prompt'],
-    script_name='agent.py',
-    type_check=True,
-    type_check_stubs=type_definitions,
-)
-
 
 Messages = list[dict[str, Any]]
 
@@ -126,10 +123,17 @@ async def call_llm(prompt: str, messages: Messages) -> str | Messages:
 
 
 async def main():
-    output = await m.run_async(
-        inputs={'prompt': 'testing'},
-        external_functions={'call_llm': call_llm},
-    )
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout(
+            script_name='agent.py',
+            type_check=True,
+            type_check_stubs=type_definitions,
+        ) as session:
+            output = await session.feed_run(
+                code,
+                inputs={'prompt': 'testing'},
+                external_lookup={'call_llm': call_llm},
+            )
     print(output)
     #> example output, message count 2
 
@@ -140,73 +144,70 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
-#### Iterative Execution with External Functions
-
-Use `start()` and `resume()` to handle external function calls iteratively,
-giving you control over each call:
-
-```python
-import pydantic_monty
-
-code = """
-data = fetch(url)
-len(data)
-"""
-
-m = pydantic_monty.Monty(code, inputs=['url'])
-
-# Start execution - pauses when fetch() is called
-result = m.start(inputs={'url': 'https://example.com'})
-
-print(type(result))
-#> <class 'pydantic_monty.FunctionSnapshot'>
-print(result.function_name)  # fetch
-#> fetch
-print(result.args)
-#> ('https://example.com',)
-
-# Perform the actual fetch, then resume with the result
-result = result.resume({'return_value': 'hello world'})
-
-print(type(result))
-#> <class 'pydantic_monty.MontyComplete'>
-print(result.output)
-#> 11
-```
-
-#### Serialization
-
-Both `Monty` and snapshot types like `FunctionSnapshot` can be serialized to bytes and restored later.
-This allows caching parsed code or suspending execution across process boundaries:
+Execution happens in a pool of `monty` worker subprocesses, so even a memory
+error triggered by adversarial code (stack overflow, allocator abort) can
+never crash your process — the worker dies, raises `MontyCrashedError`, and
+is replaced. There is also a fully synchronous API:
 
 ```python
 import pydantic_monty
 
-# Serialize parsed code to avoid re-parsing
-m = pydantic_monty.Monty('x + 1', inputs=['x'])
-data = m.dump()
-
-# Later, restore and run
-m2 = pydantic_monty.Monty.load(data)
-print(m2.run(inputs={'x': 41}))
-#> 42
-
-# Serialize execution state mid-flight
-m = pydantic_monty.Monty('fetch(url)', inputs=['url'])
-progress = m.start(inputs={'url': 'https://example.com'})
-state = progress.dump()
-
-# Later, restore and resume (e.g., in a different process)
-progress2 = pydantic_monty.load_snapshot(state)
-result = progress2.resume({'return_value': 'response data'})
-print(result.output)
-#> response data
+with pydantic_monty.Monty() as pool:
+    with pool.checkout() as session:
+        # session state persists between feed_run calls
+        session.feed_run('x = 21')
+        print(session.feed_run('x * 2'))
+        #> 42
 ```
+
+### JavaScript / TypeScript
+
+To install:
+
+```bash
+npm install @pydantic/monty
+```
+
+The JS package is a native (napi) binding over the same Rust worker pool the
+Python package uses — the binding and the `monty` worker binary ship via
+platform-specific npm packages:
+
+```ts
+import { Monty } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+
+// session state persists between feedRun calls
+await session.feedRun('x = 21')
+console.log(await session.feedRun('x * 2')) // 42
+
+// external functions may be async
+const result = await session.feedRun('await fetch_data()', {
+  externalLookup: { fetch_data: async () => 'data' },
+})
+```
+
+For browsers (or anywhere subprocesses are impossible) the same package
+exposes an in-process WebAssembly build under the `@pydantic/monty/wasm`
+subpath (no crash isolation: a sandbox crash is a host crash there).
 
 ### Rust
 
+For running untrusted code from Rust, we recommend the
+[`monty-pool`](https://crates.io/crates/monty-pool) crate rather than the in-process API below.
+`monty-pool` only runs code in `monty` worker subprocesses, which affords extra protections:
+a crash triggered by adversarial code (stack overflow, allocator abort) kills only the worker —
+the pool detects the death and replaces the worker — and a parent-side watchdog can kill workers
+that exceed a hard timeout. It is the same engine the Python and JavaScript packages above are
+built on. See the [monty-pool README](https://github.com/pydantic/monty/tree/main/crates/monty-pool)
+for usage.
+
+The `monty` crate itself provides the in-process interpreter:
+
 ```rust
-use monty::{MontyRun, MontyObject, NoLimitTracker, PrintWriter};
+use monty::MontyRun;
+use monty_types::{CompileOptions, ResourceTracker, MontyObject, PrintWriter, ResourceLimits};
 
 let code = r#"
 def fib(n):
@@ -217,27 +218,43 @@ def fib(n):
 fib(x)
 "#;
 
-let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()]).unwrap();
-let result = runner.run(vec![MontyObject::Int(10)], NoLimitTracker, PrintWriter::Stdout).unwrap();
+let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
+let result = runner.run(vec![MontyObject::Int(10)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(55));
 ```
 
 #### Serialization
 
-`MontyRun` and `RunProgress` can be serialized using the `dump()` and `load()` methods:
+A REPL session can be serialized with `dump()` and restored with `Dump::load()`. The dump carries the session metadata (script name, type-check stubs) alongside the interpreter state, behind a version the loading build checks:
 
 ```rust
-use monty::{MontyRun, MontyObject, NoLimitTracker, PrintWriter};
+use monty::{Dump, MontyRepl, Session, SessionRef, dump};
+use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 
-// Serialize parsed code
-let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()]).unwrap();
-let bytes = runner.dump().unwrap();
+// Snapshot a session between snippets
+let mut repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
+repl.feed_run("x = 41", vec![], PrintWriter::Stdout).unwrap();
+let bytes = dump("main.py", None, SessionRef::Idle(&repl)).unwrap();
 
-// Later, restore and run
-let runner2 = MontyRun::load(&bytes).unwrap();
-let result = runner2.run(vec![MontyObject::Int(41)], NoLimitTracker, PrintWriter::Stdout).unwrap();
+// Later, restore and carry on feeding
+let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+    panic!("dumped an idle session")
+};
+let result = restored.feed_run("x + 1", vec![], PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(42));
 ```
+
+`MontyRun` and `RunProgress` have no dump format of their own, but both implement `serde::Serialize`/`Deserialize`, so a host can serialize parsed code or a paused run with whatever format it already uses.
+
+## Memory limits in workers
+
+A session's `max_memory` is measured by the worker's allocator. The interpreter
+reports a graceful `MemoryError` after crossing the soft limit; a higher hard
+limit kills and replaces the worker if one allocation jumps too far between checkpoints.
+
+See [`limitations/resource_limits.md`](limitations/resource_limits.md) for how
+exceeding a limit surfaces to a host, and `monty-alloc` for the allocator both
+the subprocess and WebAssembly workers run under.
 
 ## PydanticAI Integration
 
@@ -432,3 +449,11 @@ Running Python directly via `exec()` (~0.1ms) or subprocess (~30ms).
 - **Setup complexity**: None
 - **File mounting**: Direct filesystem access (that's the problem)
 - **Snapshotting**: Possible with durable execution solutions like Temporal
+
+## Part of the Pydantic Stack
+
+The Pydantic Stack is everything you need to ship production-grade AI agents:
+
+- [Pydantic AI](https://pydantic.dev/pydantic-ai?utm_source=github&utm_medium=readme&utm_campaign=monty) - Type-safe agent framework
+- [Pydantic Logfire](https://pydantic.dev/logfire?utm_source=github&utm_medium=readme&utm_campaign=monty) - AI-first, full-stack observability
+- [Logfire AI Gateway](https://pydantic.dev/ai-gateway?utm_source=github&utm_medium=readme&utm_campaign=monty) - Unified LLM proxy

@@ -1,114 +1,87 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
-import { Monty, MontySyntaxError } from '../wrapper'
+import { MontySyntaxError } from '@pydantic/monty'
+import { setupPool } from './helpers.js'
 
-// =============================================================================
-// Constructor tests
-// =============================================================================
-
-test('Monty constructor with default options', (t) => {
-  const m = new Monty('1 + 2')
-  t.is(m.scriptName, 'main.py')
-  t.deepEqual(m.inputs, [])
-})
-
-test('Monty constructor with custom script name', (t) => {
-  const m = new Monty('1 + 2', { scriptName: 'test.py' })
-  t.is(m.scriptName, 'test.py')
-})
-
-test('Monty constructor with inputs', (t) => {
-  const m = new Monty('x + y', { inputs: ['x', 'y'] })
-  t.deepEqual(m.inputs, ['x', 'y'])
-})
-
-test('Monty constructor with syntax error', (t) => {
-  const error = t.throws(() => new Monty('def'), { instanceOf: MontySyntaxError })
-  t.true(error?.message.includes('SyntaxError'))
-})
-
-// =============================================================================
-// repr() tests
-// =============================================================================
-
-test('Monty repr() no inputs', (t) => {
-  const m = new Monty('1 + 1')
-  const repr = m.repr()
-  t.true(repr.includes('Monty'))
-  t.true(repr.includes('main.py'))
-})
-
-test('Monty repr() with inputs', (t) => {
-  const m = new Monty('x', { inputs: ['x', 'y'] })
-  const repr = m.repr()
-  t.true(repr.includes('Monty'))
-  t.true(repr.includes('inputs'))
-})
-
-test('Monty repr() with inputs and external call', (t) => {
-  const m = new Monty('foo(x)', { inputs: ['x'] })
-  const repr = m.repr()
-  t.true(repr.includes('inputs'))
-})
+const { run, pool } = setupPool()
 
 // =============================================================================
 // Simple expression tests
 // =============================================================================
 
-test('simple expression', (t) => {
-  const m = new Monty('1 + 2')
-  t.is(m.run(), 3)
+test('simple expression', async () => {
+  t.is(await run('1 + 2'), 3)
 })
 
-test('arithmetic', (t) => {
-  const m = new Monty('10 * 5 - 3')
-  t.is(m.run(), 47)
+test('arithmetic', async () => {
+  t.is(await run('10 * 5 - 3'), 47)
 })
 
-test('string concatenation', (t) => {
-  const m = new Monty('"hello" + " " + "world"')
-  t.is(m.run(), 'hello world')
+test('string concatenation', async () => {
+  t.is(await run('"hello" + " " + "world"'), 'hello world')
 })
 
-// =============================================================================
-// Multiple runs tests
-// =============================================================================
-
-test('multiple runs same instance', (t) => {
-  const m = new Monty('x * 2', { inputs: ['x'] })
-  t.is(m.run({ inputs: { x: 5 } }), 10)
-  t.is(m.run({ inputs: { x: 10 } }), 20)
-  t.is(m.run({ inputs: { x: -3 } }), -6)
-})
-
-test('run multiple times no inputs', (t) => {
-  const m = new Monty('1 + 2')
-  t.is(m.run(), 3)
-  t.is(m.run(), 3)
-  t.is(m.run(), 3)
+test('syntax error', async () => {
+  const error = await t.throwsAsync(() => run('def'), { instanceOf: MontySyntaxError })
+  t.true(error.message.includes('SyntaxError'))
 })
 
 // =============================================================================
 // Multiline code tests
 // =============================================================================
 
-test('multiline code', (t) => {
+test('multiline code', async () => {
   const code = `
 x = 1
 y = 2
 x + y
 `
-  const m = new Monty(code)
-  t.is(m.run(), 3)
+  t.is(await run(code), 3)
 })
 
-test('function definition and call', (t) => {
+test('function definition and call', async () => {
   const code = `
 def add(a, b):
     return a + b
 
 add(3, 4)
 `
-  const m = new Monty(code)
-  t.is(m.run(), 7)
+  t.is(await run(code), 7)
+})
+
+// =============================================================================
+// Session behaviour
+// =============================================================================
+
+test('session state persists across feeds', async () => {
+  const session = await pool().checkout()
+  try {
+    t.is(await session.feedRun('x = 5'), null)
+    t.is(await session.feedRun('x * 2'), 10)
+  } finally {
+    await session.close()
+  }
+})
+
+test('sessions are isolated from each other', async () => {
+  const a = await pool().checkout()
+  const b = await pool().checkout()
+  try {
+    await a.feedRun('secret = 42')
+    const error = await t.throwsAsync(() => b.feedRun('secret'))
+    t.is(error.message, "NameError: name 'secret' is not defined")
+  } finally {
+    await a.close()
+    await b.close()
+  }
+})
+
+test('await using closes the session', async () => {
+  let result: unknown
+  {
+    await using session = await pool().checkout()
+    result = await session.feedRun('21 * 2')
+  }
+  t.is(result, 42)
 })

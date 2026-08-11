@@ -9,7 +9,8 @@
 
 use std::fmt::Write;
 
-use monty::{ExcType, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, ExcType, MontyException};
 
 /// Generates Python code with N local variables in a function.
 ///
@@ -79,7 +80,7 @@ fn generate_many_parameters(count: usize) -> String {
 }
 
 /// Asserts that a MontyRun result is a SyntaxError with a message containing the expected text.
-fn assert_syntax_error(result: Result<MontyRun, monty::MontyException>, expected_msg: &str) {
+fn assert_syntax_error(result: Result<MontyRun, MontyException>, expected_msg: &str) {
     let err = result.expect_err("expected SyntaxError");
     assert_eq!(
         err.exc_type(),
@@ -102,7 +103,7 @@ mod local_variable_limits {
     fn locals_under_u8_limit_succeeds() {
         // 255 locals should work with u8 slots (0-254)
         let code = generate_many_locals(255);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(result.is_ok(), "255 locals should compile successfully");
 
         let run = result.unwrap();
@@ -114,7 +115,7 @@ mod local_variable_limits {
     fn locals_at_u8_boundary_succeeds() {
         // 256 locals (slots 0-255) - uses wide instructions for slot 255+
         let code = generate_many_locals(256);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(
             result.is_ok(),
             "256 locals should compile successfully (wide instructions)"
@@ -129,7 +130,7 @@ mod local_variable_limits {
     fn locals_exceeding_u8_uses_wide_instructions() {
         // 257 locals requires LoadLocalW/StoreLocalW for slot 256
         let code = generate_many_locals(257);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(result.is_ok(), "257 locals should compile (using wide instructions)");
 
         let run = result.unwrap();
@@ -141,7 +142,7 @@ mod local_variable_limits {
     fn locals_well_over_u8_limit() {
         // 300 locals - well into wide instruction territory
         let code = generate_many_locals(300);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(result.is_ok(), "300 locals should compile successfully");
 
         let run = result.unwrap();
@@ -157,7 +158,7 @@ mod function_argument_limits {
     fn positional_args_under_u8_limit_succeeds() {
         // 255 positional args should work
         let code = generate_many_positional_args(255);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(result.is_ok(), "255 positional args should compile successfully");
 
         let run = result.unwrap();
@@ -169,7 +170,7 @@ mod function_argument_limits {
     fn positional_args_at_u8_boundary_returns_syntax_error() {
         // 256 positional args - exceeds u8 limit, should return SyntaxError
         let code = generate_many_positional_args(256);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert_syntax_error(result, "more than 255 positional arguments");
     }
 
@@ -177,7 +178,7 @@ mod function_argument_limits {
     fn positional_args_exceeding_u8_limit_returns_syntax_error() {
         // 257 positional args - clearly exceeds u8 capacity
         let code = generate_many_positional_args(257);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert_syntax_error(result, "more than 255 positional arguments");
     }
 }
@@ -189,7 +190,7 @@ mod keyword_argument_limits {
     fn keyword_args_under_u8_limit_succeeds() {
         // 255 keyword args should work
         let code = generate_many_keyword_args(255);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(result.is_ok(), "255 keyword args should compile successfully");
 
         let run = result.unwrap();
@@ -201,7 +202,7 @@ mod keyword_argument_limits {
     fn keyword_args_at_u8_boundary_returns_syntax_error() {
         // 256 keyword args - exceeds u8 limit, should return SyntaxError
         let code = generate_many_keyword_args(256);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert_syntax_error(result, "more than 255 keyword arguments");
     }
 
@@ -209,7 +210,7 @@ mod keyword_argument_limits {
     fn keyword_args_exceeding_u8_limit_returns_syntax_error() {
         // 257 keyword args - clearly exceeds u8 capacity
         let code = generate_many_keyword_args(257);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert_syntax_error(result, "more than 255 keyword arguments");
     }
 }
@@ -239,7 +240,7 @@ mod comprehension_generator_limits {
         // practical compile-time limit from the u8 `ListAppend` depth
         // operand is around 127. 50 is comfortably inside that window.
         let code = generate_comprehension_with_generators(50);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(
             result.is_ok(),
             "50 comprehension generators should compile successfully"
@@ -251,7 +252,7 @@ mod comprehension_generator_limits {
         // Above `MAX_COMP_GENERATORS` the compiler rejects with our
         // dedicated message before recursing into per-clause compilation.
         let code = generate_comprehension_with_generators(256);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert_syntax_error(result, "comprehension has too many nested clauses (256)");
     }
 
@@ -262,7 +263,7 @@ mod comprehension_generator_limits {
         // `compile_comprehension_generators` recursed once per clause with
         // no up-front guard.
         let code = generate_comprehension_with_generators(5000);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert_syntax_error(result, "comprehension has too many nested clauses (5000)");
     }
 }
@@ -274,7 +275,7 @@ mod function_parameter_limits {
     fn parameters_under_u8_limit_succeeds() {
         // 255 parameters should work - both definition and call
         let code = generate_many_parameters(255);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(result.is_ok(), "255 parameters should compile successfully");
 
         let run = result.unwrap();
@@ -287,7 +288,7 @@ mod function_parameter_limits {
         // 256 parameters - the function definition uses locals (wide instructions ok),
         // but the call site has 256 positional args which exceeds the limit
         let code = generate_many_parameters(256);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert_syntax_error(result, "more than 255 positional arguments");
     }
 
@@ -295,7 +296,134 @@ mod function_parameter_limits {
     fn parameters_exceeding_u8_limit_returns_syntax_error_for_call() {
         // 257 parameters - same issue, call site has too many args
         let code = generate_many_parameters(257);
-        let result = MontyRun::new(code, "test.py", vec![]);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert_syntax_error(result, "more than 255 positional arguments");
+    }
+}
+
+/// Generates a class with `count` simple `a{i} = {i}` class variables, plus an
+/// assert reading the last one back through the class object.
+///
+/// Namespace assembly pushes two operand-stack entries (name const + value) per
+/// member before `BuildDict` pops them all into the `type()` call's namespace
+/// argument, so counts above 16383 overflow an `i16` stack-effect accumulator —
+/// a regression guard for the i16→i32 widening.
+fn generate_many_class_members(count: usize) -> String {
+    let mut code = String::from("class C:\n");
+    for i in 0..count {
+        writeln!(code, "    a{i} = {i}").unwrap();
+    }
+    writeln!(code, "assert C.a{} == {}", count - 1, count - 1).unwrap();
+    code
+}
+
+/// Generates `x = {0: 0, 1: 1, ...}` with `count` entries plus a read-back
+/// assert — the dict-literal analogue of the class-member stack-effect case.
+fn generate_large_dict_literal(count: usize) -> String {
+    let mut code = String::from("x = {");
+    for i in 0..count {
+        if i > 0 {
+            code.push_str(", ");
+        }
+        write!(code, "{i}: {i}").unwrap();
+    }
+    code.push('}');
+    writeln!(code, "\nassert x[{}] == {}", count - 1, count - 1).unwrap();
+    code
+}
+
+/// Generates one `try/finally` with many independent return sites.
+fn generate_many_finally_return_sites(count: usize) -> String {
+    let mut code = String::from("def f(x):\n    try:\n");
+    for i in 0..count {
+        writeln!(code, "        if x == {i}:\n            return {i}").unwrap();
+    }
+    code.push_str("    finally:\n        x = 0\n");
+    code
+}
+
+/// Generates nested `try/finally` suites inside a return-path `finally`.
+///
+/// Each outer copy recompiles the nested suite, producing exponential copy
+/// growth from source whose size is only linear in `depth`.
+fn generate_nested_finally_suites(depth: usize) -> String {
+    let mut code = String::from("def f():\n    try:\n        return 1\n    finally:\n");
+    for level in 0..depth {
+        let indent = "    ".repeat(level + 2);
+        writeln!(code, "{indent}try:\n{indent}    pass\n{indent}finally:").unwrap();
+    }
+    writeln!(code, "{}pass\n\nassert f() == 1", "    ".repeat(depth + 2)).unwrap();
+    code
+}
+
+mod stack_effect_limits {
+    use super::*;
+
+    #[test]
+    fn class_members_above_i16_stack_effect() {
+        // 16384 members -> 32768+ pushed operands, past i16::MAX (32767)
+        let code = generate_many_class_members(16384);
+        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
+            .expect("16384 class members should compile");
+        let result = run.run_no_limits(vec![]);
+        assert!(result.is_ok(), "16384 class members should run: {result:?}");
+    }
+
+    #[test]
+    fn dict_literal_above_i16_stack_effect() {
+        // 20000 entries -> 40000 pushed operands, past i16::MAX
+        let code = generate_large_dict_literal(20000);
+        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
+            .expect("20000-entry dict literal should compile");
+        let result = run.run_no_limits(vec![]);
+        assert!(result.is_ok(), "20000-entry dict literal should run: {result:?}");
+    }
+}
+
+// `n` return sites emit `n + 2` finally copies: one per return site, plus the
+// exception-path and fall-through copies every `try/finally` emits — hence
+// the 1024-copy boundary sits at 1022/1023 sites.
+mod finally_copy_limits {
+    use super::*;
+
+    /// The failure side of the boundary: 1023 sites are 1025 copies, one past
+    /// `MAX_FINALLY_COPIES` (1024).
+    #[test]
+    fn excessive_inline_finally_copies_return_syntax_error() {
+        let code = generate_many_finally_return_sites(1023);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
+        assert_syntax_error(result, "too many inline finally copies; maximum is 1024");
+    }
+
+    /// The success side of the boundary: 1022 sites are exactly
+    /// `MAX_FINALLY_COPIES` (1024) copies, so an off-by-one in the limit
+    /// guard or the constant cannot slip through the failure-only test above.
+    #[test]
+    fn max_inline_finally_copies_compile_and_run() {
+        let code = generate_many_finally_return_sites(1022);
+        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
+            .expect("1024 inline finally copies should compile");
+        let result = run.run_no_limits(vec![]);
+        assert!(result.is_ok(), "1024 inline finally copies should run: {result:?}");
+    }
+
+    /// Ten nested suites exceed the cap through repeated expansion even
+    /// though the generated source contains only eleven `finally` statements.
+    #[test]
+    fn nested_finally_amplification_returns_syntax_error() {
+        let code = generate_nested_finally_suites(10);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
+        assert_syntax_error(result, "too many inline finally copies; maximum is 1024");
+    }
+
+    /// Nine nested suites produce 1,023 copies and exercise the return path,
+    /// guarding the compact-source test against an overly conservative limit.
+    #[test]
+    fn nested_finally_amplification_below_limit_runs() {
+        let code = generate_nested_finally_suites(9);
+        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
+            .expect("nested finally expansion below the copy limit should compile");
+        let result = run.run_no_limits(vec![]);
+        assert!(result.is_ok(), "nested finally expansion should run: {result:?}");
     }
 }

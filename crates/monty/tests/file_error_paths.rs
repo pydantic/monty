@@ -6,9 +6,10 @@
 //! interned-string return value that hits the `InternBytes`/empty-string
 //! materialisation branch of [`apply_buffer_store`]).
 
-use monty::{
-    ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject, MontyRun, NoLimitTracker,
-    PrintWriter,
+use monty::MontyRun;
+use monty_types::{
+    CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject, PrintWriter,
+    ResourceTracker,
 };
 
 /// Drives an `open()` followed by a single read/write OS call, then resumes
@@ -22,10 +23,12 @@ fn run_with_open_then_io(
     file_handle: MontyFileHandle,
     io_result: ExtFunctionResult,
 ) -> Result<MontyObject, MontyException> {
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
     let open_call = progress.into_os_call().expect("expected Open OsCall");
-    assert_eq!(open_call.function_call.name(), "Open");
+    assert_eq!(open_call.function_call.name(), "open");
     let progress = open_call
         .resume(MontyObject::FileHandle(file_handle), PrintWriter::Stdout)
         .unwrap();
@@ -79,8 +82,10 @@ except OSError:
     pass
 f.readline()
 ";
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
     let open_call = progress.into_os_call().expect("expected Open OsCall");
     let progress = open_call
         .resume(MontyObject::FileHandle(file_handle("/x.txt", "r")), PrintWriter::Stdout)

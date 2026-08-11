@@ -1,172 +1,172 @@
 # === String concatenation (+) ===
-assert 'hello' + ' ' + 'world' == 'hello world', 'basic concat'
-assert '' + 'test' == 'test', 'empty left concat'
-assert 'test' + '' == 'test', 'empty right concat'
-assert '' + '' == '', 'empty both concat'
-assert 'a' + 'b' + 'c' + 'd' == 'abcd', 'multiple concat'
+assert 'hello' + ' ' + 'world' == 'hello world'
+assert '' + 'test' == 'test'
+assert 'test' + '' == 'test'
+assert '' + '' == ''
+assert 'a' + 'b' + 'c' + 'd' == 'abcd'
 
 # === Augmented assignment (+=) ===
 s = 'hello'
 s += ' world'
-assert s == 'hello world', 'basic iadd'
+assert s == 'hello world'
 
 s = 'test'
 s += ''
-assert s == 'test', 'iadd empty'
+assert s == 'test'
 
 s = 'a'
 s += 'b'
 s += 'c'
-assert s == 'abc', 'multiple iadd'
+assert s == 'abc'
 
 s = 'ab'
 s += s
-assert s == 'abab', 'iadd self'
+assert s == 'abab'
 
 # === String length ===
-assert len('') == 0, 'len empty'
-assert len('a') == 1, 'len single'
-assert len('hello') == 5, 'len basic'
-assert len('hello world') == 11, 'len with space'
-assert len('caf\xe9') == 4, 'len unicode'
+assert len('') == 0
+assert len('a') == 1
+assert len('hello') == 5
+assert len('hello world') == 11
+assert len('caf\xe9') == 4
 
 # === String repr/str ===
-assert repr('') == "''", 'empty string repr'
-assert str('') == '', 'empty string str'
+assert repr('') == "''"
+assert str('') == ''
 
-assert repr('hello') == "'hello'", 'string repr'
-assert str('hello') == 'hello', 'string str'
+assert repr('hello') == "'hello'"
+assert str('hello') == 'hello'
 
-assert repr('hello "world"') == '\'hello "world"\'', 'string with quotes repr'
-assert str('hello "world"') == 'hello "world"', 'string with quotes str'
+assert repr('hello "world"') == '\'hello "world"\''
+assert str('hello "world"') == 'hello "world"'
 
 # === String repetition (*) ===
-assert 'ab' * 3 == 'ababab', 'str mult int'
-assert 3 * 'ab' == 'ababab', 'int mult str'
-assert 'x' * 0 == '', 'str mult zero'
-assert 'x' * -1 == '', 'str mult negative'
-assert '' * 5 == '', 'empty str mult'
-assert 'a' * 1 == 'a', 'str mult one'
+assert 'ab' * 3 == 'ababab'
+assert 3 * 'ab' == 'ababab'
+assert 'x' * 0 == ''
+assert 'x' * -1 == ''
+assert '' * 5 == ''
+assert 'a' * 1 == 'a'
 
 # === String repetition augmented assignment (*=) ===
 s = 'ab'
 s *= 3
-assert s == 'ababab', 'str imult'
+assert s == 'ababab'
 
 s = 'x'
 s *= 0
-assert s == '', 'str imult zero'
+assert s == ''
 
 # === String join method ===
 # Basic join on literals
-assert ','.join(['a', 'b', 'c']) == 'a,b,c', 'join list with comma'
-assert ''.join(['a', 'b', 'c']) == 'abc', 'join with empty separator'
-assert '-'.join([]) == '', 'join empty list'
-assert ','.join(['only']) == 'only', 'join single element'
+assert ','.join(['a', 'b', 'c']) == 'a,b,c'
+assert ''.join(['a', 'b', 'c']) == 'abc'
+assert '-'.join([]) == ''
+assert ','.join(['only']) == 'only'
 
 # Join with different iterables
-assert ' '.join(('hello', 'world')) == 'hello world', 'join tuple'
+assert ' '.join(('hello', 'world')) == 'hello world'
 
 # Join with string iterable (iterates over characters)
-assert ','.join('abc') == 'a,b,c', 'join string iterable'
+assert ','.join('abc') == 'a,b,c'
 
 # Join with variable separator
 sep = '-'
-assert sep.join(['a', 'b']) == 'a-b', 'join with variable separator'
+assert sep.join(['a', 'b']) == 'a-b'
 
 # Heap-allocated string separator
 s = str('.')
-assert s.join(['a', 'b']) == 'a.b', 'join with heap string'
+assert s.join(['a', 'b']) == 'a.b'
 
 # Mixed string types in iterable (interned and heap)
 mixed = ['hello', str('world')]
-assert ' '.join(mixed) == 'hello world', 'join with mixed string types'
+assert ' '.join(mixed) == 'hello world'
 
 # === String indexing (getitem) ===
 # Basic indexing
-assert 'hello'[0] == 'h', 'getitem index 0'
-assert 'hello'[1] == 'e', 'getitem index 1'
-assert 'hello'[4] == 'o', 'getitem last index'
+assert 'hello'[0] == 'h'
+assert 'hello'[1] == 'e'
+assert 'hello'[4] == 'o'
 
 # Negative indexing
-assert 'hello'[-1] == 'o', 'getitem -1'
-assert 'hello'[-2] == 'l', 'getitem -2'
-assert 'hello'[-5] == 'h', 'getitem -5'
+assert 'hello'[-1] == 'o'
+assert 'hello'[-2] == 'l'
+assert 'hello'[-5] == 'h'
 
 # Single character strings
-assert 'a'[0] == 'a', 'getitem single char at 0'
-assert 'a'[-1] == 'a', 'getitem single char at -1'
+assert 'a'[0] == 'a'
+assert 'a'[-1] == 'a'
 
 # Unicode strings
 s = 'café'
-assert s[0] == 'c', 'unicode getitem 0'
-assert s[1] == 'a', 'unicode getitem 1'
-assert s[2] == 'f', 'unicode getitem 2'
-assert s[3] == 'é', 'unicode getitem 3 (accented)'
-assert s[-1] == 'é', 'unicode getitem -1'
+assert s[0] == 'c'
+assert s[1] == 'a'
+assert s[2] == 'f'
+assert s[3] == 'é'
+assert s[-1] == 'é'
 
 # Multi-byte unicode (CJK characters)
 s = '日本語'
-assert s[0] == '日', 'cjk getitem 0'
-assert s[1] == '本', 'cjk getitem 1'
-assert s[2] == '語', 'cjk getitem 2'
-assert s[-1] == '語', 'cjk getitem -1'
+assert s[0] == '日'
+assert s[1] == '本'
+assert s[2] == '語'
+assert s[-1] == '語'
 
 # Emoji (multi-byte UTF-8)
 s = 'a🎉b'
-assert s[0] == 'a', 'emoji string getitem 0'
-assert s[1] == '🎉', 'emoji string getitem 1 (emoji)'
-assert s[2] == 'b', 'emoji string getitem 2'
+assert s[0] == 'a'
+assert s[1] == '🎉'
+assert s[2] == 'b'
 
 # Heap-allocated strings
 s = str('hello')
-assert s[0] == 'h', 'heap string getitem'
-assert s[-1] == 'o', 'heap string negative getitem'
+assert s[0] == 'h'
+assert s[-1] == 'o'
 
 # Variable index
 s = 'abc'
 i = 1
-assert s[i] == 'b', 'getitem with variable index'
+assert s[i] == 'b'
 
 # Bool indices (True=1, False=0)
 s = 'abc'
-assert s[False] == 'a', 'str getitem with False'
-assert s[True] == 'b', 'str getitem with True'
+assert s[False] == 'a'
+assert s[True] == 'b'
 
 # === Sorting and comparisons ===
-assert 'a' < 'b', 'str < str'
-assert 'b' > 'a', 'str > str'
-assert 'a' <= 'a', 'str <= str equal'
-assert 'a' <= 'b', 'str <= str less'
-assert 'b' >= 'b', 'str >= str equal'
-assert 'b' >= 'a', 'str >= str greater'
+assert 'a' < 'b'
+assert 'b' > 'a'
+assert 'a' <= 'a'
+assert 'a' <= 'b'
+assert 'b' >= 'b'
+assert 'b' >= 'a'
 assert not ('b' < 'a'), 'str not < str'
 assert not ('a' > 'b'), 'str not > str'
 
 # Different lengths
-assert 'a' < 'aa', 'shorter prefix is less'
-assert 'ab' < 'b', 'first char decides'
-assert '' < 'a', 'empty string is less'
-assert 'abc' > 'ab', 'longer string with same prefix is greater'
+assert 'a' < 'aa'
+assert 'ab' < 'b'
+assert '' < 'a'
+assert 'abc' > 'ab'
 
 # Non-ASCII comparisons (by Unicode code point)
-assert 'café' < 'cafë', 'non-ascii comparison (é < ë)'
-assert 'z' < 'é', 'ascii < non-ascii (z < é)'
-assert '日' < '本', 'CJK comparison by code point'
-assert '😀' < '😁', 'emoji comparison by code point'
+assert 'café' < 'cafë'
+assert 'z' < 'é'
+assert '日' < '本'
+assert '😀' < '😁'
 
 # Sorting
-assert sorted('cba') == ['a', 'b', 'c'], 'sorted string'
-assert sorted(['b', 'c', 'a']) == ['a', 'b', 'c'], 'sorted list of strings'
-assert sorted(['café', 'cafë', 'cafa']) == ['cafa', 'café', 'cafë'], 'sorted non-ascii strings'
-assert sorted(['bb', 'a', 'ba']) == ['a', 'ba', 'bb'], 'sorted different length strings'
+assert sorted('cba') == ['a', 'b', 'c']
+assert sorted(['b', 'c', 'a']) == ['a', 'b', 'c']
+assert sorted(['café', 'cafë', 'cafa']) == ['cafa', 'café', 'cafë']
+assert sorted(['bb', 'a', 'ba']) == ['a', 'ba', 'bb']
 
 # === str() constructor with keyword argument ===
-assert str(object=42) == '42', 'str object kwarg int'
-assert str(object='hello') == 'hello', 'str object kwarg str'
-assert str(object=True) == 'True', 'str object kwarg bool'
-assert str(object=[1, 2]) == '[1, 2]', 'str object kwarg list'
-assert str(object=None) == 'None', 'str object kwarg None'
+assert str(object=42) == '42'
+assert str(object='hello') == 'hello'
+assert str(object=True) == 'True'
+assert str(object=[1, 2]) == '[1, 2]'
+assert str(object=None) == 'None'
 
 # str() constructor error cases
 try:
@@ -180,3 +180,105 @@ try:
     assert False, 'str pos + kwarg should raise'
 except TypeError as e:
     assert str(e) == "argument for str() given by name ('object') and position (1)", f'dup: {e}'
+
+# === str() decoding bytes with encoding/errors ===
+assert str(b'x', 'utf-8') == 'x'
+assert str(b'x', encoding='utf-8') == 'x'
+assert str(object=b'x', encoding='utf-8') == 'x'
+assert str(b'\xe2\x82\xac', 'utf-8') == '€'
+assert str(b'\xff', 'utf-8', 'replace') == '�'
+assert str(b'\xff', errors='replace') == '�'
+assert str(b'x', errors='strict') == 'x'
+# a missing object wins over the decoding args
+assert str(encoding='utf-8') == ''
+assert str(errors='strict') == ''
+# without decoding args, bytes stringify to their repr
+assert str(b'x') == "b'x'"
+
+try:
+    str(b'\xff', 'utf-8')
+    assert False, 'expected UnicodeDecodeError'
+except UnicodeDecodeError as e:
+    assert str(e) == "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"
+
+try:
+    str('x', 'utf-8')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'decoding str is not supported'
+
+try:
+    str('x', errors='strict')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'decoding str is not supported'
+
+try:
+    str(1, 'utf-8')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'decoding to str: need a bytes-like object, int found'
+
+try:
+    str(None, 'utf-8')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'decoding to str: need a bytes-like object, NoneType found'
+
+# encoding/errors are named with the wrong value's type name (NoneType, not
+# the bad-arg 'None' special case used by bytes())
+try:
+    str(b'x', 1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "str() argument 'encoding' must be str, not int"
+
+try:
+    str(b'x', None)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "str() argument 'encoding' must be str, not NoneType"
+
+try:
+    str(b'x', 'utf-8', 1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "str() argument 'errors' must be str, not int"
+
+try:
+    str(b'x', 'bogus')
+    assert False, 'expected LookupError'
+except LookupError as e:
+    assert str(e) == 'unknown encoding: bogus'
+
+# no kwargs: unicode_vectorcall's un-parenthesised arity wording
+try:
+    str(b'x', 'utf-8', 'strict', 1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'str expected at most 3 arguments, got 4'
+
+# with kwargs: the clinic parser's parenthesised total-count wording
+try:
+    str(b'x', 'utf-8', 'strict', 'x', bogus=1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'str() takes at most 3 arguments (5 given)'
+
+try:
+    str(b'x', 'utf-8', encoding='q')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "argument for str() given by name ('encoding') and position (2)"
+
+# === `in` / `not in` ===
+assert 'bc' in 'abc'
+assert 'abc' in 'abc'
+assert '' in 'abc'
+assert 'x' not in 'abc'
+# Only a str is a valid probe; the error names the offending type.
+try:
+    1 in 'abc'
+    assert False, 'expected TypeError for a non-str probe'
+except TypeError as exc:
+    assert str(exc) == "'in <string>' requires string as left operand, not int"

@@ -2,6 +2,7 @@ import pytest
 from pytest_examples import CodeExample, EvalExample, find_examples
 
 paths = (
+    'packages/pydantic-monty/README.md',
     'crates/monty-python/README.md',
     'README.md',
 )

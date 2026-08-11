@@ -1,26 +1,29 @@
 use std::{borrow::Cow, fmt};
 
+use monty_types::{MontyException, StackFrame};
 use num_bigint::BigInt;
 use num_traits::Num;
 use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
     name::Name,
+    token::TokenKind,
+    visitor::{Visitor, walk_expr},
 };
 use ruff_python_parser::parse_module;
-use ruff_text_size::{Ranged, TextRange};
+use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
-    StackFrame,
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     exception_private::ExcType,
-    exception_public::{MontyException, SourceMap},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
         Node, Operator, SequenceItem, UnpackTarget,
     },
-    fstring::{ConversionFlag, FStringPart, FormatSpec, ParseFormatSpecError, ParsedFormatSpec, encode_format_spec},
+    fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{InternerBuilder, StringId},
+    source_map::{SourceMap, StackFrameExt},
+    stringize::stringize_annotation,
     types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
 };
@@ -35,6 +38,31 @@ pub const MAX_NESTING_DEPTH: u16 = 200;
 /// stack overflow while still catching the error before the recursion limit.
 #[cfg(debug_assertions)]
 pub const MAX_NESTING_DEPTH: u16 = 30;
+
+/// `from __future__ import ...` features whose semantics Monty already provides,
+/// so importing them is a no-op rather than an error.
+///
+/// All but the last are inert in CPython too, having become mandatory by 3.7.
+/// `annotations` is still meaningful there, and a no-op here only because Monty
+/// stringizes unconditionally (see `limitations/typing.md`) — what it asks for.
+const SUPPORTED_FUTURES: [&str; 9] = [
+    "nested_scopes",
+    "generators",
+    "division",
+    "absolute_import",
+    "with_statement",
+    "print_function",
+    "unicode_literals",
+    "generator_stop",
+    "annotations",
+];
+
+/// `from __future__ import ...` features Monty does not implement, rejected
+/// rather than silently ignored. `barry_as_FLUFL` (PEP 401) makes `<>` the
+/// inequality operator and `!=` a `SyntaxError`; Monty parses neither
+/// differently. With [`SUPPORTED_FUTURES`] this must cover CPython's
+/// `all_feature_names` — a name in neither is reported as undefined.
+const UNSUPPORTED_FUTURES: [&str; 1] = ["barry_as_FLUFL"];
 
 /// A parameter in a function signature with optional default value.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -76,6 +104,22 @@ impl ParsedSignature {
             .chain(self.var_args.iter().copied())
             .chain(self.kwargs.iter().map(|p| p.name))
             .chain(self.var_kwargs.iter().copied())
+    }
+
+    /// Returns an iterator over every default-value expression in the signature.
+    ///
+    /// Defaults are evaluated at *definition* time in the **enclosing** scope,
+    /// not inside the function being defined. Closure analysis relies on this:
+    /// a name referenced by a default (e.g. `def inner(b=a)`) is a capture of
+    /// the enclosing scope, so the cell-var pre-pass must scan these as well as
+    /// the body (see `collect_cell_vars_from_node`). `*args`/`**kwargs` never
+    /// carry defaults, so they are not included.
+    pub fn default_exprs(&self) -> impl Iterator<Item = &ExprLoc> + '_ {
+        self.pos_args
+            .iter()
+            .chain(self.args.iter())
+            .chain(self.kwargs.iter())
+            .filter_map(|p| p.default.as_ref())
     }
 }
 
@@ -136,6 +180,18 @@ pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseErro
     parse_with_interner(code, filename, InternerBuilder::new(code))
 }
 
+/// Builds a [`CodeRange`] from an interned filename and a ruff range.
+///
+/// Free rather than a `Parser` method so a syntax error raised before the parser
+/// exists can be located the same way [`Parser::convert_range`] does.
+fn code_range(filename: StringId, range: TextRange) -> CodeRange {
+    CodeRange {
+        filename,
+        start_byte: range.start().into(),
+        end_byte: range.end().into(),
+    }
+}
+
 /// Parses code using a caller-provided interner seed.
 ///
 /// This enables incremental compilation flows (e.g. REPL) where existing
@@ -143,13 +199,22 @@ pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseErro
 pub(crate) fn parse_with_interner(
     code: &str,
     filename: &str,
-    interner: InternerBuilder,
+    mut interner: InternerBuilder,
 ) -> Result<ParseResult, ParseError> {
-    let mut parser = Parser::new(code, filename, interner);
+    // Interned up front so a syntax error can be located without a `Parser`,
+    // leaving the parser to be built once, fully populated, after parsing.
+    let filename_id = interner.intern(filename);
     let parsed =
-        parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), parser.convert_range(e.range())))?;
-    let module = parsed.into_syntax();
-    let nodes = parser.parse_statements(module.body)?;
+        parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
+    // Harvested before `into_syntax` drops the token stream.
+    let class_keyword_offsets = parsed
+        .tokens()
+        .iter()
+        .filter(|token| token.kind() == TokenKind::Class)
+        .map(Ranged::start)
+        .collect();
+    let mut parser = Parser::new(code, filename_id, interner, class_keyword_offsets);
+    let nodes = parser.parse_statements(parsed.into_syntax().body)?;
     Ok(ParseResult {
         nodes,
         interner: parser.interner,
@@ -170,16 +235,29 @@ pub struct Parser<'a> {
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
     /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
     depth_remaining: u16,
+    /// Ascending source offsets of every `class` keyword, taken from the lexer.
+    ///
+    /// Ruff's AST is abstract — a `StmtClassDef` *is* a class statement, so it
+    /// never records where `class` sat, and its range starts at the first
+    /// decorator. CPython locates a statement at its keyword, so a decorated
+    /// class's traceback frame needs the concrete position. Read only by
+    /// [`Parser::class_keyword_range`].
+    class_keyword_offsets: Vec<TextSize>,
 }
 
 impl<'a> Parser<'a> {
-    fn new(code: &'a str, filename: &'a str, mut interner: InternerBuilder) -> Self {
-        let filename_id = interner.intern(filename);
+    fn new(
+        code: &'a str,
+        filename_id: StringId,
+        interner: InternerBuilder,
+        class_keyword_offsets: Vec<TextSize>,
+    ) -> Self {
         Self {
             code,
             filename_id,
             interner,
             depth_remaining: MAX_NESTING_DEPTH,
+            class_keyword_offsets,
         }
     }
 
@@ -268,47 +346,10 @@ impl<'a> Parser<'a> {
     fn parse_statement_impl(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
         match statement {
             Stmt::FunctionDef(function) => {
-                let params = &function.parameters;
-
-                // Parse positional-only parameters (before /)
-                let pos_args = self.parse_params_with_defaults(&params.posonlyargs)?;
-
-                // Parse positional-or-keyword parameters
-                let args = self.parse_params_with_defaults(&params.args)?;
-
-                // Parse *args
-                let var_args = params.vararg.as_ref().map(|p| self.interner.intern(&p.name.id));
-
-                // Parse keyword-only parameters (after * or *args)
-                let kwargs = self.parse_params_with_defaults(&params.kwonlyargs)?;
-
-                // Parse **kwargs
-                let var_kwargs = params.kwarg.as_ref().map(|p| self.interner.intern(&p.name.id));
-
-                let signature = ParsedSignature {
-                    pos_args,
-                    args,
-                    var_args,
-                    kwargs,
-                    var_kwargs,
-                };
-
-                let name = self.identifier(&function.name.id, function.name.range);
-                // Parse function body recursively
-                let body = self.parse_statements(function.body)?;
-                let is_async = function.is_async;
-
-                Ok(Node::FunctionDef(RawFunctionDef {
-                    name,
-                    signature,
-                    body,
-                    is_async,
-                }))
+                let (def, decorators) = self.parse_function_def(function)?;
+                Ok(Node::FunctionDef { def, decorators })
             }
-            Stmt::ClassDef(c) => Err(ParseError::not_implemented(
-                "class definitions",
-                self.convert_range(c.range),
-            )),
+            Stmt::ClassDef(c) => self.parse_class_def(c),
             Stmt::Return(ast::StmtReturn { value, .. }) => Ok(Node::Return(match value {
                 Some(value) => Some(self.parse_expression(*value)?),
                 None => None,
@@ -561,6 +602,40 @@ impl<'a> Parser<'a> {
                 ..
             }) => {
                 let position = self.convert_range(range);
+                // Compiler directives, not real imports: they bind nothing and lower
+                // to a no-op, so real-world modules import cleanly. Anything Monty
+                // does not implement is rejected rather than quietly failing to do
+                // what it says. `level == 0` keeps `from .__future__ import x` an
+                // ordinary relative import, falling through to the `ImportError`.
+                if level == 0 && module.as_ref().is_some_and(|m| m.as_str() == "__future__") {
+                    return match names
+                        .iter()
+                        .find(|a| a.asname.is_some() || !SUPPORTED_FUTURES.contains(&a.name.id.as_str()))
+                    {
+                        Some(alias) if UNSUPPORTED_FUTURES.contains(&alias.name.id.as_str()) => {
+                            Err(ParseError::not_implemented(
+                                format!("the '{}' future feature", alias.name.id),
+                                self.convert_range(alias.range),
+                            ))
+                        }
+                        // Name checks come first so an aliased unknown feature is
+                        // reported as undefined, as CPython does.
+                        Some(alias) if !SUPPORTED_FUTURES.contains(&alias.name.id.as_str()) => Err(ParseError::syntax(
+                            format!("future feature {} is not defined", alias.name.id),
+                            self.convert_range(alias.range),
+                        )),
+                        // A known feature, so the alias is what selected it. An
+                        // alias asks to bind a name and a no-op binds nothing, so
+                        // accepting it would fail exactly the way this branch
+                        // exists to prevent — the `NameError` would surface later,
+                        // far from the import.
+                        Some(alias) => Err(ParseError::not_implemented(
+                            "aliasing a `__future__` feature",
+                            self.convert_range(alias.range),
+                        )),
+                        None => Ok(Node::Pass),
+                    };
+                }
                 // We only support absolute imports (level 0)
                 if level != 0 {
                     return Err(ParseError::import_error(
@@ -635,6 +710,370 @@ impl<'a> Parser<'a> {
                 "IPython escape commands",
                 self.convert_range(i.range),
             )),
+        }
+    }
+
+    /// Parses a `def` into a [`RawFunctionDef`] plus its decorators.
+    ///
+    /// Shared by the top-level `Stmt::FunctionDef` arm and by class-body method
+    /// parsing in [`parse_class_def`](Self::parse_class_def). The decorators are
+    /// returned separately because they belong to the statement, not the function
+    /// (see [`Node::FunctionDef`]); the class-body path rejects decorated methods
+    /// before calling here, so it always receives an empty list.
+    fn parse_function_def(
+        &mut self,
+        function: ast::StmtFunctionDef,
+    ) -> Result<(RawFunctionDef, Vec<ExprLoc>), ParseError> {
+        let decorators = self.parse_decorators(function.decorator_list)?;
+
+        let params = &function.parameters;
+
+        // Parse positional-only parameters (before /)
+        let pos_args = self.parse_params_with_defaults(&params.posonlyargs)?;
+
+        // Parse positional-or-keyword parameters
+        let args = self.parse_params_with_defaults(&params.args)?;
+
+        // Parse *args
+        let var_args = params.vararg.as_ref().map(|p| self.interner.intern(&p.name.id));
+
+        // Parse keyword-only parameters (after * or *args)
+        let kwargs = self.parse_params_with_defaults(&params.kwonlyargs)?;
+
+        // Parse **kwargs
+        let var_kwargs = params.kwarg.as_ref().map(|p| self.interner.intern(&p.name.id));
+
+        let signature = ParsedSignature {
+            pos_args,
+            args,
+            var_args,
+            kwargs,
+            var_kwargs,
+        };
+
+        let name = self.identifier(&function.name.id, function.name.range);
+        // Parse function body recursively
+        let body = self.parse_statements(function.body)?;
+        let is_async = function.is_async;
+
+        Ok((
+            RawFunctionDef {
+                name,
+                signature,
+                body,
+                is_async,
+            },
+            decorators,
+        ))
+    }
+
+    /// Parses decorator expressions in source order.
+    ///
+    /// They are ordinary expressions evaluated in the enclosing scope; the
+    /// compiler emits the applying calls after building the decorated value.
+    /// Shared by [`parse_function_def`](Self::parse_function_def) and
+    /// [`parse_class_def`](Self::parse_class_def).
+    fn parse_decorators(
+        &mut self,
+        decorators: impl IntoIterator<Item = ast::Decorator>,
+    ) -> Result<Vec<ExprLoc>, ParseError> {
+        decorators
+            .into_iter()
+            .map(|d| self.parse_expression(d.expression))
+            .collect()
+    }
+
+    /// Parses a `class Foo: ...` definition into a [`Node::ClassDef`].
+    ///
+    /// The class body is modelled as a synthetic zero-argument function (like
+    /// CPython's class-body code object): the class statements are collected in
+    /// source order into a [`RawFunctionDef`] that, when prepared and compiled,
+    /// runs in its own scope and returns the assembled `Class`. Methods become
+    /// nested `FunctionDef`s; class variables become `Assign`s with arbitrary
+    /// expressions (`name = <expr>` / `name: T = <expr>`). Every member name is
+    /// recorded in `members`, in source order, for namespace assembly.
+    ///
+    /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
+    /// member, and annotated names a stringized `__annotations__`. Class
+    /// decorators are supported (enclosing scope, applied bottom-up);
+    /// inheritance, function/method decorators, and anything else in the body
+    /// are rejected as not-implemented, reserving the syntax for later.
+    fn parse_class_def(&mut self, class: ast::StmtClassDef) -> Result<ParseNode, ParseError> {
+        let position = self.class_keyword_range(&class);
+        let decorators = self.parse_decorators(class.decorator_list)?;
+        // `class.arguments` carries base classes and metaclass keywords.
+        if class
+            .arguments
+            .is_some_and(|a| !a.args.is_empty() || !a.keywords.is_empty())
+        {
+            return Err(ParseError::not_implemented(
+                "class inheritance and metaclasses",
+                position,
+            ));
+        }
+
+        let name = self.identifier(&class.name.id, class.name.range);
+        // The class-body statements (in source order) and the member names they
+        // bind. Both methods and class vars are ordinary bindings of the body
+        // scope; `members` records the order so the compiler can assemble the
+        // namespace dict from the body's locals.
+        let mut body = Vec::new();
+        let mut members = Vec::new();
+        // `(name, "source text")` pairs assembled into `__annotations__` below;
+        // always stringized (PEP 563). See `limitations/typing.md`.
+        let mut annotations: Vec<DictItem> = Vec::new();
+
+        // CPython stores the class docstring as a real `__doc__` entry in the
+        // class dict (`None` when absent), so synthesize a `__doc__ = <docstring
+        // or None>` binding as the first class-body statement — `Foo.__doc__` and
+        // `obj.__doc__` then work through ordinary namespace lookup. An explicit
+        // `__doc__ = ...` later in the body overwrites it, as in CPython.
+        let doc_target = Identifier::new(self.interner.intern("__doc__"), self.convert_range(class.name.range));
+        let mut doc_value = ExprLoc::new(self.convert_range(class.name.range), Expr::Literal(Literal::None));
+
+        for (i, stmt) in class.body.into_iter().enumerate() {
+            match stmt {
+                Stmt::FunctionDef(function) => {
+                    if !function.decorator_list.is_empty() {
+                        return Err(ParseError::not_implemented(
+                            "method decorators (classmethod/staticmethod/property)",
+                            self.convert_range(function.range),
+                        ));
+                    }
+                    // Parameter defaults evaluate in the class-body scope, so a
+                    // walrus target there would become a class member (see
+                    // `reject_class_body_walrus`); walrus in the method *body*
+                    // binds in the method scope and is fine.
+                    for param in function.parameters.iter_non_variadic_params() {
+                        if let Some(default) = &param.default {
+                            self.reject_class_body_walrus(default)?;
+                        }
+                    }
+                    let (method, decorators) = self.parse_function_def(function)?;
+                    // Rejected above, so a decorated method never reaches the
+                    // class namespace — where a decorator's return value, not a
+                    // function, would end up bound as the member.
+                    debug_assert!(decorators.is_empty(), "method decorators are rejected above");
+                    members.push(method.name);
+                    body.push(Node::FunctionDef {
+                        def: method,
+                        decorators,
+                    });
+                }
+                // `name = <expr>` — a class-level variable.
+                Stmt::Assign(ast::StmtAssign {
+                    targets, value, range, ..
+                }) => {
+                    let [
+                        AstExpr::Name(ast::ExprName {
+                            id, range: name_range, ..
+                        }),
+                    ] = targets.as_slice()
+                    else {
+                        return Err(ParseError::not_implemented(
+                            "complex class variable targets (only `name = <expr>` is allowed)",
+                            self.convert_range(range),
+                        ));
+                    };
+                    let ident = self.identifier(id, *name_range);
+                    self.parse_class_var(ident, *value, &mut members, &mut body)?;
+                }
+                // `name: T [= <expr>]` — an annotated class-level name. The
+                // annotation is recorded (stringized) in `__annotations__`; a
+                // value additionally makes it a class variable. A bare `name: T`
+                // records the annotation but binds no value (matching CPython).
+                Stmt::AnnAssign(ast::StmtAnnAssign {
+                    target,
+                    mut annotation,
+                    value,
+                    range,
+                    ..
+                }) => {
+                    if let AstExpr::Name(ast::ExprName {
+                        id, range: name_range, ..
+                    }) = *target
+                    {
+                        let ident = self.identifier(&id, name_range);
+                        annotations.push(self.parse_class_annotation(ident, &mut annotation)?);
+                        if let Some(value) = value {
+                            self.parse_class_var(ident, *value, &mut members, &mut body)?;
+                        }
+                    } else if value.is_some() {
+                        // Complex target with a value (`x.y: T = v`) is unsupported;
+                        // a bare complex annotation (`x.y: T`) stores nothing in
+                        // CPython either, so it is ignored. CPython does still
+                        // evaluate the target expression (`undefined.attr: T` raises
+                        // `NameError`) where Monty drops it — see
+                        // `limitations/typing.md`.
+                        return Err(ParseError::not_implemented(
+                            "complex class variable targets (only `name = <expr>` is allowed)",
+                            self.convert_range(range),
+                        ));
+                    }
+                }
+                // `pass` and `...` (the common `class C: ...` stub idiom) are
+                // no-ops. A leading string literal is the class docstring and
+                // becomes the synthesized `__doc__` value; later bare string
+                // literals are no-ops.
+                Stmt::Pass(_) => {}
+                Stmt::Expr(ast::StmtExpr { value, .. })
+                    if matches!(*value, AstExpr::StringLiteral(_) | AstExpr::EllipsisLiteral(_)) =>
+                {
+                    if i == 0 && matches!(*value, AstExpr::StringLiteral(_)) {
+                        doc_value = self.parse_expression(*value)?;
+                    }
+                }
+                other => {
+                    return Err(ParseError::not_implemented(
+                        "class bodies containing anything other than methods and simple class variables",
+                        self.convert_range(other.range()),
+                    ));
+                }
+            }
+        }
+
+        // The synthesized `__doc__` binding runs first (like CPython's docstring
+        // store); the namespace assembly loads final local values, so an explicit
+        // `__doc__` member still wins.
+        members.insert(0, doc_target);
+        body.insert(
+            0,
+            Node::Assign {
+                target: doc_target,
+                object: doc_value,
+            },
+        );
+
+        // Last statement so the values are assembled after all members exist.
+        // Always present (empty dict) to match `Cls.__annotations__ == {}`.
+        let annotations_target = Identifier::new(self.interner.intern("__annotations__"), position);
+        let body_binds_annotations = members.iter().any(|m| m.name_id == annotations_target.name_id);
+        if body_binds_annotations && !annotations.is_empty() {
+            // Being last, the synthetic assignment would clobber the body's own
+            // binding and lose these entries. CPython stores into whatever the name
+            // holds instead — merging into a dict, `TypeError` otherwise.
+            return Err(ParseError::not_implemented(
+                "assigning `__annotations__` in a class body with annotated names",
+                position,
+            ));
+        }
+        // With nothing to store, the body's own binding stands — synthesizing an
+        // empty dict over it would break class bodies CPython accepts.
+        if !body_binds_annotations {
+            members.push(annotations_target);
+            body.push(Node::Assign {
+                target: annotations_target,
+                object: ExprLoc::new(position, Expr::Dict(annotations)),
+            });
+        }
+
+        // Wrap the body statements in a synthetic zero-arg function. The class
+        // name's `name_id` is reused for nicer tracebacks; this function is never
+        // registered in any scope (`prepare_class_def` prepares it directly,
+        // without binding a function name).
+        let body = RawFunctionDef {
+            name,
+            signature: ParsedSignature::default(),
+            body,
+            is_async: false,
+        };
+
+        Ok(Node::ClassDef {
+            name,
+            body,
+            members,
+            decorators,
+            position,
+        })
+    }
+
+    /// The range of a `class` statement from the `class` keyword, excluding
+    /// decorators: ruff's `StmtClassDef::range` starts at the first decorator
+    /// where CPython starts at the keyword, which would otherwise show decorator
+    /// lines in a class-body traceback frame.
+    ///
+    /// The keyword is located from the lexer's tokens rather than by searching the
+    /// source text, so a `class` inside a comment or a decorator's string argument
+    /// cannot be mistaken for it. Offsets are ascending, so this class's keyword is
+    /// simply the first one at or after its final decorator.
+    fn class_keyword_range(&self, class: &ast::StmtClassDef) -> CodeRange {
+        let start = match class.decorator_list.last() {
+            // Undecorated: ruff's range already starts at the keyword.
+            None => class.range.start().into(),
+            Some(last_decorator) => {
+                let after_decorators = last_decorator.range.end();
+                let index = self.class_keyword_offsets.partition_point(|&o| o < after_decorators);
+                // Bounded by the name so a malformed lookup cannot borrow a later
+                // class's keyword; the fallback is unreachable (a decorated class
+                // always has a keyword in this window) but avoids a panic path.
+                self.class_keyword_offsets
+                    .get(index)
+                    .filter(|&&offset| offset < class.name.range.start())
+                    .map_or_else(|| class.range.start().into(), |&offset| offset.into())
+            }
+        };
+        CodeRange {
+            filename: self.filename_id,
+            start_byte: start,
+            end_byte: class.range.end().into(),
+        }
+    }
+
+    /// Builds the `'name': 'annotation'` pair for one annotated class-body name.
+    ///
+    /// The annotation is stringized rather than evaluated (see
+    /// `limitations/typing.md`); [`stringize_annotation`] owns rendering it back
+    /// to the text CPython would store.
+    ///
+    /// The annotation never reaches [`Parser::parse_expression`], so the depth
+    /// check guarding stringization's two recursive passes is made here.
+    fn parse_class_annotation(&mut self, ident: Identifier, annotation: &mut AstExpr) -> Result<DictItem, ParseError> {
+        self.check_expression_depth(annotation)?;
+        let ann_range = annotation.range();
+        let ann_id = self.interner.intern(&stringize_annotation(annotation));
+        Ok(DictItem::Pair(
+            ExprLoc::new(ident.position, Expr::Literal(Literal::Str(ident.name_id))),
+            ExprLoc::new(self.convert_range(ann_range), Expr::Literal(Literal::Str(ann_id))),
+        ))
+    }
+
+    /// Parses a class-variable value and records the binding: rejects class-scope
+    /// walrus, parses the value expression, and appends the member / `Assign` pair
+    /// shared by the `Assign` and `AnnAssign` class-body arms.
+    fn parse_class_var(
+        &mut self,
+        ident: Identifier,
+        value: AstExpr,
+        members: &mut Vec<Identifier>,
+        body: &mut Vec<ParseNode>,
+    ) -> Result<(), ParseError> {
+        self.reject_class_body_walrus(&value)?;
+        let object = self.parse_expression(value)?;
+        members.push(ident);
+        body.push(Node::Assign { target: ident, object });
+        Ok(())
+    }
+
+    /// Rejects `:=` that binds in a class-body scope (in class-variable values
+    /// and method parameter defaults).
+    ///
+    /// A walrus target in such an expression binds in the class body, so in
+    /// CPython it becomes a class member (`class C: x = (y := 5)` gives `C.y`).
+    /// Monty's namespace assembly only records directly-assigned names, so the
+    /// binding would be silently dropped — reject the syntax until class-scope
+    /// walrus is implemented. A walrus inside a lambda *body* binds in the
+    /// lambda's own scope and is allowed (see [`contains_class_scope_walrus`]).
+    /// The depth check comes first: the search recurses over the raw ruff AST,
+    /// which `parse_expression` has not yet bounded.
+    fn reject_class_body_walrus(&self, expr: &AstExpr) -> Result<(), ParseError> {
+        self.check_expression_depth(expr)?;
+        if contains_class_scope_walrus(expr) {
+            Err(ParseError::not_implemented(
+                "assignment expressions (`:=`) in class bodies",
+                self.convert_range(expr.range()),
+            ))
+        } else {
+            Ok(())
         }
     }
 
@@ -940,7 +1379,11 @@ impl<'a> Parser<'a> {
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::ListComp { elt, generators },
+                    Expr::ListComp {
+                        elt,
+                        generators,
+                        captured_slots: Vec::new(),
+                    },
                 ))
             }
             AstExpr::SetComp(ast::ExprSetComp {
@@ -950,7 +1393,11 @@ impl<'a> Parser<'a> {
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::SetComp { elt, generators },
+                    Expr::SetComp {
+                        elt,
+                        generators,
+                        captured_slots: Vec::new(),
+                    },
                 ))
             }
             AstExpr::DictComp(ast::ExprDictComp {
@@ -976,7 +1423,12 @@ impl<'a> Parser<'a> {
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::DictComp { key, value, generators },
+                    Expr::DictComp {
+                        key,
+                        value,
+                        generators,
+                        captured_slots: Vec::new(),
+                    },
                 ))
             }
             AstExpr::Generator(ast::ExprGenerator {
@@ -989,7 +1441,11 @@ impl<'a> Parser<'a> {
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::ListComp { elt, generators },
+                    Expr::ListComp {
+                        elt,
+                        generators,
+                        captured_slots: Vec::new(),
+                    },
                 ))
             }
             AstExpr::Await(a) => {
@@ -1036,7 +1492,7 @@ impl<'a> Parser<'a> {
                 let position = self.convert_range(range);
                 let ast::Arguments { args, keywords, .. } = arguments;
                 let args_vec = args.into_vec();
-                let keywords_vec = keywords.into_vec();
+                let keywords_vec: Vec<_> = keywords.into_iter().collect();
 
                 // Detect whether we need the generalized path (PEP 448):
                 // - multiple *args unpacks, OR
@@ -1567,11 +2023,25 @@ impl<'a> Parser<'a> {
             }
             InterpolatedStringElement::Interpolation(interp) => {
                 let expr = Box::new(self.parse_expression((*interp.expression).clone())?);
-                let conversion = convert_conversion_flag(interp.conversion);
                 let format_spec = match &interp.format_spec {
-                    Some(spec) => Some(self.parse_format_spec(spec)?),
+                    Some(spec) => self.parse_format_spec(spec)?,
                     None => None,
                 };
+                let mut conversion = convert_conversion_flag(interp.conversion);
+                // An explicit empty spec (`f"{x=:}"`) collapses to `None` in
+                // `parse_format_spec`, but — unlike the bare debug form
+                // (`f"{x=}"`), which defaults to `repr` — it must format with
+                // `str`. Mark the conversion `Str` so the compiler's repr
+                // default for debug forms is suppressed; this is exact because
+                // `format(x, "")` equals `str(x)` for builtins (the same
+                // equivalence the empty-spec collapse already relies on).
+                if interp.debug_text.is_some()
+                    && matches!(conversion, ConversionFlag::None)
+                    && interp.format_spec.is_some()
+                    && format_spec.is_none()
+                {
+                    conversion = ConversionFlag::Str;
+                }
                 // Extract debug prefix for `=` specifier (e.g., f'{a=}' -> "a=")
                 let debug_prefix = interp.debug_text.as_ref().map(|dt| {
                     let expr_text = &self.code[interp.expression.range()];
@@ -1603,7 +2073,10 @@ impl<'a> Parser<'a> {
     ///    encoding (e.g. `f"{x:>1048576}"`). The concatenated literal text is
     ///    interned and emitted as a single-literal dynamic spec so the VM
     ///    re-parses it at runtime.
-    fn parse_format_spec(&mut self, spec: &ast::InterpolatedStringFormatSpec) -> Result<FormatSpec, ParseError> {
+    fn parse_format_spec(
+        &mut self,
+        spec: &ast::InterpolatedStringFormatSpec,
+    ) -> Result<Option<FormatSpec>, ParseError> {
         let has_interpolation = spec
             .elements
             .iter()
@@ -1631,7 +2104,7 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            Ok(FormatSpec::Dynamic(parts))
+            Ok(Some(FormatSpec::Dynamic(parts)))
         } else {
             let static_spec: String = spec
                 .elements
@@ -1641,24 +2114,48 @@ impl<'a> Parser<'a> {
                     InterpolatedStringElement::Interpolation(_) => None,
                 })
                 .collect();
-            let parsed: ParsedFormatSpec = static_spec.parse().map_err(|err: ParseFormatSpecError| {
-                ParseError::syntax(err.to_string(), self.convert_range(spec.range))
-            })?;
-            if let Some(encoded) = encode_format_spec(&parsed) {
-                Ok(FormatSpec::Static(encoded))
-            } else {
-                let string_id = self.interner.intern(&static_spec);
-                Ok(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)]))
+            // An empty spec (`f"{x:}"`) is identical to no spec (`f"{x}"`) for
+            // every builtin type — `format(x, "")` is `str(x)`. Emit no spec so
+            // the value takes the plain `str()` path rather than the default
+            // formatter, which diverges for some types (e.g. a bare float would
+            // otherwise go through `g`: `f"{1234567.0:}"` must be `"1234567.0"`,
+            // not `"1.23457e+06"`; a bool must be `"True"`, not `"1"`).
+            if static_spec.is_empty() {
+                return Ok(None);
+            }
+            match static_spec.parse::<ParsedFormatSpec>() {
+                Ok(parsed) => {
+                    if let Some(encoded) = encode_format_spec(&parsed) {
+                        Ok(Some(FormatSpec::Static(encoded)))
+                    } else {
+                        // Valid but too large for the compact encoding — re-parse
+                        // the literal at runtime.
+                        let string_id = self.interner.intern(&static_spec);
+                        Ok(Some(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)])))
+                    }
+                }
+                // Two kinds of failing spec are deferred to the dynamic
+                // (runtime) path rather than rejected here:
+                //  - one containing `%`, which may be a `strftime` string for a
+                //    date/datetime value (only resolvable once the type is known);
+                //  - one whose error CPython raises as a *runtime* `ValueError`
+                //    with type-dependent or format-time wording (`Unknown format
+                //    code`, grouping conflicts, missing precision) — see
+                //    [`ParseFormatSpecError::defer_to_runtime`]. The VM re-parses
+                //    the literal and raises the matching error.
+                // Genuinely-malformed specs and `usize` overflow still fail at
+                // compile time.
+                Err(err) if static_spec.contains('%') || err.defer_to_runtime() => {
+                    let string_id = self.interner.intern(&static_spec);
+                    Ok(Some(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)])))
+                }
+                Err(err) => Err(ParseError::syntax(err.to_string(), self.convert_range(spec.range))),
             }
         }
     }
 
     fn convert_range(&self, range: TextRange) -> CodeRange {
-        CodeRange {
-            filename: self.filename_id,
-            start_byte: range.start().into(),
-            end_byte: range.end().into(),
-        }
+        code_range(self.filename_id, range)
     }
 
     /// Decrements the depth remaining for nested parentheses.
@@ -1670,6 +2167,51 @@ impl<'a> Parser<'a> {
         } else {
             let position = self.convert_range(get_range());
             Err(ParseError::syntax("Source is too deeply nested", position))
+        }
+    }
+
+    /// Rejects an expression nested deeper than the remaining budget, without
+    /// consuming any of it — for callers that walk a raw ruff expression
+    /// recursively *before* [`Parser::parse_expression`] can bound it.
+    ///
+    /// Ruff builds deeply nested ASTs from flat source (long attribute chains)
+    /// without recursing itself, so such a walk can overflow the host stack at
+    /// compile time. The check stops descending once the budget is exhausted, so
+    /// its own depth is bounded by [`MAX_NESTING_DEPTH`].
+    fn check_expression_depth(&self, expr: &AstExpr) -> Result<(), ParseError> {
+        /// Expression visitor that reports whether the walk ever ran out of budget.
+        struct DepthCheck {
+            remaining: u16,
+            too_deep: bool,
+        }
+        impl<'a> Visitor<'a> for DepthCheck {
+            fn visit_expr(&mut self, expr: &'a AstExpr) {
+                // Nothing is pruned (not even lambda bodies): the guarded walks
+                // reach everywhere, so the bound must too.
+                match self.remaining.checked_sub(1) {
+                    _ if self.too_deep => {}
+                    None => self.too_deep = true,
+                    Some(remaining) => {
+                        self.remaining = remaining;
+                        walk_expr(self, expr);
+                        self.remaining += 1;
+                    }
+                }
+            }
+        }
+
+        let mut check = DepthCheck {
+            remaining: self.depth_remaining,
+            too_deep: false,
+        };
+        check.visit_expr(expr);
+        if check.too_deep {
+            Err(ParseError::syntax(
+                "Source is too deeply nested",
+                self.convert_range(expr.range()),
+            ))
+        } else {
+            Ok(())
         }
     }
 }
@@ -1722,6 +2264,43 @@ fn convert_conversion_flag(flag: RuffConversionFlag) -> ConversionFlag {
         RuffConversionFlag::Repr => ConversionFlag::Repr,
         RuffConversionFlag::Ascii => ConversionFlag::Ascii,
     }
+}
+
+/// Does `expr` contain a `:=` that binds in the enclosing (class-body) scope?
+///
+/// Like ruff's `any_over_expr`, but scope-aware for lambdas: a walrus inside a
+/// lambda *body* binds in the lambda's own scope (legal CPython, e.g.
+/// `class C: f = lambda: (z := 1)`) and is skipped, while lambda parameter
+/// *defaults* evaluate in the enclosing scope and are still searched.
+/// Comprehensions ARE descended into: CPython also rejects an assignment
+/// expression within a comprehension in a class body (as a `SyntaxError`).
+fn contains_class_scope_walrus(expr: &AstExpr) -> bool {
+    /// Expression visitor that records whether a class-scope-binding walrus
+    /// was seen, pruning lambda bodies from the walk.
+    struct Finder {
+        found: bool,
+    }
+    impl<'a> Visitor<'a> for Finder {
+        fn visit_expr(&mut self, expr: &'a AstExpr) {
+            match expr {
+                _ if self.found => {}
+                AstExpr::Named(_) => self.found = true,
+                AstExpr::Lambda(lambda) => {
+                    // Only the parameter defaults evaluate in the enclosing scope.
+                    for param in lambda.parameters.iter().flat_map(|p| p.iter_non_variadic_params()) {
+                        if let Some(default) = param.default.as_deref() {
+                            self.visit_expr(default);
+                        }
+                    }
+                }
+                _ => walk_expr(self, expr),
+            }
+        }
+    }
+
+    let mut finder = Finder { found: false };
+    finder.visit_expr(expr);
+    finder.found
 }
 
 /// Short human-readable name for an `AstExpr` variant, for use in
@@ -1828,7 +2407,7 @@ pub enum ParseError {
 }
 
 impl ParseError {
-    fn not_implemented(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
+    pub(crate) fn not_implemented(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
         Self::NotImplemented {
             msg: msg.into(),
             position,
@@ -1861,7 +2440,7 @@ impl ParseError {
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
         let mut source_map = SourceMap::new(source);
         match self {
-            Self::Syntax { msg, position } => MontyException::new_full(
+            Self::Syntax { msg, position } => MontyException::with_traceback(
                 ExcType::SyntaxError,
                 Some(msg.into_owned()),
                 vec![StackFrame::from_position_syntax_error(
@@ -1870,17 +2449,17 @@ impl ParseError {
                     &mut source_map,
                 )],
             ),
-            Self::NotImplemented { msg, position } => MontyException::new_full(
+            Self::NotImplemented { msg, position } => MontyException::with_traceback(
                 ExcType::NotImplementedError,
                 Some(format!("The monty syntax parser does not yet support {msg}")),
                 vec![StackFrame::from_position(position, filename, &mut source_map)],
             ),
-            Self::NotSupported { msg, position } => MontyException::new_full(
+            Self::NotSupported { msg, position } => MontyException::with_traceback(
                 ExcType::NotImplementedError,
                 Some(msg.into_owned()),
                 vec![StackFrame::from_position(position, filename, &mut source_map)],
             ),
-            Self::Import { msg, position } => MontyException::new_full(
+            Self::Import { msg, position } => MontyException::with_traceback(
                 ExcType::ImportError,
                 Some(msg.into_owned()),
                 vec![StackFrame::from_position_no_caret(position, filename, &mut source_map)],

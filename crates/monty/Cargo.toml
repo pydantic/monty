@@ -1,6 +1,6 @@
 [package]
 name = "monty"
-readme = "../../README.md"
+readme = "README.md"
 version = { workspace = true }
 license = { workspace = true }
 rust-version = { workspace = true }
@@ -17,28 +17,35 @@ name = "monty"
 path = "src/lib.rs"
 
 [dependencies]
+monty-macros = { workspace = true }
+monty-types = { workspace = true }
 ruff_python_parser = { workspace = true }
 ruff_python_stdlib = { workspace = true }
 ruff_python_ast = { workspace = true }
+ruff_python_codegen = { workspace = true }
+ruff_source_file = { workspace = true }
 ruff_text_size = { workspace = true }
 ahash = { workspace = true }
 indexmap = { workspace = true }
+itoa = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 postcard = { workspace = true }
-strum = { version = "0.27", features = ["derive"] }
+strum = { workspace = true }
 hashbrown = "0.16"
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 num-integer = { workspace = true }
+unicode-general-category = { workspace = true }
+unicode_names2 = { workspace = true }
+unicode-normalization = { workspace = true }
+memchr = { workspace = true }
 smallvec = { version = "1.13", features = ["serde"] }
 fancy-regex = "0.17.0"
 libm = "0.2"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { workspace = true }
 speedate = "0.17.0"
 itertools = "0.14.0"
-jiter = { version = "0.15.0", features = ["num-bigint"] }
-monty-macros = { path = "../monty-macros" }
+jiter = { version = "0.16.0", features = ["num-bigint"] }
 
 [features]
 # ref-count-return changes behavior to return information on reference counts to check they're correct
@@ -51,11 +58,12 @@ ref-count-return = ["test-hooks"]
 memory-model-checks = []
 # test-hooks exposes small internal helpers needed by integration tests that
 # exercise production behavior without duplicating implementation details.
-test-hooks = []
+test-hooks = ["monty-types/test-hooks"]
 
 [dev-dependencies]
 tempfile = "3"
 insta = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

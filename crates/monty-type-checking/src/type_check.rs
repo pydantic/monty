@@ -1,23 +1,18 @@
-use std::{
-    fmt,
-    sync::{Arc, Mutex},
-};
+use std::{fmt, io::ErrorKind, mem};
 
+use monty_types::{TypeCheckingConfig, TypeCheckingFormat};
 use ruff_db::{
     diagnostic::{
         Annotation, Diagnostic, DiagnosticFormat, DiagnosticId, DisplayDiagnosticConfig, DisplayDiagnostics,
         UnifiedFile,
     },
-    files::File,
-    system::SystemPathBuf,
+    files::{File, system_path_to_file},
+    system::{DbWithTestSystem, DbWithWritableSystem as _, SystemPathBuf},
 };
 use ruff_text_size::{TextRange, TextSize};
 use ty_python_semantic::check_file_unwrap;
 
-use crate::{
-    db::SRC_ROOT,
-    pool::{PooledMemoryDb, to_string},
-};
+use crate::db::{MemoryDb, SRC_ROOT};
 
 /// Definition of a source file.
 pub struct SourceFile<'a> {
@@ -35,87 +30,148 @@ impl<'a> SourceFile<'a> {
     }
 }
 
-/// Type check some python source code, checking if it's valid to run with monty.
-///
-/// # Arguments
-/// * `python_source` - The python source code to type check.
-/// * `stubs_file` - Optional stubs file to use for type checking.
-///
-/// # Returns
-/// * `Ok(Some(TypeCheckingFailure))` - If there are typing errors.
-/// * `Ok(None)` - If there are no typing errors.
-/// * `Err(String)` - If there was an unexpected/internal error during type checking.
-pub fn type_check(
-    python_source: &SourceFile<'_>,
-    stubs_file: Option<&SourceFile<'_>>,
-) -> Result<Option<TypeCheckingDiagnostics>, String> {
-    // Check out a pre-configured db from the global pool. The `Drop` impl on
-    // `PooledMemoryDb` scrubs every file (and now also every parent directory) we
-    // write below and returns the db to the pool when the lease is no longer
-    // reachable — either at the end of this function (clean run) or when the
-    // returned `TypeCheckingDiagnostics` is dropped.
-    let mut pooled_db = PooledMemoryDb::checkout()?;
+#[derive(Debug, Default)]
+pub struct TypeChecker {
+    db: MemoryDb,
+    touched_files: Vec<TouchedRootFile>,
+}
 
-    let src_root = SystemPathBuf::from(SRC_ROOT);
-    let main_path = src_root.join(python_source.path);
-    let main_source = python_source.source_code;
+impl TypeChecker {
+    /// Type check some python source code, checking if it's valid to run with monty.
+    ///
+    /// # Arguments
+    /// * `python_source` - The python source code to type check.
+    /// * `stubs_file` - Optional stubs file to use for type checking.
+    /// * `config` - Configuration for the type checking diagnostics.
+    ///
+    /// # Returns
+    /// * `Ok(None)` - If there are no typing errors.
+    /// * `Ok(Some(string))` - If there are typing errors.
+    /// * `Err(String)` - If there was an unexpected/internal error during type checking.
+    pub fn run<'a>(
+        &'a mut self,
+        python_source: &SourceFile<'_>,
+        stubs_file: Option<&SourceFile<'_>>,
+        config: TypeCheckingConfig,
+    ) -> Result<Option<TypeCheckingDiagnostics<'a>>, String> {
+        let src_root = SystemPathBuf::from(SRC_ROOT);
+        let main_path = src_root.join(python_source.path);
+        let main_source = python_source.source_code;
 
-    let (main_file, code_offset): (File, u32) = if let Some(stubs_file) = stubs_file {
-        let stubs_path = src_root.join(stubs_file.path);
-        pooled_db.write_root_file(&stubs_path, stubs_file.source_code)?;
+        let (main_file, code_offset): (File, u32) = if let Some(stubs_file) = stubs_file {
+            let stubs_path = src_root.join(stubs_file.path);
+            self.write_root_file(&stubs_path, stubs_file.source_code)?;
 
-        // prepend the stub import to the main source code
-        let stub_stem = stubs_file
-            .path
-            .split_once('.')
-            .map_or(stubs_file.path, |(before, _)| before);
-        let mut new_source = format!("from {stub_stem} import *\n");
-        let offset = u32::try_from(new_source.len()).map_err(to_string)?;
-        new_source.push_str(main_source);
+            // prepend the stub import to the main source code
+            let stub_stem = stubs_file
+                .path
+                .split_once('.')
+                .map_or(stubs_file.path, |(before, _)| before);
+            let mut new_source = format!("from {stub_stem} import *\n");
+            let offset = u32::try_from(new_source.len()).map_err(to_string)?;
+            new_source.push_str(main_source);
 
-        let main_file = pooled_db.write_root_file(&main_path, &new_source)?;
-        // one line offset for errors vs. the original source code since we injected the stub import
-        (main_file, offset)
-    } else {
-        let main_file = pooled_db.write_root_file(&main_path, main_source)?;
-        (main_file, 0)
-    };
+            let main_file = self.write_root_file(&main_path, &new_source)?;
+            // one line offset for errors vs. the original source code since we injected the stub import
+            (main_file, offset)
+        } else {
+            let main_file = self.write_root_file(&main_path, main_source)?;
+            (main_file, 0)
+        };
 
-    // Use `check_file_unwrap` (not `check_types` alone) so that parser errors
-    // and unsupported-syntax errors are included — otherwise malformed input
-    // (e.g. deeply nested parentheses that ruff's parser rejects) would silently
-    // type-check clean.
-    let mut diagnostics = check_file_unwrap(pooled_db.db(), main_file);
-    diagnostics.retain(filter_diagnostics);
+        // Use `check_file_unwrap` (not `check_types` alone) so that parser errors
+        // and unsupported-syntax errors are included — otherwise malformed input
+        // (e.g. deeply nested parentheses that ruff's parser rejects) would silently
+        // type-check clean.
+        let mut diagnostics = check_file_unwrap(&self.db, main_file);
+        diagnostics.retain(filter_diagnostics);
 
-    if diagnostics.is_empty() {
-        Ok(None)
-    } else {
-        // without all this errors would appear on the wrong line because we injected `from type_stubs import *`
+        if diagnostics.is_empty() {
+            Ok(None)
+        } else {
+            // without all this errors would appear on the wrong line because we injected `from type_stubs import *`
 
-        // if we injected the stubs import, we need to write the actual source back to the file in the database
-        pooled_db.rewrite_root_file(&main_path, main_source)?;
-        // and then adjust each span in the error message to account for the injected stubs import
-        if code_offset > 0 {
-            let offset = TextSize::new(code_offset);
-            for diagnostic in &mut diagnostics {
-                // Adjust spans in main diagnostic annotations (only for spans in the main file)
-                for ann in diagnostic.annotations_mut() {
-                    adjust_annotation_span(ann, main_file, offset);
-                }
-                // Adjust spans in sub-diagnostic annotations (e.g., "info: Function defined here")
-                for sub in diagnostic.sub_diagnostics_mut() {
-                    for ann in sub.annotations_mut() {
+            // if we injected the stubs import, we need to write the actual source back to the file in the database
+            self.rewrite_root_file(&main_path, main_source)?;
+            // and then adjust each span in the error message to account for the injected stubs import
+            if code_offset > 0 {
+                let offset = TextSize::new(code_offset);
+                for diagnostic in &mut diagnostics {
+                    // Adjust spans in main diagnostic annotations (only for spans in the main file)
+                    for ann in diagnostic.annotations_mut() {
                         adjust_annotation_span(ann, main_file, offset);
+                    }
+                    // Adjust spans in sub-diagnostic annotations (e.g., "info: Function defined here")
+                    for sub in diagnostic.sub_diagnostics_mut() {
+                        for ann in sub.annotations_mut() {
+                            adjust_annotation_span(ann, main_file, offset);
+                        }
                     }
                 }
             }
-        }
-        // Sort diagnostics by line number
-        let db = pooled_db.db();
-        diagnostics.sort_by(|a, b| a.rendering_sort_key(db).cmp(&b.rendering_sort_key(db)));
+            // Sort diagnostics by line number
+            diagnostics.sort_by(|a, b| a.rendering_sort_key(&self.db).cmp(&b.rendering_sort_key(&self.db)));
 
-        Ok(Some(TypeCheckingDiagnostics::new(diagnostics, pooled_db)))
+            Ok(Some(TypeCheckingDiagnostics {
+                diagnostics,
+                type_checker: self,
+                config,
+            }))
+        }
+    }
+
+    /// Write one root file into the db and remember it for mandatory cleanup.
+    ///
+    /// A path already tracked from an earlier `run` is overwritten rather than
+    /// tracked twice: a session rewrites the same script path on every feed,
+    /// so the tracking list must not grow with the number of feeds.
+    fn write_root_file(&mut self, path: &SystemPathBuf, source: &str) -> Result<File, String> {
+        self.db.write_file(path, source).map_err(to_string)?;
+
+        // The write above succeeded, so interning the path must succeed — otherwise the
+        // file would live in the db but be untracked, poisoning cleanup, hence the panic.
+        let file = system_path_to_file(&self.db, path)
+            .unwrap_or_else(|e| panic!("interning a just-written root file must succeed, DB in an unsafe state: {e}"));
+
+        if !self.touched_files.iter().any(|t| &t.path == path) {
+            self.touched_files.push(TouchedRootFile::new(path.clone(), file));
+        }
+        Ok(file)
+    }
+
+    /// Overwrite the contents of a root file that was previously written via
+    /// [`Self::write_root_file`].
+    ///
+    /// Panics if `path` is not already tracked — the caller would otherwise be
+    /// leaving an untracked write behind that cleanup would miss, so a later
+    /// [`Self::reset`] would leave the file visible to the next session.
+    fn rewrite_root_file(&mut self, path: &SystemPathBuf, source: &str) -> Result<(), String> {
+        assert!(
+            self.touched_files.iter().any(|t| &t.path == path),
+            "rewrite_root_file called for untracked path '{path}' — must call write_root_file first",
+        );
+        self.db.write_file(path, source).map_err(to_string)
+    }
+
+    /// Remove every file written since the last reset and sync the filesystem
+    /// changes, so the checker can be reused for unrelated code.
+    ///
+    /// Security-critical: without this a recycled worker would let one
+    /// session's modules and stubs resolve while checking the next session's
+    /// code. Each `TouchedRootFile::cleanup` removes its own file and walks its
+    /// ancestor chain up to `SRC_ROOT`, removing any directory that has become
+    /// empty. Shared parent directories collapse naturally once the last file
+    /// inside them is gone. We sync `SRC_ROOT` once at the end so the next
+    /// session cannot observe the previous root directory listing.
+    pub fn reset(&mut self) -> Result<(), String> {
+        let touched_files = mem::take(&mut self.touched_files);
+
+        for touched in touched_files.iter().rev() {
+            touched.cleanup(&mut self.db)?;
+        }
+
+        File::sync_path(&mut self.db, &SystemPathBuf::from(SRC_ROOT));
+        Ok(())
     }
 }
 
@@ -137,118 +193,40 @@ fn adjust_annotation_span(ann: &mut Annotation, main_file: File, offset: TextSiz
     }
 }
 
-/// Represents diagnostic details when type checking fails.
+/// The diagnostics of one failed type check, rendered on `Display`.
 ///
-/// The pooled database is held inside an `Arc<Mutex<...>>` so that:
-/// 1. Diagnostic rendering can borrow the db lazily on every `Display`/`Debug` call,
-///    avoiding eager pre-rendering of every output format.
-/// 2. The `MontyTypingError` Python exception that wraps this type stays `Send + Sync`.
-/// 3. The `PooledMemoryDb` is released back to the pool exactly when the last clone
-///    of this `Arc` is dropped — RAII via `PooledMemoryDb`'s `Drop` impl.
-#[derive(Clone)]
-pub struct TypeCheckingDiagnostics {
+/// Borrows the checker because ty's diagnostics only resolve their spans (file
+/// paths, source snippets) against the database that produced them — which is
+/// why the format is chosen up front, in [`TypeChecker::run`], and why callers
+/// that outlive the checker (anything across a process boundary) must keep the
+/// rendered string rather than this.
+pub struct TypeCheckingDiagnostics<'a> {
     /// The actual diagnostic message
     diagnostics: Vec<Diagnostic>,
-    /// Pooled db used to display diagnostics. Wrapped in `Mutex` for `Sync` so
-    /// `MontyTypingError` is sendable; the inner `Drop` impl releases the db when
-    /// the last `Arc` clone is dropped.
-    pooled_db: Arc<Mutex<PooledMemoryDb>>,
-    /// How to format the output
-    format: DiagnosticFormat,
-    /// Whether to highlight the output with ansi colors
-    color: bool,
+    /// The type checker, the db is needed to display diagnostics.
+    type_checker: &'a TypeChecker,
+    /// How to format the output and whether to use color.
+    config: TypeCheckingConfig,
 }
 
-/// Debug output for TypeCheckingDiagnostics shows the pretty typing output, and no other values since
-/// this will be displayed when users are printing `Result<..., TypeCheckingDiagnostics>` etc. and the
-/// raw errors are not useful to end users.
-impl fmt::Debug for TypeCheckingDiagnostics {
+impl fmt::Display for TypeCheckingDiagnostics<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let config = self.config();
-        let pooled_db = self.pooled_db.lock().unwrap();
-        write!(
-            f,
-            "TypeCheckingDiagnostics:\n{}",
-            DisplayDiagnostics::new(pooled_db.db(), &config, &self.diagnostics)
-        )
-    }
-}
-
-/// To display true debugs details about the TypeCheckingDiagnostics
-#[derive(Debug)]
-#[expect(dead_code)]
-pub struct DebugTypeCheckingDiagnostics<'a> {
-    diagnostics: &'a [Diagnostic],
-    pooled_db: Arc<Mutex<PooledMemoryDb>>,
-    format: DiagnosticFormat,
-    color: bool,
-}
-
-impl fmt::Display for TypeCheckingDiagnostics {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let pooled_db = self.pooled_db.lock().unwrap();
-        DisplayDiagnostics::new(pooled_db.db(), &self.config(), &self.diagnostics).fmt(f)
-    }
-}
-
-impl TypeCheckingDiagnostics {
-    fn new(diagnostics: Vec<Diagnostic>, pooled_db: PooledMemoryDb) -> Self {
-        Self {
-            diagnostics,
-            pooled_db: Arc::new(Mutex::new(pooled_db)),
-            format: DiagnosticFormat::Full,
-            color: false,
-        }
-    }
-
-    fn config(&self) -> DisplayDiagnosticConfig {
-        DisplayDiagnosticConfig::new("monty")
-            .format(self.format)
-            .color(self.color)
-    }
-
-    /// To display debug details for the TypeCheckingDiagnostics since debug is the pretty output
-    #[must_use]
-    pub fn debug_details(&self) -> DebugTypeCheckingDiagnostics<'_> {
-        DebugTypeCheckingDiagnostics {
-            diagnostics: &self.diagnostics,
-            pooled_db: self.pooled_db.clone(),
-            format: self.format,
-            color: self.color,
-        }
-    }
-
-    /// Set the format of the diagnostics.
-    #[must_use]
-    pub fn format(self, format: DiagnosticFormat) -> Self {
-        Self { format, ..self }
-    }
-
-    /// Set the format of the diagnostics from a string.
-    /// Valid formats: "full", "concise", "azure", "json", "jsonlines", "rdjson",
-    /// "pylint", "gitlab", "github".
-    pub fn format_from_str(self, format: &str) -> Result<Self, String> {
-        let format = match format.to_ascii_lowercase().as_str() {
-            "full" => DiagnosticFormat::Full,
-            "concise" => DiagnosticFormat::Concise,
-            "azure" => DiagnosticFormat::Azure,
-            "json" => DiagnosticFormat::Json,
-            "jsonlines" | "json-lines" => DiagnosticFormat::JsonLines,
-            "rdjson" => DiagnosticFormat::Rdjson,
-            "pylint" => DiagnosticFormat::Pylint,
-            // don't bother with the "junit" feature, please check the binary size and add it if you need this format
-            // "junit" => DiagnosticFormat::Junit,
-            "gitlab" => DiagnosticFormat::Gitlab,
-            "github" => DiagnosticFormat::Github,
-            _ => return Err(format!("Unknown format: {format}")),
+        let format = match self.config.format {
+            TypeCheckingFormat::Full => DiagnosticFormat::Full,
+            TypeCheckingFormat::Concise => DiagnosticFormat::Concise,
+            TypeCheckingFormat::Azure => DiagnosticFormat::Azure,
+            TypeCheckingFormat::Json => DiagnosticFormat::Json,
+            TypeCheckingFormat::JsonLines => DiagnosticFormat::JsonLines,
+            TypeCheckingFormat::Rdjson => DiagnosticFormat::Rdjson,
+            TypeCheckingFormat::Pylint => DiagnosticFormat::Pylint,
+            TypeCheckingFormat::Gitlab => DiagnosticFormat::Gitlab,
+            TypeCheckingFormat::Github => DiagnosticFormat::Github,
         };
-        Ok(Self { format, ..self })
-    }
 
-    /// Set whether to highlight the output with ansi colors
-    #[must_use]
-    pub fn color(self, color: bool) -> Self {
-        Self { color, ..self }
+        let config = DisplayDiagnosticConfig::new("monty")
+            .format(format)
+            .color(self.config.color);
+        DisplayDiagnostics::new(&self.type_checker.db, &config, &self.diagnostics).fmt(f)
     }
 }
 
@@ -261,4 +239,79 @@ fn filter_diagnostics(d: &Diagnostic) -> bool {
             d.primary_message(),
             "`await` statement outside of a function" | "`await` outside of an asynchronous function"
         ))
+}
+
+/// File written into a pooled database during one type-check run.
+///
+/// The path is used to remove the file from the in-memory filesystem, and the
+/// interned `File` handle is then synced so Salsa observes the deletion before
+/// the db is returned to the pool.
+#[derive(Debug)]
+struct TouchedRootFile {
+    path: SystemPathBuf,
+    file: File,
+}
+
+impl TouchedRootFile {
+    /// Track a root file and its interned handle for mandatory cleanup.
+    fn new(path: SystemPathBuf, file: File) -> Self {
+        Self { path, file }
+    }
+
+    /// Remove the file from the in-memory filesystem, then walk its ancestor
+    /// chain and remove every directory under `SRC_ROOT` that has become empty.
+    ///
+    /// `remove_directory` requires the directory to be empty, so if two touched
+    /// files live in the same directory the first cleanup hits
+    /// `DirectoryNotEmpty` (silently swallowed) and the second succeeds once its
+    /// file is gone. This gives us correct cleanup without needing to sort paths
+    /// or coordinate across `TouchedRootFile`s.
+    fn cleanup(&self, db: &mut MemoryDb) -> Result<(), String> {
+        match db.memory_file_system().remove_file(&self.path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(format!(
+                    "Failed to remove pooled type-check file '{}': {err}",
+                    self.path
+                ));
+            }
+        }
+        self.file.sync(db);
+
+        // Walk parents up to but not including SRC_ROOT, removing each empty directory
+        // and syncing its path so Salsa invalidates any cached directory listing.
+        let src_root = SystemPathBuf::from(SRC_ROOT);
+        let mut ancestor = self.path.parent();
+        while let Some(dir) = ancestor
+            && dir != src_root.as_path()
+        {
+            match db.memory_file_system().remove_directory(dir) {
+                Ok(()) => {}
+                // Another touched file still lives in this directory; it will be
+                // removed by a later `cleanup` call. Every ancestor above this
+                // one is necessarily also non-empty (they contain this directory),
+                // so there is no point walking further up.
+                //
+                // `MemoryFileSystem::remove_directory` reports "directory not
+                // empty" as `io::Error::other(...)` (kind `Other`), so we match on
+                // the message rather than on `ErrorKind::DirectoryNotEmpty`.
+                Err(err) if err.to_string().contains("directory not empty") => break,
+                // `NotFound` at this point would mean the directory never existed
+                // or was already removed, both of which indicate a logic bug
+                // (e.g. the same path tracked twice) — fail loudly.
+                Err(err) => {
+                    return Err(format!("Failed to remove pooled type-check directory '{dir}': {err}"));
+                }
+            }
+            File::sync_path(db, dir);
+            ancestor = dir.parent();
+        }
+        Ok(())
+    }
+}
+
+/// Convert a displayable error into the string type used throughout type checking.
+pub(crate) fn to_string(err: impl fmt::Display) -> String {
+    err.to_string()
 }

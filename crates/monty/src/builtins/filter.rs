@@ -10,11 +10,10 @@
 use crate::{
     args::ArgValues,
     bytecode::VM,
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::RunResult,
-    heap::{HeapData, HeapGuard},
-    resource::ResourceTracker,
-    types::{List, MontyIter, PyTrait},
+    heap::{DropGuard, HeapData},
+    types::{List, PyTrait},
     value::Value,
 };
 
@@ -30,30 +29,31 @@ use crate::{
 /// filter(lambda x: x > 0, [-1, 0, 1, 2])  # [1, 2]
 /// filter(None, [0, 1, False, True, ''])   # [1, True]
 /// ```
-pub fn builtin_filter(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (function, iterable) = args.get_two_args("filter", vm.heap)?;
     defer_drop!(function, vm);
 
-    let iter = MontyIter::new(iterable, vm)?;
-    defer_drop_mut!(iter, vm);
+    let iter = iterable.into_py_iter(vm)?;
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
     let out: Vec<Value> = Vec::new();
-    let mut out_guard = HeapGuard::new(out, vm);
+    let mut out_guard = DropGuard::new(out, vm);
     let (out, vm) = out_guard.as_parts_mut();
 
-    while let Some(item) = iter.for_next(vm)? {
-        let mut item_guard = HeapGuard::new(item, vm);
+    while let Some(item) = iter.py_next(vm)? {
+        let mut item_guard = DropGuard::new(item, vm);
         let (item, vm) = item_guard.as_parts_mut();
         let should_include = if let Value::None = function {
             // No predicate - use truthiness of element
-            item.py_bool(vm)
+            item.py_bool(vm)?
         } else {
             // Clone for predicate call - the clone is consumed by evaluate_function
             let item_for_predicate = item.clone_with_heap(vm);
             let result = vm.evaluate_function("filter()", function, ArgValues::One(item_for_predicate))?;
             let is_truthy = result.py_bool(vm);
-            result.drop_with_heap(vm);
-            is_truthy
+            result.drop_with(vm);
+            is_truthy?
         };
 
         if should_include {
@@ -62,6 +62,6 @@ pub fn builtin_filter(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) ->
     }
 
     let (out, vm) = out_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(out)))?;
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(out)));
     Ok(Value::Ref(heap_id))
 }

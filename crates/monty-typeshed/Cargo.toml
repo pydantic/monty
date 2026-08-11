@@ -1,5 +1,5 @@
 [package]
-name = "monty_typeshed"
+name = "monty-typeshed"
 readme = "README.md"
 version = { workspace = true }
 rust-version = { workspace = true }
@@ -11,6 +11,12 @@ keywords = { workspace = true }
 categories = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
+
+# Explicit lib name keeps the Rust import path `monty_typeshed` even though the
+# crates.io package name uses hyphens.
+[lib]
+name = "monty_typeshed"
+path = "src/lib.rs"
 
 [dependencies]
 ruff_db = { workspace = true }

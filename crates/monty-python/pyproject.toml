@@ -3,9 +3,10 @@ requires = ["maturin>=1.9.4,<2.0"]
 build-backend = "maturin"
 
 [project]
-# the module is named `pydantic_monty`
-name = "pydantic-monty"
-description = "Python bindings for the Monty sandboxed Python interpreter"
+# the module is named `pydantic_monty`; the `pydantic-monty` distribution is the
+# metapackage in `packages/pydantic-monty` that pairs this with the runtime
+name = "pydantic-monty-client"
+description = "Python client for the Monty sandboxed Python interpreter"
 readme = "README.md"
 requires-python = ">=3.10"
 classifiers = [
@@ -29,9 +30,9 @@ classifiers = [
     "Topic :: Internet",
     "Programming Language :: Python :: Implementation",
 ]
-dependencies = [
-    "typing_extensions>=4.5",
-]
+# deliberately does NOT depend on `pydantic-monty-runtime`,
+# to install it use the `pydantic-monty` package
+dependencies = ["typing_extensions>=4.5"]
 dynamic = ["license", "version"]
 
 [project.urls]
@@ -42,6 +43,7 @@ Source = "https://github.com/pydantic/monty"
 python-source = "python"
 module-name = "pydantic_monty._monty"
 features = ["pyo3/extension-module"]
+exclude = ["python/pydantic_monty/*.so", "python/pydantic_monty/__pycache__/**"]
 
 [dependency-groups]
 dev = [

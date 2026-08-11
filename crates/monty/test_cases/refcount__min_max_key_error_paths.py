@@ -17,13 +17,13 @@ try:
     max([item_iter], key=raising_key)
     assert False, 'max(iterable, key=raising_key) should raise ValueError'
 except ValueError as e:
-    assert e.args == ('boom',), 'max iterable key error should propagate unchanged'
+    assert e.args == ('boom',)
 
 try:
     min(item_multi, other_multi, key=raising_key)
     assert False, 'min(arg1, arg2, key=raising_key) should raise ValueError'
 except ValueError as e:
-    assert e.args == ('boom',), 'min multi-arg key error should propagate unchanged'
+    assert e.args == ('boom',)
 
 # The temporary argument container for max() and the current winner slots in
 # both builtin code paths must be released after the handled exception.

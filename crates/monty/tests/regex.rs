@@ -1,7 +1,6 @@
-/// Tests for regex-specific behavior that differs from CPython.
-///
-/// These tests verify Monty-specific regex behavior that cannot be tested via
-/// the datatest runner (which runs tests against both CPython and Monty).
+/// Tests for regex behavior that cannot be tested via the datatest runner
+/// (which runs tests against both CPython and Monty) — engine divergences from
+/// CPython, and cases too slow for the runner's per-file timeout.
 /// In particular, `fancy_regex` enforces a backtrack limit that CPython lacks,
 /// so pathological patterns raise `PatternError` in Monty instead of hanging.
 ///
@@ -11,10 +10,11 @@
 /// which enforces a default 1M-step backtrack limit, raising `re.PatternError`
 /// when exceeded. This is strictly better behavior for a sandbox.
 use monty::MontyRun;
+use monty_types::CompileOptions;
 
 /// Helper to run Python code and return the string result.
 fn run(code: &str) -> String {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let s: String = result.as_ref().try_into().unwrap();
     s
@@ -84,6 +84,24 @@ fn dfa_engine_handles_large_inputs() {
 import re
 m = re.search(r'(a+)+b', 'a' * 10000 + 'c')
 assert m is None, 'no match expected'
+'ok'
+");
+    assert_eq!(result, "ok");
+}
+
+/// Patterns whose compiled form exceeds the pattern cache's per-entry
+/// `delegate_size_limit` are recompiled per call instead of retained — they must
+/// still match identically. Lives here rather than `test_cases/` because
+/// debug-build compilation of the expanded counted repeats is too slow for the
+/// datatest runner's per-file timeout.
+#[test]
+fn oversize_pattern_not_cached_still_matches() {
+    let result = run(r"
+import re
+m = re.fullmatch('(?:ab){3000}', 'ab' * 3000)
+assert m is not None, 'oversize counted repeat fullmatch succeeds'
+assert m.span() == (0, 6000), 'oversize counted repeat span'
+assert re.findall('a{5000}', 'a' * 5000) == ['a' * 5000], 'oversize pattern findall'
 'ok'
 ");
     assert_eq!(result, "ok");

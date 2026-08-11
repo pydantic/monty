@@ -5,13 +5,9 @@
   "private": true,
   "scripts": {
     "type-check": "tsc --noEmit",
-    "test": "node --experimental-strip-types test.ts"
+    "test": "tsc && node dist/test.js"
   },
   "devDependencies": {
     "typescript": "^5.9.2"
-  },
-  "dependencies": {
-    "@pydantic/monty": "file:../pydantic-monty-1.0.0.tgz",
-    "@pydantic/monty-darwin-arm64": "file:../pydantic-monty-darwin-arm64-1.0.0.tgz"
   }
 }

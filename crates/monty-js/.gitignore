@@ -130,9 +130,11 @@ Cargo.lock
 /npm
 
 # napi generated js files
+/index.js
+/index.d.ts
 browser.js
-index.js
-index.d.ts
+native-addon.js
+native-addon.generated.d.ts
 monty.wasi.cjs
 monty.wasi-browser.js
 wasi-worker.mjs
@@ -146,4 +148,8 @@ wrapper.js.map
 .claude/settings.local.json
 plans
 prompts
-monty.wasm32-wasi.wasm
+# Browser test artifacts
+test-results
+playwright-report
+.playwright
+__test__/__screenshots__

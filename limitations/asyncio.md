@@ -56,7 +56,7 @@ preemption, no threads, and no in-sandbox scheduler.
 
 ## JavaScript binding behavior
 
-`runMontyAsync()` treats JavaScript `Promise` results from external
+`MontySession.feedRun()` treats JavaScript `Promise` results from external
 functions as Monty external futures. Python code should `await` those
 calls directly or pass them to `asyncio.gather()`. This lets sibling
 `gather` branches run concurrently while the JavaScript promises settle.
@@ -64,5 +64,5 @@ calls directly or pass them to `asyncio.gather()`. This lets sibling
 Calling an async JavaScript external function from non-async Python code
 without `await` exposes Monty's internal external-future object, currently
 as its repr string. Code that wants the promise result must use `await`;
-`runMontyAsync()` does not parse string output to guess whether a value is
-an internal future.
+`feedRun()` does not parse string output to guess whether a value is an
+internal future.

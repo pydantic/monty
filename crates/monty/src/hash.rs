@@ -35,7 +35,7 @@ use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use strum::EnumCount;
 
-use crate::intern::StaticStrings;
+use crate::{heap::HeapId, intern::StaticStrings};
 
 /// A verified Python hash value.
 ///
@@ -122,6 +122,28 @@ impl<'de> serde::Deserialize<'de> for HashValue {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self::new(u64::deserialize(deserializer)?))
     }
+}
+
+/// Hashes any `Hash` value with a fresh [`DefaultHasher`].
+///
+/// Keeps the hasher boilerplate in one place for the cold `Value::py_hash` arms
+/// (builtins, functions, markers, singletons), so the hot arms (int/str/ref)
+/// never pay for constructing a hasher they don't use.
+#[inline]
+pub(crate) fn hash_one(value: impl Hash) -> HashValue {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    HashValue::new(hasher.finish())
+}
+
+/// Hashes a heap value by its identity (`HeapId`).
+///
+/// The canonical hash for objects that compare by identity — user classes,
+/// instances, bound methods, and cells (CPython's default for objects without
+/// a user `__hash__`). Keeps the `DefaultHasher` boilerplate in one place.
+#[inline]
+pub(crate) fn identity_hash(id: HeapId) -> HashValue {
+    hash_one(id)
 }
 
 /// Hashes a string using the canonical Python-string hash function.

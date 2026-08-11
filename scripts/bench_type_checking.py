@@ -1,10 +1,14 @@
 """
-Benchmark: time successive calls to `Monty.type_check()` on different snippets.
+Benchmark: time successive type-checked feeds on different snippets.
 
 Runs six distinct snippets in a fixed order so you can see the one-time pooled-db
 cold-start cost (call 1) vs. the steady-state cost (calls 2-6) once a scrubbed
-pooled database is available for reuse, without re-checking the exact same source
-text.
+pooled database is available for reuse inside the worker, without re-checking the
+exact same source text.
+
+Each call checks out a fresh type-checking session from a shared worker pool, so
+the measured time includes the protocol round trips and the (tiny) execution
+cost on top of the type check itself.
 
 Usage:
     python scripts/bench_type_checking.py
@@ -86,18 +90,17 @@ def format_ms(seconds: float) -> str:
     return f'{seconds * 1_000_000:.1f} us'
 
 
-def time_one_call(code: str) -> float:
-    """Create a fresh Monty and time a single type_check invocation.
+def time_one_call(pool: pydantic_monty.Monty, code: str) -> float:
+    """Time a single type-checked feed in a fresh session.
 
-    A new Monty per call mirrors typical usage (each snippet gets its own instance)
-    and avoids any per-instance caching hiding the effect we want to measure.
+    A fresh session per call mirrors typical usage (each snippet gets its own
+    session) and avoids the session's accumulated type-check context hiding
+    the effect we want to measure.
     """
-    m = pydantic_monty.Monty(code)
-    start = time.perf_counter()
-    result = m.type_check()
-    elapsed = time.perf_counter() - start
-    assert result is None, f'unexpected type errors: {result}'
-    return elapsed
+    with pool.checkout(type_check=True) as session:
+        start = time.perf_counter()
+        session.feed_run(code)
+        return time.perf_counter() - start
 
 
 def main() -> None:
@@ -105,12 +108,13 @@ def main() -> None:
     print('-' * 70, flush=True)
 
     times: list[float] = []
-    for i, (name, code) in enumerate(SNIPPETS, start=1):
-        print(f'  call {i} ({name}): running...', end='', flush=True)
-        t = time_one_call(code)
-        times.append(t)
-        speedup = f'  {times[0] / t:.1f}x faster than call 1' if i > 1 and t > 0 else ''
-        print(f'\r  call {i} {name:>20}: {format_ms(t):>10}{speedup}          ', flush=True)
+    with pydantic_monty.Monty() as pool:
+        for i, (name, code) in enumerate(SNIPPETS, start=1):
+            print(f'  call {i} ({name}): running...', end='', flush=True)
+            t = time_one_call(pool, code)
+            times.append(t)
+            speedup = f'  {times[0] / t:.1f}x faster than call 1' if i > 1 and t > 0 else ''
+            print(f'\r  call {i} {name:>20}: {format_ms(t):>10}{speedup}          ', flush=True)
 
     print('-' * 70)
 

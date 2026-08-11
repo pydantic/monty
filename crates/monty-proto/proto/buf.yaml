@@ -1,0 +1,15 @@
+# Marks this directory as the buf module root so `package monty.v1` resolves
+# to `monty/v1/monty.proto` relative to root (satisfies PACKAGE_DIRECTORY_MATCH).
+#
+# This config is for the buf linter / editor integrations only — codegen runs
+# through prost directly (`make generate-proto`), so buf never builds the
+# checked-in Rust and this file cannot drift from the build.
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

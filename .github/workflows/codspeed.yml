@@ -35,17 +35,34 @@ jobs:
         with:
           python-version: '3.14'
 
-      - name: Remove .cargo config to use system Python
-        run: rm .cargo/config.toml
-
+      # Pinned so a rust-cache hit can't silently keep serving an old binary
+      # (older versions lack `--profile` and build without the workspace's
+      # LTO settings, skewing benchmark numbers).
       - name: Install cargo-codspeed
-        run: cargo install cargo-codspeed
+        run: cargo install cargo-codspeed --version 5.0.1 --locked
 
+      # The `pool` bench's workers run the `monty` CLI. Build it in RELEASE so
+      # the workers are optimized (a debug interpreter would make the pool
+      # numbers meaningless), and point the bench at it via MONTY_TEST_BIN so it
+      # resolves the binary instead of shelling out to `cargo build` mid-run.
+      # (CodSpeed instruments only the bench process, so the pool benches
+      # measure parent-side spawn/checkout/wire cost; the uninstrumented worker
+      # children are not counted.)
+      - name: Build the monty worker binary
+        run: cargo build -p monty-runtime --release
+
+      # No `--bench` filter: build and run every monty-bench target (`main` +
+      # `pool`). CodSpeed runs all benches built into the package. The
+      # `codspeed` profile (root Cargo.toml) is release codegen — fat LTO,
+      # one codegen unit — with symbols kept for CodSpeed's flamegraphs, so
+      # measurements reflect the optimization level users actually run.
       - name: Build benchmarks
-        run: cargo codspeed build -p monty-bench --bench main
+        run: cargo codspeed build -p monty-bench --profile codspeed
 
       - name: Run benchmarks
         uses: CodSpeedHQ/action@d872884a306dd4853acf0f584f4b706cf0cc72a2 # v4.13.0
         with:
           mode: simulation
-          run: cargo codspeed run -p monty-bench --bench main
+          run: cargo codspeed run -p monty-bench
+        env:
+          MONTY_TEST_BIN: ${{ github.workspace }}/target/release/monty

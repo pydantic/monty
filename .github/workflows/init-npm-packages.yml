@@ -28,15 +28,19 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
-        run: npm install
-        working-directory: crates/monty-js
+        run: |
+          (cd crates/monty-js && npm install)
 
       - name: Create npm dirs
-        run: npm run create-npm-dirs
-        working-directory: crates/monty-js
+        run: |
+          (cd crates/monty-js && npx napi create-npm-dirs && npm run create-platform-packages)
+
+      - name: Collect platform package dirs
+        run: |
+          mkdir -p npm
+          cp -r crates/monty-js/npm/* npm/
 
       - name: Check and create missing platform packages # zizmor: ignore[use-trusted-publishing]
-        working-directory: crates/monty-js
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |

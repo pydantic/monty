@@ -1,0 +1,72 @@
+[package]
+name = "monty-pool"
+readme = "README.md"
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[lib]
+name = "monty_pool"
+
+[features]
+telemetry-adapter = [
+    "dep:logfire",
+    "dep:num-traits",
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tracing",
+    "dep:tracing-opentelemetry",
+]
+
+[dependencies]
+monty-types = { workspace = true }
+monty-fs = { workspace = true }
+monty-proto = { workspace = true }
+# The pool is async end-to-end: workers are tokio child processes (or WebSocket
+# connections) read via cancel-safe in-worker frame state, and turn deadlines
+# are tokio timers. (rt-multi-thread is needed for `block_in_place` in
+# `worker::decode_event`.)
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "process", "io-util", "sync", "time", "macros"] }
+# Async WebSocket client for the remote (Websocket) transport; rustls gives
+# `wss://` support without a system TLS dependency.
+tokio-tungstenite = { workspace = true }
+# Stream/sink combinators for driving the split WebSocket halves.
+futures-util = { workspace = true }
+# Pulled in only so the pool can install a process-level rustls `CryptoProvider`
+# before the first `wss://` dial (see `install_crypto_provider` in worker.rs).
+rustls = { workspace = true }
+# Span construction only; applications choose and configure exporter features.
+logfire = { workspace = true, optional = true }
+# telemetry_json's logfire-style value encoding
+num-traits = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+# Typed values used when recording attributes; version must match logfire's.
+opentelemetry = { version = "0.32", optional = true }
+# Span construction and eager OTel context creation; versions must match Logfire.
+tracing = { version = "0.1", optional = true }
+tracing-opentelemetry = { version = "0.33", optional = true }
+# Host-neutral processors used by Python, Node, and third-party adapters.
+opentelemetry_sdk = { version = "0.32", optional = true }
+
+[dev-dependencies]
+# Snapshots of the error messages the pool reports to a host.
+insta = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# The mock WebSocket child servers in tests stay synchronous, on plain threads.
+tungstenite = { workspace = true }
+# In-memory exporters for the telemetry recorder's structural tests.
+opentelemetry_sdk = { version = "0.32", features = ["testing"] }
+
+[lints]
+workspace = true

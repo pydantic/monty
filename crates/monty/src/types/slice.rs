@@ -8,20 +8,17 @@ use std::{
     fmt,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem,
 };
 
-use ahash::AHashSet;
-
+use super::LazyHeapSet;
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{HeapData, HeapId, HeapItem, HeapRead},
+    heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    resource::ResourceTracker,
     types::{PyTrait, Type},
     value::{EitherStr, Value},
 };
@@ -59,7 +56,7 @@ impl Slice {
     /// - `slice(start, stop, step)` - slice with all three components
     ///
     /// Each argument can be None to indicate "use default".
-    pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let heap = &mut *vm.heap;
         let pos_args = args.into_pos_only("slice", heap)?;
         defer_drop!(pos_args, heap);
@@ -84,7 +81,7 @@ impl Slice {
             _ => return Err(ExcType::type_error_at_most("slice", 3, pos_args.len())),
         };
 
-        Ok(Value::Ref(heap.allocate(HeapData::Slice(slice))?))
+        Ok(Value::Ref(heap.allocate(HeapData::Slice(slice))))
     }
 
     /// Computes concrete indices for a sequence of the given length.
@@ -161,38 +158,36 @@ fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Slice
     }
 
-    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         // Slices don't have a length in Python
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::Slice(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
-        Ok(a.start == b.start && a.stop == b.stop && a.step == b.step)
+        Ok(Some(a.start == b.start && a.stop == b.stop && a.step == b.step))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
         // Slice always truthy
-        true
+        Ok(true)
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         f.write_str("slice(")?;
         format_option_i64(f, self.get(vm.heap).start)?;
         f.write_str(", ")?;
@@ -202,7 +197,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         Ok(f.write_char(')')?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let this = self.get(vm.heap);
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
@@ -224,10 +219,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
 }
 
 impl HeapItem for Slice {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Slice doesn't contain heap references, nothing to do
     }
@@ -261,7 +252,7 @@ fn format_option_i64(f: &mut impl Write, value: Option<i64>) -> fmt::Result {
 /// (e.g. `clone_with_heap` for heap-allocated `Value`s) only runs on items
 /// that survive the slice. Use `|x| x` when no transform is needed.
 pub(crate) fn slice_collect_iterator<Iter: DoubleEndedIterator + Clone, U, T: FromIterator<U>>(
-    vm: &VM<'_, impl ResourceTracker>,
+    vm: &VM<'_>,
     slice: &Slice,
     iter: Iter,
     collect_map: impl Fn(Iter::Item) -> U,

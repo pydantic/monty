@@ -10,16 +10,20 @@
 //! MontyError(Exception)        # Base class for all Monty exceptions
 //! ├── MontySyntaxError         # Raised when syntax is invalid or Monty can't parse the code
 //! ├── MontyRuntimeError        # Raised when code fails during execution
-//! └── MontyTypingError         # Raised when type checking finds errors in the code
+//! ├── MontyTypingError         # Raised when type checking finds errors in the code
+//! ├── MontyCrashedError        # Raised when the sandbox dies or times out
+//! ├── MontyDisconnectError     # A remote worker's connection closed (websocket only)
+//! ├── MontyShutdown            # The remote server is shutting down (websocket only)
+//! └── MontyConversionError     # A host value that can't be converted into the sandbox
 //! ```
 
 use std::sync::Arc;
 
-use ::monty::{ExcType, MontyException};
 use ahash::AHashMap;
-use monty_type_checking::TypeCheckingDiagnostics;
+use monty_proto::python::exc_monty_to_py;
+use monty_types::{ExcType, MontyException};
 use pyo3::{
-    PyClassInitializer, PyTypeCheck,
+    PyClassInitializer,
     exceptions::{self},
     prelude::*,
     py_format,
@@ -27,12 +31,8 @@ use pyo3::{
     types::{PyDict, PyList, PyString},
 };
 
-use crate::dataclass::get_frozen_instance_error;
-
-/// Base exception for all Monty interpreter errors.
-///
-/// This is the parent class for both `MontySyntaxError` and `MontyRuntimeError`.
-/// Catching `MontyError` will catch any exception raised by Monty.
+/// Base exception for all Monty interpreter errors; catching it catches any
+/// exception raised by Monty.
 #[pyclass(extends=exceptions::PyException, module="pydantic_monty", subclass, skip_from_py_object)]
 #[derive(Clone)]
 pub struct MontyError {
@@ -41,14 +41,10 @@ pub struct MontyError {
 }
 
 impl MontyError {
-    /// Converts a Monty exception to a `PyErr`.
-    ///
-    /// For `SyntaxError` exceptions, creates a `MontySyntaxError`.
-    /// For all other exceptions, creates a `MontyRuntimeError` with all the exception
-    /// information preserved, including the traceback frames and display string.
+    /// Converts a Monty exception to a `PyErr`: `MontySyntaxError` for syntax
+    /// errors, `MontyRuntimeError` (preserving traceback frames) otherwise.
     #[must_use]
     pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
-        // Syntax errors get their own exception type
         if exc.exc_type() == ExcType::SyntaxError {
             MontySyntaxError::new_err(py, exc)
         } else {
@@ -77,10 +73,8 @@ impl MontyError {
 
 #[pymethods]
 impl MontyError {
-    /// Returns the inner exception as a Python exception object.
-    ///
-    /// This recreates a native Python exception (e.g., `ValueError`, `TypeError`)
-    /// from the stored exception type and message.
+    /// Recreates the inner exception as a native Python exception object (e.g.
+    /// `ValueError`, `TypeError`) from the stored type and message.
     fn exception(&self, py: Python<'_>) -> Py<PyAny> {
         let py_err = exc_monty_to_py(py, self.exc.clone());
         py_err.into_value(py).into_any()
@@ -100,23 +94,71 @@ impl MontyError {
     }
 }
 
-/// Raised when type checking finds errors in the code.
+/// Raised when a host value cannot be converted across the Monty/host boundary
+/// — an `external_lookup` value or an `inputs` value of a type Monty cannot
+/// represent. Inherits from `MontyError` (so `except MontyError` catches it) and
+/// carries the "Cannot convert X to Monty value" message; the stored type is
+/// `TypeError`, so `exception()` reconstructs a native `TypeError`.
+#[pyclass(extends=MontyError, module="pydantic_monty")]
+pub struct MontyConversionError;
+
+impl MontyConversionError {
+    /// Builds a `MontyConversionError` carrying `message`, stored as a
+    /// `TypeError`. Raised via [`Self::value_conversion_err`] for a genuine
+    /// unrepresentable-type failure.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, message: String) -> PyErr {
+        let base = MontyError::new(MontyException::new(ExcType::TypeError, Some(message)));
+        let init = PyClassInitializer::from(base).add_subclass(Self);
+        match Py::new(py, init) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(e) => e,
+        }
+    }
+
+    /// Surfaces a failure from converting a host value into a Monty value
+    /// (`py_to_monty_value`). An unrepresentable *type* (`TypeError`, "Cannot
+    /// convert X to Monty value") becomes a `MontyConversionError`; any other
+    /// exception the converter raises — notably the `RuntimeError` from
+    /// exceeding the max input nesting depth — keeps its own type as a
+    /// `MontyRuntimeError`, so a depth guard is not mislabeled a conversion
+    /// error.
+    #[must_use]
+    pub fn value_conversion_err(py: Python<'_>, exc: MontyException) -> PyErr {
+        if exc.exc_type() == ExcType::TypeError {
+            Self::new_err(py, exc.into_message().unwrap_or_default())
+        } else {
+            MontyError::new_err(py, exc)
+        }
+    }
+}
+
+#[pymethods]
+impl MontyConversionError {
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!("MontyConversionError({})", slf.as_super().message().unwrap_or_default())
+    }
+}
+
+/// Raised when type checking rejects a fed snippet.
 ///
-/// Inherits from `MontyError`. This exception is raised when static type
-/// analysis detects type errors. Stores the `TypeCheckingFailure` so diagnostics
-/// can be re-rendered with different format/color settings via `display()`.
+/// Inherits from `MontyError`. Type checking runs inside the worker
+/// subprocess; the diagnostics arrive pre-rendered as text (the structured
+/// diagnostics cannot cross the process boundary), in the `type_check_format`
+/// the session was checked out with.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyTypingError {
-    failure: TypeCheckingDiagnostics,
+    rendered: String,
 }
 
 impl MontyTypingError {
-    /// Creates a `MontyTypingError` from a `TypeCheckingFailure`.
+    /// Creates a `MontyTypingError` from diagnostics rendered in the worker.
     #[must_use]
-    pub fn new_err(py: Python<'_>, failure: TypeCheckingDiagnostics) -> PyErr {
+    pub fn new_err(py: Python<'_>, rendered: String) -> PyErr {
         // we need a MontyException to create the base, but it shouldn't be visible anywhere
         let base = MontyError::new(MontyException::new(ExcType::TypeError, None));
-        let init = PyClassInitializer::from(base).add_subclass(Self { failure });
+        let init = PyClassInitializer::from(base).add_subclass(Self { rendered });
         match Py::new(py, init) {
             Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
             Err(e) => e,
@@ -126,27 +168,17 @@ impl MontyTypingError {
 
 #[pymethods]
 impl MontyTypingError {
-    /// Renders the type error diagnostics with the specified format and color.
-    ///
-    /// Args:
-    ///     format: Output format
-    ///     color: Whether to include ANSI color codes in the output.
-    #[pyo3(signature = (format = "full", color = false))]
-    fn display(&self, format: &str, color: bool) -> PyResult<String> {
-        self.failure
-            .clone()
-            .color(color)
-            .format_from_str(format)
-            .map_err(exceptions::PyValueError::new_err)
-            .map(|f| f.to_string())
+    /// Returns the rendered type-check diagnostics.
+    fn display(&self) -> &str {
+        &self.rendered
     }
 
     fn __str__(&self) -> String {
-        self.failure.to_string()
+        self.rendered.clone()
     }
 
     fn __repr__(&self) -> String {
-        format!("MontyTypingError({})", self.failure)
+        format!("MontyTypingError({})", self.rendered)
     }
 }
 
@@ -221,30 +253,23 @@ impl MontySyntaxError {
     }
 }
 
-/// Raised when Monty code fails during execution.
-///
-/// Inherits from `MontyError`. Additionally provides `traceback()` to access
-/// the Monty stack frames where the error occurred.
+/// Raised when Monty code fails during execution. Inherits from `MontyError`
+/// and provides `traceback()` for the Monty stack frames.
 ///
 /// `PyFrame` objects are materialized lazily on the first `traceback()` call
-/// rather than at exception-construction time. This bounds the cost of
-/// exception propagation: an attacker submitting deeply recursive code
-/// referencing a very long line cannot force the embedder to allocate
-/// `O(depth × line_len)` bytes simply by triggering the exception — the cost
-/// is paid only if the embedder explicitly walks the traceback. The result
-/// is cached so subsequent calls reuse the same `Frame` and source-line
-/// objects, matching the stable-object semantics of CPython's
-/// `exc.__traceback__`.
+/// (not at construction), bounding exception-propagation cost: deeply recursive
+/// code referencing a long line can't force the embedder to allocate
+/// `O(depth × line_len)` bytes just by triggering the exception. The result is
+/// cached, matching the stable-object semantics of CPython's `exc.__traceback__`.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyRuntimeError {
     traceback: PyOnceLock<Py<PyList>>,
 }
 
 impl MontyRuntimeError {
-    /// Creates a new `MontyRuntimeError` from the given exception data.
-    ///
-    /// This is O(1) — the underlying `MontyException` is stored on the base
-    /// class and frames are built on demand by `traceback()`.
+    /// Creates a `MontyRuntimeError` from the given exception. O(1) — the
+    /// `MontyException` is stored on the base; frames are built on demand by
+    /// `traceback()`.
     #[must_use]
     pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
         let base_error = MontyError::new(exc);
@@ -312,6 +337,139 @@ impl MontyRuntimeError {
     }
 }
 
+/// Raised when the sandbox is gone: the worker process died (segfault, abort,
+/// external kill), the pool killed it at the `request_timeout` deadline, or it
+/// announced a fatal error and exited — which a serving server also uses to
+/// report that it could not start a worker at all.
+///
+/// This is exactly the failure mode subprocess pools exist to contain: the
+/// sandbox process is gone, but the host process is unharmed and the pool
+/// replaces the worker — catch this error and retry or report. The session is
+/// lost in every case, which is why they share one type; the message says
+/// which happened.
+#[pyclass(extends=MontyError, module="pydantic_monty")]
+pub struct MontyCrashedError {
+    /// `True` when the worker was killed at the `request_timeout` deadline.
+    #[pyo3(get)]
+    timed_out: bool,
+    /// Exit code of the dead worker, when the OS reported one (signal deaths
+    /// on unix report `None`).
+    #[pyo3(get)]
+    exit_status: Option<i32>,
+}
+
+impl MontyCrashedError {
+    /// Creates a `MontyCrashedError` with the given description.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, message: String, timed_out: bool, exit_status: Option<i32>) -> PyErr {
+        let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
+        let init = PyClassInitializer::from(base).add_subclass(Self { timed_out, exit_status });
+        match Py::new(py, init) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(e) => e,
+        }
+    }
+}
+
+#[pymethods]
+impl MontyCrashedError {
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __str__(slf: PyRef<'_, Self>) -> String {
+        slf.as_super().message().unwrap_or_default().to_owned()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!("MontyCrashedError({})", slf.as_super().message().unwrap_or_default())
+    }
+}
+
+/// Raised when a remote worker's connection closed without ending its turn
+/// (WebSocket transport only — the local analogue is `MontyCrashedError`).
+///
+/// The sandbox may have died, or the server may have dropped the session by
+/// policy: an idle/session/turn timeout, or being over capacity. A client that
+/// only sees the connection go away cannot tell those apart, so this error
+/// deliberately claims no more than that. Retry on a fresh session.
+#[pyclass(extends=MontyError, module="pydantic_monty")]
+pub struct MontyDisconnectError {}
+
+impl MontyDisconnectError {
+    /// Creates a `MontyDisconnectError` with the given description.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, message: String) -> PyErr {
+        let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
+        let init = PyClassInitializer::from(base).add_subclass(Self {});
+        match Py::new(py, init) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(e) => e,
+        }
+    }
+}
+
+#[pymethods]
+impl MontyDisconnectError {
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __str__(slf: PyRef<'_, Self>) -> String {
+        slf.as_super().message().unwrap_or_default().to_owned()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!("MontyDisconnectError({})", slf.as_super().message().unwrap_or_default())
+    }
+}
+
+/// Raised when the remote server is shutting down (WebSocket transport only).
+///
+/// Not an error in your code, which is why it is the one exception here
+/// without an `Error` suffix — it still subclasses `MontyError`, so a generic
+/// `except MontyError` catches it. The request that triggered it **did not
+/// run**, so re-running it against a fresh session is safe.
+///
+/// `dump` holds the session state captured just before shutdown; pass it to
+/// `session.load_session` (idle, between feeds) or `session.load_snapshot`
+/// (suspended mid-feed) on a new session to carry the session over. It is
+/// `None` when nothing had run yet or the server's dump failed.
+///
+/// One caveat when the interrupted request was answering a suspension (an
+/// external function or `os` callback): the host already ran that call, and
+/// the restored session re-announces it, so it runs a second time. Make such
+/// callbacks idempotent if you intend to restore across a shutdown.
+#[pyclass(extends=MontyError, module="pydantic_monty")]
+pub struct MontyShutdown {
+    /// Restorable session dump, or `None` when the server had no session to
+    /// dump or the dump failed.
+    #[pyo3(get)]
+    dump: Option<Vec<u8>>,
+}
+
+impl MontyShutdown {
+    /// Creates a `MontyShutdown` with the given description.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, message: String, dump: Option<Vec<u8>>) -> PyErr {
+        let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
+        let init = PyClassInitializer::from(base).add_subclass(Self { dump });
+        match Py::new(py, init) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(e) => e,
+        }
+    }
+}
+
+#[pymethods]
+impl MontyShutdown {
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __str__(slf: PyRef<'_, Self>) -> String {
+        slf.as_super().message().unwrap_or_default().to_owned()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!("MontyShutdown({})", slf.as_super().message().unwrap_or_default())
+    }
+}
+
 /// Builds the `PyList` of `PyFrame` objects for a `MontyException`'s traceback.
 ///
 /// `Frame.source_line` is backed by a `Py<PyString>` that is deduplicated
@@ -348,15 +506,12 @@ fn build_traceback_list(py: Python<'_>, exc: &MontyException) -> PyResult<Py<PyL
     Ok(PyList::new(py, &frames)?.unbind())
 }
 
-/// A single frame in a Monty traceback.
+/// A single frame in a Monty traceback: file location, function name, and an
+/// optional source preview.
 ///
-/// Contains all the information needed to display a traceback line:
-/// the file location, function name, and optional source code preview.
-///
-/// `source_line` is stored as `Py<PyString>` so that frames built from the
-/// same underlying source line in a single `traceback()` call share one
-/// Python string object. For a recursion with a long preview line this turns
-/// what would be `O(depth × line_len)` peak memory into a single allocation.
+/// `source_line` is a `Py<PyString>` so frames sharing one underlying source
+/// line in a single `traceback()` call share one Python string object, turning
+/// `O(depth × line_len)` peak memory into a single allocation for deep recursion.
 #[pyclass(name = "Frame", module = "pydantic_monty", frozen, skip_from_py_object)]
 #[derive(Debug)]
 pub struct PyFrame {
@@ -408,272 +563,5 @@ impl PyFrame {
             self.column,
             func
         )
-    }
-}
-
-/// Converts Monty's `MontyException` to the matching Python exception value.
-///
-/// Creates an appropriate Python exception type with the message.
-/// The traceback information is included in the exception message
-/// since PyO3 doesn't provide direct traceback manipulation.
-pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
-    let exc_type = exc.exc_type();
-    let msg = exc.into_message().unwrap_or_default();
-
-    match exc_type {
-        ExcType::Exception => exceptions::PyException::new_err(msg),
-        ExcType::BaseException => exceptions::PyBaseException::new_err(msg),
-        ExcType::SystemExit => exceptions::PySystemExit::new_err(msg),
-        ExcType::KeyboardInterrupt => exceptions::PyKeyboardInterrupt::new_err(msg),
-        ExcType::ArithmeticError => exceptions::PyArithmeticError::new_err(msg),
-        ExcType::OverflowError => exceptions::PyOverflowError::new_err(msg),
-        ExcType::ZeroDivisionError => exceptions::PyZeroDivisionError::new_err(msg),
-        ExcType::LookupError => exceptions::PyLookupError::new_err(msg),
-        ExcType::IndexError => exceptions::PyIndexError::new_err(msg),
-        ExcType::KeyError => exceptions::PyKeyError::new_err(msg),
-        ExcType::RuntimeError => exceptions::PyRuntimeError::new_err(msg),
-        ExcType::NotImplementedError => exceptions::PyNotImplementedError::new_err(msg),
-        ExcType::RecursionError => exceptions::PyRecursionError::new_err(msg),
-        ExcType::AssertionError => exceptions::PyAssertionError::new_err(msg),
-        ExcType::AttributeError => exceptions::PyAttributeError::new_err(msg),
-        ExcType::FrozenInstanceError => {
-            if let Ok(exc_cls) = get_frozen_instance_error(py)
-                && let Ok(exc_instance) = exc_cls.call1((PyString::new(py, &msg),))
-            {
-                return PyErr::from_value(exc_instance);
-            }
-            // if creating the right exception fails, fallback to AttributeError which it's a subclass of
-            exceptions::PyAttributeError::new_err(msg)
-        }
-        ExcType::MemoryError => exceptions::PyMemoryError::new_err(msg),
-        ExcType::NameError => exceptions::PyNameError::new_err(msg),
-        ExcType::UnboundLocalError => exceptions::PyUnboundLocalError::new_err(msg),
-        ExcType::StopIteration => exceptions::PyStopIteration::new_err(msg),
-        ExcType::SyntaxError => exceptions::PySyntaxError::new_err(msg),
-        ExcType::TimeoutError => exceptions::PyTimeoutError::new_err(msg),
-        ExcType::TypeError => exceptions::PyTypeError::new_err(msg),
-        ExcType::ValueError => exceptions::PyValueError::new_err(msg),
-        ExcType::UnicodeDecodeError => exceptions::PyUnicodeDecodeError::new_err(msg),
-        ExcType::JsonDecodeError => {
-            if let Ok(json_decode_error) = get_json_decode_error(py)
-                && let Ok(exc_instance) = json_decode_error.call1((PyString::new(py, &msg),))
-            {
-                PyErr::from_value(exc_instance)
-            } else {
-                exceptions::PyValueError::new_err(msg)
-            }
-        }
-        ExcType::ImportError => exceptions::PyImportError::new_err(msg),
-        ExcType::ModuleNotFoundError => exceptions::PyModuleNotFoundError::new_err(msg),
-        ExcType::OSError => exceptions::PyOSError::new_err(msg),
-        ExcType::FileNotFoundError => exceptions::PyFileNotFoundError::new_err(msg),
-        ExcType::FileExistsError => exceptions::PyFileExistsError::new_err(msg),
-        ExcType::IsADirectoryError => exceptions::PyIsADirectoryError::new_err(msg),
-        ExcType::NotADirectoryError => exceptions::PyNotADirectoryError::new_err(msg),
-        ExcType::PermissionError => exceptions::PyPermissionError::new_err(msg),
-        ExcType::UnsupportedOperation => {
-            if let Ok(exc_cls) = get_unsupported_operation(py)
-                && let Ok(exc_instance) = exc_cls.call1((PyString::new(py, &msg),))
-            {
-                PyErr::from_value(exc_instance)
-            } else {
-                // Fall back to OSError — the parent we model in `is_subclass_of`.
-                exceptions::PyOSError::new_err(msg)
-            }
-        }
-        ExcType::RePatternError => {
-            if let Ok(re_pattern_error) = get_re_pattern_error(py)
-                && let Ok(exc_instance) = re_pattern_error.call1((PyString::new(py, &msg),))
-            {
-                PyErr::from_value(exc_instance)
-            } else {
-                exceptions::PyRuntimeError::new_err(msg)
-            }
-        }
-    }
-}
-
-/// Converts a python exception to monty.
-///
-/// Used when resuming execution with an exception from Python.
-pub fn exc_py_to_monty(py: Python<'_>, py_err: &PyErr) -> MontyException {
-    let exc = py_err.value(py);
-    let exc_type = py_err_to_exc_type(exc);
-    let arg = exc.str().ok().map(|s| s.to_string_lossy().into_owned());
-
-    MontyException::new(exc_type, arg)
-}
-
-/// Converts a Python exception to Monty's `MontyObject::Exception`.
-pub fn exc_to_monty_object(exc: &Bound<'_, exceptions::PyBaseException>) -> ::monty::MontyObject {
-    let exc_type = py_err_to_exc_type(exc);
-    let arg = exc.str().ok().map(|s| s.to_string_lossy().into_owned());
-
-    ::monty::MontyObject::Exception { exc_type, arg }
-}
-
-/// Maps a Python exception type to Monty's `ExcType` enum.
-///
-/// NOTE: order matters here as some exceptions are subclasses of others!
-/// In general we group exceptions by their type hierarchy to improve performance.
-fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
-    // Exception hierarchy
-    if exceptions::PyException::type_check(exc) {
-        // put the most commonly used exceptions first
-        if exceptions::PyTypeError::type_check(exc) {
-            ExcType::TypeError
-        // ValueError hierarchy (check UnicodeDecodeError first as it's a subclass)
-        } else if exceptions::PyValueError::type_check(exc) {
-            if is_json_decode_error(exc) {
-                ExcType::JsonDecodeError
-            } else if exceptions::PyUnicodeDecodeError::type_check(exc) {
-                ExcType::UnicodeDecodeError
-            } else if is_unsupported_operation(exc) {
-                // `io.UnsupportedOperation` inherits from both `OSError` and `ValueError`
-                ExcType::UnsupportedOperation
-            } else {
-                ExcType::ValueError
-            }
-        } else if exceptions::PyAssertionError::type_check(exc) {
-            ExcType::AssertionError
-        } else if exceptions::PySyntaxError::type_check(exc) {
-            ExcType::SyntaxError
-        // LookupError hierarchy
-        } else if exceptions::PyLookupError::type_check(exc) {
-            if exceptions::PyKeyError::type_check(exc) {
-                ExcType::KeyError
-            } else if exceptions::PyIndexError::type_check(exc) {
-                ExcType::IndexError
-            } else {
-                ExcType::LookupError
-            }
-        // ArithmeticError hierarchy
-        } else if exceptions::PyArithmeticError::type_check(exc) {
-            if exceptions::PyZeroDivisionError::type_check(exc) {
-                ExcType::ZeroDivisionError
-            } else if exceptions::PyOverflowError::type_check(exc) {
-                ExcType::OverflowError
-            } else {
-                ExcType::ArithmeticError
-            }
-        // RuntimeError hierarchy
-        } else if exceptions::PyRuntimeError::type_check(exc) {
-            if exceptions::PyNotImplementedError::type_check(exc) {
-                ExcType::NotImplementedError
-            } else if exceptions::PyRecursionError::type_check(exc) {
-                ExcType::RecursionError
-            } else {
-                ExcType::RuntimeError
-            }
-        // AttributeError hierarchy
-        } else if exceptions::PyAttributeError::type_check(exc) {
-            if is_frozen_instance_error(exc) {
-                ExcType::FrozenInstanceError
-            } else {
-                ExcType::AttributeError
-            }
-        // NameError hierarchy (check UnboundLocalError first as it's a subclass)
-        } else if exceptions::PyNameError::type_check(exc) {
-            if exceptions::PyUnboundLocalError::type_check(exc) {
-                ExcType::UnboundLocalError
-            } else {
-                ExcType::NameError
-            }
-        // `io.UnsupportedOperation` inherits from `OSError` but is covered above
-        } else if exceptions::PyOSError::type_check(exc) {
-            if exceptions::PyFileNotFoundError::type_check(exc) {
-                ExcType::FileNotFoundError
-            } else if exceptions::PyFileExistsError::type_check(exc) {
-                ExcType::FileExistsError
-            } else if exceptions::PyIsADirectoryError::type_check(exc) {
-                ExcType::IsADirectoryError
-            } else if exceptions::PyNotADirectoryError::type_check(exc) {
-                ExcType::NotADirectoryError
-            } else if exceptions::PyPermissionError::type_check(exc) {
-                ExcType::PermissionError
-            } else {
-                ExcType::OSError
-            }
-        // other standalone exception types
-        } else if exceptions::PyTimeoutError::type_check(exc) {
-            ExcType::TimeoutError
-        } else if exceptions::PyMemoryError::type_check(exc) {
-            ExcType::MemoryError
-        } else {
-            ExcType::Exception
-        }
-    // BaseException direct subclasses
-    } else if exceptions::PySystemExit::type_check(exc) {
-        ExcType::SystemExit
-    } else if exceptions::PyKeyboardInterrupt::type_check(exc) {
-        ExcType::KeyboardInterrupt
-    // Catch-all for BaseException
-    } else {
-        ExcType::BaseException
-    }
-}
-
-/// Checks if an exception is an instance of `dataclasses.FrozenInstanceError`.
-///
-/// Since `FrozenInstanceError` is not a built-in PyO3 exception type, we need to
-/// check using Python's isinstance against the imported class.
-fn is_frozen_instance_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
-    if let Ok(frozen_error_cls) = get_frozen_instance_error(exc.py()) {
-        exc.is_instance(frozen_error_cls).unwrap_or(false)
-    } else {
-        false
-    }
-}
-
-/// Checks if an exception is an instance of `json.JSONDecodeError`.
-///
-/// The concrete class lives in Python's standard library rather than PyO3's
-/// built-in exception wrappers, so we look it up lazily and cache the type.
-fn is_json_decode_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
-    if let Ok(json_decode_error_cls) = get_json_decode_error(exc.py()) {
-        exc.is_instance(json_decode_error_cls).unwrap_or(false)
-    } else {
-        false
-    }
-}
-
-fn get_re_pattern_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
-    static RE_PATTERN_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
-
-    if cfg!(Py_3_13) {
-        RE_PATTERN_ERROR.import(py, "re", "PatternError")
-    } else {
-        RE_PATTERN_ERROR.import(py, "re", "error")
-    }
-}
-
-/// Returns the cached `json.JSONDecodeError` class.
-///
-/// This avoids repeated imports while still using the stdlib-defined subclass
-/// of `ValueError` rather than fabricating a plain `ValueError`.
-fn get_json_decode_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
-    static JSON_DECODE_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
-    JSON_DECODE_ERROR.import(py, "json", "JSONDecodeError")
-}
-
-/// Returns the cached `io.UnsupportedOperation` class.
-///
-/// Lives in Python's standard library (not in PyO3's built-in wrappers) and
-/// is a subclass of both `OSError` and `ValueError` in CPython. Monty raises
-/// the real CPython class here so user code can `isinstance(e,
-/// io.UnsupportedOperation)`; both parents are modelled by
-/// [`ExcType::is_subclass_of`], so `except OSError:` and `except ValueError:`
-/// catch it just like in CPython.
-fn get_unsupported_operation(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
-    static UNSUPPORTED_OPERATION: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
-    UNSUPPORTED_OPERATION.import(py, "io", "UnsupportedOperation")
-}
-
-/// Checks if an exception is an instance of `io.UnsupportedOperation`.
-fn is_unsupported_operation(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
-    if let Ok(cls) = get_unsupported_operation(exc.py()) {
-        exc.is_instance(cls).unwrap_or(false)
-    } else {
-        false
     }
 }

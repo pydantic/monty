@@ -7,4 +7,4 @@ async def foo():
 
 
 result = await foo()  # pyright: ignore
-assert result == 123, 'async function should return awaited value'
+assert result == 123

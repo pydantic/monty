@@ -5,9 +5,8 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{HeapData, HeapGuard},
-    resource::ResourceTracker,
-    types::{List, MontyIter, PyTrait, allocate_tuple, tuple::TupleVec},
+    heap::{DropGuard, HeapData},
+    types::{List, PyTrait, allocate_tuple, tuple::TupleVec},
     value::Value,
 };
 
@@ -17,37 +16,38 @@ use crate::{
 /// from each of the argument iterables. Stops when the shortest iterable is exhausted.
 /// When `strict=True`, raises `ValueError` if any iterable has a different length.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ZipArgs { iterables, strict } = ZipArgs::from_args(args, vm)?;
     defer_drop_mut!(iterables, vm);
-    // CPython's `strict` is truthy-checked (not strict typed), so use `py_bool`
-    // on the raw value rather than asking the macro to coerce to `bool`.
+    // CPython's `strict` is truthy-checked (not strict typed), so test the raw
+    // value rather than asking the macro to coerce to a strict `bool`.
     defer_drop!(strict, vm);
-    let strict = strict.py_bool(vm);
+    let strict = strict.py_bool(vm)?;
 
     if iterables.is_empty() {
         // zip() with no arguments returns empty list
-        let heap_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())))?;
+        let heap_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
         return Ok(Value::Ref(heap_id));
     }
 
     // Create iterators for each iterable
-    let iterators: Vec<MontyIter> = Vec::with_capacity(iterables.len());
+    let iterators: Vec<Value> = Vec::with_capacity(iterables.len());
     defer_drop_mut!(iterators, vm);
     for iterable in iterables.drain(..) {
-        iterators.push(MontyIter::new(iterable, vm)?);
+        iterators.push(iterable.into_py_iter(vm)?);
     }
+    let mut iterators = iterators.iter().map(|iter| iter.read(vm)).collect::<Vec<_>>();
 
-    let mut result_guard = HeapGuard::new(Vec::new(), vm);
+    let mut result_guard = DropGuard::new(Vec::new(), vm);
     let (result, vm) = result_guard.as_parts_mut();
 
     // Zip until shortest iterator is exhausted
     'outer: loop {
-        let mut items_guard = HeapGuard::new(TupleVec::with_capacity(iterators.len()), vm);
+        let mut items_guard = DropGuard::new(TupleVec::with_capacity(iterators.len()), vm);
         let (tuple_items, vm) = items_guard.as_parts_mut();
 
         for (i, iter) in iterators.iter_mut().enumerate() {
-            if let Some(item) = iter.for_next(vm)? {
+            if let Some(item) = iter.py_next(vm)? {
                 tuple_items.push(item);
             } else {
                 // This iterator is exhausted - stop zipping
@@ -64,8 +64,8 @@ pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
                     // j is the 0-based index; iterators 0..j are all exhausted,
                     // so j gives the count for the error message.
                     for (j, remaining) in iterators.iter_mut().enumerate().skip(1) {
-                        if let Some(extra) = remaining.for_next(vm)? {
-                            extra.drop_with_heap(vm);
+                        if let Some(extra) = remaining.py_next(vm)? {
+                            extra.drop_with(vm);
                             return Err(strict_length_error(j + 1, j, "longer"));
                         }
                     }
@@ -77,12 +77,12 @@ pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
 
         // Create tuple from collected items
         let (tuple_items, vm) = items_guard.into_parts();
-        let tuple_val = allocate_tuple(tuple_items, vm.heap)?;
+        let tuple_val = allocate_tuple(tuple_items, vm.heap);
         result.push(tuple_val);
     }
 
     let (result, vm) = result_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)))?;
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)));
     Ok(Value::Ref(heap_id))
 }
 

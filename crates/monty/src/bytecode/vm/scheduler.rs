@@ -13,10 +13,8 @@ use ahash::AHashMap;
 use crate::{
     asyncio::{Awaiter, CallId, ExternalFutureState, TaskId},
     exception_private::RunError,
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapId, HeapReadOutput, HeapReader},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},
     intern::FunctionId,
-    parse::CodeRange,
-    resource::ResourceTracker,
     value::Value,
 };
 
@@ -43,12 +41,12 @@ pub(crate) enum TaskState {
     Failed(RunError),
 }
 
-impl DropWithHeap for TaskState {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for TaskState {
+    fn drop_with(self, heap: &mut C) {
         match self {
             Self::Ready | Self::Failed(_) => {}
             Self::Blocked(id) => heap.heap_mut().dec_ref(id),
-            Self::Completed(value) => value.drop_with_heap(heap),
+            Self::Completed(value) => value.drop_with(heap),
         }
     }
 }
@@ -88,15 +86,11 @@ pub(crate) struct Task {
     pub state: TaskState,
 }
 
-impl DropWithHeap for Task {
-    fn drop_with_heap<H: ContainsHeap>(mut self, heap: &mut H) {
-        for value in self.stack.drain(..) {
-            value.drop_with_heap(heap);
-        }
-        for value in self.exception_stack.drain(..) {
-            value.drop_with_heap(heap);
-        }
-        self.state.drop_with_heap(heap);
+impl<C: ContainsHeap> DropWithContext<C> for Task {
+    fn drop_with(mut self, heap: &mut C) {
+        self.stack.drain(..).drop_with(heap);
+        self.exception_stack.drain(..).drop_with(heap);
+        self.state.drop_with(heap);
         if let Some(coro_id) = self.coroutine_id.take() {
             heap.heap_mut().dec_ref(coro_id);
         }
@@ -123,8 +117,12 @@ pub(crate) struct SerializedTaskFrame {
     /// Base index into the VM-wide `exception_stack` for this frame.
     /// See `CallFrame.exception_stack_base`.
     pub exception_stack_base: usize,
-    /// Call site position (for tracebacks).
-    pub call_position: Option<CodeRange>,
+    /// Caller's bytecode offset at the call site (for tracebacks). See
+    /// `CallFrame.call_offset`.
+    pub call_offset: Option<u32>,
+    /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
+    #[serde(default)]
+    pub is_initializer: bool,
 }
 
 impl Task {
@@ -258,7 +256,7 @@ impl Scheduler {
     /// The scheduler inc_refs `future_id` so the entry stays alive between
     /// the yield to the host and the matching `resolve_future` / `fail_future`
     /// call, even if no awaiter holds a `Value::Ref` to it.
-    pub fn add_pending_external(&mut self, call_id: CallId, future_id: HeapId, heap: &Heap<impl ResourceTracker>) {
+    pub fn add_pending_external(&mut self, call_id: CallId, future_id: HeapId, heap: &Heap) {
         heap.inc_ref(future_id);
         let prev = self.pending_externals.insert(call_id, future_id);
         debug_assert!(prev.is_none(), "add_pending_external: CallId already registered");
@@ -277,7 +275,7 @@ impl Scheduler {
     /// The task will be unblocked when the awaitable settles and its awaiter
     /// slot routes back here (`Awaiter::Task(task_id)` on either
     /// `ExternalFuture::Pending` or `AwaitedGather`).
-    pub fn block_current_on(&mut self, awaitable_id: HeapId, heap: &Heap<impl ResourceTracker>) {
+    pub fn block_current_on(&mut self, awaitable_id: HeapId, heap: &Heap) {
         if let Some(task_id) = self.current_task {
             let task = self.get_task_mut(task_id);
             heap.inc_ref(awaitable_id);
@@ -298,29 +296,21 @@ impl Scheduler {
         self.ready_queue.retain(|&id| id != task_id);
     }
 
-    /// Spawns a new task from a coroutine.
+    /// Spawns a new task from a coroutine, enforcing one-task-per-coroutine.
     ///
-    /// Creates a new task that will execute the given coroutine when scheduled.
-    /// The task is added to the ready queue.
-    ///
+    /// Returns `None` if `coroutine_id` is already driving a task —
+    /// caught here because cross-gather reuse can hit two spawns while
+    /// both coroutine states are still `New`, so the state check in
+    /// `await_coroutine` doesn't catch it. Callers translate `None`
+    /// into a `RuntimeError: cannot reuse already awaited coroutine`.
     /// Both `coroutine_id` and `gather_id` (when present) become **owning**
-    /// references held by the new task — `inc_ref` is called on each before
-    /// storing. The matching `dec_ref` happens in [`Scheduler::remove_task`]
-    /// when the task is eventually removed (typically at gather finalization).
-    ///
-    /// # Arguments
-    /// * `heap` - Heap to increment reference counts in
-    /// * `coroutine_id` - HeapId of the coroutine to execute
-    /// * `gather_id` - Optional HeapId of the GatherFuture this task belongs to
-    ///
-    /// # Returns
-    /// The TaskId of the newly created task.
-    pub fn spawn(
-        &mut self,
-        heap: &Heap<impl ResourceTracker>,
-        coroutine_id: HeapId,
-        gather_id: Option<HeapId>,
-    ) -> TaskId {
+    /// references held by the new task; the matching `dec_ref` happens in
+    /// [`Scheduler::cancel_task`].
+    pub fn spawn(&mut self, heap: &Heap, coroutine_id: HeapId, gather_id: Option<HeapId>) -> Option<TaskId> {
+        if self.coroutine_to_task.contains_key(&coroutine_id) {
+            return None;
+        }
+
         let task_id = TaskId::new(self.next_task_id);
         self.next_task_id += 1;
 
@@ -336,7 +326,7 @@ impl Scheduler {
         self.coroutine_to_task.insert(coroutine_id, task_id);
         self.ready_queue.push_back(task_id);
 
-        task_id
+        Some(task_id)
     }
 
     /// Returns the task driving `coroutine_id`, if any.
@@ -357,14 +347,14 @@ impl Scheduler {
 
     /// Replaces a task's state, properly releasing any heap references owned
     /// by the previous state.
-    pub fn set_state(&mut self, task_id: TaskId, new_state: TaskState, heap: &mut Heap<impl ResourceTracker>) {
+    pub fn set_state(&mut self, task_id: TaskId, new_state: TaskState, heap: &mut Heap) {
         let task = self.get_task_mut(task_id);
         let old_state = mem::replace(&mut task.state, new_state);
-        old_state.drop_with_heap(heap);
+        old_state.drop_with(heap);
     }
 
     /// Adds a task back to the ready queue.
-    pub fn make_ready(&mut self, task_id: TaskId, heap: &mut Heap<impl ResourceTracker>) {
+    pub fn make_ready(&mut self, task_id: TaskId, heap: &mut Heap) {
         self.set_state(task_id, TaskState::Ready, heap);
         self.ready_queue.push_back(task_id);
     }
@@ -381,12 +371,7 @@ impl Scheduler {
     ///
     /// # Returns
     /// The gather_id if this task belongs to a gather (for sibling lookup).
-    pub fn fail_task(
-        &mut self,
-        task_id: TaskId,
-        error: RunError,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> Option<HeapId> {
+    pub fn fail_task(&mut self, task_id: TaskId, error: RunError, heap: &mut Heap) -> Option<HeapId> {
         let gather_id = self.get_task(task_id).gather_id;
         self.set_state(task_id, TaskState::Failed(error), heap);
         gather_id
@@ -399,8 +384,8 @@ impl Scheduler {
     /// result, and tears down any inner gather it was blocked on. After this
     /// call the task no longer exists in `Scheduler::tasks`; its owning
     /// references to its coroutine and (outer) gather are released by the
-    /// `Task::drop_with_heap` call at the end.
-    pub fn cancel_task(&mut self, task_id: TaskId, heap: &mut HeapReader<'_, impl ResourceTracker>) {
+    /// `Task::drop_with` call at the end.
+    pub fn cancel_task(&mut self, task_id: TaskId, heap: &mut HeapReader<'_>) {
         // No-op if the task has already been removed (idempotent — finalization
         // sites may iterate task ids that include already-cancelled siblings).
         let Some(task) = self.tasks.remove(&task_id) else {
@@ -450,7 +435,7 @@ impl Scheduler {
             }
         }
 
-        task.drop_with_heap(heap);
+        task.drop_with(heap);
     }
 
     /// Records a host-side failure for `call_id` and returns the awaiter the
@@ -471,12 +456,7 @@ impl Scheduler {
     /// already-resolved future, or the future had no awaiter — the failure
     /// is simply cached on the future for replay).
     #[must_use]
-    pub fn fail_for_call(
-        &mut self,
-        call_id: CallId,
-        error: &RunError,
-        heap: &mut HeapReader<'_, impl ResourceTracker>,
-    ) -> Option<Awaiter> {
+    pub fn fail_for_call(&mut self, call_id: CallId, error: &RunError, heap: &mut HeapReader<'_>) -> Option<Awaiter> {
         let future_id = self.pending_externals.remove(&call_id)?;
 
         let HeapReadOutput::ExternalFuture(mut fut) = heap.read(future_id) else {
@@ -542,7 +522,7 @@ impl Scheduler {
 
     /// Cleans up all scheduler resources: the pending-future inc_refs and
     /// every remaining task (via [`Scheduler::cancel_task`]).
-    pub fn cleanup(&mut self, heap: &mut HeapReader<'_, impl ResourceTracker>) {
+    pub fn cleanup(&mut self, heap: &mut HeapReader<'_>) {
         // Release the inc_refs the scheduler holds on each pending future.
         for (_, future_id) in mem::take(&mut self.pending_externals) {
             heap.dec_ref(future_id);

@@ -2,41 +2,38 @@
 
 ## 1. Bump Version
 
-Update version in both files:
+Edit `Cargo.toml` to bump the version (both the main `version` and the package versions)
+
+Run
 
 ```bash
-# Edit Cargo.toml - update workspace.package.version
-# Edit crates/monty-js/package.json - update version
-
-# Update Cargo.lock
 make lint-rs
 ```
 
-Both `Cargo.toml` and `package.json` should have the same version (e.g., `0.0.2`).
+This will update `Cargo.lock`, sync `package.json`/`package-lock.json` (via `crates/monty-js/build.rs`),
+and sync the `pydantic-monty` metapackage's version and its exact pins on
+`pydantic-monty-client`/`pydantic-monty-runtime` (via `crates/monty-python/build.rs`).
 
 ## 2. Commit and Push
 
 ```bash
-git add Cargo.toml Cargo.lock crates/monty-js/package.json
-git commit -m "Bump version to X.Y.Z"
+git checkout -b prepare-release-vX.Y.Z
+git commit -am "Bump version to vX.Y.Z"
 git push
 ```
 
 ## 3. Create Release via GitHub UI
 
-1. Go to https://github.com/pydantic/monty/releases/new
-2. Click "Choose a tag" and type the new tag name (e.g., `v0.0.2`)
-3. Select "Create new tag on publish"
-4. Set the release title (e.g., `v0.0.2`)
-5. Add release notes
-6. Click "Publish release"
+Once the PR is merged, create a release in the GitHub UI with a tag matching the version in `Cargo.toml`.
 
 ## 4. CI Handles Publishing
 
 Once the tag is pushed, CI will:
 - Build wheels for all platforms
-- Publish to PyPI (`pydantic-monty`)
-- Publish to NPM (`@pydantic/monty`)
+- Publish to PyPI (`pydantic-monty-client` wheels, `pydantic-monty-runtime` wheels,
+  and the `pydantic-monty` metapackage that pins both)
+- Publish to NPM (`@pydantic/monty` + the platform packages carrying the napi library, the `monty` binary, and the wasm build)
+- Publish the Rust crates to crates.io (`monty`, `monty-types`, `monty-alloc`, `monty-fs`, `monty-runtime`, `monty-macros`, `monty-proto`, `monty-pool`, `monty-type-checking`, `monty-typeshed`) via `cargo publish --workspace`
 
 Monitor the workflow at https://github.com/pydantic/monty/actions
 

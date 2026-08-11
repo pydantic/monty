@@ -6,41 +6,33 @@ _monty = 'Monty' in sys.version
 
 # === now/today from deterministic OS callback ===
 today = datetime.date.today()
-assert isinstance(today, datetime.date), 'date.today() should return a date instance'
+assert isinstance(today, datetime.date)
 
 now_local = datetime.datetime.now()
-assert isinstance(now_local, datetime.datetime), 'datetime.now() should return a datetime instance'
-assert now_local.tzinfo is None, 'datetime.now() without tz should return a naive datetime'
-assert str(now_local).startswith(str(today)), 'datetime.now() and date.today() should agree on the local calendar date'
+assert isinstance(now_local, datetime.datetime)
+assert now_local.tzinfo is None
+assert str(now_local).startswith(str(today))
 
 now_utc = datetime.datetime.now(datetime.timezone.utc)
-assert now_utc.tzinfo is datetime.timezone.utc, 'datetime.now(timezone.utc) should return an aware UTC datetime'
+assert now_utc.tzinfo is datetime.timezone.utc
 
 plus_two = datetime.timezone(datetime.timedelta(hours=2))
 now_plus_two = datetime.datetime.now(plus_two)
-assert now_plus_two.tzinfo == plus_two, 'datetime.now() with fixed offset should preserve the offset timezone'
+assert now_plus_two.tzinfo == plus_two
 named_plus_two = datetime.timezone(datetime.timedelta(hours=2), 'PLUS2')
 now_named_plus_two = datetime.datetime.now(named_plus_two)
-assert now_named_plus_two.tzinfo == named_plus_two, (
-    'datetime.now() should preserve explicit timezone offsets on named fixed-offset tzinfo'
-)
+assert now_named_plus_two.tzinfo == named_plus_two
 
 # === repr/str parity ===
-assert repr(datetime.date(2024, 1, 15)) == 'datetime.date(2024, 1, 15)', 'date repr should match CPython'
-assert str(datetime.date(2024, 1, 15)) == '2024-01-15', 'date str should match CPython'
-assert repr(datetime.datetime(2024, 1, 15, 10, 30)) == 'datetime.datetime(2024, 1, 15, 10, 30)', (
-    'datetime repr should omit trailing zero fields'
-)
-assert str(datetime.datetime(2024, 1, 15, 10, 30)) == '2024-01-15 10:30:00', 'datetime str should include seconds'
-assert repr(datetime.timedelta(days=1, seconds=3600)) == 'datetime.timedelta(days=1, seconds=3600)', (
-    'timedelta repr should match CPython'
-)
-assert str(datetime.timedelta(days=1, seconds=3600)) == '1 day, 1:00:00', 'timedelta str should match CPython'
-assert repr(datetime.timezone.utc) == 'datetime.timezone.utc', 'timezone.utc repr should match CPython'
-assert datetime.timezone.utc is datetime.timezone.utc, 'timezone.utc should be a singleton identity value'
-assert datetime.timezone(datetime.timedelta(0)) is datetime.timezone.utc, (
-    'timezone(timedelta(0)) should return the timezone.utc singleton'
-)
+assert repr(datetime.date(2024, 1, 15)) == 'datetime.date(2024, 1, 15)'
+assert str(datetime.date(2024, 1, 15)) == '2024-01-15'
+assert repr(datetime.datetime(2024, 1, 15, 10, 30)) == 'datetime.datetime(2024, 1, 15, 10, 30)'
+assert str(datetime.datetime(2024, 1, 15, 10, 30)) == '2024-01-15 10:30:00'
+assert repr(datetime.timedelta(days=1, seconds=3600)) == 'datetime.timedelta(days=1, seconds=3600)'
+assert str(datetime.timedelta(days=1, seconds=3600)) == '1 day, 1:00:00'
+assert repr(datetime.timezone.utc) == 'datetime.timezone.utc'
+assert datetime.timezone.utc is datetime.timezone.utc
+assert datetime.timezone(datetime.timedelta(0)) is datetime.timezone.utc
 # Explicit `None` for the name argument differs from omitting it: CPython
 # raises `TypeError` while `timezone(td)` succeeds.
 try:
@@ -50,88 +42,64 @@ except TypeError as e:
     assert str(e) == 'timezone() argument 2 must be str, not None', f'timezone explicit None name: {e}'
 assert (
     repr(datetime.timezone(datetime.timedelta(seconds=3600))) == 'datetime.timezone(datetime.timedelta(seconds=3600))'
-), 'timezone repr should match CPython'
-assert str(datetime.timezone(datetime.timedelta(seconds=61))) == 'UTC+00:01:01', (
-    'timezone str should include second-level offsets'
 )
+assert str(datetime.timezone(datetime.timedelta(seconds=61))) == 'UTC+00:01:01'
 assert (
     repr(datetime.timezone(datetime.timedelta(seconds=-1)))
     == 'datetime.timezone(datetime.timedelta(days=-1, seconds=86399))'
-), 'timezone repr should normalize negative second offsets like CPython'
+)
 assert (
     repr(datetime.timezone(datetime.timedelta(hours=1), 'A'))
     == "datetime.timezone(datetime.timedelta(seconds=3600), 'A')"
-), 'timezone repr should use Python string quoting for custom names'
+)
 assert str(datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone(datetime.timedelta(seconds=61)))) == (
     '2024-01-01 00:00:00+00:01:01'
-), 'datetime str should include second-level offsets'
+)
 assert repr(datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone(datetime.timedelta(seconds=-1)))) == (
     'datetime.datetime(2024, 1, 1, 0, 0, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=86399)))'
-), 'datetime repr should use normalized negative timezone offsets'
+)
 named_tz = datetime.timezone(datetime.timedelta(hours=1), 'X')
 named_dt = datetime.datetime(2024, 1, 1, tzinfo=named_tz)
 assert repr(named_dt) == (
     "datetime.datetime(2024, 1, 1, 0, 0, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600), 'X'))"
-), 'datetime repr should preserve explicit timezone names'
-assert repr(named_dt.tzinfo) == "datetime.timezone(datetime.timedelta(seconds=3600), 'X')", (
-    'datetime.tzinfo should preserve explicit timezone names'
 )
+assert repr(named_dt.tzinfo) == "datetime.timezone(datetime.timedelta(seconds=3600), 'X')"
 
 # === tzinfo identity semantics ===
 identity_tz = datetime.timezone(datetime.timedelta(hours=1), 'IDENTITY')
 identity_dt = datetime.datetime(2024, 1, 1, 12, 0, 0, tzinfo=identity_tz)
-assert identity_dt.tzinfo is identity_tz, 'aware datetime should preserve input tzinfo identity'
-assert identity_dt.tzinfo is identity_dt.tzinfo, 'datetime.tzinfo should be stable across repeated attribute access'
-assert (identity_dt + datetime.timedelta(seconds=1)).tzinfo is identity_tz, (
-    'datetime arithmetic should preserve aware datetime tzinfo identity'
-)
+assert identity_dt.tzinfo is identity_tz
+assert identity_dt.tzinfo is identity_dt.tzinfo
+assert (identity_dt + datetime.timedelta(seconds=1)).tzinfo is identity_tz
 
 # === arithmetic ===
-assert datetime.date(2024, 1, 10) + datetime.timedelta(days=5) == datetime.date(2024, 1, 15), (
-    'date + timedelta should add days'
-)
-assert datetime.date(2024, 1, 10) - datetime.timedelta(days=5) == datetime.date(2024, 1, 5), (
-    'date - timedelta should subtract days'
-)
-assert datetime.date(2024, 1, 10) - datetime.date(2024, 1, 1) == datetime.timedelta(days=9), (
-    'date - date should return timedelta'
-)
+assert datetime.date(2024, 1, 10) + datetime.timedelta(days=5) == datetime.date(2024, 1, 15)
+assert datetime.date(2024, 1, 10) - datetime.timedelta(days=5) == datetime.date(2024, 1, 5)
+assert datetime.date(2024, 1, 10) - datetime.date(2024, 1, 1) == datetime.timedelta(days=9)
 
 base_dt = datetime.datetime(2024, 1, 10, 12, 0, 0)
-assert base_dt + datetime.timedelta(hours=2) == datetime.datetime(2024, 1, 10, 14, 0, 0), (
-    'datetime + timedelta should add duration'
-)
-assert base_dt - datetime.timedelta(hours=2) == datetime.datetime(2024, 1, 10, 10, 0, 0), (
-    'datetime - timedelta should subtract duration'
-)
+assert base_dt + datetime.timedelta(hours=2) == datetime.datetime(2024, 1, 10, 14, 0, 0)
+assert base_dt - datetime.timedelta(hours=2) == datetime.datetime(2024, 1, 10, 10, 0, 0)
 assert datetime.datetime(2024, 1, 10, 12, 0, 0) - datetime.datetime(2024, 1, 10, 11, 0, 0) == datetime.timedelta(
     hours=1
-), 'datetime - datetime should return timedelta'
+)
 
-assert datetime.timedelta(days=1, seconds=10) + datetime.timedelta(seconds=5) == datetime.timedelta(
-    days=1, seconds=15
-), 'timedelta + timedelta should add'
-assert datetime.timedelta(days=1, seconds=10) - datetime.timedelta(seconds=5) == datetime.timedelta(
-    days=1, seconds=5
-), 'timedelta - timedelta should subtract'
-assert -datetime.timedelta(days=1, seconds=30) == datetime.timedelta(days=-2, seconds=86370), (
-    'unary -timedelta should normalize like CPython'
-)
-assert -datetime.timedelta(0) == datetime.timedelta(0), 'negation of zero timedelta'
-assert -datetime.timedelta(days=-1) == datetime.timedelta(days=1), 'double negation of timedelta'
-assert datetime.timedelta(hours=1, minutes=30).total_seconds() == 5400.0, (
-    'timedelta.total_seconds() should match CPython'
-)
+assert datetime.timedelta(days=1, seconds=10) + datetime.timedelta(seconds=5) == datetime.timedelta(days=1, seconds=15)
+assert datetime.timedelta(days=1, seconds=10) - datetime.timedelta(seconds=5) == datetime.timedelta(days=1, seconds=5)
+assert -datetime.timedelta(days=1, seconds=30) == datetime.timedelta(days=-2, seconds=86370)
+assert -datetime.timedelta(0) == datetime.timedelta(0)
+assert -datetime.timedelta(days=-1) == datetime.timedelta(days=1)
+assert datetime.timedelta(hours=1, minutes=30).total_seconds() == 5400.0
 
 # === aware/naive comparison and subtraction rules ===
 aware = datetime.datetime(2024, 1, 1, 12, 0, 0, tzinfo=datetime.timezone.utc)
 naive = datetime.datetime(2024, 1, 1, 12, 0, 0)
 
-assert (aware == naive) is False, 'aware == naive should be False, not an exception'
-assert (aware != naive) is True, 'aware != naive should be True, not an exception'
+assert (aware == naive) is False
+assert (aware != naive) is True
 assert datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.timezone.utc) == datetime.datetime(
     2024, 1, 1, 13, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=1))
-), 'aware datetime equality should compare UTC instants, not local fields'
+)
 
 # TODO(datetime): restore once compare/subtract error semantics are finalized without VM-specific branching.
 # try:
@@ -159,26 +127,16 @@ assert datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.timezone.utc) == dat
 #     )
 
 # === timezone validations and constant ===
-assert datetime.timezone.utc == datetime.timezone(datetime.timedelta(0)), (
-    'timezone.utc should equal zero offset timezone'
-)
+assert datetime.timezone.utc == datetime.timezone(datetime.timedelta(0))
 # TODO(timezone): add a GC-stability regression ensuring `timezone.utc` identity
 # persists after allocation/collection cycles.
-assert datetime.timezone(offset=datetime.timedelta(hours=1)) == datetime.timezone(datetime.timedelta(hours=1)), (
-    'timezone constructor should support the offset keyword'
-)
-assert datetime.timezone(datetime.timedelta(hours=1), name='A') == datetime.timezone(
-    datetime.timedelta(hours=1), 'A'
-), 'timezone constructor should support the name keyword'
-assert datetime.timezone(datetime.timedelta(hours=1), 'A') == datetime.timezone(datetime.timedelta(hours=1), 'B'), (
-    'timezone equality should depend on offset, not name'
-)
+assert datetime.timezone(offset=datetime.timedelta(hours=1)) == datetime.timezone(datetime.timedelta(hours=1))
+assert datetime.timezone(datetime.timedelta(hours=1), name='A') == datetime.timezone(datetime.timedelta(hours=1), 'A')
+assert datetime.timezone(datetime.timedelta(hours=1), 'A') == datetime.timezone(datetime.timedelta(hours=1), 'B')
 assert hash(datetime.timezone(datetime.timedelta(hours=1), 'A')) == hash(
     datetime.timezone(datetime.timedelta(hours=1), 'B')
-), 'timezone hash should depend on offset, not name'
-assert repr(datetime.timezone(datetime.timedelta(seconds=1))) == 'datetime.timezone(datetime.timedelta(seconds=1))', (
-    'timezone should allow second-level fixed offsets'
 )
+assert repr(datetime.timezone(datetime.timedelta(seconds=1))) == 'datetime.timezone(datetime.timedelta(seconds=1))'
 
 try:
     datetime.timezone(datetime.timedelta(hours=24))
@@ -187,38 +145,76 @@ except ValueError as e:
     assert str(e) == (
         'offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24), '
         'not datetime.timedelta(days=1)'
-    ), 'timezone range validation message should match CPython'
+    )
 
 # === duplicate argument bindings ===
 try:
     datetime.datetime(2024, 1, 1, 1, hour=2)
     assert False, 'datetime constructor should reject positional+keyword duplicate hour'
 except TypeError as e:
-    assert str(e) == "argument for function given by name ('hour') and position (4)", (
-        'datetime duplicate hour should raise CPython-style duplicate-binding TypeError'
-    )
+    assert str(e) == "argument for function given by name ('hour') and position (4)"
 
 try:
     datetime.datetime(2024, 1, 1, 0, 0, 0, 0, datetime.timezone.utc, tzinfo=datetime.timezone.utc)
     assert False, 'datetime constructor should reject positional+keyword duplicate tzinfo'
 except TypeError as e:
-    assert str(e) == "argument for function given by name ('tzinfo') and position (8)", (
-        'datetime duplicate tzinfo should raise CPython-style duplicate-binding TypeError'
-    )
+    assert str(e) == "argument for function given by name ('tzinfo') and position (8)"
 
 try:
     datetime.timezone(datetime.timedelta(hours=1), offset=datetime.timedelta(hours=1))
     assert False, 'timezone constructor should reject positional+keyword duplicate offset'
 except TypeError as e:
-    assert str(e) == "argument for timezone() given by name ('offset') and position (1)", (
-        'timezone duplicate offset should raise duplicate-binding TypeError'
-    )
+    assert str(e) == "argument for timezone() given by name ('offset') and position (1)"
 
 try:
     datetime.timezone(datetime.timedelta(hours=1), 'A', name='B')
     assert False, 'timezone constructor should reject 3 arguments even when name is also provided by keyword'
 except TypeError as e:
     assert str(e) == 'timezone() takes at most 2 arguments (3 given)', f'timezone 3-arg error: {e}'
+
+# === constructor arguments too wide for the C parameter type ===
+# CPython's `i` format converts to C long first ("too large to convert"), then
+# range-checks C int with sign-aware wording; timedelta components report C int.
+# On Windows C long is 32 bits, so ±2**40 already fails CPython's *long*
+# conversion with a different message — skip the sign-aware cases there.
+# Monty's ints are i64 on every host (sys.platform == 'monty', so these always
+# run under Monty) — divergence documented in limitations/datetime.md.
+if sys.platform != 'win32':
+    try:
+        datetime.date(2**40, 1, 1)
+        assert False, 'date year above C int range should raise OverflowError'
+    except OverflowError as e:
+        assert str(e) == 'signed integer is greater than maximum', f'date year overflow: {e}'
+
+    try:
+        datetime.date(-(2**40), 1, 1)
+        assert False, 'date year below C int range should raise OverflowError'
+    except OverflowError as e:
+        assert str(e) == 'signed integer is less than minimum', f'date year underflow: {e}'
+
+try:
+    datetime.date(2**100, 1, 1)
+    assert False, 'date year beyond C long should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C long', f'date year big-int: {e}'
+
+try:
+    datetime.datetime(2**100, 1, 1)
+    assert False, 'datetime year beyond C long should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C long', f'datetime year big-int: {e}'
+
+try:
+    datetime.timedelta(days=2**70)
+    assert False, 'timedelta days beyond i64 should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C int', f'timedelta days big-int: {e}'
+
+try:
+    datetime.timedelta(weeks=2**100)
+    assert False, 'timedelta weeks beyond i64 should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C int', f'timedelta weeks big-int: {e}'
 
 # TODO(datetime): restore once overflow paths are finalized without VM-specific binary fallback branches.
 # try:
@@ -244,63 +240,63 @@ except TypeError as e:
 # === attribute access ===
 
 d = datetime.date(2024, 2, 29)
-assert d.year == 2024, 'date.year should return year'
-assert d.month == 2, 'date.month should return month'
-assert d.day == 29, 'date.day should return day'
+assert d.year == 2024
+assert d.month == 2
+assert d.day == 29
 
 d_boundary = datetime.date(1, 1, 1)
-assert d_boundary.year == 1, 'date.year at minimum boundary'
-assert d_boundary.month == 1, 'date.month at minimum boundary'
-assert d_boundary.day == 1, 'date.day at minimum boundary'
+assert d_boundary.year == 1
+assert d_boundary.month == 1
+assert d_boundary.day == 1
 
 d_max = datetime.date(9999, 12, 31)
-assert d_max.year == 9999, 'date.year at maximum boundary'
-assert d_max.month == 12, 'date.month at maximum boundary'
-assert d_max.day == 31, 'date.day at maximum boundary'
+assert d_max.year == 9999
+assert d_max.month == 12
+assert d_max.day == 31
 
 dt = datetime.datetime(2024, 6, 15, 14, 30, 45, 123456)
-assert dt.year == 2024, 'datetime.year should return year'
-assert dt.month == 6, 'datetime.month should return month'
-assert dt.day == 15, 'datetime.day should return day'
-assert dt.hour == 14, 'datetime.hour should return hour'
-assert dt.minute == 30, 'datetime.minute should return minute'
-assert dt.second == 45, 'datetime.second should return second'
-assert dt.microsecond == 123456, 'datetime.microsecond should return microsecond'
+assert dt.year == 2024
+assert dt.month == 6
+assert dt.day == 15
+assert dt.hour == 14
+assert dt.minute == 30
+assert dt.second == 45
+assert dt.microsecond == 123456
 
 dt_zero = datetime.datetime(2024, 1, 1, 0, 0, 0, 0)
-assert dt_zero.hour == 0, 'datetime.hour should return 0 for midnight'
-assert dt_zero.microsecond == 0, 'datetime.microsecond should return 0'
+assert dt_zero.hour == 0
+assert dt_zero.microsecond == 0
 
 td = datetime.timedelta(days=5, seconds=3600, microseconds=500)
-assert td.days == 5, 'timedelta.days should return days'
-assert td.seconds == 3600, 'timedelta.seconds should return seconds'
-assert td.microseconds == 500, 'timedelta.microseconds should return microseconds'
+assert td.days == 5
+assert td.seconds == 3600
+assert td.microseconds == 500
 
 td_zero = datetime.timedelta(0)
-assert td_zero.days == 0, 'zero timedelta.days'
-assert td_zero.seconds == 0, 'zero timedelta.seconds'
-assert td_zero.microseconds == 0, 'zero timedelta.microseconds'
+assert td_zero.days == 0
+assert td_zero.seconds == 0
+assert td_zero.microseconds == 0
 
 td_neg = datetime.timedelta(days=-1)
-assert td_neg.days == -1, 'negative timedelta.days'
-assert td_neg.seconds == 0, 'negative timedelta.seconds'
-assert td_neg.microseconds == 0, 'negative timedelta.microseconds'
+assert td_neg.days == -1
+assert td_neg.seconds == 0
+assert td_neg.microseconds == 0
 
 td_mixed_neg = datetime.timedelta(seconds=-1)
-assert td_mixed_neg.days == -1, 'timedelta(-1s).days should be -1 (normalized)'
-assert td_mixed_neg.seconds == 86399, 'timedelta(-1s).seconds should be 86399 (normalized)'
-assert td_mixed_neg.microseconds == 0, 'timedelta(-1s).microseconds should be 0'
+assert td_mixed_neg.days == -1
+assert td_mixed_neg.seconds == 86399
+assert td_mixed_neg.microseconds == 0
 
 # === edge cases: repr and str ===
 
-assert repr(datetime.timedelta(0)) == 'datetime.timedelta(0)', 'zero timedelta repr'
-assert str(datetime.timedelta(0)) == '0:00:00', 'zero timedelta str'
-assert str(datetime.timedelta(days=-1)) == '-1 day, 0:00:00', 'negative day timedelta str'
-assert str(datetime.timedelta(days=1)) == '1 day, 0:00:00', 'singular day timedelta str'
-assert str(datetime.timedelta(days=2)) == '2 days, 0:00:00', 'plural days timedelta str'
-assert repr(datetime.date(2024, 2, 29)) == 'datetime.date(2024, 2, 29)', 'leap year date repr'
-assert str(datetime.date(1, 1, 1)) == '0001-01-01', 'minimum date str'
-assert str(datetime.date(9999, 12, 31)) == '9999-12-31', 'maximum date str'
+assert repr(datetime.timedelta(0)) == 'datetime.timedelta(0)'
+assert str(datetime.timedelta(0)) == '0:00:00'
+assert str(datetime.timedelta(days=-1)) == '-1 day, 0:00:00'
+assert str(datetime.timedelta(days=1)) == '1 day, 0:00:00'
+assert str(datetime.timedelta(days=2)) == '2 days, 0:00:00'
+assert repr(datetime.date(2024, 2, 29)) == 'datetime.date(2024, 2, 29)'
+assert str(datetime.date(1, 1, 1)) == '0001-01-01'
+assert str(datetime.date(9999, 12, 31)) == '9999-12-31'
 
 # === error messages should match CPython 3.14 ===
 
@@ -367,141 +363,70 @@ except ValueError as e:
 # === timedelta truthiness ===
 
 assert not datetime.timedelta(0), 'timedelta(0) should be falsy'
-assert datetime.timedelta(seconds=1), 'non-zero timedelta should be truthy'
-assert datetime.timedelta(days=-1), 'negative timedelta should be truthy'
+assert datetime.timedelta(seconds=1)
+assert datetime.timedelta(days=-1)
 
 # === isinstance subclass: datetime is a subclass of date ===
 
-assert isinstance(datetime.datetime(2024, 1, 1, 0, 0), datetime.date), (
-    'datetime should be instance of date (datetime is subclass of date)'
-)
+assert isinstance(datetime.datetime(2024, 1, 1, 0, 0), datetime.date)
 assert not isinstance(datetime.date(2024, 1, 1), datetime.datetime), 'date should NOT be instance of datetime'
 
 # === isoformat ===
 
-assert datetime.date(2024, 1, 15).isoformat() == '2024-01-15', 'date.isoformat()'
-assert datetime.datetime(2024, 1, 15, 10, 30).isoformat() == '2024-01-15T10:30:00', 'naive datetime.isoformat()'
-assert datetime.datetime(2024, 1, 15, 10, 30, 0, 123456).isoformat() == '2024-01-15T10:30:00.123456', (
-    'datetime.isoformat() with microseconds'
-)
+assert datetime.date(2024, 1, 15).isoformat() == '2024-01-15'
+assert datetime.datetime(2024, 1, 15, 10, 30).isoformat() == '2024-01-15T10:30:00'
+assert datetime.datetime(2024, 1, 15, 10, 30, 0, 123456).isoformat() == '2024-01-15T10:30:00.123456'
 utc_iso = datetime.datetime(2024, 1, 15, 10, 30, tzinfo=datetime.timezone.utc)
-assert utc_iso.isoformat() == '2024-01-15T10:30:00+00:00', 'aware UTC datetime.isoformat()'
+assert utc_iso.isoformat() == '2024-01-15T10:30:00+00:00'
 
-# === strftime ===
-
-assert datetime.datetime(2024, 6, 15, 10, 30, 45).strftime('%Y-%m-%d') == '2024-06-15', 'datetime.strftime date format'
-assert datetime.datetime(2024, 6, 15, 10, 30, 45).strftime('%H:%M:%S') == '10:30:45', 'datetime.strftime time format'
-assert datetime.date(2024, 6, 15).strftime('%Y/%m/%d') == '2024/06/15', 'date.strftime'
-assert datetime.date(2024, 6, 15).strftime(format='%Y/%m/%d') == '2024/06/15', 'date.strftime accepts kwarg'
-assert datetime.datetime.strptime('2024-06-15 10:30:45.1', '%Y-%m-%d %H:%M:%S.%f') == datetime.datetime(
-    2024, 6, 15, 10, 30, 45, 100000
-), 'strptime %f should accept 1 digit and right-pad to microseconds'
-
-try:
-    datetime.date(2024, 6, 15).strftime()
-    assert False, 'expected strftime() with no args to fail'
-except TypeError as exc:
-    assert str(exc) == "strftime() missing required argument 'format' (pos 1)", f'strftime() no-args: {exc}'
-
-try:
-    datetime.date(2024, 6, 15).strftime('%Y', '%m')
-    assert False, 'expected strftime() with extra positional to fail'
-except TypeError as exc:
-    assert str(exc) == 'strftime() takes at most 1 argument (2 given)', f'strftime() extra positional: {exc}'
-
-try:
-    datetime.date(2024, 6, 15).strftime('%Y', extra='nope')
-    assert False, 'expected strftime() with unexpected kwarg to fail'
-except TypeError as exc:
-    assert str(exc) == 'strftime() takes at most 1 argument (2 given)', f'strftime() unexpected kwarg: {exc}'
-
-# Wrong-type `format` matches CPython's `_PyArg_BadArgument` wording, including
-# the special "not None" case (vs. the type name "NoneType").
-for bad, expected_type in (
-    (42, 'int'),
-    (None, 'None'),
-    (b'%Y', 'bytes'),
-    (1.5, 'float'),
-    (True, 'bool'),
-    ([1, 2], 'list'),
-    ({1: 2}, 'dict'),
-    ((1, 2), 'tuple'),
-):
-    try:
-        datetime.date(2024, 6, 15).strftime(bad)
-        assert False, f'expected strftime({bad!r}) to fail'
-    except TypeError as exc:
-        assert str(exc) == f'strftime() argument 1 must be str, not {expected_type}', (
-            f'strftime({bad!r}) wrong type: {exc}'
-        )
-    # Same wording when passed as a kwarg.
-    try:
-        datetime.date(2024, 6, 15).strftime(format=bad)
-        assert False, f'expected strftime(format={bad!r}) to fail'
-    except TypeError as exc:
-        assert str(exc) == f'strftime() argument 1 must be str, not {expected_type}', (
-            f'strftime(format={bad!r}) wrong type: {exc}'
-        )
-
-# Same error wording on `datetime.strftime`.
-try:
-    datetime.datetime(2024, 6, 15).strftime(42)
-    assert False, 'expected datetime.strftime(42) to fail'
-except TypeError as exc:
-    assert str(exc) == 'strftime() argument 1 must be str, not int', f'datetime.strftime wrong type: {exc}'
+# NOTE: strftime and f-string/format formatting tests live in datetime__format.py.
 
 # === replace ===
 
-assert datetime.date(2024, 6, 15).replace(month=1) == datetime.date(2024, 1, 15), 'date.replace(month=1)'
-assert datetime.date(2024, 6, 15).replace(year=2025, day=1) == datetime.date(2025, 6, 1), 'date.replace(year, day)'
-assert datetime.datetime(2024, 6, 15, 10, 30).replace(hour=0, minute=0) == datetime.datetime(2024, 6, 15, 0, 0), (
-    'datetime.replace(hour, minute)'
-)
+assert datetime.date(2024, 6, 15).replace(month=1) == datetime.date(2024, 1, 15)
+assert datetime.date(2024, 6, 15).replace(year=2025, day=1) == datetime.date(2025, 6, 1)
+assert datetime.datetime(2024, 6, 15, 10, 30).replace(hour=0, minute=0) == datetime.datetime(2024, 6, 15, 0, 0)
 assert datetime.datetime(2024, 6, 15, 10, 30).replace(tzinfo=datetime.timezone.utc) == datetime.datetime(
     2024, 6, 15, 10, 30, tzinfo=datetime.timezone.utc
-), 'datetime.replace(tzinfo=...) should replace the timezone'
+)
 
 # === weekday / isoweekday ===
 
-assert datetime.date(2024, 6, 15).weekday() == 5, 'Saturday weekday() should be 5'
-assert datetime.date(2024, 6, 15).isoweekday() == 6, 'Saturday isoweekday() should be 6'
-assert datetime.date(2024, 6, 10).weekday() == 0, 'Monday weekday() should be 0'
-assert datetime.date(2024, 6, 10).isoweekday() == 1, 'Monday isoweekday() should be 1'
-assert datetime.datetime(2024, 6, 15, 12, 0).weekday() == 5, 'datetime.weekday()'
+assert datetime.date(2024, 6, 15).weekday() == 5
+assert datetime.date(2024, 6, 15).isoweekday() == 6
+assert datetime.date(2024, 6, 10).weekday() == 0
+assert datetime.date(2024, 6, 10).isoweekday() == 1
+assert datetime.datetime(2024, 6, 15, 12, 0).weekday() == 5
 
 # === datetime.date() method ===
 
-assert datetime.datetime(2024, 6, 15, 10, 30).date() == datetime.date(2024, 6, 15), 'datetime.date() extracts date'
+assert datetime.datetime(2024, 6, 15, 10, 30).date() == datetime.date(2024, 6, 15)
 
 # === datetime.timestamp() ===
 
-assert datetime.datetime(2024, 6, 15, 10, 30, 0, tzinfo=datetime.timezone.utc).timestamp() == 1718447400.0, (
-    'aware UTC datetime.timestamp()'
-)
+assert datetime.datetime(2024, 6, 15, 10, 30, 0, tzinfo=datetime.timezone.utc).timestamp() == 1718447400.0
 
 # === timedelta * int ===
 
-assert datetime.timedelta(days=1) * 7 == datetime.timedelta(days=7), 'timedelta * int'
-assert 3 * datetime.timedelta(days=1) == datetime.timedelta(days=3), 'int * timedelta'
-assert datetime.timedelta(hours=2) * 0 == datetime.timedelta(0), 'timedelta * 0'
+assert datetime.timedelta(days=1) * 7 == datetime.timedelta(days=7)
+assert 3 * datetime.timedelta(days=1) == datetime.timedelta(days=3)
+assert datetime.timedelta(hours=2) * 0 == datetime.timedelta(0)
 
 # === abs(timedelta) ===
 
-assert abs(datetime.timedelta(days=-3)) == datetime.timedelta(days=3), 'abs(negative timedelta)'
-assert abs(datetime.timedelta(0)) == datetime.timedelta(0), 'abs(zero timedelta)'
-assert abs(datetime.timedelta(days=5)) == datetime.timedelta(days=5), 'abs(positive timedelta)'
+assert abs(datetime.timedelta(days=-3)) == datetime.timedelta(days=3)
+assert abs(datetime.timedelta(0)) == datetime.timedelta(0)
+assert abs(datetime.timedelta(days=5)) == datetime.timedelta(days=5)
 
 # === timedelta // int and timedelta / int ===
 
-assert datetime.timedelta(days=1) // 2 == datetime.timedelta(hours=12), 'timedelta // int'
-assert datetime.timedelta(days=1) / 2 == datetime.timedelta(hours=12), 'timedelta / int'
-assert datetime.timedelta(microseconds=3) / 2 == datetime.timedelta(microseconds=2), (
-    'timedelta / int should round to nearest microsecond with ties-to-even'
-)
+assert datetime.timedelta(days=1) // 2 == datetime.timedelta(hours=12)
+assert datetime.timedelta(days=1) / 2 == datetime.timedelta(hours=12)
+assert datetime.timedelta(microseconds=3) / 2 == datetime.timedelta(microseconds=2)
 
 # === date.fromisoformat ===
 
-assert datetime.date.fromisoformat('2024-06-15') == datetime.date(2024, 6, 15), 'date.fromisoformat YYYY-MM-DD'
+assert datetime.date.fromisoformat('2024-06-15') == datetime.date(2024, 6, 15)
 
 try:
     datetime.date.fromisoformat('not-a-date')
@@ -511,38 +436,24 @@ except ValueError as e:
 
 # === datetime.fromisoformat ===
 
-assert datetime.datetime.fromisoformat('2024-06-15') == datetime.datetime(2024, 6, 15, 0, 0), (
-    'datetime.fromisoformat date only'
-)
-assert datetime.datetime.fromisoformat('2024-06-15T10:30:00') == datetime.datetime(2024, 6, 15, 10, 30), (
-    'datetime.fromisoformat with T separator'
-)
-assert datetime.datetime.fromisoformat('2024-06-15 10:30:00') == datetime.datetime(2024, 6, 15, 10, 30), (
-    'datetime.fromisoformat with space separator'
-)
-assert datetime.datetime.fromisoformat('2024-06-15T10:30') == datetime.datetime(2024, 6, 15, 10, 30), (
-    'datetime.fromisoformat without seconds'
-)
+assert datetime.datetime.fromisoformat('2024-06-15') == datetime.datetime(2024, 6, 15, 0, 0)
+assert datetime.datetime.fromisoformat('2024-06-15T10:30:00') == datetime.datetime(2024, 6, 15, 10, 30)
+assert datetime.datetime.fromisoformat('2024-06-15 10:30:00') == datetime.datetime(2024, 6, 15, 10, 30)
+assert datetime.datetime.fromisoformat('2024-06-15T10:30') == datetime.datetime(2024, 6, 15, 10, 30)
 assert datetime.datetime.fromisoformat('2024-06-15T10:30:00.123456') == datetime.datetime(
     2024, 6, 15, 10, 30, 0, 123456
-), 'datetime.fromisoformat with microseconds'
+)
 
 iso_utc = datetime.datetime.fromisoformat('2024-06-15T10:30:00+00:00')
-assert iso_utc == datetime.datetime(2024, 6, 15, 10, 30, tzinfo=datetime.timezone.utc), (
-    'datetime.fromisoformat with UTC offset'
-)
+assert iso_utc == datetime.datetime(2024, 6, 15, 10, 30, tzinfo=datetime.timezone.utc)
 
 # === datetime.strptime ===
 
-assert datetime.datetime.strptime('2024-06-15', '%Y-%m-%d') == datetime.datetime(2024, 6, 15, 0, 0), (
-    'strptime date-only format'
-)
+assert datetime.datetime.strptime('2024-06-15', '%Y-%m-%d') == datetime.datetime(2024, 6, 15, 0, 0)
 assert datetime.datetime.strptime('2024-06-15 10:30:45', '%Y-%m-%d %H:%M:%S') == datetime.datetime(
     2024, 6, 15, 10, 30, 45
-), 'strptime datetime format'
-assert datetime.datetime.strptime('15/06/2024', '%d/%m/%Y') == datetime.datetime(2024, 6, 15, 0, 0), (
-    'strptime custom date format'
 )
+assert datetime.datetime.strptime('15/06/2024', '%d/%m/%Y') == datetime.datetime(2024, 6, 15, 0, 0)
 
 try:
     datetime.datetime.strptime('2024-06-15', '%d/%m/%Y')
@@ -552,8 +463,8 @@ except ValueError as e:
 
 # === keyword-only construction for date ===
 
-assert datetime.date(year=2024, month=6, day=15) == datetime.date(2024, 6, 15), 'date keyword construction'
-assert datetime.date(2024, month=6, day=15) == datetime.date(2024, 6, 15), 'date mixed positional/keyword construction'
+assert datetime.date(year=2024, month=6, day=15) == datetime.date(2024, 6, 15)
+assert datetime.date(2024, month=6, day=15) == datetime.date(2024, 6, 15)
 
 try:
     datetime.date(2024, 1, 1, 1)
@@ -589,9 +500,7 @@ except TypeError as e:
 
 # === keyword-only construction for datetime ===
 
-assert datetime.datetime(year=2024, month=1, day=1, hour=12) == datetime.datetime(2024, 1, 1, 12), (
-    'datetime keyword construction'
-)
+assert datetime.datetime(year=2024, month=1, day=1, hour=12) == datetime.datetime(2024, 1, 1, 12)
 
 try:
     datetime.datetime(2024, 1, 1, foo=1)
@@ -627,163 +536,141 @@ td_2h = datetime.timedelta(hours=2)
 
 # aware datetime + timedelta
 aware_add = aware_base + td_2h
-assert aware_add == datetime.datetime(2024, 6, 15, 14, 0, 0, tzinfo=utc), 'aware datetime + timedelta'
-assert aware_add.tzinfo is utc, 'aware datetime + timedelta preserves tzinfo'
+assert aware_add == datetime.datetime(2024, 6, 15, 14, 0, 0, tzinfo=utc)
+assert aware_add.tzinfo is utc
 
 # aware datetime - timedelta
 aware_sub = aware_base - td_2h
-assert aware_sub == datetime.datetime(2024, 6, 15, 10, 0, 0, tzinfo=utc), 'aware datetime - timedelta'
-assert aware_sub.tzinfo is utc, 'aware datetime - timedelta preserves tzinfo'
+assert aware_sub == datetime.datetime(2024, 6, 15, 10, 0, 0, tzinfo=utc)
+assert aware_sub.tzinfo is utc
 
 # aware datetime - aware datetime
 aware_diff = aware_base - datetime.datetime(2024, 6, 15, 10, 0, 0, tzinfo=utc)
-assert aware_diff == datetime.timedelta(hours=2), 'aware datetime - aware datetime'
+assert aware_diff == datetime.timedelta(hours=2)
 
 # aware datetime subtraction with different offsets
 plus5 = datetime.timezone(datetime.timedelta(hours=5))
 aware_plus5 = datetime.datetime(2024, 6, 15, 17, 0, 0, tzinfo=plus5)
 diff_tz = aware_base - aware_plus5
-assert diff_tz == datetime.timedelta(0), 'aware datetimes at same UTC instant should have zero diff'
+assert diff_tz == datetime.timedelta(0)
 
 # === aware datetime comparison ===
 
 aware_a = datetime.datetime(2024, 1, 1, 12, 0, 0, tzinfo=utc)
 aware_b = datetime.datetime(2024, 1, 1, 14, 0, 0, tzinfo=utc)
-assert aware_a < aware_b, 'aware datetime < comparison'
-assert aware_b > aware_a, 'aware datetime > comparison'
-assert aware_a <= aware_a, 'aware datetime <= equal'
-assert aware_a >= aware_a, 'aware datetime >= equal'
+assert aware_a < aware_b
+assert aware_b > aware_a
+assert aware_a <= aware_a
+assert aware_a >= aware_a
 assert not (aware_a > aware_b), 'aware datetime not >'
 
 # === naive datetime comparison ===
 
 naive_a = datetime.datetime(2024, 1, 1, 10, 0, 0)
 naive_b = datetime.datetime(2024, 1, 1, 12, 0, 0)
-assert naive_a < naive_b, 'naive datetime < comparison'
-assert naive_b > naive_a, 'naive datetime > comparison'
-assert naive_a == naive_a, 'naive datetime equality'
+assert naive_a < naive_b
+assert naive_b > naive_a
+assert naive_a == naive_a
 assert not (naive_a == naive_b), 'naive datetime inequality'
 
 # === timedelta comparison ===
 
 td_a = datetime.timedelta(days=1)
 td_b = datetime.timedelta(days=2)
-assert td_a < td_b, 'timedelta < comparison'
-assert td_b > td_a, 'timedelta > comparison'
-assert td_a <= td_a, 'timedelta <= equal'
-assert td_a >= td_a, 'timedelta >= equal'
-assert td_a == td_a, 'timedelta equality'
+assert td_a < td_b
+assert td_b > td_a
+assert td_a <= td_a
+assert td_a >= td_a
+assert td_a == td_a
 assert not (td_a == td_b), 'timedelta inequality'
 
 # === timedelta repr with microseconds ===
 
-assert repr(datetime.timedelta(microseconds=500)) == 'datetime.timedelta(microseconds=500)', (
-    'timedelta repr with microseconds only'
-)
-assert repr(datetime.timedelta(seconds=1, microseconds=500)) == ('datetime.timedelta(seconds=1, microseconds=500)'), (
-    'timedelta repr with seconds and microseconds'
-)
+assert repr(datetime.timedelta(microseconds=500)) == 'datetime.timedelta(microseconds=500)'
+assert repr(datetime.timedelta(seconds=1, microseconds=500)) == ('datetime.timedelta(seconds=1, microseconds=500)')
 
 # === datetime repr with seconds and microseconds ===
 
-assert repr(datetime.datetime(2024, 1, 1, 0, 0, 30)) == 'datetime.datetime(2024, 1, 1, 0, 0, 30)', (
-    'datetime repr with seconds'
-)
-assert repr(datetime.datetime(2024, 1, 1, 0, 0, 0, 123456)) == 'datetime.datetime(2024, 1, 1, 0, 0, 0, 123456)', (
-    'datetime repr with microseconds'
-)
-assert repr(datetime.datetime(2024, 1, 1, 0, 0, 30, 123456)) == ('datetime.datetime(2024, 1, 1, 0, 0, 30, 123456)'), (
-    'datetime repr with seconds and microseconds'
-)
+assert repr(datetime.datetime(2024, 1, 1, 0, 0, 30)) == 'datetime.datetime(2024, 1, 1, 0, 0, 30)'
+assert repr(datetime.datetime(2024, 1, 1, 0, 0, 0, 123456)) == 'datetime.datetime(2024, 1, 1, 0, 0, 0, 123456)'
+assert repr(datetime.datetime(2024, 1, 1, 0, 0, 30, 123456)) == ('datetime.datetime(2024, 1, 1, 0, 0, 30, 123456)')
 
 # === datetime str with microseconds ===
 
-assert str(datetime.datetime(2024, 1, 1, 10, 30, 0, 123456)) == '2024-01-01 10:30:00.123456', (
-    'datetime str with microseconds'
-)
+assert str(datetime.datetime(2024, 1, 1, 10, 30, 0, 123456)) == '2024-01-01 10:30:00.123456'
 
 # === datetime repr with UTC timezone ===
 
 assert repr(datetime.datetime(2024, 1, 1, 0, 0, tzinfo=datetime.timezone.utc)) == (
     'datetime.datetime(2024, 1, 1, 0, 0, tzinfo=datetime.timezone.utc)'
-), 'datetime repr with UTC timezone'
+)
 
 # === datetime.replace with second/microsecond ===
 
 dt_rep = datetime.datetime(2024, 6, 15, 10, 30, 45, 123456)
-assert dt_rep.replace(second=0) == datetime.datetime(2024, 6, 15, 10, 30, 0, 123456), 'datetime.replace(second=0)'
-assert dt_rep.replace(microsecond=0) == datetime.datetime(2024, 6, 15, 10, 30, 45, 0), 'datetime.replace(microsecond=0)'
+assert dt_rep.replace(second=0) == datetime.datetime(2024, 6, 15, 10, 30, 0, 123456)
+assert dt_rep.replace(microsecond=0) == datetime.datetime(2024, 6, 15, 10, 30, 45, 0)
 assert dt_rep.replace(year=2025, month=1, day=1, hour=0, minute=0, second=0, microsecond=0) == (
     datetime.datetime(2025, 1, 1, 0, 0)
-), 'datetime.replace all fields'
+)
 
 # === date.replace ===
 
 d_rep = datetime.date(2024, 6, 15)
-assert d_rep.replace(year=2025) == datetime.date(2025, 6, 15), 'date.replace(year)'
-assert d_rep.replace(month=1) == datetime.date(2024, 1, 15), 'date.replace(month)'
-assert d_rep.replace(day=1) == datetime.date(2024, 6, 1), 'date.replace(day)'
+assert d_rep.replace(year=2025) == datetime.date(2025, 6, 15)
+assert d_rep.replace(month=1) == datetime.date(2024, 1, 15)
+assert d_rep.replace(day=1) == datetime.date(2024, 6, 1)
 
 # === date.isoformat ===
 
-assert datetime.date(1, 1, 1).isoformat() == '0001-01-01', 'isoformat with minimum date'
-assert datetime.date(9999, 12, 31).isoformat() == '9999-12-31', 'isoformat with maximum date'
+assert datetime.date(1, 1, 1).isoformat() == '0001-01-01'
+assert datetime.date(9999, 12, 31).isoformat() == '9999-12-31'
 
 # === datetime.isoformat with timezone ===
 
 plus1 = datetime.timezone(datetime.timedelta(hours=1))
-assert datetime.datetime(2024, 1, 15, 10, 30, tzinfo=plus1).isoformat() == '2024-01-15T10:30:00+01:00', (
-    'aware datetime.isoformat with +01:00'
-)
+assert datetime.datetime(2024, 1, 15, 10, 30, tzinfo=plus1).isoformat() == '2024-01-15T10:30:00+01:00'
 
 minus5 = datetime.timezone(datetime.timedelta(hours=-5))
-assert datetime.datetime(2024, 1, 15, 10, 30, tzinfo=minus5).isoformat() == '2024-01-15T10:30:00-05:00', (
-    'aware datetime.isoformat with -05:00'
-)
+assert datetime.datetime(2024, 1, 15, 10, 30, tzinfo=minus5).isoformat() == '2024-01-15T10:30:00-05:00'
 
 # === datetime.isoformat with seconds and microseconds ===
 
-assert datetime.datetime(2024, 1, 15, 10, 30, 45).isoformat() == '2024-01-15T10:30:45', (
-    'datetime.isoformat with seconds'
-)
+assert datetime.datetime(2024, 1, 15, 10, 30, 45).isoformat() == '2024-01-15T10:30:45'
 
 # === date arithmetic ===
 
-assert datetime.date(2024, 3, 1) - datetime.date(2024, 2, 1) == datetime.timedelta(days=29), (
-    'date subtraction across leap year February'
-)
+assert datetime.date(2024, 3, 1) - datetime.date(2024, 2, 1) == datetime.timedelta(days=29)
 
 # === date comparison ===
 
 d_a = datetime.date(2024, 1, 1)
 d_b = datetime.date(2024, 12, 31)
-assert d_a < d_b, 'date < comparison'
-assert d_b > d_a, 'date > comparison'
-assert d_a <= d_a, 'date <= equal'
-assert d_a >= d_a, 'date >= equal'
+assert d_a < d_b
+assert d_b > d_a
+assert d_a <= d_a
+assert d_a >= d_a
 
 # === date attribute access ===
 
 d_attr = datetime.date(2024, 6, 15)
-assert d_attr.year == 2024, 'date.year attribute'
-assert d_attr.month == 6, 'date.month attribute'
-assert d_attr.day == 15, 'date.day attribute'
+assert d_attr.year == 2024
+assert d_attr.month == 6
+assert d_attr.day == 15
 
 # === timedelta with milliseconds, minutes, hours, weeks ===
 
-assert datetime.timedelta(milliseconds=1500) == datetime.timedelta(seconds=1, microseconds=500000), (
-    'timedelta with milliseconds'
-)
-assert datetime.timedelta(minutes=90) == datetime.timedelta(seconds=5400), 'timedelta with minutes'
-assert datetime.timedelta(hours=2) == datetime.timedelta(seconds=7200), 'timedelta with hours'
-assert datetime.timedelta(weeks=1) == datetime.timedelta(days=7), 'timedelta with weeks'
+assert datetime.timedelta(milliseconds=1500) == datetime.timedelta(seconds=1, microseconds=500000)
+assert datetime.timedelta(minutes=90) == datetime.timedelta(seconds=5400)
+assert datetime.timedelta(hours=2) == datetime.timedelta(seconds=7200)
+assert datetime.timedelta(weeks=1) == datetime.timedelta(days=7)
 
 # === timedelta attributes ===
 
 td_attrs = datetime.timedelta(days=3, seconds=7200, microseconds=500)
-assert td_attrs.days == 3, 'timedelta.days attribute'
-assert td_attrs.seconds == 7200, 'timedelta.seconds attribute'
-assert td_attrs.microseconds == 500, 'timedelta.microseconds attribute'
+assert td_attrs.days == 3
+assert td_attrs.seconds == 7200
+assert td_attrs.microseconds == 500
 
 # === timezone constructor edge cases ===
 
@@ -804,30 +691,28 @@ except TypeError as e:
 
 # === timezone repr and str ===
 
-assert str(datetime.timezone.utc) == 'UTC', 'timezone.utc str should be UTC'
-assert str(datetime.timezone(datetime.timedelta(hours=5))) == 'UTC+05:00', 'positive offset timezone str'
-assert str(datetime.timezone(datetime.timedelta(hours=-5))) == 'UTC-05:00', 'negative offset timezone str'
-assert str(datetime.timezone(datetime.timedelta(hours=5, minutes=30))) == 'UTC+05:30', 'offset with minutes'
-assert str(datetime.timezone(datetime.timedelta(hours=0), 'MyTZ')) == 'MyTZ', 'named timezone str uses name'
+assert str(datetime.timezone.utc) == 'UTC'
+assert str(datetime.timezone(datetime.timedelta(hours=5))) == 'UTC+05:00'
+assert str(datetime.timezone(datetime.timedelta(hours=-5))) == 'UTC-05:00'
+assert str(datetime.timezone(datetime.timedelta(hours=5, minutes=30))) == 'UTC+05:30'
+assert str(datetime.timezone(datetime.timedelta(hours=0), 'MyTZ')) == 'MyTZ'
 
 # === datetime.now with tz keyword arg ===
 
 now_kw = datetime.datetime.now(tz=datetime.timezone.utc)
-assert now_kw.tzinfo is not None, 'datetime.now(tz=...) should return aware datetime'
+assert now_kw.tzinfo is not None
 
 # === hash ===
 
-assert hash(datetime.date(2024, 1, 1)) == hash(datetime.date(2024, 1, 1)), 'date hash consistency'
-assert hash(datetime.datetime(2024, 1, 1, 12, 0)) == hash(datetime.datetime(2024, 1, 1, 12, 0)), (
-    'datetime hash consistency'
-)
-assert hash(datetime.timedelta(days=1)) == hash(datetime.timedelta(days=1)), 'timedelta hash consistency'
+assert hash(datetime.date(2024, 1, 1)) == hash(datetime.date(2024, 1, 1))
+assert hash(datetime.datetime(2024, 1, 1, 12, 0)) == hash(datetime.datetime(2024, 1, 1, 12, 0))
+assert hash(datetime.timedelta(days=1)) == hash(datetime.timedelta(days=1))
 
 # === datetime.timestamp() for naive datetime ===
 
 # naive datetimes use local time for timestamp, just check it returns a float
 ts_naive = datetime.datetime(2024, 6, 15, 12, 0, 0).timestamp()
-assert isinstance(ts_naive, float), 'naive datetime.timestamp() should return float'
+assert isinstance(ts_naive, float)
 
 # === aware datetime timestamp ===
 
@@ -888,6 +773,20 @@ try:
 except TypeError as e:
     assert str(e) == 'now() takes at most 1 argument (2 given)', f'datetime.now too many args: {e}'
 
+# === datetime.now() error: arity checked before tz type ===
+
+try:
+    datetime.datetime.now(123, 456)
+    assert False, 'datetime.now(123, 456) should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'now() takes at most 1 argument (2 given)'
+
+try:
+    datetime.datetime.now(datetime.timezone.utc, badkw=1)
+    assert False, 'datetime.now(utc, badkw=1) should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'now() takes at most 1 argument (2 given)'
+
 # === datetime.now() error: bad keyword argument (lines 370-374) ===
 
 try:
@@ -915,7 +814,7 @@ except TypeError as e:
 # === datetime.now() with tz=None ===
 
 now_tz_none = datetime.datetime.now(tz=None)
-assert now_tz_none.tzinfo is None, 'now(tz=None) should be naive'
+assert now_tz_none.tzinfo is None
 
 # === aware datetime arithmetic: add timedelta (lines 523-542) ===
 
@@ -959,18 +858,18 @@ assert not (aware_dt2 == naive_dt), 'aware != naive should be False'
 
 aware_early = datetime.datetime(2024, 1, 1, 10, 0, tzinfo=utc)
 aware_late = datetime.datetime(2024, 1, 1, 14, 0, tzinfo=utc)
-assert aware_early < aware_late, 'earlier aware < later aware'
-assert aware_late > aware_early, 'later aware > earlier aware'
-assert aware_early <= aware_late, 'earlier aware <= later aware'
-assert aware_late >= aware_early, 'later aware >= earlier aware'
-assert aware_early <= aware_early, 'aware <= self'
-assert aware_early >= aware_early, 'aware >= self'
+assert aware_early < aware_late
+assert aware_late > aware_early
+assert aware_early <= aware_late
+assert aware_late >= aware_early
+assert aware_early <= aware_early
+assert aware_early >= aware_early
 
 # === aware datetime hash consistency (line 52) ===
 
 hash_a = hash(datetime.datetime(2024, 1, 1, 12, 0, tzinfo=utc))
 hash_b = hash(datetime.datetime(2024, 1, 1, 12, 0, tzinfo=utc))
-assert hash_a == hash_b, 'aware datetime hash should be consistent'
+assert hash_a == hash_b
 
 # === datetime.isoweekday (lines 1027-1030) ===
 
@@ -988,7 +887,7 @@ assert sunday_dt.isoweekday() == 7, f'Sunday isoweekday should be 7, got {sunday
 dt_with_time = datetime.datetime(2024, 6, 15, 12, 30, 45, 123456)
 d = dt_with_time.date()
 assert repr(d) == 'datetime.date(2024, 6, 15)', f'datetime.date() method: {d!r}'
-assert isinstance(d, datetime.date), 'datetime.date() should return a date instance'
+assert isinstance(d, datetime.date)
 
 # === datetime unknown attribute (line 1046) ===
 
@@ -1034,8 +933,8 @@ except ValueError as e:
 
 # === datetime bool is always True (lines 939-941) ===
 
-assert bool(datetime.datetime(2024, 1, 1)), 'datetime bool should always be True'
-assert bool(datetime.datetime(1, 1, 1, 0, 0, 0, 0)), 'min datetime bool should be True'
+assert bool(datetime.datetime(2024, 1, 1))
+assert bool(datetime.datetime(1, 1, 1, 0, 0, 0, 0))
 
 # === datetime isoformat (line 783, 1002-1007) ===
 
@@ -1058,24 +957,24 @@ assert formatted == '2024/06/15 12:30', f'strftime: {formatted}'
 
 aware_rep = datetime.datetime(2024, 6, 15, 12, 30, tzinfo=utc)
 aware_rep_result = aware_rep.replace(year=2025)
-assert aware_rep_result.tzinfo is not None, 'replace on aware should preserve tzinfo'
+assert aware_rep_result.tzinfo is not None
 assert repr(aware_rep_result) == 'datetime.datetime(2025, 6, 15, 12, 30, tzinfo=datetime.timezone.utc)', (
     f'aware replace: {aware_rep_result!r}'
 )
 
 # === date bool is always True (date.rs py_bool) ===
 
-assert bool(datetime.date(2024, 1, 1)), 'date bool should always be True'
-assert bool(datetime.date(1, 1, 1)), 'min date bool should be True'
+assert bool(datetime.date(2024, 1, 1))
+assert bool(datetime.date(1, 1, 1))
 
 # === date ordering comparisons (date.rs py_cmp) ===
 
-assert datetime.date(2024, 1, 1) < datetime.date(2024, 1, 2), 'date < should work'
-assert datetime.date(2024, 1, 2) > datetime.date(2024, 1, 1), 'date > should work'
-assert datetime.date(2024, 1, 1) <= datetime.date(2024, 1, 1), 'date <= equal should work'
-assert datetime.date(2024, 1, 1) >= datetime.date(2024, 1, 1), 'date >= equal should work'
-assert datetime.date(2024, 1, 1) <= datetime.date(2024, 1, 2), 'date <= less should work'
-assert datetime.date(2024, 6, 15) >= datetime.date(2024, 6, 14), 'date >= greater should work'
+assert datetime.date(2024, 1, 1) < datetime.date(2024, 1, 2)
+assert datetime.date(2024, 1, 2) > datetime.date(2024, 1, 1)
+assert datetime.date(2024, 1, 1) <= datetime.date(2024, 1, 1)
+assert datetime.date(2024, 1, 1) >= datetime.date(2024, 1, 1)
+assert datetime.date(2024, 1, 1) <= datetime.date(2024, 1, 2)
+assert datetime.date(2024, 6, 15) >= datetime.date(2024, 6, 14)
 
 # === date constructor: negative day (date.rs from_ymd) ===
 
@@ -1094,19 +993,16 @@ except TypeError as e:
     assert str(e) == 'function takes at most 3 arguments (4 given)', f'date too many args: {e}'
 
 # === date constructor: duplicate year kwarg (date.rs init) ===
-# CPython runs the missing-required check before the duplicate-arg check,
-# so it surfaces the missing `month` first; Monty fires the duplicate
-# error during dispatch. Both are TypeErrors, both make sense — but the
-# wording diverges until the macro is taught CPython's check ordering.
+# A kwarg naming an already-positional parameter is a *leftover* in CPython's
+# parser: every missing-required error beats it, so the missing param
+# surfaces first. (The conflict wording only appears when nothing else
+# fails — see the datetime dup-kwarg tests below.)
 
 try:
     datetime.date(2024, year=2024)
     assert False, 'date with duplicate year should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "argument for function given by name ('year') and position (1)", f'date dup year: {e}'
-    else:
-        assert str(e) == "function missing required argument 'month' (pos 2)", f'date dup year: {e}'
+    assert str(e) == "function missing required argument 'month' (pos 2)", f'date dup year: {e}'
 
 # === date constructor: duplicate month kwarg (date.rs init) ===
 
@@ -1114,10 +1010,7 @@ try:
     datetime.date(2024, 1, month=1)
     assert False, 'date with duplicate month should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "argument for function given by name ('month') and position (2)", f'date dup month: {e}'
-    else:
-        assert str(e) == "function missing required argument 'day' (pos 3)", f'date dup month: {e}'
+    assert str(e) == "function missing required argument 'day' (pos 3)", f'date dup month: {e}'
 
 # === date.replace() unexpected keyword (date.rs extract_date_replace_kwargs) ===
 
@@ -1142,19 +1035,16 @@ except OverflowError as e:
     assert str(e) == 'days=-1000000000; must have magnitude <= 999999999', f'td neg overflow: {e}'
 
 # === timedelta constructor: duplicate kwargs (timedelta.rs init) ===
-# CPython surfaces these via `__new__()` in C-style "argument for X given
-# by name (...) and position (...)" wording; Monty's Python-style FromArgs
-# config emits "timedelta() got multiple values for argument 'X'". Both
-# behaviours are correct rejections — fixing the wording divergence
-# requires switching timedelta's struct to `c_error` style + a
-# kwarg_error_name override pointing at `__new__()`.
+# Both engines use the clinic conflict wording "argument for X given by
+# name (...) and position (...)"; only the descriptor differs — CPython
+# reports the underlying `__new__()`, Monty the visible `timedelta()`.
 
 try:
     datetime.timedelta(1, days=1)
     assert False, 'timedelta with duplicate days should raise TypeError'
 except TypeError as e:
     if _monty:
-        assert str(e) == "timedelta() got multiple values for argument 'days'", f'td dup days: {e}'
+        assert str(e) == "argument for timedelta() given by name ('days') and position (1)", f'td dup days: {e}'
     else:
         assert str(e) == "argument for __new__() given by name ('days') and position (1)", f'td dup days: {e}'
 
@@ -1163,7 +1053,7 @@ try:
     assert False, 'timedelta with duplicate seconds should raise TypeError'
 except TypeError as e:
     if _monty:
-        assert str(e) == "timedelta() got multiple values for argument 'seconds'", f'td dup seconds: {e}'
+        assert str(e) == "argument for timedelta() given by name ('seconds') and position (2)", f'td dup seconds: {e}'
     else:
         assert str(e) == "argument for __new__() given by name ('seconds') and position (2)", f'td dup seconds: {e}'
 
@@ -1172,7 +1062,9 @@ try:
     assert False, 'timedelta with duplicate microseconds should raise TypeError'
 except TypeError as e:
     if _monty:
-        assert str(e) == "timedelta() got multiple values for argument 'microseconds'", f'td dup micro: {e}'
+        assert str(e) == "argument for timedelta() given by name ('microseconds') and position (3)", (
+            f'td dup micro: {e}'
+        )
     else:
         assert str(e) == "argument for __new__() given by name ('microseconds') and position (3)", f'td dup micro: {e}'
 
@@ -1188,16 +1080,11 @@ except TypeError as e:
         assert str(e) == "__new__() got an unexpected keyword argument 'foo'", f'td foo kw: {e}'
 
 # === FromArgs migration: invalid argument-type coverage ===
-# CPython routes non-int arguments through component-specific error messages
-# that name the argument (e.g. `unsupported type for timedelta days
-# component: str`, or `'str' object cannot be interpreted as an integer`),
-# while Monty's `FromValue::<i32|i128>::from_value` emits the generic
-# "an integer is required (got type float)" — note the wording is itself
-# wrong for non-float inputs and stems from a pre-existing wart in
-# `Value::to_i32`. Closing the gap requires either (a) custom `FromValue`
-# impls for the timedelta components or (b) fixing `Value::to_i32`'s type
-# reporting plus matching CPython's `'<type>' object cannot be interpreted`
-# wording.
+# Monty's int extraction reports CPython's `'<type>' object cannot be
+# interpreted as an integer`. timedelta is the one remaining divergence:
+# CPython's timedelta constructor names the component (`unsupported type for
+# timedelta days component: str`), which would need argument-name-aware
+# wording in the extraction machinery — see limitations/datetime.md.
 
 # timedelta: positional days as wrong type
 try:
@@ -1205,7 +1092,7 @@ try:
     assert False, 'timedelta(non-int) should raise TypeError'
 except TypeError as e:
     if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'td non-int days: {e}'
+        assert str(e) == "'str' object cannot be interpreted as an integer", f'td non-int days: {e}'
     else:
         assert str(e) == 'unsupported type for timedelta days component: str', f'td non-int days: {e}'
 
@@ -1215,7 +1102,7 @@ try:
     assert False, 'timedelta(milliseconds=non-int) should raise TypeError'
 except TypeError as e:
     if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'td non-int ms kw: {e}'
+        assert str(e) == "'list' object cannot be interpreted as an integer", f'td non-int ms kw: {e}'
     else:
         assert str(e) == 'unsupported type for timedelta milliseconds component: list', f'td non-int ms kw: {e}'
 
@@ -1225,10 +1112,7 @@ try:
     base_dt.replace(year='nope')
     assert False, 'datetime.replace(year=str) should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'dt.replace bad type: {e}'
-    else:
-        assert str(e) == "'str' object cannot be interpreted as an integer", f'dt.replace bad type: {e}'
+    assert str(e) == "'str' object cannot be interpreted as an integer", f'dt.replace bad type: {e}'
 
 # NOTE: CPython's datetime.replace() accepts positional args (year, month,
 # day, ...). Monty's existing implementation rejects all positional args for
@@ -1241,10 +1125,7 @@ try:
     base_date.replace(day='last')
     assert False, 'date.replace(day=str) should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'date.replace bad type: {e}'
-    else:
-        assert str(e) == "'str' object cannot be interpreted as an integer", f'date.replace bad type: {e}'
+    assert str(e) == "'str' object cannot be interpreted as an integer", f'date.replace bad type: {e}'
 
 # datetime constructor: missing required positional (yields a precise message,
 # shared with CPython's `PyArg_ParseTupleAndKeywords`)
@@ -1259,49 +1140,36 @@ try:
     datetime.datetime('twenty-four', 6, 15)
     assert False, 'datetime non-int year should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'dt non-int year: {e}'
-    else:
-        assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int year: {e}'
+    assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int year: {e}'
 
 # datetime constructor: wrong type for optional positional (microsecond)
 try:
     datetime.datetime(2024, 6, 15, 0, 0, 0, 'oops')
     assert False, 'datetime non-int microsecond should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'dt non-int microsec: {e}'
-    else:
-        assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int microsec: {e}'
+    assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int microsec: {e}'
 
 # datetime constructor: wrong type for kw-only-style microsecond (via kwarg path)
 try:
     datetime.datetime(2024, 6, 15, microsecond='nope')
     assert False, 'datetime non-int microsecond kwarg should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'dt non-int microsec kw: {e}'
-    else:
-        assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int microsec kw: {e}'
+    assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int microsec kw: {e}'
 
 # === timedelta str with microseconds (timedelta.rs py_str) ===
 
-assert str(datetime.timedelta(seconds=1, microseconds=500)) == '0:00:01.000500', (
-    'timedelta str should include 6-digit microsecond padding'
-)
-assert str(datetime.timedelta(microseconds=1)) == '0:00:00.000001', 'timedelta str should show single microsecond'
-assert str(datetime.timedelta(days=1, microseconds=123456)) == '1 day, 0:00:00.123456', (
-    'timedelta str with days and microseconds'
-)
+assert str(datetime.timedelta(seconds=1, microseconds=500)) == '0:00:01.000500'
+assert str(datetime.timedelta(microseconds=1)) == '0:00:00.000001'
+assert str(datetime.timedelta(days=1, microseconds=123456)) == '1 day, 0:00:00.123456'
 
 # === timedelta ordering comparisons (timedelta.rs py_cmp) ===
 
-assert datetime.timedelta(days=1) < datetime.timedelta(days=2), 'timedelta < should work'
-assert datetime.timedelta(days=2) > datetime.timedelta(days=1), 'timedelta > should work'
-assert datetime.timedelta(days=1) <= datetime.timedelta(days=1), 'timedelta <= equal should work'
-assert datetime.timedelta(days=1) >= datetime.timedelta(days=1), 'timedelta >= equal should work'
-assert datetime.timedelta(seconds=30) < datetime.timedelta(seconds=60), 'timedelta < seconds'
-assert datetime.timedelta(days=1) >= datetime.timedelta(seconds=86399), 'timedelta >= cross-unit'
+assert datetime.timedelta(days=1) < datetime.timedelta(days=2)
+assert datetime.timedelta(days=2) > datetime.timedelta(days=1)
+assert datetime.timedelta(days=1) <= datetime.timedelta(days=1)
+assert datetime.timedelta(days=1) >= datetime.timedelta(days=1)
+assert datetime.timedelta(seconds=30) < datetime.timedelta(seconds=60)
+assert datetime.timedelta(days=1) >= datetime.timedelta(seconds=86399)
 
 # === timezone constructor: too many args (timezone.rs init) ===
 
@@ -1361,8 +1229,8 @@ except ValueError as e:
 tz_five = datetime.timezone(datetime.timedelta(hours=5))
 tz_five_b = datetime.timezone(datetime.timedelta(hours=5))
 tz_six = datetime.timezone(datetime.timedelta(hours=6))
-assert tz_five == tz_five_b, 'same offset timezones should be equal'
-assert tz_five != tz_six, 'different offset timezones should not be equal'
+assert tz_five == tz_five_b
+assert tz_five != tz_six
 assert not (tz_five != tz_five_b), 'same offset timezones should not be not-equal'
 
 # === datetime constructor: duplicate month (datetime.rs init) ===
@@ -1391,4 +1259,4 @@ gc_seed = []
 gc_seed.append(gc_seed)
 _ = []  # triggers GC
 
-assert str(dt_keepalive.tzinfo) == 'UTC+05:00', 'datetime tzinfo must survive GC'
+assert str(dt_keepalive.tzinfo) == 'UTC+05:00'

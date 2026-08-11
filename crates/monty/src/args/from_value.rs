@@ -2,28 +2,35 @@
 //! argument extraction.
 //!
 //! Companion to the `#[derive(FromArgs)]` macro in `monty-macros`. The derive
-//! generates code that calls `FromValue::from_value(arg, vm)` for every
-//! positional or keyword argument. The trait owns the cleanup of the input
-//! `Value` — primitive impls drop the input, the identity impl for `Value`
-//! keeps it. Generated callers also need to drop already-extracted owning
-//! fields on later error paths; for that they call
+//! generates code that calls [`FromValue::extract_into`] for every positional
+//! or keyword argument. The trait owns the cleanup of the input `Value` —
+//! constrained impls drop the input, the identity impl for `Value` and the
+//! owning [`StrArg`] keep it. Generated callers also need to drop
+//! already-extracted owning fields on later error paths; for that they call
 //! [`FromValue::drop_extracted`], which knows whether the extracted form holds
 //! a heap reference.
+//!
+//! Failures are structured ([`FromValueFail`]) so the *kind* of failure is
+//! reported by the impl rather than re-derived from error messages:
+//! `WrongType` lets the extraction site pick CPython's wording, `Raise`
+//! surfaces a fully-formed error unchanged.
+
+use std::borrow::Cow;
 
 use crate::{
     bytecode::VM,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::ContainsHeap,
-    resource::ResourceTracker,
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    heap::{ContainsHeap, DropWithContext, HeapData},
     types::PyTrait,
     value::Value,
 };
 
 /// Error-wording selection for [`FromValue::extract_into`]. Built as a literal
-/// by `#[derive(FromArgs)]` at each extraction site to pick how a failed
-/// coercion is reported, mirroring CPython's `_PyArg_BadArgument` variants.
+/// by `#[derive(FromArgs)]` at each extraction site to pick how a
+/// [`FromValueFail::WrongType`] failure is reported, mirroring CPython's
+/// `_PyArg_BadArgument` variants.
 pub(crate) enum ArgErrCtx {
-    /// Surface the inner `from_value` error unchanged (no `bad_arg`).
+    /// No per-site wording: use the impl's [`FromValue::type_error`].
     Plain,
     /// Positional form: `{func_name}() argument {pos} must be {expected}, not {got}`.
     BadArgPos { func_name: &'static str, pos: usize },
@@ -34,22 +41,49 @@ pub(crate) enum ArgErrCtx {
     },
 }
 
-/// Coerces a `Value` into `Self`, consuming the value and handling refcount
-/// cleanup on both success and failure paths.
+/// A failed [`FromValue`] coercion, split by *why* it failed so extraction
+/// sites never have to reverse-engineer the reason from an error message.
+pub(crate) enum FromValueFail {
+    /// The input value's type is unacceptable. Deliberately carries no
+    /// [`Type`]: the input has already been dropped by the time the failure
+    /// is reported, so a `Type::Instance` derived from it could dangle.
+    /// [`extract_into`](FromValue::extract_into) names the offending type
+    /// from a snapshot taken *before* the coercion ran; the extraction site
+    /// owns the wording — the per-site `_PyArg_BadArgument` forms
+    /// ([`ArgErrCtx`]) or the impl's [`FromValue::type_error`].
+    WrongType,
+    /// The type was acceptable but the value was not (`ValueError`,
+    /// `OverflowError`, resource errors, …). Surfaces unchanged — never
+    /// rewritten into a type error.
+    Raise(RunError),
+}
+
+/// Coerces a `Value` into `Self` during `#[derive(FromArgs)]` argument
+/// extraction, consuming the value and handling refcount cleanup on both
+/// success and failure paths.
 ///
-/// Implementations *must* call `drop_with_heap` on the input value once any
-/// heap-allocated data has been extracted (typically: read out a primitive or
-/// `String`, then drop). The identity impl for `Value` is the only exception:
-/// it transfers ownership of the value into `Self` instead of dropping it.
+/// **Only use `FromValue`-typed fields for functions that are implemented in
+/// C in CPython** (builtins and extension modules, where CPython's argument
+/// clinic type-checks each argument *while binding* it). Functions that are
+/// pure-Python `def`s in CPython (`style = def` structs — the `re` module,
+/// `json.dumps`/`loads`, …) must declare fields as raw `Value` and coerce in
+/// the function body instead: CPython `def` binding never type-checks, so a
+/// coercion failure at extraction time would wrongly preempt later binding
+/// errors such as missing arguments or unexpected kwargs.
+///
+/// Implementations *must* consume the input on every path: either drop it
+/// (`drop_with`) once any needed data has been read out, or transfer
+/// ownership into `Self` (the identity `Value` impl, [`StrArg`]) — in which
+/// case [`drop_extracted`](Self::drop_extracted) must release it.
 pub(crate) trait FromValue: Sized {
     /// CPython "must be X" type label used by `_PyArg_BadArgument`-style
     /// error messages ("argument N must be {EXPECTED_TYPE_NAME}, not {Y}").
     ///
     /// `Some("str")`, `Some("int")`, etc. for impls that constrain their input;
-    /// `None` for the identity `Value` impl (which accepts any value). The
-    /// `#[derive(FromArgs)]` macro reads this via the trait so it can emit
-    /// CPython-matching errors when [`bad_arg`](../../monty_macros/struct.FromArgs.html)
-    /// is set on the struct — see `crates/monty-macros/README.md`.
+    /// `None` for the identity `Value` impl (which accepts any value). Read by
+    /// [`extract_into`](Self::extract_into) when the struct sets
+    /// [`bad_arg`](../../monty_macros/struct.FromArgs.html) — see
+    /// `crates/monty-macros/README.md`.
     ///
     /// Impls that wrap another `FromValue` (e.g. `Option<T>`) forward this
     /// from the inner type by default; override if you need different wording
@@ -60,16 +94,31 @@ pub(crate) trait FromValue: Sized {
     /// been dropped before returning.
     ///
     /// Takes `&mut VM` so impls can both inspect the heap (for type coercion)
-    /// and call `drop_with_heap` on the input; this also lets `LaxBool` route
+    /// and call `drop_with` on the input; this also lets `LaxBool` route
     /// through `PyTrait::py_bool`.
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self>;
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail>;
+
+    /// The error for a [`FromValueFail::WrongType`] failure at a site with no
+    /// `_PyArg_BadArgument` wording ([`ArgErrCtx::Plain`], `*args` elements).
+    /// `got` is the offending type's CPython arg-error name (e.g. `'Foo'` for
+    /// a user-class instance), snapshotted before the value was consumed.
+    ///
+    /// The default is a generic `expected {EXPECTED_TYPE_NAME}, not {got}`;
+    /// impls whose wrong-type error can actually surface through a `Plain`
+    /// site should override it with the exact CPython message their callers
+    /// produce (e.g. the int impls' `'{got}' object cannot be interpreted as
+    /// an integer`).
+    fn type_error(got: &str) -> RunError {
+        let expected = Self::EXPECTED_TYPE_NAME.unwrap_or("a different type");
+        ExcType::type_error(format!("expected {expected}, not {got}"))
+    }
 
     /// Drop the *extracted* value (i.e. `Self`) so refcounts stay balanced
     /// when generated `from_args` code aborts after extracting one field but
     /// before completing the struct.
     ///
-    /// For primitives this is a no-op; for `Value` / `Vec<Value>` it walks
-    /// the contents and decrements references.
+    /// For primitives this is a no-op; for `Value` / [`StrArg`] it decrements
+    /// the held reference.
     fn drop_extracted(self, heap: &mut impl ContainsHeap) {
         // Default: no heap references held. Specialise in impls that hold them.
         let _ = heap;
@@ -77,7 +126,7 @@ pub(crate) trait FromValue: Sized {
     }
 
     /// Coerce `value` into `Self` and store it in `slot`, applying `ctx`'s
-    /// CPython `_PyArg_BadArgument` wording on failure.
+    /// CPython `_PyArg_BadArgument` wording to `WrongType` failures.
     ///
     /// This is what `#[derive(FromArgs)]` calls for every positional/keyword
     /// argument. Centralising it here — rather than inlining the equivalent
@@ -85,110 +134,181 @@ pub(crate) trait FromValue: Sized {
     /// body is monomorphised once per field type and shared across all derives.
     /// On error the input `value` has already been dropped by `from_value`; the
     /// caller remains responsible for draining the argument iterators.
-    fn extract_into(
-        value: Value,
-        slot: &mut Option<Self>,
-        vm: &mut VM<'_, impl ResourceTracker>,
-        ctx: ArgErrCtx,
-    ) -> RunResult<()> {
-        // Snapshot the incoming type before `from_value` consumes the value,
-        // but only when a `bad_arg` message could actually need it.
-        let got_type = match (&ctx, Self::EXPECTED_TYPE_NAME) {
-            (ArgErrCtx::Plain, _) | (_, None) => None,
-            _ => Some(value.py_type_heap(vm.heap)),
-        };
+    ///
+    /// [`FromValueFail::Raise`] errors surface unchanged, so an impl can
+    /// report a failure that is not a type mismatch — e.g. the int impls
+    /// raise `OverflowError` for out-of-range ints — without that error being
+    /// clobbered into a bogus "must be int, not int". Use `Raise` only for
+    /// checks CPython performs *during* argument conversion; validation
+    /// CPython does in the function body belongs in the body (see
+    /// `NormForm::parse` in `unicodedata.rs`).
+    fn extract_into(value: Value, slot: &mut Option<Self>, vm: &mut VM<'_>, ctx: ArgErrCtx) -> RunResult<()> {
+        // Snapshot the incoming type's arg-error name before `from_value`
+        // consumes the value — a `Type::Instance` cannot be named once the
+        // value is dropped. Only impls that constrain their input (an
+        // `EXPECTED_TYPE_NAME`) can report `WrongType`, so the lookup is
+        // skipped for accept-anything impls. The slice borrows only the
+        // interner, so it stays valid after the value is dropped.
+        let got_name =
+            Self::EXPECTED_TYPE_NAME.map(|_| value.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.interns));
         match Self::from_value(value, vm) {
             Ok(extracted) => {
                 *slot = Some(extracted);
                 Ok(())
             }
-            Err(err) => Err(match (ctx, Self::EXPECTED_TYPE_NAME, got_type) {
-                (ArgErrCtx::BadArgPos { func_name, pos }, Some(expected), Some(got)) => {
-                    ExcType::type_error_bad_arg_pos(func_name, pos, expected, got.cpython_arg_name())
-                }
-                (ArgErrCtx::BadArgNamed { func_name, arg_name }, Some(expected), Some(got)) => {
-                    ExcType::type_error_bad_arg_named(func_name, arg_name, expected, got.cpython_arg_name())
-                }
-                _ => err,
-            }),
+            Err(FromValueFail::Raise(err)) => Err(err),
+            Err(FromValueFail::WrongType) => {
+                // `WrongType` is only reported by impls with an
+                // `EXPECTED_TYPE_NAME`, so the snapshot is always present;
+                // "object" keeps that unreachable arm honest without a panic.
+                let got = got_name.unwrap_or(Cow::Borrowed("object"));
+                Err(match (ctx, Self::EXPECTED_TYPE_NAME) {
+                    (ArgErrCtx::BadArgPos { func_name, pos }, Some(expected)) => {
+                        ExcType::type_error_bad_arg_pos(func_name, pos, expected, got)
+                    }
+                    (ArgErrCtx::BadArgNamed { func_name, arg_name }, Some(expected)) => {
+                        ExcType::type_error_bad_arg_named(func_name, arg_name, expected, got)
+                    }
+                    _ => Self::type_error(&got),
+                })
+            }
         }
     }
 }
 
 impl FromValue for Value {
-    fn from_value(value: Self, _vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+    fn from_value(value: Self, _vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
         Ok(value)
     }
 
     fn drop_extracted(self, heap: &mut impl ContainsHeap) {
-        self.drop_with_heap(heap);
+        self.drop_with(heap);
     }
 }
 
 impl FromValue for i32 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
-        let result = value.to_i32();
-        value.drop_with_heap(vm);
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let result = match value {
+            Value::Bool(b) => Ok(Self::from(b)),
+            // Overflow is a *value* failure: the argument is a genuine int,
+            // so a bad-arg rewrite ("must be int, not int") would be wrong.
+            // CPython's `i` format range-checks with sign-aware wording.
+            Value::Int(i) => Self::try_from(i).map_err(|_| {
+                let msg = if i < 0 {
+                    "signed integer is less than minimum"
+                } else {
+                    "signed integer is greater than maximum"
+                };
+                FromValueFail::Raise(SimpleException::new_msg(ExcType::OverflowError, msg).into())
+            }),
+            _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_long())),
+            _ => Err(FromValueFail::WrongType),
+        };
+        value.drop_with(vm);
         result
+    }
+
+    fn type_error(got: &str) -> RunError {
+        ExcType::type_error_not_integer(got)
     }
 }
 
 impl FromValue for i64 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
         let result = match value {
             Value::Bool(b) => Ok(Self::from(b)),
             Value::Int(i) => Ok(i),
-            _ => Err(type_error_integer_required()),
+            _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_long())),
+            _ => Err(FromValueFail::WrongType),
         };
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         result
+    }
+
+    fn type_error(got: &str) -> RunError {
+        ExcType::type_error_not_integer(got)
     }
 }
 
-/// Accepts `Int` and `Bool`; widens to `i128`. Used by constructors like
-/// `timedelta()` that hold their intermediate component values in `i128` so
-/// the overflow check on the normalisation step doesn't silently wrap.
-impl FromValue for i128 {
-    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
-
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
-        let result = match value {
-            Value::Bool(b) => Ok(Self::from(b)),
-            Value::Int(i) => Ok(Self::from(i)),
-            _ => Err(type_error_integer_required()),
-        };
-        value.drop_with_heap(vm);
-        result
+/// True when `value` is a Python int wider than i64 (heap or interned
+/// `LongInt`). Such values are genuine ints, so fixed-width int impls
+/// must raise `OverflowError` rather than report `WrongType` — a bad-arg
+/// rewrite would produce the absurd "must be int, not int". Also used by
+/// consumer-specific int impls (e.g. `timedelta`'s component extraction).
+pub(crate) fn is_long_int(value: &Value, vm: &VM<'_>) -> bool {
+    match value {
+        Value::InternLongInt(_) => true,
+        Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(_)),
+        _ => false,
     }
 }
 
 impl FromValue for bool {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("bool");
 
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
         let result = match value {
             Value::Bool(b) => Ok(b),
-            _ => Err(type_error_bool_required()),
+            _ => Err(FromValueFail::WrongType),
         };
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         result
+    }
+
+    fn type_error(_got: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, "a bool is required").into()
     }
 }
 
-impl FromValue for String {
+/// A `str` argument extracted without copying: validates the value is a
+/// string, then keeps the original `Value` (ownership and refcount
+/// transferred in) and lends the text on demand via [`StrArg::as_str`].
+///
+/// Always prefer this over an owned `String` field — copying the text onto
+/// the Rust heap is pure overhead for arguments the function only reads. If
+/// ownership is genuinely needed, call `.as_str(vm).to_owned()` at the point
+/// of storage.
+///
+/// Holds a heap reference for heap strings, so extracted fields must be
+/// released on every path: bind them with `defer_drop!` in the function body
+/// (the macro's error paths use [`FromValue::drop_extracted`]).
+pub(crate) struct StrArg(Value);
+
+impl FromValue for StrArg {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("str");
 
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
-        let result = match value.as_either_str(vm.heap) {
-            Some(either) => Ok(either.into_string(vm.interns)),
-            None => Err(type_error_string_required()),
-        };
-        value.drop_with_heap(vm);
-        result
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        if value.is_str(vm.heap) {
+            Ok(Self(value))
+        } else {
+            value.drop_with(vm);
+            Err(FromValueFail::WrongType)
+        }
+    }
+
+    fn drop_extracted(self, heap: &mut impl ContainsHeap) {
+        self.0.drop_with(heap);
+    }
+}
+
+impl StrArg {
+    /// Borrows the text. Infallible: the constructor validated str-ness and a
+    /// live value's type cannot change.
+    pub fn as_str<'a>(&'a self, vm: &'a VM<'_>) -> &'a str {
+        match self.0.to_str(vm) {
+            Ok(s) => s,
+            Err(_) => unreachable!("StrArg always holds a str"),
+        }
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for StrArg {
+    fn drop_with(self, ctx: &mut C) {
+        self.0.drop_with(ctx);
     }
 }
 
@@ -203,15 +323,19 @@ impl FromValue for String {
 /// This matches CPython: `date.replace(year=None)` is a `TypeError`, not a
 /// no-op.
 impl<T: FromValue> FromValue for Option<T> {
-    // Forward the inner type's label — `Option<String>` reports "str" in
+    // Forward the inner type's label — `Option<StrArg>` reports "str" in
     // bad-arg errors, matching CPython for fields where absence is signalled
     // by `Option::None` rather than by passing `None`. Functions that accept
     // a literal `None` value (e.g. open()'s `encoding=None`) need
     // `"str or None"` wording and should override at the field level.
     const EXPECTED_TYPE_NAME: Option<&'static str> = T::EXPECTED_TYPE_NAME;
 
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
         T::from_value(value, vm).map(Some)
+    }
+
+    fn type_error(got: &str) -> RunError {
+        T::type_error(got)
     }
 
     fn drop_extracted(self, heap: &mut impl ContainsHeap) {
@@ -235,10 +359,10 @@ impl<T: FromValue> FromValue for Option<T> {
 pub(crate) struct LaxBool(bool);
 
 impl FromValue for LaxBool {
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
         let result = value.py_bool(vm);
-        value.drop_with_heap(vm);
-        Ok(Self(result))
+        value.drop_with(vm);
+        result.map(Self).map_err(FromValueFail::Raise)
     }
 }
 
@@ -250,21 +374,4 @@ impl LaxBool {
     pub fn bool(self) -> bool {
         self.0
     }
-}
-
-fn type_error_integer_required() -> RunError {
-    // Match the hardcoded message in `Value::to_i32` so callers that
-    // mix-and-match the macro and the hand-written extractor see the same
-    // error wording. The literal "(got type float)" is a known wart inherited
-    // from the original implementation — it is wrong for non-float inputs but
-    // matches what callers and tests already expect.
-    SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into()
-}
-
-fn type_error_bool_required() -> RunError {
-    SimpleException::new_msg(ExcType::TypeError, "a bool is required").into()
-}
-
-fn type_error_string_required() -> RunError {
-    SimpleException::new_msg(ExcType::TypeError, "a str is required").into()
 }

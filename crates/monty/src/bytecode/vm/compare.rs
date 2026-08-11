@@ -1,141 +1,134 @@
 //! Comparison operation helpers for the VM.
 
-use std::cmp::Ordering;
-
 use super::VM;
 use crate::{
     defer_drop,
-    exception_private::{ExcType, RunError},
-    resource::ResourceTracker,
-    types::{LongInt, PyTrait},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    expressions::CmpOperator,
+    types::{CmpOrder, PyTrait},
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
-    /// Equality comparison.
+impl VM<'_> {
+    /// Evaluates a comparison as a boolean without consuming its operands.
+    ///
+    /// Shared by fused asserts and comparison helpers that need truth rather
+    /// than the arbitrary value a direct `==` expression may produce.
+    #[inline]
+    pub(super) fn cmp_values(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
+        match op {
+            CmpOperator::Eq | CmpOperator::NotEq => {
+                let result = lhs.py_rich_eq(rhs, self)?;
+                let is_equal = result.py_bool(self);
+                result.drop_with(self);
+                let is_equal = is_equal?;
+                Ok(if op == CmpOperator::NotEq { !is_equal } else { is_equal })
+            }
+            CmpOperator::Is => Ok(lhs.is(rhs)),
+            CmpOperator::IsNot => Ok(!lhs.is(rhs)),
+            // `in` tests membership of the *left* operand in the right one.
+            CmpOperator::In => rhs.py_contains(lhs, self),
+            CmpOperator::NotIn => Ok(!rhs.py_contains(lhs, self)?),
+            CmpOperator::Lt | CmpOperator::LtE | CmpOperator::Gt | CmpOperator::GtE => self.cmp_ordering(op, lhs, rhs),
+        }
+    }
+
+    /// Executes direct `==`, preserving an arbitrary value returned by `__eq__`.
     pub(super) fn compare_eq(&mut self) -> Result<(), RunError> {
         let this = self;
-
         let rhs = this.pop();
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let result = lhs.py_eq(rhs, this)?;
-        this.push(Value::Bool(result));
+        let result = lhs.py_rich_eq(rhs, this)?;
+        this.push(result);
         Ok(())
     }
 
-    /// Inequality comparison.
+    /// Executes direct `!=`; user `__ne__` dispatch is not yet supported.
     pub(super) fn compare_ne(&mut self) -> Result<(), RunError> {
         let this = self;
-
         let rhs = this.pop();
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let result = !lhs.py_eq(rhs, this)?;
-        this.push(Value::Bool(result));
+        let result = lhs.py_rich_eq(rhs, this)?;
+        defer_drop!(result, this);
+        let is_not_equal = !result.py_bool(this)?;
+        this.push(Value::Bool(is_not_equal));
         Ok(())
     }
 
-    /// Ordering comparison with a predicate.
-    pub(super) fn compare_ord<F>(&mut self, check: F) -> Result<(), RunError>
-    where
-        F: FnOnce(Ordering) -> bool,
-    {
-        let this = self;
-
-        let rhs = this.pop();
-        defer_drop!(rhs, this);
-        let lhs = this.pop();
-        defer_drop!(lhs, this);
-
-        let result = lhs.py_cmp(rhs, this)?.is_some_and(check);
-        this.push(Value::Bool(result));
-        Ok(())
-    }
-
-    /// Identity comparison (is/is not).
-    pub(super) fn compare_is(&mut self, negate: bool) {
-        let this = self;
-
-        let rhs = this.pop();
-        defer_drop!(rhs, this);
-        let lhs = this.pop();
-        defer_drop!(lhs, this);
-
-        let result = lhs.is(rhs, this);
-        this.push(Value::Bool(if negate { !result } else { result }));
-    }
-
-    /// Membership test (in/not in).
-    pub(super) fn compare_in(&mut self, negate: bool) -> Result<(), RunError> {
-        let this = self;
-
-        let container = this.pop(); // container (rhs)
-        defer_drop!(container, this);
-        let item = this.pop(); // item to find (lhs)
-        defer_drop!(item, this);
-
-        let contained = container.py_contains(item, this)?;
-        this.push(Value::Bool(if negate { !contained } else { contained }));
-        Ok(())
-    }
-
-    /// Modulo equality comparison: a % b == k
-    ///
-    /// This is an optimization for patterns like `x % 3 == 0`. The constant k
-    /// is provided by the caller (fetched from the constant pool using the
-    /// cached code reference in the run loop).
-    ///
-    /// Uses a fast path for Int/Float types via `py_mod_eq`, and falls back to
-    /// computing `py_mod` then comparing with `py_eq` for other types (e.g., LongInt).
-    pub(super) fn compare_mod_eq(&mut self, k: &Value) -> Result<(), RunError> {
-        let this = self;
-
-        let rhs = this.pop(); // divisor (b)
-        defer_drop!(rhs, this);
-        let lhs = this.pop(); // dividend (a)
-        defer_drop!(lhs, this);
-
-        // Try fast path for Int/Float types
-        let mod_result = match k {
-            Value::Int(k_val) => lhs.py_mod_eq(rhs, *k_val),
-            _ => None,
-        };
-
-        if let Some(is_equal) = mod_result {
-            // Fast path succeeded
-            this.push(Value::Bool(is_equal));
-            Ok(())
-        } else {
-            // Fallback: compute py_mod then compare with py_eq
-            // This handles LongInt and other Ref types
-            let mod_value = lhs.py_mod(rhs, this);
-
-            match mod_value {
-                Ok(Some(v)) => {
-                    defer_drop!(v, this);
-
-                    // Handle InternLongInt by converting to heap LongInt for comparison
-                    let k_value = if let Value::InternLongInt(id) = k {
-                        let bi = this.interns.get_long_int(*id).clone();
-                        LongInt::new(bi).into_value(this.heap)?
-                    } else {
-                        // k is from the constant pool and is always an immediate value
-                        k.clone_immediate()
-                    };
-                    defer_drop!(k_value, this);
-
-                    let is_equal = v.py_eq(k_value, this)?;
-                    this.push(Value::Bool(is_equal));
-                    Ok(())
-                }
-                Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for %")),
-                Err(e) => Err(e),
+    /// Evaluates an ordering comparison, preserving CPython's behavior for
+    /// unordered values such as `NaN` and incomparable operand types.
+    #[inline]
+    fn cmp_ordering(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
+        // A type whose ordering no `CmpOrder` describes (a `Counter` compares as
+        // a multiset) answers the operator itself. Hooked in here rather than at
+        // the opcode so the fused-assert path, which calls `cmp_values` directly,
+        // gets the same semantics.
+        if let Some(result) = lhs.py_cmp_op(rhs, op, self, lhs.ref_id())? {
+            return Ok(result);
+        }
+        match lhs.py_cmp(rhs, self)? {
+            CmpOrder::Ordered(ordering) => Ok(match op {
+                CmpOperator::Lt => ordering.is_lt(),
+                CmpOperator::LtE => ordering.is_le(),
+                CmpOperator::Gt => ordering.is_gt(),
+                CmpOperator::GtE => ordering.is_ge(),
+                // `cmp_values` calls this only for ordering operators.
+                _ => unreachable!("cmp_ordering reached with a non-ordering operator"),
+            }),
+            CmpOrder::Unordered => Ok(false),
+            CmpOrder::Incomparable => {
+                let left_type = lhs.py_type_name(self);
+                let right_type = rhs.py_type_name(self);
+                Err(ExcType::type_error_ordering(op.as_str(), &left_type, &right_type))
             }
         }
     }
+
+    /// Pops both operands and pushes a boolean comparison result.
+    /// The const operator lets dispatch specialize the implementation per opcode.
+    fn compare_op<const OP: u8>(&mut self) -> Result<(), RunError> {
+        // Rejects a bad `OP` at compile time, which makes the `else` dead.
+        const { assert!(CmpOperator::from_repr(OP).is_some(), "invalid CmpOperator operand") };
+        let op = CmpOperator::from_repr(OP).expect("invalid CmpOperator operand");
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        let result = this.cmp_values(op, lhs, rhs)?;
+        this.push(Value::Bool(result));
+        Ok(())
+    }
+}
+
+/// Defines a specialized entry point for each boolean comparison opcode.
+macro_rules! compare_opcodes {
+    ($($name:ident => $op:ident,)*) => {
+        impl VM<'_> {
+            $(
+                pub(super) fn $name(&mut self) -> Result<(), RunError> {
+                    self.compare_op::<{ CmpOperator::$op.as_operand() }>()
+                }
+            )*
+        }
+    };
+}
+
+compare_opcodes! {
+    compare_lt => Lt,
+    compare_le => LtE,
+    compare_gt => Gt,
+    compare_ge => GtE,
+    compare_is => Is,
+    compare_is_not => IsNot,
+    compare_in => In,
+    compare_not_in => NotIn,
 }

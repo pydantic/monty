@@ -1,0 +1,704 @@
+// Wire protocol for driving a `monty subprocess` child process.
+//
+// Transport: each message is framed as a 4-byte unsigned little-endian length
+// prefix followed by the protobuf-encoded bytes, written to the child's stdin
+// (`ParentRequest`) and read from its stdout (`ChildEvent`). stderr carries free-form
+// diagnostics only.
+//
+// The protocol is a strict alternation: the parent writes exactly one
+// `ParentRequest`; the child replies with zero or more streamed `Print` events
+// followed by exactly one turn-ending event. There is no multiplexing, so a
+// parent can be implemented with a single blocking read loop in any language.
+//
+// Evolution rules: the schema carries its own version, independent of the
+// monty package version. A parent declares it in `Configure.protocol_version`
+// and the child rejects anything outside the range it serves
+// (`MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION` in `monty-proto`).
+// Prefer additive changes (fresh tag numbers, `reserved` removals) so a
+// separately-deployed parent has a migration window; a change an older peer
+// could mis-read needs a `PROTOCOL_VERSION` bump instead.
+
+syntax = "proto3";
+
+package monty.v1;
+
+// Empty placeholder for valueless oneof arms. Defined locally (rather than
+// importing google.protobuf.Empty) so non-Rust decoders need nothing beyond
+// this single file.
+message Unit {}
+
+// ============================================================================
+// Values
+// ============================================================================
+
+// A Python value crossing the sandbox boundary. Mirrors monty's `MontyObject`
+// enum variant-for-variant.
+//
+// `repr` and `cycle` are OUTPUT-ONLY: the child may emit them (e.g. inside a
+// `Complete` value) but rejects them as inputs, exactly like `MontyObject`.
+message MontyObject {
+  oneof kind {
+    Unit ellipsis = 1;
+    Unit none = 2;
+    bool boolean = 3;
+    // Python int fitting in 64 bits.
+    sint64 int = 4;
+    // Python int wider than 64 bits.
+    BigInt bigint = 5;
+    double float = 6;
+    string str = 7;
+    bytes bytes = 8;
+    ObjectList list = 9;
+    ObjectList tuple = 10;
+    NamedTuple named_tuple = 11;
+    Dict dict = 12;
+    ObjectList set = 13;
+    ObjectList frozen_set = 14;
+    Date date = 15;
+    DateTime datetime = 16;
+    TimeDelta timedelta = 17;
+    TimeZone timezone = 18;
+    // A simple exception VALUE (no traceback) — e.g. an exception stored in a
+    // variable. Errors that terminate execution use `RaisedException` instead.
+    Exception exception = 19;
+    // A Python type object, named by monty's `Type` Display string, e.g.
+    // "int", "str", "datetime.datetime", "ValueError".
+    string type = 20;
+    // A builtin function, named by its Python name, e.g. "len", "print".
+    string builtin_function = 21;
+    // A pathlib.Path value (always a virtual POSIX path, never a host path).
+    string path = 22;
+    FileHandle file_handle = 23;
+    Dataclass dataclass = 24;
+    Function function = 25;
+    // OUTPUT-ONLY fallback: repr() of a value with no other representation.
+    string repr = 26;
+    // OUTPUT-ONLY marker breaking reference cycles in container output.
+    Cycle cycle = 27;
+    // The type object of a sandbox-defined class, named by its class name,
+    // e.g. "Foo". Kept separate from `type` so a class shadowing a builtin
+    // name ("int") cannot be confused with the builtin type. Accepted by the
+    // decoder but rejected as an execution input (the class binding cannot be
+    // reconstructed from a name).
+    string instance_type = 28;
+    Unit not_implemented = 29;
+  }
+}
+
+message ObjectList {
+  repeated MontyObject items = 1;
+}
+
+// One key/value entry. Used for dicts and kwargs: proto maps cannot have
+// message keys and do not preserve order, while Python dicts allow arbitrary
+// hashable keys and are insertion-ordered.
+message Pair {
+  MontyObject key = 1;
+  MontyObject value = 2;
+}
+
+message Dict {
+  repeated Pair pairs = 1;
+}
+
+// Arbitrary-precision integer as sign + big-endian magnitude. Exact and O(n);
+// JS decode is `(negative ? -1n : 1n) * BigInt('0x' + hex(magnitude))`.
+message BigInt {
+  bool negative = 1;
+  bytes magnitude = 2;
+}
+
+message NamedTuple {
+  // Type name used in repr, e.g. "os.stat_result".
+  string type_name = 1;
+  // Attribute names, one per value.
+  repeated string field_names = 2;
+  repeated MontyObject values = 3;
+}
+
+message Date {
+  // Gregorian year in 1..=9999.
+  int32 year = 1;
+  // 1..=12.
+  uint32 month = 2;
+  uint32 day = 3;
+}
+
+message DateTime {
+  int32 year = 1;
+  uint32 month = 2;
+  uint32 day = 3;
+  uint32 hour = 4;
+  uint32 minute = 5;
+  uint32 second = 6;
+  // 0..=999999.
+  uint32 microsecond = 7;
+  // Fixed UTC offset for aware datetimes; absent for naive values.
+  optional int32 offset_seconds = 8;
+  // Optional timezone name; only valid when offset_seconds is set.
+  optional string timezone_name = 9;
+}
+
+message TimeDelta {
+  int32 days = 1;
+  // Normalized to 0..86400.
+  int32 seconds = 2;
+  // Normalized to 0..1000000.
+  int32 microseconds = 3;
+}
+
+message TimeZone {
+  int32 offset_seconds = 1;
+  optional string name = 2;
+}
+
+// A simple exception value: type name (e.g. "ValueError") + optional single
+// string argument.
+message Exception {
+  string exc_type = 1;
+  optional string arg = 2;
+}
+
+message FileHandle {
+  // Virtual (sandbox) path — never a host path.
+  string path = 1;
+  // Canonical Python open() mode string: one of r, rb, r+, rb+, w, wb, w+,
+  // wb+, a, ab, a+, ab+.
+  string mode = 2;
+  // Char index (text mode) or byte index (binary mode).
+  uint64 position = 3;
+}
+
+message Dataclass {
+  // Class name, e.g. "Point".
+  string name = 1;
+  // Host-side identity of the class, from `id(type(dc))`.
+  uint64 type_id = 2;
+  // Declared field names in definition order.
+  repeated string field_names = 3;
+  // All attributes (fields and extras), in order.
+  Dict attrs = 4;
+  bool frozen = 5;
+}
+
+// An external (host-provided) function value, usually supplied by the parent
+// in response to a `NameLookup` event.
+message Function {
+  string name = 1;
+  optional string docstring = 2;
+}
+
+message Cycle {
+  // Opaque identity token for the object the cycle refers back to: two
+  // cycle markers in the same result are the same object iff their tokens
+  // match. Meaningless outside the result that produced it.
+  uint64 identity = 1;
+  // Type-specific placeholder shown in reprs, e.g. "[...]".
+  string placeholder = 2;
+}
+
+// ============================================================================
+// Errors
+// ============================================================================
+
+// A raised Python exception with its traceback. Mirrors monty's
+// `MontyException`.
+message RaisedException {
+  // Exception type name, e.g. "ValueError", "json.JSONDecodeError".
+  string exc_type = 1;
+  optional string message = 2;
+  // Outermost frame first, matching Python traceback order.
+  repeated StackFrame traceback = 3;
+  // Structured payload for exception types that carry more than a message;
+  // absent for most exceptions. Mirrors monty's `ExcData`.
+  ExcData data = 4;
+}
+
+// Structured exception payload, mirroring monty's `ExcData` enum. Future
+// exception types that carry more than a message (e.g. OSError's errno)
+// get new oneof arms with fresh tags. An absent/empty kind means "no
+// payload" (`ExcData::None`).
+message ExcData {
+  oneof kind {
+    UnicodeErrorData unicode = 1;
+    JsonErrorData json = 2;
+  }
+}
+
+// CPython's UnicodeDecodeError/UnicodeEncodeError constructor fields
+// (encoding, object, start, end, reason), letting hosts rebuild the real
+// exception instead of a message-only fallback. Mirrors monty's
+// `UnicodeErrorData`.
+message UnicodeErrorData {
+  // Codec name as CPython reports it, e.g. "utf-8".
+  string encoding = 1;
+  // The input that failed: bytes for decode errors, str for encode errors.
+  oneof object {
+    bytes object_bytes = 2;
+    string object_str = 3;
+  }
+  // Failing range: byte offsets for decode errors, character indices for
+  // encode errors. `end` is exclusive.
+  uint64 start = 4;
+  uint64 end = 5;
+  // CPython's reason wording, e.g. "ordinal not in range(128)".
+  string reason = 6;
+}
+
+// CPython's json.JSONDecodeError attribute fields (msg, doc, pos, lineno,
+// colno), letting hosts rebuild the real exception instead of a message-only
+// fallback. Mirrors monty's `JsonErrorData`.
+message JsonErrorData {
+  // Bare error message, without the ": line N column M (char K)" suffix.
+  string msg = 1;
+  // The document being parsed; absent when larger than the sender's size cap
+  // or when bytes input is not valid UTF-8.
+  optional string doc = 2;
+  // Character index of the error in `doc`.
+  uint64 pos = 3;
+  // 1-based line and column of the error.
+  uint64 lineno = 4;
+  uint64 colno = 5;
+}
+
+// 1-based line/column source position (columns count characters, not bytes).
+message CodeLoc {
+  uint32 line = 1;
+  uint32 column = 2;
+}
+
+message StackFrame {
+  string filename = 1;
+  CodeLoc start = 2;
+  CodeLoc end = 3;
+  // Function name; absent for module-level code (rendered as "<module>").
+  optional string frame_name = 4;
+  // Source line shown in the traceback preview.
+  optional string preview_line = 5;
+  // Suppress the `~~~` caret markers for this frame.
+  bool hide_caret = 6;
+  // Suppress the `, in <name>` suffix (SyntaxError style).
+  bool hide_frame_name = 7;
+}
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+// Sandbox resource limits, enforced inside the child. Absent fields mean
+// "unlimited" except recursion depth, which defaults to monty's standard
+// limit (1000) when absent.
+message ResourceLimits {
+  optional uint64 max_duration_micros = 1;
+  optional uint64 max_memory_bytes = 2;
+  optional uint64 gc_interval = 3;
+  optional uint64 max_recursion_depth = 4;
+}
+
+// ============================================================================
+// Resume payloads
+// ============================================================================
+
+// Outcome of an external function / OS call, decided by the parent. Mirrors
+// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
+// resolve, against its suspended call).
+message ExtFunctionResult {
+  oneof kind {
+    // The call returned this value.
+    MontyObject return_value = 1;
+    // The call raised this exception.
+    RaisedException error = 2;
+    // The call is asynchronous: register an external future for `call_id`
+    // (the id from the suspension event) and keep executing other tasks.
+    uint32 future = 3;
+    // No handler exists for this name — the child raises NameError.
+    string not_found = 4;
+    // No handler accepted this OS call — the child raises the call's own
+    // no-handler default (PermissionError naming the path for filesystem
+    // calls, RuntimeError for the rest). Only valid answering an `OsCall`
+    // suspension; the child computes it from its retained call payload.
+    Unit not_handled = 5;
+  }
+}
+
+message FutureResult {
+  uint32 call_id = 1;
+  ExtFunctionResult result = 2;
+}
+
+message NamedValue {
+  string name = 1;
+  MontyObject value = 2;
+}
+
+// ============================================================================
+// Requests (parent -> child)
+// ============================================================================
+
+// Tags 1-19 are reserved for `kind` arms and the message-level fields start
+// at 20, mirroring `ChildEvent` — a oneof shares its field-number space with
+// the enclosing message, so a new arm never has to jump the numbering. The
+// same caveats apply: arms past 15 cost a two-byte key, and a forwarding
+// server mirrors this numbering to classify frames without decoding them, so
+// adding an arm degrades to "opaque" while renumbering one would misroute.
+message ParentRequest {
+  oneof kind {
+    Configure configure = 1;
+    InstallDependencies install_dependencies = 2;
+    Feed feed = 3;
+    ResumeCall resume_call = 4;
+    ResumeNameLookup resume_name_lookup = 5;
+    ResumeFutures resume_futures = 6;
+    Dump dump = 7;
+    Load load = 8;
+    Reset reset = 9;
+    Shutdown shutdown = 10;
+  }
+
+  // W3C `traceparent` identifying the caller's span, so a child that exports
+  // its own telemetry can attach its spans to the trace the request came
+  // from. Purely additive context: the child's execution of the request must
+  // not depend on it, and it is absent whenever the parent is not tracing.
+  optional string trace_parent = 20;
+}
+
+// Configures the REPL session this child will serve until `Reset`, sent once
+// when the worker is checked out. The session's repl is materialized lazily on
+// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
+// worker can still be initialized by `Load` instead. Valid only when the
+// worker has no session yet.
+message Configure {
+  string script_name = 1;
+  ResourceLimits limits = 2;
+  // Type-check each fed snippet before executing it.
+  bool type_check = 3;
+  // Optional stub file contents used by type checking.
+  optional string type_check_stubs = 4;
+  // The parent's monty package version (e.g. "0.0.18"). INFORMATIONAL ONLY —
+  // it is never checked, only reported (in telemetry, and when diagnosing a
+  // rejected `protocol_version`). Parent and child may run different package
+  // versions as long as their protocol versions are compatible.
+  string monty_version = 5;
+  // Introspected `assert` failure messages (see limitations/assert.md).
+  // Absent = on with the default 120-byte operand-repr truncation; 0 disables
+  // annotations; any other value retains that many bytes per operand before
+  // any ellipsis, cutting on a character boundary.
+  optional uint32 assert_message_annotations = 6;
+  // How the child renders the diagnostics carried by `TypingError`. The
+  // structured diagnostics borrow the type checker's database and so cannot
+  // cross the wire — the parent picks the format up front and the child
+  // renders it. Ignored when `type_check` is false.
+  TypeCheckFormat type_check_format = 7;
+  // Render typing diagnostics with ANSI colour escapes. Only `FULL` and
+  // `CONCISE` carry colour; the machine-readable formats ignore it.
+  bool type_check_color = 8;
+  // Version of the wire schema the parent speaks. The child rejects the
+  // session with a `FatalError` naming its own supported range when this
+  // falls outside it, so a parent deployed separately from its worker (over
+  // a websocket, say) learns what to downgrade to without a handshake.
+  //
+  // 0 means the parent declared nothing — either it predates this field or it
+  // is not a monty parent — and is always rejected. The protocol has no
+  // in-band negotiation, so an undeclared peer cannot be assumed compatible.
+  uint32 protocol_version = 9;
+}
+
+// Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's
+// `DiagnosticFormat`.
+enum TypeCheckFormat {
+  // Unset by an older parent — the child renders `FULL`.
+  TYPE_CHECK_FORMAT_UNSPECIFIED = 0;
+  TYPE_CHECK_FORMAT_FULL = 1;
+  TYPE_CHECK_FORMAT_CONCISE = 2;
+  TYPE_CHECK_FORMAT_AZURE = 3;
+  TYPE_CHECK_FORMAT_JSON = 4;
+  TYPE_CHECK_FORMAT_JSON_LINES = 5;
+  TYPE_CHECK_FORMAT_RDJSON = 6;
+  TYPE_CHECK_FORMAT_PYLINT = 7;
+  TYPE_CHECK_FORMAT_GITLAB = 8;
+  TYPE_CHECK_FORMAT_GITHUB = 9;
+}
+
+// Executes one snippet against the session. Turn ends with `Complete`,
+// `Error`, `TypingError`, or a suspension event.
+message Feed {
+  string code = 1;
+  repeated NamedValue inputs = 2;
+  // Skip type checking for this feed even when the session enables it.
+  bool skip_type_check = 3;
+}
+
+// Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the
+// suspension event.
+message ResumeCall {
+  uint32 call_id = 1;
+  ExtFunctionResult result = 2;
+}
+
+// Answers a `NameLookup` suspension.
+message ResumeNameLookup {
+  oneof kind {
+    // The name resolves to this value.
+    MontyObject value = 1;
+    // The name is undefined — the child raises NameError.
+    Unit undefined = 2;
+  }
+}
+
+// Answers a `ResolveFutures` suspension with results for some or all pending
+// call ids.
+message ResumeFutures {
+  repeated FutureResult results = 1;
+}
+
+// Requests an opaque serialized snapshot of the current session state
+// (idle or suspended). The child stays usable afterwards. The bytes carry
+// monty's own dump format, versioned independently of this schema, and can
+// only be restored via `Load` by a child built with the same dump version.
+message Dump {}
+
+// Restores state produced by `Dump`. Valid only from no session. If
+// the restored state was suspended, the child re-emits the suspension event so
+// the parent learns the resume point; otherwise it replies `Ok`.
+message Load {
+  bytes state = 1;
+}
+
+// Ends the checkout: the child drops all session state and returns to the
+// no-session state, ready for the next `Configure` or `Load`.
+message Reset {}
+
+// The child replies `Ok` and exits cleanly.
+message Shutdown {}
+
+// Installs third-party Python packages into the session before further feeds,
+// using `uv pip install --python <venv-python>` against the worker's session
+// virtualenv. Only the
+// embedded-CPython worker honors this; the Monty sandbox child rejects it with
+// an `Error` (it has no host interpreter to install for). Repeatable between
+// feeds. Turn ends with `Ok` on success or `Error` (carrying uv's stderr) on
+// failure. Valid only once a session exists (after `Configure`).
+message InstallDependencies {
+  // PEP 508 requirement strings, e.g. "httpx>=0.27", "numpy". An empty list is
+  // a no-op that replies `Ok`.
+  repeated string requirements = 1;
+}
+
+// ============================================================================
+// Events (child -> parent)
+// ============================================================================
+
+// A oneof shares its field-number space with the enclosing message, so tags
+// 1-19 are reserved by convention for `kind` arms and the message-level
+// fields start at 20 — a new arm then never has to jump the numbering. Note
+// arms past 15 cost a two-byte key instead of one, which forwarding servers
+// (which walk only field keys, on every frame) pay per event. Such a server
+// mirrors this numbering to classify frames without decoding them; it treats
+// a tag it does not know as opaque, so adding an arm degrades rather than
+// misroutes, but renumbering an existing one would break it.
+message ChildEvent {
+  oneof kind {
+    Print print = 1;
+    FunctionCall function_call = 2;
+    OsCall os_call = 3;
+    NameLookup name_lookup = 4;
+    ResolveFutures resolve_futures = 5;
+    Complete complete = 6;
+    Error error = 7;
+    TypingError typing_error = 8;
+    DumpResult dump_result = 9;
+    Ok ok = 10;
+    FatalError fatal_error = 11;
+    ShutdownDump shutdown = 12;
+  }
+
+  // Cumulative execution time consumed by the session's sandbox code, in
+  // microseconds. The in-sandbox clock runs only while the interpreter is
+  // executing bytecode — never while suspended waiting on the parent or idle
+  // between feeds — and survives Dump/Load. Set on every turn-ending event
+  // while a session exists (zero on Print events and outside a session) so
+  // the parent can mirror the `max_duration` budget, e.g. to arm a watchdog
+  // backstop, without keeping a second clock.
+  uint64 total_execution_micros = 20;
+
+  // The session's `max_duration` limit in microseconds, when one is
+  // configured. Reported alongside `total_execution_micros` so a parent that
+  // restored a session via `Load` (where the limits travel inside the opaque
+  // state bytes) still learns the budget.
+  optional uint64 max_duration_micros = 21;
+
+  // The session's script name, surfaced on a `Load` reply so a parent that
+  // restored a session (whose script name, like the limits above, travels
+  // inside the opaque dump bytes) learns it without parsing the dump. Set only
+  // on a successful `Load` reply; unset on all other events.
+  optional string restored_script_name = 22;
+}
+
+enum PrintStream {
+  PRINT_STREAM_UNSPECIFIED = 0;
+  PRINT_STREAM_STDOUT = 1;
+  PRINT_STREAM_STDERR = 2;
+}
+
+// Streamed sandbox print() output. Zero or more of these precede each
+// turn-ending event; text is flushed at line granularity.
+message Print {
+  PrintStream stream = 1;
+  string text = 2;
+}
+
+// Suspension: the sandbox called an external function (or a dataclass method
+// when `method_call` is true — the instance is then the first arg). Answer
+// with `ResumeCall`.
+message FunctionCall {
+  string function_name = 1;
+  repeated MontyObject args = 2;
+  repeated Pair kwargs = 3;
+  uint32 call_id = 4;
+  bool method_call = 5;
+}
+
+// Suspension: the sandbox performed an OS operation, surfaced for the parent
+// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
+// per call; every path is a virtual POSIX sandbox path, never a host path.
+// Some calls have typed result expectations (e.g. `open` must return a
+// file_handle); a mismatched result becomes a Python-level error inside the
+// sandbox.
+//
+// A parent with no handler should answer `ResumeCall` with
+// `ExtFunctionResult.not_handled`: the child raises the call's own default
+// (PermissionError naming the path for filesystem calls, RuntimeError for
+// the rest — monty's `OsFunctionCall::on_no_handler`).
+message OsCall {
+  uint32 call_id = 1;
+
+  oneof call {
+    // ---- FS read / check / remove — the string is the virtual path -------
+    string exists = 2; // Path.exists
+    string is_file = 3; // Path.is_file
+    string is_dir = 4; // Path.is_dir
+    string is_symlink = 5; // Path.is_symlink
+    string read_text = 6; // Path.read_text
+    string read_bytes = 7; // Path.read_bytes
+    string stat = 8; // Path.stat
+    string iterdir = 9; // Path.iterdir
+    string resolve = 10; // Path.resolve
+    string absolute = 11; // Path.absolute
+    string unlink = 12; // Path.unlink
+    string rmdir = 13; // Path.rmdir
+
+    // ---- FS write / mutate -----------------------------------------------
+    TextWrite write_text = 14; // Path.write_text (truncating)
+    TextWrite append_text = 15; // Path.append_text
+    BytesWrite write_bytes = 16; // Path.write_bytes (truncating)
+    BytesWrite append_bytes = 17; // Path.append_bytes
+    Open open = 18;
+    Mkdir mkdir = 19;
+    Rename rename = 20;
+
+    // ---- Non-FS ----------------------------------------------------------
+    Getenv getenv = 21; // os.getenv
+    Unit get_environ = 22; // the os.environ snapshot
+    Unit date_today = 23; // date.today()
+    // datetime.now(tz) — the timezone argument (absent for a naive result).
+    DateTimeNow date_time_now = 24;
+  }
+
+  message TextWrite {
+    string path = 1;
+    string data = 2;
+  }
+  message BytesWrite {
+    string path = 1;
+    bytes data = 2;
+  }
+  message Open {
+    string path = 1;
+    // Canonical open() mode string, same set as `FileHandle.mode`.
+    string mode = 2;
+  }
+  message Mkdir {
+    string path = 1;
+    bool parents = 2;
+    bool exist_ok = 3;
+  }
+  message Rename {
+    string src = 1;
+    string dst = 2;
+  }
+  // os.getenv(key, default) — `default` may be any Python value.
+  message Getenv {
+    string key = 1;
+    MontyObject default = 2;
+  }
+  // datetime.now(tz) — the VM validates the argument to None-or-timezone
+  // before suspending, so the wire carries a typed TimeZone rather than an
+  // arbitrary MontyObject.
+  message DateTimeNow {
+    // Fixed-offset timezone for an aware result; absent for a naive one.
+    optional TimeZone tz = 1;
+  }
+}
+
+// Suspension: the sandbox read an undefined name — typically probing whether
+// the parent provides an external function. Answer with `ResumeNameLookup`.
+message NameLookup {
+  string name = 1;
+}
+
+// Suspension: every sandbox task is blocked on external futures previously
+// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
+message ResolveFutures {
+  repeated uint32 pending_call_ids = 1;
+}
+
+// Turn end: the snippet completed with this value. The session is ready for
+// the next `Feed`.
+message Complete {
+  MontyObject value = 1;
+}
+
+// Turn end: the snippet (or request) failed with a Python exception. The
+// session survives — prior globals remain available to later feeds.
+message Error {
+  RaisedException exception = 1;
+}
+
+// Turn end: type checking rejected the fed snippet (only when the session
+// was created with type_check). The snippet was not executed; the session
+// survives.
+message TypingError {
+  // Diagnostics rendered in the session's `TypeCheckFormat`.
+  string diagnostics = 1;
+}
+
+message DumpResult {
+  // Opaque versioned snapshot; see `Dump`.
+  bytes state = 1;
+}
+
+// Generic acknowledgement for Configure / Load (idle) / Reset / Shutdown.
+message Ok {}
+
+// The child hit an unrecoverable error (frame desync, panic, unsupported
+// protocol version) and exits immediately after writing this. A child that
+// exits WITHOUT a FatalError crashed hard (segfault, abort, kill) — parents
+// must treat EOF as a crash.
+message FatalError {
+  string message = 1;
+}
+
+// Turn end: the serving relay (monty-server, never a child) is shutting down
+// and did NOT run the request it is replying to. Sent only in reply to an
+// in-flight request, so the client is always reading when it arrives.
+//
+// Every other server policy action (idle/session/turn timeout, capacity) is
+// just a dropped connection, which the client already classifies as a dead
+// worker — only shutdown needs a message, because only shutdown has state to
+// hand back.
+message ShutdownDump {
+  // Session state captured immediately before shutdown (same bytes as
+  // `DumpResult.state`), restorable into a fresh worker via `Load`. Absent
+  // when there was no session yet or the dump itself failed.
+  optional bytes dump = 1;
+}

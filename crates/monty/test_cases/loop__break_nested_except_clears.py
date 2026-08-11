@@ -14,7 +14,7 @@ def test_break():
     return 'ok'
 
 
-assert test_break() == 'ok', 'break from nested except should reach return'
+assert test_break() == 'ok'
 
 
 # Test 2: break from depth 3 should also work
@@ -33,7 +33,7 @@ def test_break_depth3():
     return 'deep'
 
 
-assert test_break_depth3() == 'deep', 'break from 3-deep except should reach return'
+assert test_break_depth3() == 'deep'
 
 
 # Test 3: verify exception stack is empty after break
@@ -52,4 +52,4 @@ def test_empty_stack():
     return result
 
 
-assert test_empty_stack() == ['breaking', 'after'], 'should execute code after break'
+assert test_empty_stack() == ['breaking', 'after']

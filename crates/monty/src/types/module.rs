@@ -1,15 +1,12 @@
 //! Python module type for representing imported modules.
 
-use std::mem;
-
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunResult},
-    heap::{HeapGuard, HeapId, HeapItem, HeapRead},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
+    heap::{DropGuard, HeapId, HeapItem, HeapRead},
     intern::StringId,
-    resource::ResourceTracker,
     types::Dict,
     value::{EitherStr, Value},
 };
@@ -59,7 +56,7 @@ impl Module {
     /// # Panics
     ///
     /// Panics if the attribute name string has not been pre-interned.
-    pub fn set_attr(&mut self, name: impl Into<StringId>, value: Value, vm: &mut VM<'_, impl ResourceTracker>) {
+    pub fn set_attr(&mut self, name: impl Into<StringId>, value: Value, vm: &mut VM<'_>) {
         let key = Value::InternString(name.into());
         // Unwrap is safe because InternString keys are always hashable
         self.attrs.set(key, value, vm).unwrap();
@@ -82,7 +79,7 @@ impl<'h> HeapRead<'h, Module> {
     /// Returns the attribute value if found, or `None` if the attribute doesn't exist.
     /// For `Property` values, invokes the property getter rather than returning
     /// the Property itself - this implements Python's descriptor protocol.
-    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> Option<CallResult> {
+    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
         let value = self
             .get(vm.heap)
             .attrs
@@ -106,12 +103,12 @@ impl<'h> HeapRead<'h, Module> {
     pub fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
+        vm: &mut VM<'h>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
-        let mut args_guard = HeapGuard::new(args, vm);
-        let vm = args_guard.heap();
+        let mut args_guard = DropGuard::new(args, vm);
+        let vm = args_guard.ctx();
 
         let attr_str = match attr {
             EitherStr::Interned(id) => vm.interns.get_str(*id),
@@ -139,10 +136,6 @@ impl<'h> HeapRead<'h, Module> {
 }
 
 impl HeapItem for Module {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.attrs.py_estimate_size()
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.attrs.py_dec_ref_ids(stack);
     }

@@ -1,8 +1,5 @@
-//! Type conversion between Monty's `MontyObject` and JavaScript values via napi-rs.
-//!
-//! This module provides bidirectional conversion using native napi-rs APIs:
-//! - `monty_to_js`: Convert Monty's `MontyObject` to a JavaScript value
-//! - `js_to_monty`: Convert a JavaScript value to Monty's `MontyObject`
+//! Bidirectional conversion between Monty's `MontyObject` and JavaScript
+//! values via napi-rs (`monty_to_js` / `js_to_monty`).
 //!
 //! ## Type Mappings
 //!
@@ -26,30 +23,28 @@
 //! - `MontyObject::Type` → `{ __monty_type__: 'Type', value }`
 //! - `MontyObject::BuiltinFunction` → `{ __monty_type__: 'BuiltinFunction', value }`
 //! - `MontyObject::Dataclass` → `{ __monty_type__: 'Dataclass', name, fields, ... }`
+//! - `MontyObject::FileHandle` ↔ `{ __monty_type__: 'FileHandle', path, mode, position }`
 //! - `MontyObject::Repr` → plain `string`
 //! - `MontyObject::Cycle` → placeholder `string`
+#![expect(unsafe_code, reason = "napi API is unsafe")]
 
-use std::{collections::HashMap, ptr};
+use std::{borrow::Cow, collections::HashMap, ptr};
 
-use monty::{DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
+use monty_types::{
+    DictPairs, ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone,
+};
 use napi::{bindgen_prelude::*, sys::Status};
 use num_bigint::BigInt as NumBigInt;
 
 /// JavaScript safe integer range: -(2^53) to 2^53.
 const JS_SAFE_INT_MIN: i64 = -(1_i64 << 53);
 const JS_SAFE_INT_MAX: i64 = 1_i64 << 53;
+const JS_MAX_SAFE_POSITION: u64 = (1_u64 << 53) - 1;
+const JS_MAX_SAFE_POSITION_F64: f64 = 9_007_199_254_740_991.0;
 
-/// Wrapper for returning an unknown JS value from napi functions.
-///
-/// This allows `monty_to_js` to return dynamically typed JS values.
+/// Wrapper letting `monty_to_js` return a dynamically typed JS value from a
+/// napi function.
 pub struct JsMontyObject<'env>(pub(crate) Unknown<'env>);
-
-impl JsMontyObject<'_> {
-    /// Returns the raw napi value for use in low-level operations.
-    pub fn raw(&self) -> sys::napi_value {
-        self.0.raw()
-    }
-}
 
 impl ToNapiValue for JsMontyObject<'_> {
     unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
@@ -57,21 +52,15 @@ impl ToNapiValue for JsMontyObject<'_> {
     }
 }
 
-/// Converts Monty's `MontyObject` to a JavaScript value using native napi-rs APIs.
-///
-/// This function creates native JS types where possible:
-/// - Numbers use JS `number` or `BigInt` depending on size
-/// - Dicts use native JS `Map` (preserves key types and insertion order)
-/// - Sets use native JS `Set`
-/// - Bytes use Node.js `Buffer`
-/// - Tuples use arrays with a `__tuple__` marker property
-///
-/// Types that don't have direct JS equivalents get marker properties to preserve
-/// type information for round-tripping.
+/// Converts a `MontyObject` to a JS value, using native JS types where
+/// possible (`number`/`BigInt`, `Map`, `Set`, `Buffer`, `__tuple__`-marked
+/// arrays). Types without a JS equivalent get `__monty_type__` marker
+/// properties so they round-trip.
 pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<'e>> {
     let unknown = match obj {
         MontyObject::None => create_js_null(env)?,
         MontyObject::Ellipsis => create_js_ellipsis(env)?,
+        MontyObject::NotImplemented => create_js_not_implemented(env)?,
         MontyObject::Bool(b) => create_js_bool(*b, env)?,
         MontyObject::Int(i) => create_js_int(*i, env)?,
         MontyObject::BigInt(bi) => create_js_bigint(bi, env)?,
@@ -99,9 +88,7 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
             frozen,
         } => create_js_dataclass(name, *type_id, field_names, attrs, *frozen, env)?,
         MontyObject::Path(p) => env.create_string(p)?.into_unknown(env)?,
-        // A Monty file object has no faithful JS representation (it is not a
-        // real OS file): expose its repr string.
-        MontyObject::FileHandle { .. } => env.create_string(obj.py_repr())?.into_unknown(env)?,
+        MontyObject::FileHandle(handle) => create_js_file_handle(handle, env)?,
         MontyObject::Repr(s) | MontyObject::Cycle(_, s) => env.create_string(s)?.into_unknown(env)?,
         // Function objects are internal to the name lookup protocol and should not normally
         // appear as final output values. If they do, represent as a string with the function name.
@@ -112,7 +99,6 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
 
 /// Creates a JS null value.
 fn create_js_null(env: &Env) -> Result<Unknown<'_>> {
-    // Use raw napi to create null
     let mut result = ptr::null_mut();
     // SAFETY: [DH] - all arguments are valid and result is valid on success
     unsafe {
@@ -142,22 +128,18 @@ fn create_js_int(i: i64, env: &Env) -> Result<Unknown<'_>> {
     if (JS_SAFE_INT_MIN..=JS_SAFE_INT_MAX).contains(&i) {
         env.create_int64(i)?.into_unknown(env)
     } else {
-        // Use BigInt for large integers
         BigInt::from(i).into_unknown(env)
     }
 }
 
-/// Creates a native JS BigInt from an arbitrary-precision integer.
-///
-/// For integers that fit in i64, uses direct creation. For larger integers,
-/// calls the global `BigInt()` constructor with the decimal string representation.
+/// Creates a native JS BigInt from an arbitrary-precision integer. Values that
+/// fit in i64 use direct creation; larger ones call the global `BigInt()`
+/// constructor with the decimal string.
 fn create_js_bigint<'e>(bi: &NumBigInt, env: &'e Env) -> Result<Unknown<'e>> {
-    // Try to fit in i64 first for efficiency
     if let Ok(i) = i64::try_from(bi) {
         return BigInt::from(i).into_unknown(env);
     }
 
-    // For larger integers, call global BigInt(string)
     let global = env.get_global()?;
     let bigint_constructor: Function<String> = global.get_named_property("BigInt")?;
     let result = bigint_constructor.call(bi.to_string())?;
@@ -183,10 +165,16 @@ fn create_js_array<'e>(items: &[MontyObject], env: &'e Env) -> Result<Array<'e>>
 /// Creates a tuple representation as a JS array with a `__tuple__` marker property.
 ///
 /// This allows distinguishing tuples from lists in JavaScript while still allowing
-/// array-like access to tuple elements.
+/// array-like access to tuple elements. The marker is non-enumerable so the
+/// array still compares deep-equal to a plain array of the same elements
+/// (and `Object.keys`/spreads see only the indices).
 fn create_js_tuple<'e>(items: &[MontyObject], env: &'e Env) -> Result<Unknown<'e>> {
     let mut arr = create_js_array(items, env)?;
-    arr.set_named_property("__tuple__", true)?;
+    let marker = create_js_bool(true, env)?;
+    arr.define_properties(&[Property::new()
+        .with_utf8_name("__tuple__")?
+        .with_value(&marker)
+        .with_property_attributes(PropertyAttributes::Writable | PropertyAttributes::Configurable)])?;
     arr.into_unknown(env)
 }
 
@@ -205,7 +193,6 @@ fn create_js_map<'e>(pairs: &DictPairs, env: &'e Env) -> Result<Unknown<'e>> {
     for (k, v) in pairs {
         let js_key = monty_to_js(k, env)?;
         let js_value = monty_to_js(v, env)?;
-        // Call map.set(key, value) using raw napi to pass two separate arguments
         call_method_2_args(env.raw(), map.raw(), set_method.raw(), js_key.0.raw(), js_value.0.raw())?;
     }
     map.into_unknown(env)
@@ -252,6 +239,13 @@ fn create_js_set<'e>(items: &[MontyObject], env: &'e Env) -> Result<Unknown<'e>>
 fn create_js_ellipsis(env: &Env) -> Result<Unknown<'_>> {
     let mut obj = Object::new(env)?;
     obj.set_named_property("__monty_type__", "Ellipsis")?;
+    obj.into_unknown(env)
+}
+
+/// Creates a JS object representing NotImplemented: `{ __monty_type__: 'NotImplemented' }`.
+fn create_js_not_implemented(env: &Env) -> Result<Unknown<'_>> {
+    let mut obj = Object::new(env)?;
+    obj.set_named_property("__monty_type__", "NotImplemented")?;
     obj.into_unknown(env)
 }
 
@@ -331,6 +325,50 @@ fn create_js_builtin_function_marker<'e>(func_str: &str, env: &'e Env) -> Result
     obj.into_unknown(env)
 }
 
+/// Creates a JS marker object representing a sandbox file handle.
+fn create_js_file_handle<'e>(handle: &MontyFileHandle, env: &'e Env) -> Result<Unknown<'e>> {
+    if handle.position > JS_MAX_SAFE_POSITION {
+        return Err(Error::from_reason(
+            "MontyFileHandle position exceeds JavaScript's maximum safe integer",
+        ));
+    }
+
+    let mut obj = Object::new(env)?;
+    obj.set_named_property("path", handle.path.as_str())?;
+    obj.set_named_property("mode", handle.mode.as_str())?;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "position is within JavaScript's safe integer range"
+    )]
+    obj.set_named_property("position", handle.position as f64)?;
+
+    let marker = env.create_string("FileHandle")?;
+    let binary = create_js_bool(handle.mode.is_binary(), env)?;
+    let readable = create_js_bool(handle.mode.readable(), env)?;
+    let writable = create_js_bool(handle.mode.writable(), env)?;
+    let hidden = PropertyAttributes::empty();
+    obj.define_properties(&[
+        Property::new()
+            .with_utf8_name("__monty_type__")?
+            .with_value(&marker)
+            .with_property_attributes(hidden),
+        Property::new()
+            .with_utf8_name("binary")?
+            .with_value(&binary)
+            .with_property_attributes(hidden),
+        Property::new()
+            .with_utf8_name("readable")?
+            .with_value(&readable)
+            .with_property_attributes(hidden),
+        Property::new()
+            .with_utf8_name("writable")?
+            .with_value(&writable)
+            .with_property_attributes(hidden),
+    ])?;
+    obj.freeze()?;
+    obj.into_unknown(env)
+}
+
 /// Creates a JS object representing a dataclass instance.
 fn create_js_dataclass<'e>(
     name: &str,
@@ -348,7 +386,6 @@ fn create_js_dataclass<'e>(
     let type_id_bigint = BigInt::from(type_id);
     obj.set_named_property("typeId", type_id_bigint)?;
 
-    // field_names as array
     let mut field_names_arr =
         env.create_array(field_names.len().try_into().expect("field_names size overflows u32"))?;
     for (i, field_name) in field_names.iter().enumerate() {
@@ -359,7 +396,6 @@ fn create_js_dataclass<'e>(
     }
     obj.set_named_property("fieldNames", field_names_arr)?;
 
-    // Build attrs as a nested object mapping field names to values
     let attrs_map: HashMap<&str, &MontyObject> = attrs
         .into_iter()
         .filter_map(|(k, v)| {
@@ -371,13 +407,29 @@ fn create_js_dataclass<'e>(
         })
         .collect();
 
+    // Field names are sandbox-controlled: assigning them with plain `obj[k] =
+    // v` ([[Set]] semantics) would let a field named `__proto__` replace the
+    // object's prototype. `define_properties` uses [[DefineOwnProperty]],
+    // which always creates an own property instead.
     let mut fields_obj = Object::new(env)?;
+    let mut field_values = Vec::with_capacity(field_names.len());
     for field_name in field_names {
         if let Some(value) = attrs_map.get(field_name.as_str()) {
-            let js_value = monty_to_js(value, env)?;
-            fields_obj.set_named_property(field_name.as_str(), js_value)?;
+            field_values.push((field_name, monty_to_js(value, env)?));
         }
     }
+    let properties = field_values
+        .iter()
+        .map(|(field_name, js_value)| {
+            Ok(Property::new()
+                .with_utf8_name(field_name)?
+                .with_value(&js_value.0)
+                .with_property_attributes(
+                    PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable,
+                ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    fields_obj.define_properties(&properties)?;
     obj.set_named_property("fields", fields_obj)?;
 
     obj.set_named_property("frozen", frozen)?;
@@ -389,9 +441,8 @@ fn create_js_dataclass<'e>(
 // JS to Monty conversion
 // =============================================================================
 
-/// Converts a JavaScript value to Monty's `MontyObject`.
-///
-/// This function handles native JS types and marked objects:
+/// Converts a JavaScript value to Monty's `MontyObject`, handling native JS
+/// types and `__monty_type__`-marked objects:
 /// - `null` → `None`
 /// - `boolean` → `Bool`
 /// - `number` → `Int` (if integer) or `Float`
@@ -415,9 +466,12 @@ pub fn js_to_monty(value: Unknown<'_>, env: Env) -> Result<MontyObject> {
         }
         ValueType::Number => {
             let n: f64 = value.coerce_to_number()?.get_double()?;
-            // Check if the number is actually an integer (no fractional part)
-            // and fits within i64 range
-            if n.fract() == 0.0 && n >= i64::MIN as f64 && n <= i64::MAX as f64 {
+            // Integral numbers within i64 become Python ints. The i64 range
+            // check must be half-open: `i64::MIN as f64` is exactly -2^63,
+            // but `i64::MAX as f64` rounds *up* to 2^63 — a value of exactly
+            // 2^63 does not fit in i64 (`as` would saturate, silently
+            // changing the value), so it crosses as a float instead.
+            if n.fract() == 0.0 && n >= i64::MIN as f64 && n < -(i64::MIN as f64) {
                 #[expect(
                     clippy::cast_possible_truncation,
                     reason = "Checked above that n is integer and within i64 range"
@@ -429,9 +483,8 @@ pub fn js_to_monty(value: Unknown<'_>, env: Env) -> Result<MontyObject> {
         ValueType::BigInt => {
             let bigint: BigInt = BigInt::from_unknown(value)?;
 
-            // BigInt has public fields: sign_bit (bool) and words (Vec<u64>)
-            // Convert words (u64 array) to num-bigint::BigInt
-            // Each word is a 64-bit limb, little-endian order
+            // `words` are 64-bit limbs in little-endian order; reassemble into
+            // a num-bigint and apply `sign_bit`.
             if bigint.words.is_empty() {
                 return Ok(MontyObject::Int(0));
             }
@@ -446,7 +499,6 @@ pub fn js_to_monty(value: Unknown<'_>, env: Env) -> Result<MontyObject> {
                 bi = -bi;
             }
 
-            // Try to fit in i64
             if let Ok(i) = i64::try_from(&bi) {
                 Ok(MontyObject::Int(i))
             } else {
@@ -460,28 +512,19 @@ pub fn js_to_monty(value: Unknown<'_>, env: Env) -> Result<MontyObject> {
         ValueType::Object => {
             let obj: Object = value.coerce_to_object()?;
 
-            // Check if it's a Buffer (Uint8Array)
             if obj.is_buffer()? {
                 let buffer: BufferSlice = BufferSlice::from_unknown(value)?;
                 return Ok(MontyObject::Bytes(buffer.to_vec()));
             }
-
-            // Check if it's a Map
             if is_js_map(&obj, env)? {
                 return js_map_to_monty(obj, env);
             }
-
-            // Check if it's a Set
             if is_js_set(&obj, env)? {
                 return js_set_to_monty(obj, env);
             }
-
-            // Check if it's an Array
             if obj.is_array()? {
                 return js_array_to_monty(obj, env);
             }
-
-            // Check for __monty_type__ marker
             if let Some(monty_type) = get_string_property(&obj, "__monty_type__")? {
                 return js_marked_object_to_monty(&obj, &monty_type, env);
             }
@@ -490,8 +533,8 @@ pub fn js_to_monty(value: Unknown<'_>, env: Env) -> Result<MontyObject> {
             js_object_to_monty_dict(obj, env)
         }
         ValueType::Function => {
-            // JS functions are converted to MontyObject::Function for external function resolution.
-            // The function's `name` property is used as the Monty function name.
+            // JS functions become MontyObject::Function (keyed by `name`) for
+            // external function resolution.
             let func_obj: Object = value.coerce_to_object()?;
             let name: String = func_obj
                 .get_named_property::<String>("name")
@@ -525,7 +568,6 @@ fn is_js_map(obj: &Object, env: Env) -> Result<bool> {
 
 /// Converts a JS Map to `MontyObject::Dict`.
 fn js_map_to_monty(map: Object, env: Env) -> Result<MontyObject> {
-    // Get the entries iterator
     let entries_method: Function<()> = map.get_named_property("entries")?;
     let iterator: Object = entries_method.apply(map, ())?.coerce_to_object()?;
 
@@ -554,7 +596,6 @@ fn js_map_to_monty(map: Object, env: Env) -> Result<MontyObject> {
 
 /// Converts a JS Set to `MontyObject::Set`.
 fn js_set_to_monty(set: Object, env: Env) -> Result<MontyObject> {
-    // Get the values iterator
     let values_method: Function<()> = set.get_named_property("values")?;
     let iterator: Object = values_method.apply(set, ())?.coerce_to_object()?;
 
@@ -598,6 +639,7 @@ fn js_array_to_monty(arr: Object, env: Env) -> Result<MontyObject> {
 fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result<MontyObject> {
     match monty_type {
         "Ellipsis" => Ok(MontyObject::Ellipsis),
+        "NotImplemented" => Ok(MontyObject::NotImplemented),
         "Exception" => {
             let exc_type_str: String = obj.get_named_property("excType")?;
             let message: String = obj.get_named_property("message")?;
@@ -642,10 +684,18 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
             let value: String = obj.get_named_property("value")?;
             Ok(MontyObject::Repr(format!("<built-in function {value}>")))
         }
+        "FileHandle" => {
+            let path = get_required_string_property(obj, "path", "MontyFileHandle")?;
+            let mode = get_required_string_property(obj, "mode", "MontyFileHandle")?;
+            let mode: FileMode = mode
+                .parse()
+                .map_err(|error: Cow<'static, str>| Error::from_reason(error.into_owned()))?;
+            let position = get_file_handle_position(obj)?;
+            Ok(MontyObject::FileHandle(MontyFileHandle { path, mode, position }))
+        }
         "Dataclass" => {
             let name: String = obj.get_named_property("name")?;
 
-            // type_id is BigInt - access its public fields
             let type_id_bigint: BigInt = obj.get_named_property("typeId")?;
             let type_id = if type_id_bigint.words.is_empty() {
                 0u64
@@ -655,7 +705,6 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
                 type_id_bigint.words[0]
             };
 
-            // field_names
             let field_names_arr: Array = obj.get_named_property("fieldNames")?;
             let field_names_len = field_names_arr.len();
             let mut field_names = Vec::with_capacity(field_names_len as usize);
@@ -664,7 +713,6 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
                 field_names.push(name);
             }
 
-            // fields object
             let fields_obj: Object = obj.get_named_property("fields")?;
             let mut attrs_vec = Vec::new();
             for field_name in &field_names {
@@ -685,10 +733,51 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
                 frozen,
             })
         }
-        _ => {
-            // Unknown marker type, treat as dict
-            js_object_to_monty_dict(*obj, env)
-        }
+        _ => Err(Error::from_reason(format!("Unknown Monty marker type: {monty_type}"))),
+    }
+}
+
+/// Reads and validates the optional JavaScript-safe file position.
+fn get_file_handle_position(obj: &Object) -> Result<u64> {
+    if !obj.has_named_property("position")? {
+        return Ok(0);
+    }
+
+    let value: Unknown = obj.get_named_property("position")?;
+    if value.get_type()? == ValueType::Undefined {
+        return Ok(0);
+    }
+    if value.get_type()? != ValueType::Number {
+        return Err(Error::from_reason(
+            "MontyFileHandle position must be a non-negative safe integer",
+        ));
+    }
+
+    let position = value.coerce_to_number()?.get_double()?;
+    if position.is_finite() && position.fract() == 0.0 && (0.0..=JS_MAX_SAFE_POSITION_F64).contains(&position) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "validated as a non-negative safe integer"
+        )]
+        Ok(position as u64)
+    } else {
+        Err(Error::from_reason(
+            "MontyFileHandle position must be a non-negative safe integer",
+        ))
+    }
+}
+
+/// Reads a required string field from a marked object without coercion.
+fn get_required_string_property(obj: &Object, name: &str, marker: &str) -> Result<String> {
+    if !obj.has_named_property(name)? {
+        return Err(Error::from_reason(format!("{marker} {name} must be a string")));
+    }
+    let value: Unknown = obj.get_named_property(name)?;
+    if value.get_type()? == ValueType::String {
+        value.coerce_to_string()?.into_utf8()?.into_owned()
+    } else {
+        Err(Error::from_reason(format!("{marker} {name} must be a string")))
     }
 }
 
@@ -699,7 +788,6 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
 /// For full key type preservation, use JS `Map` instead.
 fn js_object_to_monty_dict(obj: Object, env: Env) -> Result<MontyObject> {
     let keys = obj.get_property_names()?;
-    // Get length by accessing the "length" property
     let length: u32 = keys.get_named_property("length")?;
     let mut pairs = Vec::with_capacity(length as usize);
 

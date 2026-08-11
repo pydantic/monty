@@ -5,23 +5,26 @@ use std::{
     mem, slice, vec,
 };
 
-use ahash::AHashSet;
 use hashbrown::HashTable;
 use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
 
-use super::{DictItemsView, DictKeysView, DictValuesView, MontyIter, PyTrait, allocate_tuple};
+use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, list::repr_check_time};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
-    bytecode::{CallResult, VM},
+    bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
-    heap::{
-        ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput,
-        RecursionToken,
-    },
+    exception_private::{ExcType, ExcTypeExt, RunResult},
+    expressions::CmpOperator,
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    resource::ResourceTracker,
+    modules::collections::{
+        counter::{
+            CounterCmp, CounterOp, counter_binary_op, counter_compare, counter_elements, counter_inplace_op,
+            counter_most_common, counter_order, counter_total, counter_unary_op, counter_update_method,
+        },
+        defaultdict::defaultdict_missing,
+    },
     types::Type,
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -72,6 +75,67 @@ pub(crate) struct Dict {
     /// in `collect_child_ids` and `py_dec_ref_ids` when no refs are present.
     /// Only transitions from false to true (never back) since tracking removals would be O(n).
     contains_refs: bool,
+    /// Whether this is a plain `dict` or a `collections.defaultdict` (and its
+    /// factory). A defaultdict reuses all of `Dict`'s behaviour and only
+    /// diverges on missing-key access, `type`/`repr`, and the
+    /// `default_factory` attribute.
+    kind: DictKind,
+}
+
+/// Distinguishes a plain `dict` from a `collections.defaultdict` or `Counter`.
+///
+/// Stored as one word: a plain `dict` (the overwhelmingly common case) is
+/// `None`, and the special kinds box a [`DictSpecial`]. `Dict` is embedded
+/// inline in `Instance` and `Module`, so every byte here is paid by the
+/// `HeapData` size ceiling (see the assertion in `heap_data.rs`) — an unboxed
+/// factory `Value` would push the whole heap arena's entry size up.
+///
+/// The real solution is inheritance, as CPython does it: both are genuine
+/// `dict` subclasses there (`class Counter(dict)`; `defaultdict`'s C struct
+/// embeds a `PyDictObject` and adds a `default_factory`), so they get the dict
+/// surface *and* their own type identity. Monty has no inheritance and derives
+/// type from the `HeapData` variant, so kinds approximate the reuse half only —
+/// hence the `type(x) is Counter` divergence in `limitations/collections.md`.
+/// Workable in the meantime; revisit once inheritance exists.
+///
+/// The defaultdict factory is a heap reference the dict owns — released in
+/// [`Dict::py_dec_ref_ids`] / `DropWithContext` and reported to the cycle
+/// collector alongside the entries, so those two paths MUST stay in sync.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DictKind(Option<Box<DictSpecial>>);
+
+/// Boxed state for the non-plain [`DictKind`]s. Private to this module —
+/// everything outside speaks through `DictKind`'s constructors and `Dict`'s
+/// accessors (`is_defaultdict`, `default_factory`, `kind_type`, ...).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum DictSpecial {
+    /// A `collections.defaultdict`; the optional `default_factory` is invoked
+    /// on a missing-key access. `None` means missing keys raise `KeyError`.
+    Default(Option<Value>),
+    /// A `collections.Counter`; a missing-key access returns `0` (without
+    /// inserting), and it adds `most_common`/`elements`/arithmetic on top of
+    /// the dict surface.
+    Counter,
+}
+
+impl DictKind {
+    /// A plain `dict` — no allocation.
+    #[must_use]
+    pub fn plain() -> Self {
+        Self(None)
+    }
+
+    /// A `defaultdict` kind, taking ownership of the factory reference.
+    #[must_use]
+    pub fn defaultdict(factory: Option<Value>) -> Self {
+        Self(Some(Box::new(DictSpecial::Default(factory))))
+    }
+
+    /// A `Counter` kind.
+    #[must_use]
+    pub fn counter() -> Self {
+        Self(Some(Box::new(DictSpecial::Counter)))
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -94,6 +158,100 @@ impl Dict {
             indices: HashTable::with_capacity(capacity),
             entries: Vec::with_capacity(capacity),
             contains_refs: false,
+            kind: DictKind::plain(),
+        }
+    }
+
+    /// Marks this dict as a `defaultdict` with the given factory (a callable or
+    /// `None`), taking ownership of the factory reference. Called once at
+    /// construction; the factory joins the dict's `contains_refs` accounting.
+    pub fn make_defaultdict(&mut self, factory: Option<Value>) {
+        if matches!(factory, Some(Value::Ref(_))) {
+            self.contains_refs = true;
+        }
+        self.kind = DictKind::defaultdict(factory);
+    }
+
+    /// Returns whether this dict is a `defaultdict`.
+    #[must_use]
+    pub fn is_defaultdict(&self) -> bool {
+        matches!(self.kind.0.as_deref(), Some(DictSpecial::Default(_)))
+    }
+
+    /// Marks this dict as a `collections.Counter`.
+    pub fn make_counter(&mut self) {
+        self.kind = DictKind::counter();
+    }
+
+    /// Returns whether this dict is a `Counter`.
+    #[must_use]
+    pub fn is_counter(&self) -> bool {
+        matches!(self.kind.0.as_deref(), Some(DictSpecial::Counter))
+    }
+
+    /// Clones this dict's kind for a derived dict, taking a counted reference to
+    /// a `defaultdict` factory.
+    ///
+    /// Exhaustive over [`DictKind`] on purpose: every operation that builds a
+    /// *new* dict from an existing one (`copy`, and any future `|` / slice-like
+    /// derivation) must carry the tag across, and a hand-written `if
+    /// is_defaultdict()` chain silently degrades a `Counter` to a plain dict.
+    #[must_use]
+    pub fn cloned_kind(&self, heap: &impl ContainsHeap) -> DictKind {
+        match self.kind.0.as_deref() {
+            None => DictKind::plain(),
+            Some(DictSpecial::Default(factory)) => {
+                DictKind::defaultdict(factory.as_ref().map(|f| f.clone_with_heap(heap)))
+            }
+            Some(DictSpecial::Counter) => DictKind::counter(),
+        }
+    }
+
+    /// Adopts a kind produced by [`cloned_kind`], taking ownership of any
+    /// factory reference it carries.
+    pub fn set_kind(&mut self, kind: DictKind) {
+        if matches!(kind.0.as_deref(), Some(DictSpecial::Default(Some(Value::Ref(_))))) {
+            self.contains_refs = true;
+        }
+        self.kind = kind;
+    }
+
+    /// Returns the Python type for this dict's kind (`dict`, `defaultdict`, or
+    /// `Counter`).
+    #[must_use]
+    pub fn kind_type(&self) -> Type {
+        match self.kind.0.as_deref() {
+            None => Type::Dict,
+            Some(DictSpecial::Default(_)) => Type::DefaultDict,
+            Some(DictSpecial::Counter) => Type::Counter,
+        }
+    }
+
+    /// Returns the `default_factory` callable, or `None` for a plain dict or a
+    /// factory-less defaultdict.
+    #[must_use]
+    pub fn default_factory(&self) -> Option<&Value> {
+        match self.kind.0.as_deref() {
+            Some(DictSpecial::Default(factory)) => factory.as_ref(),
+            None | Some(DictSpecial::Counter) => None,
+        }
+    }
+
+    /// Replaces the `default_factory` (the `d.default_factory = ...` setter),
+    /// returning the previous factory for the caller to drop. Only valid on a
+    /// defaultdict.
+    pub fn replace_default_factory(&mut self, factory: Option<Value>) -> Option<Value> {
+        if matches!(factory, Some(Value::Ref(_))) {
+            self.contains_refs = true;
+        }
+        // The `default_factory =` setter only calls this on an existing
+        // defaultdict; the other arms are defensive.
+        match self.kind.0.as_deref_mut() {
+            Some(DictSpecial::Default(slot)) => mem::replace(slot, factory),
+            None | Some(DictSpecial::Counter) => {
+                self.kind = DictKind::defaultdict(factory);
+                None
+            }
         }
     }
 
@@ -118,15 +276,15 @@ impl Dict {
     /// Assumes the caller is transferring ownership of all keys and values in the pairs.
     /// Does NOT increment reference counts since ownership is being transferred.
     /// Returns Err if any key is unhashable (e.g., list, dict).
-    pub fn from_pairs(pairs: Vec<(Value, Value)>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+    pub fn from_pairs(pairs: Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunResult<Self> {
         let pairs_iter = pairs.into_iter();
         defer_drop_mut!(pairs_iter, vm);
         let dict = Self::with_capacity(pairs_iter.len());
-        let mut dict_guard = HeapGuard::new(dict, vm);
+        let mut dict_guard = DropGuard::new(dict, vm);
         let (dict, vm) = dict_guard.as_parts_mut();
         for (key, value) in pairs_iter {
             if let Some(old_value) = dict.set(key, value, vm)? {
-                old_value.drop_with_heap(vm);
+                old_value.drop_with(vm);
             }
         }
         Ok(dict_guard.into_inner())
@@ -139,12 +297,10 @@ impl Dict {
     /// we can compare keys directly by their string contents while preserving the
     /// same duplicate-key semantics as CPython (`{"a": 1, "a": 2}` keeps the
     /// last value and retains the first insertion position).
-    pub fn set_json_string_key(
-        &mut self,
-        key: Value,
-        value: Value,
-        vm: &mut VM<'_, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
+    ///
+    /// Ownership follows [`Dict::set`]: `key` and `value` transfer to the dict,
+    /// and are released here if the insertion exceeds the memory limit.
+    pub fn set_json_string_key(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
         debug_assert!(json_key_string_slice(&key, vm.heap, vm.interns).is_some());
 
         if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
@@ -160,10 +316,9 @@ impl Dict {
         let entry = DictEntry { key, value, hash };
         if let Some(index) = opt_index {
             let old_entry = mem::replace(&mut self.entries[index], entry);
-            old_entry.key.drop_with_heap(vm);
+            old_entry.key.drop_with(vm);
             Ok(Some(old_entry.value))
         } else {
-            vm.heap.track_growth(2 * VALUE_SIZE)?;
             let index = self.entries.len();
             self.entries.push(entry);
             self.indices.insert_unique(hash, index, |&i| self.entries[i].hash);
@@ -175,13 +330,7 @@ impl Dict {
     ///
     /// The `hash` must match the Python string hash for `key`. Only string keys
     /// participate; any non-string entry is treated as non-equal.
-    fn find_json_string_key_index(
-        &self,
-        hash: u64,
-        key: &Value,
-        heap: &Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Option<usize> {
+    fn find_json_string_key_index(&self, hash: u64, key: &Value, heap: &Heap, interns: &Interns) -> Option<usize> {
         let key_str = json_key_string_slice(key, heap, interns).expect("json object keys are always string values");
         self.indices
             .find(hash, |&idx| {
@@ -196,11 +345,7 @@ impl Dict {
 ///
 /// JSON object parsing only inserts string keys, but the helper remains
 /// defensive and returns `None` for any non-string value.
-fn json_key_string_slice<'a>(
-    key: &'a Value,
-    heap: &'a Heap<impl ResourceTracker>,
-    interns: &'a Interns,
-) -> Option<&'a str> {
+fn json_key_string_slice<'a>(key: &'a Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
     match key {
         Value::InternString(id) => Some(interns.get_str(*id)),
         Value::Ref(id) => match heap.get(*id) {
@@ -215,7 +360,7 @@ fn json_key_string_slice<'a>(
 ///
 /// This bypasses Python's full equality machinery because JSON object keys are
 /// always strings, so content comparison is sufficient and much cheaper.
-fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> bool {
+fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap, interns: &Interns) -> bool {
     match key {
         Value::InternString(id) => interns.get_str(*id) == expected,
         Value::Ref(id) => match heap.get(*id) {
@@ -227,15 +372,78 @@ fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap<impl ResourceTra
 }
 
 impl<'h> HeapRead<'h, Dict> {
+    /// Element-wise equality against another dict (matching keys and values).
+    ///
+    /// Shared by `Dict::py_eq_impl` and `Dataclass::py_eq_impl` (which compares
+    /// the dataclasses' attribute dicts).
+    pub(crate) fn eq_dict(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<bool> {
+        if self.get(vm.heap).len() != other.get(vm.heap).len() {
+            return Ok(false);
+        }
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((key, value)) = iter.next(vm)? {
+            let Some(other_value) = other.dict_get(key, vm)? else {
+                return Ok(false);
+            };
+            defer_drop!(other_value, vm);
+            if !value.py_eq(other_value, vm)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Multiset equality between two Counters.
+    ///
+    /// CPython compares over the union of both key sets with a missing key
+    /// reading as `0`, so a zero count is indistinguishable from an absent one
+    /// (`Counter(a=1, b=0) == Counter(a=1)`).
+    ///
+    /// Applies ONLY between two Counters: against anything else
+    /// `Counter.__eq__` returns `NotImplemented` and the comparison falls back
+    /// to [`eq_dict`](Self::eq_dict), where a zero count *is* a real entry — so
+    /// `Counter(a=1, b=0) == {'a': 1}` stays `False`.
+    pub(crate) fn eq_counter(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<bool> {
+        // Every count in `self` must match the other side's, missing reading as 0.
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((key, value)) = iter.next(vm)? {
+            let other_value = other.dict_get(key, vm)?;
+            let eq = match &other_value {
+                Some(other_value) => value.py_eq(other_value, vm),
+                None => value.py_eq(&Value::Int(0), vm),
+            };
+            if let Some(other_value) = other_value {
+                other_value.drop_with(vm);
+            }
+            if !eq? {
+                return Ok(false);
+            }
+        }
+
+        // Keys only in `other` were not visited above, and must themselves be 0.
+        let other_iter = other.iter(vm)?;
+        defer_drop_mut!(other_iter, vm);
+        while let Some((key, value)) = other_iter.next(vm)? {
+            match self.dict_get(key, vm)? {
+                // Already compared in the first pass.
+                Some(existing) => existing.drop_with(vm),
+                None => {
+                    if !value.py_eq(&Value::Int(0), vm)? {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(true)
+    }
+
     /// Gets a value from the dict by key.
     ///
     /// Returns Ok(Some(value)) if key exists, Ok(None) if key doesn't exist.
     /// Returns Err if key is unhashable.
-    pub(crate) fn dict_get<'a>(
-        &'a self,
-        key: &Value,
-        vm: &'a mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
+    pub(crate) fn dict_get<'a>(&'a self, key: &Value, vm: &'a mut VM<'h>) -> RunResult<Option<Value>> {
         let (opt_index, _hash) = self.find_index_hash(key, vm)?;
         if let Some(index) = opt_index {
             Ok(Some(self.get(vm.heap).entries[index].value.clone_with_heap(vm.heap)))
@@ -250,7 +458,7 @@ impl Dict {
     ///
     /// This is an O(1) lookup that doesn't require mutable heap access.
     /// Only works for string keys - returns None if the key is not found.
-    pub fn get_by_str(&self, key_str: &str, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Option<&Value> {
+    pub fn get_by_str(&self, key_str: &str, heap: &Heap, interns: &Interns) -> Option<&Value> {
         // Compute hash for the string key
         let mut hasher = DefaultHasher::new();
         key_str.hash(&mut hasher);
@@ -283,8 +491,9 @@ impl Dict {
     ///
     /// If the key already exists, replaces the old value and returns it (caller now
     /// owns the old value and is responsible for its refcount).
-    /// Returns Err if key is unhashable.
-    pub fn set(&mut self, key: Value, value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    /// Returns Err if key is unhashable or the insertion exceeds the memory limit;
+    /// either way `key` and `value` are released, so the caller must not drop them.
+    pub fn set(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
         vm.heap.protect_mut(self).set(key, value, vm)
     }
 }
@@ -298,8 +507,9 @@ impl<'h> HeapRead<'h, Dict> {
     ///
     /// If the key already exists, replaces the old value and returns it (caller now
     /// owns the old value and is responsible for its refcount).
-    /// Returns Err if key is unhashable.
-    pub fn set(&mut self, key: Value, value: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    /// Returns Err if key is unhashable or the insertion exceeds the memory limit;
+    /// either way `key` and `value` are released, so the caller must not drop them.
+    pub fn set(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         // Track if we're adding a reference for GC optimization
         if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
@@ -310,8 +520,8 @@ impl<'h> HeapRead<'h, Dict> {
             Ok(result) => result,
             Err(e) => {
                 // Drop the key and value before returning the error
-                key.drop_with_heap(vm);
-                value.drop_with_heap(vm);
+                key.drop_with(vm);
+                value.drop_with(vm);
                 return Err(e);
             }
         };
@@ -322,13 +532,10 @@ impl<'h> HeapRead<'h, Dict> {
             let old_entry = mem::replace(&mut self.get_mut(vm.heap).entries[index], entry);
 
             // Decrement refcount for old key (we're discarding it)
-            old_entry.key.drop_with_heap(vm);
+            old_entry.key.drop_with(vm);
             // Transfer ownership of the old value to caller (no clone needed)
             Ok(Some(old_entry.value))
         } else {
-            // Key doesn't exist — track memory growth before adding the new entry.
-            // Growth unit is 2 * size_of::<Value>() to match Dict::py_estimate_size.
-            vm.heap.track_growth(2 * VALUE_SIZE)?;
             let this = self.get_mut(vm.heap);
             let index = this.entries.len();
             this.entries.push(entry);
@@ -345,7 +552,7 @@ impl<'h> HeapRead<'h, Dict> {
     ///
     /// Reference counting: does not decrement refcounts for removed key and value;
     /// caller assumes ownership and is responsible for managing their refcounts.
-    pub fn pop(&mut self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<(Value, Value)>> {
+    pub fn pop(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Option<(Value, Value)>> {
         // Find the key using the candidate-based lookup
         let (opt_index, _hash) = self.find_index_hash(key, vm)?;
 
@@ -420,19 +627,19 @@ impl Dict {
     ///
     /// For now, only real `dict` values use mapping-copy semantics; other values
     /// are interpreted as iterables of pairs.
-    pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let DictInitArgs { source, extras } = DictInitArgs::from_args(args, vm)?;
         let dict = Self::new();
-        let mut dict_guard = HeapGuard::new(dict, vm);
+        let mut dict_guard = DropGuard::new(dict, vm);
 
         {
             let (dict, vm) = dict_guard.as_parts_mut();
-            let mut kwargs_guard = HeapGuard::new(extras, vm);
+            let mut kwargs_guard = DropGuard::new(extras, vm);
 
             if let Some(other_value) = source {
-                let other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
+                let other_value_guard = DropGuard::new(other_value, kwargs_guard.ctx());
                 let other_value = other_value_guard.into_inner();
-                dict_merge_from_value(dict, other_value, kwargs_guard.heap())?;
+                dict_merge_from_value(dict, other_value, kwargs_guard.ctx())?;
             }
 
             let kwargs = kwargs_guard.into_inner();
@@ -440,7 +647,7 @@ impl Dict {
         }
 
         let dict = dict_guard.into_inner();
-        let heap_id = vm.heap.allocate(HeapData::Dict(dict))?;
+        let heap_id = vm.heap.allocate(HeapData::Dict(dict));
         Ok(Value::Ref(heap_id))
     }
 }
@@ -460,10 +667,10 @@ struct DictInitArgs {
 }
 
 impl<'h> HeapRead<'h, Dict> {
-    fn find_index_hash(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<(Option<usize>, u64)> {
+    fn find_index_hash(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<(Option<usize>, u64)> {
         let hash = key
             .py_hash(vm)?
-            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(vm)))?
+            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(&key.py_type_name(vm)))?
             .raw();
 
         // Dict keys are typically shallow (strings, ints, tuples of primitives),
@@ -492,7 +699,7 @@ impl<'h> HeapRead<'h, Dict> {
     }
 
     /// Checks whether the dict contains a given key.
-    pub(crate) fn contains_key(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+    pub(crate) fn contains_key(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let (opt_index, _hash) = self.find_index_hash(key, vm)?;
         Ok(opt_index.is_some())
     }
@@ -505,7 +712,7 @@ impl<'h> HeapRead<'h, Dict> {
     /// [`DictIter`]) because that's the obvious entry point for "iterate
     /// this container".
     #[expect(clippy::iter_not_returning_iterator)]
-    pub(crate) fn iter<R: ResourceTracker>(&self, vm: &mut VM<'h, R>) -> RunResult<DictIter<'_, 'h>> {
+    pub(crate) fn iter(&self, vm: &mut VM<'h>) -> RunResult<DictIter<'_, 'h>> {
         DictIter::new(self, vm)
     }
 
@@ -513,8 +720,8 @@ impl<'h> HeapRead<'h, Dict> {
     ///
     /// For dict sources, uses HeapReader::read() to access the source dict through
     /// the heap, enabling self-referential updates like `d.update(d)`.
-    fn merge_from_value(&mut self, other_value: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
-        let mut guard = HeapGuard::new(other_value, vm);
+    fn merge_from_value(&mut self, other_value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let mut guard = DropGuard::new(other_value, vm);
         let (other_value, vm) = guard.as_parts_mut();
         if let Value::Ref(id) = other_value {
             let src_id = *id;
@@ -523,7 +730,7 @@ impl<'h> HeapRead<'h, Dict> {
                 defer_drop_mut!(iter, vm);
                 while let Some((key, value)) = iter.next_owned(vm)? {
                     let old_value = self.set(key, value, vm)?;
-                    old_value.drop_with_heap(vm);
+                    old_value.drop_with(vm);
                 }
 
                 // guard drops other_value here
@@ -537,30 +744,32 @@ impl<'h> HeapRead<'h, Dict> {
     }
 
     /// Merges key-value pairs from an iterable of 2-item pairs.
-    fn merge_from_iterable_pairs(&mut self, iterable: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
-        let iter = MontyIter::new(iterable, vm)?;
-        defer_drop_mut!(iter, vm);
+    fn merge_from_iterable_pairs(&mut self, iterable: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let iter = iterable.into_py_iter(vm)?;
+        defer_drop!(iter, vm);
+        let mut iter = iter.read(vm);
 
-        while let Some(item) = iter.for_next(vm)? {
-            let pair_iter = MontyIter::new(item, vm)?;
-            defer_drop_mut!(pair_iter, vm);
+        while let Some(item) = iter.py_next(vm)? {
+            let pair_iter = item.into_py_iter(vm)?;
+            defer_drop!(pair_iter, vm);
+            let mut pair_iter = pair_iter.read(vm);
 
-            let Some(key) = pair_iter.for_next(vm)? else {
+            let Some(key) = pair_iter.py_next(vm)? else {
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length 0; 2 is required",
                 ));
             };
-            let mut key_guard = HeapGuard::new(key, vm);
+            let mut key_guard = DropGuard::new(key, vm);
 
-            let Some(value) = pair_iter.for_next(key_guard.heap())? else {
+            let Some(value) = pair_iter.py_next(key_guard.ctx())? else {
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length 1; 2 is required",
                 ));
             };
-            let mut value_guard = HeapGuard::new(value, key_guard.heap());
+            let mut value_guard = DropGuard::new(value, key_guard.ctx());
 
-            if let Some(extra) = pair_iter.for_next(value_guard.heap())? {
-                extra.drop_with_heap(value_guard.heap());
+            if let Some(extra) = pair_iter.py_next(value_guard.ctx())? {
+                extra.drop_with(value_guard.ctx());
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length > 2; 2 is required",
                 ));
@@ -570,7 +779,7 @@ impl<'h> HeapRead<'h, Dict> {
             let key = key_guard.into_inner();
 
             if let Some(old_value) = self.set(key, value, vm)? {
-                old_value.drop_with_heap(vm);
+                old_value.drop_with(vm);
             }
         }
 
@@ -578,12 +787,12 @@ impl<'h> HeapRead<'h, Dict> {
     }
 
     /// Merges kwargs into self.
-    fn merge_from_kwargs(&mut self, kwargs: KwargsValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
+    fn merge_from_kwargs(&mut self, kwargs: KwargsValues, vm: &mut VM<'h>) -> RunResult<()> {
         let kwargs_iter = kwargs.into_iter();
         defer_drop_mut!(kwargs_iter, vm);
         for (key, value) in kwargs_iter {
             let old_value = self.set(key, value, vm)?;
-            old_value.drop_with_heap(vm);
+            old_value.drop_with(vm);
         }
         Ok(())
     }
@@ -649,25 +858,27 @@ impl IntoIterator for Dict {
 /// Borrows a [`HeapRead`] for its lifetime, so the heap entry is pinned by
 /// the reader count for the duration of iteration.
 ///
-/// **Two yield modes.** Pick the variant that matches the caller's natural
-/// pattern to avoid redundant `clone_with_heap` / `drop_with_heap` work:
+/// **Yield modes.** Pick the variant that matches the caller's natural
+/// pattern to avoid redundant `clone_with_heap` / `drop_with` work:
 ///
 /// - [`next`](Self::next) returns `Option<(&Value, &Value)>`. The iterator
 ///   owns the most-recently-yielded pair (using [`Value::Undefined`] as the
 ///   empty sentinel) and drops the previous pair at the start of each call,
 ///   so "use and discard" call sites do **not** need a per-item
 ///   `defer_drop!`.
+/// - [`next_value`](Self::next_value) returns only a borrowed value, avoiding
+///   key refcount churn for value-only operations.
 /// - [`next_owned`](Self::next_owned) returns `Option<(Value, Value)>` and
 ///   clones straight into the return value, leaving the internal slot
 ///   `Undefined`. Prefer this when feeding pairs into a sink that takes
 ///   ownership (e.g. [`HeapRead::set`], `Set::add`) — going through `next`
 ///   forces a second `clone_with_heap` per element.
 ///
-/// Mixing the two modes is supported: every step drops whatever the slot
+/// Mixing the yield modes is supported: every step drops whatever the slot
 /// held before doing its work.
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
-/// releases it via [`DropWithHeap`]. The iterator MUST be wrapped in
+/// releases it via [`DropWithContext`]. The iterator MUST be wrapped in
 /// [`defer_drop_mut!`] so the token (and any in-flight pair) is released on
 /// every exit path — dict iteration almost always calls back into
 /// `py_eq` / `py_hash` (membership lookups, comparison) which recurse on
@@ -676,7 +887,7 @@ impl IntoIterator for Dict {
 /// **Mutation policy.** The initial length is captured at construction. If
 /// the dict's size changes between steps, the next step returns
 /// `RuntimeError: dictionary changed size during iteration` (matching
-/// CPython and [`MontyIter`]'s dict behavior). Same-size updates (replacing
+/// CPython and Monty's dict-iterator behavior). Same-size updates (replacing
 /// a value at an existing key) are allowed and observable.
 pub(crate) struct DictIter<'a, 'h> {
     dict: &'a HeapRead<'h, Dict>,
@@ -691,9 +902,9 @@ pub(crate) struct DictIter<'a, 'h> {
 }
 
 impl<'a, 'h> DictIter<'a, 'h> {
-    fn new<R: ResourceTracker>(dict: &'a HeapRead<'h, Dict>, vm: &mut VM<'h, R>) -> RunResult<Self> {
+    fn new(dict: &'a HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Self> {
         let expected_len = dict.get(vm.heap).entries.len();
-        let token = vm.heap.incr_recursion_depth()?;
+        let token = vm.recursion_token()?;
         Ok(Self {
             dict,
             index: 0,
@@ -710,10 +921,7 @@ impl<'a, 'h> DictIter<'a, 'h> {
     ///
     /// Returns `Err(RuntimeError)` if the dict's size has changed since
     /// construction.
-    pub(crate) fn next<'i, R: ResourceTracker>(
-        &'i mut self,
-        vm: &mut VM<'h, R>,
-    ) -> RunResult<Option<(&'i Value, &'i Value)>> {
+    pub(crate) fn next<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<(&'i Value, &'i Value)>> {
         let Some(entry_index) = self.advance(vm)? else {
             return Ok(None);
         };
@@ -721,6 +929,20 @@ impl<'a, 'h> DictIter<'a, 'h> {
         self.current_key = entry.key.clone_with_heap(vm.heap);
         self.current_value = entry.value.clone_with_heap(vm.heap);
         Ok(Some((&self.current_key, &self.current_value)))
+    }
+
+    /// Advances the iterator and returns a borrow of the next value.
+    ///
+    /// Prefer this for value-only operations so dictionary keys are not cloned.
+    /// The returned reference is valid until the next call that advances the
+    /// iterator, or until the iterator is dropped.
+    pub(crate) fn next_value<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<&'i Value>> {
+        let Some(entry_index) = self.advance(vm)? else {
+            return Ok(None);
+        };
+        let entry = &self.dict.get(vm.heap).entries[entry_index];
+        self.current_value = entry.value.clone_with_heap(vm.heap);
+        Ok(Some(&self.current_value))
     }
 
     /// Advances the iterator and returns the next `(key, value)` pair as
@@ -734,7 +956,7 @@ impl<'a, 'h> DictIter<'a, 'h> {
     ///
     /// The iterator's internal slot is left `Undefined` after this call, so
     /// callers can freely mix `next` and `next_owned` on the same iterator.
-    pub(crate) fn next_owned<R: ResourceTracker>(&mut self, vm: &mut VM<'h, R>) -> RunResult<Option<(Value, Value)>> {
+    pub(crate) fn next_owned(&mut self, vm: &mut VM<'h>) -> RunResult<Option<(Value, Value)>> {
         let Some(entry_index) = self.advance(vm)? else {
             return Ok(None);
         };
@@ -743,15 +965,15 @@ impl<'a, 'h> DictIter<'a, 'h> {
         Ok(Some(pair))
     }
 
-    /// Shared step for [`next`](Self::next) / [`next_owned`](Self::next_owned).
+    /// Shared step for the iterator's borrowed and owned yield modes.
     ///
     /// Releases the previously-yielded slot (no-op when each slot is
     /// `Undefined`), runs the per-step time check and the dict mutation
     /// guard, then returns the entry index to read at — or `Ok(None)` when
     /// the iterator is exhausted. Bumps `self.index` on success.
-    fn advance<R: ResourceTracker>(&mut self, vm: &mut VM<'h, R>) -> RunResult<Option<usize>> {
-        mem::replace(&mut self.current_key, Value::Undefined).drop_with_heap(vm.heap);
-        mem::replace(&mut self.current_value, Value::Undefined).drop_with_heap(vm.heap);
+    fn advance(&mut self, vm: &mut VM<'h>) -> RunResult<Option<usize>> {
+        mem::replace(&mut self.current_key, Value::Undefined).drop_with(vm.heap);
+        mem::replace(&mut self.current_value, Value::Undefined).drop_with(vm.heap);
         vm.heap.check_time()?;
         let current = self.dict.get(vm.heap);
         if current.entries.len() != self.expected_len {
@@ -766,11 +988,146 @@ impl<'a, 'h> DictIter<'a, 'h> {
     }
 }
 
-impl DropWithHeap for DictIter<'_, '_> {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.current_key.drop_with_heap(heap);
-        self.current_value.drop_with_heap(heap);
-        self.token.drop_with_heap(heap);
+impl<'h, C: ContainsVM<'h>> DropWithContext<C> for DictIter<'_, 'h> {
+    fn drop_with(self, container: &mut C) {
+        self.current_key.drop_with(container);
+        self.current_value.drop_with(container);
+        self.token.drop_with(container);
+    }
+}
+
+impl<'h> HeapRead<'h, Dict> {
+    /// Writes the plain `{k: v, ...}` mapping repr — the body shared by `dict`
+    /// and the `defaultdict(<factory>, <body>)` wrapper.
+    fn write_map_repr(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        if self.get(vm.heap).is_empty() {
+            return Ok(f.write_str("{}")?);
+        }
+
+        // Check depth limit before recursing
+        let Ok(mut guard) = vm.recursion_guard() else {
+            return Ok(f.write_str("{...}")?);
+        };
+        let vm = &mut *guard;
+
+        f.write_char('{')?;
+        // Iterate the live entries like CPython, cloning only the current pair
+        // (refcount bumps — required because the reprs below run user
+        // `__repr__` code that may drop the dict's references). Bounds are
+        // re-checked every index, so mid-repr mutation cannot panic: inserted
+        // entries append and are printed (matching CPython); a deletion shifts
+        // `entries` where CPython leaves a tombstone, so later entries can be
+        // skipped (see `limitations/builtins.md`).
+        for i in 0.. {
+            let Some((key, value)) = self.get(vm.heap).item_at(i) else {
+                break;
+            };
+            let pair = (key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap));
+            defer_drop!(pair, vm);
+            let (key, value) = pair;
+            if i > 0 {
+                if repr_check_time(i, vm) {
+                    f.write_str(", ...[timeout]")?;
+                    break;
+                }
+                f.write_str(", ")?;
+            }
+            key.py_repr_fmt(f, vm, heap_ids)?;
+            f.write_str(": ")?;
+            value.py_repr_fmt(f, vm, heap_ids)?;
+        }
+        f.write_char('}')?;
+
+        Ok(())
+    }
+
+    /// Writes the `{k: v, ...}` body for a Counter repr, ordered by count
+    /// descending (`most_common` order) rather than insertion order.
+    fn write_counter_map_repr(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        let Ok(mut guard) = vm.recursion_guard() else {
+            return Ok(f.write_str("{...}")?);
+        };
+        let vm = &mut *guard;
+
+        // Snapshot the entries BEFORE ordering: the reprs printed below run
+        // user `__repr__` code that can mutate the Counter, so the ordered
+        // indices must refer to the snapshot, not live entries.
+        let pairs = self.clone_all_pairs(vm)?;
+        defer_drop!(pairs, vm);
+        // The counts clone and the order indices live alongside the pair
+        // snapshot — preflight them too so an over-budget Counter raises a
+        // graceful `MemoryError` instead of hitting the allocator hard limit.
+        vm.heap
+            .tracker()
+            .check_allocation(pairs.len().saturating_mul(VALUE_SIZE + mem::size_of::<usize>()))?;
+        let counts = pairs.iter().map(|(_, value)| value.clone_with_heap(vm.heap)).collect();
+        let order = counter_order(counts, vm)?;
+        f.write_char('{')?;
+        for (n, &i) in order.iter().enumerate() {
+            if n > 0 {
+                if repr_check_time(n, vm) {
+                    f.write_str(", ...[timeout]")?;
+                    break;
+                }
+                f.write_str(", ")?;
+            }
+            let (key, value) = &pairs[i];
+            key.py_repr_fmt(f, vm, heap_ids)?;
+            f.write_str(": ")?;
+            value.py_repr_fmt(f, vm, heap_ids)?;
+        }
+        f.write_char('}')?;
+        Ok(())
+    }
+
+    /// Clones every entry as a refcount-bumped `(key, value)` pair, for the
+    /// Counter repr: printing runs user `__repr__` code against indices from
+    /// the ordering pass, so live indices would panic or skew once that code
+    /// mutates the Counter — and CPython's `most_common()` snapshots the same way.
+    ///
+    /// Preflights the slot bytes so an over-budget clone raises a graceful
+    /// `MemoryError` instead of bursting past the allocator's hard limit.
+    fn clone_all_pairs(&self, vm: &mut VM<'h>) -> RunResult<Vec<(Value, Value)>> {
+        let len = self.get(vm.heap).len();
+        vm.heap.tracker().check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
+        let mut pairs = Vec::with_capacity(len);
+        // No user code runs during the snapshot, so `len` stays current and
+        // the `expect`s cannot fire.
+        for i in 0..len {
+            let dict = self.get(vm.heap);
+            let key = dict.key_at(i).expect("index in range").clone_with_heap(vm.heap);
+            let value = dict.value_at(i).expect("index in range").clone_with_heap(vm.heap);
+            pairs.push((key, value));
+        }
+        Ok(pairs)
+    }
+
+    /// Handles dict attribute assignment. Only `defaultdict.default_factory` is
+    /// settable, and it accepts *any* value (see the note below); it returns the
+    /// previous factory for the caller to drop. Every other attribute — and any
+    /// attribute on a plain dict — raises the generic no-setattr
+    /// `AttributeError`. Consumes `value`.
+    fn set_default_factory_attr(
+        &mut self,
+        attr: &EitherStr,
+        value: Value,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Option<Value>> {
+        if self.get(vm.heap).is_defaultdict() && attr.static_string() == Some(StaticStrings::DefaultFactory) {
+            // Deliberately unvalidated: CPython's setter is a plain member
+            // assignment, so a non-callable is stored and only raises
+            // `'int' object is not callable` when a missing key finally calls it.
+            // (The *constructor* does check — see `modules::collections::defaultdict`.)
+            if matches!(value, Value::None) {
+                Ok(self.get_mut(vm.heap).replace_default_factory(None))
+            } else {
+                Ok(self.get_mut(vm.heap).replace_default_factory(Some(value)))
+            }
+        } else {
+            let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+            value.drop_with(vm);
+            Err(ExcType::attribute_error_no_setattr(&type_name, attr.as_str(vm.interns)))
+        }
     }
 }
 
@@ -780,94 +1137,180 @@ impl DropWithHeap for DictIter<'_, '_> {
 /// `self.get(vm.heap)`, and mutation methods use `self.get_mut(vm.heap)`. This avoids
 /// taking the dict out of the heap, enabling self-referential operations like `d.update(d)`.
 impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
-        Type::Dict
+    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+        true
     }
 
-    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
-        Some(self.get(vm.heap).len())
+    /// `in` on a dict tests its *keys*, matching CPython.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        self.contains_key(item, vm).map(Some)
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        if self.get(vm.heap).len() != other.get(vm.heap).len() {
-            return Ok(false);
-        }
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some((key, value)) = iter.next(vm)? {
-            let Ok(Some(other_value)) = other.dict_get(key, vm) else {
-                return Ok(false);
-            };
-            defer_drop!(other_value, vm);
-            if !value.py_eq(other_value, vm)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+    fn py_type(&self, vm: &VM<'h>) -> Type {
+        self.get(vm.heap).kind_type()
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        !self.get(vm.heap).is_empty()
-    }
-
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> RunResult<()> {
-        if self.get(vm.heap).is_empty() {
-            return Ok(f.write_str("{}")?);
-        }
-
-        // Check depth limit before recursing
-        let Ok(token) = vm.heap.incr_recursion_depth() else {
-            return Ok(f.write_str("{...}")?);
-        };
-        defer_drop!(token, vm);
-
-        f.write_char('{')?;
-        let len = self.get(vm.heap).len();
-        for i in 0..len {
-            if i > 0 {
-                if vm.heap.check_time().is_err() {
-                    f.write_str(", ...[timeout]")?;
-                    break;
-                }
-                f.write_str(", ")?;
-            }
-            let key = self
-                .get(vm.heap)
-                .key_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
-            defer_drop!(key, vm);
-            key.py_repr_fmt(f, vm, heap_ids)?;
-            f.write_str(": ")?;
-            let value = self
-                .get(vm.heap)
-                .value_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
-            defer_drop!(value, vm);
-            value.py_repr_fmt(f, vm, heap_ids)?;
-        }
-        f.write_char('}')?;
-
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let old_value = self.set_default_factory_attr(name, value, vm)?;
+        old_value.drop_with(vm);
         Ok(())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(DictKeyIterator::allocate(
+            self_id.expect("heap values have an id"),
+            self.get(vm.heap).len(),
+            vm,
+        ))
+    }
+
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
+        Some(self.get(vm.heap).len())
+    }
+
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::Dict(other)) => {
+                // Two Counters compare as multisets (zero counts ignored); any
+                // other pairing is plain dict equality.
+                let both_counters = self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter();
+                if both_counters {
+                    Ok(Some(self.eq_counter(&other, vm)?))
+                } else {
+                    Ok(Some(self.eq_dict(&other, vm)?))
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(!self.get(vm.heap).is_empty())
+    }
+
+    /// Two Counters compare as multisets; every other pairing defers to `py_cmp`,
+    /// which has no dict ordering and so raises `TypeError` — CPython's
+    /// `Counter.__lt__` likewise returns `NotImplemented` for a non-Counter,
+    /// which is why `Counter(a=1) < {'a': 2}` never becomes a dict comparison.
+    fn py_cmp_op(
+        &self,
+        other: &Value,
+        op: CmpOperator,
+        vm: &mut VM<'h>,
+        self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
+        let cmp = match op {
+            CmpOperator::Lt => CounterCmp::Lt,
+            CmpOperator::LtE => CounterCmp::Le,
+            CmpOperator::Gt => CounterCmp::Gt,
+            CmpOperator::GtE => CounterCmp::Ge,
+            // Only the four ordering operators reach `py_cmp_op`.
+            _ => return Ok(None),
+        };
+        match (self_id, other.ref_id()) {
+            (Some(l), Some(r)) if self.both_counters(r, vm) => Ok(Some(counter_compare(l, r, cmp, vm)?)),
+            _ => Ok(None),
+        }
+    }
+
+    fn py_neg_impl(&self, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        self.counter_unary(true, vm, self_id)
+    }
+
+    fn py_pos_impl(&self, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        self.counter_unary(false, vm, self_id)
+    }
+
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        self.counter_binary(other, CounterOp::Add, vm, self_id)
+    }
+
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        self.counter_binary(other, CounterOp::Sub, vm, self_id)
+    }
+
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        self.counter_binary(other, CounterOp::And, vm, self_id)
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        self.counter_binary(other, CounterOp::Or, vm, self_id)
+    }
+
+    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
+        self.counter_inplace(other, CounterOp::Add, vm, self_id)
+    }
+
+    fn py_isub_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
+        self.counter_inplace(other, CounterOp::Sub, vm, self_id)
+    }
+
+    fn py_iand_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
+        self.counter_inplace(other, CounterOp::And, vm, self_id)
+    }
+
+    fn py_ior_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
+        self.counter_inplace(other, CounterOp::Or, vm, self_id)
+    }
+
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        // A defaultdict renders as `defaultdict(<factory repr>, <dict repr>)`.
+        if self.get(vm.heap).is_defaultdict() {
+            f.write_str("defaultdict(")?;
+            let factory = self.get(vm.heap).default_factory().map(|v| v.clone_with_heap(vm.heap));
+            match factory {
+                Some(factory) => {
+                    defer_drop!(factory, vm);
+                    factory.py_repr_fmt(f, vm, heap_ids)?;
+                }
+                None => f.write_str("None")?,
+            }
+            f.write_str(", ")?;
+            self.write_map_repr(f, vm, heap_ids)?;
+            return Ok(f.write_char(')')?);
+        }
+        // A Counter renders as `Counter({<items in most-common order>})`, or
+        // `Counter()` when empty.
+        if self.get(vm.heap).is_counter() {
+            if self.get(vm.heap).is_empty() {
+                return Ok(f.write_str("Counter()")?);
+            }
+            f.write_str("Counter(")?;
+            self.write_counter_map_repr(f, vm, heap_ids)?;
+            return Ok(f.write_char(')')?);
+        }
+        self.write_map_repr(f, vm, heap_ids)
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        // A defaultdict exposes `default_factory`; every other attribute (and all
+        // attributes on a plain dict) falls through to the caller's generic error.
+        if self.get(vm.heap).is_defaultdict() && attr.static_string() == Some(StaticStrings::DefaultFactory) {
+            let factory = self
+                .get(vm.heap)
+                .default_factory()
+                .map_or(Value::None, |v| v.clone_with_heap(vm.heap));
+            Ok(Some(CallResult::Value(factory)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// A Counter reads a missing key as `0` *without* inserting it. A
+    /// defaultdict's miss inserts `factory()` instead, which re-enters the VM
+    /// and so cannot happen behind this `&self` — see `heap_data::heap_subscript`.
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         match self.dict_get(key, vm)? {
             Some(value) => Ok(value),
+            None if self.get(vm.heap).is_counter() => Ok(Value::Int(0)),
             None => Err(ExcType::key_error(key, vm)),
         }
     }
 
-    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         // Drop the old value if one was replaced
         if let Some(old_value) = self.set(key, value, vm)? {
-            old_value.drop_with_heap(vm);
+            old_value.drop_with(vm);
         }
         Ok(())
     }
@@ -875,23 +1318,41 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
     fn py_call_attr(
         &mut self,
         self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
+        vm: &mut VM<'h>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(vm);
-            return Err(ExcType::attribute_error(Type::Dict, attr.as_str(vm.interns)));
+            let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+            args.drop_with(vm);
+            return Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)));
         };
 
         let value = match method {
+            // Counter-only methods (a plain dict falls through to AttributeError).
+            StaticStrings::MostCommon if self.get(vm.heap).is_counter() => counter_most_common(self_id, args, vm),
+            StaticStrings::Elements if self.get(vm.heap).is_counter() => counter_elements(self_id, args, vm),
+            StaticStrings::Total if self.get(vm.heap).is_counter() => {
+                args.check_zero_args("total", vm.heap)?;
+                counter_total(self_id, vm)
+            }
+            StaticStrings::Subtract if self.get(vm.heap).is_counter() => counter_update_method(self_id, args, true, vm),
+            // Counter overrides `update` to add counts, and disables `fromkeys`.
+            StaticStrings::Update if self.get(vm.heap).is_counter() => counter_update_method(self_id, args, false, vm),
+            StaticStrings::Fromkeys if self.get(vm.heap).is_counter() => {
+                args.drop_with(vm);
+                return Err(ExcType::not_implemented(
+                    "Counter.fromkeys() is undefined.  Use Counter(iterable) instead.",
+                )
+                .into());
+            }
             StaticStrings::Get => {
                 // dict.get() accepts 1 or 2 arguments
                 let (key, default) = args.get_one_two_args("get", vm.heap)?;
                 defer_drop!(key, vm);
                 let default = default.unwrap_or(Value::None);
-                let mut default_guard = HeapGuard::new(default, vm);
-                let vm = default_guard.heap();
+                let mut default_guard = DropGuard::new(default, vm);
+                let vm = default_guard.ctx();
                 // Handle the lookup - may fail for unhashable keys
                 match self.dict_get(key, vm)? {
                     Some(v) => Ok(v),
@@ -900,21 +1361,19 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
             }
             StaticStrings::Keys => {
                 args.check_zero_args("dict.keys", vm.heap)?;
-                let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self_id)))?;
+                let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self_id)));
                 vm.heap.inc_ref(self_id);
                 Ok(Value::Ref(view_id))
             }
             StaticStrings::Values => {
                 args.check_zero_args("dict.values", vm.heap)?;
-                let view_id = vm
-                    .heap
-                    .allocate(HeapData::DictValuesView(DictValuesView::new(self_id)))?;
+                let view_id = vm.heap.allocate(HeapData::DictValuesView(DictValuesView::new(self_id)));
                 vm.heap.inc_ref(self_id);
                 Ok(Value::Ref(view_id))
             }
             StaticStrings::Items => {
                 args.check_zero_args("dict.items", vm.heap)?;
-                let view_id = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(self_id)))?;
+                let view_id = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(self_id)));
                 vm.heap.inc_ref(self_id);
                 Ok(Value::Ref(view_id))
             }
@@ -922,11 +1381,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
                 // dict.pop() accepts 1 or 2 arguments (key, optional default)
                 let (key, default) = args.get_one_two_args("pop", vm.heap)?;
                 defer_drop!(key, vm);
-                let mut default_guard = HeapGuard::new(default, vm);
-                let vm = default_guard.heap();
+                let mut default_guard = DropGuard::new(default, vm);
+                let vm = default_guard.ctx();
                 if let Some((old_key, value)) = self.pop(key, vm)? {
                     // Drop the old key - we don't need it
-                    old_key.drop_with_heap(vm);
+                    old_key.drop_with(vm);
                     Ok(value)
                 } else {
                     let (default, vm) = default_guard.into_parts();
@@ -953,24 +1412,106 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
                 args.check_zero_args("dict.popitem", vm.heap)?;
                 dict_popitem(self, vm)
             }
-            // fromkeys is a classmethod but also accessible on instances
-            StaticStrings::Fromkeys => dict_fromkeys(args, vm),
+            // fromkeys is a classmethod but also accessible on instances. CPython
+            // builds `cls()`, so a defaultdict receiver yields a defaultdict with
+            // no factory (the zero-arg constructor); Counter is rejected above.
+            StaticStrings::Fromkeys => {
+                let kind = if self.get(vm.heap).is_defaultdict() {
+                    DictKind::defaultdict(None)
+                } else {
+                    DictKind::plain()
+                };
+                dict_fromkeys(args, kind, vm)
+            }
+            // `defaultdict.__missing__(key)` — plain dicts have no such method.
+            StaticStrings::DunderMissing if self.get(vm.heap).is_defaultdict() => {
+                let key = args.get_one_arg("__missing__", vm.heap)?;
+                defer_drop!(key, vm);
+                defaultdict_missing(self_id, key, vm)
+            }
             _ => {
-                args.drop_with_heap(vm);
-                return Err(ExcType::attribute_error(Type::Dict, attr.as_str(vm.interns)));
+                let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+                args.drop_with(vm);
+                return Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)));
             }
         };
         value.map(CallResult::Value)
     }
 }
 
-impl HeapItem for Dict {
-    fn py_estimate_size(&self) -> usize {
-        // Dict size: struct overhead + entries (2 Values per entry for key+value)
-        mem::size_of::<Self>() + self.len() * 2 * VALUE_SIZE
+impl<'h> HeapRead<'h, Dict> {
+    /// Runs a binary `Counter` operator (`+ - & |`), which needs *both* operands
+    /// to be Counters.
+    ///
+    /// Any other pairing reports `None` so the caller raises its ordinary
+    /// `TypeError`, matching CPython: `Counter.__add__` returns `NotImplemented`
+    /// for a non-Counter, and a plain dict has no `+` of its own.
+    fn counter_binary(
+        &self,
+        other: &Value,
+        op: CounterOp,
+        vm: &mut VM<'h>,
+        self_id: Option<HeapId>,
+    ) -> RunResult<Option<Value>> {
+        match (self_id, other.ref_id()) {
+            (Some(l), Some(r)) if self.both_counters(r, vm) => Ok(Some(counter_binary_op(l, r, op, vm)?)),
+            _ => Ok(None),
+        }
     }
 
+    /// Runs an in-place `Counter` operator (`+= -= &= |=`), which needs only the
+    /// *left* operand to be a Counter, mutating it and reporting `true`.
+    ///
+    /// CPython's `__iadd__`/etc. accept any mapping on the right (`c += {'a': 2}`)
+    /// and reject a non-mapping with whatever the underlying `other.items()` /
+    /// `other[elem]` raises — so once the left is a Counter this owns the
+    /// operation, error paths included. A plain dict reports `false`, falling
+    /// back to the binary operator.
+    fn counter_inplace(
+        &mut self,
+        other: &Value,
+        op: CounterOp,
+        vm: &mut VM<'h>,
+        self_id: Option<HeapId>,
+    ) -> RunResult<bool> {
+        match self_id {
+            Some(l) if self.get(vm.heap).is_counter() => {
+                counter_inplace_op(l, other, op, vm)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Runs a unary `Counter` operator (`+c` / `-c`), which strips the counts
+    /// that are not positive (negating first for `-c`) into a fresh Counter.
+    ///
+    /// A plain dict has no unary form and reports `None` for the caller's
+    /// `TypeError`.
+    fn counter_unary(&self, negate: bool, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        match self_id {
+            Some(id) if self.get(vm.heap).is_counter() => Ok(Some(counter_unary_op(id, negate, vm)?)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Whether this dict and the heap value `other_id` are both Counters.
+    fn both_counters(&self, other_id: HeapId, vm: &VM<'h>) -> bool {
+        self.get(vm.heap).is_counter() && matches!(vm.heap.get(other_id), HeapData::Dict(d) if d.is_counter())
+    }
+}
+
+impl HeapItem for Dict {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Release the default_factory (a defaultdict with a heap-ref factory, e.g.
+        // a lambda). MUST be reported here and in `for_each_child_id` identically.
+        if let Some(DictSpecial::Default(Some(factory))) = self.kind.0.as_deref_mut()
+            && let Value::Ref(id) = factory
+        {
+            stack.push(*id);
+            #[cfg(feature = "memory-model-checks")]
+            factory.dec_ref_forget();
+        }
         // Skip iteration if no refs - major GC optimization for dicts of primitives
         if !self.contains_refs {
             return;
@@ -990,32 +1531,43 @@ impl HeapItem for Dict {
     }
 }
 
-impl DropWithHeap for Dict {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.entries.drop_with_heap(heap);
+impl<C: ContainsHeap> DropWithContext<C> for Dict {
+    fn drop_with(self, heap: &mut C) {
+        self.entries.drop_with(heap);
+        self.kind.drop_with(heap);
     }
 }
 
-impl DropWithHeap for DictEntry {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.key.drop_with_heap(heap);
-        self.value.drop_with_heap(heap);
+impl<C: ContainsHeap> DropWithContext<C> for DictKind {
+    fn drop_with(self, heap: &mut C) {
+        if let Some(special) = self.0
+            && let DictSpecial::Default(Some(factory)) = *special
+        {
+            factory.drop_with(heap);
+        }
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for DictEntry {
+    fn drop_with(self, heap: &mut C) {
+        self.key.drop_with(heap);
+        self.value.drop_with(heap);
     }
 }
 
 /// Implements Python's `dict.clear()` method.
 ///
 /// Removes all items from the dict.
-fn dict_clear<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, impl ResourceTracker>) {
+fn dict_clear<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h>) {
     dict.get_mut(vm.heap).indices.clear();
-    mem::take(&mut dict.get_mut(vm.heap).entries).drop_with_heap(vm.heap);
+    mem::take(&mut dict.get_mut(vm.heap).entries).drop_with(vm.heap);
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }
 
 /// Implements Python's `dict.copy()` method.
 ///
 /// Returns a shallow copy of the dict.
-fn dict_copy<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+fn dict_copy<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
     // Copy all key-value pairs (incrementing refcounts)
     let pairs: Vec<(Value, Value)> = dict
         .get(vm.heap)
@@ -1023,8 +1575,16 @@ fn dict_copy<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, impl ResourceTra
         .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
         .collect();
 
-    let new_dict = Dict::from_pairs(pairs, vm)?;
-    let heap_id = vm.heap.allocate(HeapData::Dict(new_dict))?;
+    // `copy()` preserves the subclass: a defaultdict keeps its factory, a
+    // Counter stays a Counter. `cloned_kind` clones that factory reference, so
+    // guard it — a `from_pairs` failure (e.g. a key `__eq__` raising) would
+    // otherwise drop `kind` via Rust's `Drop`, leaking the factory refcount.
+    // (`from_pairs` cleans up `pairs` on its own error paths.)
+    let kind = dict.get(vm.heap).cloned_kind(vm.heap);
+    let mut kind_guard = DropGuard::new(kind, vm);
+    let mut new_dict = Dict::from_pairs(pairs, kind_guard.ctx())?;
+    new_dict.set_kind(kind_guard.into_inner());
+    let heap_id = vm.heap.allocate(HeapData::Dict(new_dict));
     Ok(Value::Ref(heap_id))
 }
 
@@ -1034,18 +1594,14 @@ fn dict_copy<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, impl ResourceTra
 /// If `other` is a dict, copies its key-value pairs.
 /// If `other` is an iterable, expects pairs of (key, value).
 /// Keyword arguments are also added to the dict.
-fn dict_update<'h>(
-    dict: &mut HeapRead<'h, Dict>,
-    args: ArgValues,
-    vm: &mut VM<'h, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn dict_update<'h>(dict: &mut HeapRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let DictUpdateArgs { source, extras } = DictUpdateArgs::from_args(args, vm)?;
-    let mut kwargs_guard = HeapGuard::new(extras, vm);
+    let mut kwargs_guard = DropGuard::new(extras, vm);
 
     if let Some(other_value) = source {
-        let other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
+        let other_value_guard = DropGuard::new(other_value, kwargs_guard.ctx());
         let other_value = other_value_guard.into_inner();
-        dict.merge_from_value(other_value, kwargs_guard.heap())?;
+        dict.merge_from_value(other_value, kwargs_guard.ctx())?;
     }
 
     let kwargs = kwargs_guard.into_inner();
@@ -1070,8 +1626,8 @@ struct DictUpdateArgs {
 ///
 /// This is shared between `dict()` construction and `dict.update()` so both
 /// entry points follow identical positional-source semantics.
-fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<()> {
-    let mut other_value_guard = HeapGuard::new(other_value, vm);
+fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_>) -> RunResult<()> {
+    let mut other_value_guard = DropGuard::new(other_value, vm);
     {
         let (other_value, vm) = other_value_guard.as_parts();
         if let Value::Ref(id) = other_value
@@ -1086,7 +1642,7 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_, im
             // Apply pairs into the target dict.
             for (key, value) in pairs {
                 let old_value = dict.set(key, value, vm)?;
-                old_value.drop_with_heap(vm);
+                old_value.drop_with(vm);
             }
             return Ok(());
         }
@@ -1101,35 +1657,33 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_, im
 ///
 /// Each item from `iterable` is treated as `(key, value)`. Items with length 0, 1,
 /// or greater than 2 raise the same TypeError messages used by `dict.update()`.
-fn dict_merge_from_iterable_pairs(
-    dict: &mut Dict,
-    iterable: Value,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<()> {
-    let iter = MontyIter::new(iterable, vm)?;
-    defer_drop_mut!(iter, vm);
+fn dict_merge_from_iterable_pairs(dict: &mut Dict, iterable: Value, vm: &mut VM<'_>) -> RunResult<()> {
+    let iter = iterable.into_py_iter(vm)?;
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some(item) = iter.py_next(vm)? {
         // Each item should be a pair (iterable of 2 elements).
-        let pair_iter = MontyIter::new(item, vm)?;
-        defer_drop_mut!(pair_iter, vm);
+        let pair_iter = item.into_py_iter(vm)?;
+        defer_drop!(pair_iter, vm);
+        let mut pair_iter = pair_iter.read(vm);
 
-        let Some(key) = pair_iter.for_next(vm)? else {
+        let Some(key) = pair_iter.py_next(vm)? else {
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length 0; 2 is required",
             ));
         };
-        let mut key_guard = HeapGuard::new(key, vm);
+        let mut key_guard = DropGuard::new(key, vm);
 
-        let Some(value) = pair_iter.for_next(key_guard.heap())? else {
+        let Some(value) = pair_iter.py_next(key_guard.ctx())? else {
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length 1; 2 is required",
             ));
         };
-        let mut value_guard = HeapGuard::new(value, key_guard.heap());
+        let mut value_guard = DropGuard::new(value, key_guard.ctx());
 
-        if let Some(extra) = pair_iter.for_next(value_guard.heap())? {
-            extra.drop_with_heap(value_guard.heap());
+        if let Some(extra) = pair_iter.py_next(value_guard.ctx())? {
+            extra.drop_with(value_guard.ctx());
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length > 2; 2 is required",
             ));
@@ -1139,7 +1693,7 @@ fn dict_merge_from_iterable_pairs(
         let key = key_guard.into_inner();
 
         if let Some(old_value) = dict.set(key, value, vm)? {
-            old_value.drop_with_heap(vm);
+            old_value.drop_with(vm);
         }
     }
 
@@ -1150,16 +1704,12 @@ fn dict_merge_from_iterable_pairs(
 ///
 /// This helper drains `kwargs` safely on error so all values are dropped
 /// correctly, then inserts each key-value pair into `dict`.
-fn dict_merge_from_kwargs(
-    dict: &mut Dict,
-    kwargs: KwargsValues,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<()> {
+fn dict_merge_from_kwargs(dict: &mut Dict, kwargs: KwargsValues, vm: &mut VM<'_>) -> RunResult<()> {
     let kwargs_iter = kwargs.into_iter();
     defer_drop_mut!(kwargs_iter, vm);
     for (key, value) in kwargs_iter {
         let old_value = dict.set(key, value, vm)?;
-        old_value.drop_with_heap(vm);
+        old_value.drop_with(vm);
     }
     Ok(())
 }
@@ -1168,18 +1718,14 @@ fn dict_merge_from_kwargs(
 ///
 /// If key is in the dict, return its value.
 /// If not, insert key with a value of default (or None) and return default.
-fn dict_setdefault<'h>(
-    dict: &mut HeapRead<'h, Dict>,
-    args: ArgValues,
-    vm: &mut VM<'h, impl ResourceTracker>,
-) -> RunResult<Value> {
+fn dict_setdefault<'h>(dict: &mut HeapRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (key, default) = args.get_one_two_args("setdefault", vm.heap)?;
     let default = default.unwrap_or(Value::None);
-    let mut key_guard = HeapGuard::new(key, vm);
+    let mut key_guard = DropGuard::new(key, vm);
     let (key, vm) = key_guard.as_parts();
 
     if let Some(existing) = dict.dict_get(key, vm)? {
-        default.drop_with_heap(vm);
+        default.drop_with(vm);
         Ok(existing)
     } else {
         // Key doesn't exist - insert default and return it (cloned before insertion)
@@ -1187,7 +1733,7 @@ fn dict_setdefault<'h>(
         let (key, vm) = key_guard.into_parts();
         if let Some(old_value) = dict.set(key, default, vm)? {
             // This shouldn't happen since we checked, but handle it anyway
-            old_value.drop_with_heap(vm);
+            old_value.drop_with(vm);
         }
         Ok(return_value)
     }
@@ -1197,7 +1743,7 @@ fn dict_setdefault<'h>(
 ///
 /// Removes and returns the last inserted key-value pair as a tuple.
 /// Raises KeyError if the dict is empty.
-fn dict_popitem<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+fn dict_popitem<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
     let this = dict.get_mut(vm.heap);
     if this.is_empty() {
         return Err(ExcType::key_error_popitem_empty_dict());
@@ -1217,16 +1763,17 @@ fn dict_popitem<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, impl Resource
     }
 
     // Create tuple (key, value)
-    Ok(allocate_tuple(smallvec![entry.key, entry.value], vm.heap)?)
+    Ok(allocate_tuple(smallvec![entry.key, entry.value], vm.heap))
 }
 
 // Custom serde implementation for Dict.
-// Serializes entries and contains_refs; rebuilds the indices hash table on deserialize.
+// Serializes entries, contains_refs, and kind; rebuilds the indices hash table on deserialize.
 impl serde::Serialize for Dict {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("Dict", 2)?;
+        let mut state = serializer.serialize_struct("Dict", 3)?;
         state.serialize_field("entries", &self.entries)?;
         state.serialize_field("contains_refs", &self.contains_refs)?;
+        state.serialize_field("kind", &self.kind)?;
         state.end()
     }
 }
@@ -1237,6 +1784,7 @@ impl<'de> serde::Deserialize<'de> for Dict {
         struct DictFields {
             entries: Vec<DictEntry>,
             contains_refs: bool,
+            kind: DictKind,
         }
         let fields = DictFields::deserialize(deserializer)?;
         // Rebuild the indices hash table from the entries
@@ -1248,6 +1796,7 @@ impl<'de> serde::Deserialize<'de> for Dict {
             indices,
             entries: fields.entries,
             contains_refs: fields.contains_refs,
+            kind: fields.kind,
         })
     }
 }
@@ -1262,27 +1811,210 @@ impl<'de> serde::Deserialize<'de> for Dict {
 /// dict.fromkeys(['a', 'b', 'c'])  # {'a': None, 'b': None, 'c': None}
 /// dict.fromkeys(['a', 'b'], 0)    # {'a': 0, 'b': 0}
 /// ```
-pub fn dict_fromkeys(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
-    let (iterable, default) = args.get_one_two_args("dict.fromkeys", vm.heap)?;
+pub fn dict_fromkeys(args: ArgValues, kind: DictKind, vm: &mut VM<'_>) -> RunResult<Value> {
+    // CPython names the bare method (`fromkeys expected …`), not `dict.fromkeys`,
+    // for both `dict` and the inherited `defaultdict.fromkeys`.
+    let (iterable, default) = args.get_one_two_args("fromkeys", vm.heap)?;
     let default = default.unwrap_or(Value::None);
     defer_drop!(default, vm);
 
-    let iter = MontyIter::new(iterable, vm)?;
-    defer_drop_mut!(iter, vm);
+    let iter = iterable.into_py_iter(vm)?;
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
     let dict = Dict::new();
-    let mut dict_guard = HeapGuard::new(dict, vm);
+    let mut dict_guard = DropGuard::new(dict, vm);
 
     {
         let (dict, vm) = dict_guard.as_parts_mut();
 
-        while let Some(key) = iter.for_next(vm)? {
+        while let Some(key) = iter.py_next(vm)? {
             let old_value = dict.set(key, default.clone_with_heap(vm), vm)?;
-            old_value.drop_with_heap(vm);
+            old_value.drop_with(vm);
         }
     }
 
-    let dict = dict_guard.into_inner();
-    let heap_id = vm.heap.allocate(HeapData::Dict(dict))?;
+    let mut dict = dict_guard.into_inner();
+    dict.set_kind(kind);
+    let heap_id = vm.heap.allocate(HeapData::Dict(dict));
     Ok(Value::Ref(heap_id))
 }
+
+/// Shared dictionary iterator position and mutation sentinel.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct DictIteratorState {
+    dict: HeapId,
+    index: usize,
+    expected_len: usize,
+}
+
+impl DictIteratorState {
+    /// Validates mutation and returns the next storage index.
+    fn next_index(&mut self, current_len: usize) -> RunResult<Option<usize>> {
+        if self.index >= self.expected_len {
+            Ok(None)
+        } else if current_len != self.expected_len {
+            Err(ExcType::runtime_error_dict_changed_size())
+        } else {
+            let index = self.index;
+            self.index += 1;
+            Ok(Some(index))
+        }
+    }
+
+    /// Returns the captured number of entries not yet yielded.
+    fn size_hint(&self) -> usize {
+        self.expected_len.saturating_sub(self.index)
+    }
+}
+
+/// Iterator yielding dictionary keys.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DictKeyIterator(DictIteratorState);
+
+/// Iterator yielding dictionary `(key, value)` tuples.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DictItemIterator(DictIteratorState);
+
+/// Iterator yielding dictionary values.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DictValueIterator(DictIteratorState);
+
+macro_rules! impl_dict_iterator {
+    ($ty:ty, $python_type:expr, $heap_variant:path, $next:expr) => {
+        impl $ty {
+            /// Allocates an iterator retaining `dict`.
+            pub(crate) fn allocate(dict: HeapId, expected_len: usize, vm: &mut VM<'_>) -> Value {
+                let id = vm.heap.allocate($heap_variant(Self(DictIteratorState {
+                    dict,
+                    index: 0,
+                    expected_len,
+                })));
+                vm.heap.inc_ref(dict);
+                Value::Ref(id)
+            }
+
+            /// Returns the retained dictionary id for GC tracing.
+            pub(crate) fn source_id(&self) -> HeapId {
+                self.0.dict
+            }
+
+            /// Returns the captured number of entries not yet yielded.
+            pub(crate) fn size_hint(&self) -> usize {
+                self.0.size_hint()
+            }
+        }
+
+        impl HeapItem for $ty {
+            fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+                stack.push(self.source_id());
+            }
+        }
+
+        impl<'h> PyTrait<'h> for HeapRead<'h, $ty> {
+            fn py_is_iterable(&self, _: &VM<'h>) -> bool {
+                true
+            }
+
+            fn py_type(&self, _: &VM<'h>) -> Type {
+                $python_type
+            }
+
+            fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+                None
+            }
+
+            fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+                Ok(None)
+            }
+
+            fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+                let self_id = self_id.expect("heap values have an id");
+                vm.heap.inc_ref(self_id);
+                Ok(Value::Ref(self_id))
+            }
+
+            fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+                $next(self, vm)
+            }
+        }
+    };
+}
+
+impl_dict_iterator!(
+    DictKeyIterator,
+    Type::DictKeyIterator,
+    HeapData::DictKeyIterator,
+    |this: &mut HeapRead<'h, DictKeyIterator>, vm: &mut VM<'h>| {
+        let (dict_id, current_len) = {
+            let dict_id = this.get(vm.heap).source_id();
+            let HeapData::Dict(dict) = vm.heap.get(dict_id) else {
+                unreachable!("dict iterator must retain a dict")
+            };
+            (dict_id, dict.len())
+        };
+        let Some(index) = this.get_mut(vm.heap).0.next_index(current_len)? else {
+            return Ok(None);
+        };
+        let HeapData::Dict(dict) = vm.heap.get(dict_id) else {
+            unreachable!("dict iterator must retain a dict")
+        };
+        Ok(Some(
+            dict.key_at(index)
+                .expect("index should be valid")
+                .clone_with_heap(vm.heap),
+        ))
+    }
+);
+
+impl_dict_iterator!(
+    DictItemIterator,
+    Type::DictItemIterator,
+    HeapData::DictItemIterator,
+    |this: &mut HeapRead<'h, DictItemIterator>, vm: &mut VM<'h>| {
+        let (dict_id, current_len) = {
+            let dict_id = this.get(vm.heap).source_id();
+            let HeapData::Dict(dict) = vm.heap.get(dict_id) else {
+                unreachable!("dict iterator must retain a dict")
+            };
+            (dict_id, dict.len())
+        };
+        let Some(index) = this.get_mut(vm.heap).0.next_index(current_len)? else {
+            return Ok(None);
+        };
+        let HeapData::Dict(dict) = vm.heap.get(dict_id) else {
+            unreachable!("dict iterator must retain a dict")
+        };
+        let (key, value) = dict.item_at(index).expect("index should be valid");
+        Ok(Some(allocate_tuple(
+            smallvec![key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)],
+            vm.heap,
+        )))
+    }
+);
+
+impl_dict_iterator!(
+    DictValueIterator,
+    Type::DictValueIterator,
+    HeapData::DictValueIterator,
+    |this: &mut HeapRead<'h, DictValueIterator>, vm: &mut VM<'h>| {
+        let (dict_id, current_len) = {
+            let dict_id = this.get(vm.heap).source_id();
+            let HeapData::Dict(dict) = vm.heap.get(dict_id) else {
+                unreachable!("dict iterator must retain a dict")
+            };
+            (dict_id, dict.len())
+        };
+        let Some(index) = this.get_mut(vm.heap).0.next_index(current_len)? else {
+            return Ok(None);
+        };
+        let HeapData::Dict(dict) = vm.heap.get(dict_id) else {
+            unreachable!("dict iterator must retain a dict")
+        };
+        Ok(Some(
+            dict.value_at(index)
+                .expect("index should be valid")
+                .clone_with_heap(vm.heap),
+        ))
+    }
+);

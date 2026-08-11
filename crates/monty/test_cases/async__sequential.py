@@ -10,7 +10,7 @@ a = await get_value(1)  # pyright: ignore
 b = await get_value(2)  # pyright: ignore
 c = await get_value(3)  # pyright: ignore
 
-assert a == 2, 'first await'
-assert b == 4, 'second await'
-assert c == 6, 'third await'
-assert a + b + c == 12, 'sum of sequential awaits'
+assert a == 2
+assert b == 4
+assert c == 6
+assert a + b + c == 12

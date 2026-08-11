@@ -1,14 +1,13 @@
 //! Implementation of the hasattr() builtin function.
 
+use monty_types::ExcType;
+
 use crate::{
-    ExcType,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{RunError, RunResult, SimpleException},
-    heap::DropWithHeap,
-    resource::ResourceTracker,
-    types::PyTrait,
+    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
+    heap::DropWithContext,
     value::Value,
 };
 
@@ -28,7 +27,7 @@ use crate::{
 /// hasattr(slice(1, 10), 'start') # True - slice has start attribute
 /// hasattr(42, 'nonexistent')    # False - int has no such attribute
 /// ```
-pub fn builtin_hasattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let positional = args.into_pos_only("hasattr", vm.heap)?;
     defer_drop!(positional, vm);
 
@@ -40,7 +39,7 @@ pub fn builtin_hasattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
     let Some(name) = name.as_either_str(vm.heap) else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("attribute name must be string, not '{}'", name.py_type(vm)),
+            format!("attribute name must be string, not '{}'", name.py_type_name(vm)),
         )
         .into());
     };
@@ -48,11 +47,11 @@ pub fn builtin_hasattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
     // important: we must own the returned value if py_get_attr succeeds to drop it
     let has_attr = match object.py_getattr(&name, vm) {
         Ok(CallResult::Value(value)) => {
-            value.drop_with_heap(vm);
+            value.drop_with(vm);
             true
         }
         Ok(other) => {
-            other.drop_with_heap(vm);
+            other.drop_with(vm);
             // hasattr() only tests attribute values — OS calls, external calls,
             // method calls, and awaits are not supported here
             //

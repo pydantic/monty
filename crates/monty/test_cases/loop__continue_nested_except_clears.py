@@ -16,7 +16,7 @@ def test_continue():
     return results
 
 
-assert test_continue() == [0, 1, 2], 'continue from nested except should process all iterations'
+assert test_continue() == [0, 1, 2]
 
 
 # Test 2: continue from depth 3 should also work
@@ -37,7 +37,7 @@ def test_continue_depth3():
     return results
 
 
-assert test_continue_depth3() == [0, 1], 'continue from 3-deep except should work'
+assert test_continue_depth3() == [0, 1]
 
 
 # Test 3: continue runs else clause since loop completes normally
@@ -57,4 +57,4 @@ def test_continue_with_else():
     return results
 
 
-assert test_continue_with_else() == [0, 1, 'else'], 'continue should allow else to run'
+assert test_continue_with_else() == [0, 1, 'else']

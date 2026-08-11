@@ -1,8 +1,13 @@
+dist
+node_modules
+npm
+package-lock.json
 target
-.yarn
+# napi-generated artifacts
 index.js
-package-template.wasi-browser.js
-package-template.wasi.cjs
-wasi-worker-browser.mjs
+index.d.ts
+browser.js
+monty.wasi.cjs
+monty.wasi-browser.js
 wasi-worker.mjs
-.yarnrc.yml
+wasi-worker-browser.mjs

@@ -10,13 +10,12 @@
 use super::{CallResult, VM};
 use crate::{
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
-    resource::ResourceTracker,
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     types::PyTrait,
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     /// `BeforeWith`: peek the context manager at TOS, call `__enter__`, and push
     /// the result. The context manager stays on the stack across the body so the
     /// matching `WithExit` / `WithExceptStart` can find it.
@@ -33,7 +32,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             return Err(not_a_context_manager(self));
         };
         let mut ctx = self.heap.read(ctx_id);
-        if ctx.py_is_context_manager() {
+        if ctx.py_is_context_manager(self) {
             ctx.py_enter(ctx_id, self)
         } else {
             Err(not_a_context_manager(self))
@@ -51,7 +50,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             // Unreachable in well-formed bytecode (BeforeWith would have rejected
             // a non-Ref ctx), but guard rather than panic so a corrupt VM
             // surfaces a clear internal error instead of an uncontrolled drop.
-            ctx.drop_with_heap(this);
+            ctx.drop_with(this);
             return Err(RunError::internal("WithExit: expected context-manager ref on stack"));
         };
         // Drop the ctx reference on every exit path of this function — whether
@@ -88,15 +87,13 @@ impl<T: ResourceTracker> VM<'_, T> {
 /// Builds the CPython-equivalent `TypeError` raised when a value used in a
 /// `with` statement does not implement the context-manager protocol.
 ///
-/// CPython's message names the missing dunder (`__exit__` is what it checks
-/// for first); Monty's [`PyTrait::py_is_context_manager`] gate is per-type
-/// rather than per-dunder, but the user-visible text matches CPython so
-/// traceback-equivalence tests pass.
-fn not_a_context_manager<T: ResourceTracker>(vm: &VM<'_, T>) -> RunError {
-    let ty = vm.peek().py_type(vm);
-    SimpleException::new_msg(
-        ExcType::TypeError,
-        format!("'{ty}' object does not support the context manager protocol (missed __exit__ method)"),
-    )
-    .into()
+/// CPython's message names the missing dunder, and it checks `__exit__`
+/// first — [`PyTrait::py_is_context_manager`] mirrors that (user classes
+/// check their namespace for `__exit__`; builtin types answer per-type), so
+/// this gate failure always reports `__exit__`. A user class that defines
+/// `__exit__` but not `__enter__` passes the gate and gets the
+/// "missed __enter__ method" variant from `Instance::py_enter` instead.
+fn not_a_context_manager(vm: &VM<'_>) -> RunError {
+    let ty = vm.peek().py_type_name(vm);
+    ExcType::type_error_not_context_manager(ty, "__exit__")
 }

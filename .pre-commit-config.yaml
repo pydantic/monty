@@ -57,3 +57,10 @@ repos:
         types: [ts]
         language: system
         pass_filenames: false
+      # `custom/*.pyi` only reaches the type checker via the vendored copy
+      - id: check-typeshed
+        name: Check vendored typeshed
+        entry: make check-typeshed
+        files: ^crates/monty-typeshed/(custom|vendor)/
+        language: system
+        pass_filenames: false

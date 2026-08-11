@@ -1,33 +1,26 @@
+mod bind_native;
+mod bind_python;
 mod from_value;
-mod to_monty_object;
 
 use std::{mem, slice, vec::IntoIter};
 
-pub(crate) use from_value::{ArgErrCtx, FromValue, LaxBool};
-pub(crate) use monty_macros::{FromArgs, ToArgs};
-pub(crate) use to_monty_object::ToMontyObject;
+pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
+pub(crate) use bind_python::Signature;
+pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int};
+pub(crate) use monty_macros::FromArgs;
+use monty_types::MontyObject;
 
 use crate::{
-    MontyObject, ResourceTracker,
     bytecode::VM,
-    exception_private::{ExcType, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::{ExprLoc, Identifier},
-    heap::{ContainsHeap, DropWithHeap, Heap},
+    heap::{ContainsHeap, DropWithContext, Heap},
     intern::StringId,
+    object_bridge::MontyObjectExt,
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
     value::Value,
 };
-
-/// Projects a typed args struct into the `(positional, keyword)` `MontyObject`
-/// pair host callbacks expect. Consumes `self` to avoid cloning owned fields.
-///
-/// Inverse of [`FromArgs`]: `FromArgs` is internal `ArgValues` → struct,
-/// `ToArgs` is struct → host-facing `(args, kwargs)`. Driven by
-/// [`crate::os::OsFunctionCall::to_args`] for the monty-python / monty-js bindings.
-pub trait ToArgs {
-    fn to_args(self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>);
-}
 
 /// Type for method call arguments.
 ///
@@ -47,12 +40,12 @@ impl ArgValues {
     /// Checks that zero arguments were passed.
     ///
     /// On error, properly drops all contained values to maintain reference counts.
-    pub fn check_zero_args(self, name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<()> {
+    pub fn check_zero_args(self, name: &str, heap: &mut Heap) -> RunResult<()> {
         match self {
             Self::Empty => Ok(()),
             other => {
                 let count = other.count();
-                other.drop_with_heap(heap);
+                other.drop_with(heap);
                 Err(ExcType::type_error_no_args(name, count))
             }
         }
@@ -61,12 +54,12 @@ impl ArgValues {
     /// Checks that exactly one positional argument was passed, returning it.
     ///
     /// On error, properly drops all contained values to maintain reference counts.
-    pub fn get_one_arg(self, name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    pub fn get_one_arg(self, name: &str, heap: &mut Heap) -> RunResult<Value> {
         match self {
             Self::One(a) => Ok(a),
             other => {
                 let count = other.count();
-                other.drop_with_heap(heap);
+                other.drop_with(heap);
                 Err(ExcType::type_error_arg_count(name, 1, count))
             }
         }
@@ -75,12 +68,12 @@ impl ArgValues {
     /// Checks that exactly two positional arguments were passed, returning them as a tuple.
     ///
     /// On error, properly drops all contained values to maintain reference counts.
-    pub fn get_two_args(self, name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<(Value, Value)> {
+    pub fn get_two_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Value)> {
         match self {
             Self::Two(a1, a2) => Ok((a1, a2)),
             other => {
                 let count = other.count();
-                other.drop_with_heap(heap);
+                other.drop_with(heap);
                 Err(ExcType::type_error_arg_count(name, 2, count))
             }
         }
@@ -89,17 +82,13 @@ impl ArgValues {
     /// Checks that one or two arguments were passed, returning them as a tuple.
     ///
     /// On error, properly drops all contained values to maintain reference counts.
-    pub fn get_one_two_args(
-        self,
-        name: &str,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> RunResult<(Value, Option<Value>)> {
+    pub fn get_one_two_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Option<Value>)> {
         match self {
             Self::One(a) => Ok((a, None)),
             Self::Two(a1, a2) => Ok((a1, Some(a2))),
             other => {
                 let count = other.count();
-                other.drop_with_heap(heap);
+                other.drop_with(heap);
                 if count == 0 {
                     Err(ExcType::type_error_at_least(name, 1, count))
                 } else {
@@ -112,13 +101,13 @@ impl ArgValues {
     /// Checks that zero or one argument was passed, returning the optional value.
     ///
     /// On error, properly drops all contained values to maintain reference counts.
-    pub fn get_zero_one_arg(self, name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    pub fn get_zero_one_arg(self, name: &str, heap: &mut Heap) -> RunResult<Option<Value>> {
         match self {
             Self::Empty => Ok(None),
             Self::One(a) => Ok(Some(a)),
             other => {
                 let count = other.count();
-                other.drop_with_heap(heap);
+                other.drop_with(heap);
                 Err(ExcType::type_error_at_most(name, 1, count))
             }
         }
@@ -161,7 +150,7 @@ impl ArgValues {
     }
 
     /// Variant of [`into_parts()`](Self::into_parts) that accepts no kwargs, returning an error if any are present.
-    pub fn into_pos_only(self, method_name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<ArgPosIter> {
+    pub fn into_pos_only(self, method_name: &str, heap: &mut Heap) -> RunResult<ArgPosIter> {
         match self {
             Self::Empty => Ok(ArgPosIter::Empty),
             Self::One(v) => Ok(ArgPosIter::One(v)),
@@ -177,7 +166,7 @@ impl ArgValues {
                 if kwargs.is_empty() {
                     Ok(ArgPosIter::Vec(args.into_iter()))
                 } else {
-                    args.drop_with_heap(heap);
+                    args.drop_with(heap);
                     Err(Self::unexpected_kwargs_error(kwargs, method_name, heap))
                 }
             }
@@ -185,22 +174,15 @@ impl ArgValues {
     }
 
     #[cold]
-    fn unexpected_kwargs_error(
-        kwargs: KwargsValues,
-        method_name: &str,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> RunError {
-        kwargs.drop_with_heap(heap);
+    fn unexpected_kwargs_error(kwargs: KwargsValues, method_name: &str, heap: &mut Heap) -> RunError {
+        kwargs.drop_with(heap);
         ExcType::type_error_no_kwargs(method_name)
     }
 
     /// Converts the arguments into a Vec of MontyObjects.
     ///
     /// This is used when passing arguments to external functions.
-    pub fn into_py_objects(
-        self,
-        vm: &mut VM<'_, impl ResourceTracker>,
-    ) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
+    pub fn into_py_objects(self, vm: &mut VM<'_>) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
         match self {
             Self::Empty => (vec![], vec![]),
             Self::One(a) => (vec![MontyObject::new(a, vm)], vec![]),
@@ -227,21 +209,21 @@ impl ArgValues {
     }
 }
 
-impl DropWithHeap for ArgValues {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for ArgValues {
+    fn drop_with(self, heap: &mut C) {
         match self {
             Self::Empty => {}
-            Self::One(v) => v.drop_with_heap(heap),
+            Self::One(v) => v.drop_with(heap),
             Self::Two(v1, v2) => {
-                v1.drop_with_heap(heap);
-                v2.drop_with_heap(heap);
+                v1.drop_with(heap);
+                v2.drop_with(heap);
             }
             Self::Kwargs(kwargs) => {
-                kwargs.drop_with_heap(heap);
+                kwargs.drop_with(heap);
             }
             Self::ArgsKargs { args, kwargs } => {
-                args.drop_with_heap(heap);
-                kwargs.drop_with_heap(heap);
+                args.drop_with(heap);
+                kwargs.drop_with(heap);
             }
         }
     }
@@ -251,10 +233,10 @@ impl DropWithHeap for ArgValues {
 ///
 /// Supports iterating over `ArgValues::One/Two` without converting to Vec.
 /// This iterator must be fully consumed OR explicitly dropped with
-/// `drop_remaining_with_heap()` to maintain correct reference counts.
+/// `drop_with()` to maintain correct reference counts.
 ///
 /// The iterator yields values by ownership transfer. Once a value is yielded,
-/// the caller is responsible for either using it or calling `drop_with_heap()` on it.
+/// the caller is responsible for either using it or calling `drop_with()` on it.
 pub(crate) enum ArgPosIter {
     Empty,
     One(Value),
@@ -311,13 +293,13 @@ impl Iterator for ArgPosIter {
 
 impl ExactSizeIterator for ArgPosIter {}
 
-impl DropWithHeap for ArgPosIter {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for ArgPosIter {
+    fn drop_with(self, heap: &mut C) {
         match self {
             Self::Empty => {}
-            Self::One(v1) => v1.drop_with_heap(heap),
-            Self::Two(v12) => v12.drop_with_heap(heap),
-            Self::Vec(iter) => iter.drop_with_heap(heap),
+            Self::One(v1) => v1.drop_with(heap),
+            Self::Two(v12) => v12.drop_with(heap),
+            Self::Vec(iter) => iter.drop_with(heap),
         }
     }
 }
@@ -330,6 +312,10 @@ impl DropWithHeap for ArgPosIter {
 pub(crate) enum KwargsValues {
     Empty,
     Inline(Vec<(StringId, Value)>),
+    /// Kwargs whose keys are runtime string `Value`s — produced by the binder's
+    /// `varkwargs` collection, where `**{...}` unpacking can supply str keys
+    /// that have no interned id (`Inline` can only carry `StringId` keys).
+    Pairs(Vec<(Value, Value)>),
     Dict(Dict),
 }
 
@@ -340,6 +326,7 @@ impl KwargsValues {
         match self {
             Self::Empty => 0,
             Self::Inline(kvs) => kvs.len(),
+            Self::Pairs(kvs) => kvs.len(),
             Self::Dict(dict) => dict.len(),
         }
     }
@@ -353,7 +340,7 @@ impl KwargsValues {
     /// Converts the arguments into a Vec of MontyObjects.
     ///
     /// This is used when passing arguments to external functions.
-    fn into_py_objects(self, vm: &mut VM<'_, impl ResourceTracker>) -> Vec<(MontyObject, MontyObject)> {
+    fn into_py_objects(self, vm: &mut VM<'_>) -> Vec<(MontyObject, MontyObject)> {
         match self {
             Self::Empty => vec![],
             Self::Inline(kvs) => kvs
@@ -364,6 +351,10 @@ impl KwargsValues {
                     (key, value)
                 })
                 .collect(),
+            Self::Pairs(kvs) => kvs
+                .into_iter()
+                .map(|(k, v)| (MontyObject::new(k, vm), MontyObject::new(v, vm)))
+                .collect(),
             Self::Dict(dict) => dict
                 .into_iter()
                 .map(|(k, v)| (MontyObject::new(k, vm), MontyObject::new(v, vm)))
@@ -372,20 +363,26 @@ impl KwargsValues {
     }
 }
 
-impl DropWithHeap for KwargsValues {
+impl<C: ContainsHeap> DropWithContext<C> for KwargsValues {
     /// Properly drops all values in the arguments, decrementing reference counts.
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+    fn drop_with(self, heap: &mut C) {
         match self {
             Self::Empty => {}
             Self::Inline(kvs) => {
                 for (_, v) in kvs {
-                    v.drop_with_heap(heap);
+                    v.drop_with(heap);
+                }
+            }
+            Self::Pairs(kvs) => {
+                for (k, v) in kvs {
+                    k.drop_with(heap);
+                    v.drop_with(heap);
                 }
             }
             Self::Dict(dict) => {
                 for (k, v) in dict {
-                    k.drop_with_heap(heap);
-                    v.drop_with_heap(heap);
+                    k.drop_with(heap);
+                    v.drop_with(heap);
                 }
             }
         }
@@ -400,6 +397,7 @@ impl IntoIterator for KwargsValues {
         match self {
             Self::Empty => KwargsValuesIter::Empty,
             Self::Inline(kvs) => KwargsValuesIter::Inline(kvs.into_iter()),
+            Self::Pairs(kvs) => KwargsValuesIter::Pairs(kvs.into_iter()),
             Self::Dict(dict) => KwargsValuesIter::Dict(dict.into_iter()),
         }
     }
@@ -408,11 +406,12 @@ impl IntoIterator for KwargsValues {
 /// Iterator over keyword argument (key, value) pairs.
 ///
 /// For `Inline` kwargs, converts `StringId` keys to `Value::InternString`.
-/// For `Dict` kwargs, iterates directly over the dict's entries without
-/// intermediate allocation.
+/// For `Pairs` and `Dict` kwargs, iterates directly over the owned entries
+/// without intermediate allocation.
 pub(crate) enum KwargsValuesIter {
     Empty,
     Inline(IntoIter<(StringId, Value)>),
+    Pairs(IntoIter<(Value, Value)>),
     Dict(DictIntoIter),
 }
 
@@ -423,6 +422,7 @@ impl Iterator for KwargsValuesIter {
         match self {
             Self::Empty => None,
             Self::Inline(iter) => iter.next().map(|(k, v)| (Value::InternString(k), v)),
+            Self::Pairs(iter) => iter.next(),
             Self::Dict(iter) => iter.next(),
         }
     }
@@ -431,6 +431,7 @@ impl Iterator for KwargsValuesIter {
         match self {
             Self::Empty => (0, Some(0)),
             Self::Inline(iter) => iter.size_hint(),
+            Self::Pairs(iter) => iter.size_hint(),
             Self::Dict(iter) => iter.size_hint(),
         }
     }
@@ -438,19 +439,25 @@ impl Iterator for KwargsValuesIter {
 
 impl ExactSizeIterator for KwargsValuesIter {}
 
-impl DropWithHeap for KwargsValuesIter {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for KwargsValuesIter {
+    fn drop_with(self, heap: &mut C) {
         match self {
             Self::Empty => {}
             Self::Inline(iter) => {
                 for (_, v) in iter {
-                    v.drop_with_heap(heap);
+                    v.drop_with(heap);
+                }
+            }
+            Self::Pairs(iter) => {
+                for (k, v) in iter {
+                    k.drop_with(heap);
+                    v.drop_with(heap);
                 }
             }
             Self::Dict(iter) => {
                 for (k, v) in iter {
-                    k.drop_with_heap(heap);
-                    v.drop_with_heap(heap);
+                    k.drop_with(heap);
+                    v.drop_with(heap);
                 }
             }
         }

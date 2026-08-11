@@ -3,4 +3,4 @@
 # Monty must not panic when the iterable is the list itself.
 x = [1, 2, 3]
 x.extend(x)
-assert x == [1, 2, 3, 1, 2, 3], 'extend self should duplicate elements'
+assert x == [1, 2, 3, 1, 2, 3]

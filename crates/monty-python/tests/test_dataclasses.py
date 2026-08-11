@@ -9,6 +9,7 @@ from dataclasses import (
 from typing import NoReturn
 
 import pytest
+from conftest import RunMonty
 from inline_snapshot import snapshot
 
 import pydantic_monty
@@ -20,12 +21,10 @@ class Person:
     age: int
 
 
-def test_dataclass_input():
-    """Dataclass instances are converted and returned as MontyDataclass."""
+def test_dataclass_input(monty_run: RunMonty):
+    """Dataclass instances are converted and returned as the registered dataclass."""
 
-    m = pydantic_monty.Monty('x', inputs=['x'])
-    m.register_dataclass(Person)
-    result = m.run(inputs={'x': Person(name='Alice', age=30)})
+    result = monty_run('x', inputs={'x': Person(name='Alice', age=30)}, dataclass_registry=[Person])
     assert result.name == snapshot('Alice')
     assert result.age == snapshot(30)
     assert is_dataclass(result)
@@ -34,11 +33,10 @@ def test_dataclass_input():
     assert repr(result) == snapshot("Person(name='Alice', age=30)")
 
 
-def test_dataclass_auto_registered():
+def test_dataclass_auto_registered(monty_run: RunMonty):
     """Dataclass passed as input is auto-registered, so isinstance() works without explicit registry."""
 
-    m = pydantic_monty.Monty('x', inputs=['x'])
-    result = m.run(inputs={'x': Person(name='Alice', age=30)})
+    result = monty_run('x', inputs={'x': Person(name='Alice', age=30)})
     assert result.name == snapshot('Alice')
     assert result.age == snapshot(30)
     assert is_dataclass(result)
@@ -53,11 +51,10 @@ class Point:
     y: int
 
 
-def test_dataclass_frozen():
+def test_dataclass_frozen(monty_run: RunMonty):
     """Frozen dataclasses are converted like regular dataclasses."""
 
-    m = pydantic_monty.Monty('p', inputs=['p'], dataclass_registry=[Point])
-    result = m.run(inputs={'p': Point(x=10, y=20)})
+    result = monty_run('p', inputs={'p': Point(x=10, y=20)}, dataclass_registry=[Point])
     assert isinstance(result, Point)
     assert result.x == snapshot(10)
     assert result.y == snapshot(20)
@@ -76,13 +73,14 @@ class PersonAddress:
     address: Address
 
 
-def test_dataclass_nested():
+def test_dataclass_nested(monty_run: RunMonty):
     """Nested dataclasses are recursively converted."""
 
-    m = pydantic_monty.Monty('x', inputs=['x'])
-    m.register_dataclass(Address)
-    m.register_dataclass(PersonAddress)
-    result = m.run(inputs={'x': PersonAddress(name='Bob', address=Address(city='NYC', zip_code='10001'))})
+    result = monty_run(
+        'x',
+        inputs={'x': PersonAddress(name='Bob', address=Address(city='NYC', zip_code='10001'))},
+        dataclass_registry=[Address, PersonAddress],
+    )
     assert isinstance(result, PersonAddress)
     assert result.name == snapshot('Bob')
     assert isinstance(result.address, Address)
@@ -90,10 +88,9 @@ def test_dataclass_nested():
     assert result.address.zip_code == snapshot('10001')
 
 
-def test_dataclass_nested_auto_registered():
+def test_dataclass_nested_auto_registered(monty_run: RunMonty):
     """Nested dataclasses are auto-registered when passed as input."""
-    m = pydantic_monty.Monty('x', inputs=['x'])
-    result = m.run(inputs={'x': PersonAddress(name='Bob', address=Address(city='NYC', zip_code='10001'))})
+    result = monty_run('x', inputs={'x': PersonAddress(name='Bob', address=Address(city='NYC', zip_code='10001'))})
     assert isinstance(result, PersonAddress)
     assert result.name == snapshot('Bob')
     assert isinstance(result.address, Address)
@@ -101,84 +98,74 @@ def test_dataclass_nested_auto_registered():
     assert result.address.zip_code == snapshot('10001')
 
 
-def test_dataclass_auto_registered_in_list():
+def test_dataclass_auto_registered_in_list(monty_run: RunMonty):
     """Dataclass inside a list input is auto-registered."""
 
-    m = pydantic_monty.Monty('x[0]', inputs=['x'])
-    result = m.run(inputs={'x': [Person(name='Alice', age=30)]})
+    result = monty_run('x[0]', inputs={'x': [Person(name='Alice', age=30)]})
     assert isinstance(result, Person)
     assert result.name == snapshot('Alice')
 
 
-def test_dataclass_auto_registered_in_dict_value():
+def test_dataclass_auto_registered_in_dict_value(monty_run: RunMonty):
     """Dataclass inside a dict value is auto-registered."""
 
-    m = pydantic_monty.Monty('x["key"]', inputs=['x'])
-    result = m.run(inputs={'x': {'key': Person(name='Alice', age=30)}})
+    result = monty_run('x["key"]', inputs={'x': {'key': Person(name='Alice', age=30)}})
     assert isinstance(result, Person)
     assert result.name == snapshot('Alice')
 
 
-def test_dataclass_explicit_registry_idempotent():
+def test_dataclass_explicit_registry_idempotent(monty_run: RunMonty):
     """Explicit registry still works alongside auto-registration (idempotent)."""
 
-    m = pydantic_monty.Monty('x', inputs=['x'], dataclass_registry=[Person])
-    result = m.run(inputs={'x': Person(name='Alice', age=30)})
+    result = monty_run('x', inputs={'x': Person(name='Alice', age=30)}, dataclass_registry=[Person])
     assert isinstance(result, Person)
     assert result.name == snapshot('Alice')
     assert result.age == snapshot(30)
 
 
-def test_dataclass_with_list_field():
+def test_dataclass_with_list_field(monty_run: RunMonty):
     """Dataclasses with list fields are properly converted."""
 
     @dataclass
     class Container:
         items: list[int]
 
-    m = pydantic_monty.Monty('x', inputs=['x'])
-    result = m.run(inputs={'x': Container(items=[1, 2, 3])})
+    result = monty_run('x', inputs={'x': Container(items=[1, 2, 3])})
     assert result.items == snapshot([1, 2, 3])
 
 
-def test_dataclass_with_dict_field():
+def test_dataclass_with_dict_field(monty_run: RunMonty):
     """Dataclasses with dict fields are properly converted."""
 
     @dataclass
     class Config:
         settings: dict[str, int]
 
-    m = pydantic_monty.Monty('x', inputs=['x'])
-    m.register_dataclass(Config)
-    result = m.run(inputs={'x': Config(settings={'a': 1, 'b': 2})})
+    result = monty_run('x', inputs={'x': Config(settings={'a': 1, 'b': 2})}, dataclass_registry=[Config])
     assert result.settings == snapshot({'a': 1, 'b': 2})
 
 
-def test_dataclass_empty():
+def test_dataclass_empty(monty_run: RunMonty):
     """Empty dataclass (no fields) has empty repr."""
 
     @dataclass
     class Empty:
         pass
 
-    m = pydantic_monty.Monty('x', inputs=['x'])
-    m.register_dataclass(Empty)
-    result = m.run(inputs={'x': Empty()})
+    result = monty_run('x', inputs={'x': Empty()}, dataclass_registry=[Empty])
     assert repr(result) == snapshot('test_dataclass_empty.<locals>.Empty()')
 
 
 @pytest.mark.xfail(reason='We should extend the dataclass registry to cover all types, then test it is enforced')
-def test_dataclass_type_raises():
+def test_dataclass_type_raises(monty_run: RunMonty):
     """Dataclass type (not instance) should raise TypeError."""
 
     @dataclass
     class MyClass:
         value: int
 
-    m = pydantic_monty.Monty('x', inputs=['x'])
-    m.register_dataclass(MyClass)
     with pytest.raises(TypeError) as exc_info:
-        m.run(inputs={'x': MyClass})
+        monty_run('x', inputs={'x': MyClass}, dataclass_registry=[MyClass])
 
     assert str(exc_info.value) == snapshot('Cannot convert builtins.type to Monty value')
 
@@ -186,7 +173,7 @@ def test_dataclass_type_raises():
 # === Field access ===
 
 
-def test_dataclass_field_access():
+def test_dataclass_field_access(monty_run: RunMonty):
     """Access individual fields of a dataclass."""
 
     @dataclass
@@ -194,22 +181,20 @@ def test_dataclass_field_access():
         name: str
         age: int
 
-    m = pydantic_monty.Monty('x.name', inputs=['x'])
-    assert m.run(inputs={'x': Person(name='Alice', age=30)}) == snapshot('Alice')
-
-    m = pydantic_monty.Monty('x.age', inputs=['x'])
-    assert m.run(inputs={'x': Person(name='Alice', age=30)}) == snapshot(30)
+    assert monty_run('x.name', inputs={'x': Person(name='Alice', age=30)}) == snapshot('Alice')
+    assert monty_run('x.age', inputs={'x': Person(name='Alice', age=30)}) == snapshot(30)
 
 
-def test_dataclass_field_access_nested():
+def test_dataclass_field_access_nested(monty_run: RunMonty):
     """Access fields of nested dataclasses."""
 
-    m = pydantic_monty.Monty('x.address.city', inputs=['x'])
-    result = m.run(inputs={'x': PersonAddress(name='Bob', address=Address(city='NYC', zip_code='10001'))})
+    result = monty_run(
+        'x.address.city', inputs={'x': PersonAddress(name='Bob', address=Address(city='NYC', zip_code='10001'))}
+    )
     assert result == snapshot('NYC')
 
 
-def test_dataclass_field_in_expression():
+def test_dataclass_field_in_expression(monty_run: RunMonty):
     """Use dataclass fields in expressions."""
 
     @dataclass
@@ -217,27 +202,39 @@ def test_dataclass_field_in_expression():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('p.x + p.y', inputs=['p'])
-    assert m.run(inputs={'p': Point(x=10, y=20)}) == snapshot(30)
+    assert monty_run('p.x + p.y', inputs={'p': Point(x=10, y=20)}) == snapshot(30)
 
 
-def test_dataclass_field_access_missing():
+def test_dataclass_field_access_missing(monty_run: RunMonty):
     """Accessing a non-existent field raises AttributeError."""
 
     @dataclass
     class Person:
         name: str
 
-    m = pydantic_monty.Monty('x.age', inputs=['x'])
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(inputs={'x': Person(name='Alice')})
+        monty_run('x.age', inputs={'x': Person(name='Alice')})
     assert isinstance(exc_info.value.exception(), AttributeError)
+
+
+def test_dataclass_private_method_not_dispatched(monty_run: RunMonty):
+    @dataclass
+    class Secret:
+        value: int
+
+        def _leak(self) -> int:
+            return self.value
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('x._leak()', inputs={'x': Secret(value=42)})
+    assert isinstance(exc_info.value.exception(), AttributeError)
+    assert str(exc_info.value) == snapshot("AttributeError: 'Secret' object has no attribute '_leak'")
 
 
 # === Repr ===
 
 
-def test_dataclass_repr():
+def test_dataclass_repr(monty_run: RunMonty):
     """Repr of dataclass shows ClassName(field=value, ...) format."""
 
     @dataclass
@@ -245,11 +242,10 @@ def test_dataclass_repr():
         name: str
         age: int
 
-    m = pydantic_monty.Monty('repr(x)', inputs=['x'])
-    assert m.run(inputs={'x': Person(name='Alice', age=30)}) == snapshot("Person(name='Alice', age=30)")
+    assert monty_run('repr(x)', inputs={'x': Person(name='Alice', age=30)}) == snapshot("Person(name='Alice', age=30)")
 
 
-def test_dataclass_repr_frozen():
+def test_dataclass_repr_frozen(monty_run: RunMonty):
     """Repr of frozen dataclass shows same format."""
 
     @dataclass(frozen=True)
@@ -257,11 +253,10 @@ def test_dataclass_repr_frozen():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('repr(p)', inputs=['p'])
-    assert m.run(inputs={'p': Point(x=10, y=20)}) == snapshot('Point(x=10, y=20)')
+    assert monty_run('repr(p)', inputs={'p': Point(x=10, y=20)}) == snapshot('Point(x=10, y=20)')
 
 
-def test_dataclass_repr_nested():
+def test_dataclass_repr_nested(monty_run: RunMonty):
     """Repr of nested dataclass shows nested repr."""
 
     @dataclass
@@ -272,26 +267,23 @@ def test_dataclass_repr_nested():
     class Outer:
         inner: Inner
 
-    m = pydantic_monty.Monty('repr(x)', inputs=['x'])
-    assert m.run(inputs={'x': Outer(inner=Inner(value=42))}) == snapshot('Outer(inner=Inner(value=42))')
+    assert monty_run('repr(x)', inputs={'x': Outer(inner=Inner(value=42))}) == snapshot('Outer(inner=Inner(value=42))')
 
 
-def test_dataclass_repr_empty():
+def test_dataclass_repr_empty(monty_run: RunMonty):
     """Repr of empty dataclass shows ClassName()."""
 
     @dataclass
     class Empty:
         pass
 
-    m = pydantic_monty.Monty('repr(x)', inputs=['x'])
-    m.register_dataclass(Empty)
-    assert m.run(inputs={'x': Empty()}) == snapshot('Empty()')
+    assert monty_run('repr(x)', inputs={'x': Empty()}, dataclass_registry=[Empty]) == snapshot('Empty()')
 
 
 # === Setattr ===
 
 
-def test_dataclass_setattr_mutable():
+def test_dataclass_setattr_mutable(monty_run: RunMonty):
     """Setting attributes on mutable dataclass works (auto-registered, returns real dataclass)."""
 
     @dataclass
@@ -299,8 +291,7 @@ def test_dataclass_setattr_mutable():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('p', inputs=['p'])
-    result = m.run(inputs={'p': Point(x=10, y=20)})
+    result = monty_run('p', inputs={'p': Point(x=10, y=20)})
     assert isinstance(result, Point)
 
     # Modify existing field
@@ -309,7 +300,7 @@ def test_dataclass_setattr_mutable():
     assert repr(result) == snapshot('test_dataclass_setattr_mutable.<locals>.Point(x=100, y=20)')
 
 
-def test_dataclass_setattr_frozen():
+def test_dataclass_setattr_frozen(monty_run: RunMonty):
     """Setting attributes on frozen dataclass raises FrozenInstanceError."""
 
     @dataclass(frozen=True)
@@ -317,8 +308,7 @@ def test_dataclass_setattr_frozen():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('p', inputs=['p'])
-    result = m.run(inputs={'p': Point(x=10, y=20)})
+    result = monty_run('p', inputs={'p': Point(x=10, y=20)})
 
     # FrozenInstanceError is raised (which is a subclass of AttributeError)
     with pytest.raises(FrozenInstanceError, match="cannot assign to field 'x'"):
@@ -328,7 +318,7 @@ def test_dataclass_setattr_frozen():
         result.z = 30
 
 
-def test_frozen_instance_error_is_attribute_error():
+def test_frozen_instance_error_is_attribute_error(monty_run: RunMonty):
     """FrozenInstanceError can be caught as AttributeError."""
 
     @dataclass(frozen=True)
@@ -336,8 +326,7 @@ def test_frozen_instance_error_is_attribute_error():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('p', inputs=['p'])
-    result = m.run(inputs={'p': Point(x=10, y=20)})
+    result = monty_run('p', inputs={'p': Point(x=10, y=20)})
 
     # Can catch with AttributeError (parent class)
     with pytest.raises(AttributeError):
@@ -350,7 +339,7 @@ def test_frozen_instance_error_is_attribute_error():
         assert isinstance(e, FrozenInstanceError)
 
 
-def test_frozen_instance_error_message():
+def test_frozen_instance_error_message(monty_run: RunMonty):
     """FrozenInstanceError has correct message format."""
 
     @dataclass(frozen=True)
@@ -358,15 +347,14 @@ def test_frozen_instance_error_message():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('p', inputs=['p'])
-    result = m.run(inputs={'p': Point(x=10, y=20)})
+    result = monty_run('p', inputs={'p': Point(x=10, y=20)})
 
     with pytest.raises(FrozenInstanceError) as exc_info:
         result.x = 100
     assert exc_info.value.args[0] == snapshot("cannot assign to field 'x'")
 
 
-def test_frozen_instance_error_from_monty_code():
+def test_frozen_instance_error_from_monty_code(monty_run: RunMonty):
     """FrozenInstanceError raised by Monty code is properly converted."""
 
     @dataclass(frozen=True)
@@ -374,20 +362,14 @@ def test_frozen_instance_error_from_monty_code():
         x: int
         y: int
 
-    # Monty code that tries to modify a frozen dataclass
-    code = """
-p.x = 100
-"""
-    m = pydantic_monty.Monty(code, inputs=['p'])
-
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(inputs={'p': Point(x=10, y=20)})
+        monty_run('p.x = 100', inputs={'p': Point(x=10, y=20)})
     inner = exc_info.value.exception()
     assert isinstance(inner, FrozenInstanceError)
     assert inner.args[0] == snapshot("cannot assign to field 'x'")
 
 
-def test_frozen_instance_error_from_monty_caught_as_attribute_error():
+def test_frozen_instance_error_from_monty_caught_as_attribute_error(monty_run: RunMonty):
     """FrozenInstanceError from Monty can be caught as AttributeError."""
 
     @dataclass(frozen=True)
@@ -395,19 +377,16 @@ def test_frozen_instance_error_from_monty_caught_as_attribute_error():
         x: int
         y: int
 
-    code = 'p.x = 100'
-    m = pydantic_monty.Monty(code, inputs=['p'])
-
     # Wrapped in MontyRuntimeError, but inner exception is FrozenInstanceError
     # which is a subclass of AttributeError
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(inputs={'p': Point(x=10, y=20)})
+        monty_run('p.x = 100', inputs={'p': Point(x=10, y=20)})
     inner = exc_info.value.exception()
     assert isinstance(inner, AttributeError)
     assert isinstance(inner, FrozenInstanceError)
 
 
-def test_frozen_instance_error_from_external_function():
+def test_frozen_instance_error_from_external_function(monty_run: RunMonty):
     """FrozenInstanceError from external function is properly converted."""
     code = """
 try:
@@ -418,25 +397,23 @@ except AttributeError:
     caught = 'attr'
 caught
 """
-    m = pydantic_monty.Monty(code)
 
     def fail() -> NoReturn:
         raise FrozenInstanceError('cannot assign to field')
 
     # Monty should catch it as FrozenInstanceError specifically
-    result = m.run(external_functions={'fail': fail})
+    result = monty_run(code, external_lookup={'fail': fail})
     assert result == snapshot('frozen')
 
 
-def test_frozen_instance_error_from_external_function_propagates():
+def test_frozen_instance_error_from_external_function_propagates(monty_run: RunMonty):
     """FrozenInstanceError from external function propagates to Python."""
-    m = pydantic_monty.Monty('fail()')
 
     def fail() -> NoReturn:
         raise FrozenInstanceError('test frozen error')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(external_functions={'fail': fail})
+        monty_run('fail()', external_lookup={'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, FrozenInstanceError)
     assert inner.args[0] == snapshot('test frozen error')
@@ -445,7 +422,7 @@ def test_frozen_instance_error_from_external_function_propagates():
 # === Equality ===
 
 
-def test_dataclass_equality_same():
+def test_dataclass_equality_same(monty_run: RunMonty):
     """Equal dataclasses compare equal."""
 
     @dataclass
@@ -453,12 +430,11 @@ def test_dataclass_equality_same():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('(a, b)', inputs=['a', 'b'])
-    a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': Point(x=10, y=20)})
+    a, b = monty_run('(a, b)', inputs={'a': Point(x=10, y=20), 'b': Point(x=10, y=20)})
     assert a == b
 
 
-def test_dataclass_equality_different_values():
+def test_dataclass_equality_different_values(monty_run: RunMonty):
     """Dataclasses with different values compare not equal."""
 
     @dataclass
@@ -466,12 +442,11 @@ def test_dataclass_equality_different_values():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('(a, b)', inputs=['a', 'b'])
-    a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': Point(x=10, y=30)})
+    a, b = monty_run('(a, b)', inputs={'a': Point(x=10, y=20), 'b': Point(x=10, y=30)})
     assert a != b
 
 
-def test_dataclass_equality_different_types():
+def test_dataclass_equality_different_types(monty_run: RunMonty):
     """Dataclasses of different types compare not equal."""
 
     @dataclass
@@ -484,12 +459,11 @@ def test_dataclass_equality_different_types():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('(a, b)', inputs=['a', 'b'])
-    a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': Vector(x=10, y=20)})
+    a, b = monty_run('(a, b)', inputs={'a': Point(x=10, y=20), 'b': Vector(x=10, y=20)})
     assert a != b
 
 
-def test_dataclass_equality_with_other_type():
+def test_dataclass_equality_with_other_type(monty_run: RunMonty):
     """Dataclass compared to non-dataclass returns False."""
 
     @dataclass
@@ -497,8 +471,7 @@ def test_dataclass_equality_with_other_type():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('p', inputs=['p'])
-    result = m.run(inputs={'p': Point(x=10, y=20)})
+    result = monty_run('p', inputs={'p': Point(x=10, y=20)})
     assert result != {'x': 10, 'y': 20}
     assert result != (10, 20)
     assert result != 'Point(x=10, y=20)'
@@ -507,7 +480,7 @@ def test_dataclass_equality_with_other_type():
 # === Hashing ===
 
 
-def test_dataclass_hash_frozen():
+def test_dataclass_hash_frozen(monty_run: RunMonty):
     """Frozen dataclasses are hashable."""
 
     @dataclass(frozen=True)
@@ -515,8 +488,7 @@ def test_dataclass_hash_frozen():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('p', inputs=['p'])
-    result = m.run(inputs={'p': Point(x=10, y=20)})
+    result = monty_run('p', inputs={'p': Point(x=10, y=20)})
 
     h = hash(result)
     assert isinstance(h, int)
@@ -524,7 +496,7 @@ def test_dataclass_hash_frozen():
     assert hash(result) == h
 
 
-def test_dataclass_hash_frozen_equal_values():
+def test_dataclass_hash_frozen_equal_values(monty_run: RunMonty):
     """Equal frozen dataclasses have equal hashes."""
 
     @dataclass(frozen=True)
@@ -532,13 +504,12 @@ def test_dataclass_hash_frozen_equal_values():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('(a, b)', inputs=['a', 'b'])
-    a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': Point(x=10, y=20)})
+    a, b = monty_run('(a, b)', inputs={'a': Point(x=10, y=20), 'b': Point(x=10, y=20)})
 
     assert hash(a) == hash(b)
 
 
-def test_dataclass_hash_mutable_raises():
+def test_dataclass_hash_mutable_raises(monty_run: RunMonty):
     """Mutable dataclasses are not hashable."""
 
     @dataclass
@@ -546,14 +517,13 @@ def test_dataclass_hash_mutable_raises():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('p', inputs=['p'])
-    result = m.run(inputs={'p': Point(x=10, y=20)})
+    result = monty_run('p', inputs={'p': Point(x=10, y=20)})
 
     with pytest.raises(TypeError, match="unhashable type: 'Point'"):
         hash(result)
 
 
-def test_dataclass_hash_in_set():
+def test_dataclass_hash_in_set(monty_run: RunMonty):
     """Frozen dataclasses can be used in sets."""
 
     @dataclass(frozen=True)
@@ -561,20 +531,20 @@ def test_dataclass_hash_in_set():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('(a, b, c)', inputs=['a', 'b', 'c'])
-    a, b, c = m.run(
+    a, b, c = monty_run(
+        '(a, b, c)',
         inputs={
             'a': Point(x=10, y=20),
             'b': Point(x=10, y=20),  # duplicate
             'c': Point(x=30, y=40),
-        }
+        },
     )
 
     s = {a, b, c}
     assert len(s) == snapshot(2)
 
 
-def test_dataclass_hash_as_dict_key():
+def test_dataclass_hash_as_dict_key(monty_run: RunMonty):
     """Frozen dataclasses can be used as dict keys."""
 
     @dataclass(frozen=True)
@@ -582,8 +552,7 @@ def test_dataclass_hash_as_dict_key():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('(a, b)', inputs=['a', 'b'])
-    a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': Point(x=10, y=20)})
+    a, b = monty_run('(a, b)', inputs={'a': Point(x=10, y=20), 'b': Point(x=10, y=20)})
 
     d = {a: 'first'}
     assert d[b] == snapshot('first')
@@ -592,7 +561,7 @@ def test_dataclass_hash_as_dict_key():
 # === dataclasses module compatibility ===
 
 
-def test_dataclass_is_dataclass():
+def test_dataclass_is_dataclass(monty_run: RunMonty):
     """is_dataclass() returns True for returned dataclasses."""
 
     @dataclass
@@ -600,12 +569,11 @@ def test_dataclass_is_dataclass():
         name: str
         age: int
 
-    m = pydantic_monty.Monty('x', inputs=['x'])
-    result = m.run(inputs={'x': Person(name='Alice', age=30)})
+    result = monty_run('x', inputs={'x': Person(name='Alice', age=30)})
     assert is_dataclass(result) is True
 
 
-def test_dataclass_fields():
+def test_dataclass_fields(monty_run: RunMonty):
     """fields() returns Field objects for returned dataclasses."""
 
     @dataclass
@@ -613,8 +581,7 @@ def test_dataclass_fields():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('p', inputs=['p'])
-    result = m.run(inputs={'p': Point(x=10, y=20)})
+    result = monty_run('p', inputs={'p': Point(x=10, y=20)})
 
     fs = fields(result)
     assert len(fs) == snapshot(2)
@@ -625,22 +592,21 @@ def test_dataclass_fields():
     assert fs[1].type is int
 
 
-def test_dataclass_fields_string():
+def test_dataclass_fields_string(monty_run: RunMonty):
     """fields() returns correct type for string fields."""
 
     @dataclass
     class Person:
         name: str
 
-    m = pydantic_monty.Monty('p', inputs=['p'])
-    result = m.run(inputs={'p': Person(name='Alice')})
+    result = monty_run('p', inputs={'p': Person(name='Alice')})
 
     fs = fields(result)
     assert fs[0].name == snapshot('name')
     assert fs[0].type is str
 
 
-def test_dataclass_asdict():
+def test_dataclass_asdict(monty_run: RunMonty):
     """asdict() converts returned dataclass to dict."""
 
     @dataclass
@@ -648,14 +614,13 @@ def test_dataclass_asdict():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('p', inputs=['p'])
-    result = m.run(inputs={'p': Point(x=10, y=20)})
+    result = monty_run('p', inputs={'p': Point(x=10, y=20)})
 
     d = asdict(result)
     assert d == snapshot({'x': 10, 'y': 20})
 
 
-def test_dataclass_asdict_nested():
+def test_dataclass_asdict_nested(monty_run: RunMonty):
     """asdict() recursively converts nested dataclasses."""
 
     @dataclass
@@ -666,14 +631,13 @@ def test_dataclass_asdict_nested():
     class Outer:
         inner: Inner
 
-    m = pydantic_monty.Monty('x', inputs=['x'])
-    result = m.run(inputs={'x': Outer(inner=Inner(value=42))})
+    result = monty_run('x', inputs={'x': Outer(inner=Inner(value=42))})
 
     d = asdict(result)
     assert d == snapshot({'inner': {'value': 42}})
 
 
-def test_dataclass_astuple():
+def test_dataclass_astuple(monty_run: RunMonty):
     """astuple() converts returned dataclass to tuple."""
 
     @dataclass
@@ -681,14 +645,13 @@ def test_dataclass_astuple():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('p', inputs=['p'])
-    result = m.run(inputs={'p': Point(x=10, y=20)})
+    result = monty_run('p', inputs={'p': Point(x=10, y=20)})
 
     t = astuple(result)
     assert t == snapshot((10, 20))
 
 
-def test_dataclass_dataclass_fields_attr():
+def test_dataclass_dataclass_fields_attr(monty_run: RunMonty):
     """__dataclass_fields__ attribute is accessible."""
 
     @dataclass
@@ -696,8 +659,7 @@ def test_dataclass_dataclass_fields_attr():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('p', inputs=['p'])
-    result = m.run(inputs={'p': Point(x=10, y=20)})
+    result = monty_run('p', inputs={'p': Point(x=10, y=20)})
 
     df = result.__dataclass_fields__
     assert 'x' in df
@@ -706,7 +668,7 @@ def test_dataclass_dataclass_fields_attr():
     assert df['y'].name == snapshot('y')
 
 
-def test_dataclass_params_frozen():
+def test_dataclass_params_frozen(monty_run: RunMonty):
     """__dataclass_params__.frozen reflects frozen status."""
 
     @dataclass(frozen=True)
@@ -719,14 +681,13 @@ def test_dataclass_params_frozen():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('(f, m)', inputs=['f', 'm'])
-    frozen, mutable = m.run(inputs={'f': FrozenPoint(x=1, y=2), 'm': MutablePoint(x=3, y=4)})
+    frozen, mutable = monty_run('(f, m)', inputs={'f': FrozenPoint(x=1, y=2), 'm': MutablePoint(x=3, y=4)})
 
     assert frozen.__dataclass_params__.frozen is True
     assert mutable.__dataclass_params__.frozen is False
 
 
-def test_dataclass_params_attributes():
+def test_dataclass_params_attributes(monty_run: RunMonty):
     """__dataclass_params__ has expected attributes."""
 
     @dataclass
@@ -734,8 +695,7 @@ def test_dataclass_params_attributes():
         x: int
         y: int
 
-    m = pydantic_monty.Monty('p', inputs=['p'])
-    result = m.run(inputs={'p': Point(x=10, y=20)})
+    result = monty_run('p', inputs={'p': Point(x=10, y=20)})
 
     params = result.__dataclass_params__
     assert params.init is True
@@ -745,7 +705,7 @@ def test_dataclass_params_attributes():
     assert params.frozen is False
 
 
-def test_repeat_dataclass_name():
+def test_repeat_dataclass_name(monty_run: RunMonty):
     """Two classes with the same name are distinguished because we use id, not name."""
 
     def create_point():
@@ -757,8 +717,11 @@ def test_repeat_dataclass_name():
         return Point
 
     point_cls2 = create_point()
-    m = pydantic_monty.Monty('a, b', inputs=['a', 'b'], dataclass_registry=[Point, point_cls2])
-    a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': point_cls2(x=30, y=40)})
+    a, b = monty_run(
+        'a, b',
+        inputs={'a': Point(x=10, y=20), 'b': point_cls2(x=30, y=40)},
+        dataclass_registry=[Point, point_cls2],
+    )
     assert isinstance(a, Point)
     assert isinstance(b, point_cls2)
 
@@ -797,48 +760,33 @@ class Point2D:
         return Point2D(x=self.x + dx, y=self.y + dy)
 
 
-def test_method_no_args_raw():
-    """Calling a dataclass method with no args (besides self), raw."""
-    m = pydantic_monty.Monty('g.greet()', inputs=['g'], dataclass_registry=[Greeter])
-    result = m.start(inputs={'g': Greeter(greeting='hello')})
-    assert isinstance(result, pydantic_monty.FunctionSnapshot)
-    assert result.script_name == snapshot('main.py')
-    assert result.function_name == snapshot('greet')
-    assert result.args == snapshot((Greeter(greeting='hello'),))
-    assert result.kwargs == snapshot({})
-
-
-def test_method_no_args():
+def test_method_no_args(monty_run: RunMonty):
     """Calling a dataclass method with no args (besides self)."""
-    m = pydantic_monty.Monty('g.greet()', inputs=['g'], dataclass_registry=[Greeter])
-    result = m.run(inputs={'g': Greeter(greeting='hello')})
+    result = monty_run('g.greet()', inputs={'g': Greeter(greeting='hello')}, dataclass_registry=[Greeter])
     assert result == snapshot('hello')
 
 
-def test_method_with_args():
+def test_method_with_args(monty_run: RunMonty):
     """Calling a dataclass method with positional args."""
-    m = pydantic_monty.Monty('c.add(10)', inputs=['c'], dataclass_registry=[Calculator])
-    result = m.run(inputs={'c': Calculator(value=5)})
+    result = monty_run('c.add(10)', inputs={'c': Calculator(value=5)}, dataclass_registry=[Calculator])
     assert result == snapshot(15)
 
 
-def test_method_accessing_fields():
+def test_method_accessing_fields(monty_run: RunMonty):
     """Method that reads multiple fields from self."""
-    m = pydantic_monty.Monty('p.distance()', inputs=['p'], dataclass_registry=[Point2D])
-    result = m.run(inputs={'p': Point2D(x=3.0, y=4.0)})
+    result = monty_run('p.distance()', inputs={'p': Point2D(x=3.0, y=4.0)}, dataclass_registry=[Point2D])
     assert result == snapshot(5.0)
 
 
-def test_method_returning_dataclass():
+def test_method_returning_dataclass(monty_run: RunMonty):
     """Method that returns a new dataclass instance."""
-    m = pydantic_monty.Monty('p.translate(1.0, 2.0)', inputs=['p'], dataclass_registry=[Point2D])
-    result = m.run(inputs={'p': Point2D(x=3.0, y=4.0)})
+    result = monty_run('p.translate(1.0, 2.0)', inputs={'p': Point2D(x=3.0, y=4.0)}, dataclass_registry=[Point2D])
     assert isinstance(result, Point2D)
     assert result.x == snapshot(4.0)
     assert result.y == snapshot(6.0)
 
 
-def test_method_on_frozen_dataclass():
+def test_method_on_frozen_dataclass(monty_run: RunMonty):
     """Methods work on frozen dataclasses too."""
 
     @dataclass(frozen=True)
@@ -848,12 +796,11 @@ def test_method_on_frozen_dataclass():
         def doubled(self) -> int:
             return self.value * 2
 
-    m = pydantic_monty.Monty('c.doubled()', inputs=['c'], dataclass_registry=[FrozenCalc])
-    result = m.run(inputs={'c': FrozenCalc(value=21)})
+    result = monty_run('c.doubled()', inputs={'c': FrozenCalc(value=21)}, dataclass_registry=[FrozenCalc])
     assert result == snapshot(42)
 
 
-def test_method_with_kwargs():
+def test_method_with_kwargs(monty_run: RunMonty):
     """Method called with keyword arguments."""
 
     @dataclass
@@ -863,56 +810,52 @@ def test_method_with_kwargs():
         def format(self, prefix: str = '', suffix: str = '') -> str:
             return prefix + self.base + suffix
 
-    m = pydantic_monty.Monty(
+    result = monty_run(
         "f.format(prefix='[', suffix=']')",
-        inputs=['f'],
+        inputs={'f': Formatter(base='hello')},
         dataclass_registry=[Formatter],
     )
-    result = m.run(inputs={'f': Formatter(base='hello')})
     assert result == snapshot('[hello]')
 
 
-def test_method_multiple_calls():
+def test_method_multiple_calls(monty_run: RunMonty):
     """Multiple method calls in the same expression."""
-    m = pydantic_monty.Monty(
+    result = monty_run(
         'c.add(10) + c.multiply(3)',
-        inputs=['c'],
+        inputs={'c': Calculator(value=5)},
         dataclass_registry=[Calculator],
     )
-    result = m.run(inputs={'c': Calculator(value=5)})
     assert result == snapshot(30)
 
 
-def test_method_nonexistent_raises():
+def test_method_nonexistent_raises(monty_run: RunMonty):
     """Calling a non-existent method raises AttributeError."""
-    m = pydantic_monty.Monty('g.nonexistent()', inputs=['g'], dataclass_registry=[Greeter])
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(inputs={'g': Greeter(greeting='hi')})
+        monty_run('g.nonexistent()', inputs={'g': Greeter(greeting='hi')}, dataclass_registry=[Greeter])
     assert str(exc_info.value) == snapshot("AttributeError: 'Greeter' object has no attribute 'nonexistent'")
 
 
-def test_method_on_nested_dataclass_in_list():
+def test_method_on_nested_dataclass_in_list(monty_run: RunMonty):
     """Method call on a dataclass nested inside a list input."""
-    m = pydantic_monty.Monty('items[0].greet()', inputs=['items'], dataclass_registry=[Greeter])
-    result = m.run(inputs={'items': [Greeter(greeting='nested')]})
+    result = monty_run('items[0].greet()', inputs={'items': [Greeter(greeting='nested')]}, dataclass_registry=[Greeter])
     assert result == snapshot('nested')
 
 
-def test_method_on_nested_dataclass_in_dict():
+def test_method_on_nested_dataclass_in_dict(monty_run: RunMonty):
     """Method call on a dataclass nested inside a dict input."""
-    m = pydantic_monty.Monty('d["g"].greet()', inputs=['d'], dataclass_registry=[Greeter])
-    result = m.run(inputs={'d': {'g': Greeter(greeting='from dict')}})
+    result = monty_run(
+        'd["g"].greet()', inputs={'d': {'g': Greeter(greeting='from dict')}}, dataclass_registry=[Greeter]
+    )
     assert result == snapshot('from dict')
 
 
-def test_method_on_nested_dataclass_in_tuple():
+def test_method_on_nested_dataclass_in_tuple(monty_run: RunMonty):
     """Method call on a dataclass nested inside a tuple input."""
-    m = pydantic_monty.Monty('t[1].add(10)', inputs=['t'], dataclass_registry=[Calculator])
-    result = m.run(inputs={'t': (0, Calculator(value=5))})
+    result = monty_run('t[1].add(10)', inputs={'t': (0, Calculator(value=5))}, dataclass_registry=[Calculator])
     assert result == snapshot(15)
 
 
-def test_dataclass_private_fields_skipped():
+def test_dataclass_private_fields_skipped(monty_run: RunMonty):
     """Private fields (starting with _) are excluded from conversion."""
 
     @dataclass
@@ -920,12 +863,11 @@ def test_dataclass_private_fields_skipped():
         name: str
         _internal: int = 0
 
-    m = pydantic_monty.Monty('repr(x)', inputs=['x'])
-    result = m.run(inputs={'x': WithPrivate(name='Alice', _internal=42)})
+    result = monty_run('repr(x)', inputs={'x': WithPrivate(name='Alice', _internal=42)})
     assert result == snapshot("WithPrivate(name='Alice')")
 
 
-def test_dataclass_private_fields_skipped_no_default():
+def test_dataclass_private_fields_skipped_no_default(monty_run: RunMonty):
     """Private fields without defaults cause TypeError on reconstruction (field is missing)."""
 
     @dataclass
@@ -933,12 +875,11 @@ def test_dataclass_private_fields_skipped_no_default():
         name: str
         _secret: str
 
-    m = pydantic_monty.Monty('x', inputs=['x'])
     with pytest.raises(TypeError):
-        m.run(inputs={'x': WithPrivateNoDefault(name='Alice', _secret='hidden')})
+        monty_run('x', inputs={'x': WithPrivateNoDefault(name='Alice', _secret='hidden')})
 
 
-def test_dataclass_private_field_not_accessible_in_monty():
+def test_dataclass_private_field_not_accessible_in_monty(monty_run: RunMonty):
     """Private fields are not accessible inside Monty expressions."""
 
     @dataclass
@@ -946,13 +887,12 @@ def test_dataclass_private_field_not_accessible_in_monty():
         name: str
         _internal: int = 0
 
-    m = pydantic_monty.Monty('x._internal', inputs=['x'])
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        m.run(inputs={'x': WithPrivate(name='Alice', _internal=42)})
+        monty_run('x._internal', inputs={'x': WithPrivate(name='Alice', _internal=42)})
     assert isinstance(exc_info.value.exception(), AttributeError)
 
 
-def test_method_on_nested_dataclass_field():
+def test_method_on_nested_dataclass_field(monty_run: RunMonty):
     """Method call on a dataclass that is a field of another dataclass (d.c.method())."""
 
     @dataclass
@@ -966,6 +906,7 @@ def test_method_on_nested_dataclass_field():
     class Outer:
         inner: Inner
 
-    m = pydantic_monty.Monty('o.inner.doubled()', inputs=['o'], dataclass_registry=[Outer, Inner])
-    result = m.run(inputs={'o': Outer(inner=Inner(value=21))})
+    result = monty_run(
+        'o.inner.doubled()', inputs={'o': Outer(inner=Inner(value=21))}, dataclass_registry=[Outer, Inner]
+    )
     assert result == snapshot(42)

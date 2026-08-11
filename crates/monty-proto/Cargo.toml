@@ -1,0 +1,61 @@
+[package]
+name = "monty-proto"
+readme = "README.md"
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[lib]
+name = "monty_proto"
+
+[dependencies]
+monty-types = { workspace = true }
+num-bigint = { workspace = true }
+# Optional: the worker feature's Child state machine drives the interpreter
+monty = { workspace = true, optional = true }
+prost = { workspace = true }
+# Optional: used with the worker feature
+monty-type-checking = { workspace = true, optional = true }
+# Optional: powers the `python` feature's Python ↔ MontyObject conversion layer
+pyo3 = { workspace = true, optional = true, features = ["num-bigint"] }
+# generation-only dependencies (see src/bin/generate.rs); exact pins so the
+# checked-in generated code is reproducible across contributors and CI
+prost-build = { version = "=0.14.4", optional = true }
+protox = { version = "=0.9.1", optional = true }
+
+[features]
+# Enables the `generate-proto` binary that regenerates src/generated from the
+# .proto schema. Not used by normal builds — the generated code is checked in.
+generate = ["dep:prost-build", "dep:protox"]
+# Enables the `python` module: PyO3-based conversions between Python objects
+# and `MontyObject`/`MontyException`. Off by default so pure-Rust consumers
+# (monty-pool, monty-runtime) never build or link against libpython.
+python = ["dep:pyo3"]
+# Enables the `worker` module: the child-side Child state machine that drives
+# the interpreter. Off by default so host-side consumers (monty-pool, the
+# bindings) never link the interpreter itself.
+worker = ["dep:monty", "dep:monty-type-checking"]
+
+[[bin]]
+name = "generate-proto"
+path = "src/bin/generate.rs"
+required-features = ["generate"]
+
+# The `Child` state-machine tests drive `worker::dispatch_frame`, which only
+# exists with the `worker` feature; run with `cargo test --features worker`.
+[[test]]
+name = "dispatch"
+required-features = ["worker"]
+
+[dev-dependencies]
+monty = { workspace = true }
+
+[lints]
+workspace = true

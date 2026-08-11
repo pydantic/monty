@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from nonexistent_module import something
 
 # Verify TYPE_CHECKING is False at runtime (as expected)
-assert TYPE_CHECKING is False, 'TYPE_CHECKING should be False at runtime'
+assert TYPE_CHECKING is False
 
 
 # === Function using TYPE_CHECKING for conditional import ===
@@ -19,7 +19,7 @@ def get_type_checking_value():
 
 
 result = get_type_checking_value()
-assert result == 'success', 'function with TYPE_CHECKING guard should execute'
+assert result == 'success'
 
 # === Nested TYPE_CHECKING blocks ===
 if TYPE_CHECKING:
@@ -34,4 +34,4 @@ else:
     if TYPE_CHECKING:
         from unreachable_module import Unreachable
 
-assert True, 'all TYPE_CHECKING guards work correctly'
+assert True

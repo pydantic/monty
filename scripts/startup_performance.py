@@ -22,7 +22,11 @@ code = '1 + 1'
 
 def run_monty():
     start = time.perf_counter()
-    result = Monty('1 + 1').run()
+    # cold start now includes spawning a worker subprocess and the protocol
+    # handshake — execution is always subprocess-isolated
+    with Monty() as pool:
+        with pool.checkout() as session:
+            result = session.feed_run('1 + 1')
     diff = time.perf_counter() - start
     assert result == 2, f'Unexpected result: {result!r}'
     print(f'Monty cold start time: {(diff * 1000):.3f} milliseconds')

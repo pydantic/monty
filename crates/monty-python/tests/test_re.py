@@ -1,27 +1,25 @@
+from __future__ import annotations
+
 import re
 import sys
 
 import pytest
-from inline_snapshot import snapshot
+from conftest import RunMonty
 
-import pydantic_monty
-
-
-def test_re_module():
-    m = pydantic_monty.Monty('import re')
-    output = m.run()
-    assert output is None
+from pydantic_monty import MontyRuntimeError
 
 
-def test_re_compile():
+def test_re_module(monty_run: RunMonty):
+    assert monty_run('import re') is None
+
+
+def test_re_compile(monty_run: RunMonty):
     code = """
 import re
 pattern = re.compile(r'\\d+')
 matches = pattern.findall('There are 24 hours in a day and 365 days in a year.')
 """
-    m = pydantic_monty.Monty(code)
-    output = m.run()
-    assert output is None
+    assert monty_run(code) is None
 
 
 supported_flags = [
@@ -38,60 +36,51 @@ if sys.version_info >= (3, 11):
     supported_flags,
     ids=str,
 )
-def test_re_constant(flags: list[str], target: int):
+def test_re_constant(monty_run: RunMonty, flags: list[str], target: int):
     code = f'import re; ({",".join(flags)},)'
-    m = pydantic_monty.Monty(code)
-    output = m.run()
+    output = monty_run(code)
     assert all(map(lambda orig: orig == target, output))
 
 
-def test_re_compile_repr():
+def test_re_compile_repr(monty_run: RunMonty):
     code = r"""
 import re
 pattern = re.compile(r'\d+', re.IGNORECASE | re.DOTALL)
 pattern
 """
-    m = pydantic_monty.Monty(code)
-    output = m.run()
-    assert output == r"re.compile('\\d+', re.IGNORECASE|re.DOTALL)"
+    assert monty_run(code) == r"re.compile('\\d+', re.IGNORECASE|re.DOTALL)"
 
 
-def test_re_match_repr():
+def test_re_match_repr(monty_run: RunMonty):
     code = """
 import re
 pattern = re.compile(r'\\d+')
 pattern.match('123abc')
 """
-    m = pydantic_monty.Monty(code)
-    output = m.run()
-    assert output == "<re.Match object; span=(0, 3), match='123'>"
+    assert monty_run(code) == "<re.Match object; span=(0, 3), match='123'>"
 
 
-def test_re_match_groups():
+def test_re_match_groups(monty_run: RunMonty):
     code = """
 import re
 pattern = re.compile(r'(\\d+)-(\\w+)')
 match = pattern.match('123-abc')
 match.groups()
 """
-    m = pydantic_monty.Monty(code)
-    output = m.run()
-    assert output == ('123', 'abc')
+    assert monty_run(code) == ('123', 'abc')
 
 
-def test_re_substitution():
+def test_re_substitution(monty_run: RunMonty):
     code = """
 import re
 pattern = re.compile(r'\\s+')
 result = pattern.sub('-', 'This is a test.')
 result
 """
-    m = pydantic_monty.Monty(code)
-    output = m.run()
-    assert output == 'This-is-a-test.'
+    assert monty_run(code) == 'This-is-a-test.'
 
 
-def test_re_error_handling():
+def test_re_error_handling(monty_run: RunMonty):
     code = """
 import re
 try:
@@ -100,71 +89,19 @@ except Exception as e:
     error_message = str(e)
 error_message
 """
-    m = pydantic_monty.Monty(code)
-    output = m.run()
-    error = 'Parsing error at position 1: Invalid character class'
-    assert error in output
+    output = monty_run(code)
+    assert 'Parsing error at position 1: Invalid character class' in output
 
 
-def test_re_resume():
-    code = """
-import re
-pattern = re.compile(func())
-matches = pattern.findall('Sample 123 text 456')
-dump(matches)
-"""
-    m = pydantic_monty.Monty(code)
-    progress = m.start()
-    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
-
-    assert progress.function_name == snapshot('func')
-    assert progress.args == snapshot(())
-    assert progress.kwargs == snapshot({})
-
-    progress2 = progress.resume({'return_value': '\\d+'})
-    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
-
-    result = progress2.resume({'return_value': ['123', '456']})
-    assert isinstance(result, pydantic_monty.MontyComplete)
-    assert result.output == snapshot(['123', '456'])
-
-
-def test_re_persistence():
-    code = """
-import re
-pattern = re.compile(r'\\w+')
-dump()
-matches = pattern.findall('Test 123!')
-matches
-"""
-    m = pydantic_monty.Monty(code)
-    progress = m.start()
-    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
-
-    data = progress.dump()
-
-    progress2 = pydantic_monty.load_snapshot(data)
-    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
-
-    result = progress2.resume({'return_value': None})
-    assert isinstance(result, pydantic_monty.MontyComplete)
-    assert result.output == snapshot(['Test', '123'])
-
-
-def test_re_error_upcast():
+def test_re_error_upcast(monty_run: RunMonty):
     code = """
 import re
 re.compile(r'[')
 """
-    m = pydantic_monty.Monty(code)
-    try:
-        m.run()
-        assert False, 'Expected an exception to be raised'
-    except pydantic_monty.MontyRuntimeError as e:
-        error_message = str(e)
-        assert True, 'Expected an exception to be raised'
-        if sys.version_info >= (3, 13):
-            assert type(e.exception()) is re.PatternError
-        else:
-            assert type(e.exception()) is re.error
-        assert 'Parsing error at position 1: Invalid character class' in error_message
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code)
+    if sys.version_info >= (3, 13):
+        assert type(exc_info.value.exception()) is re.PatternError
+    else:
+        assert type(exc_info.value.exception()) is re.error
+    assert 'Parsing error at position 1: Invalid character class' in str(exc_info.value)

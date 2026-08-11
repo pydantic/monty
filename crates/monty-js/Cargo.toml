@@ -1,10 +1,12 @@
 [package]
 name = "monty-js"
-description = "TypeScript/JavaScript bindings for the Monty sandboxed Python interpreter"
+description = "Node.js/TypeScript bindings for the Monty sandboxed Python interpreter"
 readme = "README.md"
+# Distributed as a napi-rs native addon on npm, not as a crate on crates.io.
+publish = false
 version = { workspace = true }
 rust-version = { workspace = true }
-# edition = { workspace = true }
+# napi-derive's generated code is not yet edition-2024 clean
 edition = "2021"
 authors = { workspace = true }
 license = { workspace = true }
@@ -17,12 +19,18 @@ repository = { workspace = true }
 crate-type = ["cdylib"]
 
 [dependencies]
-monty = { path = "../monty" }
-monty_type_checking = { path = "../monty-type-checking" }
-napi = { version = "3.0.0", default-features = false, features = ["napi6", "compat-mode"] }
+monty-types = { workspace = true }
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
+monty-pool = { workspace = true, features = ["telemetry-adapter"] }
+napi = { version = "3.8", default-features = false, features = ["napi8", "compat-mode", "tokio_rt"] }
+# The pool is async; the binding shares napi's tokio runtime and only needs
+# the sync primitives (the per-session checkout mutex) itself.
+tokio = { workspace = true, features = ["sync", "time"] }
 napi-derive = "3.0.0"
 num-bigint = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 postcard = { workspace = true }
 
 [build-dependencies]

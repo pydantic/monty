@@ -6,10 +6,9 @@ use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, HeapData},
-    resource::ResourceTracker,
-    types::{List, MontyIter},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
+    heap::{DropWithContext, HeapData},
+    types::{List, iter::checked_preallocation_hint},
     value::Value,
 };
 
@@ -27,7 +26,7 @@ use crate::{
 /// map(pow, [2, 3], [3, 2])          # [8, 9]
 /// map(str, [1, 2, 3])               # ['1', '2', '3']
 /// ```
-pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // CPython's map() uses a bespoke arity message
     // (`map() must have at least two arguments.`) rather than the generic
     // "missing N required positional arguments" wording the macro would
@@ -44,7 +43,7 @@ pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         _ => true,
     };
     if args.count() < 2 && kwargs_empty {
-        args.drop_with_heap(vm.heap);
+        args.drop_with(vm.heap);
         return Err(ExcType::type_error_map_arity());
     }
     let MapArgs {
@@ -53,36 +52,38 @@ pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         extra_iterables,
     } = MapArgs::from_args(args, vm)?;
     defer_drop!(function, vm);
+    defer_drop_mut!(extra_iterables, vm);
 
-    let first_iter = MontyIter::new(first_iterable, vm)?;
-    defer_drop_mut!(first_iter, vm);
+    let first_iter = first_iterable.into_py_iter(vm)?;
+    defer_drop!(first_iter, vm);
+    let mut first_iter = first_iter.read(vm);
 
-    let extra_iterators: Vec<MontyIter> = Vec::with_capacity(extra_iterables.len());
+    let extra_iterators: Vec<Value> = Vec::with_capacity(extra_iterables.len());
     defer_drop_mut!(extra_iterators, vm);
 
-    for iterable in extra_iterables {
-        extra_iterators.push(MontyIter::new(iterable, vm)?);
+    for iterable in extra_iterables.drain(..) {
+        extra_iterators.push(iterable.into_py_iter(vm)?);
     }
 
-    // `preallocation_hint` validates the requested capacity against the
-    // resource tracker and clamps it so an attacker-controlled iterable length
-    // cannot drive an unbounded native pre-allocation.
-    let mut out = Vec::with_capacity(first_iter.preallocation_hint(mem::size_of::<Value>(), vm)?);
+    // Validate and clamp the iterator's hint before reserving native memory.
+    let hint = first_iter.iter_size_hint(vm);
+    let capacity = checked_preallocation_hint(hint, mem::size_of::<Value>(), vm.heap.tracker())?;
+    let mut out = Vec::with_capacity(capacity);
 
     // map function over iterables until the shortest iter is exhausted
     match extra_iterators.as_mut_slice() {
         // map(f, iter)
         [] => {
-            while let Some(item) = first_iter.for_next(vm)? {
+            while let Some(item) = first_iter.py_next(vm)? {
                 let args = ArgValues::One(item);
                 out.push(vm.evaluate_function("map()", function, args)?);
             }
         }
         // map(f, iter1, iter2)
         [single] => {
-            while let Some(arg1) = first_iter.for_next(vm)? {
-                let Some(arg2) = single.for_next(vm)? else {
-                    arg1.drop_with_heap(vm);
+            while let Some(arg1) = first_iter.py_next(vm)? {
+                let Some(arg2) = single.py_next(vm)? else {
+                    arg1.drop_with(vm);
                     break;
                 };
                 let args = ArgValues::Two(arg1, arg2);
@@ -93,11 +94,11 @@ pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         multiple => 'outer: loop {
             let mut items = Vec::with_capacity(1 + multiple.len());
 
-            for iter in iter::once(&mut *first_iter).chain(multiple.iter_mut()) {
-                if let Some(item) = iter.for_next(vm)? {
+            for result in iter::once(first_iter.py_next(vm)).chain(multiple.iter_mut().map(|iter| iter.py_next(vm))) {
+                if let Some(item) = result? {
                     items.push(item);
                 } else {
-                    items.drop_with_heap(vm);
+                    items.drop_with(vm);
                     break 'outer;
                 }
             }
@@ -111,7 +112,7 @@ pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         },
     }
 
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(out)))?;
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(out)));
     Ok(Value::Ref(heap_id))
 }
 

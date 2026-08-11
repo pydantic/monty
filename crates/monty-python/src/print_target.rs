@@ -10,17 +10,19 @@
 //! - A `CollectString()` instance — fragments accumulate into a shared flat
 //!   `String` exposed via `CollectString.output`.
 //!
+//! Both collectors default to [`DEFAULT_MAX_PRINT_COLLECT_BYTES`]; pass
+//! `max_bytes=None` to disable. The cap is enforced here in
+//! [`PrintTarget::write_event`] (pool host path) — not by worker
+//! `ResourceLimits.max_memory`.
+//!
 //! This module encapsulates that dispatch. The rest of the bindings thread a
-//! [`PrintTarget`] value through `start`/`resume`/`run`/`run_async`, while the
-//! collector objects themselves remain the single public place that exposes the
-//! captured output.
+//! [`PrintTarget`] value through `feed_run`, while the collector objects
+//! themselves remain the single public place that exposes the captured output.
 
-use std::{
-    borrow::Cow,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
-};
+use std::sync::{Arc, Mutex, PoisonError};
 
-use monty::{MontyException, PrintStream, PrintWriter, PrintWriterCallback};
+use monty_proto::python::exc_py_to_monty;
+use monty_types::{DEFAULT_MAX_PRINT_COLLECT_BYTES, MontyException, PrintStream, check_print_collect_limit};
 use pyo3::{
     PyRef,
     exceptions::PyTypeError,
@@ -29,20 +31,41 @@ use pyo3::{
     types::{PyList, PyString},
 };
 
-use crate::exceptions::exc_py_to_monty;
+/// Host bytes charged per retained `(stream, text)` entry beyond the payload.
+///
+/// `String` / `Vec` bookkeeping is not free: many tiny prints can exhaust the
+/// host long before payload bytes hit the cap. Charged toward `max_bytes`.
+const COLLECT_STREAMS_ENTRY_OVERHEAD: usize = 64;
+
+/// Shared collect-streams state: labelled fragments plus optional byte cap.
+#[derive(Debug)]
+pub(crate) struct CollectStreamsState {
+    output: Vec<(PrintStream, String)>,
+    /// Running charge: payload UTF-8 bytes plus [`COLLECT_STREAMS_ENTRY_OVERHEAD`]
+    /// per retained entry. Avoids O(n) rescans on each print event.
+    collected_bytes: usize,
+    max_bytes: Option<usize>,
+}
 
 /// Shared buffer for the `CollectStreams` mode.
 ///
 /// The `Arc<Mutex<..>>` wrapper lets a single collector keep accumulating
 /// across `start()` / `resume()` / async / snapshot-load boundaries while still
 /// allowing read access from Python between transitions.
-type CollectStreamsBuffer = Arc<Mutex<Vec<(PrintStream, String)>>>;
+type CollectStreamsBuffer = Arc<Mutex<CollectStreamsState>>;
+
+/// Shared collect-string state: flat text plus optional byte cap.
+#[derive(Debug)]
+pub(crate) struct CollectStringState {
+    output: String,
+    max_bytes: Option<usize>,
+}
 
 /// Shared buffer for the `CollectString` mode.
 ///
 /// This follows the same sharing scheme as [`CollectStreamsBuffer`], but stores
 /// a flat concatenated string instead of labelled stream fragments.
-type CollectStringBuffer = Arc<Mutex<String>>;
+type CollectStringBuffer = Arc<Mutex<CollectStringState>>;
 
 /// Python collector that records printed fragments as `(stream, text)` tuples.
 ///
@@ -50,18 +73,30 @@ type CollectStringBuffer = Arc<Mutex<String>>;
 /// entire run or snapshot chain. Reading `.output` clones the current buffer
 /// without draining it, so callers can inspect intermediate state and continue
 /// accumulating into the same collector.
+///
+/// Defaults to a [`DEFAULT_MAX_PRINT_COLLECT_BYTES`] cap; `max_bytes=None`
+/// disables the limit (trusted hosts only). The cap includes a fixed per-entry
+/// overhead so many tiny fragments cannot exhaust the host before payload bytes
+/// hit the limit.
 #[pyclass(name = "CollectStreams", module = "pydantic_monty", frozen)]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct PyCollectStreams {
     buffer: CollectStreamsBuffer,
 }
 
 #[pymethods]
 impl PyCollectStreams {
-    /// Creates an empty stream collector.
+    /// Creates an empty stream collector with an optional byte cap.
     #[new]
-    fn new() -> Self {
-        Self::default()
+    #[pyo3(signature = (max_bytes=DEFAULT_MAX_PRINT_COLLECT_BYTES))]
+    fn new(max_bytes: Option<usize>) -> Self {
+        Self {
+            buffer: Arc::new(Mutex::new(CollectStreamsState {
+                output: Vec::new(),
+                collected_bytes: 0,
+                max_bytes,
+            })),
+        }
     }
 
     /// Returns the collected `(stream, text)` tuples so far.
@@ -72,6 +107,7 @@ impl PyCollectStreams {
             self.buffer
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
+                .output
                 .iter()
                 .map(|(stream, text)| {
                     let label = match stream {
@@ -100,25 +136,34 @@ impl PyCollectStreams {
 /// Pass `CollectString()` as `print_callback` to accumulate raw printed text
 /// while still letting the corresponding run or snapshot return its ordinary
 /// execution value.
+///
+/// Defaults to a [`DEFAULT_MAX_PRINT_COLLECT_BYTES`] cap; `max_bytes=None`
+/// disables the limit (trusted hosts only).
 #[pyclass(name = "CollectString", module = "pydantic_monty", frozen)]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct PyCollectString {
     buffer: CollectStringBuffer,
 }
 
 #[pymethods]
 impl PyCollectString {
-    /// Creates an empty string collector.
+    /// Creates an empty string collector with an optional byte cap.
     #[new]
-    fn new() -> Self {
-        Self::default()
+    #[pyo3(signature = (max_bytes=DEFAULT_MAX_PRINT_COLLECT_BYTES))]
+    fn new(max_bytes: Option<usize>) -> Self {
+        Self {
+            buffer: Arc::new(Mutex::new(CollectStringState {
+                output: String::new(),
+                max_bytes,
+            })),
+        }
     }
 
     /// Returns the collected text so far.
     #[getter]
     fn output<'py>(&self, py: Python<'py>) -> Bound<'py, PyString> {
         let guard = self.buffer.lock().unwrap_or_else(PoisonError::into_inner);
-        PyString::new(py, guard.as_str())
+        PyString::new(py, guard.output.as_str())
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
@@ -136,16 +181,14 @@ impl PyCollectString {
 /// Destination for Monty `print()` output.
 ///
 /// The variant is chosen once from the Python `print_callback` argument (via
-/// [`PrintTarget::from_py`]) and threaded through the execution chain. It is
-/// not invoked directly — call [`PrintTarget::with_writer`] to build a
-/// `PrintWriter` on demand for each VM transition.
+/// [`PrintTarget::from_py`]) and threaded through the execution chain. Pool
+/// sessions deliver pre-rendered fragments via [`PrintTarget::write_event`].
 ///
 /// # Foot-guns
 ///
 /// - The `CollectStreams` / `CollectString` variants hold an `Arc`; cloning is
-///   cheap but **shares** the buffer. Use [`PrintTarget::clone_handle`] /
-///   [`clone_handle_detached`](Self::clone_handle_detached) instead of `Clone`
-///   so the intent is explicit.
+///   cheap but **shares** the buffer. Use [`PrintTarget::clone_handle`]
+///   instead of `Clone` so the intent is explicit.
 #[derive(Debug, Default)]
 pub(crate) enum PrintTarget {
     /// Print goes to process stdout — the default when no `print_callback` is set.
@@ -184,19 +227,12 @@ impl PrintTarget {
         }
     }
 
-    /// Returns a fresh `PrintTarget` that targets the same sink as `self`.
-    ///
-    /// - `Stdout` → `Stdout` (nothing to share).
-    /// - `Callback` → clones the `Py<PyAny>` reference using the provided GIL
-    ///   token.
-    /// - `CollectStreams` / `CollectString` → clones the `Arc`, so the new
-    ///   target **writes into the same buffer**. This is the desired behavior
-    ///   for threading the target through `start`/`resume` chains and into
-    ///   `spawn_blocking` workers.
+    /// Returns a fresh `PrintTarget` targeting the same sink as `self`. The
+    /// collector variants clone their `Arc`, so the new target **writes into the
+    /// same buffer** — exactly what threading through `start`/`resume` chains
+    /// needs.
     ///
     /// Used instead of `Clone` to make the share-vs-copy intent explicit.
-    /// Callers without a `Python` token in scope should use
-    /// [`clone_handle_detached`](Self::clone_handle_detached) instead.
     pub fn clone_handle(&self, py: Python<'_>) -> Self {
         match self {
             Self::Stdout => Self::Stdout,
@@ -206,126 +242,49 @@ impl PrintTarget {
         }
     }
 
-    /// Detached variant of [`clone_handle`](Self::clone_handle) for callers
-    /// running without the GIL held (e.g. inside an `async move` block or a
-    /// `spawn_blocking` worker about to hand the clone to another thread).
+    /// Delivers one already-formatted output fragment to this target.
     ///
-    /// Acquires the GIL internally only when the `Callback` variant actually
-    /// needs it; `Stdout` and the two collect variants skip the acquisition
-    /// entirely.
-    pub fn clone_handle_detached(&self) -> Self {
+    /// Used by pool sessions, where `print()` output arrives from the
+    /// worker process as pre-rendered `(stream, text)` events rather than
+    /// through a `PrintWriter`. Safe to call without the GIL held — the
+    /// `Callback` variant attaches internally.
+    //
+    // TODO: support `async def` print callbacks under `AsyncMonty` by having
+    // this return the callback's coroutine as the turn's `PrintFuture`
+    // (converted via `into_future_with_locals`, with the drive's `TaskLocals`
+    // threaded through `run_turn`), instead of blocking a runtime thread.
+    pub fn write_event(&self, stream: PrintStream, text: &str) -> Result<(), MontyException> {
         match self {
-            Self::Stdout => Self::Stdout,
-            Self::Callback(_) => Python::attach(|py| self.clone_handle(py)),
-            Self::CollectStreams(arc) => Self::CollectStreams(arc.clone()),
-            Self::CollectString(arc) => Self::CollectString(arc.clone()),
-        }
-    }
-
-    /// Builds a `PrintWriter` for a single VM transition and invokes `f` with it.
-    ///
-    /// The writer borrows from this target for the duration of `f`, so the
-    /// closure shape keeps lifetimes sound. For the collect variants, the
-    /// internal mutex is held for the entirety of `f` — that is fine because a
-    /// single VM transition is synchronous and Python only inspects collectors
-    /// between transitions.
-    pub fn with_writer<R>(&self, f: impl FnOnce(PrintWriter<'_>) -> R) -> R {
-        let mut storage = self.storage();
-        f(storage.writer())
-    }
-
-    /// Allocates writer-local storage (callback wrapper, mutex guard) that can
-    /// back a `PrintWriter` produced by [`PrintStorage::writer`].
-    ///
-    /// Use this instead of [`with_writer`] when a caller needs to hold the
-    /// writer across multiple VM transitions and reborrow it for each step
-    /// (e.g. the synchronous dispatch loop in `Monty.run`). The storage keeps
-    /// the `CallbackStringPrint` / `MutexGuard` alive while the writer pointer
-    /// remains valid.
-    pub fn storage(&self) -> PrintStorage<'_> {
-        match self {
-            Self::Stdout => PrintStorage::Stdout,
-            // Borrow the callback rather than clone it — the storage's lifetime
-            // is bounded by the target, so there is no need to bump the Py ref
-            // count per VM transition (which would require reacquiring the GIL
-            // inside `py.detach`).
-            Self::Callback(cb) => PrintStorage::Callback(CallbackStringPrint(cb)),
-            Self::CollectStreams(arc) => {
-                PrintStorage::CollectStreams(arc.lock().unwrap_or_else(PoisonError::into_inner))
+            Self::Stdout => {
+                match stream {
+                    PrintStream::Stdout => print!("{text}"),
+                    PrintStream::Stderr => eprint!("{text}"),
+                }
+                Ok(())
             }
-            Self::CollectString(arc) => PrintStorage::CollectString(arc.lock().unwrap_or_else(PoisonError::into_inner)),
+            Self::Callback(cb) => Python::attach(|py| {
+                let stream_name = match stream {
+                    PrintStream::Stdout => "stdout",
+                    PrintStream::Stderr => "stderr",
+                };
+                cb.bind(py).call1((stream_name, text))?;
+                Ok::<_, PyErr>(())
+            })
+            .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e))),
+            Self::CollectStreams(buf) => {
+                let mut state = buf.lock().unwrap_or_else(PoisonError::into_inner);
+                let add = text.len().saturating_add(COLLECT_STREAMS_ENTRY_OVERHEAD);
+                check_print_collect_limit(state.collected_bytes, add, state.max_bytes)?;
+                state.output.push((stream, text.to_owned()));
+                state.collected_bytes = state.collected_bytes.saturating_add(add);
+                Ok(())
+            }
+            Self::CollectString(buf) => {
+                let mut state = buf.lock().unwrap_or_else(PoisonError::into_inner);
+                check_print_collect_limit(state.output.len(), text.len(), state.max_bytes)?;
+                state.output.push_str(text);
+                Ok(())
+            }
         }
-    }
-}
-
-/// Live writer storage — owns the per-call backing (mutex guard, callback
-/// wrapper) that a `PrintWriter` points into.
-///
-/// Produced by [`PrintTarget::storage`] and consumed by repeatedly calling
-/// [`PrintStorage::writer`] (which hands out a fresh `PrintWriter` each time
-/// with lifetime tied to this storage). This two-step split exists because
-/// the `PrintWriter::Collect*` variants need `&mut` access to a locked buffer,
-/// and `PrintWriter::Callback` needs `&mut` access to a `CallbackStringPrint`
-/// value — both of which must outlive the writer.
-pub(crate) enum PrintStorage<'a> {
-    /// No-op storage — the writer just targets stdout.
-    Stdout,
-    /// Borrowed callback wrapper — points at the `Py<PyAny>` owned by the
-    /// parent `PrintTarget::Callback` variant.
-    Callback(CallbackStringPrint<'a>),
-    /// Live `MutexGuard` over the shared streams buffer, held for as long as
-    /// this storage exists.
-    CollectStreams(MutexGuard<'a, Vec<(PrintStream, String)>>),
-    /// Live `MutexGuard` over the shared string buffer, held for as long as
-    /// this storage exists.
-    CollectString(MutexGuard<'a, String>),
-}
-
-impl PrintStorage<'_> {
-    /// Returns a `PrintWriter` backed by this storage.
-    ///
-    /// The returned writer borrows from `self`; call repeatedly (including via
-    /// `PrintWriter::reborrow`) to get fresh writers with progressively shorter
-    /// lifetimes, without dropping the underlying storage.
-    pub fn writer(&mut self) -> PrintWriter<'_> {
-        match self {
-            Self::Stdout => PrintWriter::Stdout,
-            Self::Callback(cb) => PrintWriter::Callback(cb),
-            Self::CollectStreams(guard) => PrintWriter::CollectStreams(guard),
-            Self::CollectString(guard) => PrintWriter::CollectString(guard),
-        }
-    }
-}
-
-/// `PrintWriterCallback` adaptor that forwards each fragment to a Python callable.
-///
-/// Borrows the `Py<PyAny>` from the parent `PrintTarget` rather than cloning
-/// it; this avoids reacquiring the GIL on every VM transition just to bump the
-/// reference count. `Py<PyAny>` is `Send + Sync`, so the shared reference is
-/// safe to move across `py.detach` / `spawn_blocking` boundaries. The GIL is
-/// re-acquired once per actual print fragment inside the trait methods —
-/// which is unavoidable, since that is when we call into Python.
-#[derive(Debug)]
-pub(crate) struct CallbackStringPrint<'a>(&'a Py<PyAny>);
-
-impl PrintWriterCallback for CallbackStringPrint<'_> {
-    fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
-        Python::attach(|py| {
-            self.0.bind(py).call1(("stdout", output.as_ref()))?;
-            Ok::<_, PyErr>(())
-        })
-        .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e)))
-    }
-
-    fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
-        // Encode the character into a stack buffer to avoid allocating a
-        // fresh `String` for each separator / terminator that `print()` emits.
-        let mut buf = [0u8; 4];
-        let end_str: &str = end.encode_utf8(&mut buf);
-        Python::attach(|py| {
-            self.0.bind(py).call1(("stdout", end_str))?;
-            Ok::<_, PyErr>(())
-        })
-        .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e)))
     }
 }

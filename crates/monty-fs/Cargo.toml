@@ -1,0 +1,35 @@
+[package]
+name = "monty-fs"
+readme = "README.md"
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[lib]
+name = "monty_fs"
+
+[dependencies]
+monty-types = { workspace = true }
+ahash = { workspace = true }
+cap-std = { workspace = true }
+
+# `O_NONBLOCK` for the special-file guard; Windows needs no equivalent.
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
+# `mkfifo`, to build the special file the guard is tested against.
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

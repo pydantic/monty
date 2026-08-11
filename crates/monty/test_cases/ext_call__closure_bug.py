@@ -13,4 +13,4 @@ def make_adder(x):
 
 add5 = make_adder(5)
 result = add5(10)
-assert result == 15, 'ext call in closure accessing captured var'
+assert result == 15

@@ -1,14 +1,13 @@
 //! Implementation of the getattr() builtin function.
 
+use monty_types::ExcType;
+
 use crate::{
-    ExcType,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{RunError, RunResult, SimpleException},
-    heap::DropWithHeap,
-    resource::ResourceTracker,
-    types::PyTrait,
+    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
+    heap::DropWithContext,
     value::Value,
 };
 
@@ -28,7 +27,7 @@ use crate::{
 /// getattr(obj, 'y', None)       # Get obj.y or None if not found
 /// getattr(module, 'function')   # Get module.function
 /// ```
-pub fn builtin_getattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let positional = args.into_pos_only("getattr", vm.heap)?;
     defer_drop!(positional, vm);
 
@@ -40,7 +39,7 @@ pub fn builtin_getattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
     };
 
     let Some(attr) = name.as_either_str(vm.heap) else {
-        let ty = name.py_type(vm);
+        let ty = name.py_type_name(vm);
         return Err(
             SimpleException::new_msg(ExcType::TypeError, format!("attribute name must be string, not '{ty}'")).into(),
         );
@@ -49,7 +48,7 @@ pub fn builtin_getattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
     match object.py_getattr(&attr, vm) {
         Ok(CallResult::Value(value)) => Ok(value),
         Ok(other) => {
-            other.drop_with_heap(vm);
+            other.drop_with(vm);
             // getattr() only retrieves attribute values — OS calls, external calls,
             // method calls, and awaits are not supported here
             //

@@ -1,825 +1,170 @@
-from collections.abc import Coroutine
 from pathlib import Path
-from typing import Any, Callable, Literal, final
+from typing import Any, Callable, Literal, NoReturn, final
 
 from typing_extensions import Self
 
-from . import ExternalResult, ResourceLimits
+from . import (
+    AsyncSnapshot,
+    ExternalResult,
+    ExternalSettledResult,
+    OsHandler,
+    PrintCallback,
+    ResourceLimits,
+    SyncSnapshot,
+    TypeCheckFormat,
+)
 from .os_access import AbstractOS, OsFunction
 
 __all__ = [
     '__version__',
+    '_install_telemetry_adapter',
     'NOT_HANDLED',
+    'AsyncMonty',
+    'AsyncMontySession',
+    'AsyncMontyWebsocket',
     'CollectStreams',
     'CollectString',
+    'Frame',
     'Monty',
-    'MontyRepl',
+    'MontyConversionError',
+    'MontyCrashedError',
+    'MontyDisconnectError',
+    'MontyError',
+    'MontyFileHandle',
+    'MontySession',
+    'MontyShutdown',
+    'MontySyntaxError',
+    'MontyRuntimeError',
+    'MontyTypingError',
+    'MountDir',
     'MontyComplete',
     'FunctionSnapshot',
     'NameLookupSnapshot',
     'FutureSnapshot',
-    'MontyError',
-    'MontySyntaxError',
-    'MontyRuntimeError',
-    'MontyTypingError',
-    'MontyFileHandle',
-    'MountDir',
-    'Frame',
-    'load_snapshot',
-    'load_repl_snapshot',
+    'AsyncFunctionSnapshot',
+    'AsyncNameLookupSnapshot',
+    'AsyncFutureSnapshot',
 ]
 __version__: str
+
+# Private versioned hook used by the Python Logfire integration.
+def _install_telemetry_adapter(version: int, adapter: Any) -> None: ...
 
 NOT_HANDLED = object()
 
 @final
 class CollectStreams:
-    """Collect printed output as `(stream, text)` tuples."""
+    """Collect printed output as `(stream, text)` tuples.
 
-    def __new__(cls) -> CollectStreams: ...
+    Defaults to a 10 MiB cap. Pass `max_bytes=None` to disable (trusted hosts).
+    Exceeding the cap raises `MemoryError`. Not covered by `ResourceLimits.max_memory`.
+    The cap includes a fixed per-entry overhead (many tiny fragments).
+    """
+
+    def __new__(cls, max_bytes: int | None = 10 * 1024 * 1024) -> CollectStreams: ...
     @property
     def output(self) -> list[tuple[Literal['stdout', 'stderr'], str]]:
         """Collected output so far."""
 
 @final
 class CollectString:
-    """Collect printed output as one concatenated string."""
+    """Collect printed output as one concatenated string.
 
-    def __new__(cls) -> CollectString: ...
+    Defaults to a 10 MiB cap. Pass `max_bytes=None` to disable (trusted hosts).
+    Exceeding the cap raises `MemoryError`. Not covered by `ResourceLimits.max_memory`.
+    """
+
+    def __new__(cls, max_bytes: int | None = 10 * 1024 * 1024) -> CollectString: ...
     @property
     def output(self) -> str:
         """Collected output so far."""
 
 @final
 class MountDir:
-    """A single mount point configuration mapping a virtual path to a host directory."""
+    """A mount point mapping a virtual path to a host directory.
 
-    virtual_path: str
+    The directory is opened here, and every feed this mount is passed to serves
+    that same directory — so build one and reuse it. `'overlay'` writes live in
+    each feed's own table and are discarded when the feed ends.
+
+    ```python
+    from pathlib import Path
+
+    from pydantic_monty import Monty, MountDir
+
+    with Monty() as pool, MountDir(host_path=Path('host-dir'), virtual_path='/data') as mount:
+        with pool.checkout() as session:
+            contents = session.feed_run("open('/data/notes.txt').read()", mount=mount)
+    ```
+
+    The directory is held open from construction until the mount is closed, not
+    for the duration of a feed — so reusing one across feeds is free, and works
+    the same inside a `with` block or outside it. `with` (or `close()`) is what
+    hands the directory back; feeds passed a closed mount raise `ValueError`.
+    Without it the directory stays open until the object is collected: a file
+    descriptor on Unix, but on Windows that blocks renaming or deleting it.
+    """
+
     host_path: str
+    virtual_path: str
     mode: Literal['read-only', 'read-write', 'overlay']
     write_bytes_limit: int | None
+    memory_usage_limit: int
 
     def __new__(
         cls,
-        virtual_path: str,
-        host_path: str | Path,
         *,
+        host_path: str | Path,
+        virtual_path: str,
         mode: Literal['read-only', 'read-write', 'overlay'] = 'overlay',
         write_bytes_limit: int | None = None,
-    ) -> MountDir: ...
+        memory_usage_limit: int = 100_000_000,
+    ) -> MountDir:
+        """Configure a mount point; validation happens here, not at feed time.
 
-@final
-class Monty:
-    """
-    A sandboxed Python interpreter instance.
-
-    Parses and compiles Python code on initialization, then can be run
-    multiple times with different input values. This separates the parsing
-    cost from execution, making repeated runs more efficient.
-    """
-
-    def __new__(
-        cls,
-        code: str,
-        *,
-        script_name: str = 'main.py',
-        inputs: list[str] | None = None,
-        type_check: bool = False,
-        type_check_stubs: str | None = None,
-        dataclass_registry: list[type] | None = None,
-    ) -> Self:
-        """
-        Create a new Monty interpreter by parsing the given code.
+        All arguments are keyword-only: mount tools disagree on host-first
+        (docker `-v`) vs virtual-first (nginx `alias`) ordering, so requiring
+        names removes the ambiguity.
 
         Arguments:
-            code: Python code to execute
-            script_name: Name used in tracebacks and error messages
-            inputs: List of input variable names available in the code
-            type_check: Whether to perform type checking on the code (default: True)
-            type_check_stubs: Optional code to prepend before type checking,
-                e.g. with input variable declarations or external function signatures
-            dataclass_registry: Optional list of dataclass types to register for proper
-                isinstance() support on output, see `register_dataclass()` above.
-
-        Raises:
-            MontySyntaxError: If the code cannot be parsed
-            MontyTypingError: If type_check is True and type errors are found
+            host_path: Real host directory to expose. Opened at construction;
+                raises if it doesn't exist, isn't a directory, or cannot be
+                opened — on macOS/BSD a search-only (`0o111`) directory is not
+                mountable, though Linux accepts one. Sandbox code can never see
+                this path or reach outside it. The mount tracks the directory
+                itself rather than its name, so renaming it on the host does
+                not detach the mount; on Windows the open handle prevents the
+                host renaming or deleting it at all while the mount lives.
+                Symlinks inside it are followed only if their targets are
+                relative — an absolute target raises `PermissionError` in the
+                sandbox even when it points back into the same mount.
+            virtual_path: Absolute POSIX-style path prefix inside the sandbox
+                (e.g. `'/data'`), regardless of host OS. Raises `ValueError`
+                if not absolute.
+            mode: `'read-only'` — reads only, writes raise `PermissionError`;
+                `'read-write'` — writes through to the host directory;
+                `'overlay'` (default) — reads fall through to the host, writes
+                are captured in memory per feed and discarded when it ends.
+            write_bytes_limit: Cap on cumulative bytes written through the
+                mount within one feed; exceeding it raises `OSError` in the
+                sandbox. `None` (default) means unlimited.
+            memory_usage_limit: Per-mount budget in bytes (default 100 MB,
+                matches DEFAULT_MEMORY_USAGE_LIMIT in rust) shared by retained
+                overlay data and transient filesystem results; an operation that
+                would exceed it raises `MemoryError` in the sandbox.
         """
 
-    @staticmethod
-    def acreate(
-        code: str,
-        *,
-        script_name: str = 'main.py',
-        inputs: list[str] | None = None,
-        type_check: bool = False,
-        type_check_stubs: str | None = None,
-        dataclass_registry: list[type] | None = None,
-    ) -> Coroutine[Any, Any, Monty]:
-        """
-        Async alternative constructor that parses and (optionally) type-checks
-        the code on a worker thread, returning a coroutine that resolves to a
-        new `Monty` instance.
+    def close(self) -> None:
+        """Release the open host directory. Idempotent.
 
-        Use this from `async def` callers when the source might be large or
-        when type-checking is enabled, so the build does not block the event
-        loop. Arguments and exceptions match `__new__`.
-
-        Raises:
-            MontySyntaxError: If the code cannot be parsed
-            MontyTypingError: If type_check is True and type errors are found
+        Feeds passed this mount afterwards raise `ValueError`; the attributes
+        above keep answering. Only Windows needs this — it refuses to rename or
+        delete a directory while a handle to it is open — but `MountDir` also
+        works as a context manager, which closes on exit.
         """
 
-    def type_check(self, type_check_stubs: str | None = None) -> None:
-        """
-        Perform static type checking on the code.
-
-        Analyzes the code for type errors without executing it. This uses
-        a subset of Python's type system supported by Monty.
-
-        Arguments:
-            type_check_stubs: Optional code to prepend before type checking,
-                e.g. with input variable declarations or external function signatures.
-
-        Raises:
-            MontyTypingError: If type errors are found. Use `.display(format, color)`
-                on the exception to render the diagnostics in different formats.
-            RuntimeError: If the type checking infrastructure fails internally.
-        """
-
-    def run(
-        self,
-        *,
-        inputs: dict[str, Any] | None = None,
-        limits: ResourceLimits | None = None,
-        external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
-        mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
-    ) -> Any:
-        """
-        Execute the code and return the result.
-
-        The GIL is released allowing parallel execution.
-
-        Arguments:
-            inputs: Dict of input variable values (must match names from __init__)
-            limits: Optional resource limits configuration
-            external_functions: Dict of external function callbacks
-            print_callback: `None` (write to stdout/stderr), a callable `(stream, text) -> None`,
-                `CollectStreams()`, or `CollectString()`.
-            mount: Optional filesystem mount(s) to expose inside the sandbox.
-            os: Optional callback for OS calls.
-                Called with (function_name, args) where function_name is like 'Path.exists'
-                and args is a tuple of arguments. Must return the appropriate value for the
-                OS function (e.g., bool for exists(), stat_result for stat()).
-
-        Returns:
-            The result of the last expression in the code.
-
-        Raises:
-            MontyRuntimeError: If the code raises an exception during execution.
-        """
-
-    def start(
-        self,
-        *,
-        inputs: dict[str, Any] | None = None,
-        limits: ResourceLimits | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
-        mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
-    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
-        """
-        Start the code execution and return a progress object, or completion.
-
-        This allows you to iteratively run code and parse/resume whenever an external function is called.
-
-        The GIL is released allowing parallel execution.
-
-        When `mount` or `os` is provided, OS calls are resolved automatically using
-        the same logic as `run()` (mount table first, then the `os` callback),
-        this method only returns a snapshot when a non-OS event is reached
-        (external function, name lookup, future, or completion).
-
-        Auto-dispatch does NOT persist across subsequent `snapshot.resume()` calls —
-        OS calls produced after the first resume surface as a `FunctionSnapshot`
-        with `is_os_function=True`, as before.
-
-        Arguments:
-            inputs: Dict of input variable values (must match names from __init__)
-            limits: Optional resource limits configuration
-            print_callback: Optional callback for print output
-            mount: Optional filesystem mount(s) to expose inside the sandbox.
-            os: Optional callback for OS calls. Called with (function_name, args, kwargs)
-                and must return the appropriate value for the OS function. Return
-                `NOT_HANDLED` to fall back to Monty's default unhandled behavior.
-
-        Returns:
-            FunctionSnapshot if an external function call is pending,
-            NameLookupSnapshot if more futures need to be resolved,
-            FutureSnapshot if futures need to be resolved,
-            MontyComplete if execution finished without external calls.
-
-        Raises:
-            MontyRuntimeError: If the code raises an exception during execution
-        """
-
-    def run_async(
-        self,
-        *,
-        inputs: dict[str, Any] | None = None,
-        limits: ResourceLimits | None = None,
-        external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
-        os: AbstractOS | None = None,
-    ) -> Coroutine[Any, Any, Any]:
-        """
-        Execute the code with support for async external functions.
-
-        VM resume calls are offloaded to a new thread to avoid blocking the event loop.
-        External functions that return coroutines are awaited on the Python event loop.
-
-        Arguments:
-            inputs: Dict of input variable values (must match names from __init__)
-            limits: Optional resource limits configuration
-            external_functions: Dict of external function callbacks (sync or async)
-            print_callback: `None` (stdout), a callable `(stream, text) -> None`,
-                `CollectStreams()`, or `CollectString()`.
-            os: Optional OS access handler for filesystem operations
-
-        Returns:
-            A coroutine that resolves to the result of the last expression.
-
-        Raises:
-            MontyRuntimeError: If the code raises an exception during execution.
-        """
-
-    def dump(self) -> bytes:
-        """
-        Serialize the Monty instance to a binary format.
-
-        The serialized data can be stored and later restored with `Monty.load()`.
-        This allows caching parsed code to avoid re-parsing on subsequent runs.
-
-        Returns:
-            Bytes containing the serialized Monty instance.
-
-        Raises:
-            ValueError: If serialization fails.
-        """
-
-    @staticmethod
-    def load(
-        data: bytes,
-        *,
-        dataclass_registry: list[type] | None = None,
-    ) -> Monty:
-        """
-        Deserialize a Monty instance from binary format.
-
-        Arguments:
-            data: The serialized Monty data from `dump()`
-            dataclass_registry: Optional list of dataclass types to register for proper
-                isinstance() support on output, see `register_dataclass()` above.
-
-        Returns:
-            A new Monty instance.
-
-        Raises:
-            ValueError: If deserialization fails.
-        """
-
-    def register_dataclass(self, cls: type) -> None:
-        """
-        Register a dataclass type for proper isinstance() support on output.
-
-        When a dataclass passes through Monty and is returned, it normally becomes
-        an `UnknownDataclass`. By registering the original type, we can use it to
-        instantiate a real instance of that dataclass.
-
-        Arguments:
-            cls: The dataclass type to register.
-
-        Raises:
-            TypeError: If the argument is not a dataclass type.
-        """
-
-    def __repr__(self) -> str: ...
-
-@final
-class MontyRepl:
-    """
-    Incremental no-replay REPL session.
-
-    Create with `MontyRepl()` then call `feed_run()` to execute snippets
-    incrementally against persistent heap and namespace state.
-    """
-
-    def __new__(
-        cls,
-        *,
-        script_name: str = 'main.py',
-        limits: ResourceLimits | None = None,
-        type_check: bool = False,
-        type_check_stubs: str | None = None,
-        dataclass_registry: list[type] | None = None,
-    ) -> Self:
-        """
-        Create an empty REPL session ready to receive snippets via `feed_run()`.
-
-        No code is parsed or executed at construction time.
-
-        Arguments:
-            script_name: Name used in tracebacks and error messages
-            limits: Optional resource limits configuration
-            type_check: Whether to type-check each snippet before execution.
-                When enabled, each `feed_run`/`feed_run_async`/`feed_start` call
-                runs static type checking before executing the code, and each
-                successfully executed snippet is appended to the accumulated
-                context used for type-checking subsequent snippets.
-            type_check_stubs: Optional stub code providing type declarations for
-                variables and functions available in the REPL, e.g. input variable
-                types or external function signatures.
-            dataclass_registry: Optional list of dataclass types to register for proper
-                isinstance() support on output.
-        """
-
-    @property
-    def script_name(self) -> str:
-        """The name of the script being executed."""
-
-    def register_dataclass(self, cls: type) -> None:
-        """
-        Register a dataclass type for proper isinstance() support on output.
-        """
-
-    def type_check(self, code: str, type_check_stubs: str | None = None) -> None:
-        """
-        Perform static type checking on the given code snippet.
-
-        Checks the snippet in isolation using `type_check_stubs` as stub context.
-        This does not use the accumulated code from previous `feed_run` calls —
-        use `type_check_stubs` to provide any needed declarations.
-
-        Arguments:
-            code: The code to type check
-            type_check_stubs: Optional code to prepend before type checking,
-                e.g. with input variable declarations or external function signatures
-
-        Raises:
-            RuntimeError: If type checking infrastructure fails
-            MontyTypingError: If type errors are found
-        """
-
-    def feed_run(
-        self,
-        code: str,
-        *,
-        inputs: dict[str, Any] | None = None,
-        external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
-        mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
-        skip_type_check: bool = False,
-    ) -> Any:
-        """
-        Execute one incremental snippet and return its output.
-
-        Arguments:
-            code: The Python code snippet to execute
-            inputs: Dict of input values injected into the REPL namespace
-                before executing the snippet
-            external_functions: Dict of external function callbacks. When
-                provided, external function calls and name lookups are
-                dispatched to the provided callables — matching the behavior
-                of `Monty.run(external_functions=...)`.
-            print_callback: Optional callback for print output
-            mount: Optional filesystem mount(s) to expose inside the sandbox
-            os: Optional OS access handler for filesystem operations
-            skip_type_check: When `True`, static type checking is bypassed for
-                this snippet AND the snippet is NOT appended to the accumulated
-                type-check context, so later type-checked snippets will not see
-                any names it defined. Has no effect unless `type_check=True`
-                was set on the REPL.
-        """
-
-    def feed_run_async(
-        self,
-        code: str,
-        *,
-        inputs: dict[str, Any] | None = None,
-        external_functions: dict[str, Callable[..., Any]] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
-        os: AbstractOS | None = None,
-        skip_type_check: bool = False,
-    ) -> Coroutine[Any, Any, Any]:
-        """
-        Execute one incremental snippet and return its output with support for async external functions.
-
-        VM resume calls are offloaded to a new thread to avoid blocking the event loop.
-        External functions that return coroutines are awaited on the Python event loop.
-
-        Arguments:
-            code: The Python code snippet to execute
-            inputs: Dict of input values to inject into the REPL namespace
-            external_functions: Dict of external function callbacks (sync or async)
-            print_callback: Optional callback for print output
-            os: Optional OS access handler for filesystem operations
-            skip_type_check: When `True`, static type checking is bypassed for
-                this snippet AND the snippet is NOT appended to the accumulated
-                type-check context, so later type-checked snippets will not see
-                any names it defined. Has no effect unless `type_check=True`
-                was set on the REPL.
-
-        Returns:
-            A coroutine that resolves to the output of the snippet
-
-        Raises:
-            MontyRuntimeError: If the code raises an exception during execution
-        """
-
-    def feed_start(
-        self,
-        code: str,
-        *,
-        inputs: dict[str, Any] | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
-        mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
-        skip_type_check: bool = False,
-    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
-        """
-        Start executing an incremental snippet, yielding snapshots for external calls.
-
-        Unlike `feed_run()`, which handles external function dispatch internally,
-        `feed_start()` returns a snapshot object whenever the code needs an external
-        function call, OS call, name lookup, or future resolution. The caller provides
-        the result via `snapshot.resume(...)`, which returns the next snapshot or
-        `MontyComplete`.
-
-        This enables the same iterative start/resume pattern used by `Monty.start()`,
-        including support for async external functions via `FutureSnapshot`.
-
-        When `mount` or `os` is provided, OS calls are resolved automatically using
-        the same logic as `feed_run()`, and this method only returns a snapshot when
-        a non-OS event is reached. Auto-dispatch does NOT persist across subsequent
-        `snapshot.resume()` calls — OS calls produced after the first resume surface
-        as a `FunctionSnapshot` with `is_os_function=True`, as before.
-
-        On completion or error, the REPL state is automatically restored.
-
-        Arguments:
-            code: The Python code snippet to execute
-            inputs: Dict of input values injected into the REPL namespace
-                before executing the snippet
-            print_callback: Optional callback for print output
-            mount: Optional filesystem mount(s) to expose inside the sandbox.
-            os: Optional callback for OS calls. Called with (function_name, args, kwargs)
-                and must return the appropriate value for the OS function. Return
-                `NOT_HANDLED` to fall back to Monty's default unhandled behavior.
-            skip_type_check: When `True`, static type checking is bypassed for
-                this snippet AND the snippet is NOT appended to the accumulated
-                type-check context, so later type-checked snippets will not see
-                any names it defined. Has no effect unless `type_check=True`
-                was set on the REPL.
-        """
-
-    def dump(self) -> bytes:
-        """Serialize the REPL session to bytes."""
-
-    @staticmethod
-    def load(
-        data: bytes,
-        *,
-        dataclass_registry: list[type] | None = None,
-    ) -> MontyRepl:
-        """Restore a REPL session from bytes."""
-
-@final
-class FunctionSnapshot:
-    """
-    Represents a paused execution waiting for an external function call return value.
-
-    Contains information about the pending external function call and allows
-    resuming execution with the return value.
-    """
-
-    @property
-    def script_name(self) -> str:
-        """The name of the script being executed."""
-
-    @property
-    def is_os_function(self) -> bool:
-        """Whether this snapshot is for an OS function call (e.g., Path.stat)."""
-
-    @property
-    def is_method_call(self) -> bool:
-        """Whether this snapshot is for a dataclass method call (first arg is `self`)."""
-
-    @property
-    def function_name(self) -> str | OsFunction:
-        """The name of the function being called (external function or OS function like 'Path.stat').
-
-        Will be a `OsFunction` if `is_os_function` is `True`.
-        """
-
-    @property
-    def args(self) -> tuple[Any, ...]:
-        """The positional arguments passed to the external function."""
-
-    @property
-    def kwargs(self) -> dict[str, Any]:
-        """The keyword arguments passed to the external function."""
-
-    def args_json(self) -> str:
-        """Serialize the positional args as a JSON array.
-
-        Uses the same natural-form mapping as 'MontyComplete.output_json':
-        JSON-native Python values ('None', 'bool', 'int', 'float',
-        'str', list, and dict with string keys) are emitted bare, while
-        non-JSON-native values (tuples, bytes, sets, dataclasses, ...) are
-        wrapped in a single-key object with a '$'-prefixed tag such as
-        '{"$tuple": [...]}'.
-
-        Raises:
-            RuntimeError: If serialization fails.
-        """
-
-    def kwargs_json(self) -> str:
-        """Serialize the keyword args as a JSON object.
-
-        Python kwargs always have string keys, so the result is a plain
-        '{"<name>": <value>, ...}' object using the same natural-form
-        mapping as 'args_json' for the values.
-
-        Raises:
-            RuntimeError: If serialization fails.
-        """
-
-    @property
-    def call_id(self) -> int:
-        """The unique identifier for this external function call."""
-
-    def resume(
-        self,
-        result: ExternalResult,
-        *,
-        mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
-    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
-        """Resume execution with a return value from the external function.
-
-        `resume` may only be called once on each FunctionSnapshot instance.
-
-        The GIL is released allowing parallel execution.
-
-        When `mount` or `os` is provided, OS calls produced by the resumed
-        execution are auto-dispatched internally until the next non-OS event,
-        matching the semantics of `Monty.start(mount=..., os=...)`. Auto-dispatch
-        does not persist beyond this single `resume()` call — each `resume()`
-        must be passed `mount`/`os` again to continue the behavior.
-
-        Arguments:
-            result: A typeddict representing the return value, exception, or pending future.
-            mount: Optional filesystem mount(s) to expose inside the sandbox.
-            os: Optional callback for OS calls. Return `NOT_HANDLED` to fall back
-                to Monty's default unhandled behavior.
-
-        Returns:
-            FunctionSnapshot if another external function call is pending,
-            FutureSnapshot if another name lookup is pending,
-            FutureSnapshot if futures need to be resolved,
-            MontyComplete if execution finished.
-
-        Raises:
-            TypeError: If both arguments are incorrect.
-            RuntimeError: If execution has already completed.
-            MontyRuntimeError: If the code raises an exception during execution
-        """
-
-    def resume_not_handled(
-        self,
-        *,
-        mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
-    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
-        """Resume an OS snapshot using Monty's default unhandled-OS behavior.
-
-        This is only valid when `is_os_function` is `True`. It behaves the same
-        as leaving the OS call unhandled in Monty's runtime.
-
-        When `mount` or `os` is provided, OS calls produced by the resumed
-        execution are auto-dispatched until a non-OS event is reached.
-        """
-
-    def dump(self) -> bytes:
-        """
-        Serialize the FunctionSnapshot instance to a binary format.
-
-        The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
-        This allows suspending execution and resuming later, potentially in a different process.
-
-        Note: The `print_callback` is not serialized and must be re-provided to
-        `load_snapshot()` or `load_repl_snapshot()` when the snapshot is restored.
-
-        Returns:
-            Bytes containing the serialized FunctionSnapshot instance.
-
-        Raises:
-            ValueError: If serialization fails.
-            RuntimeError: If the progress has already been resumed.
-        """
-
-    def __repr__(self) -> str: ...
-
-@final
-class NameLookupSnapshot:
-    """
-    Represents a paused execution waiting for multiple futures to be resolved.
-
-    Contains information about the pending futures and allows resuming execution
-    with the results.
-    """
-
-    @property
-    def script_name(self) -> str:
-        """The name of the script being executed."""
-
-    @property
-    def variable_name(self) -> str:
-        """The name of the variable being looked up."""
-
-    def resume(
-        self,
-        *,
-        value: Any | None = None,
-        mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
-    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
-        """Resume execution with result the value from a name lookup, if any.
-
-        If no `value` is passed, a `NameError` is raised.
-
-        `resume` may only be called once on each NameLookupSnapshot instance.
-
-        The GIL is released allowing parallel execution.
-
-        When `mount` or `os` is provided, OS calls produced after the name is
-        resolved are auto-dispatched until a non-OS event is reached, matching
-        the semantics of `Monty.start(mount=..., os=...)`.
-
-        Arguments:
-            value: The value from the name lookup, if any.
-            mount: Optional filesystem mount(s) to expose inside the sandbox.
-            os: Optional callback for OS calls. Return `NOT_HANDLED` to fall back
-                to Monty's default unhandled behavior.
-
-        Returns:
-            FunctionSnapshot if an external function call is pending,
-            NameLookupSnapshot if more futures need to be resolved,
-            FutureSnapshot if another name lookup is pending,
-            MontyComplete if execution finished.
-
-        Raises:
-            TypeError: If result dict has invalid keys.
-            RuntimeError: If execution has already completed.
-            MontyRuntimeError: If the code raises an exception during execution
-        """
-
-    def dump(self) -> bytes:
-        """
-        Serialize the NameLookupSnapshot instance to a binary format.
-
-        The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
-        This allows suspending execution and resuming later, potentially in a different process.
-
-        Note: The `print_callback` is not serialized and must be re-provided to
-        `load_snapshot()` or `load_repl_snapshot()` when the snapshot is restored.
-
-        Returns:
-            Bytes containing the serialized NameLookupSnapshot instance.
-
-        Raises:
-            ValueError: If serialization fails.
-            RuntimeError: If the progress has already been resumed.
-        """
-
-    def __repr__(self) -> str: ...
-
-@final
-class FutureSnapshot:
-    """
-    Represents a paused execution waiting for multiple futures to be resolved.
-
-    Contains information about the pending futures and allows resuming execution
-    with the results.
-    """
-
-    @property
-    def script_name(self) -> str:
-        """The name of the script being executed."""
-
-    @property
-    def pending_call_ids(self) -> list[int]:
-        """The call IDs of the pending futures.
-
-        Raises an error if the snapshot has already been resumed.
-        """
-
-    def resume(
-        self,
-        results: dict[int, ExternalResult],
-        *,
-        mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
-    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
-        """Resume execution with results for one or more futures.
-
-        `resume` may only be called once on each FutureSnapshot instance.
-
-        The GIL is released allowing parallel execution.
-
-        When `mount` or `os` is provided, OS calls produced after the futures
-        resolve are auto-dispatched until a non-OS event is reached, matching
-        the semantics of `Monty.start(mount=..., os=...)`.
-
-        Arguments:
-            results: Dict mapping call_id to result dict. Each result dict must have
-                either 'return_value' or 'exception' key (not both).
-            mount: Optional filesystem mount(s) to expose inside the sandbox.
-            os: Optional callback for OS calls. Return `NOT_HANDLED` to fall back
-                to Monty's default unhandled behavior.
-
-        Returns:
-            FunctionSnapshot if an external function call is pending,
-            NameLookupSnapshot if more futures need to be resolved,
-            FutureSnapshot if more futures need to be resolved,
-            MontyComplete if execution finished.
-
-        Raises:
-            TypeError: If result dict has invalid keys.
-            RuntimeError: If execution has already completed.
-            MontyRuntimeError: If the code raises an exception during execution
-        """
-
-    def dump(self) -> bytes:
-        """
-        Serialize the FutureSnapshot instance to a binary format.
-
-        The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
-        This allows suspending execution and resuming later, potentially in a different process.
-
-        Note: The `print_callback` is not serialized and must be re-provided to
-        `load_snapshot()` or `load_repl_snapshot()` when the snapshot is restored.
-
-        Returns:
-            Bytes containing the serialized FutureSnapshot instance.
-
-        Raises:
-            ValueError: If serialization fails.
-            RuntimeError: If the progress has already been resumed.
-        """
-
-    def __repr__(self) -> str: ...
-
-@final
-class MontyComplete:
-    """The result of a completed code execution."""
-
-    @property
-    def output(self) -> Any:
-        """The final output value from the executed code.
-
-        Converted from Monty's internal representation to a Python object on
-        each access. Callers that want to inspect the value repeatedly should
-        save it to a local variable.
-        """
-
-    def output_json(self) -> str:
-        """Serialize the output as a Monty-specific JSON string.
-
-        This is **not** a drop-in wrapper around ``json.dumps(result.output)``:
-        the shape is chosen to preserve types that plain JSON can't express,
-        so consumers can round-trip richer Python values than CPython's
-        stdlib would allow. JSON-native Python types (None, bool, int, float,
-        str, list, and dict with string keys) become bare JSON values.
-        Non-JSON-native types are wrapped in a single-key object with a
-        ``$``-prefixed tag, for example:
-
-        - tuple → ``{"$tuple": [...]}``
-        - bytes → ``{"$bytes": [...]}``
-        - set / frozenset → ``{"$set": [...]}`` / ``{"$frozenset": [...]}``
-        - ``...`` → ``{"$ellipsis": "..."}``
-        - ``nan`` / ``inf`` / ``-inf`` → ``{"$float": "nan" | "inf" | "-inf"}``
-        - dict with any non-string key → ``{"$dict": [[k, v], ...]}``
-        - dataclass → ``{"$dataclass": {...}, "name": "ClassName"}``
-
-        Raises:
-            RuntimeError: If serialization fails.
-        """
-
-    def __repr__(self) -> str: ...
+    def __enter__(self) -> MountDir: ...
+    def __exit__(self, *args: object) -> bool: ...
 
 class MontyError(Exception):
     """Base exception for all Monty interpreter errors.
@@ -855,29 +200,17 @@ class MontySyntaxError(MontyError):
 
 @final
 class MontyTypingError(MontyError):
-    """Raised when type checking finds errors in the code.
+    """Raised when type checking rejects a fed snippet.
 
-    This exception is raised when static type analysis detects type errors
-    before execution. Use `.display(format, color)` to render the diagnostics
-    in different formats.
+    Type checking runs inside the worker subprocess; the diagnostics arrive
+    pre-rendered as text, in the `type_check_format` chosen at checkout.
 
     Inherits exception(), __str__() from MontyError.
     Cannot be constructed directly from Python.
     """
 
-    def display(
-        self,
-        format: Literal[
-            'full', 'concise', 'azure', 'json', 'jsonlines', 'rdjson', 'pylint', 'gitlab', 'github'
-        ] = 'full',
-        color: bool = False,
-    ) -> str:
-        """Renders the type error diagnostics with the specified format and color.
-
-        Args:
-            format: Output format for the diagnostics. Defaults to 'full'.
-            color: Whether to include ANSI color codes. Defaults to False.
-        """
+    def display(self) -> str:
+        """Returns the rendered type-check diagnostics."""
 
 @final
 class MontyRuntimeError(MontyError):
@@ -898,6 +231,16 @@ class MontyRuntimeError(MontyError):
                   'type-msg' - 'ExceptionType: message' format
                   'msg' - just the message
         """
+
+@final
+class MontyConversionError(MontyError):
+    """Raised when a host value cannot be converted across the Monty/host boundary.
+
+    A value Monty cannot represent — an `external_lookup` entry or an `inputs`
+    value of an unsupported type — rejects the feed with this error rather than
+    crossing into the sandbox. Inherits `exception()` (a native `TypeError`) and
+    `__str__()` (the conversion message) from `MontyError`.
+    """
 
 @final
 class Frame:
@@ -934,70 +277,22 @@ class Frame:
     def dict(self) -> dict[str, int | str | None]:
         """dict of attributes."""
 
-def load_snapshot(
-    data: bytes,
-    *,
-    print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
-    dataclass_registry: list[type] | None = None,
-) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot:
-    """Load a non-REPL snapshot from serialized bytes.
-
-    Auto-detects the snapshot type (FunctionSnapshot, NameLookupSnapshot, or
-    FutureSnapshot) from the serialized data.
-
-    Arguments:
-        data: Serialized snapshot bytes from `.dump()`
-        print_callback: Optional callback for print output
-        dataclass_registry: Optional list of dataclass types to register
-
-    Returns:
-        The deserialized snapshot, ready to be resumed.
-
-    Raises:
-        ValueError: If deserialization fails or data contains a REPL snapshot
-            (use `load_repl_snapshot` for those).
-    """
-
-def load_repl_snapshot(
-    data: bytes,
-    *,
-    print_callback: Callable[[Literal['stdout'], str], None] | CollectStreams | CollectString | None = None,
-    dataclass_registry: list[type] | None = None,
-) -> tuple[FunctionSnapshot | NameLookupSnapshot | FutureSnapshot, MontyRepl]:
-    """Load a REPL snapshot from serialized bytes.
-
-    Returns both the snapshot and a reconstructed `MontyRepl` session.
-    The snapshot's REPL variant is wired to the returned `MontyRepl`,
-    so resuming the snapshot will update the REPL state.
-
-    Arguments:
-        data: Serialized snapshot bytes from `.dump()` on a REPL snapshot
-        print_callback: Optional callback for print output
-        dataclass_registry: Optional list of dataclass types to register
-
-    Returns:
-        A tuple of (snapshot, MontyRepl).
-
-    Raises:
-        ValueError: If deserialization fails.
-    """
-
 @final
 class MontyFileHandle:
     """Host-side handle to a file opened inside a Monty sandbox.
 
     Plain data holder — Monty never gives the host a live OS file descriptor.
-    Exposed to callbacks (e.g. as the first argument of an `Open` result or
+    Exposed to callbacks (e.g. as the first argument of an `open` result or
     a `read`/`write` request) so they can route on `path` and branch on
     `mode`/`binary`/`readable`/`writable` without re-parsing the mode string.
 
-    Construct one from a Python `Open` OS handler to return a handle back to
+    Construct one from a Python `open` OS handler to return a handle back to
     Monty: `MontyFileHandle('/data/foo.txt', 'r')`. The `mode` is canonicalized
     at construction (`'rt'` → `'r'`, `'r+b'` → `'rb+'`).
     """
 
     def __new__(cls, path: str, mode: str, *, position: int = 0) -> MontyFileHandle:
-        """Construct a `MontyFileHandle` to return from an `Open` OS callback.
+        """Construct a `MontyFileHandle` to return from an `open` OS callback.
 
         Arguments:
             path: Virtual sandbox path of the opened file (POSIX-style).
@@ -1037,3 +332,818 @@ class MontyFileHandle:
     @property
     def writable(self) -> bool:
         """`True` if the mode permits `write()` (`'w'`, `'a'`, `'r+'`, `'w+'`, `'a+'`, and binary variants)."""
+
+@final
+class MontyCrashedError(MontyError):
+    """Raised when the sandbox is gone and the session with it.
+
+    This is the failure mode subprocess pools exist to contain: the worker is
+    gone — segfault, allocator abort, external kill, `request_timeout`
+    watchdog, or a fatal error it announced before exiting — but the host
+    process is unharmed and the pool replaces it. A remote server also reports
+    its own failure to start a worker this way. Catch this error to retry or
+    report; the message says which happened.
+
+    `exit_status` is `None` whenever the process could not be reaped, which
+    includes every remote worker.
+
+    Cannot be constructed directly from Python.
+    """
+
+    @property
+    def timed_out(self) -> bool:
+        """`True` when the pool's `request_timeout` watchdog killed the worker."""
+
+    @property
+    def exit_status(self) -> int | None:
+        """Exit code of the dead worker when the OS reported one (signal deaths report `None`)."""
+
+@final
+class MontyDisconnectError(MontyError):
+    """Raised when a remote worker's connection closed mid-session (WebSocket transport only).
+
+    The local analogue is `MontyCrashedError`. The sandbox may have died, or
+    the server may have dropped the session by policy — an idle, session, or
+    turn timeout, or being over capacity. A client that only sees the
+    connection go away cannot tell those apart, so this error claims no more
+    than that. Retry on a fresh session.
+
+    Cannot be constructed directly from Python.
+    """
+
+@final
+class MontyShutdown(MontyError):
+    """Raised when the remote server is shutting down (WebSocket transport only).
+
+    Not an error in your code, which is why it is the one exception here
+    without an `Error` suffix; it still subclasses `MontyError`. The request
+    that raised it **did not run**, so re-running it on a fresh session is
+    safe.
+
+    `dump` carries the session state captured just before shutdown — restore
+    it on a new session to carry the session across a server restart, with
+    `session.load_session` (idle, between feeds) or `session.load_snapshot`
+    (suspended mid-feed).
+
+    One caveat: if the interrupted request was answering a suspension (an
+    external function or `os` callback), the host already ran that call and
+    the restored session re-announces it, so it runs again. Make such
+    callbacks idempotent if you intend to restore across a shutdown.
+
+    Cannot be constructed directly from Python.
+    """
+
+    @property
+    def dump(self) -> bytes | None:
+        """Restorable session dump, or `None` when nothing had run yet or the server's dump failed."""
+
+@final
+class Monty:
+    """
+    Sync context manager owning a pool of `monty` subprocess workers.
+
+    Monty processes can never be made fully crash-proof against memory errors
+    (stack overflow, allocator aborts), so execution always happens in worker
+    subprocesses: a crashed worker raises `MontyCrashedError` and is replaced
+    transparently — the host Python process is never at risk.
+
+    ```python
+    with Monty() as pool:
+        with pool.checkout() as session:
+            result = session.feed_run('1 + 1')
+    ```
+    """
+
+    def __new__(
+        cls,
+        *,
+        binary_path: str | Path | None = None,
+        min_processes: int = 1,
+        max_processes: int | None = None,
+        checkout_timeout: float | None = None,
+        request_timeout: float | None = None,
+        max_checkouts_per_worker: int | None = None,
+    ) -> Self:
+        """
+        Configure a worker pool; the workers are spawned by `with`.
+
+        Arguments:
+            binary_path: Path to the `monty` CLI binary. When omitted it is
+                resolved from the `MONTY_BIN` environment variable, the
+                environment's scripts directory (where the `pydantic-monty-runtime`
+                dependency installs it), or `PATH`.
+            min_processes: Workers spawned eagerly and kept warm.
+            max_processes: Cap on live workers (defaults to the CPU count);
+                checkouts beyond it wait for a worker to be returned.
+            checkout_timeout: Seconds `checkout()` waits for a free worker
+                before raising `TimeoutError`. `None` waits forever.
+            request_timeout: Parent-side deadline in seconds — a worker that
+                exceeds it is killed and the call raises `MontyCrashedError`
+                with `timed_out=True`. Trusted synchronous telemetry callbacks
+                delay enforcement while they run. Backstops sandbox `limits`.
+            max_checkouts_per_worker: Recycle a worker after this many sessions.
+        """
+
+    def __enter__(self) -> Self: ...
+    def __exit__(self, *args: Any) -> None: ...
+    def checkout(
+        self,
+        *,
+        script_name: str = 'main.py',
+        limits: ResourceLimits | None = None,
+        type_check: bool = False,
+        type_check_stubs: str | None = None,
+        type_check_format: TypeCheckFormat | None = None,
+        type_check_color: bool = False,
+        assert_message_annotations: bool | int = ...,
+        dataclass_registry: list[type] | None = None,
+    ) -> MontySession:
+        """
+        Prepare a REPL session served by a dedicated worker.
+
+        The worker is checked out of the pool by `with` on the returned
+        session and returned to the pool when the `with` block exits.
+
+        Arguments:
+            script_name: Name used in tracebacks and error messages.
+            limits: Resource limits enforced inside the worker.
+            type_check: Type-check each fed snippet before executing it; each
+                successfully executed snippet is appended to the accumulated
+                context used for type-checking subsequent snippets.
+            type_check_stubs: Stub declarations made available to type checking.
+            type_check_format: How `MontyTypingError` diagnostics are rendered;
+                `None` (the default) means `'full'`. Chosen here rather than on
+                the error because the checker's structured diagnostics never
+                leave the worker.
+            type_check_color: Render diagnostics with ANSI colour escapes; only
+                `'full'` and `'concise'` carry colour.
+            assert_message_annotations: Give failed `assert` statements
+                pytest-style introspected messages, e.g.
+                `AssertionError: assert 2 == 5` — a deliberate divergence from
+                CPython's empty `AssertionError`. On by default; set to `False`
+                to restore CPython's behavior, or to an int >= 1 to customize
+                the per-operand repr truncation length (default 120 bytes).
+            dataclass_registry: Dataclass types to register for proper
+                isinstance() support on output.
+        """
+
+@final
+class MontySession:
+    """
+    A REPL session running in a dedicated `monty` subprocess worker.
+
+    Obtained from `Monty.checkout()` and used as a context manager. Session
+    state (globals, functions) persists across `feed_run` calls within the
+    session.
+    """
+
+    def __enter__(self) -> Self: ...
+    def __exit__(self, *args: Any) -> None: ...
+    def feed_run(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        external_lookup: dict[str, Any] | None = None,
+        print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
+        | CollectStreams
+        | CollectString
+        | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
+        skip_type_check: bool = False,
+    ) -> Any:
+        """
+        Execute one snippet in the worker and return its result.
+
+        Blocks the calling thread (with the GIL released) while the worker
+        runs; external functions, the `os` fallback, and print callbacks are
+        invoked in this process. Async external functions are not supported
+        here — use `AsyncMonty`.
+
+        Arguments:
+            code: The Python snippet to execute; its trailing expression value
+                (if any) is converted to a Python object and returned.
+            inputs: Values eagerly bound as globals before the snippet runs —
+                every entry is converted and bound once, whether or not it is
+                referenced.
+            external_lookup: Host values resolving names the snippet leaves
+                undefined, lazily and on demand: a callable entry becomes a host
+                function the sandbox can call, any other value is converted and
+                returned directly when the name is read, and an absent name
+                raises `NameError`. The lazy counterpart to `inputs`; a name
+                present in both is served by the eager `inputs` binding.
+            print_callback: Receives the sandbox's `print()` output as
+                `(stream, text)`, or a `CollectStreams` / `CollectString`
+                collector. Defaults to the host process stdout/stderr.
+            mount: Host directories mounted into the sandbox for this feed.
+                Serviced by the pool on the host side — `'overlay'` writes
+                live in the pool's per-feed mount table and are discarded when
+                the feed ends.
+            os: Fallback handler for OS calls (e.g. filesystem access) not
+                covered by a mount, invoked as `(function_name, args, kwargs)`,
+                or an `AbstractOS` instance.
+            skip_type_check: Skip type checking for this feed even when the
+                session was checked out with `type_check=True`.
+
+        Raises:
+            MontyRuntimeError: The code raised an exception (session survives).
+            MontyTypingError: Type checking rejected the snippet (session survives).
+            MontyCrashedError: The worker process died or hit `request_timeout`;
+                the session is lost but the pool replaces the worker.
+        """
+
+    def feed_start(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        external_lookup: dict[str, Any] | None = None,
+        print_callback: PrintCallback | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: OsHandler | None = None,
+        skip_type_check: bool = False,
+    ) -> SyncSnapshot:
+        """
+        Start a snippet and return a snapshot at each external call, OS call,
+        name lookup, or future resolution instead of driving to completion.
+
+        Answer the snapshot with `snapshot.resume(...)`, which returns the next
+        snapshot or a `MontyComplete`. Alternatively, supply `external_lookup`
+        (and/or `os`) and drive the whole snippet with `snapshot.resume_auto()`,
+        which answers each suspension from them automatically:
+
+        ```python
+        snapshot = session.feed_start(code, external_lookup={'fetch': fetch})
+        while not isinstance(snapshot, MontyComplete):
+            snapshot = snapshot.resume_auto()
+        ```
+
+        Unlike `feed_run`, `external_lookup` is *not* consulted during this
+        initial drive — external calls and name lookups are still surfaced as
+        snapshots; it is only captured for later `resume_auto()` calls.
+
+        Use `snapshot.dump()` to checkpoint the worker mid-execution and
+        `load_snapshot` to restore it.
+
+        Arguments:
+            code: The Python snippet to execute; its trailing expression value
+                (if any) is the `MontyComplete.output` when the feed completes.
+            inputs: Values eagerly bound as globals before the snippet runs —
+                every entry is converted and bound once, whether or not it is
+                referenced.
+            external_lookup: Host functions and values, by name, that
+                `resume_auto()` resolves external calls and undefined names
+                against (as in `feed_run`). Captured for `resume_auto()`; not
+                used by a plain `resume(...)`.
+            print_callback: Receives the sandbox's `print()` output as
+                `(stream, text)`, or a `CollectStreams` / `CollectString`
+                collector. Defaults to the host process stdout/stderr.
+            mount: Host directories mounted into the sandbox for the whole feed
+                (there is no `mount=` on `resume`). `'overlay'` writes live in
+                the pool's per-feed mount table and are discarded when the feed
+                ends.
+            os: Fallback handler for OS calls not covered by a mount, invoked
+                as `(function_name, args, kwargs)`, or an `AbstractOS` instance.
+                Consulted only by `resume_auto()` — `feed_start` always surfaces
+                OS calls as snapshots.
+            skip_type_check: Skip type checking for this feed even when the
+                session was checked out with `type_check=True`.
+        """
+
+    def load_session(self, state: bytes) -> None:
+        """
+        Restore a session between feeds.
+
+        This method should take data from `session.dump()` taken when no block of
+        code is running (i.e. between feeds).
+
+        Use `load_snapshot` for a dump taken mid-execution.
+
+        The dump restores its own `script_name` /
+        limits / type-check state (the `checkout()` config for those is not
+        applied); the dataclass registry from `checkout()` is reused. Raises if
+        the dump is actually a suspended snapshot.
+        """
+
+    def load_snapshot(
+        self,
+        state: bytes,
+        *,
+        mount: MountDir | list[MountDir] | None = None,
+        print_callback: PrintCallback | None = None,
+        external_lookup: dict[str, Any] | None = None,
+        os: OsHandler | None = None,
+    ) -> SyncSnapshot:
+        """
+        Restore a snapshot generated while a block of code is running (e.g.
+        after `feed_start`) and return the re-announced snapshot to resume.
+
+        Use `load_session` for a dump taken between feeds.
+
+        Valid only on a fresh session, before any feed or load; raises
+        `RuntimeError` otherwise. The dump restores its own `script_name` /
+        limits / type-check state (the `checkout()` config for those is not
+        applied); the dataclass registry from `checkout()` is reused. `mount`
+        re-establishes the suspended feed's mounts, which are never part of the
+        dump — pass the same mounts the original feed used, or its filesystem
+        calls degrade into unhandled OS calls. `'overlay'` writes made before
+        the dump are not preserved (the restored overlay starts empty). Raises
+        if the dump is actually an idle session.
+
+        `external_lookup` / `os` are captured for `resume_auto()`, exactly as on
+        `feed_start`. One caveat applies to a *restored* snapshot: a restored
+        `FutureSnapshot`'s pending coroutines are gone (they lived in the
+        previous process), so `resume_auto()` on it raises — resolve it manually
+        with `resume({call_id: ...})`.
+        """
+
+    def dump(self) -> bytes:
+        """
+        Serialize the worker's session state (idle or suspended) to opaque
+        bytes using monty's existing dump format. The session stays usable.
+        """
+
+    def install_dependencies(self, requirements: list[str]) -> None:
+        """
+        Install third-party Python packages into the session, making them
+        importable by subsequent `feed_run` calls. Session-scoped and
+        repeatable; an empty list is a no-op.
+
+        Only supported by an embedded-CPython worker.
+        Against the pure-Monty sandbox worker, or on a `uv` install failure
+        (the error carries uv's stderr), raises `MontyRuntimeError`; the
+        session stays usable. Bounded by the pool's `request_timeout`, so raise
+        it for large dependency sets.
+
+        Requirements are PEP 508 strings, e.g. `["httpx>=0.27", "numpy"]`.
+        Dependencies a script declares inline via PEP 723 (`# /// script`) are
+        installed automatically on `feed_run` and need no call here.
+        """
+
+    @property
+    def worker_pid(self) -> int | None:
+        """OS process id of this session's worker (diagnostics/tests).
+
+        `None` when no worker is attached or a turn is currently in flight
+        on another thread (the getter never blocks on a running turn).
+        """
+
+@final
+class AsyncMonty:
+    """
+    Async context manager owning a pool of `monty` subprocess workers.
+
+    The async counterpart of `Monty`: worker I/O runs off the event loop, and
+    external functions may be coroutines.
+
+    ```python
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            result = await session.feed_run('1 + 1')
+    ```
+    """
+
+    def __new__(
+        cls,
+        *,
+        binary_path: str | Path | None = None,
+        min_processes: int = 1,
+        max_processes: int | None = None,
+        checkout_timeout: float | None = None,
+        request_timeout: float | None = None,
+        max_checkouts_per_worker: int | None = None,
+    ) -> Self:
+        """
+        Configure a worker pool; the workers are spawned by `async with`.
+
+        Arguments are identical to `Monty`.
+        """
+
+    async def __aenter__(self) -> Self: ...
+    async def __aexit__(self, *args: Any) -> None: ...
+    def checkout(
+        self,
+        *,
+        script_name: str = 'main.py',
+        limits: ResourceLimits | None = None,
+        type_check: bool = False,
+        type_check_stubs: str | None = None,
+        type_check_format: TypeCheckFormat | None = None,
+        type_check_color: bool = False,
+        assert_message_annotations: bool | int = ...,
+        dataclass_registry: list[type] | None = None,
+    ) -> AsyncMontySession:
+        """
+        Prepare a REPL session served by a dedicated worker.
+
+        The worker is checked out of the pool by `async with` on the returned
+        session and returned to the pool when the `async with` block exits.
+        Arguments are identical to `Monty.checkout`.
+        """
+
+@final
+class AsyncMontyWebsocket:
+    """
+    Async context manager owning a pool of remote `monty` workers reached over a
+    WebSocket. The intended peer is `monty-server` (the production server: one
+    `monty subprocess` child per connection, plus capacity/timeout policy and
+    graceful drain), but any server that accepts the connection and bridges to
+    a worker fits — a relay pairing it with a child that dialed in from the
+    other end, or the dev relay `scripts/websocket_relay.py`.
+
+    Like `AsyncMonty`, but instead of spawning local subprocesses each checkout
+    dials the configured URL. There is no sync counterpart — remote turns are
+    network-bound. `checkout()` yields the same `AsyncMontySession`.
+
+    A `monty-server` enforces its own policy on top of the pool's. On SIGTERM
+    drain it answers the session's next request with `MontyShutdown`, whose
+    `dump` restores the session onto another server; every other server-side
+    drop (idle, session or turn timeout, capacity) closes the connection and
+    raises `MontyDisconnectError`.
+
+    ```python
+    async with AsyncMontyWebsocket('ws://127.0.0.1:8799') as pool:
+        async with pool.checkout() as session:
+            result = await session.feed_run('1 + 1')
+    ```
+    """
+
+    def __new__(
+        cls,
+        url: str,
+        *,
+        max_processes: int | None = None,
+        checkout_timeout: float | None = None,
+        request_timeout: float | None = 10.0,
+    ) -> Self:
+        """
+        Configure a remote worker pool; connections are made by `async with` and
+        each checkout (no workers are pre-warmed).
+
+        Arguments:
+            url: `ws://`/`wss://` URL to dial — a relay, or any server that
+                bridges to a worker. Dialed verbatim; any session/rendezvous routing the URL
+                needs (e.g. a `/<uuid>/parent` path for a relay) must already be
+                in it.
+            max_processes: Cap on concurrent connections (defaults to the CPU
+                count); checkouts beyond it wait.
+            checkout_timeout: Seconds `checkout()` waits for capacity before
+                raising `TimeoutError`. `None` waits forever.
+            request_timeout: Hard per-call deadline in seconds (default 10.0) — a
+                worker that exceeds it has its connection killed and the call
+                raises `MontyCrashedError` with `timed_out=True`. This also
+                bounds the wait when a relay accepts the connection but never
+                produces a worker. Pass `None` to wait indefinitely.
+
+                Note that `install_dependencies` is a turn too, so the default
+                10.0 is often too low for it — a real `uv pip install` can exceed
+                it. Raise `request_timeout` (or pass `None`) when installing
+                dependencies over the WebSocket transport.
+        """
+
+    async def __aenter__(self) -> Self: ...
+    async def __aexit__(self, *args: Any) -> None: ...
+    def checkout(
+        self,
+        *,
+        script_name: str = 'main.py',
+        limits: ResourceLimits | None = None,
+        type_check: bool = False,
+        type_check_stubs: str | None = None,
+        type_check_format: TypeCheckFormat | None = None,
+        type_check_color: bool = False,
+        assert_message_annotations: bool | int = ...,
+        dataclass_registry: list[type] | None = None,
+    ) -> AsyncMontySession:
+        """
+        Prepare a REPL session served by a dedicated remote connection.
+
+        Identical to `AsyncMonty.checkout`; the connection is opened by
+        `async with` on the returned session.
+        """
+
+@final
+class AsyncMontySession:
+    """
+    A REPL session running in a dedicated `monty` subprocess worker.
+
+    Obtained from `AsyncMonty.checkout()` and used as an async context
+    manager. Session state (globals, functions) persists across
+    `feed_run` calls within the session.
+    """
+
+    async def __aenter__(self) -> Self: ...
+    async def __aexit__(self, *args: Any) -> None: ...
+    async def feed_run(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        external_lookup: dict[str, Any] | None = None,
+        print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
+        | CollectStreams
+        | CollectString
+        | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
+        skip_type_check: bool = False,
+    ) -> Any:
+        """
+        Execute one snippet in the worker and return its result.
+
+        Worker I/O runs off the event loop; external functions (the callable
+        entries in `external_lookup`) may be coroutines, awaited concurrently.
+        See `MontySession.feed_run` for the shared error types.
+
+        Arguments:
+            code: The Python snippet to execute; its trailing expression value
+                (if any) is converted to a Python object and returned.
+            inputs: Values eagerly bound as globals before the snippet runs —
+                every entry is converted and bound once, whether or not it is
+                referenced.
+            external_lookup: Host values resolving names the snippet leaves
+                undefined, lazily and on demand: a callable entry (sync or a
+                coroutine function) becomes a host function the sandbox can call,
+                any other value is converted and returned directly when the name
+                is read, and an absent name raises `NameError`. The lazy
+                counterpart to `inputs`; a name present in both is served by the
+                eager `inputs` binding.
+            print_callback: Receives the sandbox's `print()` output as
+                `(stream, text)`, or a `CollectStreams` / `CollectString`
+                collector. Defaults to the host process stdout/stderr.
+            mount: Host directories mounted into the sandbox for this feed.
+                Serviced by the pool on the host side — `'overlay'` writes
+                live in the pool's per-feed mount table and are discarded when
+                the feed ends.
+            os: Fallback handler for OS calls (e.g. filesystem access) not
+                covered by a mount, invoked as `(function_name, args, kwargs)`,
+                or an `AbstractOS` instance.
+            skip_type_check: Skip type checking for this feed even when the
+                session was checked out with `type_check=True`.
+        """
+
+    async def feed_start(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        external_lookup: dict[str, Any] | None = None,
+        print_callback: PrintCallback | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: OsHandler | None = None,
+        skip_type_check: bool = False,
+    ) -> AsyncSnapshot:
+        """
+        Async counterpart of `MontySession.feed_start`: resolves to a snapshot
+        (whose `resume(...)` / `resume_auto()` is awaitable) or a
+        `MontyComplete`.
+
+        As in the sync version, `external_lookup` (and `os`) are captured for
+        `await snapshot.resume_auto()` rather than consulted during this initial
+        drive. A coroutine external answered by `resume_auto()` is awaited
+        concurrently: it yields an `AsyncFutureSnapshot` whose `resume_auto()`
+        settles the pending coroutines.
+
+        Arguments:
+            code: The Python snippet to execute; its trailing expression value
+                (if any) is the `MontyComplete.output` when the feed completes.
+            inputs: Values eagerly bound as globals before the snippet runs —
+                every entry is converted and bound once, whether or not it is
+                referenced.
+            external_lookup: Host functions and values, by name, that
+                `resume_auto()` resolves external calls and undefined names
+                against (as in `feed_run`). Callables may be coroutine
+                functions. Captured for `resume_auto()`; not used by a plain
+                `resume(...)`.
+            print_callback: Receives the sandbox's `print()` output as
+                `(stream, text)`, or a `CollectStreams` / `CollectString`
+                collector. Defaults to the host process stdout/stderr.
+            mount: Host directories mounted into the sandbox for the whole feed
+                (there is no `mount=` on `resume`). `'overlay'` writes live in
+                the pool's per-feed mount table and are discarded when the feed
+                ends.
+            os: Fallback handler for OS calls not covered by a mount, invoked
+                as `(function_name, args, kwargs)`, or an `AbstractOS` instance.
+                Consulted only by `resume_auto()` — `feed_start` always surfaces
+                OS calls as snapshots.
+            skip_type_check: Skip type checking for this feed even when the
+                session was checked out with `type_check=True`.
+        """
+
+    async def load_session(self, state: bytes) -> None:
+        """Async counterpart of `MontySession.load_session`: restore a session between feeds."""
+
+    async def load_snapshot(
+        self,
+        state: bytes,
+        *,
+        mount: MountDir | list[MountDir] | None = None,
+        print_callback: PrintCallback | None = None,
+        external_lookup: dict[str, Any] | None = None,
+        os: OsHandler | None = None,
+    ) -> AsyncSnapshot:
+        """
+        Async counterpart of `MontySession.load_snapshot`.
+
+        Restore a snapshot generated while a block of code is running (e.g.
+        after `feed_start`) and return the re-announced snapshot to resume.
+
+        `external_lookup` / `os` are captured for `resume_auto()`, with the same
+        restored-snapshot caveats as the sync method (a restored `FutureSnapshot`
+        cannot be driven with `resume_auto()` — its pending coroutines are gone).
+        """
+
+    async def dump(self) -> bytes:
+        """
+        Serialize the worker's session state (idle or suspended) to opaque
+        bytes using monty's existing dump format. The session stays usable.
+        """
+
+    async def install_dependencies(self, requirements: list[str]) -> None:
+        """
+        Async counterpart of `MontySession.install_dependencies`: install
+        third-party packages into the session (off the event loop) so later
+        `feed_run` calls can import them. Session-scoped and repeatable; an
+        empty list is a no-op.
+
+        Only supported by an embedded-CPython worker. Against the pure-Monty
+        sandbox worker, or on a `uv` install failure, raises
+        `MontyRuntimeError`; the session stays usable. PEP 723 inline
+        dependencies are installed automatically on `feed_run`.
+        """
+
+    @property
+    def worker_pid(self) -> int | None:
+        """OS process id of this session's worker (diagnostics/tests).
+
+        `None` when no worker is attached or a turn is currently in flight
+        on another thread (the getter never blocks on a running turn).
+        """
+
+@final
+class MontyComplete:
+    """The result of a completed `feed_start` execution."""
+
+    @property
+    def output(self) -> Any:
+        """The final value, converted to a Python object on each access."""
+
+    def __repr__(self) -> str: ...
+
+@final
+class FunctionSnapshot:
+    """A paused execution waiting for an external function or OS call result.
+
+    For OS calls `is_os_function` is `True` and `function_name` is the
+    `OsFunction` name; resume with a value, an exception, or
+    `resume_not_handled()`.
+    """
+
+    @property
+    def script_name(self) -> str: ...
+    @property
+    def is_os_function(self) -> bool: ...
+    @property
+    def is_method_call(self) -> bool:
+        """Whether this is a dataclass method call (the instance is `args[0]`)."""
+
+    @property
+    def function_name(self) -> str | OsFunction: ...
+    @property
+    def call_id(self) -> int: ...
+    @property
+    def args(self) -> tuple[Any, ...]: ...
+    @property
+    def kwargs(self) -> dict[str, Any]: ...
+    def resume(self, result: ExternalResult) -> SyncSnapshot:
+        """Resume with the call's result; resumes at most once.
+
+        Answers only this call: the result is passed straight through, and
+        neither the feed's mounts nor the captured `os=` are consulted. Use
+        `resume_auto()` for those.
+        """
+
+    def resume_not_handled(self) -> SyncSnapshot:
+        """Resume an OS-call snapshot with monty's default unhandled behaviour."""
+
+    def resume_auto(self) -> SyncSnapshot:
+        """Answer this call automatically, then return the next snapshot (or
+        `MontyComplete`). Resumes at most once.
+
+        An OS call is offered to the feed's mounts first, falling back to the
+        `os=` captured at `feed_start` / `load_snapshot` and then to monty's
+        unhandled default. An external call is resolved through
+        `external_lookup=`; a name absent from it makes the sandbox raise
+        `NameError` (as in `feed_run`). A coroutine external raises
+        `RuntimeError` — use `AsyncMonty` for async externals."""
+
+    def dump(self) -> bytes:
+        """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
+
+    def __repr__(self) -> str: ...
+
+@final
+class NameLookupSnapshot:
+    """A paused execution waiting for the value of an undefined name."""
+
+    @property
+    def script_name(self) -> str: ...
+    @property
+    def variable_name(self) -> str: ...
+    def resume(self, *, value: Any = ...) -> SyncSnapshot:
+        """Resume by binding the name to `value` (any value, including `None`), or
+        omit `value` to leave the name undefined and raise `NameError`."""
+
+    def resume_auto(self) -> SyncSnapshot:
+        """Answer this name lookup automatically from the captured
+        `external_lookup=`, then return the next snapshot (or `MontyComplete`). A
+        name absent from the lookup makes the sandbox raise `NameError`."""
+
+    def dump(self) -> bytes:
+        """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
+
+    def __repr__(self) -> str: ...
+
+@final
+class FutureSnapshot:
+    """A paused execution where every sandbox task is blocked on external futures."""
+
+    @property
+    def script_name(self) -> str: ...
+    @property
+    def pending_call_ids(self) -> list[int]: ...
+    def resume(self, results: dict[int, ExternalSettledResult]) -> SyncSnapshot:
+        """Resume with settled results for one or more pending futures (by
+        `call_id`); a future cannot resolve to another `future`."""
+
+    def resume_auto(self) -> NoReturn:
+        """Always raises `RuntimeError`: a sync session cannot drive coroutine
+        externals. Resolve the pending futures manually with `resume({...})`, or
+        use `AsyncMonty`. Does not consume the snapshot."""
+
+    def dump(self) -> bytes:
+        """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
+
+    def __repr__(self) -> str: ...
+
+@final
+class AsyncFunctionSnapshot:
+    """Async sibling of `FunctionSnapshot`; `resume`/`resume_not_handled` are awaitable."""
+
+    @property
+    def script_name(self) -> str: ...
+    @property
+    def is_os_function(self) -> bool: ...
+    @property
+    def is_method_call(self) -> bool: ...
+    @property
+    def function_name(self) -> str | OsFunction: ...
+    @property
+    def call_id(self) -> int: ...
+    @property
+    def args(self) -> tuple[Any, ...]: ...
+    @property
+    def kwargs(self) -> dict[str, Any]: ...
+    async def resume(self, result: ExternalResult) -> AsyncSnapshot: ...
+    async def resume_not_handled(self) -> AsyncSnapshot: ...
+    async def resume_auto(self) -> AsyncSnapshot:
+        """Async sibling of `FunctionSnapshot.resume_auto`. A coroutine external
+        is spawned and answered with a pending future, so other sandbox tasks
+        keep running; it is later settled by `AsyncFutureSnapshot.resume_auto`."""
+
+    def dump(self) -> bytes: ...
+    def __repr__(self) -> str: ...
+
+@final
+class AsyncNameLookupSnapshot:
+    """Async sibling of `NameLookupSnapshot`."""
+
+    @property
+    def script_name(self) -> str: ...
+    @property
+    def variable_name(self) -> str: ...
+    async def resume(self, *, value: Any = ...) -> AsyncSnapshot: ...
+    async def resume_auto(self) -> AsyncSnapshot:
+        """Async sibling of `NameLookupSnapshot.resume_auto`."""
+
+    def dump(self) -> bytes: ...
+    def __repr__(self) -> str: ...
+
+@final
+class AsyncFutureSnapshot:
+    """Async sibling of `FutureSnapshot`."""
+
+    @property
+    def script_name(self) -> str: ...
+    @property
+    def pending_call_ids(self) -> list[int]: ...
+    async def resume(self, results: dict[int, ExternalSettledResult]) -> AsyncSnapshot: ...
+    async def resume_auto(self) -> AsyncSnapshot:
+        """Wait for one or more coroutine externals spawned by earlier
+        `resume_auto` calls to settle, deliver them, and return the next
+        snapshot. Raises if there are no pending coroutines to await (e.g. a
+        snapshot restored via `load_snapshot`)."""
+
+    def dump(self) -> bytes: ...
+    def __repr__(self) -> str: ...

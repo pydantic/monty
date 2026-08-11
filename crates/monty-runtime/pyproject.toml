@@ -1,0 +1,32 @@
+[build-system]
+requires = ["maturin>=1.9.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "pydantic-monty-runtime"
+description = "The monty CLI binary — spawned as worker subprocesses by pydantic-monty"
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Rust",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Unix",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Environment :: MacOS X",
+]
+dynamic = ["license", "version"]
+
+[project.urls]
+Homepage = "https://github.com/pydantic/monty"
+Source = "https://github.com/pydantic/monty"
+
+# Same pattern as the `uv` and `ruff` packages: `bindings = "bin"` makes
+# maturin place the compiled `monty` binary in the wheel's scripts directory,
+# so installation puts it on the environment's PATH (and pydantic-monty's
+# `find_monty_binary` resolves it via `sysconfig.get_path('scripts')`).
+[tool.maturin]
+bindings = "bin"
+strip = true

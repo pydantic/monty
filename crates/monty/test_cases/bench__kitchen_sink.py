@@ -51,7 +51,7 @@ not_identity = 1 is not None
 compare = 5 >= 5 and 5 <= 5 and 4 != 5
 
 # Assert with message
-assert total > 0, 'total should be positive'
+assert total > 0
 
 # List comprehension
 squares = [x * x for x in range(10)]

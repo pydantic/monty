@@ -1,39 +1,38 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { assertMemoryError, t } from './assertions.js'
+import { kind } from './env.js'
 
-import { Monty, MontyRuntimeError, type ResourceLimits } from '../wrapper'
+import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
+import { setupPool } from './helpers.js'
 
-// The WASI target uses 32-bit `usize`, so limits above u32::MAX cannot be represented.
-// Skip u32-overflow tests when running against the WASI build.
-const testAboveU32 = process.env.NAPI_RS_FORCE_WASI ? test.skip : test
+const { run } = setupPool()
+
+const isRuntimeError = { instanceOf: MontyRuntimeError }
 
 // =============================================================================
 // ResourceLimits construction tests
 // =============================================================================
 
-test('resource limits custom', (t) => {
+test('resource limits custom', async () => {
   const limits: ResourceLimits = {
-    maxAllocations: 100,
     maxDurationSecs: 5.0,
-    maxMemory: 1024,
+    maxMemory: 64 * 1024,
     gcInterval: 10,
     maxRecursionDepth: 500,
   }
   // Just verify the object is valid and can be passed
-  const m = new Monty('1 + 1')
-  t.is(m.run({ limits }), 2)
+  t.is(await run('1 + 1', { limits }), 2)
 })
 
-test('run with limits', (t) => {
-  const m = new Monty('1 + 1')
-  const limits: ResourceLimits = { maxDurationSecs: 5.0 }
-  t.is(m.run({ limits }), 2)
+test('run with limits', async () => {
+  t.is(await run('1 + 1', { limits: { maxDurationSecs: 5.0 } }), 2)
 })
 
 // =============================================================================
 // Recursion limit tests
 // =============================================================================
 
-test('recursion limit', (t) => {
+test('recursion limit', async () => {
   const code = `
 def recurse(n):
     if n <= 0:
@@ -42,13 +41,11 @@ def recurse(n):
 
 recurse(10)
 `
-  const m = new Monty(code)
-  const limits: ResourceLimits = { maxRecursionDepth: 5 }
-  const error = t.throws(() => m.run({ limits }), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('RecursionError'))
+  const error = await t.throwsAsync(() => run(code, { limits: { maxRecursionDepth: 5 } }), isRuntimeError)
+  t.is(error.message, 'RecursionError: maximum recursion depth exceeded')
 })
 
-test('recursion limit ok', (t) => {
+test('recursion limit ok', async () => {
   const code = `
 def recurse(n):
     if n <= 0:
@@ -57,122 +54,76 @@ def recurse(n):
 
 recurse(5)
 `
-  const m = new Monty(code)
-  const limits: ResourceLimits = { maxRecursionDepth: 100 }
-  t.is(m.run({ limits }), 5)
-})
-
-// =============================================================================
-// Allocation limit tests
-// =============================================================================
-
-test('allocation limit', (t) => {
-  // Use a more aggressive allocation pattern
-  const code = `
-result = []
-for i in range(10000):
-    result.append([i])
-len(result)
-`
-  const m = new Monty(code)
-  const limits: ResourceLimits = { maxAllocations: 5 }
-  const error = t.throws(() => m.run({ limits }), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('MemoryError'))
-})
-
-testAboveU32('allocation limit accepts values above u32 max', (t) => {
-  const m = new Monty('1 + 1')
-  const limits: ResourceLimits = { maxAllocations: 2 ** 33 }
-  t.is(m.run({ limits }), 2)
+  t.is(await run(code, { limits: { maxRecursionDepth: 100 } }), 5)
 })
 
 // =============================================================================
 // Memory limit tests
 // =============================================================================
 
-test('memory limit', (t) => {
+test('memory limit', async () => {
   const code = `
 result = []
 for i in range(1000):
     result.append('x' * 100)
 len(result)
 `
-  const m = new Monty(code)
-  const limits: ResourceLimits = { maxMemory: 100 }
-  const error = t.throws(() => m.run({ limits }), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('MemoryError'))
+  const maxMemory = 64 * 1024
+  const error = await t.throwsAsync(() => run(code, { limits: { maxMemory } }), isRuntimeError)
+  assertMemoryError(error, kind === 'browser' ? 76_160 : 88_673, maxMemory)
 })
 
-testAboveU32('memory limit accepts values above u32 max', (t) => {
-  const m = new Monty('1 + 1')
-  const limits: ResourceLimits = { maxMemory: 2 ** 33 }
-  t.is(m.run({ limits }), 2)
+test('memory limit accepts values above u32 max', async () => {
+  t.is(await run('1 + 1', { limits: { maxMemory: 2 ** 33 } }), 2)
 })
 
 // =============================================================================
 // Limits with inputs tests
 // =============================================================================
 
-test('limits with inputs', (t) => {
-  const m = new Monty('x * 2', { inputs: ['x'] })
-  const limits: ResourceLimits = { maxDurationSecs: 5.0 }
-  t.is(m.run({ inputs: { x: 21 }, limits }), 42)
+test('limits with inputs', async () => {
+  t.is(await run('x * 2', { inputs: { x: 21 }, limits: { maxDurationSecs: 5.0 } }), 42)
 })
 
 // =============================================================================
 // Large operation limits tests
 // =============================================================================
 
-test('pow memory limit', (t) => {
-  const m = new Monty('2 ** 10000000')
-  const limits: ResourceLimits = { maxMemory: 1_000_000 }
-  const error = t.throws(() => m.run({ limits }), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('MemoryError'))
+test('pow memory limit', async () => {
+  const error = await t.throwsAsync(() => run('2 ** 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
+  assertMemoryError(error, kind === 'browser' ? 10_024_700 : 10_031_056, 1_000_000)
 })
 
-test('lshift memory limit', (t) => {
-  const m = new Monty('1 << 10000000')
-  const limits: ResourceLimits = { maxMemory: 1_000_000 }
-  const error = t.throws(() => m.run({ limits }), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('MemoryError'))
+test('lshift memory limit', async () => {
+  const error = await t.throwsAsync(() => run('1 << 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
+  assertMemoryError(error, kind === 'browser' ? 1_274_701 : 1_281_057, 1_000_000)
 })
 
-test('mult memory limit', (t) => {
+test('mult memory limit', async () => {
   const code = `
 big = 2 ** 4000000
 result = big * big
 `
-  const m = new Monty(code)
-  const limits: ResourceLimits = { maxMemory: 1_000_000 }
-  const error = t.throws(() => m.run({ limits }), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('MemoryError'))
+  const error = await t.throwsAsync(() => run(code, { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
+  assertMemoryError(error, kind === 'browser' ? 4_025_371 : 4_031_724, 1_000_000)
 })
 
-test('small operations within limit', (t) => {
-  const m = new Monty('2 ** 1000')
-  const limits: ResourceLimits = { maxMemory: 1_000_000 }
-  const result = m.run({ limits })
-  t.true(typeof result === 'bigint' || typeof result === 'number')
+test('small operations within limit', async () => {
+  const result = await run('2 ** 1000', { limits: { maxMemory: 1_000_000 } })
+  t.is(typeof result, 'bigint')
+  t.is(result, 2n ** 1000n)
 })
 
 // =============================================================================
 // Time limit tests
 // =============================================================================
 
-test('time limit', (t) => {
-  // Use recursion instead of while loop
-  const code = `
-def infinite(n):
-    return infinite(n + 1)
-infinite(0)
-`
-  const m = new Monty(code)
-  const limits: ResourceLimits = { maxDurationSecs: 0.1 }
-  const error = t.throws(() => m.run({ limits }))
-  // May hit time limit or recursion limit
-  t.true(
-    error?.message.includes('TimeoutError') ||
-      error?.message.includes('timed out') ||
-      error?.message.includes('RecursionError'),
+test('time limit', async () => {
+  const error = await t.throwsAsync(
+    () => run('while True:\n    pass\n', { limits: { maxDurationSecs: 0.1 } }),
+    isRuntimeError,
   )
+  t.is(error.exception.typeName, 'TimeoutError')
+  // The reported elapsed time varies from run to run; the limit is fixed.
+  t.regex(error.display('msg'), /^time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
 })

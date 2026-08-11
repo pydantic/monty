@@ -10,11 +10,10 @@ use std::{
 
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::VM,
+    bytecode::{ContainsVM, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead, HeapReadOutput},
-    resource::ResourceTracker,
+    exception_private::{ExcType, ExcTypeExt, RunResult},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
     sorting::{apply_permutation, sort_indices},
     types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
@@ -85,7 +84,7 @@ impl JsonDumpsConfig {
     /// the "JSONEncoder.__init__" prefix that matches CPython's error
     /// wording). This method only translates the raw `Value` slots into the
     /// concrete encoder options used by the serializer.
-    fn from_macro_args(args: JsonDumpsArgs, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(Value, Self)> {
+    fn from_macro_args(args: JsonDumpsArgs, vm: &mut VM<'_>) -> RunResult<(Value, Self)> {
         let JsonDumpsArgs {
             obj,
             indent,
@@ -98,18 +97,18 @@ impl JsonDumpsConfig {
 
         // Keep `obj` alive across kwarg processing — early errors below must
         // not leak the heap reference.
-        let mut obj_guard = HeapGuard::new(obj, vm);
-        let vm = obj_guard.heap();
+        let mut obj_guard = DropGuard::new(obj, vm);
+        let vm = obj_guard.ctx();
 
         let mut config = Self::default();
 
         let indent = parse_indent_value(indent, vm)?;
         config.indent = indent;
 
-        config.flags = apply_bool_flag(config.flags, Self::SORT_KEYS, sort_keys, vm);
-        config.flags = apply_bool_flag(config.flags, Self::ENSURE_ASCII, ensure_ascii, vm);
-        config.flags = apply_bool_flag(config.flags, Self::ALLOW_NAN, allow_nan, vm);
-        config.flags = apply_bool_flag(config.flags, Self::SKIPKEYS, skipkeys, vm);
+        config.flags = apply_bool_flag(config.flags, Self::SORT_KEYS, sort_keys, vm)?;
+        config.flags = apply_bool_flag(config.flags, Self::ENSURE_ASCII, ensure_ascii, vm)?;
+        config.flags = apply_bool_flag(config.flags, Self::ALLOW_NAN, allow_nan, vm)?;
+        config.flags = apply_bool_flag(config.flags, Self::SKIPKEYS, skipkeys, vm)?;
 
         // `separators=None` is documented as equivalent to "use the indent-
         // aware defaults", so we only override the per-instance separators
@@ -139,33 +138,28 @@ impl JsonDumpsConfig {
 ///
 /// CPython kwargs `cls`, `default`, and `check_circular` are intentionally
 /// unsupported and will raise `TypeError` if passed.
-pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let macro_args = JsonDumpsArgs::from_args(args, vm)?;
     let (obj, config) = JsonDumpsConfig::from_macro_args(macro_args, vm)?;
 
-    let mut obj_guard = HeapGuard::new(obj, vm);
+    defer_drop!(obj, vm);
     let mut output = String::new();
     let mut active_containers = Vec::new();
-    {
-        let (obj, vm) = obj_guard.as_parts_mut();
-        let mut encoder = Encoder {
-            out: &mut output,
-            config: &config,
-            active_containers: &mut active_containers,
-            vm,
-        };
-        encoder.serialize_value(obj, 0)?;
-    }
-
-    let (obj, vm) = obj_guard.into_parts();
-    obj.drop_with_heap(vm);
-    Ok(allocate_string(output, vm.heap)?)
+    let mut encoder = Encoder {
+        out: &mut output,
+        config: &config,
+        active_containers: &mut active_containers,
+        vm,
+    };
+    encoder.serialize_value(obj, 0)?;
+    Ok(allocate_string(output, vm.heap))
 }
 
 /// Argument shape for `json.dumps(obj, *, indent=None, sort_keys=False,
 /// ensure_ascii=True, allow_nan=True, separators=None, skipkeys=False)`.
 ///
-/// Arity and missing-arg errors use the `dumps()` descriptor, but the
+/// Arity and missing-arg errors use the `dumps()` descriptor with `style =
+/// def` wording (CPython's `json.dumps` is a pure-Python `def`), but the
 /// unknown-kwarg error uses `JSONEncoder.__init__()` — CPython's `json.dumps`
 /// forwards unknown kwargs straight to the encoder constructor, which is what
 /// surfaces in the error. `kwarg_error_name` overrides the function name used
@@ -174,7 +168,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
 /// (`py_bool`) or shape coercion (`parse_indent_value` /
 /// `parse_separators_value`) on the way through.
 #[derive(FromArgs)]
-#[from_args(name = "dumps", kwarg_error_name = "JSONEncoder.__init__")]
+#[from_args(name = "dumps", style = def, kwarg_error_name = "JSONEncoder.__init__")]
 struct JsonDumpsArgs {
     obj: Value,
     #[from_args(kw_only, default = Value::None)]
@@ -194,10 +188,13 @@ struct JsonDumpsArgs {
 /// Sets `bit` in `flags` when `value` is truthy, clearing it otherwise. The
 /// value is dropped afterwards. Used by the json.dumps kwarg pipeline so each
 /// boolean-style flag is handled with a single line.
-fn apply_bool_flag(flags: u8, bit: u8, value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> u8 {
-    let new_flags = if value.py_bool(vm) { flags | bit } else { flags & !bit };
-    value.drop_with_heap(vm);
-    new_flags
+fn apply_bool_flag(flags: u8, bit: u8, value: Value, vm: &mut VM<'_>) -> RunResult<u8> {
+    defer_drop!(value, vm);
+    if value.py_bool(vm)? {
+        Ok(flags | bit)
+    } else {
+        Ok(flags & !bit)
+    }
 }
 
 /// Parses the `indent=` value for `json.dumps()`.
@@ -206,9 +203,8 @@ fn apply_bool_flag(flags: u8, bit: u8, value: Value, vm: &mut VM<'_, impl Resour
 /// spaces per nesting level (with zero and negative values enabling newline-
 /// only pretty printing), and
 /// strings are repeated once per depth level exactly like CPython.
-fn parse_indent_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<String>> {
-    let mut value_guard = HeapGuard::new(value, vm);
-    let (value, vm) = value_guard.as_parts_mut();
+fn parse_indent_value(value: Value, vm: &mut VM<'_>) -> RunResult<Option<String>> {
+    defer_drop!(value, vm);
 
     match value {
         Value::None => Ok(None),
@@ -245,9 +241,8 @@ fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
 ///
 /// `None` leaves the default separators intact. Otherwise the value must be a
 /// two-item list or tuple of strings representing the item and key separators.
-fn parse_separators_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<(String, String)>> {
-    let mut value_guard = HeapGuard::new(value, vm);
-    let (value, vm) = value_guard.as_parts_mut();
+fn parse_separators_value(value: Value, vm: &mut VM<'_>) -> RunResult<Option<(String, String)>> {
+    defer_drop!(value, vm);
 
     if matches!(value, Value::None) {
         return Ok(None);
@@ -274,14 +269,14 @@ fn parse_separators_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -
             _ => {
                 return Err(ExcType::type_error(format!(
                     "cannot unpack non-iterable {} object",
-                    value.py_type(vm)
+                    value.py_type_name(vm)
                 )));
             }
         },
         _ => {
             return Err(ExcType::type_error(format!(
                 "cannot unpack non-iterable {} object",
-                value.py_type(vm)
+                value.py_type_name(vm)
             )));
         }
     };
@@ -311,7 +306,7 @@ fn check_separators_length(len: usize) -> RunResult<()> {
 /// their positional argument index in `make_encoder()`. The `role` parameter
 /// selects the matching CPython argument number (6 for `item_separator`,
 /// 5 for `key_separator`) so the error message matches CPython exactly.
-fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<String> {
+fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_>) -> RunResult<String> {
     let arg_num = if role == "item_separator" { 6 } else { 5 };
     match value {
         Value::InternString(string_id) => Ok(vm.interns.get_str(*string_id).to_owned()),
@@ -319,12 +314,12 @@ fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_, impl Resource
             HeapData::Str(string) => Ok(string.as_str().to_owned()),
             _ => Err(ExcType::type_error(format!(
                 "make_encoder() argument {arg_num} must be str, not {}",
-                value.py_type(vm)
+                value.py_type_name(vm)
             ))),
         },
         _ => Err(ExcType::type_error(format!(
             "make_encoder() argument {arg_num} must be str, not {}",
-            value.py_type(vm)
+            value.py_type_name(vm)
         ))),
     }
 }
@@ -341,30 +336,37 @@ fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_, impl Resource
 /// `depth` is intentionally **not** a field of this struct: every recursive
 /// call needs to bump it by one for the descent and restore it on return,
 /// which is exactly what a stack-passed parameter does for free.
-struct Encoder<'a, 'h, R: ResourceTracker> {
+struct Encoder<'a, 'h> {
     out: &'a mut String,
     config: &'a JsonDumpsConfig,
     active_containers: &'a mut Vec<HeapId>,
-    vm: &'a mut VM<'h, R>,
+    vm: &'a mut VM<'h>,
 }
 
-/// Lets the encoder participate in the [`HeapGuard`] / [`defer_drop_mut!`]
+/// Lets the encoder participate in the [`DropGuard`] / [`defer_drop_mut!`]
 /// pattern: passing the encoder as the "heap" argument re-borrows the whole
 /// encoder (including its `vm`) into the guard, which is exactly what we need
 /// so the rebound iter and the rebound encoder share a lifetime.
-impl<R: ResourceTracker> ContainsHeap for Encoder<'_, '_, R> {
-    type ResourceTracker = R;
-
-    fn heap(&self) -> &Heap<R> {
+impl ContainsHeap for Encoder<'_, '_> {
+    fn heap(&self) -> &Heap {
         self.vm.heap()
     }
 
-    fn heap_mut(&mut self) -> &mut Heap<R> {
+    fn heap_mut(&mut self) -> &mut Heap {
         self.vm.heap_mut()
     }
 }
 
-impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
+/// Lets a [`RecursionToken`](crate::bytecode::RecursionToken) (and the container
+/// iterators that hold one) be released through the encoder via `defer_drop!`,
+/// reaching the VM-side recursion counter while the encoder itself stays borrowable.
+impl<'h> ContainsVM<'h> for Encoder<'_, 'h> {
+    fn vm(&mut self) -> &mut VM<'h> {
+        self.vm
+    }
+}
+
+impl<'h> Encoder<'_, 'h> {
     /// Serializes a Monty value into JSON text.
     ///
     /// Handles immediate primitives directly and delegates to type-specific
@@ -445,13 +447,13 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
                     defer_drop_mut!(entries, this);
                     // Need to explicitly acquire a recursion token for the dict as we don't go
                     // via the default dict iterator.
-                    let token = this.vm.heap.incr_recursion_depth()?;
+                    let token = this.vm.recursion_token()?;
                     defer_drop!(token, this);
                     this.with_entered_container(*heap_id, |enc| enc.serialize_dict(entries, depth))
                 }
-                _ => Err(ExcType::json_not_serializable_error(value.py_type(self.vm))),
+                _ => Err(ExcType::json_not_serializable_error(&value.py_type_name(self.vm))),
             },
-            _ => Err(ExcType::json_not_serializable_error(value.py_type(self.vm))),
+            _ => Err(ExcType::json_not_serializable_error(&value.py_type_name(self.vm))),
         }
     }
 
@@ -530,7 +532,7 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
         if self.config.skipkeys() {
             skip_disallowed_dict_keys(entries, self.vm);
         } else if let Some((key, _)) = entries.iter().find(|(key, _)| !is_json_key_allowed(key, self.vm)) {
-            return Err(ExcType::json_invalid_key_error(key.py_type(self.vm)));
+            return Err(ExcType::json_invalid_key_error(&key.py_type_name(self.vm)));
         }
 
         if self.config.sort_keys() {
@@ -587,23 +589,18 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
 /// The implementation mirrors the error style used by `sorted()` and
 /// `list.sort()`: when two keys are not orderable, it raises
 /// `TypeError: '<' not supported between instances of ...`.
-fn sort_dict_entries(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<()> {
+fn sort_dict_entries(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunResult<()> {
     let mut indices: Vec<usize> = (0..entries.len()).collect();
     let compare_values: Vec<Value> = entries.iter().map(|(key, _)| key.clone_with_heap(vm)).collect();
-    let mut compare_values_guard = HeapGuard::new(compare_values, vm);
-    let (compare_values, vm) = compare_values_guard.as_parts_mut();
+    defer_drop!(compare_values, vm);
     sort_indices(&mut indices, compare_values.as_slice(), false, vm)?;
     apply_permutation(entries.as_mut_slice(), &mut indices);
     Ok(())
 }
 
 /// Removes dict entries whose keys are not JSON-serializable, preserving order.
-///
-/// `skipkeys=True` must drop invalid entries without disturbing the relative
-/// order of the retained pairs. A two-pointer compaction avoids the repeated
-/// shifting cost of `Vec::remove(i)` while still cleaning up skipped `Value`
-/// references with `drop_with_heap`.
-fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, impl ResourceTracker>) {
+fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>) {
+    // Use two pointers to preserve relative order
     let mut write = 0;
     for read in 0..entries.len() {
         if is_json_key_allowed(&entries[read].0, vm) {
@@ -614,17 +611,15 @@ fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, 
         }
     }
 
-    for (key, value) in entries.drain(write..) {
-        key.drop_with_heap(vm);
-        value.drop_with_heap(vm);
-    }
+    // Drain the disallowed entries
+    entries.drain(write..).drop_with(vm);
 }
 
 /// Returns whether a value is an allowed JSON object key type.
 ///
 /// CPython accepts strings, integers, floats, booleans, and `None`, then
 /// coerces the non-string cases to JSON strings during output.
-fn is_json_key_allowed(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+fn is_json_key_allowed(value: &Value, vm: &VM<'_>) -> bool {
     matches!(
         value,
         Value::None | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::InternString(_)
@@ -635,12 +630,7 @@ fn is_json_key_allowed(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool
 ///
 /// Non-string supported key types are rendered to their JSON string form first,
 /// then escaped as a JSON string token.
-fn write_json_key(
-    key: &Value,
-    out: &mut String,
-    config: &JsonDumpsConfig,
-    vm: &VM<'_, impl ResourceTracker>,
-) -> RunResult<()> {
+fn write_json_key(key: &Value, out: &mut String, config: &JsonDumpsConfig, vm: &VM<'_>) -> RunResult<()> {
     let ensure_ascii = config.ensure_ascii();
     match key {
         Value::None => write_json_ascii_key("null", out),
@@ -657,9 +647,9 @@ fn write_json_key(
                 long_int.check_str_digits_limit()?;
                 write_json_display_key(long_int.inner(), out);
             }
-            _ => return Err(ExcType::json_invalid_key_error(key.py_type(vm))),
+            _ => return Err(ExcType::json_invalid_key_error(&key.py_type_name(vm))),
         },
-        _ => return Err(ExcType::json_invalid_key_error(key.py_type(vm))),
+        _ => return Err(ExcType::json_invalid_key_error(&key.py_type_name(vm))),
     }
     Ok(())
 }

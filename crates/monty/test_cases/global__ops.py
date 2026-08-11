@@ -7,7 +7,7 @@ def read_explicit():
     return x1
 
 
-assert read_explicit() == 42, 'explicit global read'
+assert read_explicit() == 42
 
 
 x2 = 1
@@ -19,7 +19,7 @@ def write_explicit():
 
 
 write_explicit()
-assert x2 == 2, 'explicit global write'
+assert x2 == 2
 
 
 x3 = 42
@@ -29,7 +29,7 @@ def read_implicit():
     return x3  # no local x3, reads global
 
 
-assert read_implicit() == 42, 'implicit global read'
+assert read_implicit() == 42
 
 
 # === Multiple functions sharing global ===
@@ -47,7 +47,7 @@ def get_counter():
 
 inc()
 inc()
-assert get_counter() == 2, 'multiple functions sharing global'
+assert get_counter() == 2
 
 
 # === Mutating global containers (no 'global' needed) ===
@@ -59,7 +59,7 @@ def add_dict_entry():
 
 
 add_dict_entry()
-assert data1 == {'a': 1, 'b': 2}, 'mutate global dict'
+assert data1 == {'a': 1, 'b': 2}
 
 
 items1 = [1, 2]
@@ -70,7 +70,7 @@ def append_list_item():
 
 
 append_list_item()
-assert items1 == [1, 2, 3], 'mutate global list append'
+assert items1 == [1, 2, 3]
 
 
 items2 = ['a', 'c']
@@ -81,7 +81,7 @@ def insert_list_item():
 
 
 insert_list_item()
-assert items2 == ['a', 'b', 'c'], 'mutate global list insert'
+assert items2 == ['a', 'b', 'c']
 
 
 items3 = []
@@ -94,7 +94,7 @@ def build_list():
 
 
 build_list()
-assert items3 == [1, 2, 3], 'mutate global list multiple'
+assert items3 == [1, 2, 3]
 
 
 # === Reassigning global containers (requires 'global') ===
@@ -107,7 +107,7 @@ def replace_list():
 
 
 replace_list()
-assert items4 == [3, 4, 5], 'reassign global list'
+assert items4 == [3, 4, 5]
 
 
 # === Nested functions with global ===
@@ -123,7 +123,7 @@ def outer_global():
 
 
 outer_global()
-assert x4 == 10, 'nested inner global write'
+assert x4 == 10
 
 
 x5 = 42
@@ -136,7 +136,7 @@ def outer_read():
     return inner()
 
 
-assert outer_read() == 42, 'nested inner global read'
+assert outer_read() == 42
 
 
 # === Shadowing ===
@@ -148,7 +148,7 @@ def shadow_local():
     return x6
 
 
-assert shadow_local() == 20, 'local shadows global'
+assert shadow_local() == 20
 
 
 x7 = 10
@@ -159,8 +159,8 @@ def shadow_unchanged():
     return x7
 
 
-assert shadow_unchanged() == 99, 'shadowing returns local'
-assert x7 == 10, 'global unchanged after shadowing'
+assert shadow_unchanged() == 99
+assert x7 == 10
 
 
 # === `global X` for a name that doesn't yet exist at module level ===
@@ -172,7 +172,7 @@ def declare_then_write():
 
 
 declare_then_write()
-assert ghost1 == 5, 'global declaration then write makes name visible at module level'
+assert ghost1 == 5
 
 
 def declare_then_read():
@@ -184,7 +184,7 @@ try:
     declare_then_read()
     raise AssertionError('expected NameError for never-assigned global')
 except NameError as exc:
-    assert str(exc) == "name 'ghost2' is not defined", 'NameError message for unassigned global'
+    assert str(exc) == "name 'ghost2' is not defined"
 
 
 # === Forward reference to a later module-level binding ===
@@ -195,7 +195,7 @@ def read_late_value():
 
 
 late_value = 'bound'
-assert read_late_value() == 'bound', 'function sees later module-level binding'
+assert read_late_value() == 'bound'
 
 
 # === Late binding overrides parse-time builtin resolution ===
@@ -205,26 +205,26 @@ def call_min():
     return min([3, 1, 2])
 
 
-assert call_min() == 1, 'first call resolves to builtin min'
+assert call_min() == 1
 
 
 def min(*args):
     return 'shadowed'
 
 
-assert call_min() == 'shadowed', 'second call resolves to user-defined min'
+assert call_min() == 'shadowed'
 
 
 # === Module-scope shadowing builtins ===
 
-assert max(1, 2) == 2, 'pre-binding: module-scope max resolves to builtin'
+assert max(1, 2) == 2
 
 
 def max(*args):
     return 'shadowed-max'
 
 
-assert max(1, 2) == 'shadowed-max', 'post-binding: module-scope max sees user-defined version'
+assert max(1, 2) == 'shadowed-max'
 
 
 # === Deeply nested `global X` ===
@@ -239,4 +239,4 @@ def deep_outer():
 
 
 deep_outer()
-assert deep_x == 'reached-module', 'global X bubbles up from doubly-nested function'
+assert deep_x == 'reached-module'

@@ -78,6 +78,35 @@ invalid_cases = [
         'True',
         'Expecting value: line 1 column 1 (char 0)',
     ),
+    (
+        '[1 2]',
+        "Expecting ',' delimiter: line 1 column 4 (char 3)",
+    ),
+    (
+        '{"a": 1 "b": 2}',
+        "Expecting ',' delimiter: line 1 column 9 (char 8)",
+    ),
+    (
+        '[1,',
+        'Expecting value: line 1 column 4 (char 3)',
+    ),
+    (
+        '[1,2',
+        "Expecting ',' delimiter: line 1 column 5 (char 4)",
+    ),
+    # positions count characters, not bytes: multibyte input before the error
+    (
+        '["é", x]',
+        'Expecting value: line 1 column 7 (char 6)',
+    ),
+    (
+        '["é" 2]',
+        "Expecting ',' delimiter: line 1 column 6 (char 5)",
+    ),
+    (
+        '["日本語",\n "a", x]',
+        'Expecting value: line 2 column 7 (char 14)',
+    ),
 ]
 
 for source, expected in invalid_cases:

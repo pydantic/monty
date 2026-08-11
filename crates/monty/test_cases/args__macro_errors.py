@@ -1,8 +1,9 @@
 # Argument-extraction errors emitted by the `#[derive(FromArgs)]` macro.
 #
-# This file is the source of truth for every error path the macro can
-# produce, exercising each across all three error styles (Python, C,
-# NamedC) and the modifier flags (at_most_total, at_most_positional).
+# This file is the source of truth for every error path the macro (and
+# the runtime binder in `crates/monty/src/args/binder.rs`) can produce,
+# exercising each across the style families (`def`, `clinic`, `c`,
+# `c_named`, `unpack`) and the `at_most_total` modifier.
 #
 # Each section names the error path being tested. Where Monty's wording
 # matches CPython byte-for-byte the assert is unconditional; where Monty
@@ -10,13 +11,15 @@
 # vs `expandtabs()`).
 import asyncio
 import datetime
+import json
 import re
 import sys
+import unicodedata
 
 is_monty = sys.platform == 'monty'
 
 # =====================================================================
-# === Python style (default — no `c_error` / `c_error_named`)        ===
+# === Clinic style (the default — plus `def` for pure-Python targets) ===
 # =====================================================================
 
 # === Python: unknown kwarg ===
@@ -60,6 +63,32 @@ try:
     assert False, 're.split with pos+kw conflict should raise'
 except TypeError as e:
     assert str(e) == "split() got multiple values for argument 'pattern'", f'py-pos-kw: {e}'
+
+# === Python: def-style kwarg errors beat too-many-positional ===
+# CPython's `def` binding processes keyword arguments before its
+# too-many-positional check, so unexpected-kwarg and multiple-values
+# errors win even when there are also excess positionals.
+try:
+    re.sub('a', 'b', 'c', 'd', 'e', 'f', bogus=1)
+    assert False, 're.sub with excess positionals + unknown kwarg should raise unknown-kwarg'
+except TypeError as e:
+    assert str(e) == "sub() got an unexpected keyword argument 'bogus'", f'py-def-kw-beats-overflow: {e}'
+
+try:
+    re.sub('a', 'b', 'c', 'd', 'e', 'f', pattern='x')
+    assert False, 're.sub with excess positionals + duplicate kwarg should raise multiple-values'
+except TypeError as e:
+    assert str(e) == "sub() got multiple values for argument 'pattern'", f'py-def-dup-beats-overflow: {e}'
+
+# When every kwarg binds cleanly to a keyword-only param, the overflow
+# fires and counts them in the `(and N keyword-only argument(s))` suffix.
+try:
+    json.dumps(1, 2, indent=0)
+    assert False, 'json.dumps with excess positional + kw-only kwarg should raise overflow'
+except TypeError as e:
+    assert str(e) == (
+        'dumps() takes 1 positional argument but 2 positional arguments (and 1 keyword-only argument) were given'
+    ), f'py-def-overflow-kwonly: {e}'
 
 # === Python: missing required positional (PyArg_UnpackKeywords wording derived from `pos_only`) ===
 try:
@@ -117,6 +146,28 @@ try:
 except TypeError as e:
     assert str(e) == 'groupdict() takes at most 1 argument (2 given)', f'py-atmost-total-3: {e}'
 
+# === at_most_total: the all-keyword pivot ===
+# Both C parsers say "keyword argument" when the call passed no positionals
+# at all (the `nargs == 0` branch in vgetargskeywords /
+# vgetargskeywordsfast_impl); one positional is enough to drop it again.
+try:
+    'hello'.expandtabs(tabsize=8, bogus=1)
+    assert False, 'expandtabs all-keyword overflow should raise'
+except TypeError as e:
+    assert str(e) == 'expandtabs() takes at most 1 keyword argument (2 given)', f'py-atmost-kw-1: {e}'
+
+try:
+    round(number=1, ndigits=2, bogus=3)
+    assert False, 'round all-keyword overflow should raise'
+except TypeError as e:
+    assert str(e) == 'round() takes at most 2 keyword arguments (3 given)', f'named-atmost-kw: {e}'
+
+try:
+    int(x='1', base=10, bogus=2)
+    assert False, 'int all-keyword overflow should raise'
+except TypeError as e:
+    assert str(e) == 'int() takes at most 2 keyword arguments (3 given)', f'vectorcall-atmost-kw: {e}'
+
 # === Python: sorted() positional-arity wording (PyArg_UnpackTuple style) ===
 # `builtin_sorted` manually checks the positional iterator length and
 # emits CPython's `"sorted expected N argument(s), got M"` wording before
@@ -167,18 +218,18 @@ except TypeError as e:
     assert str(e) == 'map() must have at least two arguments.', f'py-missing-1: {e}'
 
 # =====================================================================
-# === C style (`c_error` — anonymous "function" wording)             ===
+# === C style (`style = c` — anonymous "function" wording)           ===
 # =====================================================================
 #
-# Used by `date()` (with `at_most_total`) and `datetime()` (with
-# `at_most_positional`). Error wording uses CPython's
-# PyArg_ParseTupleAndKeywords "function" literal.
+# Used by `date()` (with `at_most_total`) and `datetime()` (whose
+# positional-pivot wording is derived from its kw_only fields). Error
+# wording uses CPython's PyArg_ParseTupleAndKeywords "function" literal.
 
 # === C: unknown kwarg under at_most_total threshold (missing-required wins) ===
 # 2 positional + 1 unknown kwarg = total 3, max 3 → at_most_total
-# does not fire; the macro defers the unknown-kwarg error for C / NamedC
-# styles so that the missing-required check (matching CPython's
-# `PyArg_ParseTupleAndKeywords` order) fires first.
+# does not fire; the binder treats unknown kwargs as *leftovers* for the
+# C families, raised only after every missing/conversion error (matching
+# CPython's `PyArg_ParseTupleAndKeywords` final sweep).
 try:
     datetime.date(2024, 1, foo=1)
     assert False, 'date unknown kwarg under at_most_total should raise'
@@ -195,7 +246,7 @@ except TypeError as e:
 
 try:
     datetime.date(2024, day=3, month=2)
-    assert datetime.date(2024, day=3, month=2).day == 3, 'date kwarg-filled required succeeds'
+    assert datetime.date(2024, day=3, month=2).day == 3
 except TypeError as e:
     assert False, f'unexpected error: {e}'
 
@@ -226,7 +277,7 @@ try:
 except TypeError as e:
     assert str(e) == 'function takes at most 3 arguments (4 given)', f'c-atmost-total-kwconflict: {e}'
 
-# === C: too-many positional (at_most_positional — datetime) ===
+# === C: too-many positional (kw_only-derived pivot — datetime) ===
 # CPython's `datetime` constructor has 8 positional-or-keyword slots plus
 # the keyword-only `fold` field (max_total = 9). The error wording pivots
 # on whether the supplied count *could* still have fit in the kw-only tail:
@@ -266,7 +317,7 @@ except TypeError as e:
     assert str(e) == 'replace() takes at most 3 arguments (5 given)', f'py-atmost-pos-many: {e}'
 
 # =====================================================================
-# === NamedC style (`c_error_named` — embeds the type's name)        ===
+# === NamedC style (`style = c_named` — embeds the type's name)      ===
 # =====================================================================
 #
 # Used by `str`, `bytes`, `timezone` (the latter with `at_most_total`).
@@ -357,3 +408,292 @@ if is_monty:
         assert False, 'gather with kwarg should raise'
     except NotImplementedError as e:
         assert str(e) == 'gather() does not yet support keyword arguments'
+
+# =====================================================================
+# === Binding vs conversion ordering (per style family)              ===
+# =====================================================================
+# The binder separates *binding* (arity, kwarg dispatch, conflicts,
+# unknown kwargs) from *conversion*. The clinic family binds fully before
+# any converter runs; the C families interleave missing errors with
+# conversion parameter-by-parameter and report leftover kwargs
+# (conflicts before unknowns) last. Every message below is CPython-exact.
+
+# === clinic: unknown kwarg beats a bad-type positional ===
+try:
+    'a'.encode(42, bogus=1)
+    assert False, 'encode bad type + unknown kwarg should raise on the kwarg'
+except TypeError as e:
+    assert str(e) == "encode() got an unexpected keyword argument 'bogus'", f'clinic-unknown-vs-type: {e}'
+
+# === clinic: pos/kw conflict beats a bad-type positional ===
+try:
+    'a'.encode(42, encoding='x')
+    assert False, 'encode bad type + conflict should raise the conflict'
+except TypeError as e:
+    assert str(e) == "argument for encode() given by name ('encoding') and position (1)", f'clinic-conflict: {e}'
+
+# === clinic: total pre-count beats a bad-type positional (encode/decode at_most_total) ===
+try:
+    'a'.encode(42, 'x', 'y')
+    assert False, 'encode 3 positional should raise arity'
+except TypeError as e:
+    assert str(e) == 'encode() takes at most 2 arguments (3 given)', f'clinic-atmost-pos: {e}'
+
+try:
+    'a'.encode('utf-8', 'strict', bogus=1)
+    assert False, 'encode 2 pos + kwarg should pre-count to too-many'
+except TypeError as e:
+    assert str(e) == 'encode() takes at most 2 arguments (3 given)', f'clinic-atmost-total: {e}'
+
+try:
+    b'a'.decode('utf-8', 'strict', bogus=1)
+    assert False, 'decode 2 pos + kwarg should pre-count to too-many'
+except TypeError as e:
+    assert str(e) == 'decode() takes at most 2 arguments (3 given)', f'clinic-atmost-total-decode: {e}'
+
+# === C: conversion error beats a same-param conflict ===
+try:
+    datetime.date('x', year=1)
+    assert False, 'date bad type + conflict should raise the conversion error'
+except TypeError as e:
+    assert str(e) == "'str' object cannot be interpreted as an integer", f'c-convert-vs-conflict: {e}'
+
+# === C: conversion error at an earlier param beats a later-param conflict ===
+try:
+    datetime.datetime('x', 1, 1, 4, hour=5)
+    assert False, 'datetime bad year + hour conflict should raise the conversion error'
+except TypeError as e:
+    assert str(e) == "'str' object cannot be interpreted as an integer", f'c-convert-vs-later-conflict: {e}'
+
+# === C: kwarg values convert at their parameter position ===
+try:
+    datetime.date(2024, month='x')
+    assert False, 'date bad-type month kwarg should raise at param 2'
+except TypeError as e:
+    assert str(e) == "'str' object cannot be interpreted as an integer", f'c-kwarg-convert: {e}'
+
+# ... but a missing earlier param wins over a later kwarg conversion.
+try:
+    datetime.date(month='x')
+    assert False, 'date missing year should beat month conversion'
+except TypeError as e:
+    assert str(e) == "function missing required argument 'year' (pos 1)", f'c-missing-vs-kwarg-convert: {e}'
+
+# === C: leftover conflict beats leftover unknown kwarg (either order) ===
+try:
+    datetime.datetime(2024, 1, 1, bogus=6, year=5)
+    assert False, 'datetime conflict + unknown should raise the conflict'
+except TypeError as e:
+    assert str(e) == "argument for function given by name ('year') and position (1)", f'c-conflict-vs-unknown: {e}'
+
+# === C: among several conflicts the earliest parameter is reported ===
+try:
+    datetime.datetime(2024, 1, 1, day=1, month=2)
+    assert False, 'datetime double conflict should report month'
+except TypeError as e:
+    assert str(e) == "argument for function given by name ('month') and position (2)", f'c-earliest-conflict: {e}'
+
+# =====================================================================
+# === Unpack style (`style = unpack` — positional-only, no keywords) ===
+# =====================================================================
+
+# === unpack: any keyword is rejected wholesale, before arity ===
+try:
+    next(iter([]), 1, 2, bogus=1)
+    assert False, 'next with kwargs should raise no-keyword error'
+except TypeError as e:
+    assert str(e) == 'next() takes no keyword arguments'
+
+try:
+    reversed(sequence=[1])
+    assert False, 'reversed with kwargs should raise no-keyword error'
+except TypeError as e:
+    assert str(e) == 'reversed() takes no keyword arguments'
+
+try:
+    unicodedata.name('a', bogus=1)
+    assert False, 'unicodedata.name with kwargs should raise no-keyword error'
+except TypeError as e:
+    # `kwarg_error_name` qualifies the module function like CPython does.
+    assert str(e) == 'unicodedata.name() takes no keyword arguments'
+
+# === unpack: exact arity (min == max collapses the wording) ===
+try:
+    reversed([1], [2])
+    assert False, 'reversed with 2 args should raise'
+except TypeError as e:
+    assert str(e) == 'reversed expected 1 argument, got 2'
+
+# =====================================================================
+# === Newly bound builtins: sum (clinic), round (c_named)            ===
+# =====================================================================
+
+# === sum: positional-only iterable cannot be passed by keyword ===
+try:
+    sum(iterable=[1])
+    assert False, 'sum(iterable=...) should raise'
+except TypeError as e:
+    assert str(e) == 'sum() takes at least 1 positional argument (0 given)'
+
+# === sum: at_most_total pre-count ===
+try:
+    sum([1], 1, 1)
+    assert False, 'sum with 3 args should raise'
+except TypeError as e:
+    assert str(e) == 'sum() takes at most 2 arguments (3 given)'
+
+# === sum: unknown kwarg ===
+try:
+    sum([1], bogus=1)
+    assert False, 'sum with unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "sum() got an unexpected keyword argument 'bogus'"
+
+# === round: c_named missing required argument ===
+try:
+    round()
+    assert False, 'round() should raise'
+except TypeError as e:
+    assert str(e) == "round() missing required argument 'number' (pos 1)"
+
+try:
+    round(ndigits=1)
+    assert False, 'round(ndigits=1) should raise'
+except TypeError as e:
+    assert str(e) == "round() missing required argument 'number' (pos 1)"
+
+# === round: at_most_total pre-count ===
+try:
+    round(1, 2, 3)
+    assert False, 'round with 3 args should raise'
+except TypeError as e:
+    assert str(e) == 'round() takes at most 2 arguments (3 given)'
+
+# === round: unknown kwarg ===
+try:
+    round(1, bogus=2)
+    assert False, 'round with unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "round() got an unexpected keyword argument 'bogus'"
+
+# =====================================================================
+# === enumerate — CPython's hand-written vectorcall parser           ===
+# =====================================================================
+# CPython special-cases enumerate's argument parsing (enumobject.c
+# `enumerate_vectorcall`), so its errors match no parser family; Monty
+# mirrors that parser exactly, quirks included.
+
+try:
+    enumerate()
+    assert False, 'enumerate() should raise'
+except TypeError as e:
+    assert str(e) == "enumerate() missing required argument 'iterable'"
+
+# Quirk: any unrecognised zero-positional keyword shape reports the missing
+# iterable — even when `iterable=` was actually passed.
+try:
+    enumerate(start=1, bogus=1, iterable=[1])
+    assert False, 'enumerate 3-kwarg form should raise'
+except TypeError as e:
+    assert str(e) == "enumerate() missing required argument 'iterable'"
+
+# Quirk: keyword names are validated positionally against the accepted
+# shapes, so a lone `start=` reports 'start' as invalid.
+try:
+    enumerate(start=1)
+    assert False, 'enumerate(start=1) should raise'
+except TypeError as e:
+    assert str(e) == "'start' is an invalid keyword argument for enumerate()"
+
+try:
+    enumerate([1], iterable=[2])
+    assert False, 'enumerate positional + iterable= should raise'
+except TypeError as e:
+    assert str(e) == "'iterable' is an invalid keyword argument for enumerate()"
+
+try:
+    enumerate([1], bogus=1)
+    assert False, 'enumerate with unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()"
+
+# Total pre-count fires whenever at least one positional is present.
+try:
+    enumerate([1], 0, 0)
+    assert False, 'enumerate with 3 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'enumerate() takes at most 2 arguments (3 given)'
+
+try:
+    enumerate([1], bogus=1, worse=2)
+    assert False, 'enumerate 1-pos 2-kwarg should raise'
+except TypeError as e:
+    assert str(e) == 'enumerate() takes at most 2 arguments (3 given)'
+
+# === unpack: arity wording (`{name} expected …`, no parentheses) ===
+try:
+    next()
+    assert False, 'next() should raise'
+except TypeError as e:
+    assert str(e) == 'next expected at least 1 argument, got 0'
+
+try:
+    next(iter([]), 1, 2)
+    assert False, 'next with 3 args should raise'
+except TypeError as e:
+    assert str(e) == 'next expected at most 2 arguments, got 3'
+
+try:
+    reversed()
+    assert False, 'reversed() should raise'
+except TypeError as e:
+    assert str(e) == 'reversed expected 1 argument, got 0'
+
+# === sum: body type-check reachable through the keyword path ===
+try:
+    sum([1], start='x')
+    assert False, 'sum string start= should raise'
+except TypeError as e:
+    assert str(e) == "sum() can't sum strings [use ''.join(seq) instead]"
+
+# === enumerate: lone unknown keyword ===
+try:
+    enumerate(bogus=1)
+    assert False, 'enumerate(bogus=1) should raise'
+except TypeError as e:
+    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()"
+
+# === enumerate: two-kwarg form, each rejection branch ===
+# swapped order (start first) with a bad second name
+try:
+    enumerate(start=1, bogus=2)
+    assert False, 'enumerate(start=, bogus=) should raise'
+except TypeError as e:
+    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()"
+
+# unswapped order with a bad first name
+try:
+    enumerate(bogus=2, start=1)
+    assert False, 'enumerate(bogus=, start=) should raise'
+except TypeError as e:
+    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()"
+
+# unswapped order with a good first and bad second name
+try:
+    enumerate(iterable=[1], bogus=1)
+    assert False, 'enumerate(iterable=, bogus=) should raise'
+except TypeError as e:
+    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()"
+
+# === enumerate: non-string keys reach its hand-written key check ===
+try:
+    enumerate([1], **{1: 2})
+    assert False, 'enumerate non-string key should raise'
+except TypeError as e:
+    assert str(e) == 'keywords must be strings'
+
+try:
+    enumerate(**{1: 2})
+    assert False, 'enumerate lone non-string key should raise'
+except TypeError as e:
+    assert str(e) == 'keywords must be strings'

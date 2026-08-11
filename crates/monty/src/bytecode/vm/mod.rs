@@ -12,38 +12,38 @@ mod compare;
 mod context_manager;
 mod exceptions;
 mod format;
+mod recursion;
 mod scheduler;
 
-use std::{cmp::Ordering, mem};
+use std::mem;
 
 pub(crate) use call::CallResult;
+use monty_types::{InvalidInputError, MontyObject, OsFunctionCall, PrintWriter};
+pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;
 
 use crate::{
-    MontyObject,
     args::ArgValues,
     asyncio::{CallId, TaskId},
     builtins::Builtins,
     bytecode::{
         code::{Code, LocationEntry},
-        op::Opcode,
+        op::{Opcode, decode_assert_flags},
     },
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput, HeapReader},
-    heap_data::{Closure, FunctionDefaults},
-    intern::{FunctionId, Interns, StringId},
-    io::PrintWriter,
-    modules::{StandardLib, json::JsonStringCache},
-    object::InvalidInputError,
-    os::OsFunctionCall,
+    defer_drop_mut,
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
+    heap_data::{CellValue, Closure, FunctionDefaults},
+    intern::{FunctionId, Interns, StaticStrings, StringId},
+    modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
+    object_bridge::MontyObjectExt,
+    os_dispatch::{PendingOsEffect, listdir_names},
     parse::CodeRange,
-    resource::ResourceTracker,
     types::{
-        LongInt, MontyIter, PyTrait,
-        file::{PendingFileEffect, apply_buffer_store, apply_write_position},
-        timedelta,
+        Dict, LongInt, PyTrait,
+        file::{apply_buffer_store, apply_write_position},
     },
-    value::{BitwiseOp, EitherStr, Value},
+    value::{EitherStr, Value},
 };
 
 /// Result of executing Await opcode.
@@ -173,12 +173,12 @@ macro_rules! handle_call_result {
                 $self.current_frame_mut().ip = $cached_frame.ip;
                 return Ok(FrameExit::OsCall { function_call, call_id });
             }
-            Ok(CallResult::OsCallStoreBuffer { call, file_id }) => {
+            Ok(CallResult::OsCallWithEffect { call, effect }) => {
                 let call_id = $self.allocate_call_id();
-                // Record the pending-buffer-store hook for this call so the
-                // matching resume routes the OS result into the file's buffer
-                // instead of pushing it onto the operand stack.
-                $self.pending_file_effect = Some(PendingFileEffect::BufferStore { file_id });
+                // Arm the resume effect only here, at dispatch — a rejected
+                // and dropped `CallResult` must never leave a stale effect
+                // (see `CallResult::OsCallWithEffect`).
+                $self.pending_os_effect = Some(effect);
                 // Sync cached IP back to frame before snapshot for resume
                 $self.current_frame_mut().ip = $cached_frame.ip;
                 return Ok(FrameExit::OsCall {
@@ -301,14 +301,14 @@ pub enum FrameExit {
     },
 }
 
-impl DropWithHeap for FrameExit {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
+    fn drop_with(self, heap: &mut C) {
         match self {
-            Self::Return(value) => value.drop_with_heap(heap),
+            Self::Return(value) => value.drop_with(heap),
             Self::ExternalCall { args, .. } | Self::MethodCall { args, .. } => {
-                args.drop_with_heap(heap);
+                args.drop_with(heap);
             }
-            Self::OsCall { function_call, .. } => function_call.drop_with_heap(heap),
+            Self::OsCall { function_call, .. } => function_call.drop_with(heap),
             Self::ResolveFutures(_) | Self::NameLookup { .. } => {}
         }
     }
@@ -338,28 +338,31 @@ pub struct CallFrame<'code> {
     /// For function frames, this equals `func.namespace_size`.
     locals_count: u16,
 
-    /// Base index into the VM-wide `exception_stack` for this frame.
-    ///
-    /// Entries pushed by `except` handlers in this frame live at
-    /// `exception_stack[exception_stack_base..]`, while
-    /// `exception_stack[..exception_stack_base]` belongs to caller frames.
-    /// `ExceptionEntry.exception_stack_count` is relative to this base —
-    /// on exception unwind, the VM drains entries down to
-    /// `exception_stack_base + entry.exception_stack_count()` so that
-    /// handlers abandoned by the propagating exception (whose
-    /// fall-through trailers are dead code) don't leave residue that a
-    /// later bare `raise` would resurrect.
+    /// Base of this frame's entries in the VM-wide `exception_stack`.
+    /// Recorded region depths are relative to this index, keeping caller
+    /// exceptions intact when abandoned handlers are unwound.
     exception_stack_base: usize,
 
     /// Function ID (for tracebacks). None for module-level code.
     function_id: Option<FunctionId>,
 
-    /// Call site position (for tracebacks).
-    call_position: Option<CodeRange>,
+    /// Caller's bytecode offset at the call site (for tracebacks). Stored raw
+    /// and resolved to a `CodeRange` lazily on unwind (see `resolve_offset`) to
+    /// skip the location-table scan unless the call raises. `None` at the root.
+    call_offset: Option<u32>,
 
     /// When this frame returns (or exits with an exception) the VM should exit the run loop
     /// and return to the caller. Supports `evaluate_function`.
     should_return: bool,
+
+    /// Whether this frame is a class `__init__` running for `Foo(...)`.
+    ///
+    /// When `true`, the `ReturnValue` handler discards the frame's return value
+    /// (`__init__` returns `None`) and leaves the instance — pushed onto the
+    /// caller's operand stack before this frame was created — as the result of the
+    /// construction. Threaded through serialization (`SerializedFrame`) so a
+    /// suspended initializer resumes correctly.
+    is_initializer: bool,
 }
 
 impl<'code> CallFrame<'code> {
@@ -375,8 +378,9 @@ impl<'code> CallFrame<'code> {
             locals_count: 0,
             exception_stack_base,
             function_id: None,
-            call_position: None,
+            call_offset: None,
             should_return: false,
+            is_initializer: false,
         }
     }
 
@@ -394,7 +398,7 @@ impl<'code> CallFrame<'code> {
         locals_count: u16,
         exception_stack_base: usize,
         function_id: FunctionId,
-        call_position: Option<CodeRange>,
+        call_offset: Option<u32>,
     ) -> Self {
         Self {
             code,
@@ -403,8 +407,9 @@ impl<'code> CallFrame<'code> {
             locals_count,
             exception_stack_base,
             function_id: Some(function_id),
-            call_position,
+            call_offset,
             should_return: false,
+            is_initializer: false,
         }
     }
 }
@@ -534,8 +539,18 @@ pub struct SerializedFrame {
     /// See `CallFrame.exception_stack_base`.
     exception_stack_base: usize,
 
-    /// Call site position (for tracebacks).
-    call_position: Option<CodeRange>,
+    /// Caller's bytecode offset at the call site (for tracebacks). See
+    /// `CallFrame.call_offset`.
+    call_offset: Option<u32>,
+
+    /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
+    ///
+    /// Unlike `should_return`, an initializer frame can legitimately be live
+    /// across a suspend (an `__init__` that calls an external/OS function), so it
+    /// must round-trip — otherwise the resumed frame would push `__init__`'s
+    /// `None` instead of leaving the instance on the stack.
+    #[serde(default)]
+    is_initializer: bool,
 }
 
 impl CallFrame<'_> {
@@ -551,7 +566,8 @@ impl CallFrame<'_> {
             stack_base: self.stack_base,
             locals_count: self.locals_count,
             exception_stack_base: self.exception_stack_base,
-            call_position: self.call_position,
+            call_offset: self.call_offset,
+            is_initializer: self.is_initializer,
         }
     }
 }
@@ -596,10 +612,10 @@ pub struct VMSnapshot {
     /// Contains call ID counter, task state, pending calls, and resolved futures.
     scheduler: Scheduler,
 
-    /// In-flight buffer-store target for the paused OS call, if any. See
-    /// [`VM::pending_file_effect`].
+    /// In-flight resume effect for the paused OS call, if any. See
+    /// [`VM::pending_os_effect`].
     #[serde(default)]
-    pending_file_effect: Option<PendingFileEffect>,
+    pending_os_effect: Option<PendingOsEffect>,
 }
 
 // ============================================================================
@@ -611,7 +627,7 @@ pub struct VMSnapshot {
 /// Executes compiled bytecode using a stack-based execution model.
 /// The instruction pointer (IP) lives in each `CallFrame`, not here,
 /// to avoid sync bugs on call/return.
-pub struct VM<'h, T: ResourceTracker> {
+pub struct VM<'h> {
     /// Operand stack — locals and operands interleaved per frame.
     ///
     /// Each function frame's locals occupy `stack[frame.stack_base..frame.stack_base + frame.locals_count]`,
@@ -630,7 +646,7 @@ pub struct VM<'h, T: ResourceTracker> {
     frames: Vec<CallFrame<'h>>,
 
     /// Heap for reference-counted objects.
-    pub(crate) heap: &'h mut HeapReader<'h, T>,
+    pub(crate) heap: &'h mut HeapReader<'h>,
 
     /// Interned strings/bytes.
     pub(crate) interns: &'h Interns,
@@ -691,16 +707,48 @@ pub struct VM<'h, T: ResourceTracker> {
     /// VM is single-threaded and OS calls are strictly request/response — so a
     /// single `Option` is sufficient even with async tasks (which interleave
     /// between OS calls, not within one).
-    pub(crate) pending_file_effect: Option<PendingFileEffect>,
+    pub(crate) pending_os_effect: Option<PendingOsEffect>,
+
+    /// Current recursion depth — charged by function-call frames and by nested
+    /// data-structure traversals (`repr`/`eq`/`cmp`/`hash`, json, ...).
+    ///
+    /// See [`recursion`](self::recursion) for the guard/token primitives that
+    /// maintain it. Not serialized: it is reconstructed from the active frame
+    /// count on `restore` and rebalanced per-task across async switches.
+    recursion_depth: usize,
+
+    /// Reusable scratch buffer for building a sync call's locals, avoiding a
+    /// `malloc`/`free` per call. Only held transiently within
+    /// `call_sync_function`, so one shared buffer is safe under recursion.
+    namespace_scratch: Vec<Value>,
+    /// Remaining native Rust call-stack re-entry budget, counted down from
+    /// [`recursion::MAX_RUN_REENTRY_DEPTH`] only around `evaluate_function`'s
+    /// nested call into [`Self::run`] (the one place the interpreter recurses
+    /// on its own stack instead of the heap-allocated `frames` vec).
+    ///
+    /// Not serialized: a nested `run()` never reaches a snapshot boundary (its
+    /// non-`Return` exits are converted to `NotImplementedError` in
+    /// `evaluate_function`), so the budget is always full at a snapshot;
+    /// `debug_assert!`-checked in [`Self::snapshot`].
+    run_reentry_depth: u8,
+
+    /// Per-run cache of compiled patterns for module-level `re.*` calls. Not
+    /// snapshotted (a pure performance cache), so default-initialized on restore.
+    pub(crate) re_pattern_cache: RePatternCache,
+
+    /// UTF-8 byte cap for each operand repr in introspected assert messages.
+    /// Supplied by the executor on construction, so it is not snapshotted.
+    pub(crate) assert_repr_max_bytes: u32,
 }
 
-impl<'h, T: ResourceTracker> VM<'h, T> {
+impl<'h> VM<'h> {
     /// Creates a new VM with the given runtime context.
     pub fn new(
         globals: Vec<Value>,
-        heap: &'h mut HeapReader<'h, T>,
+        heap: &'h mut HeapReader<'h>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
+        assert_repr_max_bytes: u32,
     ) -> Self {
         Self {
             stack: Vec::with_capacity(64),
@@ -715,7 +763,12 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             ext_function_load_ip: None, // Set by LoadGlobalCallable
             module_code: None,
             json_string_cache: JsonStringCache::default(),
-            pending_file_effect: None,
+            pending_os_effect: None,
+            recursion_depth: 0,
+            namespace_scratch: Vec::new(),
+            run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
+            re_pattern_cache: RePatternCache::default(),
+            assert_repr_max_bytes,
         }
     }
 
@@ -731,12 +784,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// * `heap` - The deserialized heap
     /// * `interns` - Interns for looking up function code
     /// * `print_writer` - Writer for print output
+    /// * `assert_repr_max_bytes` - Operand-repr byte cap from the executor
     pub fn restore(
         snapshot: VMSnapshot,
         module_code: &'h Code,
-        heap: &'h mut HeapReader<'h, T>,
+        heap: &'h mut HeapReader<'h>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
+        assert_repr_max_bytes: u32,
     ) -> Self {
         // Reconstruct call frames from serialized form
         let frames: Vec<CallFrame<'_>> = snapshot
@@ -754,17 +809,17 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     locals_count: sf.locals_count,
                     exception_stack_base: sf.exception_stack_base,
                     function_id: sf.function_id,
-                    call_position: sf.call_position,
+                    call_offset: sf.call_offset,
                     should_return: false,
+                    is_initializer: sf.is_initializer,
                 }
             })
             .collect();
 
         // Restore recursion depth to match the number of active function frames.
-        // During serialization, recursion_depth is transient (defaults to 0),
-        // but cleanup paths call decr_recursion_depth for each non-root frame.
-        let current_frame_depth = frames.len().saturating_sub(1); // Subtract 1 for root frame which doesn't contribute to depth
-        heap.set_recursion_depth(current_frame_depth);
+        // recursion_depth is not serialized; cleanup paths decrement it for each
+        // non-root frame, so it must start matching the restored frame count.
+        let current_frame_depth = frames.len().saturating_sub(1); // root frame doesn't contribute to depth
 
         Self {
             stack: snapshot.stack,
@@ -779,7 +834,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             module_code: Some(module_code),
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
-            pending_file_effect: snapshot.pending_file_effect,
+            pending_os_effect: snapshot.pending_os_effect,
+            recursion_depth: current_frame_depth,
+            namespace_scratch: Vec::new(),
+            // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
+            run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
+            re_pattern_cache: RePatternCache::default(),
+            assert_repr_max_bytes,
         }
     }
 
@@ -792,6 +853,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// This is NOT a clone - it's a transfer. After calling this, the original VM
     /// is gone and only the snapshot (+ serialized heap/namespaces) represents the state.
     pub fn snapshot(mut self) -> VMSnapshot {
+        // Always fully released (== MAX) here — see the field doc. Asserted to
+        // catch a future `run()` call site that can suspend mid-re-entry.
+        debug_assert_eq!(
+            self.run_reentry_depth,
+            recursion::MAX_RUN_REENTRY_DEPTH,
+            "VM snapshotted while inside a nested evaluate_function re-entry"
+        );
+
         // Drop cached JSON strings before consuming the VM — they are not
         // included in the snapshot and their refcounts must be decremented.
         self.json_string_cache.drop_all(self.heap);
@@ -805,7 +874,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             exception_stack: mem::take(&mut self.exception_stack),
             instruction_ip: self.instruction_ip,
             scheduler: mem::take(&mut self.scheduler),
-            pending_file_effect: self.pending_file_effect.take(),
+            pending_os_effect: self.pending_os_effect.take(),
         }
     }
 
@@ -820,7 +889,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // at its exit, so they share the same address space as ordinary
         // operand values.
         self.push_frame(CallFrame::new_module(code, exc_stack_base))?;
-        self.run()
+        self.run_external()
     }
 
     /// Returns the `stack_base` of the current (topmost) call frame.
@@ -838,7 +907,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     ///
     /// Used by the REPL to reclaim globals after VM execution completes.
     /// Must be called before the VM is dropped, since `Drop` will clean up
-    /// any remaining globals with `drop_with_heap`.
+    /// any remaining globals with `drop_with`.
     pub fn take_globals(&mut self) -> Vec<Value> {
         mem::take(&mut self.globals)
     }
@@ -857,23 +926,44 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         self.scheduler.current_task_id().is_none_or(TaskId::is_main)
     }
 
+    /// Runs the VM from a host boundary, bracketing the loop with the
+    /// tracker's execution-clock hooks so `max_duration` measures cumulative
+    /// *execution* time only — the clock stops whenever this returns
+    /// (completion, error, or suspension at an external call).
+    ///
+    /// Every host turn must enter the loop through exactly one
+    /// `run_external` call, and it must NEVER nest: VM-internal re-entry
+    /// (task switches, `evaluate_function`) uses the raw private [`Self::run`]
+    /// instead, whose time is already inside the enclosing window.
+    pub(crate) fn run_external(&mut self) -> Result<FrameExit, RunError> {
+        self.heap.tracker().on_execution_start();
+        let result = self.run();
+        self.heap.tracker().on_execution_stop();
+        result
+    }
+
     /// Main execution loop.
     ///
     /// Fetches opcodes from the current frame's bytecode and executes them.
     /// Returns when execution completes, an error occurs, or an external
     /// call is needed.
     ///
+    /// Private: host boundaries go through [`Self::run_external`] (directly
+    /// or via `run_module`/`resume`/`resume_with_exception`/
+    /// `resume_with_resolved_futures`) so the execution clock is accounted;
+    /// only VM-internal re-entry calls this raw loop.
+    ///
     /// Uses locally cached `code` and `ip` variables to avoid repeated
     /// `frames.last_mut().expect()` calls during operand fetching. The cache
     /// is reloaded after any operation that modifies the frame stack.
-    pub fn run(&mut self) -> Result<FrameExit, RunError> {
+    fn run(&mut self) -> Result<FrameExit, RunError> {
         // Cache frame state locally to avoid repeated frames.last_mut() calls.
         // The Code reference has lifetime 'h (lives in Interns), independent of frame borrow.
         let mut cached_frame: CachedFrame<'h> = self.new_cached_frame();
 
         loop {
             // Check time limit and trigger GC if needed at each instruction.
-            // For NoLimitTracker, these are inlined no-ops that compile away.
+            // With no limits configured these reduce to a single branch each.
             self.heap.check_time()?;
 
             if self.heap.should_gc() {
@@ -889,7 +979,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             let opcode = {
                 let byte = cached_frame.code.bytecode()[cached_frame.ip];
                 cached_frame.ip += 1;
-                Opcode::try_from(byte).expect("invalid opcode in bytecode")
+                Opcode::from_repr(byte).expect("invalid opcode in bytecode")
             };
 
             match opcode {
@@ -898,7 +988,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 // ============================================================
                 Opcode::Pop => {
                     let value = self.pop();
-                    value.drop_with_heap(self);
+                    value.drop_with(self);
                 }
                 Opcode::Dup => {
                     let value = self.peek().clone_with_heap(self);
@@ -931,10 +1021,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     // Handle InternLongInt specially - convert to heap-allocated LongInt
                     if let Value::InternLongInt(long_int_id) = value {
                         let bi = self.interns.get_long_int(*long_int_id).clone();
-                        match LongInt::new(bi).into_value(self.heap) {
-                            Ok(v) => self.push(v),
-                            Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
-                        }
+                        let long_value = LongInt::new(bi).into_value(self.heap);
+                        self.push(long_value);
                     } else {
                         self.push(value.clone_with_heap(self));
                     }
@@ -942,6 +1030,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::LoadNone => self.push(Value::None),
                 Opcode::LoadTrue => self.push(Value::Bool(true)),
                 Opcode::LoadFalse => self.push(Value::Bool(false)),
+                Opcode::BuildCell => {
+                    let cell_id = self.heap.allocate(HeapData::Cell(CellValue(Value::Undefined)));
+                    self.push(Value::Ref(cell_id));
+                }
                 Opcode::LoadSmallInt => {
                     let n = cached_frame.fetch_i8();
                     self.push(Value::Int(i64::from(n)));
@@ -1013,6 +1105,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let slot = cached_frame.fetch_u16();
                     self.store_cell(&cached_frame, slot);
                 }
+                Opcode::DeleteCell => {
+                    let slot = cached_frame.fetch_u16();
+                    self.delete_cell(&cached_frame, slot);
+                }
                 // Binary Operations - route through exception handling for tracebacks
                 Opcode::BinaryAdd => try_catch_sync!(self, cached_frame, self.binary_add()),
                 Opcode::BinarySub => try_catch_sync!(self, cached_frame, self.binary_sub()),
@@ -1026,110 +1122,35 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::BinaryOr => try_catch_sync!(self, cached_frame, self.binary_or()),
                 Opcode::BinaryXor => try_catch_sync!(self, cached_frame, self.binary_xor()),
                 Opcode::BinaryLShift => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::LShift));
+                    try_catch_sync!(self, cached_frame, self.binary_lshift());
                 }
                 Opcode::BinaryRShift => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::RShift));
+                    try_catch_sync!(self, cached_frame, self.binary_rshift());
                 }
                 Opcode::BinaryMatMul => try_catch_sync!(self, cached_frame, self.binary_matmul()),
                 // Comparison Operations
                 Opcode::CompareEq => try_catch_sync!(self, cached_frame, self.compare_eq()),
                 Opcode::CompareNe => try_catch_sync!(self, cached_frame, self.compare_ne()),
-                Opcode::CompareLt => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_lt)),
-                Opcode::CompareLe => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_le)),
-                Opcode::CompareGt => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_gt)),
-                Opcode::CompareGe => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_ge)),
-                Opcode::CompareIs => self.compare_is(false),
-                Opcode::CompareIsNot => self.compare_is(true),
-                Opcode::CompareIn => try_catch_sync!(self, cached_frame, self.compare_in(false)),
-                Opcode::CompareNotIn => try_catch_sync!(self, cached_frame, self.compare_in(true)),
-                Opcode::CompareModEq => {
-                    let const_idx = cached_frame.fetch_u16();
-                    let k = cached_frame.code.constants().get(const_idx);
-                    try_catch_sync!(self, cached_frame, self.compare_mod_eq(k));
-                }
+                Opcode::CompareLt => try_catch_sync!(self, cached_frame, self.compare_lt()),
+                Opcode::CompareLe => try_catch_sync!(self, cached_frame, self.compare_le()),
+                Opcode::CompareGt => try_catch_sync!(self, cached_frame, self.compare_gt()),
+                Opcode::CompareGe => try_catch_sync!(self, cached_frame, self.compare_ge()),
+                Opcode::CompareIs => try_catch_sync!(self, cached_frame, self.compare_is()),
+                Opcode::CompareIsNot => try_catch_sync!(self, cached_frame, self.compare_is_not()),
+                Opcode::CompareIn => try_catch_sync!(self, cached_frame, self.compare_in()),
+                Opcode::CompareNotIn => try_catch_sync!(self, cached_frame, self.compare_not_in()),
                 // Unary Operations
                 Opcode::UnaryNot => {
                     let value = self.pop();
-                    let result = !value.py_bool(self);
-                    value.drop_with_heap(self);
-                    self.push(Value::Bool(result));
-                }
-                Opcode::UnaryNeg => {
-                    // Unary minus - negate numeric value
-                    let value = self.pop();
-                    match value {
-                        Value::Int(n) => {
-                            // Use checked_neg to handle i64::MIN overflow
-                            if let Some(negated) = n.checked_neg() {
-                                self.push(Value::Int(negated));
-                            } else {
-                                // i64::MIN negated overflows to LongInt
-                                let li = -LongInt::from(n);
-                                match li.into_value(self.heap) {
-                                    Ok(v) => self.push(v),
-                                    Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
-                                }
-                            }
-                        }
-                        Value::Float(f) => self.push(Value::Float(-f)),
-                        Value::Bool(b) => self.push(Value::Int(if b { -1 } else { 0 })),
-                        Value::Ref(id) => match self.heap.get(id) {
-                            HeapData::LongInt(li) => {
-                                let negated = -LongInt::new(li.inner().clone());
-                                value.drop_with_heap(self);
-                                match negated.into_value(self.heap) {
-                                    Ok(v) => self.push(v),
-                                    Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
-                                }
-                            }
-                            HeapData::TimeDelta(td) => {
-                                let negated = timedelta::from_total_microseconds(-timedelta::total_microseconds(td));
-                                value.drop_with_heap(self);
-                                match negated {
-                                    Ok(delta) => match self.heap.allocate(HeapData::TimeDelta(delta)) {
-                                        Ok(id) => self.push(Value::Ref(id)),
-                                        Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
-                                    },
-                                    Err(e) => catch_sync!(self, cached_frame, e),
-                                }
-                            }
-                            _ => {
-                                let value_type = value.py_type(self);
-                                value.drop_with_heap(self);
-                                catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
-                            }
-                        },
-                        _ => {
-                            let value_type = value.py_type(self);
-                            value.drop_with_heap(self);
-                            catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
-                        }
+                    let result = value.py_bool(self);
+                    value.drop_with(self);
+                    match result {
+                        Ok(value) => self.push(Value::Bool(!value)),
+                        Err(error) => catch_sync!(self, cached_frame, error),
                     }
                 }
-                Opcode::UnaryPos => {
-                    // Unary plus - converts bools to int, no-op for other numbers
-                    let value = self.pop();
-                    match value {
-                        Value::Int(_) | Value::Float(_) => self.push(value),
-                        Value::Bool(b) => self.push(Value::Int(i64::from(b))),
-                        Value::Ref(id) => {
-                            if matches!(self.heap.get(id), HeapData::LongInt(_)) {
-                                // LongInt - return as-is (value already has correct refcount)
-                                self.push(value);
-                            } else {
-                                let value_type = value.py_type(self);
-                                value.drop_with_heap(self);
-                                catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
-                            }
-                        }
-                        _ => {
-                            let value_type = value.py_type(self);
-                            value.drop_with_heap(self);
-                            catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
-                        }
-                    }
-                }
+                Opcode::UnaryNeg => try_catch_sync!(self, cached_frame, self.unary_neg()),
+                Opcode::UnaryPos => try_catch_sync!(self, cached_frame, self.unary_pos()),
                 Opcode::UnaryInvert => {
                     // Bitwise NOT
                     let value = self.pop();
@@ -1140,54 +1161,55 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                             if let HeapData::LongInt(li) = self.heap.get(id) {
                                 // LongInt bitwise NOT: ~x = -(x + 1)
                                 let inverted = -(li.inner() + 1i32);
-                                value.drop_with_heap(self);
-                                match LongInt::new(inverted).into_value(self.heap) {
-                                    Ok(v) => self.push(v),
-                                    Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
-                                }
+                                value.drop_with(self);
+                                let inverted_value = LongInt::new(inverted).into_value(self.heap);
+                                self.push(inverted_value);
                             } else {
-                                let value_type = value.py_type(self);
-                                value.drop_with_heap(self);
-                                catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
+                                let value_type = value.py_type_name(self);
+                                value.drop_with(self);
+                                catch_sync!(self, cached_frame, ExcType::unary_type_error("~", &value_type));
                             }
                         }
                         _ => {
-                            let value_type = value.py_type(self);
-                            value.drop_with_heap(self);
-                            catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
+                            let value_type = value.py_type_name(self);
+                            value.drop_with(self);
+                            catch_sync!(self, cached_frame, ExcType::unary_type_error("~", &value_type));
                         }
                     }
                 }
-                // In-place Operations - route through exception handling
+                // In-place Operations - route through exception handling.
+                // `+=`/`-=`/`&=`/`|=` first try a true in-place `Counter` op
+                // (mutating the left operand); everything else — and the
+                // non-Counter fallback — reuses the binary implementation, since
+                // Monty's other types have no distinct in-place form.
                 Opcode::InplaceAdd => try_catch_sync!(self, cached_frame, self.inplace_add()),
-                // Other in-place ops use the same logic as binary ops for now
-                Opcode::InplaceSub => try_catch_sync!(self, cached_frame, self.binary_sub()),
+                Opcode::InplaceSub => try_catch_sync!(self, cached_frame, self.inplace_sub()),
                 Opcode::InplaceMul => try_catch_sync!(self, cached_frame, self.binary_mult()),
                 Opcode::InplaceDiv => try_catch_sync!(self, cached_frame, self.binary_div()),
                 Opcode::InplaceFloorDiv => try_catch_sync!(self, cached_frame, self.binary_floordiv()),
                 Opcode::InplaceMod => try_catch_sync!(self, cached_frame, self.binary_mod()),
                 Opcode::InplacePow => try_catch_sync!(self, cached_frame, self.binary_pow()),
                 Opcode::InplaceAnd => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::And));
+                    try_catch_sync!(self, cached_frame, self.inplace_and());
                 }
-                Opcode::InplaceOr => try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::Or)),
+                Opcode::InplaceOr => try_catch_sync!(self, cached_frame, self.inplace_or()),
                 Opcode::InplaceXor => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::Xor));
+                    try_catch_sync!(self, cached_frame, self.binary_xor());
                 }
                 Opcode::InplaceLShift => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::LShift));
+                    try_catch_sync!(self, cached_frame, self.binary_lshift());
                 }
                 Opcode::InplaceRShift => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::RShift));
+                    try_catch_sync!(self, cached_frame, self.binary_rshift());
                 }
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
                     let count = cached_frame.fetch_u16() as usize;
-                    try_catch_sync!(self, cached_frame, self.build_list(count));
+                    self.build_list(count);
                 }
                 Opcode::BuildTuple => {
                     let count = cached_frame.fetch_u16() as usize;
-                    try_catch_sync!(self, cached_frame, self.build_tuple(count));
+                    self.build_tuple(count);
                 }
                 Opcode::BuildDict => {
                     let count = cached_frame.fetch_u16() as usize;
@@ -1249,8 +1271,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let index = self.pop();
                     let obj = self.pop();
                     let result = obj.py_getitem(&index, self);
-                    obj.drop_with_heap(self);
-                    index.drop_with_heap(self);
+                    obj.drop_with(self);
+                    index.drop_with(self);
                     match result {
                         Ok(v) => self.push(v),
                         Err(e) => catch_sync!(self, cached_frame, e),
@@ -1262,7 +1284,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let mut obj = self.pop();
                     let value = self.pop();
                     let result = obj.py_setitem(index, value, self);
-                    obj.drop_with_heap(self);
+                    obj.drop_with(self);
                     if let Err(e) = result {
                         catch_sync!(self, cached_frame, e);
                     }
@@ -1290,69 +1312,81 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::JumpIfTrue => {
                     let offset = cached_frame.fetch_i16();
                     let cond = self.pop();
-                    if cond.py_bool(self) {
-                        jump_relative!(cached_frame.ip, offset);
+                    let result = cond.py_bool(self);
+                    cond.drop_with(self);
+                    match result {
+                        Ok(true) => jump_relative!(cached_frame.ip, offset),
+                        Ok(false) => {}
+                        Err(error) => catch_sync!(self, cached_frame, error),
                     }
-                    cond.drop_with_heap(self);
                 }
                 Opcode::JumpIfFalse => {
                     let offset = cached_frame.fetch_i16();
                     let cond = self.pop();
-                    if !cond.py_bool(self) {
-                        jump_relative!(cached_frame.ip, offset);
+                    let result = cond.py_bool(self);
+                    cond.drop_with(self);
+                    match result {
+                        Ok(false) => jump_relative!(cached_frame.ip, offset),
+                        Ok(true) => {}
+                        Err(error) => catch_sync!(self, cached_frame, error),
                     }
-                    cond.drop_with_heap(self);
                 }
                 Opcode::JumpIfTrueOrPop => {
                     let offset = cached_frame.fetch_i16();
                     let value = self.pop();
-                    if value.py_bool(self) {
-                        self.push(value);
-                        jump_relative!(cached_frame.ip, offset);
-                    } else {
-                        value.drop_with_heap(self);
+                    match value.py_bool(self) {
+                        Ok(true) => {
+                            self.push(value);
+                            jump_relative!(cached_frame.ip, offset);
+                        }
+                        Ok(false) => value.drop_with(self),
+                        Err(error) => {
+                            value.drop_with(self);
+                            catch_sync!(self, cached_frame, error);
+                        }
                     }
                 }
                 Opcode::JumpIfFalseOrPop => {
                     let offset = cached_frame.fetch_i16();
                     let value = self.pop();
-                    if value.py_bool(self) {
-                        value.drop_with_heap(self);
-                    } else {
-                        self.push(value);
-                        jump_relative!(cached_frame.ip, offset);
+                    match value.py_bool(self) {
+                        Ok(true) => value.drop_with(self),
+                        Ok(false) => {
+                            self.push(value);
+                            jump_relative!(cached_frame.ip, offset);
+                        }
+                        Err(error) => {
+                            value.drop_with(self);
+                            catch_sync!(self, cached_frame, error);
+                        }
                     }
                 }
                 // Iteration - route through exception handling
                 Opcode::GetIter => {
                     let value = self.pop();
-                    // Create a MontyIter from the value and store on heap
-                    match MontyIter::new(value, self) {
-                        Ok(iter) => match self.heap.allocate(HeapData::Iter(iter)) {
-                            Ok(heap_id) => self.push(Value::Ref(heap_id)),
-                            Err(e) => catch_sync!(self, cached_frame, e.into()),
-                        },
+                    let iterator = value.py_iter(self);
+                    value.drop_with(self);
+                    match iterator {
+                        Ok(iterator) => self.push(iterator),
                         Err(e) => catch_sync!(self, cached_frame, e),
                     }
                 }
                 Opcode::ForIter => {
                     let offset = cached_frame.fetch_i16();
-                    // Peek at the iterator on TOS and extract heap_id
+                    // Iterator implementations return heap objects from `py_iter`.
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
-                    let HeapReadOutput::Iter(mut iter) = self.heap.read(heap_id) else {
-                        panic!("ForIter: expected iterator ref on stack");
-                    };
+                    let mut iter = self.heap.read(heap_id);
 
-                    match iter.advance(self) {
+                    match iter.py_next(Some(heap_id), self) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {
                             // Drop the HeapRead before dec_ref to release the reader count
                             drop(iter);
                             // Iterator exhausted - pop it and jump to end
                             let iter = self.pop();
-                            iter.drop_with_heap(self);
+                            iter.drop_with(self);
                             jump_relative!(cached_frame.ip, offset);
                         }
                         Err(e) => {
@@ -1360,7 +1394,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                             drop(iter);
                             // Error during iteration (e.g., dict size changed)
                             let iter = self.pop();
-                            iter.drop_with_heap(self);
+                            iter.drop_with(self);
                             catch_sync!(self, cached_frame, e);
                         }
                     }
@@ -1480,7 +1514,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         // Create FunctionDefaults on heap and push reference
                         let heap_id = self
                             .heap
-                            .allocate(HeapData::FunctionDefaults(FunctionDefaults { func_id, defaults }))?;
+                            .allocate(HeapData::FunctionDefaults(FunctionDefaults { func_id, defaults }));
                         self.push(Value::Ref(heap_id));
                     }
                 }
@@ -1502,7 +1536,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                                 // Keep the reference - the Closure will own the HeapId
                                 cells.push(*heap_id);
                                 // Mark the Value as dereferenced since Closure takes ownership
-                                // of the reference count (we don't call drop_with_heap because
+                                // of the reference count (we don't call drop_with because
                                 // we're not decrementing the refcount, just transferring it)
                                 #[cfg(feature = "memory-model-checks")]
                                 cell_val.dec_ref_forget();
@@ -1523,39 +1557,63 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         func_id,
                         cells,
                         defaults,
-                    }))?;
+                    }));
                     self.push(Value::Ref(heap_id));
                 }
                 // Exception Handling
                 Opcode::Raise => {
                     let exc = self.pop();
-                    let error = self.make_exception(exc, true); // is_raise=true, hide caret
+                    let error = self.make_exception(&exc, true); // is_raise=true, hide caret
+                    // Re-raise an instance as-is so `raise e` preserves `e`'s
+                    // identity, like CPython. A bare type or non-exception has
+                    // nothing to reuse and rebuilds from the error.
+                    let raised = match &exc {
+                        Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Exception(_)) => Some(exc),
+                        _ => {
+                            exc.drop_with(self);
+                            None
+                        }
+                    };
+                    if let Some(result) = self.handle_exception_with_value(error, raised) {
+                        return Err(result);
+                    }
+                    // Exception was caught - handler may be in different frame, reload cache
+                    reload_cache!(self, cached_frame);
+                }
+                Opcode::Assert => {
+                    match decode_assert_flags(cached_frame.fetch_u8()).expect("invalid assert flags in bytecode") {
+                        Some(op) => try_catch_sync!(self, cached_frame, self.assert_cmp(op)),
+                        None => try_catch_sync!(self, cached_frame, self.assert_test()),
+                    }
+                }
+                Opcode::AssertFailed => {
+                    let cmp_op =
+                        decode_assert_flags(cached_frame.fetch_u8()).expect("invalid assert flags in bytecode");
+                    let error = self.assert_failed_msg(cmp_op);
                     catch_sync!(self, cached_frame, error);
                 }
                 Opcode::Reraise => {
-                    // Re-raise the currently-being-handled exception (top of
-                    // exception_stack), keeping the original entry in place
-                    // — popping would lose track of the enclosing handler
-                    // when the bare raise is locally caught (the local
-                    // handler's `ClearException` would otherwise pop the
-                    // enclosing entry instead of its own new one). When the
-                    // re-raised exception propagates past handler boundaries,
-                    // the unwind drain via `exception_stack_count` cleans up
-                    // any leftover entries.
-                    let error = if let Some(exc) = self.exception_stack.last() {
-                        let exc = exc.clone_with_heap(self.heap);
-                        self.make_exception(exc, true) // is_raise=true for reraise
-                    } else {
+                    // Clone rather than pop: a locally caught bare raise must
+                    // preserve its enclosing handler's active exception.
+                    let raised = self.exception_stack.last().map(|exc| exc.clone_with_heap(self.heap));
+                    let error = match &raised {
+                        Some(exc) => self.make_exception(exc, true), // is_raise=true for reraise
                         // No active exception - create a RuntimeError
-                        SimpleException::new_msg(ExcType::RuntimeError, "No active exception to reraise").into()
+                        None => {
+                            SimpleException::new_msg(ExcType::RuntimeError, "No active exception to reraise").into()
+                        }
                     };
-                    catch_sync!(self, cached_frame, error);
+                    if let Some(result) = self.handle_exception_with_value(error, raised) {
+                        return Err(result);
+                    }
+                    // Exception was caught - handler may be in different frame, reload cache
+                    reload_cache!(self, cached_frame);
                 }
                 Opcode::ClearException => {
                     // Pop the current exception from the stack
                     // This restores the previous exception context (if any)
                     if let Some(exc) = self.exception_stack.pop() {
-                        exc.drop_with_heap(self);
+                        exc.drop_with(self);
                     }
                 }
                 Opcode::CheckExcMatch => {
@@ -1563,7 +1621,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let exc_type = self.pop();
                     let exception = self.peek();
                     let result = self.check_exc_match(exception, &exc_type);
-                    exc_type.drop_with_heap(self);
+                    exc_type.drop_with(self);
                     match result {
                         Ok(matched) => self.push(Value::Bool(matched)),
                         // An invalid `except` type (e.g. `except 123:` or a
@@ -1607,13 +1665,48 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         }
                         continue;
                     }
-                    // Pop current frame and push return value
-                    if self.pop_frame() {
+                    // Read the initializer flag before popping the frame.
+                    let is_init = self.current_frame().is_initializer;
+                    // Pop current frame; `stop` requests returning to the host
+                    // (e.g. `evaluate_function`).
+                    let stop = self.pop_frame();
+                    if is_init {
+                        if !matches!(value, Value::None) {
+                            // CPython raises at the `Foo(...)` call site: the
+                            // initializer frame is already popped, so the traceback
+                            // matches (no `__init__` frame).
+                            let type_name = value.py_type_name(self);
+                            value.drop_with(self);
+                            let err = ExcType::type_error_init_return(type_name);
+                            if stop {
+                                // The initializer was driven by `evaluate_function`
+                                // and its frame boundary is already popped —
+                                // propagate directly rather than unwinding into
+                                // frames that must not observe this error. The
+                                // pending instance left on the operand stack is
+                                // reclaimed by the eventual `handle_exception`
+                                // stack drain (or final teardown).
+                                return Err(err);
+                            }
+                            catch_sync!(self, cached_frame, err);
+                            continue;
+                        }
+                        // `__init__` returned None — discard it. The instance was
+                        // pushed onto the caller's stack before this frame ran and
+                        // is the real result of `Foo(...)`.
+                        value.drop_with(self);
+                        if stop {
+                            let instance = self.pop();
+                            return Ok(FrameExit::Return(instance));
+                        }
+                        // Instance already on the caller's stack — push nothing.
+                    } else if stop {
                         // This frame indicated evaluation should stop - return to host with value
                         // e.g. `evaluate_function`
                         return Ok(FrameExit::Return(value));
+                    } else {
+                        self.push(value);
                     }
-                    self.push(value);
                     // Reload cache from parent frame
                     reload_cache!(self, cached_frame);
                 }
@@ -1655,7 +1748,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 // Module Operations
                 Opcode::LoadModule => {
                     let module_id = cached_frame.fetch_u8();
-                    try_catch_sync!(self, cached_frame, self.load_module(module_id));
+                    self.load_module(module_id);
                 }
                 Opcode::RaiseImportError => {
                     // Fetch the module name from the constant pool and raise ModuleNotFoundError
@@ -1688,23 +1781,33 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     }
 
     /// Loads a built-in module and pushes it onto the stack.
-    fn load_module(&mut self, module_id: u8) -> RunResult<()> {
+    fn load_module(&mut self, module_id: u8) {
         let module = StandardLib::from_repr(module_id).expect("unknown module id");
 
         // Create the module on the heap using pre-interned strings
-        let heap_id = module.create(self)?;
+        let heap_id = module.create(self);
         self.push(Value::Ref(heap_id));
-        Ok(())
     }
 
     /// Resumes execution after an external call completes.
     ///
     /// Pushes the return value onto the stack and continues execution.
     ///
-    /// If the paused OS call has a pending file effect, the result is routed
-    /// through the corresponding file-state helper before it is pushed back to
-    /// Python.
+    /// If the paused OS call has a pending effect, the result is routed
+    /// through the corresponding helper (file-state update or `os.listdir`
+    /// name reduction) before it is pushed back to Python.
     pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
+        // `ListdirNames` reshapes the raw host object *before* heap
+        // conversion — plain data in, plain data out, no refcounts involved.
+        let obj = if matches!(self.pending_os_effect, Some(PendingOsEffect::ListdirNames)) {
+            self.pending_os_effect = None;
+            match listdir_names(obj) {
+                Ok(obj) => obj,
+                Err(err) => return self.resume_with_exception(err),
+            }
+        } else {
+            obj
+        };
         // Surface resource-exhaustion failures from `to_value` (e.g. a host
         // string whose `heap.allocate` trips `max_memory`) as the same
         // `RunError::Resource` that pure-Monty allocations produce, so the
@@ -1716,21 +1819,23 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {other}"))).into()
             }
         })?;
-        if let Some(effect) = self.pending_file_effect.take() {
+        if let Some(effect) = self.pending_os_effect.take() {
             let result = match effect {
-                PendingFileEffect::BufferStore { file_id } => apply_buffer_store(file_id, value, self),
-                PendingFileEffect::WritePosition { file_id, .. } => apply_write_position(file_id, value, self),
+                PendingOsEffect::BufferStore { file_id } => apply_buffer_store(file_id, value, self),
+                PendingOsEffect::WritePosition { file_id, .. } => apply_write_position(file_id, value, self),
+                // Cleared above, before conversion.
+                PendingOsEffect::ListdirNames => unreachable!("ListdirNames is handled before heap conversion"),
             };
             match result {
                 Ok(value) => {
                     self.push(value);
-                    self.run()
+                    self.run_external()
                 }
                 Err(err) => self.resume_with_exception(err),
             }
         } else {
             self.push(value);
-            self.run()
+            self.run_external()
         }
     }
 
@@ -1751,16 +1856,16 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// Also clears any pending file effect so user code that catches a
     /// host-side OS exception can retry without stale in-flight state.
     pub fn resume_with_exception(&mut self, error: RunError) -> Result<FrameExit, RunError> {
-        if let Some(effect) = self.pending_file_effect.take() {
+        if let Some(effect) = self.pending_os_effect.take() {
             match effect {
-                PendingFileEffect::BufferStore { file_id } => {
+                PendingOsEffect::BufferStore { file_id } => {
                     if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
                         file.get_mut(self.heap).clear_pending_read();
                         drop(file);
                     }
                     self.heap.dec_ref(file_id);
                 }
-                PendingFileEffect::WritePosition {
+                PendingOsEffect::WritePosition {
                     file_id,
                     previous_position,
                     previous_length,
@@ -1772,6 +1877,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     }
                     self.heap.dec_ref(file_id);
                 }
+                // Holds no state or heap references — nothing to roll back.
+                PendingOsEffect::ListdirNames => {}
             }
         }
         // Use the normal exception handling mechanism
@@ -1780,7 +1887,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             return Err(uncaught_error);
         }
         // Exception was caught, continue execution
-        self.run()
+        self.run_external()
     }
 
     // ========================================================================
@@ -1839,7 +1946,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     pub(super) fn push_frame(&mut self, frame: CallFrame<'h>) -> RunResult<()> {
         // root frame doesn't count towards recursion depth, so only check if there's already a frame on the stack
         if !self.frames.is_empty()
-            && let Err(e) = self.heap.incr_recursion_depth()
+            && let Err(e) = self.incr_recursion()
         {
             self.cleanup_frame_state(&frame);
             return Err(e.into());
@@ -1866,7 +1973,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         }
         // Decrement recursion depth if this wasn't the root frame
         if !self.frames.is_empty() {
-            self.heap.decr_recursion_depth();
+            self.decr_recursion();
         }
         frame.should_return
     }
@@ -1877,24 +1984,16 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // drain naturally covers them).
         self.stack
             .drain(frame.stack_base..)
-            .for_each(|value| value.drop_with_heap(&mut *self.heap));
-
-        // Track freed memory for the locals region. Matches the `on_allocate`
-        // at each frame-entry site (sync function, module, sync coroutine,
-        // spawned coroutine).
-        if frame.locals_count > 0 {
-            let size = usize::from(frame.locals_count) * mem::size_of::<Value>();
-            self.heap.tracker_mut().on_free(|| size);
-        }
+            .for_each(|value| value.drop_with(&mut *self.heap));
     }
 
     /// Cleans up all frames and stack values for the current task.
     ///
     /// Used when a task completes or fails and we need to switch to another task.
-    /// Drains the stack with proper `drop_with_heap` for each value (since locals
+    /// Drains the stack with proper `drop_with` for each value (since locals
     /// are inlined on the stack), then cleans up each frame's cell references.
     pub(super) fn cleanup_current_task(&mut self) {
-        self.stack.drain(..).drop_with_heap(self.heap);
+        self.stack.drain(..).drop_with(self.heap);
         self.frames.clear();
     }
 
@@ -1939,6 +2038,28 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         )
     }
 
+    /// Captures the caller's current bytecode offset for a call site, or `None`
+    /// when no frame is on the stack (host-initiated calls).
+    ///
+    /// The cheap counterpart to [`current_position`](Self::current_position):
+    /// no location-table scan, so it is affordable on every call. Out-of-range
+    /// offsets (an invariant violation) degrade to `None` rather than panic.
+    pub(super) fn current_offset(&self) -> Option<u32> {
+        self.frames.last()?;
+        u32::try_from(self.instruction_ip).ok()
+    }
+
+    /// Resolves a raw caller offset (`CallFrame::call_offset`) to a source
+    /// [`CodeRange`] against the current frame's code, during traceback unwind
+    /// once the failing frame has been popped so the current frame is the caller.
+    pub(super) fn resolve_offset(&self, offset: u32) -> CodeRange {
+        self.frames
+            .last()
+            .and_then(|frame| frame.code.location_for_offset(offset as usize))
+            .map(LocationEntry::range)
+            .unwrap_or_default()
+    }
+
     // ========================================================================
     // Variable Operations
     // ========================================================================
@@ -1960,11 +2081,11 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         Ok(())
     }
 
-    /// Loads a global variable in call context, pushing `ExtFunction` for undefined names.
+    /// Loads a global variable in call context, pushing an external function for undefined names.
     ///
     /// Unlike `load_global`, this never yields `NameLookup`. When the variable is undefined,
-    /// it pushes `Value::ExtFunction(name_id)` so that the subsequent `CallFunction` opcode
-    /// can yield `FunctionCall` instead. Before doing so it tries the builtin fallback
+    /// it allocates an external function so that the subsequent `CallFunction` opcode can
+    /// yield `FunctionCall` instead. Before doing so it tries the builtin fallback
     /// (see [`builtin_for_name`]) so `f()` style calls into a builtin still work when
     /// the name happens to have a module slot allocated (e.g. because the module also
     /// `def`-binds the same name elsewhere) but that slot is currently `Undefined`.
@@ -1973,12 +2094,20 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
         if matches!(value, Value::Undefined) {
             if let Some(builtin) = self.builtin_for_name(name_id) {
-                self.push(Value::Builtin(builtin));
+                self.push(builtin);
+                return;
+            }
+            // A reserved module dunder (e.g. `__name__`) in call position resolves
+            // to its fixed value; the subsequent call then fails with the usual
+            // "object is not callable" error, matching CPython.
+            if let Some(value) = self.module_dunder(name_id) {
+                self.push(value);
                 return;
             }
             // Save the load instruction's IP so NameError tracebacks point to the name
             self.ext_function_load_ip = Some(self.instruction_ip);
-            self.push(Value::ExtFunction(name_id));
+            let function = self.heap.get_ext_function(self.interns.get_str(name_id));
+            self.push(function);
         } else {
             self.push(value);
         }
@@ -2011,9 +2140,31 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// The first call hits `globals[sum_slot] = Undefined` and falls back here to
     /// the builtin; once `def sum` runs, the slot holds the user function and the
     /// fallback isn't taken anymore.
-    fn builtin_for_name(&self, name_id: StringId) -> Option<Builtins> {
-        let name = self.interns.get_str(name_id);
-        name.parse::<Builtins>().ok()
+    fn builtin_for_name(&self, name_id: StringId) -> Option<Value> {
+        Builtins::value_from_name(self.interns.get_str(name_id))
+    }
+
+    /// Returns the fixed value for a module-level dunder, or `None` if `name_id`
+    /// does not name one of [`RESERVED_MODULE_DUNDERS`](crate::bytecode::RESERVED_MODULE_DUNDERS).
+    ///
+    /// Backs the read side of those dunders: `__name__` is always `'__main__'`
+    /// (Monty only ever runs a top-level module) and `__debug__` is `True`
+    /// (asserts always run). `__doc__`/`__spec__`/`__package__` default to
+    /// `None` and `__annotations__` to a fresh empty dict — module-level
+    /// annotations are not stored (see `limitations/typing.md`), so it is
+    /// always empty. `__loader__` is deliberately *not* exposed: CPython only
+    /// ever puts a loader object there (never `None`), so rather than diverge
+    /// on the type we let it raise `NameError` like other unexposed dunders
+    /// (`__file__`, `__cached__`, …).
+    fn module_dunder(&self, name_id: StringId) -> Option<Value> {
+        let value = match self.interns.get_str(name_id) {
+            "__name__" => Value::InternString(StaticStrings::DunderMain.into()),
+            "__debug__" => Value::Bool(true),
+            "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))),
+            "__doc__" | "__spec__" | "__package__" => Value::None,
+            _ => return None,
+        };
+        Some(value)
     }
 
     /// Creates a NameError for an undefined global variable.
@@ -2030,14 +2181,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let value = self.pop();
         let target = &mut self.stack[cached_frame.stack_base + slot as usize];
         let old_value = mem::replace(target, value);
-        old_value.drop_with_heap(self);
+        old_value.drop_with(self);
     }
 
     /// Deletes a local variable (sets it to Undefined).
     fn delete_local(&mut self, cached_frame: &CachedFrame<'h>, slot: u16) {
         let target = &mut self.stack[cached_frame.stack_base + slot as usize];
         let old_value = mem::replace(target, Value::Undefined);
-        old_value.drop_with_heap(self);
+        old_value.drop_with(self);
     }
 
     /// Loads a global variable and pushes it onto the stack.
@@ -2050,14 +2201,18 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
         // Check for undefined value — raise appropriate error or yield to host
         if matches!(value, Value::Undefined) {
-            let name = self.current_frame().code.local_name(slot);
+            let name = self.global_name(slot);
 
             let Some(name_id) = name else {
                 // No name available — raise NameError directly
                 return Err(self.name_error(slot, None));
             };
             if let Some(builtin) = self.builtin_for_name(name_id) {
-                self.push(Value::Builtin(builtin));
+                self.push(builtin);
+                return Ok(None);
+            }
+            if let Some(value) = self.module_dunder(name_id) {
+                self.push(value);
                 return Ok(None);
             }
             Ok(Some(FrameExit::NameLookup {
@@ -2071,11 +2226,24 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         }
     }
 
+    /// Returns the interned name of a module-level global at `slot`, if known.
+    ///
+    /// Returns `None` if no module code is attached (test harness use of
+    /// `VM::new` without `run_module`) or if the slot is past the recorded
+    /// name table.
+    fn global_name(&self, slot: u16) -> Option<StringId> {
+        self.module_code.and_then(|c| c.local_name(slot))
+    }
+
     /// Pops the top of stack and stores it in a global variable.
+    ///
+    /// Reassigning a reserved module dunder (see [`RESERVED_MODULE_DUNDERS`]) is
+    /// rejected at compile time (see `Compiler::compile_store`), so no name
+    /// check is needed here.
     fn store_global(&mut self, slot: u16) {
         let value = self.pop();
         let old_value = mem::replace(&mut self.globals[slot as usize], value);
-        old_value.drop_with_heap(self);
+        old_value.drop_with(self);
     }
 
     /// Deletes a global variable (sets it to `Undefined`).
@@ -2085,11 +2253,11 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // TODO: the `Undefined` branch is currently unreachable from Python source,
         // needs support for the `del` statement.
         if matches!(self.globals[slot as usize], Value::Undefined) {
-            let name = self.current_frame().code.local_name(slot);
+            let name = self.global_name(slot);
             return Err(self.name_error(slot, name));
         }
         let old_value = mem::replace(&mut self.globals[slot as usize], Value::Undefined);
-        old_value.drop_with_heap(self);
+        old_value.drop_with(self);
         Ok(())
     }
 
@@ -2105,15 +2273,22 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             _ => panic!("LoadCell: entry is not a Cell"),
         };
 
-        // Check for undefined value - raise NameError for unbound free variable
+        // An undefined value raises the error CPython picks by cell kind: the
+        // free-variable NameError only for a cell *captured* from an enclosing
+        // function; an unbound cell this frame owns (a local captured by
+        // nested functions) is an ordinary UnboundLocalError, like any local.
         if matches!(value, Value::Undefined) {
-            value.drop_with_heap(self);
+            value.drop_with(self);
             let name = cached_frame.code.local_name(slot);
-            return Err(self.free_var_error(name));
+            Err(if self.is_free_var_slot(slot) {
+                self.free_var_error(name)
+            } else {
+                self.unbound_local_error(slot, name)
+            })
+        } else {
+            self.push(value);
+            Ok(())
         }
-
-        self.push(value);
-        Ok(())
     }
 
     /// Extracts the cell `HeapId` from a local variable slot on the stack.
@@ -2124,6 +2299,20 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             Value::Ref(cell_id) => *cell_id,
             other => panic!("LoadCell/StoreCell: expected cell reference in local slot {slot}, found {other:?}"),
         }
+    }
+
+    /// Whether `slot` holds a cell captured from an enclosing function (a
+    /// free variable), as opposed to a cell this frame owns. Module frames
+    /// (`function_id: None`) own all their cells — the only module-level
+    /// cells are inlined-comprehension captures.
+    fn is_free_var_slot(&self, slot: u16) -> bool {
+        self.current_frame().function_id.is_some_and(|id| {
+            self.interns
+                .get_function(id)
+                .free_var_slots
+                .iter()
+                .any(|s| s.as_u16() == slot)
+        })
     }
 
     /// Creates a NameError for an unbound free variable.
@@ -2141,8 +2330,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     fn store_cell(&mut self, cached_frame: &CachedFrame<'_>, slot: u16) {
         let value = self.pop();
         // The guard will clean up the new value if we panic, or the old value if we swap
-        let mut guard = HeapGuard::new(value, self);
-        let (value, this) = guard.as_parts_mut();
+        let this = self;
+        defer_drop_mut!(value, this);
 
         let cell_id = this.cell_id_from_local(cached_frame, slot);
         let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
@@ -2150,15 +2339,32 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         };
         mem::swap(&mut cell.get_mut(this.heap).0, value);
     }
+
+    /// Unbinds a closure cell: replaces its contents with `Undefined`, so a
+    /// later [`Self::load_cell`] raises the free-variable `NameError` —
+    /// CPython's `DELETE_DEREF` cleanup of a captured `except ... as` target.
+    /// The only emitter stores `None` first, so the cell is never already
+    /// unbound here (no error path, unlike [`Self::delete_global`]).
+    fn delete_cell(&mut self, cached_frame: &CachedFrame<'_>, slot: u16) {
+        let value = Value::Undefined;
+        // the guard drops the cell's previous contents after the swap
+        let this = self;
+        defer_drop_mut!(value, this);
+
+        let cell_id = this.cell_id_from_local(cached_frame, slot);
+        let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
+            panic!("DeleteCell: entry is not a Cell")
+        };
+        mem::swap(&mut cell.get_mut(this.heap).0, value);
+    }
 }
 
 // `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`
-impl<T: ResourceTracker> ContainsHeap for VM<'_, T> {
-    type ResourceTracker = T;
-    fn heap(&self) -> &Heap<T> {
+impl ContainsHeap for VM<'_> {
+    fn heap(&self) -> &Heap {
         self.heap
     }
-    fn heap_mut(&mut self) -> &mut Heap<T> {
+    fn heap_mut(&mut self) -> &mut Heap {
         self.heap
     }
 }
@@ -2169,20 +2375,15 @@ impl<T: ResourceTracker> ContainsHeap for VM<'_, T> {
 /// string cache — all of which may hold heap references that need their
 /// ref-counts decremented. Fields that were already emptied (e.g. by
 /// `take_globals`) are harmlessly drained as empty.
-impl<T: ResourceTracker> Drop for VM<'_, T> {
+impl Drop for VM<'_> {
     fn drop(&mut self) {
-        if let Some(effect) = self.pending_file_effect.take() {
-            let file_id = match effect {
-                PendingFileEffect::BufferStore { file_id } | PendingFileEffect::WritePosition { file_id, .. } => {
-                    file_id
-                }
-            };
+        if let Some(file_id) = self.pending_os_effect.take().and_then(PendingOsEffect::pinned_file) {
             self.heap.dec_ref(file_id);
         }
-        self.exception_stack.drain(..).drop_with_heap(self.heap);
+        self.exception_stack.drain(..).drop_with(self.heap);
         self.cleanup_current_task();
         self.scheduler.cleanup(self.heap);
-        self.globals.drain(..).drop_with_heap(self.heap);
+        self.globals.drain(..).drop_with(self.heap);
         self.json_string_cache.drop_all(self.heap);
     }
 }

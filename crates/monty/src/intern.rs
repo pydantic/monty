@@ -16,7 +16,9 @@ use std::{slice::from_ref, str::FromStr};
 
 use ahash::AHashMap;
 use num_bigint::BigInt;
-use strum::{EnumCount, EnumString, FromRepr, IntoStaticStr};
+#[cfg(test)]
+use strum::IntoEnumIterator;
+use strum::{EnumCount, EnumIter, EnumString, FromRepr, IntoStaticStr};
 
 use crate::{
     function::Function,
@@ -49,8 +51,16 @@ impl StringId {
 
     /// Returns the StringId for an ASCII byte.
     #[must_use]
-    pub fn from_ascii(byte: u8) -> Self {
-        Self(u32::from(byte))
+    pub const fn from_ascii(byte: u8) -> Self {
+        Self(byte as u32)
+    }
+
+    /// Const equivalent of `StringId::from(StaticStrings)`, for building
+    /// `static` tables (e.g. the `ParamSpec`s emitted by `derive(FromArgs)`)
+    /// where trait-based `From` conversions cannot be used.
+    #[must_use]
+    pub const fn from_static(value: StaticStrings) -> Self {
+        Self(value as u32)
     }
 }
 
@@ -97,6 +107,7 @@ pub(crate) static ASCII_STRS: [&str; 128] = const {
     Copy,
     FromRepr,
     EnumCount,
+    EnumIter,
     EnumString,
     IntoStaticStr,
     PartialEq,
@@ -209,6 +220,7 @@ pub enum StaticStrings {
     Obj,
     Object,
     Source,
+    Base,
     // Additional string methods
     Encode,
     Isidentifier,
@@ -568,6 +580,9 @@ pub enum StaticStrings {
     Offset,
     // datetime.now() kwarg
     Tz,
+    // round() kwargs
+    Number,
+    Ndigits,
     // date/datetime methods
     Isoformat,
     Strftime,
@@ -698,6 +713,262 @@ pub enum StaticStrings {
     // same StringId-stability reason as the gc entries above).
     /// `sys.setrecursionlimit()` function (only callable under `test-hooks`).
     Setrecursionlimit,
+
+    // ==========================
+    // unicodedata module strings. The `name()` function reuses the existing
+    // `Name` variant (both intern to "name").
+    /// Module name for `import unicodedata`.
+    Unicodedata,
+    /// `unicodedata.normalize()` function.
+    Normalize,
+    /// `unicodedata.is_normalized()` function.
+    #[strum(serialize = "is_normalized")]
+    IsNormalized,
+    /// `unicodedata.category()` function.
+    Category,
+    /// `unicodedata.lookup()` function.
+    Lookup,
+    /// `unicodedata.combining()` function.
+    Combining,
+    /// `unicodedata.unidata_version` constant.
+    #[strum(serialize = "unidata_version")]
+    UnidataVersion,
+
+    // ==========================
+    // Module dunder values.
+    #[strum(serialize = "__main__")]
+    DunderMain,
+
+    // ==========================
+    // Class dunder attributes.
+    /// `__doc__` — synthesized into the namespace of classes created by the
+    /// 3-arg `type()` builtin when the caller's dict omits it (compiled
+    /// `class` bodies get theirs from the parser). Appended at the enum end:
+    /// StaticStrings discriminants are serialized `StringId`s, so mid-enum
+    /// insertion would shift every later id.
+    #[strum(serialize = "__doc__")]
+    DunderDoc,
+
+    // ==========================
+    // Singleton `repr()`/`str()` values. Interned so `str(None)`, `repr(True)`,
+    // `f"{...}"`, `print(False)` etc. resolve to an existing `StringId` instead
+    // of allocating a fresh heap string each time — see `Value::py_repr`.
+    // Appended at the enum end: discriminants are serialized `StringId`s, so
+    // mid-enum insertion would shift every later id.
+    #[strum(serialize = "None")]
+    NoneRepr,
+    #[strum(serialize = "True")]
+    TrueRepr,
+    #[strum(serialize = "False")]
+    FalseRepr,
+    #[strum(serialize = "Ellipsis")]
+    EllipsisRepr,
+
+    // ==========================
+    // os module function/constant names. Appended at the enum end:
+    // discriminants are serialized `StringId`s, so mid-enum insertion would
+    // shift every later id. Constants reuse existing variants where the text
+    // already exists (`Sep` in the kwarg section, `Name`, single-char ASCII
+    // ids for `/`, `.`, `\n`).
+    /// `os.listdir()` function.
+    Listdir,
+    /// `os.makedirs()` function.
+    Makedirs,
+    /// `os.fspath()` function — distinct from `Fspath` (`__fspath__`).
+    #[strum(serialize = "fspath")]
+    OsFspath,
+    /// `os.altsep` constant name.
+    Altsep,
+    /// `os.extsep` constant name.
+    Extsep,
+    /// `os.curdir` constant name.
+    Curdir,
+    /// `os.pardir` constant name.
+    Pardir,
+    /// `os.linesep` constant name.
+    Linesep,
+    /// `os.devnull` constant name.
+    Devnull,
+    /// Value of `os.name`.
+    Posix,
+    /// Value of `os.pardir`.
+    #[strum(serialize = "..")]
+    ParentDirString,
+    /// Value of `os.devnull`.
+    #[strum(serialize = "/dev/null")]
+    DevNullString,
+    /// Kwarg name `path` — `os.listdir(path=...)`, `os.stat(path=...)`, etc.
+    Path,
+    /// Kwarg name `dir_fd` — `os.stat(dir_fd=...)`, `os.mkdir(dir_fd=...)`, etc.
+    DirFd,
+    /// Kwarg name `follow_symlinks` — `os.stat(follow_symlinks=...)`.
+    FollowSymlinks,
+    /// Kwarg name `src` — `os.rename(src=...)`, `os.replace(src=...)`.
+    Src,
+    /// Kwarg name `dst` — `os.rename(dst=...)`, `os.replace(dst=...)`.
+    Dst,
+    /// Kwarg name `src_dir_fd` — `os.rename(src_dir_fd=...)`.
+    SrcDirFd,
+    /// Kwarg name `dst_dir_fd` — `os.rename(dst_dir_fd=...)`.
+    DstDirFd,
+
+    // itertools module strings; `count`, `start`, `step` and `object` reuse the
+    // existing variants of the same name. Appended, per the rule above.
+    /// Module name for `import itertools`.
+    Itertools,
+    /// `itertools.repeat()` function.
+    Repeat,
+    /// `times` keyword argument of `itertools.repeat()`.
+    Times,
+
+    // ==========================
+    // dataclasses module strings. Appended at the enum end: discriminants are
+    // serialized `StringId`s, so mid-enum insertion would shift every later id.
+    /// Module name for `import dataclasses`.
+    Dataclasses,
+    /// `dataclasses.dataclass` decorator.
+    Dataclass,
+    /// `dataclasses.is_dataclass()` function.
+    IsDataclass,
+    /// The `__dataclass_fields__` class attribute `@dataclass` writes: the
+    /// name -> `Field` mapping that drives every synthesized dunder.
+    #[strum(serialize = "__dataclass_fields__")]
+    DataclassFields,
+
+    // ==========================
+    // collections module strings. Appended at the enum end: discriminants are
+    // serialized `StringId`s, so mid-enum insertion would shift every later id.
+    /// Module name for `import collections`.
+    Collections,
+    /// The `collections.deque` type.
+    Deque,
+    /// `deque.appendleft()` method.
+    Appendleft,
+    /// `deque.extendleft()` method.
+    Extendleft,
+    /// `deque.popleft()` method.
+    Popleft,
+    /// `deque.rotate()` method.
+    Rotate,
+    /// `deque.maxlen` attribute (also a constructor keyword argument).
+    Maxlen,
+    /// `deque(iterable=...)` — the constructor's first parameter, which CPython
+    /// also accepts by keyword. Distinct from [`Self::Iterable`], which is the
+    /// capitalized `typing.Iterable`.
+    #[strum(serialize = "iterable")]
+    IterableArg,
+    /// The `collections.namedtuple` factory function.
+    Namedtuple,
+    /// The `collections.defaultdict` factory function.
+    Defaultdict,
+    /// The `collections.Counter` type/factory.
+    #[strum(serialize = "Counter")]
+    Counter,
+    /// `Counter.most_common()` method.
+    #[strum(serialize = "most_common")]
+    MostCommon,
+    /// `Counter.elements()` method.
+    Elements,
+    /// `Counter.total()` method.
+    Total,
+    /// `Counter.subtract()` method.
+    Subtract,
+    /// `namedtuple(typename=...)` keyword argument.
+    Typename,
+    /// `namedtuple(field_names=...)` keyword argument.
+    #[strum(serialize = "field_names")]
+    FieldNames,
+    /// `NamedTuple._fields` — tuple of field names.
+    #[strum(serialize = "_fields")]
+    UnderFields,
+    /// `NamedTuple._field_defaults` — dict of defaulted field names to values.
+    #[strum(serialize = "_field_defaults")]
+    UnderFieldDefaults,
+    /// `NamedTuple._make(iterable)` classmethod.
+    #[strum(serialize = "_make")]
+    UnderMake,
+    /// `NamedTuple._replace(**kwargs)` method.
+    #[strum(serialize = "_replace")]
+    UnderReplace,
+    /// `NamedTuple._asdict()` method.
+    #[strum(serialize = "_asdict")]
+    UnderAsdict,
+    /// `namedtuple(..., defaults=...)` keyword argument.
+    Defaults,
+    /// `namedtuple(..., module=...)` keyword argument.
+    #[strum(serialize = "module")]
+    ModuleKwarg,
+    /// `defaultdict.default_factory` attribute.
+    #[strum(serialize = "default_factory")]
+    DefaultFactory,
+    /// `defaultdict.__missing__` method.
+    #[strum(serialize = "__missing__")]
+    DunderMissing,
+    /// `__module__` — the defining module name, exposed on namedtuple classes.
+    #[strum(serialize = "__module__")]
+    DunderModule,
+    /// `__getnewargs__` — the copy/pickle hook on named tuples.
+    #[strum(serialize = "__getnewargs__")]
+    DunderGetnewargs,
+    /// `__qualname__` — the qualified class name, exposed on namedtuple classes.
+    #[strum(serialize = "__qualname__")]
+    DunderQualname,
+
+    // ==========================
+    // More itertools module strings. Appended at the enum end rather than
+    // beside the earlier itertools block: discriminants are serialized
+    // `StringId`s, so inserting there would shift every later id.
+    /// `itertools.pairwise()` function.
+    Pairwise,
+    /// `itertools.compress()` function.
+    Compress,
+    /// `data` keyword argument of `itertools.compress()`.
+    Data,
+    /// `selectors` keyword argument of `itertools.compress()`.
+    Selectors,
+    /// `itertools.islice()` function.
+    Islice,
+    /// `itertools.chain()` function.
+    Chain,
+    /// `itertools.cycle()` function.
+    Cycle,
+    /// Python's `NotImplemented` singleton representation.
+    #[strum(serialize = "NotImplemented")]
+    NotImplementedRepr,
+}
+
+/// Computes an FNV-1a hash over static-string identities and serialization.
+#[cfg(test)]
+pub(crate) fn static_strings_fingerprint() -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0100_0000_01b3;
+
+    fn update(hash: &mut u64, bytes: &[u8]) {
+        for byte in u32::try_from(bytes.len())
+            .expect("fingerprint field length fits u32")
+            .to_le_bytes()
+        {
+            *hash ^= u64::from(byte);
+            *hash = hash.wrapping_mul(PRIME);
+        }
+        for byte in bytes {
+            *hash ^= u64::from(*byte);
+            *hash = hash.wrapping_mul(PRIME);
+        }
+    }
+
+    let mut hash = OFFSET_BASIS;
+    for value in StaticStrings::iter() {
+        update(&mut hash, &(value as u16).to_le_bytes());
+        update(&mut hash, format!("{value:?}").as_bytes());
+        let string: &'static str = value.into();
+        update(&mut hash, string.as_bytes());
+        update(
+            &mut hash,
+            &postcard::to_allocvec(&value).expect("StaticStrings serialization cannot fail"),
+        );
+    }
+    hash
 }
 
 impl StaticStrings {
@@ -936,21 +1207,101 @@ fn get_str(strings: &[WithHash<String>], id: StringId) -> &str {
 /// the value with its precomputed [`HashValue`] — populated eagerly at
 /// intern time by [`InternerBuilder`]. `str_hash` / `bytes_hash` /
 /// `long_int_hash` are plain index lookups.
+///
+/// # Reverse string lookup
+///
+/// [`get_string_id_by_name`](Self::get_string_id_by_name) returns the
+/// `StringId` for a host-supplied `&str`. It is backed by an in-memory
+/// `String → StringId` map that is rebuilt deterministically at construction
+/// time (and after deserialization, via [`InternsWire`]). REPL hot paths
+/// such as [`MontyRepl::call_function`](crate::MontyRepl::call_function)
+/// and [`MontyRepl::has_function`](crate::MontyRepl::has_function) call this
+/// per host-supplied name, so the lookup must be O(1) — not the previous
+/// linear scan over `strings`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(from = "InternsWire")]
 pub(crate) struct Interns {
+    strings: Vec<WithHash<String>>,
+    bytes: Vec<WithHash<Vec<u8>>>,
+    long_ints: Vec<WithHash<BigInt>>,
+    functions: Vec<Function>,
+    /// `String → StringId` reverse lookup for [`Self::get_string_id_by_name`].
+    ///
+    /// Built from `strings` at construction and after deserialization, so
+    /// the structure is purely additive on the wire (`InternsWire` carries
+    /// no reverse map). Single-ASCII and `StaticStrings` ids are NOT stored
+    /// here — those are resolved by the cheap branches at the top of
+    /// `get_string_id_by_name`.
+    #[serde(skip)]
+    string_id_by_name: AHashMap<String, StringId>,
+}
+
+/// Serialized form of [`Interns`]
+#[derive(serde::Deserialize)]
+struct InternsWire {
     strings: Vec<WithHash<String>>,
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
 }
 
+impl From<Interns> for InternsWire {
+    fn from(interns: Interns) -> Self {
+        Self {
+            strings: interns.strings,
+            bytes: interns.bytes,
+            long_ints: interns.long_ints,
+            functions: interns.functions,
+        }
+    }
+}
+
+impl From<InternsWire> for Interns {
+    fn from(wire: InternsWire) -> Self {
+        let string_id_by_name = build_string_id_by_name(&wire.strings);
+        Self {
+            strings: wire.strings,
+            bytes: wire.bytes,
+            long_ints: wire.long_ints,
+            functions: wire.functions,
+            string_id_by_name,
+        }
+    }
+}
+
+/// Builds the `String → StringId` reverse map from the `strings` vector.
+///
+/// Used both at fresh [`Interns::new`] time and after deserialization. The
+/// ids start at [`INTERN_STRING_ID_OFFSET`] because slots `< OFFSET` are
+/// reserved for ASCII single-character strings and the [`StaticStrings`]
+/// table — those are handled by the cheap branches at the top of
+/// [`Interns::get_string_id_by_name`] and never enter this map.
+fn build_string_id_by_name(strings: &[WithHash<String>]) -> AHashMap<String, StringId> {
+    strings
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let id = StringId(
+                u32::try_from(INTERN_STRING_ID_OFFSET + index)
+                    .expect("StringId overflow while building reverse interns map"),
+            );
+            (entry.value().clone(), id)
+        })
+        .collect()
+}
+
 impl Interns {
     pub fn new(interner: InternerBuilder, functions: Vec<Function>) -> Self {
+        // `InternerBuilder` already maintains the `String → StringId` map
+        // during the parse/prepare phase to deduplicate `intern` calls;
+        // we move it across so `Interns::get_string_id_by_name` doesn't
+        // have to rebuild the same table from `strings`.
         Self {
             strings: interner.strings,
             bytes: interner.bytes,
             long_ints: interner.long_ints,
             functions,
+            string_id_by_name: interner.string_map,
         }
     }
 
@@ -1060,27 +1411,29 @@ impl Interns {
 
     /// Looks up the `StringId` for a string, checking ASCII, static strings, and interned strings.
     ///
-    /// This is the reverse of `get_str`: given a string, find its StringId.
-    /// Used when the host provides a name (e.g., from a NameLookup response) that was
-    /// previously interned during preparation.
+    /// This is the reverse of [`Self::get_str`]: given a string, find its
+    /// `StringId`. The interned-string branch is O(1) via the
+    /// `string_id_by_name` reverse map (built once at construction /
+    /// deserialization), so the entire lookup stays O(1) regardless of how
+    /// many strings have been interned.
     ///
-    /// Error if the string was never interned.
+    /// Used when the host provides a name (e.g., from a `NameLookup` response,
+    /// [`MontyRepl::call_function`](crate::MontyRepl::call_function),
+    /// [`MontyRepl::has_function`](crate::MontyRepl::has_function), or input
+    /// injection) that was previously interned during preparation.
+    ///
+    /// Returns `None` if the string was never interned.
     pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
-        // Check single ASCII char
+        // Single ASCII char and `StaticStrings` ids live in reserved slot
+        // ranges below `INTERN_STRING_ID_OFFSET`, never in the interned
+        // pool — keep the cheap branches at the top.
         if s.len() == 1 {
             return Some(StringId::from_ascii(s.as_bytes()[0]));
         }
-        // Check static strings
         if let Ok(ss) = StaticStrings::from_str(s) {
             return Some(ss.into());
         }
-        // Check interned strings
-        for (i, interned) in self.strings.iter().enumerate() {
-            if interned.value() == s {
-                return u32::try_from(INTERN_STRING_ID_OFFSET + i).ok().map(StringId);
-            }
-        }
-        None
+        self.string_id_by_name.get(s).copied()
     }
 
     /// Sets the compiled functions.

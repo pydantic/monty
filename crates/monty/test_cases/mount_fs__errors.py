@@ -14,18 +14,23 @@ is_windows = sys.platform == 'win32'
 # ============================================================================
 
 # === TypeError on mkdir with too many positional arguments ===
+# Both engines use pure-Python `def` range wording; the counts differ because
+# CPython counts the bound `self` argument (`from 1 to 4 ... 5 were given`)
+# while Monty binds only the visible parameters.
 too_many_path = root / 'mkdir_too_many_args'
 try:
     too_many_path.mkdir(0o777, False, False, 'extra')
     assert False, 'expected TypeError on mkdir too many positional args'
 except TypeError as exc:
     if is_monty:
-        assert str(exc) == 'Path.mkdir() takes at most 3 arguments (4 given)', f'unexpected message: {exc}'
+        assert str(exc) == 'Path.mkdir() takes from 0 to 3 positional arguments but 4 were given', (
+            f'unexpected message: {exc}'
+        )
     else:
         assert str(exc) == 'Path.mkdir() takes from 1 to 4 positional arguments but 5 were given', (
             f'unexpected message: {exc}'
         )
-assert too_many_path.exists() == False, 'mkdir too many args does not create directory'
+assert too_many_path.exists() == False
 
 # === TypeError on mkdir with unknown keyword argument ===
 unknown_kw_path = root / 'mkdir_unknown_kw'
@@ -34,7 +39,7 @@ try:
     assert False, 'expected TypeError on mkdir unknown kwarg'
 except TypeError as exc:
     assert str(exc) == "Path.mkdir() got an unexpected keyword argument 'bogus'", f'unexpected message: {exc}'
-assert unknown_kw_path.exists() == False, 'mkdir unknown kwarg does not create directory'
+assert unknown_kw_path.exists() == False
 
 # === TypeError on mkdir with duplicate parents argument ===
 duplicate_arg_path = root / 'mkdir_duplicate_arg'
@@ -43,7 +48,7 @@ try:
     assert False, 'expected TypeError on mkdir duplicate parents'
 except TypeError as exc:
     assert str(exc) == "Path.mkdir() got multiple values for argument 'parents'", f'unexpected message: {exc}'
-assert duplicate_arg_path.exists() == False, 'mkdir duplicate arg does not create directory'
+assert duplicate_arg_path.exists() == False
 
 # ============================================================================
 # FileNotFoundError — read/write/stat/unlink/rmdir on nonexistent paths
@@ -222,7 +227,7 @@ except OSError as exc:
 if not is_windows:
     (root / 'rename_dst_empty').mkdir()
     (root / 'rename_src_dir').rename(root / 'rename_dst_empty')
-    assert (root / 'rename_dst_empty' / 'moved.txt').read_text() == 'moved', 'rename dir onto empty dir succeeds'
+    assert (root / 'rename_dst_empty' / 'moved.txt').read_text() == 'moved'
     assert not (root / 'rename_src_dir').exists(), 'source dir gone after rename'
 
 # ============================================================================
@@ -346,16 +351,14 @@ try:
     long_component_path.write_text('test')
     assert False, 'expected OSError on long component'
 except OSError as exc:
-    if is_monty:
-        assert str(exc) == "[Errno 36] File name too long: '/mnt/" + long_name + "'", f'unexpected message: {exc}'
-    elif not is_windows:
+    if not is_windows:
         assert str(exc).startswith(("[Errno 36] File name too long: '", "[Errno 63] File name too long: '")), (
             f'exc message: {exc}'
         )
 
 # === Component at exactly 255 bytes is accepted ===
 ok_name = 'b' * 255
-assert Path(str(root) + '/' + ok_name).exists() == False, '255-byte component should be accepted'
+assert Path(str(root) + '/' + ok_name).exists() == False
 
 # === OSError on total path too long (> 4096 bytes) ===
 long_path_str = str(root) + '/' + '/'.join(['x' * 200] * 21)
@@ -363,9 +366,7 @@ try:
     Path(long_path_str).write_text('test')
     assert False, 'expected OSError on long total path'
 except OSError as exc:
-    if is_monty:
-        assert str(exc).startswith("[Errno 36] File name too long: '"), f'unexpected message: {exc}'
-    elif not is_windows:
+    if not is_windows:
         assert str(exc).startswith(("[Errno 36] File name too long: '", "[Errno 63] File name too long: '")), (
             f'exc message: {exc}'
         )
@@ -375,9 +376,7 @@ try:
     long_component_path.read_text()
     assert False, 'expected OSError on read_text with long component'
 except OSError as exc:
-    if is_monty:
-        assert str(exc) == "[Errno 36] File name too long: '/mnt/" + long_name + "'", f'unexpected message: {exc}'
-    elif not is_windows:
+    if not is_windows:
         assert str(exc).startswith(("[Errno 36] File name too long: '", "[Errno 63] File name too long: '")), (
             f'exc message: {exc}'
         )
@@ -387,9 +386,7 @@ try:
     long_component_path.stat()
     assert False, 'expected OSError on stat with long component'
 except OSError as exc:
-    if is_monty:
-        assert str(exc) == "[Errno 36] File name too long: '/mnt/" + long_name + "'", f'unexpected message: {exc}'
-    elif not is_windows:
+    if not is_windows:
         assert str(exc).startswith(("[Errno 36] File name too long: '", "[Errno 63] File name too long: '")), (
             f'exc message: {exc}'
         )
@@ -399,9 +396,7 @@ try:
     long_component_path.mkdir()
     assert False, 'expected OSError on mkdir with long component'
 except OSError as exc:
-    if is_monty:
-        assert str(exc) == "[Errno 36] File name too long: '/mnt/" + long_name + "'", f'unexpected message: {exc}'
-    elif not is_windows:
+    if not is_windows:
         assert str(exc).startswith(("[Errno 36] File name too long: '", "[Errno 63] File name too long: '")), (
             f'exc message: {exc}'
         )

@@ -1,53 +1,56 @@
-//! Python bindings for the Monty sandboxed Python interpreter.
+#![doc = include_str!("../README.md")]
+
+//! # Rust binding internals
 //!
-//! This module provides a Python interface to Monty, allowing execution of
-//! sandboxed Python code with configurable resource limits and external
-//! function callbacks.
+//! Execution always happens in `monty` worker subprocesses (via the
+//! `monty-pool` crate): a monty process can never be made fully crash-proof
+//! against memory errors triggered by adversarial input, so crash isolation
+//! is not optional. [`PyMonty`] (`Monty`) drives workers synchronously;
+//! [`PyAsyncMonty`] (`AsyncMonty`) drives them from an asyncio event loop and
+//! supports coroutine external functions.
 
 mod async_dispatch;
 mod build;
-mod convert;
-mod dataclass;
-mod exceptions;
+pub mod exceptions;
 mod external;
 mod limits;
-mod monty_cls;
 mod mount;
+mod pool;
 mod print_target;
-mod repl;
-mod serialization;
+mod snapshot;
+mod telemetry;
+mod version;
 
 use std::sync::OnceLock;
 
-// Use `::monty` to refer to the external crate (not the pymodule)
-pub use convert::PyMontyFileHandle;
-pub use exceptions::{MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
-pub use monty_cls::{PyFunctionSnapshot, PyFutureSnapshot, PyMonty, PyMontyComplete, PyNameLookupSnapshot};
+pub use exceptions::{
+    MontyConversionError, MontyCrashedError, MontyDisconnectError, MontyError, MontyRuntimeError, MontyShutdown,
+    MontySyntaxError, MontyTypingError, PyFrame,
+};
 pub use mount::PyMountDir;
+pub use pool::{PyAsyncMonty, PyAsyncMontySession, PyAsyncMontyWebsocket, PyMonty, PyMontySession};
 pub use print_target::{PyCollectStreams, PyCollectString};
 use pyo3::{prelude::*, sync::PyOnceLock, types::PyAny};
-pub use repl::PyMontyRepl;
+pub use snapshot::{
+    MontyComplete, PyAsyncFunctionSnapshot, PyAsyncFutureSnapshot, PyAsyncNameLookupSnapshot, PyFunctionSnapshot,
+    PyFutureSnapshot, PyNameLookupSnapshot,
+};
+use version::cargo_version_to_pep440;
 
-/// Copied from `get_pydantic_core_version` in pydantic
+/// The PEP 440 version exposed as `pydantic_monty.__version__`.
+///
+/// Copied from `get_pydantic_core_version` in pydantic.
 fn get_version() -> &'static str {
     static VERSION: OnceLock<String> = OnceLock::new();
 
-    VERSION.get_or_init(|| {
-        let version = env!("CARGO_PKG_VERSION");
-        // cargo uses "1.0-alpha1" etc. while python uses "1.0.0a1", this is not full compatibility,
-        // but it's good enough for now
-        // see https://docs.rs/semver/1.0.9/semver/struct.Version.html#method.parse for rust spec
-        // see https://peps.python.org/pep-0440/ for python spec
-        // it seems the dot after "alpha/beta" e.g. "-alpha.1" is not necessary, hence why this works
-        version.replace("-alpha", "a").replace("-beta", "b")
-    })
+    VERSION.get_or_init(|| cargo_version_to_pep440(monty_types::MONTY_VERSION))
 }
 
 /// Private Python object type used for the public `NOT_HANDLED` singleton.
 ///
 /// Python OS callbacks return the singleton instance rather than creating fresh
 /// values. The Rust bridge uses object identity to detect this sentinel and
-/// apply `OsFunction::on_no_handler()` for the pending OS call.
+/// apply the call's no-handler behavior.
 #[pyclass(name = "_NotHandledSentinel", module = "pydantic_monty", frozen)]
 struct NotHandledSentinel;
 
@@ -73,16 +76,43 @@ pub(crate) fn get_not_handled(py: Python<'_>) -> PyResult<&Py<PyAny>> {
 /// Monty - A sandboxed Python interpreter written in Rust.
 #[pymodule]
 mod _monty {
+    // `MontyFileHandle` is produced by the value-conversion layer (in
+    // `monty_proto`) whenever a `MontyObject::FileHandle` crosses the
+    // boundary; export it as part of the `pydantic_monty` surface.
+    #[pymodule_export]
+    use monty_proto::python::PyMontyFileHandle as MontyFileHandle;
     use pyo3::prelude::*;
 
+    #[pymodule_export]
+    use super::MontyComplete;
+    #[pymodule_export]
+    use super::MontyConversionError;
+    #[pymodule_export]
+    use super::MontyCrashedError;
+    #[pymodule_export]
+    use super::MontyDisconnectError;
     #[pymodule_export]
     use super::MontyError;
     #[pymodule_export]
     use super::MontyRuntimeError;
     #[pymodule_export]
+    use super::MontyShutdown;
+    #[pymodule_export]
     use super::MontySyntaxError;
     #[pymodule_export]
     use super::MontyTypingError;
+    #[pymodule_export]
+    use super::PyAsyncFunctionSnapshot as AsyncFunctionSnapshot;
+    #[pymodule_export]
+    use super::PyAsyncFutureSnapshot as AsyncFutureSnapshot;
+    #[pymodule_export]
+    use super::PyAsyncMonty as AsyncMonty;
+    #[pymodule_export]
+    use super::PyAsyncMontySession as AsyncMontySession;
+    #[pymodule_export]
+    use super::PyAsyncMontyWebsocket as AsyncMontyWebsocket;
+    #[pymodule_export]
+    use super::PyAsyncNameLookupSnapshot as AsyncNameLookupSnapshot;
     #[pymodule_export]
     use super::PyCollectStreams as CollectStreams;
     #[pymodule_export]
@@ -96,19 +126,13 @@ mod _monty {
     #[pymodule_export]
     use super::PyMonty as Monty;
     #[pymodule_export]
-    use super::PyMontyComplete as MontyComplete;
-    #[pymodule_export]
-    use super::PyMontyFileHandle as MontyFileHandle;
-    #[pymodule_export]
-    use super::PyMontyRepl as MontyRepl;
+    use super::PyMontySession as MontySession;
     #[pymodule_export]
     use super::PyMountDir as MountDir;
     #[pymodule_export]
     use super::PyNameLookupSnapshot as NameLookupSnapshot;
     #[pymodule_export]
-    use super::serialization::load_repl_snapshot;
-    #[pymodule_export]
-    use super::serialization::load_snapshot;
+    use super::telemetry::_install_telemetry_adapter;
     use super::{get_not_handled, get_version};
 
     #[pymodule_init]

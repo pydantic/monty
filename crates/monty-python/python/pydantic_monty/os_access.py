@@ -27,7 +27,7 @@ OsFunction = Literal[
     'Path.is_file',
     'Path.is_dir',
     'Path.is_symlink',
-    'Open',
+    'open',
     'Path.read_text',
     'Path.read_bytes',
     'Path.write_text',
@@ -182,7 +182,7 @@ class AbstractOS(ABC):
                 return self.path_is_dir(*args)
             case 'Path.is_symlink':
                 return self.path_is_symlink(*args)
-            case 'Open':
+            case 'open':
                 return self.path_open(*args)
             case 'Path.read_text':
                 return self.path_read_text(*args)

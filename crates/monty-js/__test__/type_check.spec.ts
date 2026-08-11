@@ -1,147 +1,210 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
-import { Monty, MontyTypingError } from '../wrapper'
+import { MontyError, MontyRuntimeError, MontyTypingError } from '@pydantic/monty'
+import { encodeTypeCheckFormat } from '../ts/options.js'
+import { setupPool } from './helpers.js'
+
+const { run, pool } = setupPool()
+
+/** The full diagnostics rendering for `"hello" + 1`, parameterized by script name. */
+const unsupportedOperatorDiagnostics = (scriptName: string) =>
+  [
+    'error[unsupported-operator]: Unsupported `+` operation',
+    ` --> ${scriptName}:1:1`,
+    '  |',
+    '1 | "hello" + 1',
+    '  | -------^^^-',
+    '  | |         |',
+    '  | |         Has type `Literal[1]`',
+    '  | Has type `Literal["hello"]`',
+    '  |',
+    '',
+    '',
+  ].join('\n')
 
 // =============================================================================
-// typeCheck() tests
+// typeCheck session option
 // =============================================================================
 
-test('type check no errors', (t) => {
-  const m = new Monty('x = 1')
-  t.notThrows(() => m.typeCheck())
+test('type check no errors', async () => {
+  t.is(await run('x = 1', { typeCheck: true }), null)
 })
 
-test('type check with errors', (t) => {
-  const m = new Monty('"hello" + 1')
-  const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
-  t.true(error.message.includes('unsupported-operator'))
+test('type check with errors', async () => {
+  const error = await t.throwsAsync(() => run('"hello" + 1', { typeCheck: true }), { instanceOf: MontyTypingError })
+  t.is(error.message, 'TypeError: error[unsupported-operator]: Unsupported `+` operation')
+  t.is(error.display(), unsupportedOperatorDiagnostics('main.py'))
 })
 
-test('type check function return type', (t) => {
+test('type check format', async () => {
+  // the format is chosen at checkout: the worker renders the diagnostics
+  // before they cross the wire, so the error cannot re-render them
+  const error = await t.throwsAsync(() => run('"hello" + 1', { typeCheck: true, typeCheckFormat: 'concise' }), {
+    instanceOf: MontyTypingError,
+  })
+  t.is(
+    error.display(),
+    'main.py:1:1: error[unsupported-operator] Operator `+` is not supported between objects of type `Literal["hello"]` and `Literal[1]`\n',
+  )
+})
+
+test('type check format json', async () => {
+  const error = await t.throwsAsync(() => run('"hello" + 1', { typeCheck: true, typeCheckFormat: 'json' }), {
+    instanceOf: MontyTypingError,
+  })
+  const [diagnostic] = JSON.parse(error.display()) as { name: string; location: { row: number; column: number } }[]
+  t.is(diagnostic.name, 'unsupported-operator')
+  t.deepEqual(diagnostic.location, { row: 1, column: 1 })
+})
+
+test('type check color', async () => {
+  const error = await t.throwsAsync(
+    () => run('"hello" + 1', { typeCheck: true, typeCheckFormat: 'concise', typeCheckColor: true }),
+    { instanceOf: MontyTypingError },
+  )
+  t.true(error.display().startsWith('\u001b['))
+})
+
+test('type check format rejects inherited property names', () => {
+  // A plain lookup would find `Object.prototype.toString` and hand a function
+  // to the wire encoder; JS callers are not bound by the TypeScript type.
+  for (const bogus of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'nonsense']) {
+    t.throws(() => encodeTypeCheckFormat(bogus as never), {
+      instanceOf: RangeError,
+      message: `unknown typeCheckFormat '${bogus}', expected one of: full, concise, azure, json, jsonlines, rdjson, pylint, gitlab, github`,
+    })
+  }
+  t.is(encodeTypeCheckFormat('jsonlines'), 5)
+})
+
+test('type check function return type', async () => {
   const code = `
 def foo() -> int:
     return "not an int"
 `
-  const m = new Monty(code)
-  const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
-  t.true(error.message.includes('invalid-return-type'))
+  const error = await t.throwsAsync(() => run(code, { typeCheck: true }), { instanceOf: MontyTypingError })
+  t.is(error.message, 'TypeError: error[invalid-return-type]: Return type does not match returned value')
 })
 
-test('type check undefined variable', (t) => {
-  const m = new Monty('print(undefined_var)')
-  const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
-  t.true(error.message.includes('unresolved-reference'))
+test('type check undefined variable', async () => {
+  const error = await t.throwsAsync(() => run('print(undefined_var)', { typeCheck: true }), {
+    instanceOf: MontyTypingError,
+  })
+  t.is(error.message, 'TypeError: error[unresolved-reference]: Name `undefined_var` used when not defined')
 })
 
-test('type check valid function', (t) => {
+test('type check valid function', async () => {
   const code = `
 def add(a: int, b: int) -> int:
     return a + b
 
 add(1, 2)
 `
-  const m = new Monty(code)
-  t.notThrows(() => m.typeCheck())
+  t.is(await run(code, { typeCheck: true }), 3)
 })
 
-test('type check with prefix code', (t) => {
-  const m = new Monty('result = x + 1')
-  // Without prefix, x is undefined
-  t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
-  // With prefix declaring x as a variable, it should pass
-  t.notThrows(() => m.typeCheck('x = 0'))
+test('type check disabled by default', async () => {
+  // Without typeCheck the snippet executes and fails at runtime instead.
+  const error = await t.throwsAsync(() => run('"hello" + 1'), { instanceOf: MontyRuntimeError })
+  t.is(error.message, 'TypeError: can only concatenate str (not "int") to str')
+})
+
+test('type check explicit false', async () => {
+  await t.throwsAsync(() => run('"hello" + 1', { typeCheck: false }), { instanceOf: MontyRuntimeError })
+})
+
+test('default allows run with inputs', async () => {
+  // Type checking would reject the unresolved name, but it is off by default.
+  t.is(await run('x + 1', { inputs: { x: 5 } }), 6)
 })
 
 // =============================================================================
-// Constructor type_check parameter tests
+// Accumulated type-check context and stubs
 // =============================================================================
 
-test('constructor type check default false', (t) => {
-  // This should NOT raise during construction (typeCheck=false is default)
-  const m = new Monty('"hello" + 1')
-  // But we can still call typeCheck() manually later
-  t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
+test('earlier feeds join the type-check context', async () => {
+  // In a fresh session x is undefined ...
+  await t.throwsAsync(() => run('result = x + 1', { typeCheck: true }), { instanceOf: MontyTypingError })
+  // ... but a snippet fed earlier in the same session defines it.
+  const session = await pool().checkout({ typeCheck: true })
+  try {
+    await session.feedRun('x = 0')
+    t.is(await session.feedRun('result = x + 1\nresult'), 1)
+  } finally {
+    await session.close()
+  }
 })
 
-test('constructor type check explicit true', (t) => {
-  t.throws(() => new Monty('"hello" + 1', { typeCheck: true }), { instanceOf: MontyTypingError })
-})
-
-test('constructor type check explicit false', (t) => {
-  // This should NOT raise during construction
-  const m = new Monty('"hello" + 1', { typeCheck: false })
-  // But we can still call typeCheck() manually later
-  t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
-})
-
-test('constructor default allows run with inputs', (t) => {
-  // Code with undefined variable - type checking would fail
-  const m = new Monty('x + 1', { inputs: ['x'] })
-  // But runtime works fine with the input provided
-  const result = m.run({ inputs: { x: 5 } })
-  t.is(result, 6)
-})
-
-test('constructor type check prefix code', (t) => {
-  // Without prefix, this would fail type checking (x is undefined)
-  // Use assignment to define x, not just type annotation
-  t.notThrows(() => new Monty('result = x + 1', { typeCheck: true, typeCheckPrefixCode: 'x = 0' }))
-})
-
-test('constructor type check prefix code with external function', (t) => {
-  // Define fetch as a function that takes a string and returns a string
-  const prefix = `
-def fetch(url: str) -> str:
-    return ''
-`
-  t.notThrows(
-    () =>
-      new Monty('result = fetch("https://example.com")', {
-        typeCheck: true,
-        typeCheckPrefixCode: prefix,
-      }),
+test('type check stubs with external function', async () => {
+  // The stub satisfies the type checker; the external function provides the
+  // runtime implementation.
+  t.is(
+    await run('result = fetch("https://example.com")\nresult', {
+      typeCheck: true,
+      typeCheckStubs: 'def fetch(url: str) -> str: ...',
+      externalLookup: { fetch: () => 'response data' },
+    }),
+    'response data',
   )
 })
 
-test('constructor type check prefix code invalid', (t) => {
-  // Prefix defines x as str, but code tries to use it with int addition
-  t.throws(
-    () =>
-      new Monty('result: int = x + 1', {
-        typeCheck: true,
-        typeCheckPrefixCode: 'x = "hello"',
-      }),
+test('type check stubs invalid', async () => {
+  // The stub defines x as str, but the code uses it in an int annotation context.
+  const error = await t.throwsAsync(
+    () => run('result: int = x + 1', { typeCheck: true, typeCheckStubs: 'x = "hello"' }),
     { instanceOf: MontyTypingError },
   )
+  t.is(error.message, 'TypeError: error[unsupported-operator]: Unsupported `+` operation')
+})
+
+test('failing snippet does not execute and session survives', async () => {
+  const session = await pool().checkout({ typeCheck: true })
+  try {
+    await session.feedRun('x = 1')
+    await t.throwsAsync(() => session.feedRun('x = 2\n"hello" + 1'), { instanceOf: MontyTypingError })
+    // The rejected snippet did not run: x is unchanged.
+    t.is(await session.feedRun('x'), 1)
+  } finally {
+    await session.close()
+  }
+})
+
+test('skipTypeCheck skips checking without joining the context', async () => {
+  const session = await pool().checkout({ typeCheck: true })
+  try {
+    // The skipped feed executes unchecked ...
+    t.is(await session.feedRun('y = 41\ny', { skipTypeCheck: true }), 41)
+    // ... but does not join the accumulated type-check context.
+    const error = await t.throwsAsync(() => session.feedRun('y + 1'), { instanceOf: MontyTypingError })
+    t.is(error.message, 'TypeError: error[unresolved-reference]: Name `y` used when not defined')
+  } finally {
+    await session.close()
+  }
+})
+
+test('scriptName appears in diagnostics', async () => {
+  const error = await t.throwsAsync(() => run('"hello" + 1', { typeCheck: true, scriptName: 'my_script.py' }), {
+    instanceOf: MontyTypingError,
+  })
+  t.is(error.display(), unsupportedOperatorDiagnostics('my_script.py'))
 })
 
 // =============================================================================
-// MontyTypingError tests
+// MontyTypingError
 // =============================================================================
 
-test('monty typing error is monty error subclass', (t) => {
-  const m = new Monty('"hello" + 1')
-  const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
+test('monty typing error is monty error subclass', async () => {
+  const error = await t.throwsAsync(() => run('"hello" + 1', { typeCheck: true }), { instanceOf: MontyTypingError })
+  t.true(error instanceof MontyError)
   t.true(error instanceof Error)
 })
 
-test('monty typing error displayDiagnostics', (t) => {
-  const m = new Monty('"hello" + 1')
-  const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
-  // displayDiagnostics() returns rich diagnostics, display('msg') returns the raw message
-  t.is(error.message, `TypeError: ${error.display('msg')}`)
-})
-
-test('monty typing error displayDiagnostics concise format', (t) => {
-  const m = new Monty('"hello" + 1')
-  const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
-  const concise = error.displayDiagnostics('concise')
-  t.true(concise.includes('error[unsupported-operator]'))
-})
-
-test('monty typing error inherits base display formats', (t) => {
-  const m = new Monty('"hello" + 1')
-  const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
-  t.is(error.display('msg'), error.exception.message)
-  t.true(error.display('type-msg').startsWith('TypeError:'))
+test('monty typing error message is first diagnostic line', async () => {
+  const error = await t.throwsAsync(() => run('"hello" + 1', { typeCheck: true }), { instanceOf: MontyTypingError })
+  t.is(error.message, `TypeError: ${error.display().split('\n', 1)[0]}`)
+  t.deepEqual(error.exception, {
+    typeName: 'TypeError',
+    message: 'error[unsupported-operator]: Unsupported `+` operation',
+  })
 })

@@ -77,7 +77,8 @@ class CodeRunner(ABC):
 class MontyRunner(CodeRunner):
     """CodeRunner implementation using Monty with OSAccess virtual filesystem."""
 
-    def __init__(self) -> None:
+    def __init__(self, pool: Monty) -> None:
+        self._pool = pool
         self._files: list[MemoryFile] = []
         self._environ: dict[str, str] = {}
         self._os_access: OSAccess | None = None
@@ -101,8 +102,8 @@ class MontyRunner(CodeRunner):
     def run_code(self, code: str) -> Any:
         # Prepend imports - OSAccess now handles relative paths
         wrapped_code = f'from pathlib import Path\nimport os\n{code}'
-        m = Monty(wrapped_code)
-        return m.run(os=self._get_os_access())
+        with self._pool.checkout() as session:
+            return session.feed_run(wrapped_code, os=self._get_os_access())
 
     def tree(self) -> TreeDict:
         result: TreeDict = {}
@@ -204,10 +205,10 @@ class CPythonRunner(CodeRunner):
 
 
 @pytest.fixture(params=['monty', 'cpython'])
-def runner(request: pytest.FixtureRequest, tmp_path: Path) -> CodeRunner:
+def runner(request: pytest.FixtureRequest, tmp_path: Path, pool: Monty) -> CodeRunner:
     """Fixture that provides both Monty and CPython runners for comparison testing."""
     if request.param == 'monty':
-        return MontyRunner()
+        return MontyRunner(pool)
     else:
         return CPythonRunner(tmp_path)
 

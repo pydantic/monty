@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Update vendored typeshed files from the upstream repository.
 
 This script:
@@ -28,9 +27,11 @@ ALLOWED_FUNCTIONS = {
     'hex',
     'id',
     'isinstance',
+    'iter',
     'len',
     'max',
     'min',
+    'next',
     'oct',
     'ord',
     'pow',
@@ -100,6 +101,10 @@ COPY_FILES = [
     'typing.pyi',
     'typing_extensions.pyi',
     '_collections_abc.pyi',
+    # `@abstractmethod` decorates protocol members throughout the stubs above
+    # (e.g. `Iterator.__next__`); without it every such member infers as
+    # `Unknown` and silences downstream errors
+    'abc.pyi',
     # Used in type annotations
     'types.pyi',
     # So type checking works with dataclasses
@@ -137,11 +142,13 @@ VERSIONS = """\
 
 _collections_abc: 3.3-
 _typeshed: 3.0-  # not present at runtime, only for type checking
+abc: 3.0-  # not importable at runtime, only for type checking
 asyncio: 3.4-
 builtins: 3.0-
 collections: 3.0-
 dataclasses: 3.7-
 datetime: 3.0-
+itertools: 3.0-
 json: 3.0-
 math: 3.0-
 os: 3.0-
@@ -152,6 +159,7 @@ sys: 3.0-
 typing: 3.5-
 typing_extensions: 3.7-
 types: 3.0-
+unicodedata: 3.0-
 """
 
 CRATE_DIR = Path(__file__).parent
@@ -328,10 +336,15 @@ def main() -> int:
             raise ValueError(f'{file_path} not found in typeshed')
     print(f'Copied {len(COPY_FILES)} stdlib typeshed files')
 
-    # copy pyi files from CUSTOM_DIR into STDLIB_DIR
+    # Copy Monty's narrowed stubs from CUSTOM_DIR over the upstream copies,
+    # preserving subdirectories so package stubs (e.g. collections/__init__.pyi)
+    # land inside their package rather than flattening onto the stdlib root.
+    # `rglob` (not `glob`) is required for nested packages.
     custom_count = 0
-    for file in CUSTOM_DIR.glob('*.pyi'):
-        shutil.copy2(file, STDLIB_DIR)
+    for file in CUSTOM_DIR.rglob('*.pyi'):
+        dest_file = STDLIB_DIR / file.relative_to(CUSTOM_DIR)
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(file, dest_file)
         custom_count += 1
     print(f'Copied {custom_count} custom typeshed files')
 

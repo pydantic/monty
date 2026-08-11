@@ -1,44 +1,21 @@
 // napi macros generate code that triggers some clippy lints
-#![allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
+#![expect(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
+#![doc = include_str!("../README.md")]
 
-//! Node.js/TypeScript bindings for the Monty sandboxed Python interpreter.
+//! # Rust binding internals
 //!
-//! This module provides a JavaScript/TypeScript interface to Monty via napi-rs,
-//! allowing execution of sandboxed Python code from Node.js with configurable
-//! inputs, resource limits, and external function callbacks.
-//!
-//! ## Quick Start
-//!
-//! ```typescript
-//! import { Monty } from 'monty';
-//!
-//! // Simple execution
-//! const m = new Monty('1 + 2');
-//! const result = m.run(); // returns 3
-//!
-//! // With inputs
-//! const m2 = new Monty('x + y', { inputs: ['x', 'y'] });
-//! const result2 = m2.run({ inputs: { x: 10, y: 20 } }); // returns 30
-//!
-//! // Iterative execution with external functions
-//! const m3 = new Monty('external_func()');
-//! let progress = m3.start();
-//! if (progress instanceof MontySnapshot) {
-//!     progress = progress.resume({ returnValue: 42 });
-//! }
-//! ```
+//! This crate is native-only. Browsers (where subprocesses do not exist) run
+//! the sandbox in a Web Worker via the lean `monty-wasm-runtime` module and the
+//! TypeScript pool in `ts/worker/`, not through napi — so there is no longer an
+//! in-process napi surface or a wasm napi build.
 
 mod convert;
 mod exceptions;
 mod limits;
-mod monty_cls;
-mod mount;
+mod pool;
+mod telemetry;
 
-pub use exceptions::{ExceptionInfo, Frame, JsMontyException, MontyTypingError};
+pub use exceptions::{ExceptionInfo, Frame, JsMontyException};
 pub use limits::JsResourceLimits;
-pub use monty_cls::{
-    ExceptionInput, FutureResultInput, Monty, MontyComplete, MontyNameLookup, MontyOptions, MontyRepl,
-    MontyResolveFutures, MontySnapshot, NameLookupLoadOptions, NameLookupResumeOptions, ResolveFuturesLoadOptions,
-    ResolveFuturesResumeOptions, ResumeOptions, RunOptions, SnapshotLoadOptions, StartOptions,
-};
-pub use mount::{MountDir, MountDirOptions};
+pub use pool::{NativeCheckoutOptions, NativeMount, NativePool, NativePoolOptions, NativeSession, MAX_VALUE_DEPTH};
+pub use telemetry::install_telemetry_adapter;
