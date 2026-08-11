@@ -132,6 +132,20 @@ enum BindMode {
     Complex,
 }
 
+/// Malformed signature metadata for dump tests.
+#[cfg(feature = "test-hooks")]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SignatureMetadataFault {
+    /// Makes positional-only defaults outnumber their parameters.
+    PosDefaultsCountOutOfRange,
+    /// Makes positional defaults outnumber their parameters.
+    ArgDefaultsCountOutOfRange,
+    /// Breaks the keyword-only parameter/default-map pairing.
+    KwargDefaultMapLengthMismatch,
+    /// Makes keyword-only default indices non-contiguous.
+    KwargDefaultIndexGap,
+}
+
 impl Signature {
     /// Returns the parameter count when positional arguments need no binding.
     ///
@@ -593,6 +607,58 @@ impl Signature {
     /// Returns the total number of default values across all parameter groups.
     pub fn total_defaults_count(&self) -> usize {
         self.pos_defaults_count + self.arg_defaults_count + self.kwarg_defaults_count()
+    }
+
+    /// Validates compiler-established default metadata before dump loading.
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        if self.pos_defaults_count > self.pos_arg_count() {
+            return Err("positional-only default count exceeds parameter count");
+        }
+        if self.arg_defaults_count > self.arg_count() {
+            return Err("positional default count exceeds parameter count");
+        }
+
+        match (&self.kwargs, &self.kwarg_default_map) {
+            (None, None) => Ok(()),
+            (Some(kwargs), Some(default_map)) if kwargs.len() == default_map.len() => {
+                for (expected, &actual) in default_map.iter().flatten().enumerate() {
+                    if actual != expected {
+                        return Err("keyword-only default indices are not contiguous");
+                    }
+                }
+                Ok(())
+            }
+            _ => Err("keyword-only parameters and default map have different lengths"),
+        }
+    }
+
+    /// Injects malformed metadata for dump tests.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn corrupt_metadata_for_tests(&mut self, fault: SignatureMetadataFault) {
+        match fault {
+            SignatureMetadataFault::PosDefaultsCountOutOfRange => {
+                self.pos_defaults_count = self.pos_arg_count() + 1;
+            }
+            SignatureMetadataFault::ArgDefaultsCountOutOfRange => {
+                self.arg_defaults_count = self.arg_count() + 1;
+            }
+            SignatureMetadataFault::KwargDefaultMapLengthMismatch => {
+                self.kwarg_default_map
+                    .as_mut()
+                    .expect("test function has keyword-only parameters")
+                    .pop();
+            }
+            SignatureMetadataFault::KwargDefaultIndexGap => {
+                *self
+                    .kwarg_default_map
+                    .as_mut()
+                    .expect("test function has keyword-only parameters")
+                    .iter_mut()
+                    .flatten()
+                    .next()
+                    .expect("test function has a keyword-only default") = 1;
+            }
+        }
     }
 
     /// Returns the minimum number of positional arguments required.

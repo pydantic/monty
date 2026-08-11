@@ -300,7 +300,27 @@ fn repl_dump_load_derives_exact_positional_call_plans() {
 fn repl_dump_load_rejects_invalid_function_metadata() {
     /// Checks forged function metadata is rejected at dump load.
     fn assert_rejected(function: &str, fault: FunctionMetadataFault) {
-        let code = "def variadic(*args, **kwargs):\n    return args, kwargs\n\ndef outer(value):\n    def inner():\n        return value\n    return inner";
+        let code = r"
+def variadic(*args, **kwargs):
+    return args, kwargs
+
+def pos_defaults(value=1, /):
+    return value
+
+def defaults(value=1):
+    return value
+
+def kw_defaults(*, first=1, second=2):
+    return first, second
+
+def outer(first, second):
+    def middle():
+        local = 1
+        def inner():
+            return first + second + local
+        return inner
+    return middle
+";
         let (mut repl, _) = init_repl(code);
         repl.__corrupt_function_metadata_for_tests(function, fault);
         let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
@@ -317,6 +337,13 @@ fn repl_dump_load_rejects_invalid_function_metadata() {
     assert_rejected("inner", FunctionMetadataFault::FreeVarSlotOutOfRange);
     assert_rejected("outer", FunctionMetadataFault::CellVarSlotOutOfRange);
     assert_rejected("outer", FunctionMetadataFault::CellParamIndexOutOfRange);
+    assert_rejected("pos_defaults", FunctionMetadataFault::PosDefaultsCountOutOfRange);
+    assert_rejected("defaults", FunctionMetadataFault::ArgDefaultsCountOutOfRange);
+    assert_rejected("kw_defaults", FunctionMetadataFault::KwargDefaultMapLengthMismatch);
+    assert_rejected("kw_defaults", FunctionMetadataFault::KwargDefaultIndexGap);
+    assert_rejected("defaults", FunctionMetadataFault::DefaultsCountMismatch);
+    assert_rejected("inner", FunctionMetadataFault::DuplicateFreeVarSlot);
+    assert_rejected("middle", FunctionMetadataFault::CellFreeVarSlotOverlap);
 }
 
 #[test]

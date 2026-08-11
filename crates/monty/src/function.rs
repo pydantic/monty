@@ -1,11 +1,14 @@
 use std::{
     cell::OnceCell,
+    cmp::Ordering,
     fmt::{self, Write},
     sync::Arc,
 };
 
 use serde::{Deserialize, Deserializer, de::Error as _};
 
+#[cfg(feature = "test-hooks")]
+use crate::args::SignatureMetadataFault;
 use crate::{args::Signature, bytecode::Code, expressions::Identifier, intern::Interns, namespace::NamespaceId};
 
 /// How an exact positional call can bypass argument binding.
@@ -36,6 +39,20 @@ pub enum FunctionMetadataFault {
     CellVarSlotOutOfRange,
     /// Points an owned cell at a nonexistent parameter slot.
     CellParamIndexOutOfRange,
+    /// Makes positional-only defaults outnumber their parameters.
+    PosDefaultsCountOutOfRange,
+    /// Makes positional defaults outnumber their parameters.
+    ArgDefaultsCountOutOfRange,
+    /// Breaks the keyword-only parameter/default-map pairing.
+    KwargDefaultMapLengthMismatch,
+    /// Makes keyword-only default indices non-contiguous.
+    KwargDefaultIndexGap,
+    /// Makes the function default count disagree with its signature.
+    DefaultsCountMismatch,
+    /// Maps two captured free variables to the same local slot.
+    DuplicateFreeVarSlot,
+    /// Maps an owned and captured cell to the same local slot.
+    CellFreeVarSlotOverlap,
 }
 
 /// A defined function once compiled and ready for execution.
@@ -58,8 +75,8 @@ pub enum FunctionMetadataFault {
 ///
 /// # Closure Support
 ///
-/// - `free_var_enclosing_slots[i]`: slot in the *enclosing* frame to read cell
-///   `i` from when building a `Closure` at definition time.
+/// - `free_var_enclosing_slots[i]`: legacy compiler record of the enclosing
+///   slot for captured cell `i`; runtime closure creation uses bytecode.
 /// - `free_var_slots[i]`: slot in *this* frame where that captured cell is
 ///   installed at call time (parallel to `free_var_enclosing_slots`).
 /// - `cell_var_slots[i]`: slot in this frame for an owned cell (a local captured
@@ -72,10 +89,7 @@ pub(crate) struct Function {
     pub signature: Signature,
     /// Size of the initial namespace (number of local variable slots).
     pub namespace_size: usize,
-    /// Enclosing namespace slots for variables captured from enclosing scopes.
-    ///
-    /// At definition time the enclosing frame reads the cell `HeapId` at each
-    /// slot to build a `Closure`. Parallel to [`Self::free_var_slots`].
+    /// Legacy compiler record of enclosing slots; closure creation uses bytecode.
     pub free_var_enclosing_slots: Vec<NamespaceId>,
     /// This frame's slots that receive the captured free-var cells, parallel to
     /// [`Self::free_var_enclosing_slots`]. Explicit (not positional) so
@@ -123,7 +137,7 @@ struct FunctionFields {
     signature: Signature,
     /// Number of local slots reserved by each frame.
     namespace_size: usize,
-    /// Enclosing slots read when a closure is created.
+    /// Legacy record of enclosing slots used to compile closure loads.
     free_var_enclosing_slots: Vec<NamespaceId>,
     /// Local slots receiving captured free-variable cells.
     free_var_slots: Vec<NamespaceId>,
@@ -142,6 +156,8 @@ struct FunctionFields {
 impl FunctionFields {
     /// Validates compiler-established invariants before metadata reaches the VM.
     fn validate(&self) -> Result<(), &'static str> {
+        self.signature.validate()?;
+
         if u16::try_from(self.namespace_size).is_err() {
             return Err("function namespace size exceeds frame limit");
         }
@@ -150,6 +166,9 @@ impl FunctionFields {
         if signature_slots > self.namespace_size {
             return Err("function signature slots exceed namespace size");
         }
+        if self.defaults_count != self.signature.total_defaults_count() {
+            return Err("function default count does not match signature");
+        }
         if self.free_var_enclosing_slots.len() != self.free_var_slots.len() {
             return Err("function free-variable metadata has different lengths");
         }
@@ -157,10 +176,31 @@ impl FunctionFields {
             return Err("function cell-variable metadata has different lengths");
         }
 
-        for slot in self.cell_var_slots.iter().chain(&self.free_var_slots) {
-            let slot = slot.index();
-            if !(signature_slots..self.namespace_size).contains(&slot) {
-                return Err("function closure slot is outside the locals region");
+        for slots in [&self.cell_var_slots, &self.free_var_slots] {
+            let mut previous_slot = None;
+            for slot in slots {
+                let slot = slot.index();
+                if !(signature_slots..self.namespace_size).contains(&slot) {
+                    return Err("function closure slot is outside the locals region");
+                }
+                if previous_slot.is_some_and(|previous| previous >= slot) {
+                    return Err("function closure slots are not strictly ordered");
+                }
+                previous_slot = Some(slot);
+            }
+        }
+
+        let mut cell_slots = self.cell_var_slots.iter().peekable();
+        let mut free_slots = self.free_var_slots.iter().peekable();
+        while let (Some(cell_slot), Some(free_slot)) = (cell_slots.peek(), free_slots.peek()) {
+            match cell_slot.cmp(free_slot) {
+                Ordering::Less => {
+                    cell_slots.next();
+                }
+                Ordering::Greater => {
+                    free_slots.next();
+                }
+                Ordering::Equal => return Err("function closure slots overlap"),
             }
         }
 
@@ -300,6 +340,28 @@ impl Function {
                     .cell_param_indices
                     .first_mut()
                     .expect("test function has an owned cell") = Some(self.signature.total_slots());
+            }
+            FunctionMetadataFault::PosDefaultsCountOutOfRange => self
+                .signature
+                .corrupt_metadata_for_tests(SignatureMetadataFault::PosDefaultsCountOutOfRange),
+            FunctionMetadataFault::ArgDefaultsCountOutOfRange => self
+                .signature
+                .corrupt_metadata_for_tests(SignatureMetadataFault::ArgDefaultsCountOutOfRange),
+            FunctionMetadataFault::KwargDefaultMapLengthMismatch => self
+                .signature
+                .corrupt_metadata_for_tests(SignatureMetadataFault::KwargDefaultMapLengthMismatch),
+            FunctionMetadataFault::KwargDefaultIndexGap => self
+                .signature
+                .corrupt_metadata_for_tests(SignatureMetadataFault::KwargDefaultIndexGap),
+            FunctionMetadataFault::DefaultsCountMismatch => {
+                self.defaults_count += 1;
+            }
+            FunctionMetadataFault::DuplicateFreeVarSlot => {
+                let slots = self.free_var_slots.as_mut_slice();
+                slots[1] = slots[0];
+            }
+            FunctionMetadataFault::CellFreeVarSlotOverlap => {
+                self.free_var_slots[0] = self.cell_var_slots[0];
             }
         }
     }
