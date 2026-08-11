@@ -309,8 +309,8 @@ assert exact_result[1] is second
 try:
     exact_heap_args(first)
     assert False, 'expected TypeError for missing positional argument'
-except TypeError:
-    pass
+except TypeError as exc:
+    assert str(exc) == "exact_heap_args() missing 1 required positional argument: 'second'"
 
 
 # A parameter captured by an inner function requires the regular cell setup path.

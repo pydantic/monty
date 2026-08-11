@@ -30,8 +30,11 @@ assert exact_result[1] is second
 try:
     exact_async(first)
     assert False, 'expected TypeError for missing positional argument'
-except TypeError:
-    pass
+except TypeError as exc:
+    # `endswith`, not `==`: CPython prefixes nested functions with their
+    # `__qualname__` (here the harness's wrapping function), which Monty
+    # doesn't implement (see limitations/language.md).
+    assert str(exc).endswith("exact_async() missing 1 required positional argument: 'second'")
 
 
 # Async functions with owned cells retain the regular namespace setup path.

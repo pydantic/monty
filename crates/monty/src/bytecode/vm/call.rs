@@ -763,8 +763,7 @@ impl VM<'_> {
         arg_count: usize,
     ) -> Option<Result<CallResult, RunError>> {
         let func = self.interns.get_function(func_id);
-        debug_assert_eq!(func.exact_positional_call, func.derive_exact_positional_call());
-        match func.exact_positional_call {
+        match func.exact_positional_call() {
             Some(ExactPositionalCall::Sync(count)) if count == arg_count => {
                 Some(self.call_exact_sync_function(func_id, callable_index))
             }
@@ -787,7 +786,7 @@ impl VM<'_> {
         let code = &func.code;
 
         let callable = self.stack.remove(callable_index);
-        debug_assert!(matches!(callable, Value::DefFunction(id) if id == func_id));
+        debug_assert_exact_callable(&callable, func_id);
         self.stack
             .resize_with(callable_index + namespace_size, || Value::Undefined);
 
@@ -807,12 +806,11 @@ impl VM<'_> {
     /// Creates a coroutine by moving exact positional arguments into its namespace.
     fn create_exact_coroutine(&mut self, func_id: FunctionId, callable_index: usize) -> CallResult {
         let func = self.interns.get_function(func_id);
-        let mut namespace = Vec::with_capacity(func.namespace_size);
-        namespace.extend(self.stack.drain(callable_index + 1..));
-        namespace.resize_with(func.namespace_size, || Value::Undefined);
+        let mut namespace = self.stack.split_off(callable_index + 1);
+        self.install_closure_cells(func, &[], &mut namespace);
 
         let callable = self.pop();
-        debug_assert!(matches!(callable, Value::DefFunction(id) if id == func_id));
+        debug_assert_exact_callable(&callable, func_id);
 
         let coroutine = Coroutine::new(func_id, namespace);
         let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine));
@@ -889,7 +887,9 @@ impl VM<'_> {
     /// transitively captured (pass-through) variable is allocated a slot late
     /// during preparation, outside the contiguous param/cell/free region — so a
     /// positional `push` would place it wrong. Shared by sync calls and
-    /// coroutine creation.
+    /// coroutine creation, including the exact-positional-call fast path
+    /// (which always passes an empty `cells` slice, since it only applies when
+    /// `cell_var_slots`/`free_var_slots` are both empty).
     fn install_closure_cells(&mut self, func: &Function, cells: &[HeapId], namespace: &mut Vec<Value>) {
         namespace.resize_with(func.namespace_size, || Value::Undefined);
 
@@ -1115,6 +1115,16 @@ impl VM<'_> {
             _ => false,
         }
     }
+}
+
+/// Asserts a callable popped off the stack by an exact-positional-call fast
+/// path is the function that fast path was chosen for.
+///
+/// Shared by [`VM::call_exact_sync_function`] and [`VM::create_exact_coroutine`],
+/// which both remove their callable from the stack after already having
+/// dispatched on its `FunctionId` in [`VM::try_call_exact_def_function`].
+fn debug_assert_exact_callable(callable: &Value, func_id: FunctionId) {
+    debug_assert!(matches!(callable, Value::DefFunction(id) if *id == func_id));
 }
 
 /// Centralised dunder dispatch for `__enter__` / `__exit__` (and, when added,

@@ -273,7 +273,7 @@ fn repl_dump_load_survives_between_snippets() {
 }
 
 #[test]
-fn repl_dump_load_rebuilds_exact_positional_call_plans() {
+fn repl_dump_load_derives_exact_positional_call_plans() {
     let (repl, _) = init_repl("def add(a, b):\n    return a + b\n\nasync def async_add(a, b):\n    return a + b");
     let mut loaded = round_trip_repl(&repl);
 
@@ -285,6 +285,12 @@ fn repl_dump_load_rebuilds_exact_positional_call_plans() {
         feed_run_print(&mut loaded, "await async_add(20, 22)").unwrap(),
         MontyObject::Int(42)
     );
+
+    // The fast path's arg-count guard must also survive the round trip: a
+    // mismatched call has to fall back to the general binder (and its error),
+    // not silently misfire the cached plan.
+    let err = feed_run_print(&mut loaded, "add(1)").unwrap_err();
+    assert_eq!(err.message(), Some("add() missing 1 required positional argument: 'b'"));
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use std::{
+    cell::OnceCell,
     fmt::{self, Write},
     sync::Arc,
 };
@@ -76,9 +77,15 @@ pub(crate) struct Function {
     /// immediately pushing a frame. The coroutine captures the bound arguments
     /// and starts execution only when awaited.
     pub is_async: bool,
-    /// Cached binder-free call plan, rebuilt from the function metadata after loading.
+    /// Cached binder-free call plan, derived from the fields above and cached
+    /// via [`Self::exact_positional_call`].
+    ///
+    /// Never serialized: a function loaded from a REPL dump starts with this
+    /// empty and derives it fresh on first call, so staleness with respect to
+    /// an older binary's derivation logic is structurally impossible rather
+    /// than merely checked.
     #[serde(skip)]
-    pub exact_positional_call: Option<ExactPositionalCall>,
+    exact_positional_call: OnceCell<Option<ExactPositionalCall>>,
     /// Compiled bytecode for this function body. Wrapped in `Arc` to avoid deep clone.
     pub code: Arc<Code>,
 }
@@ -112,7 +119,7 @@ impl Function {
         is_async: bool,
         code: Code,
     ) -> Self {
-        let mut function = Self {
+        Self {
             name,
             signature,
             namespace_size,
@@ -122,20 +129,21 @@ impl Function {
             cell_param_indices,
             defaults_count,
             is_async,
-            exact_positional_call: None,
+            exact_positional_call: OnceCell::new(),
             code: Arc::new(code),
-        };
-        function.rebuild_derived_state();
-        function
+        }
     }
 
-    /// Rebuilds optimization metadata omitted from the serialized representation.
-    pub(crate) fn rebuild_derived_state(&mut self) {
-        self.exact_positional_call = self.derive_exact_positional_call();
+    /// Returns the binder-free call plan for this function, deriving and
+    /// caching it on first use.
+    pub(crate) fn exact_positional_call(&self) -> Option<ExactPositionalCall> {
+        *self
+            .exact_positional_call
+            .get_or_init(|| self.derive_exact_positional_call())
     }
 
     /// Derives the binder-free call plan from authoritative function metadata.
-    pub(crate) fn derive_exact_positional_call(&self) -> Option<ExactPositionalCall> {
+    fn derive_exact_positional_call(&self) -> Option<ExactPositionalCall> {
         if self.cell_var_slots.is_empty() && self.free_var_slots.is_empty() {
             self.signature.exact_positional_count().map(|count| {
                 if self.is_async {

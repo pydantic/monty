@@ -15,6 +15,8 @@
 //! change both; coverage lives in `test_cases/function__arity_defaults.py`
 //! and `test_cases/args__macro_errors.py`.
 
+use std::cell::OnceCell;
+
 use crate::{
     args::{ArgPosIter, ArgValues},
     bytecode::VM,
@@ -94,11 +96,18 @@ pub(crate) struct Signature {
     /// Collects excess keyword arguments into a dict.
     var_kwargs: Option<StringId>,
 
-    /// How simple the signature is, used for fast path when binding
-    bind_mode: BindMode,
+    /// How simple the signature is, used for the fast path when binding.
+    ///
+    /// Derived from the other fields and cached lazily via [`Self::bind_mode`]
+    /// rather than serialized: never storing a computed value on the wire
+    /// means a signature loaded from an older REPL dump can't ever carry a
+    /// `BindMode` stale with respect to the derivation logic in the binary
+    /// that loads it.
+    #[serde(skip)]
+    bind_mode: OnceCell<BindMode>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum BindMode {
     /// If this is a simple signature (no defaults, no *args/**kwargs).
     ///
@@ -164,25 +173,6 @@ impl Signature {
         let has_kwonly = !kwargs.is_empty();
         let kwargs = if has_kwonly { Some(kwargs) } else { None };
 
-        let bind_mode = if pos_args.is_none()
-            && pos_defaults_count == 0
-            && arg_defaults_count == 0
-            && var_args.is_none()
-            && kwargs.is_none()
-            && var_kwargs.is_none()
-        {
-            BindMode::Simple
-        } else if pos_args.is_none()
-            && var_args.is_none()
-            && kwargs.is_none()
-            && var_kwargs.is_none()
-            && arg_defaults_count > 0
-        {
-            BindMode::SimpleWithDefaults
-        } else {
-            BindMode::Complex
-        };
-
         Self {
             pos_args,
             pos_defaults_count,
@@ -192,7 +182,34 @@ impl Signature {
             kwargs,
             kwarg_default_map: if has_kwonly { Some(kwarg_default_map) } else { None },
             var_kwargs,
-            bind_mode,
+            bind_mode: OnceCell::new(),
+        }
+    }
+
+    /// Returns the signature's [`BindMode`], deriving and caching it on first use.
+    fn bind_mode(&self) -> BindMode {
+        *self.bind_mode.get_or_init(|| self.derive_bind_mode())
+    }
+
+    /// Derives [`BindMode`] from the signature's parameter fields.
+    fn derive_bind_mode(&self) -> BindMode {
+        if self.pos_args.is_none()
+            && self.pos_defaults_count == 0
+            && self.arg_defaults_count == 0
+            && self.var_args.is_none()
+            && self.kwargs.is_none()
+            && self.var_kwargs.is_none()
+        {
+            BindMode::Simple
+        } else if self.pos_args.is_none()
+            && self.var_args.is_none()
+            && self.kwargs.is_none()
+            && self.var_kwargs.is_none()
+            && self.arg_defaults_count > 0
+        {
+            BindMode::SimpleWithDefaults
+        } else {
+            BindMode::Complex
         }
     }
 
@@ -239,7 +256,7 @@ impl Signature {
         // with only positional-or-keyword params and defaults, when no keyword
         // arguments are passed. Handled before building the kwargs iterator +
         // guard below, which are pure overhead in this common positional case.
-        if n_kwargs == 0 && matches!(self.bind_mode, BindMode::Simple | BindMode::SimpleWithDefaults) {
+        if n_kwargs == 0 && matches!(self.bind_mode(), BindMode::Simple | BindMode::SimpleWithDefaults) {
             // No keyword arguments to bind; the empty container holds no refs.
             keyword_args.drop_with(vm);
             match pos_iter {
@@ -262,7 +279,7 @@ impl Signature {
             if actual_count == param_count {
                 // Exact match - no defaults needed
                 return Ok(());
-            } else if self.bind_mode == BindMode::SimpleWithDefaults {
+            } else if self.bind_mode() == BindMode::SimpleWithDefaults {
                 let required = self.required_positional_count();
                 if actual_count >= required && actual_count < param_count {
                     // Apply defaults for remaining parameters
