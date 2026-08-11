@@ -106,6 +106,14 @@ impl MontyRepl {
         self.heap.tracker_mut()
     }
 
+    /// Number of live heap entries (excluding the empty-tuple singleton) —
+    /// `ref-count-return`-only introspection for GC tests.
+    #[cfg(feature = "ref-count-return")]
+    #[must_use]
+    pub fn heap_entry_count(&self) -> usize {
+        self.heap.entry_count()
+    }
+
     /// Starts executing a new snippet and returns suspendable REPL progress.
     ///
     /// This is the REPL equivalent of `MontyRun::start`: execution may complete,

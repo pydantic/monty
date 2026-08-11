@@ -723,6 +723,28 @@ fn call_function_enforces_max_duration() {
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
 
+/// Feeds shorter than the dispatch-checkpoint interval never probe GC inside
+/// the run loop, so only the host-boundary probe in `finish_host_turn` keeps
+/// a stream of tiny cycle-making snippets from accumulating garbage (and from
+/// tripping the boundary memory check on memory a collection would reclaim).
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn short_repl_feeds_still_collect_cycles() {
+    let limits = ResourceLimits::default().gc_interval(1);
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
+    for _ in 0..20 {
+        // Rebinding `c` orphans the previous iteration's cycle; each feed is
+        // fewer instructions than the dispatch checkpoint interval.
+        repl.feed_run("c = []", vec![], PrintWriter::Stdout).unwrap();
+        repl.feed_run("c.append(c)", vec![], PrintWriter::Stdout).unwrap();
+    }
+    assert!(
+        repl.heap_entry_count() <= 3,
+        "boundary GC probe should collect orphaned cycles: {} live heap entries",
+        repl.heap_entry_count()
+    );
+}
+
 /// `call_function` applies the same host-boundary epilogue as `feed_run`: a
 /// call whose over-budget repr truncates (swallowing the timeout) must still
 /// fail rather than return the truncated value, and the discarded result's

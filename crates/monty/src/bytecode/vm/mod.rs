@@ -952,6 +952,13 @@ impl<'h> VM<'h> {
         &mut self,
         result: Result<T, RunError>,
     ) -> Result<T, RunError> {
+        // A turn shorter than the dispatch-checkpoint interval never probes
+        // GC inside the run loop, so a stream of tiny feeds could otherwise
+        // accumulate eligible cyclic garbage indefinitely — and the memory
+        // check below could trip on memory a collection would reclaim.
+        if self.heap.should_gc() {
+            self.run_gc();
+        }
         match result {
             Ok(value) => match self.heap.tracker.check_memory_time() {
                 Ok(()) => Ok(value),
