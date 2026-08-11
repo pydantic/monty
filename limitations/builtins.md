@@ -37,6 +37,15 @@ mechanism beyond dataclass field inheritance.
 
 ## Behavioural divergences
 
+- **`repr` of a dict being mutated by its own elements** — Monty iterates the
+  live entries like CPython, but deletion compacts Monty's dense entry storage
+  where CPython leaves a tombstone in place: a key deleted from inside a user
+  `__repr__` running *during that dict's repr* shifts later entries down, so
+  the entry after the deleted one can be skipped from the output where CPython
+  would still print it. Insertions during repr match CPython (appended and
+  printed), as do list (live length, mid-repr pops truncate / appends extend),
+  `set`, `collections.deque` and `collections.Counter` (all snapshot, like
+  CPython).
 - **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager, not lazy** —
   each drains its source and returns a `list`, so `type(enumerate(x)).__name__`
   is `'list'` rather than `'enumerate'`. Observable several ways: a

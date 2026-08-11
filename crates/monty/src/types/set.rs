@@ -16,8 +16,8 @@ use crate::{
         HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::StaticStrings,
-    types::{LazyHeapSet, Type},
-    value::{EitherStr, Value},
+    types::{LazyHeapSet, Type, list::repr_items_fmt},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Entry in the set storage, containing a value and its cached hash.
@@ -522,25 +522,20 @@ impl<'h> HeapRead<'h, SetStorage> {
             write!(f, "{type_name}(")?;
         }
 
-        f.write_char('{')?;
+        // Format a refcount-bumped snapshot of the elements: CPython's set repr
+        // copies to a list first, so a user `__repr__` mutating the set
+        // mid-format changes nothing (and can't invalidate indices here).
+        vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        let mut items = Vec::with_capacity(len);
         for i in 0..len {
-            if i > 0 {
-                if vm.heap.check_time().is_err() {
-                    f.write_str(", ...[timeout]")?;
-                    break;
-                }
-                f.write_str(", ")?;
-            }
-            // Refcount-bump each element before recursing so a user-defined
-            // `__repr__` mutating the set can't free the entry mid-format.
-            let value = self
-                .get(vm.heap)
-                .value_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
-            defer_drop!(value, vm);
-            value.py_repr_fmt(f, vm, heap_ids)?;
+            // No user code runs during the snapshot, so `len` is still current.
+            let value = self.get(vm.heap).value_at(i).expect("index in range");
+            items.push(value.clone_with_heap(vm.heap));
         }
+        defer_drop!(items, vm);
+
+        f.write_char('{')?;
+        repr_items_fmt(items, f, vm, heap_ids)?;
         f.write_char('}')?;
 
         if needs_prefix {

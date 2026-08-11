@@ -9,7 +9,7 @@ use hashbrown::HashTable;
 use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
 
-use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple};
+use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, list::repr_check_time};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -26,7 +26,7 @@ use crate::{
         defaultdict::defaultdict_missing,
     },
     types::Type,
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Python dict type preserving insertion order.
@@ -225,13 +225,6 @@ impl Dict {
             Some(DictSpecial::Default(_)) => Type::DefaultDict,
             Some(DictSpecial::Counter) => Type::Counter,
         }
-    }
-
-    /// Clones every entry's value, for the `Counter` orderings that must compare
-    /// counts through the VM (see [`counter_order`]).
-    #[must_use]
-    pub fn cloned_values(&self, heap: &impl ContainsHeap) -> Vec<Value> {
-        self.entries.iter().map(|e| e.value.clone_with_heap(heap)).collect()
     }
 
     /// Returns the `default_factory` callable, or `None` for a plain dict or a
@@ -1018,29 +1011,29 @@ impl<'h> HeapRead<'h, Dict> {
         let vm = &mut *guard;
 
         f.write_char('{')?;
-        let len = self.get(vm.heap).len();
-        for i in 0..len {
+        // Iterate the live entries like CPython, cloning only the current pair
+        // (refcount bumps — required because the reprs below run user
+        // `__repr__` code that may drop the dict's references). Bounds are
+        // re-checked every index, so mid-repr mutation cannot panic: inserted
+        // entries append and are printed (matching CPython); a deletion shifts
+        // `entries` where CPython leaves a tombstone, so later entries can be
+        // skipped (see `limitations/builtins.md`).
+        for i in 0.. {
+            let Some((key, value)) = self.get(vm.heap).item_at(i) else {
+                break;
+            };
+            let pair = (key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap));
+            defer_drop!(pair, vm);
+            let (key, value) = pair;
             if i > 0 {
-                if vm.heap.check_time().is_err() {
+                if repr_check_time(i, vm) {
                     f.write_str(", ...[timeout]")?;
                     break;
                 }
                 f.write_str(", ")?;
             }
-            let key = self
-                .get(vm.heap)
-                .key_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
-            defer_drop!(key, vm);
             key.py_repr_fmt(f, vm, heap_ids)?;
             f.write_str(": ")?;
-            let value = self
-                .get(vm.heap)
-                .value_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
-            defer_drop!(value, vm);
             value.py_repr_fmt(f, vm, heap_ids)?;
         }
         f.write_char('}')?;
@@ -1056,31 +1049,57 @@ impl<'h> HeapRead<'h, Dict> {
         };
         let vm = &mut *guard;
 
-        let counts = self.get(vm.heap).cloned_values(vm.heap);
+        // Snapshot the entries BEFORE ordering: the reprs printed below run
+        // user `__repr__` code that can mutate the Counter, so the ordered
+        // indices must refer to the snapshot, not live entries.
+        let pairs = self.clone_all_pairs(vm)?;
+        defer_drop!(pairs, vm);
+        // The counts clone and the order indices live alongside the pair
+        // snapshot — preflight them too so an over-budget Counter raises a
+        // graceful `MemoryError` instead of hitting the allocator hard limit.
+        vm.heap
+            .tracker()
+            .check_allocation(pairs.len().saturating_mul(VALUE_SIZE + mem::size_of::<usize>()))?;
+        let counts = pairs.iter().map(|(_, value)| value.clone_with_heap(vm.heap)).collect();
         let order = counter_order(counts, vm)?;
         f.write_char('{')?;
         for (n, &i) in order.iter().enumerate() {
             if n > 0 {
+                if repr_check_time(n, vm) {
+                    f.write_str(", ...[timeout]")?;
+                    break;
+                }
                 f.write_str(", ")?;
             }
-            let key = self
-                .get(vm.heap)
-                .key_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
-            defer_drop!(key, vm);
+            let (key, value) = &pairs[i];
             key.py_repr_fmt(f, vm, heap_ids)?;
             f.write_str(": ")?;
-            let value = self
-                .get(vm.heap)
-                .value_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
-            defer_drop!(value, vm);
             value.py_repr_fmt(f, vm, heap_ids)?;
         }
         f.write_char('}')?;
         Ok(())
+    }
+
+    /// Clones every entry as a refcount-bumped `(key, value)` pair, for the
+    /// Counter repr: printing runs user `__repr__` code against indices from
+    /// the ordering pass, so live indices would panic or skew once that code
+    /// mutates the Counter — and CPython's `most_common()` snapshots the same way.
+    ///
+    /// Preflights the slot bytes so an over-budget clone raises a graceful
+    /// `MemoryError` instead of bursting past the allocator's hard limit.
+    fn clone_all_pairs(&self, vm: &mut VM<'h>) -> RunResult<Vec<(Value, Value)>> {
+        let len = self.get(vm.heap).len();
+        vm.heap.tracker().check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
+        let mut pairs = Vec::with_capacity(len);
+        // No user code runs during the snapshot, so `len` stays current and
+        // the `expect`s cannot fire.
+        for i in 0..len {
+            let dict = self.get(vm.heap);
+            let key = dict.key_at(i).expect("index in range").clone_with_heap(vm.heap);
+            let value = dict.value_at(i).expect("index in range").clone_with_heap(vm.heap);
+            pairs.push((key, value));
+        }
+        Ok(pairs)
     }
 
     /// Handles dict attribute assignment. Only `defaultdict.default_factory` is
