@@ -807,6 +807,7 @@ impl VM<'_> {
     fn create_exact_coroutine(&mut self, func_id: FunctionId, callable_index: usize) -> CallResult {
         let func = self.interns.get_function(func_id);
         let mut namespace = self.stack.split_off(callable_index + 1);
+        namespace.reserve(func.namespace_size - namespace.len());
         self.install_closure_cells(func, &[], &mut namespace);
 
         let callable = self.pop();
