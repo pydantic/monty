@@ -187,6 +187,33 @@ impl Drop for RunReentryGuard<'_, '_> {
     }
 }
 
+/// Hard cap on `asyncio.gather` nesting, enforced by [`charge_gather_nesting`].
+///
+/// Committing a nested gather recurses, and the nesting costs no Python frames
+/// (`g = asyncio.gather(g)` in a loop), so the recursion limit neither sees it
+/// nor is small enough for it: at ~4 KiB a frame, 1,000 levels overflows 2 MiB.
+/// Like [`MAX_RUN_REENTRY_DEPTH`] a hard constant, not a Python-visible setting.
+///
+/// Measured on macOS/arm64 only — ~14x below the ~450 a 2 MiB thread holds, so
+/// the margin should cover unmeasured targets; revalidate before raising it.
+pub(crate) const MAX_GATHER_NEST_DEPTH: u8 = 32;
+
+/// Charges one level of gather nesting, returning the depth for the nested walk;
+/// errors once [`MAX_GATHER_NEST_DEPTH`] is exhausted.
+///
+/// A function rather than a guard: nothing is reserved, so there is no level to
+/// release — the depth lives in the recursive call's argument.
+pub(crate) fn charge_gather_nesting(depth: u8) -> Result<u8, ResourceError> {
+    if depth >= MAX_GATHER_NEST_DEPTH {
+        Err(ResourceError::Recursion {
+            limit: MAX_GATHER_NEST_DEPTH as usize,
+            depth: depth as usize + 1,
+        })
+    } else {
+        Ok(depth + 1)
+    }
+}
+
 /// Zero-size reservation of one recursion level, returned by [`VM::incr_recursion`].
 ///
 /// Released via [`DropWithContext`] (it cannot reach the VM counter through the heap).

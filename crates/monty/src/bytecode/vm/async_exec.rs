@@ -18,7 +18,10 @@ use crate::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
         GatherState, TaskId,
     },
-    bytecode::vm::scheduler::{Scheduler, SerializedTaskFrame, TaskState},
+    bytecode::vm::{
+        recursion::charge_gather_nesting,
+        scheduler::{Scheduler, SerializedTaskFrame, TaskState},
+    },
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapRead, HeapReadOutput, HeapReader},
@@ -54,7 +57,8 @@ impl<'h> VM<'h> {
                 let heap_id = *heap_id;
                 let poll = match this.heap.read(heap_id) {
                     HeapReadOutput::Coroutine(coro) => return this.await_coroutine(coro),
-                    HeapReadOutput::GatherFuture(gather) => this.await_gather_future(heap_id, gather, awaiter)?,
+                    // Depth 0: this is the outermost gather on the native stack.
+                    HeapReadOutput::GatherFuture(gather) => this.await_gather_future(heap_id, gather, awaiter, 0)?,
                     HeapReadOutput::ExternalFuture(mut fut) => this.await_external_future(&mut fut, awaiter)?,
                     _ => return Err(ExcType::object_not_awaitable(&awaitable.py_type_name(this))),
                 };
@@ -99,11 +103,15 @@ impl<'h> VM<'h> {
     }
 
     /// Awaits a gather future from the user's `await gather` site.
+    ///
+    /// `depth` is how many gathers are already open on the native stack above
+    /// this one — 0 at an `await` site (see [`charge_gather_nesting`]).
     fn await_gather_future(
         &mut self,
         gather_id: HeapId,
         mut gather: HeapRead<'h, GatherFuture>,
         awaiter: Awaiter,
+        depth: u8,
     ) -> Result<Poll<Value>, RunError> {
         let mut awaiter_guard = DropGuard::new(awaiter, self);
         let this = awaiter_guard.ctx();
@@ -144,7 +152,7 @@ impl<'h> VM<'h> {
         // Roll back already-committed siblings if a later child fails during
         // this commit pass; otherwise spawned tasks or awaiters can outlive a
         // gather that never reached `Awaited`.
-        if let Err(err) = this.commit_gather_items(gather_id, &gather, &mut pending_children, results) {
+        if let Err(err) = this.commit_gather_items(gather_id, &gather, &mut pending_children, results, depth) {
             gather.get_mut(this.heap).state = GatherState::Failed(err.clone());
             drop_committed_children(pending_children, &mut this.scheduler, this.heap, &err);
             return Err(err);
@@ -176,7 +184,9 @@ impl<'h> VM<'h> {
     /// Commits `gather`'s items left-to-right into result slots or pending children.
     ///
     /// Spawns coroutine children, installs awaiters on external futures, and
-    /// recursively awaits nested gathers. Any error leaves already-committed
+    /// recursively awaits nested gathers, each level charged via
+    /// [`charge_gather_nesting`] so the bound is a hard cap rather than the
+    /// native stack. Any error leaves already-committed
     /// entries in `pending_children`; the caller must pass them to
     /// [`drop_committed_children`] before propagating the error.
     fn commit_gather_items(
@@ -185,6 +195,7 @@ impl<'h> VM<'h> {
         gather: &HeapRead<'h, GatherFuture>,
         pending_children: &mut AHashMap<HeapId, SmallVec<[usize; 1]>>,
         results: &mut [Option<Value>],
+        depth: u8,
     ) -> Result<(), RunError> {
         for (idx, result) in results.iter_mut().enumerate() {
             let item_id = gather.get(self.heap).items[idx];
@@ -220,12 +231,15 @@ impl<'h> VM<'h> {
                     self.await_external_future(&mut fut, sub_awaiter)?
                 }
                 HeapReadOutput::GatherFuture(child_gather) => {
+                    // Charged before the `inc_ref`: nothing is committed yet,
+                    // so the error path needs no cleanup.
+                    let depth = charge_gather_nesting(depth)?;
                     self.heap.inc_ref(gather_id);
                     let sub_awaiter = Awaiter::GatherSlot {
                         gather: gather_id,
                         source: item_id,
                     };
-                    self.await_gather_future(item_id, child_gather, sub_awaiter)?
+                    self.await_gather_future(item_id, child_gather, sub_awaiter, depth)?
                 }
                 _ => panic!("gather item is not a Coroutine, ExternalFuture, or GatherFuture"),
             };

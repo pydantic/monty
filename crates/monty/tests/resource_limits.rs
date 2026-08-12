@@ -1008,3 +1008,165 @@ a < b
         assert_eq!(exc.exc_type(), ExcType::RecursionError, "build: {build}");
     }
 }
+
+/// Nested gathers are committed by a native recursive walk, and the nesting
+/// costs no Python frames (`g = asyncio.gather(g)` in a loop), so without the
+/// `MAX_GATHER_NEST_DEPTH` cap deep nesting aborted the process instead of
+/// raising. 5,000 is far past the ~1,900 the pre-fix build managed.
+#[test]
+fn deeply_nested_gather_futures_do_not_overflow_the_stack() {
+    let ex = MontyRun::new(nested_gather_code(5000), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let exc = ex
+        .run_no_limits(vec![])
+        .expect_err("deeply nested gathers should raise rather than overflow the stack");
+    assert_eq!(exc.exc_type(), ExcType::RecursionError);
+}
+
+/// The cap is a fixed native-stack bound, not the Python recursion limit, so a
+/// generous `max_recursion_depth` must not buy any extra gather nesting.
+#[test]
+fn nested_gather_futures_are_capped_independently_of_the_recursion_limit() {
+    let ex = MontyRun::new(nested_gather_code(100), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_recursion_depth(100_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    let exc = result.expect_err("nesting past the cap should raise regardless of the recursion limit");
+    assert_eq!(exc.exc_type(), ExcType::RecursionError);
+}
+
+/// Boundary: the outermost gather is awaited at depth 0, so 33 gathers sit
+/// exactly on the cap and must resolve while 34 must raise.
+#[test]
+fn nested_gather_futures_resolve_up_to_the_cap() {
+    let ex = MontyRun::new(nested_gather_code(33), "test.py", vec![], CompileOptions::default()).unwrap();
+    let result = ex.run_no_limits(vec![]).expect("nesting on the cap should succeed");
+    assert_eq!(result, MontyObject::Int(1));
+
+    let ex = MontyRun::new(nested_gather_code(34), "test.py", vec![], CompileOptions::default()).unwrap();
+    let exc = ex.run_no_limits(vec![]).expect_err("nesting past the cap should raise");
+    assert_eq!(exc.exc_type(), ExcType::RecursionError);
+}
+
+/// Builds `depth` `asyncio.gather` futures nested inside one another, awaits
+/// the outermost, and unwraps the resulting nested single-item lists back down
+/// to the leaf's `1`.
+fn nested_gather_code(depth: usize) -> String {
+    format!(
+        r"
+import asyncio
+
+async def leaf():
+    return 1
+
+g = leaf()
+for _ in range({depth}):
+    g = asyncio.gather(g)
+result = await g
+for _ in range({depth}):
+    result = result[0]
+result
+"
+    )
+}
+
+/// A coroutine child breaks the native chain: it is spawned as a task, so the
+/// walk unwinds before that task later runs at depth 0. Nesting far past the
+/// cap through coroutines must still resolve — the reset is only sound because
+/// it coincides with the unwind, and this is what fails if they come apart.
+#[test]
+fn gather_nesting_through_coroutines_does_not_accumulate() {
+    // Each iteration adds two gathers, so 200 levels leave 400 lists to unwrap.
+    let code = r"
+import asyncio
+
+async def leaf():
+    return 1
+
+async def wrap(g):
+    return await g
+
+g = leaf()
+for _ in range(200):
+    g = asyncio.gather(wrap(asyncio.gather(g)))
+result = await g
+for _ in range(400):
+    result = result[0]
+result
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let result = ex
+        .run_no_limits(vec![])
+        .expect("coroutine boundaries must not accumulate native depth");
+    assert_eq!(result, MontyObject::Int(1));
+}
+
+/// Companion with segments just under the cap: 100 runs of 31, each separated
+/// by a coroutine. Every segment is charged from zero, so all 3,100 levels
+/// resolve even though any two segments together would exceed the cap.
+#[test]
+fn near_cap_gather_segments_separated_by_coroutines_resolve() {
+    let code = r"
+import asyncio
+
+async def leaf():
+    return 1
+
+async def wrap(g):
+    return await g
+
+def segment(inner):
+    g = inner
+    for _ in range(31):
+        g = asyncio.gather(g)
+    return g
+
+g = leaf()
+for _ in range(100):
+    g = segment(wrap(g))
+result = await g
+for _ in range(3100):
+    result = result[0]
+result
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let result = ex
+        .run_no_limits(vec![])
+        .expect("each segment must be charged from zero");
+    assert_eq!(result, MontyObject::Int(1));
+}
+
+/// Sibling gathers commit one after another, not inside one another, so each
+/// item's level comes from the enclosing walk rather than accumulating.
+#[test]
+fn gather_width_is_not_charged_as_nesting_depth() {
+    let code = r"
+import asyncio
+
+async def leaf():
+    return 1
+
+def deep(n):
+    g = leaf()
+    for _ in range(n):
+        g = asyncio.gather(g)
+    return g
+
+shallow = await asyncio.gather(*[asyncio.gather(leaf()) for _ in range(500)])
+assert len(shallow) == 500
+
+wide = await asyncio.gather(*[deep(31) for _ in range(100)])
+assert len(wide) == 100
+
+shallow[499][0]
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let result = ex
+        .run_no_limits(vec![])
+        .expect("gather width must not be charged as depth");
+    assert_eq!(result, MontyObject::Int(1));
+}

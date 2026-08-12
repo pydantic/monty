@@ -17,6 +17,16 @@ The `asyncio` module exposes exactly two functions:
   where CPython raises
   `TypeError: gather() got an unexpected keyword argument 'X'` because
   `return_exceptions` is a real kwarg there.
+- Gathers may nest at most **32 levels** deep inside one another
+  (`asyncio.gather(asyncio.gather(...))`). Awaiting a deeper nest raises
+  `RecursionError: maximum recursion depth exceeded`. CPython has no such
+  limit: its event loop drives nested futures iteratively, whereas Monty
+  commits a nested gather by recursing on the native stack. The cap is
+  fixed and independent of `sys.setrecursionlimit`, which cannot raise it.
+  Only a gather passed *directly as an item of another gather* counts, so
+  recursion through coroutines (`await asyncio.gather(recurse(n - 1))`) and
+  `gather()` width are unaffected. In practice the cap is only reachable by
+  building an awaitable tree without awaiting it (`g = asyncio.gather(g)`).
 
 Not implemented (raise `AttributeError`):
 
