@@ -104,6 +104,26 @@ def test_limits_wrong_type_raises_error(pool: Monty):
             pass
 
 
+def test_limits_unknown_key_raises_error(pool: Monty):
+    with pytest.raises(TypeError) as exc_info:
+        with pool.checkout(limits={'max_memroy': 10_000_000}):  # pyright: ignore[reportArgumentType]
+            pass
+    assert exc_info.value.args[0] == snapshot(
+        "unknown limits key 'max_memroy'; accepted keys are 'max_duration_secs', 'max_memory', "
+        "'gc_interval', 'max_recursion_depth'"
+    )
+
+
+def test_limits_non_string_key_raises_error(pool: Monty):
+    with pytest.raises(TypeError) as exc_info:
+        with pool.checkout(limits={1: 100}):  # pyright: ignore[reportArgumentType]
+            pass
+    assert exc_info.value.args[0] == snapshot(
+        "unknown limits key 1; accepted keys are 'max_duration_secs', 'max_memory', "
+        "'gc_interval', 'max_recursion_depth'"
+    )
+
+
 def test_limits_none_value_allowed(monty_run: RunMonty):
     # None is valid to explicitly disable a limit
     assert monty_run('1 + 1', limits={'max_memory': None}) == snapshot(2)

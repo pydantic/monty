@@ -2,7 +2,14 @@
 
 use std::time::Duration;
 
-use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
+use pyo3::{
+    exceptions::{PyTypeError, PyValueError},
+    prelude::*,
+    types::PyDict,
+};
+
+/// The keys `extract_limits` understands; anything else is a hard error so typos can't fail open.
+const KNOWN_KEYS: [&str; 4] = ["max_duration_secs", "max_memory", "gc_interval", "max_recursion_depth"];
 
 /// Extracts resource limits from a Python dict.
 ///
@@ -15,9 +22,12 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 /// If a key is missing or set to `None`, that limit is not applied
 /// (except `max_recursion_depth` which defaults to 1000).
 ///
-/// Raises `TypeError` if a value is present but has the wrong type.
+/// Raises `TypeError` if a value is present but has the wrong type, or if the dict
+/// contains an unknown key — limits are a security surface, so a misspelled key
+/// (e.g. `max_memroy`) must not silently run without the intended cap.
 /// Raises `ValueError` if `max_duration_secs` is not a valid duration value.
 pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::ResourceLimits> {
+    check_unknown_keys(dict)?;
     let max_duration_secs = extract_optional_f64(dict, "max_duration_secs")?;
     let max_memory = extract_optional_usize(dict, "max_memory")?;
     let gc_interval = extract_optional_usize(dict, "gc_interval")?;
@@ -40,6 +50,21 @@ pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::Resourc
     }
 
     Ok(limits)
+}
+
+/// Rejects unrecognized (or non-string) keys with a `TypeError` naming the key and the accepted set.
+fn check_unknown_keys(dict: &Bound<'_, PyDict>) -> PyResult<()> {
+    for key in dict.keys() {
+        let known = key.extract::<&str>().is_ok_and(|k| KNOWN_KEYS.contains(&k));
+        if !known {
+            let accepted = KNOWN_KEYS.map(|k| format!("'{k}'")).join(", ");
+            return Err(PyTypeError::new_err(format!(
+                "unknown limits key {}; accepted keys are {accepted}",
+                key.repr()?
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Extracts an optional usize from a dict, raising `TypeError` if the value has the wrong type.
