@@ -123,6 +123,13 @@ protocol (`__iter__`/`__next__`, including `for line in f:`).
   reads.
 - `close()` releases the cached buffer (matching CPython), returning its memory
   when no other value, such as `data = f.read()`, retains it.
+- File I/O is rejected inside callbacks the interpreter evaluates in a
+  synchronous context that cannot suspend to the host — the `key` of
+  `sorted()`/`list.sort()`/`min()`/`max()`, `map()`/`filter()` functions,
+  `iter(callable, sentinel)`, `defaultdict`'s `default_factory`, and dunder
+  methods invoked implicitly. The first read that needs the host raises
+  `NotImplementedError: <context>: OS function 'Path.read_text' is not yet
+  supported in this context` where CPython would simply read.
 - A read that *fails* in the host leaves the file in a retry-safe state:
   `pending_read` is cleared, the buffer stays empty, and `eof` is not
   flipped. A user-caught exception followed by a retry will re-attempt

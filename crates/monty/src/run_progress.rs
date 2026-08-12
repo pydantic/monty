@@ -661,10 +661,23 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 method_call: false,
             }
         }
-        Ok(FrameExit::OsCall { function_call, call_id }) => ConvertedExit::OsCall {
+        Ok(FrameExit::OsCall {
             function_call,
-            call_id: call_id.raw(),
-        },
+            call_id,
+            effect,
+        }) => {
+            // The point of no return: the call is the host's, so a matching
+            // `resume` is guaranteed. Every other destination drops it.
+            debug_assert!(
+                vm.pending_os_effect.is_none(),
+                "an OS call is still in flight — its effect would be overwritten"
+            );
+            vm.pending_os_effect = effect;
+            ConvertedExit::OsCall {
+                function_call,
+                call_id: call_id.raw(),
+            }
+        }
         Ok(FrameExit::MethodCall {
             method_name,
             args,

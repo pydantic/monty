@@ -547,38 +547,32 @@ impl Executor {
 pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: &mut VM<'_>) -> RunResult<MontyObject> {
     match frame_exit_result? {
         FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, vm)),
-        FrameExit::ExternalCall {
-            function_name, args, ..
-        } => {
-            args.drop_with(vm);
-            let function_name = function_name.as_str(vm.interns);
-            Err(ExcType::not_implemented(format!(
-                "External function '{function_name}' not implemented with standard execution"
-            ))
-            .into())
-        }
-        FrameExit::OsCall { function_call, .. } => {
-            let name = function_call.name();
-            function_call.drop_with(vm);
-            Err(
-                ExcType::not_implemented(format!("OS function '{name}' not implemented with standard execution"))
-                    .into(),
-            )
-        }
-        FrameExit::MethodCall { method_name, args, .. } => {
-            args.drop_with(vm);
-            let name = method_name.as_str(vm.interns);
-            Err(
-                ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
-                    .into(),
-            )
-        }
-        FrameExit::ResolveFutures(_) => {
-            Err(ExcType::not_implemented("async futures not supported by standard execution.").into())
-        }
-        FrameExit::NameLookup { name_id, .. } => {
-            let name = vm.interns.get_str(name_id);
-            Err(ExcType::name_error(name).into())
+        // Suspensions this path cannot service. Built from a borrow so one
+        // `drop_with` releases whatever the exit owns, fields added later too.
+        exit => {
+            let error = match &exit {
+                FrameExit::Return(_) => unreachable!("returns are handled above"),
+                FrameExit::ExternalCall { function_name, .. } => {
+                    let function_name = function_name.as_str(vm.interns);
+                    ExcType::not_implemented(format!(
+                        "External function '{function_name}' not implemented with standard execution"
+                    ))
+                }
+                FrameExit::OsCall { function_call, .. } => ExcType::not_implemented(format!(
+                    "OS function '{}' not implemented with standard execution",
+                    function_call.name()
+                )),
+                FrameExit::MethodCall { method_name, .. } => {
+                    let name = method_name.as_str(vm.interns);
+                    ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
+                }
+                FrameExit::ResolveFutures(_) => {
+                    ExcType::not_implemented("async futures not supported by standard execution.")
+                }
+                FrameExit::NameLookup { name_id, .. } => ExcType::name_error(vm.interns.get_str(*name_id)),
+            };
+            exit.drop_with(vm);
+            Err(error.into())
         }
     }
 }

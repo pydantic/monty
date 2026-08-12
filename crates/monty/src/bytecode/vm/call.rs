@@ -21,7 +21,7 @@ use crate::{
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
-    os_dispatch::PendingOsEffect,
+    os_dispatch::{PendingOsEffect, release_pending_effect},
     types::{
         Dict, Instance, PyTrait, Type, bytes::call_bytes_method, construct_namedtuple, instance::class_name,
         str::call_str_method,
@@ -68,11 +68,9 @@ pub(crate) enum CallResult {
     /// [`PendingOsEffect`] instead of being pushed onto the operand stack raw.
     ///
     /// Used by buffered file reads (`BufferStore`), buffered writes
-    /// (`WritePosition`), and `os.listdir` (`ListdirNames`). Carrying the
-    /// effect *in* the result — armed on the VM only at dispatch — guarantees
-    /// a call that is rejected and dropped without dispatch (e.g. inside a
-    /// synchronous nested-call context, see `unsupported_call_result`) cannot
-    /// leave a stale effect behind to corrupt the next OS call's resume.
+    /// (`WritePosition`), and `os.listdir` (`ListdirNames`). The effect stays
+    /// *in* the value, handed on to `FrameExit::OsCall`, so a call rejected on
+    /// the way out cannot corrupt the next OS call's resume.
     OsCallWithEffect {
         call: OsFunctionCall,
         effect: PendingOsEffect,
@@ -90,12 +88,8 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
             Self::FramePushed => {}
             Self::OsCallWithEffect { call, effect } => {
                 call.drop_with(heap);
-                // Single pin (see `inc_ref_for_pending_oscall`): release one
-                // ref if the call is discarded before dispatch arms the
-                // effect on `pending_os_effect`.
-                if let Some(file_id) = effect.pinned_file() {
-                    heap.heap_mut().dec_ref(file_id);
-                }
+                // Discarded before it ever became a `FrameExit`.
+                release_pending_effect(Some(effect), heap);
             }
         }
     }
