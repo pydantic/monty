@@ -906,3 +906,42 @@ os.getenv('PROBE')
         MontyObject::String("env-value".to_owned())
     );
 }
+
+#[test]
+fn future_answered_os_call_does_not_reshape_a_later_external_result() {
+    // The same stranded effect, reached through a *non-OS* suspension: the
+    // external call's return value must come back whole, not sliced by the
+    // abandoned file's `BufferStore`.
+    let code = r"
+f = open('/data/sample.txt')
+f.read(5)
+some_external('x')
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected open, got {progress:?}")
+    };
+    progress = call
+        .resume(mock_file_handle("/data/sample.txt"), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected the buffered read, got {progress:?}")
+    };
+    assert_eq!(call.function_call.name(), "Path.read_text");
+    progress = call.resume(ExtFunctionResult::Future(7), PrintWriter::Stdout).unwrap();
+
+    let RunProgress::FunctionCall(call) = progress else {
+        panic!("expected the external call, got {progress:?}")
+    };
+    assert_eq!(call.function_name, "some_external");
+    let progress = call
+        .resume(MontyObject::String("external-result".to_owned()), PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(
+        progress.into_complete().expect("expected Complete"),
+        MontyObject::String("external-result".to_owned())
+    );
+}
