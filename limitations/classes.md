@@ -222,7 +222,9 @@ first, e.g. return a `dict` of the fields.
   attribute always raises the default `AttributeError` even when the class
   defines `__getattr__`, and attribute writes always go straight to the
   instance `__dict__`. `object.__setattr__` exists (see below) and is
-  therefore equivalent to a plain `obj.x = v` until those hooks land.
+  therefore equivalent to a plain `obj.x = v` on an instance until those hooks
+  land — but only on an instance: it rejects class objects, where `Foo.x = v`
+  writes a class member.
 
 - Introspection attributes other than `__name__`, `__doc__`, `__annotations__`
   and `obj.__class__`: `Foo.__dict__`, `obj.__dict__`, `Foo.__bases__`,

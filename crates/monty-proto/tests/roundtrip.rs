@@ -155,6 +155,15 @@ fn exception_and_type_values_round_trip() {
     assert_value_round_trip(&MontyObject::Type(MontyType::Instance("Foo".to_owned())));
     let builtin = MontyObject::builtin_function_from_name("len").expect("len is a builtin");
     assert_value_round_trip(&builtin);
+    // A dotted builtin name must survive too: `object.__setattr__` is the one
+    // whose name is not just its lowercased variant, so it is the only variant
+    // that can drift between the strum and serde spellings.
+    let dotted = MontyObject::builtin_function_from_name("object.__setattr__").expect("object.__setattr__ is a builtin");
+    assert_value_round_trip(&dotted);
+    assert_eq!(
+        serde_json::to_string(&dotted).expect("serializes"),
+        r#"{"BuiltinFunction":"object.__setattr__"}"#
+    );
 }
 
 #[test]

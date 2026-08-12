@@ -105,6 +105,11 @@ pub enum BuiltinsFunctions {
     /// `object.__setattr__(obj, name, value)` — the write that bypasses a
     /// class's attribute hooks, reached only through `object`. Its name is not
     /// an identifier, so it can never resolve as a bare global.
+    ///
+    /// The first variant whose name is not its lowercased identifier, so it
+    /// needs both renames: serde and strum each carry the name across a
+    /// different boundary (JSON vs. `Display`/`FromStr`) and must agree.
     #[strum(serialize = "object.__setattr__")]
+    #[serde(rename = "object.__setattr__")]
     ObjectSetattr,
 }
