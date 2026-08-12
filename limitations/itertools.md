@@ -99,6 +99,14 @@ or duration limit, and then raises `MemoryError` rather than exhausting. Under
 runs until the host itself runs out of memory. This is the same exposure as a
 `while True:` loop, not something specific to `itertools`.
 
+The adaptors that discard items without yielding — `dropwhile` and
+`filterfalse` before their first accepted item, `compress` past a falsy run,
+`islice` skipping to `start`, `chain` crossing an exhausted source — poll
+`max_duration` themselves while looping, so a discarding pass over an infinite
+source raises `TimeoutError` instead of spinning. The poll is amortized (once
+per 64 items), so the limit can be overshot by up to that much work. CPython
+has no duration limit at all and would loop forever.
+
 `cycle(iterable)` must buffer every item it has seen so far in order to replay
 them, and that buffer is charged against `max_memory` as it grows, so cycling
 over a very long source raises `MemoryError` at the limit rather than at the
