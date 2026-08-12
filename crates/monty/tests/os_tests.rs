@@ -6,8 +6,8 @@
 
 use monty::{MontyRun, RunProgress};
 use monty_types::{
-    CompileOptions, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, OsFunctionCall, PrintWriter,
-    ResourceTracker, file_stat,
+    CompileOptions, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject,
+    OsFunctionCall, PrintWriter, ResourceTracker, file_stat,
 };
 
 /// Helper to run code and extract the OsCall progress.
@@ -862,4 +862,47 @@ type(Path('/data/config.json').read_text()).__name__
         ],
     );
     assert_eq!(result, MontyObject::String("str".to_owned()));
+}
+
+#[test]
+fn os_call_answered_with_a_future_does_not_strand_its_effect() {
+    // A host may answer an OS call with `Future` instead of a value, and that
+    // resume never consumes the armed effect. The next OS call must release
+    // the stale one rather than overwrite it (leaking the file's pin) — and
+    // must not let it reshape its own result, as it did before #711.
+    let code = r"
+import os
+f = open('/data/sample.txt')
+f.read(5)
+os.getenv('PROBE')
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected open, got {progress:?}")
+    };
+    progress = call
+        .resume(mock_file_handle("/data/sample.txt"), PrintWriter::Stdout)
+        .unwrap();
+
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected the buffered read, got {progress:?}")
+    };
+    assert_eq!(call.function_call.name(), "Path.read_text");
+    progress = call.resume(ExtFunctionResult::Future(7), PrintWriter::Stdout).unwrap();
+
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected getenv, got {progress:?}")
+    };
+    assert_eq!(call.function_call.name(), "os.getenv");
+    let progress = call
+        .resume(MontyObject::String("env-value".to_owned()), PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(
+        progress.into_complete().expect("expected Complete"),
+        MontyObject::String("env-value".to_owned())
+    );
 }

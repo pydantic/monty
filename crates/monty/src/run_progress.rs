@@ -16,6 +16,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{Heap, HeapReader},
     object_bridge::MontyObjectExt,
+    os_dispatch::release_pending_effect,
     run::Executor,
 };
 
@@ -668,10 +669,12 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
         }) => {
             // The point of no return: the call is the host's, so a matching
             // `resume` is guaranteed. Every other destination drops it.
-            debug_assert!(
-                vm.pending_os_effect.is_none(),
-                "an OS call is still in flight — its effect would be overwritten"
-            );
+            //
+            // A slot that is still armed means the previous OS call never
+            // consumed its effect — a host may answer one with
+            // `ExtFunctionResult::Future`, which resumes without taking it.
+            // Release it rather than overwrite it, or its file pin leaks.
+            release_pending_effect(vm.pending_os_effect.take(), vm.heap);
             vm.pending_os_effect = effect;
             ConvertedExit::OsCall {
                 function_call,

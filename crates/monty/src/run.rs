@@ -545,36 +545,34 @@ impl Executor {
 /// Used by non-iterative execution paths where suspendable outcomes (external calls,
 /// name lookups) are not supported and should produce errors.
 pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: &mut VM<'_>) -> RunResult<MontyObject> {
-    match frame_exit_result? {
-        FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, vm)),
-        // Suspensions this path cannot service. Built from a borrow so one
-        // `drop_with` releases whatever the exit owns, fields added later too.
-        exit => {
-            let error = match &exit {
-                FrameExit::Return(_) => unreachable!("returns are handled above"),
-                FrameExit::ExternalCall { function_name, .. } => {
-                    let function_name = function_name.as_str(vm.interns);
-                    ExcType::not_implemented(format!(
-                        "External function '{function_name}' not implemented with standard execution"
-                    ))
-                }
-                FrameExit::OsCall { function_call, .. } => ExcType::not_implemented(format!(
-                    "OS function '{}' not implemented with standard execution",
-                    function_call.name()
-                )),
-                FrameExit::MethodCall { method_name, .. } => {
-                    let name = method_name.as_str(vm.interns);
-                    ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
-                }
-                FrameExit::ResolveFutures(_) => {
-                    ExcType::not_implemented("async futures not supported by standard execution.")
-                }
-                FrameExit::NameLookup { name_id, .. } => ExcType::name_error(vm.interns.get_str(*name_id)),
-            };
-            exit.drop_with(vm);
-            Err(error.into())
+    // Suspensions this path cannot service. The error is built from a borrow
+    // so one `drop_with` releases whatever the exit owns, fields added later
+    // included.
+    let exit = match frame_exit_result? {
+        FrameExit::Return(return_value) => return Ok(MontyObject::new(return_value, vm)),
+        exit => exit,
+    };
+    let error = match &exit {
+        FrameExit::Return(_) => unreachable!("returns are handled above"),
+        FrameExit::ExternalCall { function_name, .. } => {
+            let function_name = function_name.as_str(vm.interns);
+            ExcType::not_implemented(format!(
+                "External function '{function_name}' not implemented with standard execution"
+            ))
         }
-    }
+        FrameExit::OsCall { function_call, .. } => ExcType::not_implemented(format!(
+            "OS function '{}' not implemented with standard execution",
+            function_call.name()
+        )),
+        FrameExit::MethodCall { method_name, .. } => {
+            let name = method_name.as_str(vm.interns);
+            ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
+        }
+        FrameExit::ResolveFutures(_) => ExcType::not_implemented("async futures not supported by standard execution."),
+        FrameExit::NameLookup { name_id, .. } => ExcType::name_error(vm.interns.get_str(*name_id)),
+    };
+    exit.drop_with(vm);
+    Err(error.into())
 }
 
 /// Output from `run_ref_counts` containing reference count and heap information.
