@@ -364,6 +364,24 @@ ValueError: test message\
 """)
 
 
+def test_multiline_span_traceback(monty_run: RunMonty):
+    # Regression test for #631: a frame spanning multiple lines can end on a
+    # lower column than it starts (hanging-indent `)`); the parent-side wire
+    # validation used to reject the whole exception payload as malformed.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('def f(a):\n    raise ValueError("boom")\n\nr = f(\n    a=1,\n)\n')
+    assert exc_info.value.display() == snapshot("""\
+Traceback (most recent call last):
+  File "<python-input-0>", line 4, in <module>
+    r = f(
+        a=1,
+    )
+  File "<python-input-0>", line 2, in f
+    raise ValueError("boom")
+ValueError: boom\
+""")
+
+
 def test_str_returns_msg(monty_run: RunMonty):
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("raise ValueError('test message')")
