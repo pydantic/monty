@@ -1,0 +1,26 @@
+crates/monty-python/tests/test_exceptions.py
+  s_dcadb0cc03af5b::t_768297621aed3b 367-384
+crates/monty-proto/tests/roundtrip.rs
+  s_dcadb0cc03af5b::t_94123d60a9ef07 3
+  s_dcadb0cc03af5b::t_a5701824c330ad 272-297
+crates/monty-proto/src/convert/exception.rs
+  s_dcadb0cc03af5b::t_6882bdb736f81a 200-209
+crates/monty-proto/Cargo.toml
+  s_dcadb0cc03af5b::t_6463e9480080cf 58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b06362d67c6777093962055ea1223156d51560b1",
+  "prompts": {},
+  "sessions": {
+    "s_dcadb0cc03af5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c826e4d3-ad49-4291-8182-e14f2f7d9f95",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
