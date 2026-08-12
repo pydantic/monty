@@ -1,0 +1,45 @@
+crates/monty-server-tests/src/lib.rs
+  s_06bd5a6de66c6e::t_6b0b69bbb3b5a1 21
+  s_06bd5a6de66c6e::t_5fbd9434e87a65 34
+  s_06bd5a6de66c6e::t_68b9e3d6299a55 10-11
+crates/monty-server/src/session.rs
+  s_06bd5a6de66c6e::t_377766aba36ff0 45
+  s_06bd5a6de66c6e::t_c431ff26671f35 40
+crates/monty-server/src/index.rs
+  s_06bd5a6de66c6e::t_1ce6e9a9c119ca 58-79
+  s_06bd5a6de66c6e::t_16b869da37a104 19-21
+  s_06bd5a6de66c6e::t_2bc46c2ba7e0d0 12-14
+  s_06bd5a6de66c6e::t_1f8afe3d1c192d 165-169
+  s_06bd5a6de66c6e::t_3ead782b51386b 213
+crates/monty-server/CLAUDE.md
+  s_06bd5a6de66c6e::t_b81cb8c6cb20ec 174-179,182-189
+  s_06bd5a6de66c6e::t_878a3ea79c0dea 229
+crates/monty-server/src/lib.rs
+  s_06bd5a6de66c6e::t_5d6b9ffe89c766 41,45
+  s_06bd5a6de66c6e::t_e9d37f46fd1edc 20
+  s_06bd5a6de66c6e::t_6d099cb005ee26 606-607,615-616
+crates/monty-server-tests/CLAUDE.md
+  s_06bd5a6de66c6e::t_b36a8d02e829e7 13-16,18-19
+crates/monty-server/tests/server_test.rs
+  s_06bd5a6de66c6e::t_5bf3628964f293 475-477,484-492,497-498
+  s_06bd5a6de66c6e::t_f000120d27eb96 426-428
+  s_06bd5a6de66c6e::t_014067e86990ca 493-496
+crates/monty-server/README.md
+  s_06bd5a6de66c6e::t_2d19a3409c6d75 15-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ef07315b2979b00e5481d6f0b605806e8877c84a",
+  "prompts": {},
+  "sessions": {
+    "s_06bd5a6de66c6e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1c678b71-6b8e-4146-98f7-bf3412d5a8a8",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
