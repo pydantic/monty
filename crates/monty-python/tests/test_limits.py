@@ -124,6 +124,20 @@ def test_limits_non_string_key_raises_error(pool: Monty):
     )
 
 
+def test_limits_unprintable_key_still_raises_type_error(pool: Monty):
+    class BadRepr:
+        def __repr__(self) -> str:
+            raise RuntimeError('boom')
+
+    with pytest.raises(TypeError) as exc_info:
+        with pool.checkout(limits={BadRepr(): 1}):  # pyright: ignore[reportArgumentType]
+            pass
+    assert exc_info.value.args[0] == snapshot(
+        "unknown limits key <unprintable key>; accepted keys are 'max_duration_secs', 'max_memory', "
+        "'gc_interval', 'max_recursion_depth'"
+    )
+
+
 def test_limits_none_value_allowed(monty_run: RunMonty):
     # None is valid to explicitly disable a limit
     assert monty_run('1 + 1', limits={'max_memory': None}) == snapshot(2)

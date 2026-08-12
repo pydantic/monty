@@ -58,9 +58,13 @@ fn check_unknown_keys(dict: &Bound<'_, PyDict>) -> PyResult<()> {
         let known = key.extract::<&str>().is_ok_and(|k| KNOWN_KEYS.contains(&k));
         if !known {
             let accepted = KNOWN_KEYS.map(|k| format!("'{k}'")).join(", ");
+            // `repr()` runs user `__repr__`, which may itself raise — fall back
+            // so the promised `TypeError` is raised for every unknown key.
+            let key_repr = key
+                .repr()
+                .map_or_else(|_| "<unprintable key>".to_owned(), |r| r.to_string());
             return Err(PyTypeError::new_err(format!(
-                "unknown limits key {}; accepted keys are {accepted}",
-                key.repr()?
+                "unknown limits key {key_repr}; accepted keys are {accepted}"
             )));
         }
     }
