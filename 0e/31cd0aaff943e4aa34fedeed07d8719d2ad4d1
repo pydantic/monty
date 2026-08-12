@@ -1,0 +1,25 @@
+crates/monty/src/bytecode/vm/mod.rs
+  s_1ace99d5a70e2c::t_e66fa68fcf4a46 2469
+  s_1ace99d5a70e2c::t_f3bc1982ae209b 1935,1945-1979
+crates/monty/tests/file_error_paths.rs
+  s_1ace99d5a70e2c::t_82a3a39ebce670 194-265
+crates/monty/src/bytecode/vm/call.rs
+  s_1ace99d5a70e2c::t_0f6ba356854a8f 423-427
+  s_1ace99d5a70e2c::t_89867b40b30e47 457-461
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0e31cd0aaff943e4aa34fedeed07d8719d2ad4d1",
+  "prompts": {},
+  "sessions": {
+    "s_1ace99d5a70e2c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7a0858c-590c-4ef7-82bb-f6bd6ad47cdb",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
