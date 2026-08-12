@@ -1,0 +1,23 @@
+crates/monty-python/src/limits.rs
+  s_1ace99d5a70e2c::t_8105ecb3ac9152 5-12
+  s_1ace99d5a70e2c::t_8deceab1a90f62 55-69
+  s_1ace99d5a70e2c::t_e8aa38f5f94569 25-27,30
+crates/monty-python/tests/test_limits.py
+  s_1ace99d5a70e2c::t_ed9540000822d5 107-126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "34886bc179d7e785d75af54c1c5cceff887c0e07",
+  "prompts": {},
+  "sessions": {
+    "s_1ace99d5a70e2c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7a0858c-590c-4ef7-82bb-f6bd6ad47cdb",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
