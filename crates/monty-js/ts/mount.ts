@@ -37,6 +37,9 @@ export interface MountDirOptions {
    * Access mode (default `'overlay'`): `'read-only'` rejects writes,
    * `'read-write'` writes through to the host, `'overlay'` keeps writes in
    * memory and discards them when the feed ends.
+   *
+   * `'read-write'` leaves untrusted files on the host after the feed — see the
+   * warning on [`MountDir`] before choosing it.
    */
   mode?: MountDirMode
   /** Cap on total bytes written through this mount. */

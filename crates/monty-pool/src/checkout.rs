@@ -130,6 +130,10 @@ impl MountSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MountSpecMode {
     ReadOnly,
+    /// Writes go through to the host directory and outlive the feed. Those
+    /// files are untrusted and must not be executed by the host, including
+    /// indirectly via a Python `import` when the directory is on `sys.path`.
+    /// [`Self::Overlay`] keeps writes in memory instead.
     ReadWrite,
     /// Copy-on-write overlay in parent memory; writes are discarded when the
     /// feed ends.

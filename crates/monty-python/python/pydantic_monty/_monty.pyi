@@ -103,6 +103,27 @@ class MountDir:
     hands the directory back; feeds passed a closed mount raise `ValueError`.
     Without it the directory stays open until the object is collected: a file
     descriptor on Unix, but on Windows that blocks renaming or deleting it.
+
+    ### Warning
+
+    **`mode='read-write'` puts files from untrusted code onto your real filesystem.**
+
+    The sandbox cannot execute what it writes, but your machine might do so later.
+
+    Files left behind by a session are untrusted input; do not execute them.
+    Importing counts as executing, and the import can be an indirect one: any
+    mount of a directory on `sys.path` lets sandboxed code write `json.py`, or
+    any other module not yet imported, and have the next `import` run it —
+    including imports made by `pydantic_monty` itself. `sys.path[0]` is the
+    current working directory for `python -m`, `python -c`, the REPL,
+    and the script's directory for `python script.py`.
+
+    Other files are read by tools without an explicit import: `conftest.py`,
+    `sitecustomize.py`, `.git/hooks/*`, `Makefile`, `.env`, `__pycache__`.
+
+    The `'overlay'` default keeps writes in memory, so nothing reaches the host
+    filesystem. Use `'read-write'` only with a directory that contains no code
+    or config and is not on `sys.path` or any other execution path.
     """
 
     host_path: str
@@ -142,7 +163,8 @@ class MountDir:
                 (e.g. `'/data'`), regardless of host OS. Raises `ValueError`
                 if not absolute.
             mode: `'read-only'` — reads only, writes raise `PermissionError`;
-                `'read-write'` — writes through to the host directory;
+                `'read-write'` — writes through to the host directory, leaving
+                untrusted files there after the feed (see the warning above);
                 `'overlay'` (default) — reads fall through to the host, writes
                 are captured in memory per feed and discarded when it ends.
             write_bytes_limit: Cap on cumulative bytes written through the

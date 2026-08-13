@@ -61,6 +61,9 @@ impl MountTable {
     /// Mount memory uses [`DEFAULT_MEMORY_USAGE_LIMIT`] unless a pre-built
     /// [`Mount`] overrides it.
     ///
+    /// With [`MountMode::ReadWrite`] sandboxed code leaves untrusted files on
+    /// the host — read that variant's warning before choosing it.
+    ///
     /// # Errors
     ///
     /// Returns [`MountError::InvalidMount`] if the virtual path is not absolute,

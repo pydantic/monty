@@ -50,6 +50,10 @@ pub(crate) struct Cli {
     /// Uses `::` as separator to avoid ambiguity with Windows drive letters.
     /// Modes: `ro` (read-only, default), `rw` (read-write), `overlay` (in-memory overlay).
     /// `write_limit_bytes` is optional and applies to all write modes.
+    ///
+    /// WARNING: `rw` leaves files written by untrusted code on your real
+    /// filesystem, where your own tools may later execute them.
+    /// Prefer `overlay` mode, when possible.
     #[arg(short = 'm', long = "mount")]
     mounts: Vec<String>,
 

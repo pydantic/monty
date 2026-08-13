@@ -20,6 +20,19 @@ import {
  * const mount = new MountDir({ hostPath: '/path/on/host', virtualPath: '/mnt/data', mode: 'read-only' })
  * await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
  * ```
+ *
+ * Warning: with `mode: 'read-write'`, files written by sandboxed code persist
+ * on the host and must be treated as untrusted. Never execute them. Loading a
+ * module counts as executing: Node resolves imports from `node_modules`
+ * directories up the tree, so a writable mount inside a project lets sandboxed
+ * code shadow a package that has not been loaded yet. The same applies to
+ * files tools read on their own: `.git/hooks/*`, `Makefile`, `.env`, CI
+ * config. If Python also runs against the directory, it applies to `sys.path`
+ * imports too — see the `MountDir` docs in the Python package.
+ *
+ * The `'overlay'` default keeps writes in memory, so nothing reaches the host
+ * filesystem. Use `'read-write'` only with a directory that contains no code
+ * or config.
  */
 export class MountDir {
   readonly hostPath: string
