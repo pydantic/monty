@@ -1,0 +1,41 @@
+crates/monty-fs/src/mount_mode.rs
+  s_e6761934b926ac::t_8db04a860601b8 19
+  s_e6761934b926ac::t_72530c621f47b3 20-24
+crates/monty-pool/src/checkout.rs
+  s_e6761934b926ac::t_4c269eb61464ad 133-136
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_e6761934b926ac::t_88d7f9c48aada0 166-167
+  s_e6761934b926ac::t_24994764cd2db5 106-109,120
+  s_e6761934b926ac::t_37240cfcee7e9e 113-117,119,121-125
+crates/monty-python/src/mount.rs
+  s_e6761934b926ac::t_ec72cbafb3d139 63-65
+  s_e6761934b926ac::t_c2d1fbda57e5cd 29-35
+crates/monty-js/ts/mount.ts
+  s_e6761934b926ac::t_9924ca4823fec7 40
+  s_e6761934b926ac::t_e6dd60f14f0c88 41-42
+crates/monty-fs/src/mount_table.rs
+  s_e6761934b926ac::t_ae54633c769897 66
+  s_e6761934b926ac::t_9392b0fee313e9 64-65
+crates/monty-runtime/src/main.rs
+  s_e6761934b926ac::t_6cb267dfda397f 53-54
+  ai_agent 55-56
+crates/monty-js/ts/mountDir.ts
+  s_e6761934b926ac::t_b74e1b24702e14 24-31,33-35
+  s_e6761934b926ac::t_1ed5d76eaaca9f 23,32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2830090f4a0936a2261ac295a544f4e729b6d0e3",
+  "prompts": {},
+  "sessions": {
+    "s_e6761934b926ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c87def44-931f-4da0-8695-8088d6925b05",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
