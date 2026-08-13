@@ -1,0 +1,19 @@
+crates/monty-server/src/index.rs
+  s_a6b31a99b41c18::t_00eaa5ee5e81d5 67-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "48a44831ca52e470e91817c08b9d0845912fdb55",
+  "prompts": {},
+  "sessions": {
+    "s_a6b31a99b41c18": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffa4c-b342-7172-8f89-1c6616a86c7d",
+        "model": "gpt-daybreak-blue-latest"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
