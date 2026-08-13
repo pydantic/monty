@@ -1,0 +1,23 @@
+crates/monty/src/bytecode/vm/mod.rs
+  s_1c9a96ed8cfffa::t_dd4f7c8aebe4e3 81-91,1219-1224,1227-1228
+  s_1c9a96ed8cfffa::t_835b72878e0f8f 1671-1676
+crates/monty/test_cases/lookup__mutation.py
+  s_1c9a96ed8cfffa::t_629f155f5e6fb4 200-217
+  s_1c9a96ed8cfffa::t_dd4f7c8aebe4e3 231
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b0cab76dba1d5e90e56b065a9d26958e515a3098",
+  "prompts": {},
+  "sessions": {
+    "s_1c9a96ed8cfffa": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffb03-b950-7330-ad2b-2976db5b9f9b",
+        "model": "gpt-daybreak-blue-latest"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
