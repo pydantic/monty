@@ -62,6 +62,49 @@ a + b
   t.is(result, 30)
 })
 
+test('asyncio.gather runs async external calls concurrently', async () => {
+  let active = 0
+  let maxActive = 0
+
+  const result = await run(
+    `
+import asyncio
+results = await asyncio.gather(fetch(1), fetch(2))
+results[0] + results[1]
+`,
+    {
+      externalLookup: {
+        fetch: async (n: number) => {
+          active += 1
+          maxActive = Math.max(maxActive, active)
+          await new Promise((resolve) => setTimeout(resolve, 10))
+          active -= 1
+          return n * 10
+        },
+      },
+    },
+  )
+
+  t.is(result, 30)
+  t.is(maxActive, 2)
+})
+
+test('does not parse string output as an internal future marker', async () => {
+  const result = await run(
+    `
+fetch()
+'<coroutine external_future(0)>'
+`,
+    {
+      externalLookup: {
+        fetch: async () => 'promise result',
+      },
+    },
+  )
+
+  t.is(result, '<coroutine external_future(0)>')
+})
+
 test('run async external function with inputs', async () => {
   const result = await run('await multiply(x)', {
     inputs: { x: 5 },
