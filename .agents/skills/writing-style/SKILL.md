@@ -137,6 +137,78 @@ Three checks:
 - Strip the rhythm and count the facts. One is the usual answer.
 - Is the sentence about the system, or about how the reader should feel?
 
+## Industry metaphor
+
+Software described as objects moving through space, or as people with
+intentions. It is the register of a startup design review, not of reference
+documentation; CPython's docs use plain verbs throughout ("raises", "returns",
+"is stored in", "propagates", "Changed in version 3.11").
+
+The metaphor also deletes the mechanism. "The error surfaces" does not say
+whether it raises, returns or logs. "Wire the tracker through" does not say
+parameter, field or global. "It lands in 3.14" does not say merged or released.
+
+Motion and logistics:
+
+| Instead of             | Write                         |
+| ---------------------- | ----------------------------- |
+| lands, landing         | merged, released in 3.14      |
+| ship, shipping         | release                       |
+| spin up, stand up      | start, launch                 |
+| wire up, plumb through | pass, connect                 |
+| thread X through       | pass X as a parameter         |
+| bubble up              | propagate, or name the caller |
+| surface (verb)         | raise, return, report, log    |
+| hand back, hand off    | return, transfer              |
+| bake in, baked into    | built in, compiled in         |
+| punt on                | defer, skip, leave to         |
+
+Structure as furniture:
+
+| Instead of            | Write                        |
+| --------------------- | ---------------------------- |
+| seam                  | interface, boundary          |
+| surface, surface area | API, the public functions    |
+| escape hatch          | override, opt-out            |
+| knobs, dials          | options, settings            |
+| load-bearing          | required, relied on by X     |
+| X-shaped              | with the same interface as X |
+| lives in              | is defined in, is stored in  |
+| sits on top of        | wraps                        |
+| under the hood        | internally                   |
+
+Code with intentions:
+
+| Instead of               | Write                          |
+| ------------------------ | ------------------------------ |
+| the checker is happy     | the check passes               |
+| knows about, is aware of | reads, checks, has a field for |
+| talks to                 | sends requests to              |
+| teach the parser to      | add X to the parser            |
+| wants, expects (of code) | requires                       |
+| reaches into             | accesses, reads                |
+
+Also: "for free", "just works", "out of the box", "first-class", "table
+stakes", "opinionated", "non-trivial", "unlock", "blast radius", "paper over".
+
+In prose:
+
+- ✗ "Errors from the worker surface to the caller."
+- ✓ "`Checkout::feed` returns `PoolError::Crashed` when the worker exits
+  without a `FatalError` event."
+
+- ✗ "The tracker is threaded through the whole VM."
+- ✓ "Every allocation path takes `&ResourceTracker` as a parameter."
+
+- ✗ "`WorkerTransport` is the `NativeSession`-shaped seam."
+- ✓ "`WorkerTransport` has the same methods as `NativeSession`, so
+  `session.ts` drives either one."
+
+Terms of art stay, even though they began as metaphors: heap, stack, pointer,
+hot path, propagate, boilerplate, tombstone, sandbox escape, attack surface.
+`CLAUDE.md` also sanctions foot-gun, happy path and single source of truth. The
+test is whether a plain verb would say more than the metaphor does.
+
 ## Structure
 
 - Lead with the fact, not the context. First line of a docstring says what the
@@ -163,6 +235,7 @@ Three checks:
 | is responsible for handling      | handles                    |
 
 Em dashes should be avoided, or used very sparingly.
+But do not update code just to remove em dashes.
 
 Contractions are fine. Second person for user-facing docs ("you can never see
 the host path"), imperative for instructions ("mount a dedicated directory").
