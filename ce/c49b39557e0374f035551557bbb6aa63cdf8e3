@@ -1,0 +1,19 @@
+.agents/skills/writing-style/SKILL.md
+  s_e6761934b926ac::t_3c35deb7cd1657 140-211
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cec49b39557e0374f035551557bbb6aa63cdf8e3",
+  "prompts": {},
+  "sessions": {
+    "s_e6761934b926ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c87def44-931f-4da0-8695-8088d6925b05",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
