@@ -1,0 +1,49 @@
+crates/monty/test_cases/lookup__mutation.py
+  s_769cf903b3d717::t_ae1c97b92a880c 183-186,195,206,222-230
+  s_769cf903b3d717::t_aaa3e267b5f3c7 140-182,187-194,196-205,207-221,231-232
+  s_769cf903b3d717::t_01326cbb56f951 376
+crates/monty/src/types/dict.rs
+  s_769cf903b3d717::t_ff5fc2ddc6e035 766
+  s_769cf903b3d717::t_0c25424a7e6a6c 759,791-792,798-800,809
+  s_769cf903b3d717::t_bdf0a6e8111555 712,718,768,776,787
+  s_769cf903b3d717::t_8da436c7852d09 669-679
+  s_769cf903b3d717::t_2f6f1c5a752710 691
+  s_769cf903b3d717::t_68e1132bd1453f 711,717,726-734,737,741-758,760-761,763-765,767,769,771-775,777-785
+  s_769cf903b3d717::t_1caf1d47e2a6cd 689-690,692-693,770
+  s_769cf903b3d717::t_83d0485898e9ec 762,789-790,793-794,801-808,810-811,816,818-820
+  s_769cf903b3d717::t_872f0422890c8e 735-736
+  s_769cf903b3d717::t_dce9511b613aff 695-697,795-797
+  s_769cf903b3d717::t_d0afa78e496256 815
+crates/monty/src/types/set.rs
+  s_769cf903b3d717::t_dce9511b613aff 217-218,221,315-317
+  s_769cf903b3d717::t_a39327b140d4d4 232,238,247-255,258-281,283-285,287,289,291-295,297-305
+  s_769cf903b3d717::t_d0afa78e496256 335
+  s_769cf903b3d717::t_614bb712324284 19
+  s_769cf903b3d717::t_611b614c40e40f 210,212-214,290
+  s_769cf903b3d717::t_4472ae139baf33 286
+  s_769cf903b3d717::t_269cc2496d45c3 211
+  s_769cf903b3d717::t_bdf0a6e8111555 233,239,288,296,307
+  s_769cf903b3d717::t_0e71d6e0774d40 209,282,311-314,318-331,336,338-341
+  s_769cf903b3d717::t_872f0422890c8e 256-257
+limitations/builtins.md
+  s_769cf903b3d717::t_9e420dd616c144 51-59
+crates/monty/tests/resource_limits.rs
+  s_769cf903b3d717::t_bcc0e2fd3ae516 647-650,665,670,674-675,677-678
+  s_769cf903b3d717::t_6e2bedd0e4833d 644-646,651-664,666-669,671-673,676,679-682
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "45315ceffd6a3bf2fcad2009cee475d4eed590b9",
+  "prompts": {},
+  "sessions": {
+    "s_769cf903b3d717": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e4ecf9bb-3c4b-45a2-906f-6d9afaeb3fa1",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
