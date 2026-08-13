@@ -219,8 +219,9 @@ test is whether a plain verb would say more than the metaphor does.
 - Comments and field docs: 1 line, 3 at most. Function and struct docstrings:
   5 lines or fewer. If the docstring is longer than the code, something is
   wrong with one of them.
-- Warnings state the consequence first, then the subtle path to it, then the
-  safe alternative. No preamble.
+- Warnings: the command or condition first, then the consequence and the
+  subtle path to it, then the safe alternative. No preamble. Put the warning
+  before the thing it warns about, not after.
 
 ## Words and punctuation
 
@@ -233,6 +234,26 @@ test is whether a plain verb would say more than the metaphor does.
 | a variety of, a number of        | several, or the number     |
 | allows you to, enables you to    | you can, or the imperative |
 | is responsible for handling      | handles                    |
+
+**One term per concept.** Choose the word and keep it. Alternating between
+`worker`, `child` and `subprocess` for one thing makes the reader stop to check
+whether they are the same thing. Consistency beats variety.
+
+- ✗ "The checkout feeds the child, and the worker replies with events."
+- ✓ "The checkout feeds the worker, and the worker replies with events."
+
+**Noun clusters: three words at most.** Longer stacks make the reader guess
+which noun modifies which.
+
+- ✗ "parent-side mount table memory usage limit"
+- ✓ "the memory limit for a parent-side mount table"
+
+**Active voice and simple tenses.** Use the passive only when the actor is
+unknown or irrelevant. Do not drop articles or verbs to save space, except in
+the Rust convention of a subjectless first line ("Returns the host path.").
+
+- ✗ "A `PermissionError` will have been raised by the mount."
+- ✓ "The mount raises `PermissionError`."
 
 Em dashes should be avoided, or used very sparingly.
 But do not update code just to remove em dashes.
