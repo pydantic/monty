@@ -1,0 +1,48 @@
+examples/sql_playground/README.md
+  s_9dccd8545e3932::t_b3c960ea8ae4c1 13
+crates/monty-proto/README.md
+  s_9dccd8545e3932::t_a33c231af42505 60-63
+.agents/skills/writing-style/SKILL.md
+  s_e6761934b926ac::t_3fd24468f426ae 222-224
+  s_e6761934b926ac::t_e95726958199ea 238-257
+packages/pydantic-monty/README.md
+  s_9dccd8545e3932::t_d2df95fbfca1d7 280
+README.md
+  s_9dccd8545e3932::t_500f33e3200f07 427
+  s_9dccd8545e3932::t_751a7d5c0d36b5 42
+  s_9dccd8545e3932::t_f794b0e0d8dc7d 443
+  s_9dccd8545e3932::t_c1feb72a138a5d 41,48
+  s_9dccd8545e3932::t_f6ba8beffa91fd 258-259
+  s_9dccd8545e3932::t_2a3094fc3efe02 363,365
+crates/monty-pool/README.md
+  s_9dccd8545e3932::t_21b5dc32f537df 87-89
+  s_9dccd8545e3932::t_c2a4f3c736ed3e 85-86
+crates/monty-fs/README.md
+  s_9dccd8545e3932::t_42fe0c7880c414 17-21
+examples/README.md
+  s_9dccd8545e3932::t_7c7c54415c2477 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6e3071bd760375a5801107bcba2898985b093d71",
+  "prompts": {},
+  "sessions": {
+    "s_9dccd8545e3932": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "65f0da76-f9f6-4f5d-b164-b0c68da2d4a0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_e6761934b926ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c87def44-931f-4da0-8695-8088d6925b05",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
