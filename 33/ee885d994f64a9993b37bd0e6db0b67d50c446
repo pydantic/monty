@@ -1,0 +1,76 @@
+limitations/print.md
+  s_9dccd8545e3932::t_5a83b48a328835 5,18
+limitations/modules.md
+  s_9dccd8545e3932::t_262220131b9f87 9-23
+  s_9dccd8545e3932::t_5a83b48a328835 27
+.agents/skills/writing-style/SKILL.md
+  s_9dccd8545e3932::t_a5190c55361cd7 83-85
+  s_9dccd8545e3932::t_2f1fd93506daa5 28-29
+limitations/exceptions.md
+  s_9dccd8545e3932::t_5a83b48a328835 5,37
+limitations/filesystem.md
+  s_9dccd8545e3932::t_5a83b48a328835 7,16,278
+  s_9dccd8545e3932::t_0ab3fa87137e56 204,276
+limitations/encoding.md
+  s_9dccd8545e3932::t_5a83b48a328835 46,51
+limitations/itertools.md
+  s_9dccd8545e3932::t_5a83b48a328835 54
+limitations/open.md
+  s_9dccd8545e3932::t_5a83b48a328835 104
+limitations/datetime.md
+  s_9dccd8545e3932::t_5a83b48a328835 52
+limitations/pool-architecture.md
+  s_9dccd8545e3932::t_5a83b48a328835 123
+limitations/resource_limits.md
+  s_9dccd8545e3932::t_5a83b48a328835 131
+  s_9dccd8545e3932::t_0ab3fa87137e56 80
+limitations/typing.md
+  s_9dccd8545e3932::t_5a83b48a328835 70
+limitations/iter.md
+  s_9dccd8545e3932::t_5a83b48a328835 6
+limitations/builtins.md
+  s_9dccd8545e3932::t_5a83b48a328835 35,60,83,85,89
+limitations/collections.md
+  s_9dccd8545e3932::t_5a83b48a328835 34,43,49,54
+limitations/dataclasses.md
+  s_9dccd8545e3932::t_5a83b48a328835 6,47,72,76
+CLAUDE.md
+  s_9dccd8545e3932::t_a18d6a83779844 328-329
+limitations/asyncio.md
+  s_9dccd8545e3932::t_5a83b48a328835 32,42
+limitations/language.md
+  s_9dccd8545e3932::t_5a83b48a328835 15,20,52,59,61,65,78,113
+limitations/os.md
+  s_9dccd8545e3932::t_5a83b48a328835 5,78,95
+limitations/pathlib.md
+  s_9dccd8545e3932::t_5a83b48a328835 39,59
+limitations/classes.md
+  s_9dccd8545e3932::t_5a83b48a328835 40,42,136,186,207,247
+limitations/assert.md
+  s_9dccd8545e3932::t_5a83b48a328835 69
+limitations/format.md
+  s_9dccd8545e3932::t_5a83b48a328835 9,19-20,46
+limitations/namedtuple.md
+  s_9dccd8545e3932::t_5a83b48a328835 4,8,32
+limitations/sys.md
+  s_9dccd8545e3932::t_5a83b48a328835 29
+limitations/with.md
+  s_9dccd8545e3932::t_d471d4963f5a94 77-80
+  s_9dccd8545e3932::t_5a83b48a328835 5,12,31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "33ee885d994f64a9993b37bd0e6db0b67d50c446",
+  "prompts": {},
+  "sessions": {
+    "s_9dccd8545e3932": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "65f0da76-f9f6-4f5d-b164-b0c68da2d4a0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
