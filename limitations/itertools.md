@@ -51,7 +51,7 @@ raise `AttributeError` at runtime.
   detection in `repr()`, not specific to `itertools`.
 - **Adaptors without a custom `repr()` omit the address.** `repr(pairwise([]))`
   is `<itertools.pairwise object>`, where CPython appends ` at 0x...`. This is
-  Monty's general iterator treatment (see `./iter.md`), not specific
+  Monty's general iterator treatment (see ./iter.md), not specific
   to `itertools`.
 - **Crossing the host boundary loses the repr.** A `count` / `repeat` object
   returned to the host arrives as `<itertools.count object>` /

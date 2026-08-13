@@ -6,25 +6,25 @@ and no way for sandboxed code to load additional modules.
 
 ## Modules available
 
-| Module         | See                  |
-| -------------- | -------------------- |
-| `asyncio`      | `./asyncio.md`       |
-| `collections`  | `./collections.md`   |
-| `dataclasses`  | `./dataclasses.md`   |
-| `datetime`     | `./datetime.md`      |
-| `itertools`    | `./itertools.md`     |
-| `json`         | `./json.md`          |
-| `math`         | `./math.md`          |
-| `os`           | `./os.md`            |
-| `pathlib`      | `./pathlib.md`       |
-| `re`           | `./re.md`            |
-| `sys`          | `./sys.md`           |
-| `typing`       | `./typing.md`        |
-| `unicodedata`  | `./unicodedata.md`   |
+| Module         | See              |
+| -------------- | ---------------- |
+| `asyncio`      | ./asyncio.md     |
+| `collections`  | ./collections.md |
+| `dataclasses`  | ./dataclasses.md |
+| `datetime`     | ./datetime.md    |
+| `itertools`    | ./itertools.md   |
+| `json`         | ./json.md        |
+| `math`         | ./math.md        |
+| `os`           | ./os.md          |
+| `pathlib`      | ./pathlib.md     |
+| `re`           | ./re.md          |
+| `sys`          | ./sys.md         |
+| `typing`       | ./typing.md      |
+| `unicodedata`  | ./unicodedata.md |
 
 `collections` is importable and exposes `deque`, `Counter`, `defaultdict`,
 and `namedtuple`; `OrderedDict`, `ChainMap`, and the `UserDict` / `UserList`
-/ `UserString` wrappers are missing (see `./collections.md`).
+/ `UserString` wrappers are missing (see ./collections.md).
 
 A `gc` module exposing `collect()` / `enable()` / `disable()` is compiled
 in only under the `test-hooks` Cargo feature, for Monty's own test suite;

@@ -4,7 +4,7 @@ The sandbox has no default filesystem access. The host explicitly mounts
 real directories at virtual paths through Monty's `MountTable`; everything
 outside a mount is invisible. Without any mounts, `open()` and every
 `pathlib` I/O method raise `FileNotFoundError` for every path (see
-`./open.md` and `./pathlib.md`).
+./open.md and ./pathlib.md).
 
 ## Virtual paths are always POSIX
 
@@ -13,7 +13,7 @@ Inside the sandbox, paths use forward slashes regardless of host OS.
 path `C:/Users/foo`. Path repr is always `PosixPath(...)`.
 
 Bytes paths are accepted but decoded as strict UTF-8 (no `surrogateescape`
-/ PEP 383 round-tripping). See `./open.md` for the full rationale.
+/ PEP 383 round-tripping). See ./open.md for the full rationale.
 
 ## Mount modes
 
@@ -201,7 +201,7 @@ the attempt fails with `ERROR_SHARING_VIOLATION`. Unix is unaffected. The
 window is the mount's lifetime, which for `pydantic_monty` and
 `@pydantic/monty` is the lifetime of the mount object, not one feed. Close it
 (`MountDir.close()`, or the `with` / `using` block) to release the directory
-before the host touches it (see `./pool-architecture.md`).
+before the host touches it (see ./pool-architecture.md).
 
 ### A mount follows its directory, not its path
 
@@ -273,6 +273,6 @@ escapes. That matches CPython, and reveals nothing about the target.
 
 `open()` and pathlib I/O do not keep an OS handle alive between calls; each
 `read`/`write` is a separate one-shot host operation. This is what makes
-subprocess dump/load safe (see `./pool-architecture.md`), and it means
+subprocess dump/load safe (see ./pool-architecture.md), and it means
 external processes can observe partial state between writes. See the design
-note in `./open.md`.
+note in ./open.md.

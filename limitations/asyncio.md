@@ -29,7 +29,7 @@ surface.
 
 `asyncio.timeout()` / `asyncio.timeout_at()` would be unreachable in any
 case: they are async context managers, and `async with` is rejected at parse
-time (see `./language.md`).
+time (see ./language.md).
 
 ## `async def` / `await`
 
@@ -39,7 +39,7 @@ time (see `./language.md`).
   it again.
 - `await` on a non-awaitable raises `TypeError`.
 - `async for` and `async with` are **rejected at parse time** (see
-  `./language.md`). Async iteration and async context-manager
+  ./language.md). Async iteration and async context-manager
   protocols do not exist.
 - Async comprehensions (`[x async for x in ...]`) are rejected at parse
   time.

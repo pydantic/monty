@@ -49,7 +49,7 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
   are not implemented.
 
 Subclassing `datetime` is not possible, since there is no class inheritance
-(see `./classes.md`).
+(see ./classes.md).
 
 `datetime.replace()` and `date.replace()` accept **only keyword
 arguments** in Monty. CPython accepts positional args too

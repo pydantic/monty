@@ -37,9 +37,9 @@ and function-attributes-become-methods), bound methods, class variables
 `__repr__`/`__str__`/`__enter__`/`__exit__`/`__eq__`/`__hash__` dispatch,
 `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
 `Foo.__annotations__` (ordered; values stringized and provisional, see
-`./typing.md`), `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
+./typing.md), `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
 `type()` constructor. The `__enter__`/`__exit__` divergences are in
-`./with.md`.
+./with.md.
 
 ## Dynamic class creation — `type(name, bases, dict)`
 
@@ -133,7 +133,7 @@ order and error wording, but with these divergences:
   `RecursionError` in Monty. The same cap applies to synchronous callback
   evaluation such as `map()`, `filter()`, `sorted()`/`list.sort(key=...)`,
   `min()`/`max(key=...)`, and exotic `__init__` recursion (see the "Recursion"
-  section of `./resource_limits.md`).
+  section of ./resource_limits.md).
 - **Comprehensions in the class body** can see class variables, because Monty
   inlines comprehensions into the enclosing scope. In CPython a comprehension
   has its own scope that skips the class scope, so only the *leftmost iterable*
@@ -183,7 +183,7 @@ first, e.g. return a `dict` of the fields.
   on classes and on non-method functions are supported.
 - **Classes are barely introspectable**: `__dict__`, `__bases__` and `dir()`
   are all unavailable (`cls.__name__` and `cls.__annotations__` work, the
-  latter with stringized values, see `./typing.md`). A class decorator
+  latter with stringized values, see ./typing.md). A class decorator
   can therefore discover fields and nothing else.
 - **Tracebacks from decorator application point at the whole `class` statement**
   (a span from the first decorator through the body, with the body elided as
@@ -204,7 +204,7 @@ first, e.g. return a `dict` of the fields.
   - the legacy `__getitem__`-only fallback: CPython iterates a class defining
     `__getitem__` but not `__iter__` from index 0 until `IndexError`, while
     Monty reports it as not iterable. (`monty -t` accepts `iter(obj)` for
-    such a class, so this fails only at runtime, see `./iter.md`.)
+    such a class, so this fails only at runtime, see ./iter.md.)
   - `__reversed__`, so `reversed(obj)` on any user instance raises
     `TypeError: '{cls}' object is not reversible`. That matches CPython for a
     class defining neither `__reversed__` nor `__len__` + `__getitem__`, and
@@ -244,7 +244,7 @@ first, e.g. return a `dict` of the fields.
   expressions are captured as source text (stringized) and never evaluated, so
   the walrus never binds; CPython raises `SyntaxError`. This follows from
   annotations never being evaluated, so it would change if they ever are (see
-  `./typing.md`).
+  ./typing.md).
 - `del obj.attr` (the `del` statement is unsupported generally).
 
 ## `FrozenInstanceError`

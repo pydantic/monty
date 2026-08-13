@@ -325,8 +325,8 @@ When the input *is* already bounded (e.g. `s.to_lowercase()`, slicing, `to_owned
 
 ### Soft memory-limit checks — when and why
 
-`max_memory` is a **soft** limit: the VM polls allocator-backed usage before every
-instruction (`check_time`), and everything pathological is caught by the hard
+`max_memory` is a **soft** limit: the VM polls allocator-backed usage every 255
+instructions (`check_memory_time`), and everything pathological is caught by the hard
 limits — the allocator's hard ceiling (soft + headroom, worker exits with
 `OOM_EXIT_CODE` and the pool replaces it) and the pool's turn timeout. Soft
 checks exist ONLY to turn *common* overshoots into a graceful `MemoryError`

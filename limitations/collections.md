@@ -31,7 +31,7 @@ too, rather than something that type-checks and then fails at runtime.
   deque-ness are lost; sending it back yields a `list`. (Same as
   defaultdict/Counter, which arrive as plain dicts.)
 - **Mutation during iteration is not detected through `enumerate`/`zip`/`map`/
-  `filter`/`reversed`**: those are eager (see `./builtins.md`), so
+  `filter`/`reversed`**: those are eager (see ./builtins.md), so
   the deque is fully read before the loop body runs. `for x in d` and explicit
   `iter()`/`next()` detect it exactly as CPython does.
 - `d += <any iterable>` works (it is `extend`), even though `list`'s `+=` still
@@ -40,18 +40,18 @@ too, rather than something that type-checks and then fails at runtime.
   `extend`/`extendleft`/`+=` append each item as the source yields it, so an
   iterator raising part-way leaves the earlier items in place, as in CPython.
   But `map`/`filter`/`zip`/`enumerate` are eager (see
-  `./builtins.md`), so `d += map(f, xs)` with a raising `f` raises
+  ./builtins.md), so `d += map(f, xs)` with a raising `f` raises
   before the extend begins and appends nothing, where CPython appends whatever
   was yielded first.
 
 `del d[i]` and subclassing (`class Q(deque)`) both fail at *compile* time: the
 `del` statement and class inheritance are unimplemented Monty-wide (see
-`./language.md` / `./classes.md`), not deque limitations.
+./language.md / ./classes.md), not deque limitations.
 
 ## `namedtuple`
 
 Field-name validation matches CPython's messages exactly; see
-`./namedtuple.md` for the tuple-inherited surface and its
+./namedtuple.md for the tuple-inherited surface and its
 divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
 `<class '__main__.Point'>`, the repo-wide unqualified-class-name pattern.
 

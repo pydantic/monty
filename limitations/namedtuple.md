@@ -1,11 +1,11 @@
 # Named tuples
 
 Named tuples can be constructed with `collections.namedtuple` (see
-`./collections.md`), and also enter the sandbox as
+./collections.md), and also enter the sandbox as
 `sys.version_info` and as values passed in from the host via the `MontyObject`
 API. `typing.NamedTuple` is a marker only; subscripting it or inheriting from
 it does not produce a type, since there is no class inheritance (see
-`./classes.md`).
+./classes.md).
 
 Instances behave as CPython named tuples: integer indexing, attribute access,
 `len`/iteration/`bool`, equality and hashing against equivalent plain tuples,
@@ -29,4 +29,4 @@ tuples model CPython *structseqs*, which expose none of them
 - **Accessing a method without calling it** (`m = p._asdict`) raises
   `AttributeError`: methods are call-only, not bound-method values. Repo-wide,
   `[1].append`, `'a'.upper` and `{}.get` all do the same.
-- **Subclassing** is unsupported (see `./classes.md`).
+- **Subclassing** is unsupported (see ./classes.md).

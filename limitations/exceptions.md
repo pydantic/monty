@@ -2,7 +2,7 @@
 
 Monty implements a fixed set of exception classes, listed below. Sandboxed
 code **cannot define new exception classes**: the `class` statement exists
-(see `./classes.md`) but classes cannot inherit, so there is no way
+(see ./classes.md) but classes cannot inherit, so there is no way
 to subclass `BaseException`/`Exception`. `raise` must therefore use one of
 these built-ins; `raise MyClass()` on a plain user class raises
 `TypeError: exceptions must derive from BaseException`, as in CPython.
@@ -34,7 +34,7 @@ both `OSError` and `ValueError`, matching CPython's dual parentage).
 `StopAsyncIteration`, `SystemError`, `TabError`, `IndentationError`,
 `UnicodeError` (parent), `UnicodeTranslateError`,
 `EncodingWarning`, `EnvironmentError` / `IOError` aliases,
-`ExceptionGroup` / `BaseExceptionGroup` (see `./language.md`).
+`ExceptionGroup` / `BaseExceptionGroup` (see ./language.md).
 
 ## Constructor signature
 

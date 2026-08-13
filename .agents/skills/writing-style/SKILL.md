@@ -25,8 +25,8 @@ project's docs, it carries no information.
   symlinks cannot reach outside it."
 
 - ✗ "Resource limits provide robust protection against runaway code."
-- ✓ "The VM polls allocator usage before every instruction; crossing the hard
-  limit exits the process with `OOM_EXIT_CODE`."
+- ✓ "The VM polls allocator usage every 255 instructions; crossing the
+  allocator's hard limit exits the worker with `OOM_EXIT_CODE`."
 
 ### Throat-clearing
 
@@ -80,9 +80,9 @@ bug was found usually does not.
 - ✗ "This was demonstrated against a live deployment during Hack Monty, where
   sandboxed code wrote `dataclasses.py` and the client executed it during
   ordinary result conversion."
-- ✓ "Sandboxed code can write `json.py`, or any module not yet imported, and
-  have the next `import` run it, including imports made by `pydantic_monty`
-  itself."
+- ✓ "Sandboxed code can write `json.py` into a read-write mount, or any module
+  not yet imported, and have the host's next `import` run it, including imports
+  `pydantic_monty` makes itself."
 
 ## Smoothness
 

@@ -66,7 +66,7 @@ users or LLMs) can see the values involved instead of a blank
 Introspected annotations can be disabled per session, restoring CPython's empty
 message for bare asserts. This does not remove Monty's other exception
 constructor differences: with annotations disabled, an explicit assert message
-must still be a string; see `./exceptions.md`. The retained repr
+must still be a string; see ./exceptions.md. The retained repr
 length can also be customized (an int >= 1, in bytes; 0 means "off", not
 "retain no bytes"):
 

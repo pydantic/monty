@@ -67,7 +67,7 @@ This is a known temporary divergence; see `class__annotations.py`.
   binds the name but annotates nothing is accepted, and its binding stands.
 - **`from __future__ import annotations`** is accepted as a **no-op**, since it
   describes what Monty already does. See
-  `./language.md` for the other features.
+  ./language.md for the other features.
 - Consequences: `get_type_hints()` (which would evaluate the strings) is still
   not implemented, and code that reads `__annotations__` expecting type
   *objects* sees strings. CPython 3.14's `@dataclass` reads evaluated objects

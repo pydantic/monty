@@ -36,7 +36,7 @@ These yield an `OsCall` for the host to resolve:
 - `mkdir(mode=0o777, parents=False, exist_ok=False)`, `unlink()`, `rmdir()`
 - `iterdir()`, `stat()`, `rename(target)`
 - `resolve()`, `absolute()`
-- `open(...)` — see `./open.md` for the supported file API and divergences
+- `open(...)` — see ./open.md for the supported file API and divergences
 
 `Path.mkdir()` parses `mode`, `parents`, and `exist_ok`, but `mode` is
 accepted only for signature compatibility: Monty does not model POSIX
@@ -56,4 +56,4 @@ Not implemented: `glob`, `rglob`, `touch`, `chmod`, `lchmod`, `owner`,
 ## Path normalization and the sandbox
 
 Every I/O call routes through the host's mount table; paths are resolved
-strictly within mounted roots. See `./filesystem.md`.
+strictly within mounted roots. See ./filesystem.md.

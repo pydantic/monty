@@ -77,7 +77,7 @@ without one is unlimited.
   and replaced rather than allowed to grow indefinitely.
 - **Restoring a dump is bounded by the checkout it lands in.** `load_session` /
   `load_snapshot` restore the dump's own limits (see
-  `./pool-architecture.md`), and the cap is re-derived from
+  ./pool-architecture.md), and the cap is re-derived from
   them once the session exists, but the load *itself* runs under the limit the
   `checkout()` config applied. Restoring a large dump into a checkout with a
   much smaller `max_memory` can therefore exceed it while loading; pass a
@@ -128,7 +128,7 @@ indistinguishable from a stack overflow.
   during construction. Native re-entry is capped independently at a lower
   fixed depth than the 1000-frame Python limit, so Monty raises
   `RecursionError` before a native stack overflow would abort the process. See
-  the `__repr__`/`__str__` entry in `./classes.md` for the main
+  the `__repr__`/`__str__` entry in ./classes.md for the main
   user-visible divergence this causes.
 
 ## Time
