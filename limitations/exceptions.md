@@ -2,9 +2,9 @@
 
 Monty implements a fixed set of exception classes, listed below. Sandboxed
 code **cannot define new exception classes**: the `class` statement exists
-(see [classes.md](classes.md)) but classes cannot inherit, so there is no way
+(see `./classes.md`) but classes cannot inherit, so there is no way
 to subclass `BaseException`/`Exception`. `raise` must therefore use one of
-these built-ins — `raise MyClass()` on a plain user class raises
+these built-ins; `raise MyClass()` on a plain user class raises
 `TypeError: exceptions must derive from BaseException`, as in CPython.
 
 ## Implemented exception classes
@@ -34,14 +34,14 @@ both `OSError` and `ValueError`, matching CPython's dual parentage).
 `StopAsyncIteration`, `SystemError`, `TabError`, `IndentationError`,
 `UnicodeError` (parent), `UnicodeTranslateError`,
 `EncodingWarning`, `EnvironmentError` / `IOError` aliases,
-`ExceptionGroup` / `BaseExceptionGroup` (see [language.md](language.md)).
+`ExceptionGroup` / `BaseExceptionGroup` (see `./language.md`).
 
 ## Constructor signature
 
 All exception constructors accept **zero or one string argument** only.
 Multi-argument forms used in CPython (e.g. `OSError(errno, strerror,
 filename)`, `UnicodeDecodeError(encoding, obj, start, end, reason)`) are
-not supported — passing more than one argument raises an internal error.
+not supported; passing more than one argument raises an internal error.
 
 ## Attributes
 
@@ -51,12 +51,12 @@ not supported — passing more than one argument raises an internal error.
 - `repr(exc)` — `ClassName('message')` matching CPython, **except**
   `UnicodeDecodeError`/`UnicodeEncodeError`: CPython reprs these from their
   real 5-field constructor (`UnicodeDecodeError('ascii', b'\xff', 0, 1,
-  'ordinal not in range(128)')`), which Monty doesn't track — Monty's
+  'ordinal not in range(128)')`), which Monty doesn't track, so Monty's
   `repr()` uses the generic single-message form instead.
 
 **Not implemented:** `__cause__`, `__context__`, `__suppress_context__`,
 `__traceback__`, `__notes__`, `add_note()`. The `raise X from Y` syntax
-parses, but the `from Y` cause is **silently dropped** — chained
+parses, but the `from Y` cause is **silently dropped**: chained
 tracebacks are not preserved across `raise from`.
 
 ## Custom subclasses
@@ -74,8 +74,8 @@ that best fits.
 `break`/`continue`/`return` inside a `finally` block follows CPython
 semantics (the finally body runs exactly once and a `return`/`break`/
 `continue` that exits it discards any in-flight exception), but Monty does
-not emit CPython 3.14's PEP 765 `SyntaxWarning` for such statements — Monty
-has no warnings machinery.
+not emit CPython 3.14's PEP 765 `SyntaxWarning` for such statements, having
+no warnings machinery.
 
 ## Traceback behaviour
 
@@ -92,13 +92,13 @@ Known caret divergences:
   the frame's range.
 - For a frame whose location spans multiple lines (e.g. a caller frame covering
   a whole multi-line `class` statement), Monty renders the CPython-style source
-  block — all lines when the range covers at most three, otherwise
-  `...<N lines>...` elision — but never draws caret markers under it, where
-  CPython draws multi-line carets for partial-line ranges (e.g. a multi-line
-  binary expression).
+  block (all lines when the range covers at most three, otherwise
+  `...<N lines>...` elision) but never draws caret markers under it, where
+  CPython draws multi-line carets for partial-line ranges such as a multi-line
+  binary expression.
 
 Monty never emits CPython's `Did you mean: '...'?` suggestions on
-`NameError`/`AttributeError`. Note this divergence is invisible to the test
+`NameError`/`AttributeError`. This divergence is invisible to the test
 suite: `scripts/run_traceback.py` strips the suggestions from CPython's output
 before comparison, so traceback tests cannot catch it.
 
@@ -107,6 +107,6 @@ An exception raised inside a Python callable that native code invokes
 `sorted`/`min`/`max`, and a user-defined
 `__iter__`/`__next__`/`__contains__`/`__repr__`/`__str__` — omits the **calling**
 frame from its traceback; the callee frame is present.
-CPython shows both. This is a limitation of the re-entrant call path
-(`evaluate_function`), which does not splice the host call site into the
-traceback. The exception type and message are unaffected.
+CPython shows both. The re-entrant call path (`evaluate_function`) does not
+splice the host call site into the traceback. The exception type and message
+are unaffected.

@@ -1,25 +1,18 @@
 # Limitations
 
-This directory is the single source of truth for how Monty diverges from CPython.
-Module-level docstrings and inline comments are not
-sufficient on their own — divergences live here so users and contributors
-can find them in one place.
+How Monty diverges from CPython. Docstrings and inline comments do not count:
+the divergence has to be written down here.
 
-Every pull request that adds, changes, or removes user-visible behavior
-MUST land (or update) a markdown document here describing how the feature
-diverges from CPython and what subset of the CPython surface area Monty
-actually implements.
+Every pull request that adds, changes, or removes user-visible behavior MUST
+add (or update) a markdown document here describing how the feature diverges
+from CPython, and what subset of the CPython surface Monty implements.
 
-One file per feature, named after the builtin / module / construct it
-covers (e.g. `open.md`, `asyncio.md`, `re.md`). Add new sections to an
-existing file when the feature is already documented; only create a new
-file when there is no fit.
+One file per feature, named after the builtin, module, or construct it covers
+(`open.md`, `asyncio.md`, `re.md`). Add a section to an existing file when the
+feature is already documented; create a new file only when there is no fit.
 
-Keep entries concise but comprehensive — list every known divergence,
-including ones that "feel obvious". A divergence that is not written down
-is one that future readers (and future Claude) will assume does not exist.
-Reviewers should reject PRs that change behavior without updating this
-directory.
+List every known divergence, including the ones that feel obvious. Reviewers
+should reject PRs that change behavior without updating this directory.
 
 Structure each file around what a Python user would actually try:
 
