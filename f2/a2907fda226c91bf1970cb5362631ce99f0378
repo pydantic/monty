@@ -1,0 +1,28 @@
+.agents/skills/writing-style/SKILL.md
+  s_af5faff74e4eb8::t_808754e68da43c 237-239
+  s_af5faff74e4eb8::t_23ac3c62f34e01 226-236
+docs/server.md
+  s_af5faff74e4eb8::t_1fa1d881f28bdc 3,7-8,11-13,26-28,44-50,68-69,78-79,85-86,90-92,94-100,118-121
+  s_af5faff74e4eb8::t_c027a544e60fb0 71-74
+  s_af5faff74e4eb8::t_6bf669d0857b9a 4-6,9-10
+  s_af5faff74e4eb8::t_617a9fe974f4e5 101-115
+  s_af5faff74e4eb8::t_87345e429ef02e 1-2,14-25,29-39,41-43,51-67,70,75-77,80-84,87-89,93,116-117
+.agents/skills/writing-style/rewrap_md.py
+  s_af5faff74e4eb8::t_d1f6c43eac732e 1-21,24-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f2a2907fda226c91bf1970cb5362631ce99f0378",
+  "prompts": {},
+  "sessions": {
+    "s_af5faff74e4eb8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "77011028-fc83-45d8-8054-78263b010658",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
