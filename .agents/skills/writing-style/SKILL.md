@@ -223,6 +223,20 @@ test is whether a plain verb would say more than the metaphor does.
   subtle path to it, then the safe alternative. No preamble. Put the warning
   before the thing it warns about, not after.
 
+### Markdown line wrapping
+
+Hard-wrap markdown at 120 characters, one sentence per line where possible: each
+sentence starts a new line, and only a sentence longer than 120 characters wraps
+onto continuation lines. This keeps diffs one-sentence-sized — editing a
+sentence does not rewrap the paragraph around it.
+
+Continuation lines of a list item are indented to the content column of the
+marker. Code blocks, tables and headings are never rewrapped; a table whose rows
+cannot fit 120 characters should become a list instead.
+
+To reformat an existing file: `python3 .claude/skills/writing-style/rewrap_md.py <file>...`
+(rewrites in place, skips fences/tables/headings/frontmatter).
+
 ## Words and punctuation
 
 | Instead of                       | Write                      |
