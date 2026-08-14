@@ -712,7 +712,7 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
         self.ensure_ready()?;
-        let feed_mounts = Self::build_feed_mounts(mounts);
+        let feed_mounts = Self::build_feed_mounts(mounts)?;
         // the dump carries its own limits/consumed time/script name — forget
         // what the worker's Configure established and re-adopt from the reply
         // (see `pending_load_budget` for when the old budget comes back)
@@ -739,13 +739,13 @@ impl Checkout {
 
     /// Executes one snippet against the session. Inputs become sandbox
     /// globals; mounts apply to this feed only and are serviced by the parent
-    /// (an invalid host path fails here, before any frame is sent, as a
-    /// session-preserving [`PoolError::Runtime`]). The session's first feed
-    /// sets the sandbox working directory to its first mount's virtual path,
-    /// or `/` without mounts; later feeds keep the directory (`os.chdir`
-    /// included) unless [`Checkout::feed_with_cwd`] switches it. Returns the
-    /// first suspension (or completion); `print()` output streams to
-    /// `on_print` throughout.
+    /// (specs with overlapping host directories fail here, before any frame is
+    /// sent, as a session-preserving [`PoolError::Runtime`]). The session's
+    /// first feed sets the sandbox working directory to its first mount's
+    /// virtual path, or `/` without mounts; later feeds keep the directory
+    /// (`os.chdir` included) unless [`Checkout::feed_with_cwd`] switches it.
+    /// Returns the first suspension (or completion); `print()` output streams
+    /// to `on_print` throughout.
     ///
     /// # Errors
     /// [`PoolError::Runtime`] / [`PoolError::Typing`] leave the session
@@ -794,7 +794,7 @@ impl Checkout {
                 .first()
                 .map_or_else(|| "/".to_owned(), |mount| mount.virtual_path().to_owned()),
         };
-        self.feed_mounts = Self::build_feed_mounts(mounts);
+        self.feed_mounts = Self::build_feed_mounts(mounts)?;
         let (inputs, values) = named_values_to_proto(inputs.into());
         // The child resets its feed clock on this request, so the last feed's
         // reported total must not shorten this feed's backstop.
@@ -1643,9 +1643,10 @@ impl Checkout {
 
     /// Builds this feed's mount table, or `None` for the common mount-less
     /// feed. Runs inline: the specs' directories were opened when the caller
-    /// built them, so nothing here touches the host filesystem.
-    fn build_feed_mounts(mounts: Vec<MountSpec>) -> Option<MountTable> {
-        (!mounts.is_empty()).then(|| build_mount_table(mounts))
+    /// built them, so nothing here touches the host filesystem. Fails
+    /// (session-preserving) when two specs' host directories overlap.
+    fn build_feed_mounts(mounts: Vec<MountSpec>) -> Result<Option<MountTable>, PoolError> {
+        (!mounts.is_empty()).then(|| build_mount_table(mounts)).transpose()
     }
 
     /// Runs blocking host mount work on tokio's blocking pool, so a stalled
@@ -1883,9 +1884,12 @@ fn checked_cwd(cwd: &str) -> Result<String, PoolError> {
 }
 
 /// Builds the parent-side [`MountTable`] for one feed from its (non-empty)
-/// specs. Infallible and free of filesystem I/O: each spec already carries its
-/// opened directory, so this only pairs those descriptors with a per-feed mode.
-fn build_mount_table(mounts: Vec<MountSpec>) -> MountTable {
+/// specs. Free of filesystem I/O: each spec already carries its opened
+/// directory, so this only pairs those descriptors with a per-feed mode. Specs
+/// whose host directories overlap are rejected here — as a session-preserving
+/// [`PoolError::Runtime`], since specs are built independently and only meet
+/// at feed time.
+fn build_mount_table(mounts: Vec<MountSpec>) -> Result<MountTable, PoolError> {
     let mut table = MountTable::new();
     for mount in mounts {
         let mode = match mount.mode {
@@ -1898,7 +1902,9 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> MountTable {
         // No filesystem access: the root was opened when the spec was built.
         let mount = monty_fs::Mount::with_root(mount.root, mode, mount.write_bytes_limit)
             .with_memory_usage_limit(mount.memory_usage_limit);
-        table.push_mount(mount);
+        table
+            .push_mount(mount)
+            .map_err(|err| PoolError::Runtime(err.into_exception()))?;
     }
-    table
+    Ok(table)
 }

@@ -22,6 +22,11 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyTuple};
 /// Retained overlay data and filesystem results share a configurable memory
 /// budget, which defaults to 100 MB.
 ///
+/// Mounts passed to one feed must cover disjoint host directories: overlap
+/// (the same directory, or one inside the other) is rejected with
+/// `ValueError` when the feed starts, since the stricter mount's mode could
+/// otherwise be bypassed through the other mount's paths.
+///
 /// The `mode` controls sandbox access:
 /// - `'read-only'` — sandbox can read but not write
 /// - `'read-write'` — sandbox can read and write real host files
