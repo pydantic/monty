@@ -1,9 +1,17 @@
 """Rewrap markdown prose: one sentence per line, hard-wrapped at 120 chars.
 
-Skips fenced code blocks, tables, headings, and frontmatter. Paragraph and
-list-item lines are first joined, then split into sentences (one per line),
-then any line over 120 chars is wrapped at word boundaries. List continuation
-lines are indented to the content column of their marker.
+Skips fenced code blocks (``` or ~~~, closed only by a matching fence),
+tables, headings, thematic breaks / setext underlines, and frontmatter.
+Paragraph and list-item lines are joined, split into sentences (one per
+line), then any line over 120 chars is wrapped at word boundaries. List
+continuation lines are indented to the content column of their marker;
+indented paragraphs keep their indent. Hard breaks (two trailing spaces)
+are preserved.
+
+Known limitations: tables must use leading pipes (house style does), and a
+sentence starting with a lowercase letter stays on the previous line — the
+splitter requires a capital/code start so abbreviations like "e.g." never
+split.
 """
 
 import re
@@ -16,11 +24,13 @@ WIDTH = 120
 ABBREV = re.compile(r'\b(e\.g|i\.e|etc|vs|approx|cf|no|v[0-9.]*)\.$', re.IGNORECASE)
 SENT_END = re.compile(r'([.!?][)"\']?)\s+(?=[A-Z`\[($~0-9])')
 BULLET = re.compile(r'^(\s*)([-*+]|\d+\.)\s+')
+FENCE = re.compile(r'^(`{3,}|~{3,})')
+# Thematic breaks and setext underlines: a run of -/=/*/_ (spaces allowed).
+BREAK_LINE = re.compile(r'^(?:[-=*_]\s*){3,}$|^={1,2}$|^-{1,2}$')
 
 
 def split_sentences(text: str) -> list[str]:
-    parts: list[str] = []
-    last = 0
+    parts, last = [], 0
     for m in SENT_END.finditer(text):
         candidate = text[last : m.end(1)]
         if ABBREV.search(candidate):
@@ -47,23 +57,44 @@ def flush(buf: list[str], out: list[str]) -> None:
         return
     m = BULLET.match(buf[0])
     if m:
-        marker, indent = m.group(0), ' ' * len(m.group(0))
-        text = ' '.join([buf[0][len(marker) :]] + [ln.strip() for ln in buf[1:]])
-        for i, sent in enumerate(split_sentences(text)):
-            out.extend(wrap(sent, marker if i == 0 else indent, indent))
+        marker = m.group(0)
+        first_prefix, cont_prefix = marker, ' ' * len(marker)
+        texts = [buf[0][len(marker) :]] + [ln.strip() for ln in buf[1:]]
     else:
-        text = ' '.join(ln.strip() for ln in buf)
-        for sent in split_sentences(text):
-            out.extend(wrap(sent, '', ''))
+        # A plain block keeps its indent, so the continuation paragraph of a
+        # list item stays indented under its marker.
+        indent = buf[0][: len(buf[0]) - len(buf[0].lstrip())]
+        first_prefix = cont_prefix = indent
+        texts = [ln.strip() for ln in buf]
+    first = True
+
+    def emit(segment: list[str], hard_break: bool) -> None:
+        nonlocal first
+        for sent in split_sentences(' '.join(segment)):
+            out.extend(wrap(sent, first_prefix if first else cont_prefix, cont_prefix))
+            first = False
+        if hard_break and out:
+            out[-1] += '  '
+
+    # A line ending in two spaces is a markdown hard break: wrap each side
+    # separately and keep the marker on the break's last line.
+    segment: list[str] = []
+    for raw, text in zip(buf, texts):
+        segment.append(text)
+        if raw.endswith('  '):
+            emit(segment, True)
+            segment = []
+    if segment:
+        emit(segment, False)
     buf.clear()
 
 
 def rewrap(src: str) -> str:
     out: list[str] = []
     buf: list[str] = []
-    in_fence = in_front = False
-    lines = src.splitlines()
-    for i, line in enumerate(lines):
+    fence: str | None = None  # the opening run, e.g. '```' or '~~~~'
+    in_front = False
+    for i, line in enumerate(src.splitlines()):
         stripped = line.strip()
         if i == 0 and stripped == '---':
             in_front = True
@@ -74,12 +105,22 @@ def rewrap(src: str) -> str:
             if stripped == '---':
                 in_front = False
             continue
-        if stripped.startswith('```'):
+        if fence:
+            out.append(line)
+            # A closing fence is a run of the opening character at least as
+            # long as the opener, and nothing else on the line.
+            if len(stripped) >= len(fence) and set(stripped) == {fence[0]}:
+                fence = None
+            continue
+        if opening := FENCE.match(stripped):
             flush(buf, out)
-            in_fence = not in_fence
+            fence = opening.group(1)
             out.append(line)
             continue
-        if in_fence or stripped.startswith(('#', '|', '>')) or not stripped:
+        # Setext underlines are indistinguishable from thematic breaks here;
+        # both survive because the buffered heading text flushes unchanged
+        # (short, single line) and the marker line passes through verbatim.
+        if not stripped or stripped.startswith(('#', '|', '>')) or BREAK_LINE.match(stripped):
             flush(buf, out)
             out.append(line)
             continue

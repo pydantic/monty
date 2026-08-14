@@ -4,21 +4,21 @@
 subprocess from an elastic pool.
 A worker serves one session at a time and is reset or replaced between sessions, so no sandbox state crosses from one
 client to another.
-Any `monty-pool` WebSocket client connects directly — `pydantic_monty.AsyncMontyWebsocket` in Python, `@pydantic/monty`
-in TypeScript.
-The server adds capacity limits, timeouts, per-caller quotas, health probes, graceful drain and tracing to
-[Pydantic Logfire](https://pydantic.dev/logfire); the sandboxing itself is entirely the `monty` worker's.
+`pydantic_monty.AsyncMontyWebsocket` connects directly from Python; the TypeScript package (`@pydantic/monty`) is
+subprocess-only today and cannot dial a remote server.
+The server adds capacity limits, timeouts, per-caller quotas, health probes, graceful drain and tracing to [Pydantic
+Logfire](https://pydantic.dev/logfire); the sandboxing itself is entirely the `monty` worker's.
 
 The server is closed-source and distributed as a container image.
 For access and licensing, [contact us](https://pydantic.dev/contact).
 
 ## Why Monty over WebSocket
 
-This is not a sales document, but it's worth briefly enumerating why someone would want to use Monty running on a
-remote server:
+This is not a sales document, but it's worth briefly enumerating why someone would want to use Monty running on a remote
+server:
 
-- **Security**: escaping the sandbox gets you the machine running Monty, not the machine running the agent /
-  application code — and that machine is an empty container.
+- **Security**: escaping the sandbox gets you the machine running Monty, not the machine running the agent / application
+  code — and that machine is an empty container.
 - **Centralized monitoring, observability, and scaling**: one horizontally scalable service for all Monty code
   execution, instead of every service running its own worker pool.
 - **Density**: Monty workers have a small baseline footprint (as little as 2MB), plus additional memory for limits and
@@ -30,8 +30,8 @@ remote server:
 
 ## Quickstart
 
-The image is private: commercial access comes with a `key.json` service-account file that authenticates pulls
-(the same mechanism as self-hosted Logfire images, which live on the same registry host):
+The image is private: commercial access comes with a `key.json` service-account file that authenticates pulls (the same
+mechanism as self-hosted Logfire images, which live on the same registry host):
 
 ```bash
 docker login us-docker.pkg.dev -u _json_key --password-stdin < key.json
@@ -132,17 +132,16 @@ Dumps only load into a worker of the same Monty version, so roll clients and ser
 
 ## Tracing
 
-Pass `--logfire-token` (or set `LOGFIRE_TOKEN`) to export traces to
-[Pydantic Logfire](https://pydantic.dev/logfire).
+Pass `--logfire-token` (or set `LOGFIRE_TOKEN`) to export traces to [Pydantic Logfire](https://pydantic.dev/logfire).
 Without a token the server behaves identically and logs to stderr only.
 
 The server records one span per connection, and beneath it the same session, run and host-call spans every monty client
 emits — a dashboard built against any monty client works here.
-Policy outcomes (capacity rejections, timeouts, drain) are logged as events on the connection span, one line each
-naming the limit that fired.
+Policy outcomes (capacity rejections, timeouts, drain) are logged as events on the connection span, one line each naming
+the limit that fired.
 
-Traces carry caller data — the code fed to each session, call arguments, results and print output — with no flag to
-turn that off.
+Traces carry caller data — the code fed to each session, call arguments, results and print output — with no flag to turn
+that off.
 Point the token only at a backend those callers may be exposed to.
 
 ## Security
