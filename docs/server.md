@@ -12,6 +12,22 @@ The server adds capacity limits, timeouts, per-caller quotas, health probes, gra
 The server is closed-source and distributed as a container image.
 For access and licensing, [contact us](https://pydantic.dev/contact).
 
+## Why Monty over WebSocket
+
+This is not a sales document, but it's worth briefly enumerating why someone would want to use Monty running on a
+remote server:
+
+- **Security**: escaping the sandbox gets you the machine running Monty, not the machine running the agent /
+  application code — and that machine is an empty container.
+- **Centralized monitoring, observability, and scaling**: one horizontally scalable service for all Monty code
+  execution, instead of every service running its own worker pool.
+- **Density**: Monty workers have a small baseline footprint (as little as 2MB), plus additional memory for limits and
+  optional type checking, so a single machine can run hundreds.
+- **Same behavior as local Monty**: the wire protocol carries host callbacks, name lookups, async futures and mounted
+  client directories, so code that runs against a local pool runs unchanged against the server.
+- **(In future) switch to a full monty sandbox with a parameter**: the same interface, but a full VM running CPython — for
+  code that needs dependencies, bash and a real filesystem.
+
 ## Quickstart
 
 The image refuses to start without a dump-signing key of at least 16 bytes:
