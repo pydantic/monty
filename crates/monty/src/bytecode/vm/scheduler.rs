@@ -9,6 +9,7 @@
 use std::{collections::VecDeque, mem};
 
 use ahash::AHashMap;
+use smallvec::{SmallVec, smallvec};
 
 use crate::{
     asyncio::{Awaiter, CallId, ExternalFutureState, TaskId},
@@ -384,8 +385,27 @@ impl Scheduler {
     /// result, and tears down any inner gather it was blocked on. After this
     /// call the task no longer exists in `Scheduler::tasks`; its owning
     /// references to its coroutine and (outer) gather are released by the
-    /// `Task::drop_with` call at the end.
+    /// `Task::drop_with` in [`Scheduler::cancel_one`].
+    ///
+    /// Drains a worklist rather than recursing into inner gathers: a chain of
+    /// blocked tasks costs no native stack to *build*, so recursive teardown
+    /// turned that stored depth back into frames and overflowed.
     pub fn cancel_task(&mut self, task_id: TaskId, heap: &mut HeapReader<'_>) {
+        let mut pending: SmallVec<[TaskId; 4]> = smallvec![task_id];
+        while let Some(task_id) = pending.pop() {
+            self.cancel_one(task_id, heap, &mut pending);
+        }
+    }
+
+    /// Cancels one task, queueing the tasks spawned by any gather it was
+    /// blocked on for [`Scheduler::cancel_task`] to drain.
+    ///
+    /// External children are left alone — the owning `Awaiter::GatherSlot`
+    /// anchors them — whereas spawned tasks would linger in `self.tasks`
+    /// holding inc_refs. Dropping this task ahead of the children it queued is
+    /// sound: each owns an inc_ref on that same gather (see
+    /// [`Scheduler::spawn`]).
+    fn cancel_one(&mut self, task_id: TaskId, heap: &mut HeapReader<'_>, pending: &mut SmallVec<[TaskId; 4]>) {
         // No-op if the task has already been removed (idempotent — finalization
         // sites may iterate task ids that include already-cancelled siblings).
         let Some(task) = self.tasks.remove(&task_id) else {
@@ -407,31 +427,20 @@ impl Scheduler {
         if !task.is_finished() {
             self.ready_queue.retain(|&id| id != task_id);
 
-            // If blocked on an awaitable, dispatch by kind via `heap.read`.
-            // For a gather: recursively cancel its task children — external
-            // children manage themselves via the owning `Awaiter::GatherSlot`
-            // (the gather stays alive until each external resolves and
-            // releases its inc_ref), but spawned tasks have no such anchor
-            // and would otherwise linger in `self.tasks` holding inc_refs.
-            // For an external future: no extra teardown.
+            // Blocked on a gather: queue its task children (see the docstring).
+            // An external future needs no extra teardown.
             if let TaskState::Blocked(blocked_id) = task.state
                 && let HeapReadOutput::GatherFuture(gather) = heap.read(blocked_id)
             {
-                let inner_task_ids: Vec<TaskId> = gather
-                    .get(heap)
-                    .as_awaited()
-                    .map(|awaited| {
+                if let Some(awaited) = gather.get(heap).as_awaited() {
+                    pending.extend(
                         awaited
                             .pending_children
                             .keys()
-                            .filter_map(|id| self.coroutine_to_task.get(id).copied())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                drop(gather);
-                for inner_task_id in inner_task_ids {
-                    self.cancel_task(inner_task_id, heap);
+                            .filter_map(|id| self.coroutine_to_task.get(id).copied()),
+                    );
                 }
+                drop(gather);
             }
         }
 
