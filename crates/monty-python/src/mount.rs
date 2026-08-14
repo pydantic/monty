@@ -30,8 +30,8 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyTuple};
 /// Warning: with `'read-write'`, files written by sandboxed code persist on
 /// the host and are untrusted; do not execute them. Importing counts as
 /// executing, so a mount of a directory on `sys.path` (including the cwd) lets
-/// sandboxed code write `json.py`, or any other module not yet imported, and
-/// have the next `import` run it — including imports made by `pydantic_monty`
+/// sandboxed code write `json.py`, or any module not yet imported, and the
+/// next `import` runs it. That includes imports made by `pydantic_monty`
 /// itself.
 #[pyclass(name = "MountDir")]
 pub struct PyMountDir {
@@ -61,8 +61,8 @@ impl PyMountDir {
     /// * `host_path` — path to the real host directory
     /// * `virtual_path` — absolute virtual path prefix (e.g. `"/data"`)
     /// * `mode` — access mode: `"read-only"`, `"read-write"`, or `"overlay"`
-    ///   (default). `"read-write"` leaves untrusted files on the host after
-    ///   the feed — see the warning on the type.
+    ///   (default). With `"read-write"`, files written by sandboxed code
+    ///   persist on the host; see the warning on the type.
     ///
     /// # Raises
     /// `ValueError` if `mode` is not one of the allowed values, the virtual path

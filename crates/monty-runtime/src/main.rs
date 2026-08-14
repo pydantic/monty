@@ -51,9 +51,8 @@ pub(crate) struct Cli {
     /// Modes: `ro` (read-only, default), `rw` (read-write), `overlay` (in-memory overlay).
     /// `write_limit_bytes` is optional and applies to all write modes.
     ///
-    /// WARNING: `rw` leaves files written by untrusted code on your real
-    /// filesystem, where your own tools may later execute them.
-    /// Prefer `overlay` mode, when possible.
+    /// WARNING: with `rw`, files written by sandboxed code persist on the
+    /// host, where your own tools may later execute them. Prefer `overlay`.
     #[arg(short = 'm', long = "mount")]
     mounts: Vec<String>,
 
