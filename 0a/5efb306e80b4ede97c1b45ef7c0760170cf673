@@ -1,0 +1,56 @@
+crates/monty-runtime/src/main.rs
+  s_ddfcbcc5a4ee73::t_9b3faf0d18900c 53-54
+crates/monty-fs/src/error.rs
+  s_ddfcbcc5a4ee73::t_edc74de0865d2e 228-238
+  s_ddfcbcc5a4ee73::t_ef4e5ee5d2f904 7
+  s_ddfcbcc5a4ee73::t_a8962d1819e912 171-189
+  s_ddfcbcc5a4ee73::t_feff09d810aefc 70-85
+limitations/filesystem.md
+  s_ddfcbcc5a4ee73::t_29e6323c2fafc6 30-47
+crates/monty-python/tests/test_mount_table.py
+  s_ddfcbcc5a4ee73::t_0a17973e1b7860 428
+  s_ddfcbcc5a4ee73::t_3e35f5fd742d58 415-427,429-431
+crates/monty-fs/tests/fs.rs
+  s_ddfcbcc5a4ee73::t_0382166a05f679 1756
+  s_ddfcbcc5a4ee73::t_ea45aa0c454446 1631,1634
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_ddfcbcc5a4ee73::t_14dd394de77ffe 90-95
+crates/monty-fs/src/mount_table.rs
+  s_ddfcbcc5a4ee73::t_7a0648478ec2d2 362-363
+  s_ddfcbcc5a4ee73::t_643816549f6259 420-421
+  s_ddfcbcc5a4ee73::t_a2db513286ed53 289-291
+  s_ddfcbcc5a4ee73::t_a81b5eff64d86e 73-74,82,88-115,122
+  s_ddfcbcc5a4ee73::t_47488884448c46 397-402
+  s_ddfcbcc5a4ee73::t_153c48dc9538c4 428-433
+  s_ddfcbcc5a4ee73::t_927f9a42cba671 351-353
+crates/monty-fs/tests/mount_escape_repro.rs
+  s_ddfcbcc5a4ee73::t_b6fa2fcb684023 1
+  s_ddfcbcc5a4ee73::t_457212214a216b 84-86,140-142
+  s_ddfcbcc5a4ee73::t_b269a81a85514a 107-139,143-185
+crates/monty-js/ts/mountDir.ts
+  s_ddfcbcc5a4ee73::t_360c45abd0c09e 19-23
+crates/monty-python/src/mount.rs
+  s_ddfcbcc5a4ee73::t_ab385efadb062f 25-29
+crates/monty-pool/src/checkout.rs
+  s_ddfcbcc5a4ee73::t_92a048aa60ad20 395-396
+  s_ddfcbcc5a4ee73::t_a2feb53f330fab 1363-1368,1381-1383,1385
+  s_ddfcbcc5a4ee73::t_b84c29200d866d 371
+  s_ddfcbcc5a4ee73::t_efa8a5d72ff329 418
+  s_ddfcbcc5a4ee73::t_0805a39bb1e910 1145-1148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0a5efb306e80b4ede97c1b45ef7c0760170cf673",
+  "prompts": {},
+  "sessions": {
+    "s_ddfcbcc5a4ee73": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "353825e2-7206-4030-ad05-0224421cec10",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
