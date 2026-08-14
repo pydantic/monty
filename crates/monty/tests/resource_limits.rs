@@ -267,15 +267,15 @@ result
 fn map_later_iterator_exhaustion_drops_current_arguments() {
     let code = r"
 def combine(a, b, c):
-    return (a, b, c)
+    return a[0] + b[0] + c[0]
 
-result = map(combine, [[1]], [[2]], [])
+result = map(combine, [[1], [4]], [[2], [5]], [[3]])
 result
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
     let output = run.run_ref_counts(vec![]).expect("should run");
 
-    assert_eq!(output.py_object, MontyObject::List(vec![]));
+    assert_eq!(output.py_object, MontyObject::List(vec![MontyObject::Int(6)]));
     assert_eq!(output.unreachable, Vec::<String>::new());
 }
 
