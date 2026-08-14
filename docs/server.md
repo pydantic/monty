@@ -25,10 +25,26 @@ remote server:
   optional type checking, so a single machine can run hundreds.
 - **Same behavior as local Monty**: the wire protocol carries host callbacks, name lookups, async futures and mounted
   client directories, so code that runs against a local pool runs unchanged against the server.
-- **(In future) switch to a full monty sandbox with a parameter**: the same interface, but a full VM running CPython — for
-  code that needs dependencies, bash and a real filesystem.
+- **(In future) switch to a full monty sandbox with a parameter**: the same interface, but a full VM running CPython —
+  for code that needs dependencies, bash and a real filesystem.
 
 ## Quickstart
+
+The image is private: commercial access comes with a `key.json` service-account file that authenticates pulls
+(the same mechanism as self-hosted Logfire images, which live on the same registry host):
+
+```bash
+docker login us-docker.pkg.dev -u _json_key --password-stdin < key.json
+```
+
+On Kubernetes, the same file becomes an image pull secret referenced from the pod spec:
+
+```bash
+kubectl create secret docker-registry monty-image-key \
+  --docker-server=us-docker.pkg.dev \
+  --docker-username=_json_key \
+  --docker-password="$(cat key.json)"
+```
 
 The image refuses to start without a dump-signing key of at least 16 bytes:
 
