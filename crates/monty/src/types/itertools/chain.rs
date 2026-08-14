@@ -73,19 +73,13 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
         let Some(current) = chain.current.as_ref().map(|c| c.clone_with_heap(vm.heap)) else {
             // No live source: resolve the next argument, or finish.
             let Some(raw) = chain.sources.get(chain.started).map(|s| s.clone_with_heap(vm.heap)) else {
-                let ItertoolsIter::Chain(chain) = iter.get_mut(vm.heap) else {
-                    unreachable!("dispatched on Kind::Chain")
-                };
-                chain.done = true;
+                chain_mut(iter, vm).done = true;
                 return Ok(None);
             };
             // `into_py_iter` consumes `raw` on both paths, and raises here for a
             // non-iterable argument — matching CPython's lazy rejection.
             let resolved = into_py_iter_tracking(iter, raw, vm)?;
-            let ItertoolsIter::Chain(chain) = iter.get_mut(vm.heap) else {
-                unreachable!("dispatched on Kind::Chain")
-            };
-            chain.current = Some(resolved);
+            chain_mut(iter, vm).current = Some(resolved);
             continue;
         };
 
@@ -99,19 +93,37 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
             return Ok(Some(item));
         }
         // This source is spent; release it and move to the next argument.
-        let ItertoolsIter::Chain(chain) = iter.get_mut(vm.heap) else {
-            unreachable!("dispatched on Kind::Chain")
-        };
-        chain.current.take().drop_with(vm);
+        chain_mut(iter, vm).current.take().drop_with(vm);
     }
 }
 
 /// Resolves one argument to an iterator, marking it started first so a
 /// `TypeError` from a non-iterable does not leave it to be retried.
+///
+/// A failure here also *ends* the chain: CPython clears its source on an
+/// `iter()` failure, so the arguments after the bad one are never reached and
+/// every later `next()` is a plain `StopIteration`. Note the asymmetry — an
+/// error raised by a resolved source's `__next__` leaves the chain live, since
+/// CPython keeps that iterator in place.
 fn into_py_iter_tracking<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, raw: Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    chain_mut(iter, vm).started += 1;
+    match raw.into_py_iter(vm) {
+        Ok(resolved) => Ok(resolved),
+        Err(err) => {
+            chain_mut(iter, vm).done = true;
+            Err(err)
+        }
+    }
+}
+
+/// The `Chain` behind an iterator already dispatched as one.
+///
+/// `next` re-borrows the heap around every step that can run user code, so the
+/// same match-or-`unreachable!` appeared at each one; naming it once keeps those
+/// steps readable.
+fn chain_mut<'r, 'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &'r mut VM<'h>) -> &'r mut Chain {
     let ItertoolsIter::Chain(chain) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Chain")
     };
-    chain.started += 1;
-    raw.into_py_iter(vm)
+    chain
 }

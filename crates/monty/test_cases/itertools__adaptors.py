@@ -179,6 +179,33 @@ try:
 except TypeError as exc:
     assert str(exc) == "'int' object is not iterable"
 
+# An argument that fails `iter()` ends the chain: CPython drops the source, so
+# the arguments after the bad one are never reached and the chain stays spent.
+spent = itertools.chain([1], 5, [2, 3])
+assert next(spent) == 1
+try:
+    next(spent)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
+for _ in range(2):
+    try:
+        next(spent)
+        assert False, 'expected the chain to be spent'
+    except StopIteration:
+        pass
+assert list(spent) == []
+
+# the same when the very first argument is the one that fails
+first_bad = itertools.chain(5, [2, 3])
+try:
+    next(first_bad)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
+assert list(first_bad) == []
+
+
 try:
     itertools.chain(x=[1])
     assert False, 'expected TypeError'
@@ -307,6 +334,17 @@ for failing in (
 ):
     try:
         next(failing)
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == 'boom'
+
+# For chain the error is not the end of it: only a source that fails `iter()`
+# ends the chain, so a source that fails `__next__` stays in place and CPython
+# hands back the same error on the next call rather than moving to `[9]`.
+still_live = itertools.chain(Boom(), [9])
+for _ in range(2):
+    try:
+        next(still_live)
         assert False, 'expected ValueError'
     except ValueError as exc:
         assert str(exc) == 'boom'
