@@ -198,7 +198,10 @@ impl Bytes {
                 if *n < 0 {
                     return Err(ExcType::value_error_negative_bytes_count());
                 }
-                let size = usize::try_from(*n).expect("bytes count validated non-negative");
+                // Fallible on a 32-bit target (`wasm32-wasip1`), where `bytes(2**40)`
+                // is a count no `usize` can hold. On 64-bit the conversion always
+                // succeeds and the size check below rejects it with `MemoryError`.
+                let size = usize::try_from(*n).map_err(|_| ExcType::overflow_index_sized_int())?;
                 // Pre-check the requested size against resource limits before
                 // touching the global allocator. Without this, `bytes(n)` for a
                 // very large `n` would attempt the native allocation directly
