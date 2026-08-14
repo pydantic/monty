@@ -1846,15 +1846,32 @@ struct DictIteratorState {
     dict: HeapId,
     index: usize,
     expected_len: usize,
+    /// Set once a `next` call has reached the end. Mirrors CPython clearing
+    /// `di_dict`: an already-exhausted iterator returns `StopIteration` on every
+    /// further call and never re-checks the size, even if the dict was mutated
+    /// after exhaustion. Defaulted for backward-compatible snapshot decode.
+    #[serde(default)]
+    exhausted: bool,
 }
 
 impl DictIteratorState {
     /// Validates mutation and returns the next storage index.
+    ///
+    /// Matches CPython's `dictiterobject`: the size-change guard fires only while
+    /// the iterator is still live, and it is checked *before* exhaustion so a
+    /// mutation on the final element still raises on the terminating `next()`
+    /// (the case a plain `index >= expected_len` check first would mask). Once a
+    /// call has reached the end, `exhausted` makes every later call a plain
+    /// `StopIteration` with no size check — mutating the dict after the iterator
+    /// is spent is not an error.
     fn next_index(&mut self, current_len: usize) -> RunResult<Option<usize>> {
-        if self.index >= self.expected_len {
+        if self.exhausted {
             Ok(None)
         } else if current_len != self.expected_len {
             Err(ExcType::runtime_error_dict_changed_size())
+        } else if self.index >= self.expected_len {
+            self.exhausted = true;
+            Ok(None)
         } else {
             let index = self.index;
             self.index += 1;
@@ -1889,6 +1906,7 @@ macro_rules! impl_dict_iterator {
                     dict,
                     index: 0,
                     expected_len,
+                    exhausted: false,
                 })));
                 vm.heap.inc_ref(dict);
                 Value::Ref(id)
