@@ -198,13 +198,16 @@ first, e.g. return a `dict` of the fields.
   user-defined instances. `__ne__` is always the negation of `__eq__`, as
   CPython derives it by default, so a custom `__ne__` is ignored.
 - **`__index__` is dispatched for indexing, but not for arithmetic
-  operators.** A class defining it works as a subscript (`seq[obj]`), as a
-  slice bound (`seq[obj:]`, `slice(obj)`), and as an integer argument
+  operators.** A class defining it works as a subscript *read* (`seq[obj]`), as
+  a slice bound (`seq[obj:]`, `slice(obj)`), and as an integer argument
   (`range(obj)`, `'x'.center(obj)`, `s.find(sub, obj)`). It is **not**
   consulted by sequence repetition, so `'ab' * obj` and `[0] * obj` raise
   `TypeError: unsupported operand type(s) for *` where CPython repeats — each
   numeric operator carries its own coercion, which does not route through the
   shared index path.
+- **Subscript assignment does not dispatch `__index__`.** `lst[obj] = x` raises
+  `TypeError: list indices must be integers or slices, not Foo` where CPython
+  coerces and assigns; only the read side takes the index path.
 - **`slice()` stores coerced bounds, not the objects passed.** CPython's
   `slice()` keeps its arguments untouched and only calls `__index__` when the
   slice is *used*, so `slice(obj).start` is `obj`; Monty coerces during

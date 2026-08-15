@@ -144,3 +144,76 @@ try:
     assert False, 'expected an out-of-range index to raise'
 except IndexError as exc:
     assert str(exc) == 'list index out of range'
+
+# === a mutating __index__ resolves against the post-call list ===
+# `__index__` can run arbitrary code, so it may resize the very list being
+# indexed. Every length must be read *after* the dunder returns; reading it
+# first resolves a negative bound against a stale length.
+shrink_target = [9, 9, 9, 9, 9, 9, 9, 9, 7, 7]
+
+
+class ShrinkStart:
+    def __index__(self):
+        while len(shrink_target) > 3:
+            shrink_target.pop()
+        return -2
+
+
+# -2 normalizes against the post-call length 3, so the search starts at 1.
+assert shrink_target.index(9, ShrinkStart()) == 1
+assert shrink_target == [9, 9, 9]
+
+grow_target = [5, 6, 7, 8, 9, 10, 11, 12]
+
+
+class GrowStart:
+    def __index__(self):
+        grow_target.extend([99, 99, 99, 99, 99, 99, 99, 99])
+        return -3
+
+
+assert grow_target.index(99, GrowStart()) == 13
+
+end_target = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+
+class ShrinkEnd:
+    def __index__(self):
+        while len(end_target) > 4:
+            end_target.pop()
+        return -1
+
+
+# The window becomes [0, 3), so the 4 left at index 3 is out of range.
+try:
+    end_target.index(4, 0, ShrinkEnd())
+    assert False, 'expected the stale end bound to exclude the match'
+except ValueError as exc:
+    assert str(exc) == 'list.index(x): x not in list'
+
+# Subscripting reads the length after the dunder too.
+sub_target = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+
+class ShrinkSubscript:
+    def __index__(self):
+        sub_target.clear()
+        return 9
+
+
+try:
+    sub_target[ShrinkSubscript()]
+    assert False, 'expected the emptied list to raise IndexError'
+except IndexError as exc:
+    assert str(exc) == 'list index out of range'
+
+grow_sub = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+
+class GrowSubscript:
+    def __index__(self):
+        grow_sub.extend(range(100))
+        return 50
+
+
+assert grow_sub[GrowSubscript()] == 40
