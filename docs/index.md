@@ -43,8 +43,8 @@ Monty is that place, without a container or a sandboxing service in the loop.
   with the result.
   Sync or async.
   See [host functions](host-functions.md).
-- **Type check before running** — Monty bundles [ty](https://docs.astral.sh/ty/) and a trimmed typeshed describing
-  exactly what Monty implements, so code using an unsupported module fails up front rather than halfway through.
+- **Type check before running** — Monty bundles [ty](https://docs.astral.sh/ty/) and a trimmed typeshed of Monty's
+  runtime surface, so unsupported APIs generally fail up front rather than halfway through.
   See [type checking](type-checking.md).
 - **Snapshot and resume** — a paused interpreter serializes to bytes you can store in a file or a database and resume
   later, in another process or on another machine.
@@ -78,7 +78,6 @@ The exhaustive, per-feature list of how Monty diverges from CPython lives in
 
 Monty is a good fit when the code is written by a model, is short-lived, and mostly glues together tools you already
 own: fetch these three things, join them, filter, do some arithmetic, return the answer.
-That is the workload it was designed for, and the one where per-call container startup hurts most.
 
 It is a poor fit for anything that needs the real Python ecosystem — notebooks, data science, user-supplied scripts that
 import `pandas`.

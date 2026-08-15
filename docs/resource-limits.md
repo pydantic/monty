@@ -31,8 +31,10 @@ with Monty() as pool:
 | `gc_interval` | Run garbage collection every N allocations |
 
 Every key is optional.
-Omit one — or set it to `None` — to disable that limit, with one exception: `max_recursion_depth` cannot be disabled.
-Omitting it, or passing `None`, leaves the 1000-frame default in place.
+Omit `max_memory` or `max_duration_secs`, or set them to `None`, to disable that limit.
+`max_recursion_depth` cannot be disabled: omitting it, or passing `None`, leaves the 1000-frame default.
+`gc_interval` omitted or `None` uses the built-in schedule of every 100,000 allocations; collection cannot be turned
+off.
 
 In JavaScript the same fields are `maxMemory`, `maxDurationSecs`, `maxRecursionDepth` and `gcInterval`, passed as
 `limits` to `pool.checkout()`.
@@ -71,14 +73,17 @@ A few integer operations carry their own caps regardless of `max_memory`:
 The in-sandbox check runs at interpreter checkpoints, so it cannot catch code that wedges the interpreter itself.
 Two host-side backstops cover that:
 
-- **`request_timeout`** on the pool is a hard per-call deadline.
+- **`request_timeout`** on the pool is a hard per-turn deadline.
   A worker that exceeds it is killed and the call raises `MontyCrashedError` with `timed_out=True`.
+  Each resume after a host-function or mount call starts a new deadline, so a program that suspends often can outlive
+  any single timeout.
 - **The duration backstop.** For sessions with a `max_duration_secs` limit, the worker reports its execution time on
   every protocol turn, and the host kills the worker a grace period after the budget expires.
   The grace period defaults to 1 second; in JavaScript it is the `durationLimitGrace` pool option (`null` disables it),
   and from Python it is not currently configurable.
 
-Keep at least one backstop enabled when running untrusted code.
+Set `max_duration_secs` for untrusted code that may suspend repeatedly; `request_timeout` alone does not bound the
+overall call.
 
 ## Recursion
 

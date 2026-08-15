@@ -29,8 +29,8 @@ A model that writes `import functools` produces code that is perfectly valid CPy
 Type checking closes that gap, because Monty does not check against CPython's typeshed.
 It checks against [`monty-typeshed`](https://crates.io/crates/monty-typeshed), a trimmed typeshed describing *Monty's*
 runtime surface: unsupported modules, builtins and methods are filtered out of the stubs entirely.
-Code reaching for something Monty does not implement fails the check up front, instead of failing at runtime halfway
-through.
+Code reaching for something Monty does not implement usually fails the check up front, instead of failing at runtime
+halfway through.
 
 For an LLM writing code, that turns a whole class of runtime failures into a diagnostic you can hand straight back to
 the model as a retry prompt.
@@ -132,5 +132,8 @@ diagnostic formats; on the CLI the flag is `--type-check-format`.
 - **Type checking is static only.** The `typing` module inside the sandbox provides markers, not runtime enforcement —
   no annotation is ever checked at runtime, and class annotations are stored in stringized form.
   See [`limitations/typing.md`](https://github.com/pydantic/monty/blob/main/limitations/typing.md).
-- **Passing the type check does not mean the code runs.** The stubs describe Monty's surface, but a construct rejected
-  by the parser (a `match` statement, a `yield`) is a syntax-level rejection the checker does not model.
+- **Passing the type check does not mean the code runs.** Parser-rejected constructs (`match`, `yield`) are not
+  modelled.
+  Five stub-only modules (`abc`, `types`, `typing_extensions`, `_collections_abc`, `_typeshed`) resolve during checking
+  because the stubs need them, then raise `ModuleNotFoundError` at runtime.
+  See [`limitations/modules.md`](https://github.com/pydantic/monty/blob/main/limitations/modules.md).

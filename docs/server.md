@@ -14,8 +14,7 @@ For access and licensing, [contact us](https://pydantic.dev/contact).
 
 ## Why Monty over WebSocket
 
-This is not a sales document, but it's worth briefly enumerating why someone would want to use Monty running on a remote
-server:
+Why run Monty on a remote server:
 
 - **Security**: escaping the sandbox gets you the machine running Monty, not the machine running the agent / application
   code — and that machine is an empty container.
@@ -62,6 +61,8 @@ package manager.
 ## Connecting a client
 
 ```python test="skip"
+import asyncio
+
 from pydantic_monty import AsyncMontyWebsocket
 
 
@@ -70,6 +71,9 @@ async def main():
         async with pool.checkout() as session:
             print(await session.feed_run('1 + 1'))
             #> 2
+
+
+asyncio.run(main())
 ```
 
 An ordinary `GET /` on the same URL answers with a short info page.

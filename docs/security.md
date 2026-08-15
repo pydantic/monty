@@ -105,13 +105,12 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
 - `max_duration_secs` counts **cumulative execution time**, not wall clock.
   The clock is paused while the sandbox waits on a host function, so a slow host function does not consume the budget.
   It accumulates across feeds for the life of the session.
-- Because the in-sandbox time check only runs at interpreter checkpoints, both the pool's `request_timeout` and the
-  automatic `duration_limit_grace` backstop kill the worker from outside.
-  Keep at least one of them on when running untrusted code.
+- The in-sandbox time check only runs at interpreter checkpoints.
+  Two host-side backstops cover a wedged worker: `request_timeout` (a per-turn deadline; a loop of quick host calls
+  resets it) and `duration_limit_grace` (fires only if the session also set `max_duration_secs`).
+  Set both `request_timeout` and `max_duration_secs` for untrusted code.
   Every local pool (`Monty`, `AsyncMonty`, JavaScript `Monty.create()`, `PoolConfig::subprocess`) defaults
   `request_timeout` to no deadline; only `AsyncMontyWebsocket` sets one, at 10 seconds.
-  And `duration_limit_grace` only does anything for a session that set `max_duration_secs`, so a default local pool has
-  neither backstop.
 - **After a memory or time limit fires, no guarantees are made about heap state or reference counts.** Discard the
   session rather than continuing to run code in it.
   The pool does not do this for you, and the two limits do not even fail alike: a spent `max_duration_secs` budget is

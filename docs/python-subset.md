@@ -10,9 +10,8 @@ The exhaustive, per-feature list lives in [`limitations/`](https://github.com/py
 the repository, and that directory — not this page — is the source of truth.
 
 !!! tip
-    You do not have to memorise any of this.
-    Turn on [type checking](type-checking.md): Monty checks against a typeshed trimmed to exactly what it implements, so
-    code reaching for something unsupported fails before it runs.
+    Turn on [type checking](type-checking.md) rather than memorising this page.
+    Unsupported APIs generally fail before they run; see [the caveats](type-checking.md#caveats) for the exceptions.
 
 ## Language features
 
@@ -113,23 +112,8 @@ Each links to the `limitations/` file that owns it, which is where the full acco
 - **Only UTF-8, ASCII, UTF-16 and UTF-32 codecs exist.** `latin-1` and friends raise `LookupError`
   ([encoding.md](https://github.com/pydantic/monty/blob/main/limitations/encoding.md)).
 
-## How `limitations/` works
+## How to go deeper
 
-Every pull request that adds, changes or removes user-visible behaviour must land or update a document in
-[`limitations/`](https://github.com/pydantic/monty/tree/main/limitations).
-One file per builtin, module or construct, structured around what a Python user would actually try: arguments that are
-rejected or ignored, attributes that raise `AttributeError`, behaviour that differs even where the API exists, and error
-types or messages that differ.
-
-The rule is deliberately strict — a divergence that is not written down is one future readers will assume does not exist
-— and reviewers reject PRs that change behaviour without updating it.
-
-These docs do not duplicate that content.
-When you need to know exactly how a feature diverges, go to the file.
-When you need to know the shape of what Monty implements, stay here.
-
-## Reporting a gap
-
-If you hit something that is neither in the subset nor in `limitations/`, that is a bug in the documentation as much as
-in the code.
-Please [open an issue](https://github.com/pydantic/monty/issues).
+For a specific feature, open the `limitations/` file named after the builtin, module or construct.
+If you hit something that is neither in the subset nor in `limitations/`, [open an
+issue](https://github.com/pydantic/monty/issues).

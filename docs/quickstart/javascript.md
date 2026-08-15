@@ -128,8 +128,9 @@ await using session = await pool.checkout({
 })
 ```
 
-`ResourceLimits` fields are `maxDurationSecs`, `maxMemory`, `gcInterval` and `maxRecursionDepth`; an omitted field means
-unlimited, except `maxRecursionDepth`, which falls back to its 1000-frame default and cannot be disabled.
+Omitted `maxMemory` / `maxDurationSecs` means unlimited.
+`maxRecursionDepth` defaults to 1000 and cannot be disabled.
+`gcInterval` defaults to every 100,000 allocations.
 See [resource limits](../resource-limits.md) and [type checking](../type-checking.md).
 
 ## Filesystem mounts

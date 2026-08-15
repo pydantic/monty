@@ -287,14 +287,15 @@ pool = Monty(
     min_processes=1,  # workers spawned eagerly and kept warm
     max_processes=None,  # cap on live workers; defaults to the CPU count
     checkout_timeout=None,  # seconds `checkout()` waits for a free worker
-    request_timeout=None,  # hard per-call deadline; kills the worker
+    request_timeout=None,  # hard per-turn deadline; kills the worker
     max_checkouts_per_worker=None,  # recycle a worker after N sessions
 )
 ```
 
-`request_timeout` is the host-side backstop: a worker that exceeds it is killed and the call raises `MontyCrashedError`
-with `timed_out=True`.
+`request_timeout` is a per-turn host-side backstop: a worker that exceeds it is killed and the call raises
+`MontyCrashedError` with `timed_out=True`.
 It catches hangs the in-sandbox limits cannot see, because those are only checked at interpreter checkpoints.
+A loop of quick host calls resets it each turn; set [`max_duration_secs`](../resource-limits.md) as well.
 
 `AsyncMonty` takes the same arguments.
 

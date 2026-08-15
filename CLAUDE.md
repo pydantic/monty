@@ -973,9 +973,9 @@ where they are. Change one and you must change all of them:
   a string, or in a `test="skip"` block. It must never be a runnable top-level block —
   CPython would execute it.
 - New pages go in the `mkdocs.yml` `nav:`; the nav is what orders the docs site.
-- Prose style follows the rest of the repo: em-dashes, no hype, claims traceable to
-  source. Do not state a behaviour you have not read in the code, the tests or
-  `limitations/`.
+- Prose style follows [`.agents/skills/writing-style`](.agents/skills/writing-style/SKILL.md):
+  one sentence per line, claims traceable to source, no hype.
+  Do not state a behaviour you have not read in the code, the tests or `limitations/`.
 
 ### Enforcement
 
