@@ -78,6 +78,17 @@ macro_rules! try_catch_sync {
     };
 }
 
+/// Persists the cached frame IP before an operation that can execute Python.
+///
+/// A nested `run()` restores `instruction_ip` from the caller frame, so the
+/// caller must hold its resume IP for exceptions to find the right handler.
+macro_rules! try_catch_reentrant {
+    ($self:expr, $cached_frame:ident, $expr:expr) => {{
+        $self.current_frame_mut().ip = $cached_frame.ip;
+        try_catch_sync!($self, $cached_frame, $expr);
+    }};
+}
+
 /// Handles an exception and reloads cached frame state if caught.
 ///
 /// Use this in the main run loop where `cached_frame`
@@ -1317,7 +1328,8 @@ impl<'h> VM<'h> {
                     try_catch_sync!(self, cached_frame, self.build_fstring(count));
                 }
                 Opcode::BuildSlice => {
-                    try_catch_sync!(self, cached_frame, self.build_slice());
+                    // Bounds are coerced here, so a user `__index__` can run.
+                    try_catch_reentrant!(self, cached_frame, self.build_slice());
                 }
                 Opcode::ListExtend => {
                     try_catch_sync!(self, cached_frame, self.list_extend());
@@ -1359,6 +1371,9 @@ impl<'h> VM<'h> {
                 Opcode::BinarySubscr => {
                     let index = self.pop();
                     let obj = self.pop();
+                    // Sync IP before the call: a user `__index__` runs a nested
+                    // run() loop, which restores the frame IP from this frame.
+                    self.current_frame_mut().ip = cached_frame.ip;
                     let result = obj.py_getitem(&index, self);
                     obj.drop_with(self);
                     index.drop_with(self);
@@ -1512,9 +1527,13 @@ impl<'h> VM<'h> {
                     let (type_id, arg_count) = cached_frame.fetch_u8_u8();
                     let arg_count = arg_count as usize;
 
+                    // Sync IP before the call: `range(obj)`/`slice(obj)` coerce
+                    // their arguments, so a user `__index__` can push a frame
+                    // and run a nested run() loop.
+                    self.current_frame_mut().ip = cached_frame.ip;
+
                     match self.exec_call_builtin_type(type_id, arg_count) {
                         Ok(result) => self.push(result),
-                        // IP sync deferred to error path (no frame push possible)
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }

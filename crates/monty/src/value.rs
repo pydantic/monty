@@ -1838,7 +1838,12 @@ impl Value {
             }
             // Shaped like [`Self::as_int`]'s fallback, differing only in messages.
             _ => match self.try_index(vm)? {
-                Some(index) => Self::narrow_index_to_i64(index, vm, ExcType::index_error_int_too_large),
+                Some(index) => {
+                    // Resolved before narrowing because the closure cannot hold
+                    // `vm` while `narrow_index_to_i64` borrows it mutably.
+                    let name = self.py_type_name(vm).into_owned();
+                    Self::narrow_index_to_i64(index, vm, move || ExcType::index_error_cannot_fit(&name))
+                }
                 None => Err(ExcType::type_error_indices(container_type, &self.py_type_name(vm))),
             },
         }

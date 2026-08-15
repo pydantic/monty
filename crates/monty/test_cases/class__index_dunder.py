@@ -145,6 +145,51 @@ try:
 except IndexError as exc:
     assert str(exc) == 'list index out of range'
 
+# === an oversized __index__ return is a catchable IndexError ===
+# The dunder runs a nested interpreter loop, so the coercion's own error is
+# raised after that loop returns. It must still reach the enclosing handler,
+# including at module scope, and name the object asked for the index rather
+# than the `int` it returned.
+
+
+class WideIdx:
+    def __index__(self):
+        return 10**30
+
+
+wide_idx = WideIdx()
+try:
+    [1, 2, 3][wide_idx]
+    assert False, 'expected an oversized __index__ to raise'
+except IndexError as exc:
+    assert str(exc) == "cannot fit 'WideIdx' into an index-sized integer"
+
+# A plain int keeps CPython's `int` wording.
+try:
+    [1, 2, 3][10**30]
+    assert False, 'expected an oversized literal index to raise'
+except IndexError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+
+
+# The same coercion inside a function frame, which took a different path.
+def _wide_in_function():
+    try:
+        [1, 2, 3][WideIdx()]
+        return 'no raise'
+    except IndexError as exc:
+        return str(exc)
+
+
+assert _wide_in_function() == "cannot fit 'WideIdx' into an index-sized integer"
+
+# An integer argument coerced by a builtin call raises catchably too.
+try:
+    'x'.center(WideIdx())
+    assert False, 'expected an oversized width to raise'
+except OverflowError as exc:
+    assert str(exc) == 'Python int too large to convert to C ssize_t'
+
 # === a mutating __index__ resolves against the post-call list ===
 # `__index__` can run arbitrary code, so it may resize the very list being
 # indexed. Every length must be read *after* the dunder returns; reading it
