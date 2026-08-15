@@ -397,14 +397,11 @@ impl Scheduler {
         }
     }
 
-    /// Cancels one task, queueing the tasks spawned by any gather it was
+    /// Cancels one task, queueing the tasks spawned under any gather it was
     /// blocked on for [`Scheduler::cancel_task`] to drain.
     ///
-    /// External children are left alone — the owning `Awaiter::GatherSlot`
-    /// anchors them — whereas spawned tasks would linger in `self.tasks`
-    /// holding inc_refs. Dropping this task ahead of the children it queued is
-    /// sound: each owns an inc_ref on that same gather (see
-    /// [`Scheduler::spawn`]).
+    /// Dropping this task ahead of the children it queued is sound: each owns
+    /// an inc_ref on that same gather (see [`Scheduler::spawn`]).
     fn cancel_one(&mut self, task_id: TaskId, heap: &mut HeapReader<'_>, pending: &mut SmallVec<[TaskId; 4]>) {
         // No-op if the task has already been removed (idempotent — finalization
         // sites may iterate task ids that include already-cancelled siblings).
@@ -427,24 +424,49 @@ impl Scheduler {
         if !task.is_finished() {
             self.ready_queue.retain(|&id| id != task_id);
 
-            // Blocked on a gather: queue its task children (see the docstring).
-            // An external future needs no extra teardown.
-            if let TaskState::Blocked(blocked_id) = task.state
-                && let HeapReadOutput::GatherFuture(gather) = heap.read(blocked_id)
-            {
-                if let Some(awaited) = gather.get(heap).as_awaited() {
-                    pending.extend(
-                        awaited
-                            .pending_children
-                            .keys()
-                            .filter_map(|id| self.coroutine_to_task.get(id).copied()),
-                    );
-                }
-                drop(gather);
+            // Blocked on a gather: queue the tasks spawned under it. An
+            // external future needs no extra teardown.
+            if let TaskState::Blocked(blocked_id) = task.state {
+                self.queue_gather_tasks(blocked_id, heap, pending);
             }
         }
 
         task.drop_with(heap);
+    }
+
+    /// Queues every task spawned under the gather `root`, walking nested
+    /// gathers iteratively.
+    ///
+    /// A gather item can itself be a gather (`gather(gather(coro()))`), whose
+    /// tasks are just as orphaned as direct coroutine children if left in
+    /// `self.tasks` — they would keep running and then deliver a result to the
+    /// task cancelled here. External children *are* left alone: the owning
+    /// `Awaiter::GatherSlot` anchors them.
+    ///
+    /// Must run while the cancelled task still holds its `Blocked` inc_ref on
+    /// `root`, since the walk takes no references of its own: each nested
+    /// gather is kept alive by its parent's `items`, and the parent in turn by
+    /// the `Awaiter::GatherSlot` inc_ref that nested child holds.
+    fn queue_gather_tasks(&self, root: HeapId, heap: &HeapReader<'_>, pending: &mut SmallVec<[TaskId; 4]>) {
+        // Gathers nest as a tree — a gather may only be awaited once, so the
+        // walk cannot revisit a node and terminates.
+        let mut gathers: SmallVec<[HeapId; 4]> = smallvec![root];
+        while let Some(gather_id) = gathers.pop() {
+            // Coroutine and external children land here too; only gathers have
+            // children of their own to walk.
+            let HeapReadOutput::GatherFuture(gather) = heap.read(gather_id) else {
+                continue;
+            };
+            if let Some(awaited) = gather.get(heap).as_awaited() {
+                for child_id in awaited.pending_children.keys() {
+                    match self.coroutine_to_task.get(child_id) {
+                        Some(&task_id) => pending.push(task_id),
+                        None => gathers.push(*child_id),
+                    }
+                }
+            }
+            drop(gather);
+        }
     }
 
     /// Records a host-side failure for `call_id` and returns the awaiter the
