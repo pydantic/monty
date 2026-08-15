@@ -158,7 +158,7 @@ class MountDir:
                 relative — an absolute target raises `PermissionError` in the
                 sandbox even when it points back into the same mount.
             virtual_path: Absolute POSIX-style path prefix inside the sandbox
-                (e.g. `'/data'`), regardless of host OS. Raises `ValueError`
+                (e.g. `'/data'`), regardless of host OS. Raises `TypeError`
                 if not absolute.
             mode: `'read-only'` — reads only, writes raise `PermissionError`;
                 `'read-write'` — writes through to the host directory, where

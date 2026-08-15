@@ -61,12 +61,15 @@ package manager.
 
 ## Connecting a client
 
-```python
+```python test="skip"
 from pydantic_monty import AsyncMontyWebsocket
 
-async with AsyncMontyWebsocket('ws://localhost:8000/') as pool:
-    async with pool.checkout() as session:
-        result = await session.feed_run('1 + 1')
+
+async def main():
+    async with AsyncMontyWebsocket('ws://localhost:8000/') as pool:
+        async with pool.checkout() as session:
+            print(await session.feed_run('1 + 1'))
+            #> 2
 ```
 
 An ordinary `GET /` on the same URL answers with a short info page.

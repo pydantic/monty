@@ -37,6 +37,7 @@ nav:
       - Type Checking: 'type-checking.md'
   - The Python Subset: 'python-subset.md'
   - Command Line: 'cli.md'
+  - Running monty-server: 'server.md'
 
 markdown_extensions:
   - admonition

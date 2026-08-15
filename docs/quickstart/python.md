@@ -4,10 +4,10 @@
 uv add pydantic-monty
 ```
 
-Everything in `pydantic_monty` starts with a pool of worker subprocesses. Execution never
-happens in your process: a Monty process can never be made fully crash-proof against
-memory errors triggered by adversarial code, so the sandbox always runs somewhere it can
-safely die.
+Everything in `pydantic_monty` starts with a pool of worker subprocesses.
+Execution never happens in your process: a Monty process can never be made fully crash-proof against memory errors
+triggered by adversarial code, so the interpreter always runs in a worker that can crash without taking your process
+down.
 
 ```python
 from pydantic_monty import Monty
@@ -18,14 +18,13 @@ with Monty() as pool:
         #> 3
 ```
 
-`Monty()` configures the pool; the workers are spawned by `with`. `pool.checkout()`
-dedicates one worker to one REPL session. `feed_run` executes a snippet and returns the
-value of its trailing expression.
+`Monty()` configures the pool; the workers are spawned by `with`.
+`pool.checkout()` dedicates one worker to one REPL session.
+`feed_run` executes a snippet and returns the value of its trailing expression.
 
 ## Sessions keep state
 
-Session state — globals, functions, classes — persists across `feed_run` calls on the
-same checkout:
+Session state — globals, functions, classes — persists across `feed_run` calls on the same checkout:
 
 ```python
 from pydantic_monty import Monty
@@ -37,20 +36,18 @@ with Monty() as pool:
         #> 42
 ```
 
-When the `with` block on the session exits, the worker goes back to the pool and the
-session state is gone.
+When the `with` block on the session exits, the worker goes back to the pool and the session state is gone.
 
 ## Getting values in
 
 There are two ways to give the sandbox values from the host.
 
-`inputs` binds values as globals eagerly, before the snippet runs. Every entry is
-converted and bound once, whether or not the code uses it.
+`inputs` binds values as globals eagerly, before the snippet runs.
+Every entry is converted and bound once, whether or not the code uses it.
 
-`external_lookup` resolves names lazily, when the code reads them. A callable entry
-becomes a [host function](../host-functions.md) the sandbox can call; any other value is
-converted and returned when the name is read; a name that is absent raises `NameError`
-inside the sandbox.
+`external_lookup` resolves names lazily, when the code reads them.
+A callable entry becomes a [host function](../host-functions.md) the sandbox can call; any other value is converted and
+returned when the name is read; a name that is absent raises `NameError` inside the sandbox.
 
 ```python
 from pydantic_monty import Monty
@@ -70,18 +67,17 @@ A name present in both is served by the eager `inputs` binding.
 
 ### Which values cross the boundary
 
-`None`, `bool`, `int` (arbitrary precision), `float`, `str`, `bytes`, `list`, `tuple`,
-`dict`, `set`, `frozenset`, `Ellipsis`, `NotImplemented`, `datetime.date`,
-`datetime.datetime`, `datetime.timedelta`, `datetime.timezone`, named tuples, dataclass
-instances, exception instances, and the type objects Monty models (`int`, `str`,
-`datetime.date`, ...) all convert in both directions. Put callables in `external_lookup`,
-where they become [host functions](../host-functions.md); a callable in `inputs` binds only
-a reference the sandbox still resolves through `external_lookup` when it is called.
+`None`, `bool`, `int` (arbitrary precision), `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`,
+`Ellipsis`, `NotImplemented`, `datetime.date`, `datetime.datetime`, `datetime.timedelta`, `datetime.timezone`, named
+tuples, dataclass instances, exception instances, and the type objects Monty models (`int`, `str`, `datetime.date`, ...)
+all convert in both directions.
+Put callables in `external_lookup`, where they become [host functions](../host-functions.md); a callable in `inputs`
+binds only a reference the sandbox still resolves through `external_lookup` when it is called.
 
-POSIX paths convert too — `pathlib.PurePosixPath` and `pathlib.PosixPath`, which is what
-`Path()` builds on Linux and macOS. They come back as `PurePosixPath`, and a
-`PureWindowsPath` / `WindowsPath` is rejected, because paths inside the sandbox are always
-POSIX.
+POSIX paths convert too — `pathlib.PurePosixPath` and `pathlib.PosixPath`, which is what `Path()` builds on Linux and
+macOS.
+They come back as `PurePosixPath`, and a `PureWindowsPath` / `WindowsPath` is rejected, because paths inside the sandbox
+are always POSIX.
 
 Anything else is rejected with `MontyConversionError` before it reaches the sandbox:
 
@@ -101,8 +97,8 @@ with Monty() as pool:
 
 ## Async
 
-`AsyncMonty` is the asyncio counterpart. Worker I/O runs off the event loop, and host
-functions may be coroutines:
+`AsyncMonty` is the asyncio counterpart.
+Worker I/O runs off the event loop, and host functions may be coroutines:
 
 ```python
 import asyncio
@@ -129,16 +125,16 @@ async def main():
 asyncio.run(main())
 ```
 
-There is no event loop inside the sandbox — the host is the loop. Sandboxed `async def`
-and `await` work, and `asyncio` exposes exactly `run` and `gather`, the latter running
-host calls concurrently. `asyncio.create_task`, `asyncio.sleep` and everything else in the
-module do not exist. See
-[`limitations/asyncio.md`](https://github.com/pydantic/monty/blob/main/limitations/asyncio.md).
+There is no event loop inside the sandbox — the host is the loop.
+Sandboxed `async def` and `await` work, and `asyncio` exposes exactly `run` and `gather`, the latter running host calls
+concurrently.
+`asyncio.create_task`, `asyncio.sleep` and everything else in the module do not exist.
+See [`limitations/asyncio.md`](https://github.com/pydantic/monty/blob/main/limitations/asyncio.md).
 
 ## Capturing printed output
 
-By default the sandbox's `print()` goes to your process's stdout and stderr. Pass
-`print_callback` to intercept it:
+By default the sandbox's `print()` goes to your process's stdout and stderr.
+Pass `print_callback` to intercept it:
 
 ```python
 from pydantic_monty import CollectString, Monty
@@ -151,14 +147,14 @@ with Monty() as pool:
         #> 'from the sandbox\n'
 ```
 
-`CollectStreams` collects `(stream, text)` tuples instead, so you can tell stdout from
-stderr. Both cap collected output at 10 MiB by default; pass `max_bytes=None` to disable
-the cap. That cap is separate from [`max_memory`](../resource-limits.md), and it is
-enforced in your process as the output arrives, not by the worker.
+`CollectStreams` collects `(stream, text)` tuples instead, so you can tell stdout from stderr.
+Both cap collected output at 10 MiB by default; pass `max_bytes=None` to disable the cap.
+That cap is separate from [`max_memory`](../resource-limits.md), and it is enforced in your process as the output
+arrives, not by the worker.
 
-Exceeding it fails the feed with `MontyRuntimeError` wrapping a `MemoryError`; call
-`exc.exception()` for the `MemoryError` itself. Sandboxed code cannot catch it, so a
-`print()` loop cannot swallow the cap.
+Exceeding it fails the feed with `MontyRuntimeError` wrapping a `MemoryError`; call `exc.exception()` for the
+`MemoryError` itself.
+Sandboxed code cannot catch it, so a `print()` loop cannot swallow the cap.
 
 A plain callable works too, receiving `(stream, text)`:
 
@@ -177,8 +173,7 @@ with Monty() as pool:
         #> [('stdout', 'hello\n')]
 ```
 
-Output arrives in chunks flushed at newline boundaries or once roughly 8 KiB
-accumulates, not one call per `print()`.
+Output arrives in chunks flushed at newline boundaries or once roughly 8 KiB accumulates, not one call per `print()`.
 
 ## Errors
 
@@ -192,24 +187,23 @@ Every Monty error subclasses `MontyError`:
 | `MontyConversionError` | A host value cannot cross the boundary | from `inputs` yes, from `external_lookup` no |
 | `MontyCrashedError` | The worker died, or hit `request_timeout` | no |
 
-`inputs` are converted before the snippet runs, so a rejected value leaves the session
-untouched. An `external_lookup` value is converted mid-execution, while the worker is
-suspended on the name read, so the checkout is discarded and reusing it raises
-`RuntimeError: this checkout has already been finished`. Check out again to retry.
+`inputs` are converted before the snippet runs, so a rejected value leaves the session untouched.
+An `external_lookup` value is converted mid-execution, while the worker is suspended on the name read, so the checkout
+is discarded and reusing it raises `RuntimeError: this checkout has already been finished`.
+Check out again to retry.
 
-A `MontyRuntimeError` carrying `TimeoutError`, or a `MemoryError` from the sandbox heap,
-is a [resource limit](../resource-limits.md#after-a-limit-fires) rather than ordinary
-sandbox code raising. The pool leaves the checkout open, but the heap behind it is no
-longer trustworthy, so discard it rather than feeding it again. A spent
-`max_duration_secs` budget is cumulative, so later feeds re-raise `TimeoutError` anyway;
-after a `max_memory` trip they may quietly succeed.
+A `MontyRuntimeError` carrying `TimeoutError`, or a `MemoryError` from the sandbox heap, is a [resource
+limit](../resource-limits.md#after-a-limit-fires) rather than ordinary sandbox code raising.
+The pool leaves the checkout open, but the heap behind it is no longer trustworthy, so discard it rather than feeding it
+again.
+A spent `max_duration_secs` budget is cumulative, so later feeds re-raise `TimeoutError` anyway; after a `max_memory`
+trip they may quietly succeed.
 
-The print-collector cap is not one of these, though it looks identical from the outside:
-same `MontyRuntimeError`, same `MemoryError`, same `memory limit exceeded: ...` message.
-If you collect printed output at all — and the collectors are capped by default — you
-cannot tell the two apart from the exception alone, and in the collector case nothing is
-wrong with the session. See
-[`limitations/print.md`](https://github.com/pydantic/monty/blob/main/limitations/print.md).
+The print-collector cap is not one of these, though it looks identical from the outside: same `MontyRuntimeError`, same
+`MemoryError`, same `memory limit exceeded: ...` message.
+If you collect printed output at all — and the collectors are capped by default — you cannot tell the two apart from the
+exception alone, and in the collector case nothing is wrong with the session.
+See [`limitations/print.md`](https://github.com/pydantic/monty/blob/main/limitations/print.md).
 
 `MontySyntaxError` and `MontyRuntimeError` carry a Monty traceback:
 
@@ -234,12 +228,11 @@ with Monty() as pool:
             #> ['<module>', 'f']
 ```
 
-`display()` also takes `'traceback'` (the default, a full CPython-style traceback) and
-`'msg'`. `exc.exception()` returns the inner exception as a native Python exception
-object.
+`display()` also takes `'traceback'` (the default, a full CPython-style traceback) and `'msg'`.
+`exc.exception()` returns the inner exception as a native Python exception object.
 
-`MontyCrashedError` is the one that loses the session. The pool has already replaced the
-worker by the time you catch it, so retrying on a fresh checkout is safe:
+`MontyCrashedError` is the one that loses the session.
+The pool has already replaced the worker by the time you catch it, so retrying on a fresh checkout is safe:
 
 ```python test="skip"
 from pydantic_monty import Monty, MontyCrashedError
@@ -299,19 +292,17 @@ pool = Monty(
 )
 ```
 
-`request_timeout` is the host-side backstop: a worker that exceeds it is killed and the
-call raises `MontyCrashedError` with `timed_out=True`. It catches hangs the in-sandbox
-limits cannot see, because those are only checked at interpreter checkpoints.
+`request_timeout` is the host-side backstop: a worker that exceeds it is killed and the call raises `MontyCrashedError`
+with `timed_out=True`.
+It catches hangs the in-sandbox limits cannot see, because those are only checked at interpreter checkpoints.
 
 `AsyncMonty` takes the same arguments.
 
 ## Where next
 
-- [Host functions](../host-functions.md) — the only way code in the sandbox reaches
-  anything outside it.
+- [Host functions](../host-functions.md) — the only way code in the sandbox reaches anything outside it.
 - [Filesystem access](../filesystem.md) — mounts and the `os` callback.
 - [Snapshots](../snapshots.md) — `feed_start`, `dump()` and resuming later.
 - [The Python subset](../python-subset.md) — what the sandbox can actually run.
 
-Worked examples using Pydantic AI live in
-[`examples/`](https://github.com/pydantic/monty/tree/main/examples).
+Worked examples using Pydantic AI live in [`examples/`](https://github.com/pydantic/monty/tree/main/examples).
