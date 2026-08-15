@@ -1,5 +1,7 @@
 //! `itertools.chain(*iterables)` — the arguments' items, back to back.
 
+use std::mem;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -18,7 +20,8 @@ use crate::{
 /// `TypeError` part-way through consumption.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Chain {
-    /// The arguments, still as passed; resolved one at a time by `next`.
+    /// The arguments, still as passed; resolved one at a time by `next`, and
+    /// dropped wholesale by `finish` once the chain can reach no more of them.
     sources: Vec<Value>,
     started: usize,
     /// The resolved iterator currently being drained.
@@ -73,7 +76,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
         let Some(current) = chain.current.as_ref().map(|c| c.clone_with_heap(vm.heap)) else {
             // No live source: resolve the next argument, or finish.
             let Some(raw) = chain.sources.get(chain.started).map(|s| s.clone_with_heap(vm.heap)) else {
-                chain_mut(iter, vm).done = true;
+                finish(iter, vm);
                 return Ok(None);
             };
             // `into_py_iter` consumes `raw` on both paths, and raises here for a
@@ -110,10 +113,30 @@ fn into_py_iter_tracking<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, raw: Value,
     match raw.into_py_iter(vm) {
         Ok(resolved) => Ok(resolved),
         Err(err) => {
-            chain_mut(iter, vm).done = true;
+            finish(iter, vm);
             Err(err)
         }
     }
+}
+
+/// Ends the chain, releasing the arguments it will now never reach.
+///
+/// Both ways a chain ends come through here, because CPython `Py_CLEAR`s its
+/// source either way: a spent chain that stays bound must not pin its arguments
+/// until it is itself destroyed.
+///
+/// `current` is already `None` at both callsites — the chain only ends while
+/// resolving the next argument — but clearing it keeps this correct for any
+/// future path that ends a chain mid-source.
+fn finish<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) {
+    let chain = chain_mut(iter, vm);
+    chain.done = true;
+    let sources = mem::take(&mut chain.sources);
+    let current = chain.current.take();
+    // Dropping these can free the chain's own referrers, so it happens once
+    // `chain` (and its borrow of the heap) is out of the way.
+    sources.drop_with(vm);
+    current.drop_with(vm);
 }
 
 /// The `Chain` behind an iterator already dispatched as one.
