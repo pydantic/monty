@@ -25,14 +25,12 @@ const OVER_32_BIT = [
 for (const [name, code, message] of OVER_32_BIT) {
   test(`an over-32-bit ${name} raises rather than trapping`, async (ctx) => {
     skipIfBrowser(ctx)
-    const pool = await Monty.create()
-    const session = await pool.checkout({})
+    await using pool = await Monty.create()
+    await using session = await pool.checkout({})
     const error = await t.throwsAsync(() => session.feedRun(code), { instanceOf: MontyRuntimeError })
     t.is(error.exception.typeName, 'OverflowError')
     t.is(error.exception.message, message)
     // the instance survived: a trap would have taken the session with it
     t.is(await session.feedRun('1 + 1'), 2)
-    await session.close()
-    await pool.close()
   })
 }
