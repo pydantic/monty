@@ -74,7 +74,28 @@ assert list(range(Zero(), i)) == [0, 1]
 assert list(itertools.repeat('x', i)) == ['x', 'x']
 assert 'abcabc'.find('b', i) == 4
 assert b'abcabc'.find(b'b', i) == 4
+assert b'a,b,c'.split(b',', i) == [b'a', b'b', b'c']
 assert 'x'.center(Idx()) == 'x '
+
+
+# The bytes methods convert their integer arguments before checking that the
+# first one is bytes-like, so a raising bound wins over the `str` TypeError.
+class BoundBoom:
+    def __index__(self):
+        raise RuntimeError('bound')
+
+
+try:
+    b'abc'.find('a', BoundBoom())
+    assert False, 'expected the bound to convert before the sub check'
+except RuntimeError as exc:
+    assert str(exc) == 'bound'
+
+try:
+    b'abc'.split('a', BoundBoom())
+    assert False, 'expected maxsplit to convert before the sep check'
+except RuntimeError as exc:
+    assert str(exc) == 'bound'
 
 # === a non-int return is rejected ===
 

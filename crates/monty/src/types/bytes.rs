@@ -905,29 +905,24 @@ fn parse_bytes_sub_args(
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
 
-    // `sub` is copied out before the bounds are read: `extract_bytes_only` borrows
-    // the heap, and reading a bound may run a user `__index__` that needs it
-    // mutably. Copying first keeps CPython's left-to-right argument order, which
-    // reordering the two would not.
-    let (sub, start, end) = match pos.as_slice() {
-        [sub_value] => {
-            let sub = extract_bytes_only(sub_value, vm)?.to_owned();
-            (sub, 0, len)
-        }
+    // The bounds convert before `sub` is inspected, as in CPython, whose parser
+    // runs the index converters and leaves the buffer check to the function body.
+    // A raising `__index__` bound then costs no copy; `pos` keeps `sub` alive.
+    let (sub_value, start, end) = match pos.as_slice() {
+        [sub_value] => (sub_value, 0, len),
         [sub_value, start_value] => {
-            let sub = extract_bytes_only(sub_value, vm)?.to_owned();
             let start = normalize_sequence_index(start_value.as_int(vm)?, len);
-            (sub, start, len)
+            (sub_value, start, len)
         }
         [sub_value, start_value, end_value] => {
-            let sub = extract_bytes_only(sub_value, vm)?.to_owned();
             let start = normalize_sequence_index(start_value.as_int(vm)?, len);
             let end = normalize_sequence_index(end_value.as_int(vm)?, len);
-            (sub, start, end)
+            (sub_value, start, end)
         }
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => return Err(ExcType::type_error_at_most(method, 3, pos.len())),
     };
+    let sub = extract_bytes_only(sub_value, vm)?.to_owned();
 
     // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
     Ok((sub, start, end.max(start)))
@@ -1380,11 +1375,13 @@ fn bytes_rsplit<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>
 fn coerce_bytes_split_args(sep: Value, maxsplit: Value, vm: &mut VM<'_>) -> RunResult<(Option<Vec<u8>>, i64)> {
     defer_drop!(sep, vm);
     defer_drop!(maxsplit, vm);
+    // `maxsplit` converts first, as in CPython's clinic, which reads it while
+    // `sep` is still an unchecked object — a raising `__index__` costs no copy.
+    let maxsplit_int = maxsplit.as_int(vm)?;
     let sep = match sep {
         Value::None => None,
         _ => Some(extract_bytes_only(sep, vm)?.to_owned()),
     };
-    let maxsplit_int = maxsplit.as_int(vm)?;
     Ok((sep, maxsplit_int))
 }
 
