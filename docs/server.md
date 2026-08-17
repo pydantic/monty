@@ -264,8 +264,8 @@ emits — a dashboard built against any monty client works here.
 Policy outcomes (capacity rejections, timeouts, drain) are logged as events on the connection span, one line each naming
 the limit that fired.
 
-Traces carry caller data — the code fed to each session, call arguments, results and print output — with no flag to turn
-that off.
+Traces carry caller data — WebSocket handshake request headers, the code fed to each session, call arguments, results
+and print output — with no flag to turn that off.
 Point the token only at a backend those callers may be exposed to.
 
 ## Security
