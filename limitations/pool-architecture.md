@@ -141,13 +141,6 @@ properties that real CPython does not provide, per the caveat above.
   platforms, with or without a session budget — except in the wasm worker, which
   has no exit status to carry the distinction and so reports `MontyCrashedError`
   for both.
-- **The wasm worker is 32-bit, so size-like arguments overflow sooner.** An
-  `int` above `usize::MAX` but inside `i64` — `deque([], 2**40)`, `bytes(2**40)`
-  — raises `OverflowError` there, where the 64-bit subprocess worker converts it
-  and the call then succeeds (`deque([], 2**40)`) or fails later on size
-  (`bytes(2**40)` hits the size check, raising `MemoryError` under a memory
-  limit). Each worker matches the CPython build of
-  its own word size; what differs is which worker ran the snippet.
 - **Workers are spawned with an empty environment** (on Windows only
   `SystemRoot` is kept, which CRT/WinAPI lookups need): host secrets are
   never in a worker's memory, where a sandbox escape or memory disclosure
