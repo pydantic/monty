@@ -37,15 +37,6 @@ mechanism as self-hosted Logfire images, which live on the same registry host):
 docker login us-docker.pkg.dev -u _json_key --password-stdin < key.json
 ```
 
-On Kubernetes, the same file becomes an image pull secret referenced from the pod spec:
-
-```bash
-kubectl create secret docker-registry monty-image-key \
-  --docker-server=us-docker.pkg.dev \
-  --docker-username=_json_key \
-  --docker-password="$(cat key.json)"
-```
-
 The image refuses to start without a dump-signing key of at least 16 bytes:
 
 ```bash
@@ -55,21 +46,81 @@ docker run --rm \
   us-docker.pkg.dev/pydantic-public-registries/monty/monty-server:latest
 ```
 
-The bound URL (`ws://0.0.0.0:8000/`) is the only line written to stdout; all logging goes to stderr.
-The image bundles the matching `monty` worker binary and runs as non-root uid 65532 on a `scratch` base — no shell, no
-package manager.
+The image currently only has a `linux/amd64` manifest. On an Apple Silicon Mac or another ARM64 host, run it through
+Docker's amd64 emulation by adding `--platform=linux/amd64`:
 
-## Connecting a client
-
-```python
-from pydantic_monty import AsyncMontyWebsocket
-
-async with AsyncMontyWebsocket('ws://localhost:8000/') as pool:
-    async with pool.checkout() as session:
-        result = await session.feed_run('1 + 1')
+```bash
+docker run --rm \
+  --platform=linux/amd64 \
+  -e MONTY_SERVER_DUMP_KEY="$(openssl rand -hex 16)" \
+  -p 8000:8000 \
+  us-docker.pkg.dev/pydantic-public-registries/monty/monty-server:latest
 ```
 
-An ordinary `GET /` on the same URL answers with a short info page.
+Native ARM64 images are planned. Until they are available, omitting `--platform=linux/amd64` on an ARM64 host fails
+with `no matching manifest for linux/arm64/v8`.
+
+When the server is ready, it prints its bound URL to stdout:
+
+```text
+ws://0.0.0.0:8000/
+```
+
+In another terminal, create a Python client project and add `pydantic-monty`:
+
+```bash
+mkdir monty-server-quickstart
+cd monty-server-quickstart
+uv init --bare
+uv add pydantic-monty
+```
+
+Create `client.py`:
+
+```python
+import asyncio
+
+from pydantic_monty import AsyncMontyWebsocket
+
+
+async def main() -> None:
+    async with AsyncMontyWebsocket('ws://localhost:8000/') as pool:
+        async with pool.checkout() as session:
+            result = await session.feed_run('1 + 1')
+            print(result)
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+```
+
+Run the client:
+
+```bash
+uv run client.py
+```
+
+It should print:
+
+```text
+2
+```
+
+An ordinary `GET /` on the server URL answers with a short info page.
+
+The image bundles the matching `monty` worker binary and runs as non-root uid 65532 on a `scratch` base — no shell, no
+package manager. The bound URL is the only line written to stdout; all logging goes to stderr.
+
+### Kubernetes
+
+On Kubernetes, `key.json` becomes an image pull secret referenced from the pod spec:
+
+```bash
+kubectl create secret docker-registry monty-image-key \
+  --docker-server=us-docker.pkg.dev \
+  --docker-username=_json_key \
+  --docker-password="$(cat key.json)"
+```
 
 ## Configuration
 
