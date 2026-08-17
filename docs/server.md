@@ -124,7 +124,7 @@ kubectl create secret docker-registry monty-image-key \
 
 ## Configuration
 
-Every flag has an environment variable: the flag name in upper snake case with a `MONTY_SERVER_` prefix
+Every configuration flag has an environment variable: the flag name in upper snake case with a `MONTY_SERVER_` prefix
 (`--max-sessions` → `MONTY_SERVER_MAX_SESSIONS`), except `--monty-bin` and `--logfire-token`, which use `MONTY_BIN` and
 `LOGFIRE_TOKEN` respectively.
 A flag on the command line wins over its variable.
@@ -165,14 +165,13 @@ docker run --rm \
   --help
 ```
 
-Prefer environment variables for container configuration so the image's `CMD` remains intact. Always use environment
-variables for `--dump-key` and `--logfire-token`: a command line is world-readable via `ps` and commonly lands in shell
-history.
+Prefer environment variables for container configuration so the image's `CMD` remains intact, especially for
+`--dump-key` and `--logfire-token`: a command line is world-readable via `ps` and commonly lands in shell history.
 
 ### Resource limits
 
 The server's three sandbox resource limits are ceilings. A client that configures no value gets the server's limit; a
-client that asks for more is clamped to it; asking for less always works.
+client that asks for more is clamped to it; a lower requested value is accepted and becomes the effective ceiling.
 
 The server flags and Python client keys use different names and, for memory, different units:
 
@@ -240,10 +239,15 @@ Use `/health` for readiness and `/` for liveness.
 
 On SIGTERM, the server stops listening immediately, so new HTTP and WebSocket connections are refused rather than
 receiving a 503 response. Existing WebSocket sessions remain connected while the server drains. Each existing session's
-next request raises `pydantic_monty.MontyShutdown`; that request did not run, so it is safe to retry. Its `dump` contains
-the signed session state when state exists and dumping succeeds. Restore an idle dump on a fresh session with
-`await session.load_session(exc.dump)` before retrying the request; a dump captured while a feed is suspended instead
-uses `await session.load_snapshot(exc.dump, ...)`.
+next request raises `pydantic_monty.MontyShutdown`; that protocol request did not run and can be resent after restoration.
+Its `dump` contains the signed session state when state exists and dumping succeeds, or `None` otherwise. Check that the
+dump is not `None`, then restore an idle dump on a fresh session with `await session.load_session(exc.dump)` before
+resending the request; a dump captured while a feed is suspended instead uses
+`await session.load_snapshot(exc.dump, ...)`.
+
+If the interrupted request was answering an external function or `os` callback, the host already ran that callback and
+the restored snapshot re-announces it. Make such callbacks idempotent or deduplicate them before restoring across a
+shutdown.
 
 Sessions that remain silent through `--drain-grace` (default 30s) are dropped without a dump.
 Set the pod's `terminationGracePeriodSeconds` above `--drain-grace`, and use the same `MONTY_SERVER_DUMP_KEY` on every
