@@ -147,7 +147,7 @@ container's loopback interface and is not reachable through `-p 8000:8000`.
 | `--drain-grace <seconds>`           | time after SIGTERM for existing sessions to collect a dump               | 30                                         |
 | `--max-memory-mib <MiB>`            | per-session memory ceiling; 0 disables                                   | 64                                         |
 | `--max-duration <seconds>`          | cumulative sandbox execution time per session; 0 disables                | 60                                         |
-| `--max-recursion-depth <n>`         | per-session call-stack ceiling                                           | 1000                                       |
+| `--max-recursion-depth <n>`         | per-session call-stack ceiling; cannot be disabled                       | 1000                                       |
 | `--trust-forwarded-for`             | use the last `X-Forwarded-For` entry as the caller identity               | off                                        |
 | `--dump-key <key>`                  | required key of at least 16 bytes for signing session dumps              | none (required)                            |
 | `--logfire-token <token>`           | export traces to Logfire                                                 | off                                        |
@@ -170,7 +170,8 @@ Prefer environment variables for container configuration so the image's `CMD` re
 ### Resource limits
 
 The server's three sandbox resource limits are ceilings. If a client omits a limit, the server limit applies. A higher
-value is clamped to the server limit. A lower value is accepted and becomes the effective ceiling.
+value is clamped to the server limit. A lower value is accepted and becomes the effective ceiling. Duration and memory
+limits can be disabled, but recursion depth is always bounded.
 
 The server flags and Python client keys use different names and, for memory, different units:
 
@@ -223,15 +224,20 @@ their messages.
 ## Sizing the container
 
 Workers are created on demand for active connections and exit when their sessions close. `--max-sessions` is a capacity
-limit, not a number of preallocated workers. Each worker's process memory is capped at roughly `--max-memory-mib` plus a
-small baseline and headroom (4 MiB, or 32 MiB with type checking). Estimate peak memory as:
+limit, not a number of preallocated workers.
+
+`--max-memory-mib` limits per-session live bytes requested through the worker's global allocator. It does not cap total
+process memory or RSS. Thread stacks, the mapped binary image, direct `mmap`, allocator overhead and fragmentation are
+not included. The allocator's hard ceiling also includes the worker baseline and 4 MiB of headroom, or 32 MiB with type
+checking. Estimate the peak allocator budget as:
 
 ```
-peak container memory ≈ --max-sessions × (--max-memory-mib + baseline + headroom) + server overhead
+peak worker allocator budget ≈ --max-sessions × (--max-memory-mib + baseline + headroom)
 ```
 
-At full utilization, the defaults (64 sessions × 64 MiB) reach several GiB. Lower `--max-sessions` or
-`--max-memory-mib` to fit your instance.
+At full utilization, the default session limits alone allow 4 GiB of allocator-backed live bytes. Container RSS will be
+higher. Account for untracked worker memory and server overhead, and use an OS or cgroup memory limit to enforce a hard
+container bound. Lower `--max-sessions` or `--max-memory-mib` to fit your instance.
 
 ## Health probes and drain
 
