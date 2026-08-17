@@ -6,22 +6,24 @@
 //! - Task completion and failure handling
 //! - External future resolution
 
-use std::{collections::hash_map::Entry, mem, task::Poll};
+use std::{mem, task::Poll};
 
-use ahash::AHashMap;
-use monty_types::MontyException;
+use monty_types::{MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
 use super::{AwaitResult, CallFrame, FrameExit, VM};
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
-        GatherState, TaskId,
+        GatherState, PendingChildren, TaskId,
     },
     bytecode::vm::scheduler::{SerializedTaskFrame, TaskState},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadOutput, HeapReader},
+    heap::{
+        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadOutput,
+        HeapReader,
+    },
     intern::FunctionId,
     object_bridge::MontyObjectExt,
     run_progress::{ExtFunctionResult, ExtFunctionResultExt},
@@ -99,103 +101,132 @@ impl<'h> VM<'h> {
     }
 
     /// Awaits a gather future from the user's `await gather` site.
+    ///
+    /// A settled gather replays its cached result; a `Pending` one is handed to
+    /// [`Self::commit_gather_tree`], which commits it along with every gather
+    /// nested inside it.
     fn await_gather_future(
         &mut self,
-        mut gather: HeapObjectRead<'h, GatherFuture>,
+        gather: HeapObjectRead<'h, GatherFuture>,
         awaiter: Awaiter,
     ) -> Result<Poll<Value>, RunError> {
         let mut awaiter_guard = DropGuard::new(awaiter, self);
         let this = awaiter_guard.ctx();
-        match &gather.get(this.heap).state {
-            GatherState::Pending => {}
-            GatherState::Completed(value) => {
-                return Ok(Poll::Ready(value.clone_with_heap(this.heap)));
-            }
-            GatherState::Failed(err) => {
-                return Err(err.clone());
-            }
-            // TODO: support concurrent re-await (CPython does).
-            GatherState::Awaited(_) => {
-                return Err(SimpleException::new_msg(
-                    ExcType::RuntimeError,
-                    "cannot reuse gather that is currently being awaited",
-                )
-                .into());
-            }
+        if let Some(value) = poll_settled_gather(&gather, this.heap)? {
+            Ok(Poll::Ready(value))
+        } else {
+            // The walk re-reads each gather by id, so hand the handle back
+            // before it starts.
+            let gather_id = gather.id();
+            drop(gather);
+            let (awaiter, this) = awaiter_guard.into_parts();
+            this.commit_gather_tree(gather_id, awaiter)
         }
-
-        // Empty gather shortcut. Allocate the empty list, store it as the
-        // cached `Completed` result, and return an inc_ref'd reference.
-        let item_count = gather.get(this.heap).item_count();
-        if item_count == 0 {
-            let list_id = this.heap.allocate(HeapData::List(List::new(vec![])));
-            gather.cache_result(this.heap, list_id);
-            return Ok(Poll::Ready(Value::Ref(list_id)));
-        }
-
-        // Await all items, storing already resolved state and tracking the rest in `pending_children`.
-
-        let mut pending_children: AHashMap<HeapId, SmallVec<[usize; 1]>> = AHashMap::new();
-        let results: Vec<Option<Value>> = (0..item_count).map(|_| None).collect();
-        let mut results_guard = DropGuard::new(results, this);
-        let (results, this) = results_guard.as_parts_mut();
-
-        // A later item failing during this commit pass leaves the ones already
-        // committed running, as CPython does. They keep pointing at this
-        // gather; `resolve_child` drops what they deliver to a `Failed` one.
-        if let Err(err) = this.commit_gather_items(&gather, &mut pending_children, results) {
-            gather.get_mut(this.heap).state = GatherState::Failed(err.clone());
-            return Err(err);
-        }
-
-        if pending_children.is_empty() {
-            // All items resolved synchronously — skip straight to Completed with the result list.
-            let (results, this) = results_guard.into_parts();
-            let results: Vec<Value> = results
-                .into_iter()
-                .map(|r| r.expect("all results filled for synchronous gather completion"))
-                .collect();
-            let list_id = this.heap.allocate(HeapData::List(List::new(results)));
-            gather.cache_result(this.heap, list_id);
-            return Ok(Poll::Ready(Value::Ref(list_id)));
-        }
-
-        let results = results_guard.into_inner();
-        let (awaiter, this) = awaiter_guard.into_parts();
-        gather.get_mut(this.heap).state = GatherState::Awaited(AwaitedGather {
-            awaiter,
-            pending_children,
-            results,
-        });
-
-        Ok(Poll::Pending)
     }
 
-    /// Commits `gather`'s items left-to-right into result slots or pending children.
+    /// Commits `root` and every gather nested inside it, reporting whether the
+    /// root settled synchronously.
     ///
-    /// Spawns coroutine children, installs awaiters on external futures, and
-    /// recursively awaits nested gathers. Any error leaves already-committed
-    /// entries in `pending_children` and their awaiters pointing at `gather`;
-    /// the caller settles it so their results are dropped on arrival.
-    fn commit_gather_items(
-        &mut self,
-        gather: &HeapObjectRead<'h, GatherFuture>,
-        pending_children: &mut AHashMap<HeapId, SmallVec<[usize; 1]>>,
-        results: &mut [Option<Value>],
-    ) -> Result<(), RunError> {
-        let gather_id = gather.id();
-        for (idx, result) in results.iter_mut().enumerate() {
-            let item_id = gather.get(self.heap).items[idx];
-            let vacant_entry = match pending_children.entry(item_id) {
-                Entry::Occupied(occ) => {
-                    // Dedup: We've already registered this item in this commit pass —
-                    // this is a duplicate item (e.g. `gather(coro, coro)`). Just
-                    // append the new slot index to the existing entry.
-                    occ.into_mut().push(idx);
-                    continue;
+    /// Nesting a gather costs no Python frames (`g = asyncio.gather(g)` in a
+    /// loop), so the recursion limit never saw the commit walk that descends
+    /// through it — a recursive walk turned heap-held nesting back into native
+    /// frames and aborted the process. The frames it needed now live in
+    /// `stack`, one [`GatherCommit`] per level, which makes nesting depth a
+    /// matter of memory rather than of native stack, as it is for CPython's
+    /// loop-driven futures.
+    fn commit_gather_tree(&mut self, root: HeapId, awaiter: Awaiter) -> Result<Poll<Value>, RunError> {
+        let mut stack = vec![self.open_gather_commit(root, awaiter, None)];
+        let mut steps = 0;
+        let outcome = loop {
+            // Each level costs a frame on the way down and a result list on the
+            // way back up, and the whole walk runs no bytecode, so
+            // `dispatch_checkpoint` never sees how far it has grown. Without
+            // this check a nest that fits under `max_memory` commits its way
+            // past the allocator's hard ceiling, taking the worker down instead
+            // of ending the run.
+            if let Err(err) = self.heap.tracker.check_memory_time_every(steps) {
+                break Err(err.into());
+            }
+            steps += 1;
+
+            let frame = stack.last_mut().expect("the commit stack is emptied only by returning");
+            match self.step_gather_commit(frame) {
+                // Descend: the nested gather's own items must be committed
+                // before the frame that owns its result slot can continue.
+                Ok(Some(nested)) => {
+                    if let Err(err) = check_commit_stack_growth(stack.len(), stack.capacity(), &self.heap.tracker) {
+                        nested.drop_with(self.heap);
+                        break Err(err.into());
+                    }
+                    stack.push(nested);
                 }
-                Entry::Vacant(vacant) => vacant,
-            };
+                Ok(None) => {
+                    let frame = stack.pop().expect("the frame just stepped is still on the stack");
+                    let (child_id, slot) = (frame.gather, frame.parent_slot);
+                    let poll = self.settle_gather_commit(frame);
+                    match stack.last_mut() {
+                        // The root settled: `poll` is what the `await` site sees.
+                        None => break Ok(poll),
+                        Some(parent) => {
+                            let slot = slot.expect("only the root commit frame has no parent slot");
+                            parent.resume_after_child(child_id, slot, poll);
+                        }
+                    }
+                }
+                Err(err) => break Err(err),
+            }
+        };
+
+        match outcome {
+            Ok(poll) => Ok(poll),
+            Err(err) => {
+                self.unwind_gather_commits(stack, &err);
+                Err(err)
+            }
+        }
+    }
+
+    /// Opens a commit frame for the `Pending` gather `gather`, sized to its items.
+    fn open_gather_commit(&mut self, gather: HeapId, awaiter: Awaiter, parent_slot: Option<usize>) -> GatherCommit {
+        let HeapReadOutput::GatherFuture(item_source) = self.heap.read(gather) else {
+            panic!("gather commit frame id is not a GatherFuture")
+        };
+        let item_count = item_source.get(self.heap).item_count();
+        GatherCommit {
+            gather,
+            awaiter,
+            parent_slot,
+            next: 0,
+            results: (0..item_count).map(|_| None).collect(),
+            pending_children: PendingChildren::new(),
+        }
+    }
+
+    /// Commits `frame`'s items left-to-right into result slots or pending
+    /// children, spawning coroutine children and installing awaiters on
+    /// external futures as it goes.
+    ///
+    /// Stops early at a `Pending` nested gather, returning the frame the caller
+    /// must commit before this one can continue; `Ok(None)` means every item is
+    /// committed. Any error leaves the items handled so far in `frame`, which
+    /// [`Self::unwind_gather_commits`] settles.
+    fn step_gather_commit(&mut self, frame: &mut GatherCommit) -> Result<Option<GatherCommit>, RunError> {
+        let HeapReadOutput::GatherFuture(gather) = self.heap.read(frame.gather) else {
+            panic!("gather commit frame id is not a GatherFuture")
+        };
+        let gather_id = frame.gather;
+
+        while frame.next < frame.results.len() {
+            let idx = frame.next;
+            let item_id = gather.get(self.heap).items[idx];
+            if let Some(slots) = frame.pending_children.get_mut(&item_id) {
+                // Dedup: We've already registered this item in this commit pass —
+                // this is a duplicate item (e.g. `gather(coro, coro)`). Just
+                // append the new slot index to the existing entry.
+                slots.push(idx);
+                frame.next += 1;
+                continue;
+            }
 
             let poll = match self.heap.read(item_id) {
                 HeapReadOutput::Coroutine(coro) => {
@@ -218,26 +249,85 @@ impl<'h> VM<'h> {
                     self.await_external_future(&mut fut, sub_awaiter)?
                 }
                 HeapReadOutput::GatherFuture(child_gather) => {
-                    self.heap.inc_ref(gather_id);
-                    let sub_awaiter = Awaiter::GatherSlot {
-                        gather: gather_id,
-                        source: item_id,
-                    };
-                    self.await_gather_future(child_gather, sub_awaiter)?
+                    if let Some(value) = poll_settled_gather(&child_gather, self.heap)? {
+                        Poll::Ready(value)
+                    } else {
+                        drop(child_gather);
+                        // Both the inc_ref and the awaiter that owns it are
+                        // handed to the nested frame, which releases them when
+                        // it settles; until then nothing is committed for this
+                        // slot, so an error above needs no cleanup here.
+                        self.heap.inc_ref(gather_id);
+                        let sub_awaiter = Awaiter::GatherSlot {
+                            gather: gather_id,
+                            source: item_id,
+                        };
+                        return Ok(Some(self.open_gather_commit(item_id, sub_awaiter, Some(idx))));
+                    }
                 }
                 _ => panic!("gather item is not a Coroutine, ExternalFuture, or GatherFuture"),
             };
 
             match poll {
-                Poll::Ready(value) => {
-                    *result = Some(value);
-                }
+                Poll::Ready(value) => frame.results[idx] = Some(value),
                 Poll::Pending => {
-                    vacant_entry.insert(smallvec![idx]);
+                    frame.pending_children.insert(item_id, smallvec![idx]);
                 }
             }
+            frame.next += 1;
         }
-        Ok(())
+
+        Ok(None)
+    }
+
+    /// Settles a fully-committed frame.
+    ///
+    /// With nothing left in flight the gather goes straight to `Completed` with
+    /// its result list (this covers the empty `gather()` too); otherwise it
+    /// parks in `Awaited`, taking over the frame's bookkeeping, and later
+    /// resolutions drive it from there.
+    fn settle_gather_commit(&mut self, frame: GatherCommit) -> Poll<Value> {
+        let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(frame.gather) else {
+            panic!("gather commit frame id is not a GatherFuture")
+        };
+
+        if frame.pending_children.is_empty() {
+            let results: Vec<Value> = frame
+                .results
+                .into_iter()
+                .map(|r| r.expect("all results filled for synchronous gather completion"))
+                .collect();
+            let list_id = self.heap.allocate(HeapData::List(List::new(results)));
+            gather.cache_result(self.heap, list_id);
+            frame.awaiter.drop_with(self.heap);
+            Poll::Ready(Value::Ref(list_id))
+        } else {
+            gather.get_mut(self.heap).state = GatherState::Awaited(AwaitedGather {
+                awaiter: frame.awaiter,
+                pending_children: frame.pending_children,
+                results: frame.results,
+            });
+            Poll::Pending
+        }
+    }
+
+    /// Fails every frame left on the commit stack with `err`, innermost first.
+    ///
+    /// This is the unwind the recursive walk got from `?`: each level caches the
+    /// error so re-awaits replay it, and drops the result slots and awaiter the
+    /// frame was holding. The children it had already committed keep running and
+    /// keep pointing at their now-`Failed` gather, as they do for a failure that
+    /// arrives after the commit pass (see [`HeapRead::fail`]).
+    fn unwind_gather_commits(&mut self, stack: Vec<GatherCommit>, err: &RunError) {
+        for frame in stack.into_iter().rev() {
+            let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(frame.gather) else {
+                panic!("gather commit frame id is not a GatherFuture")
+            };
+            gather.get_mut(self.heap).state = GatherState::Failed(err.clone());
+            drop(gather);
+
+            frame.drop_with(self.heap);
+        }
     }
 
     /// Awaits an external future by inspecting its heap state.
@@ -935,6 +1025,93 @@ impl<'h> VM<'h> {
         } else {
             Ok(FrameExit::ResolveFutures(pending_call_ids))
         }
+    }
+}
+
+/// One gather part-way through being committed — a frame of the walk in
+/// [`VM::commit_gather_tree`], and the reason that walk needs no native stack.
+///
+/// Everything the recursive commit held in local variables lives here instead:
+/// the items handled so far, and where in `items` to resume once the nested
+/// gather this frame descended into has settled.
+struct GatherCommit {
+    /// The gather being committed. Borrowed — the reference is owned by the
+    /// parent gather's `items`, or for the root by the awaited value itself.
+    gather: HeapId,
+    /// Owned awaiter, installed on the gather when it parks in `Awaited` and
+    /// dropped when it settles synchronously. `Awaiter::GatherSlot` carries an
+    /// inc_ref on the parent gather (see [`Awaiter`]).
+    awaiter: Awaiter,
+    /// Slot in the parent frame's `results` that this gather fills; `None` for
+    /// the root, whose result goes to the `await` site instead.
+    parent_slot: Option<usize>,
+    /// Next index into the gather's `items` to commit.
+    next: usize,
+    /// Result slots, one per item, in `items` order. Owned values.
+    results: Vec<Option<Value>>,
+    /// Children committed but not yet settled → the slots they fill.
+    pending_children: PendingChildren,
+}
+
+impl GatherCommit {
+    /// Records the outcome of the nested gather this frame descended into and
+    /// resumes at the following item.
+    ///
+    /// A nested gather that settled synchronously fills its slot like any other
+    /// ready item; one that parked joins `pending_children`, so a later
+    /// resolution reaches this gather through [`HeapRead::resolve_child`].
+    fn resume_after_child(&mut self, child: HeapId, slot: usize, poll: Poll<Value>) {
+        match poll {
+            Poll::Ready(value) => self.results[slot] = Some(value),
+            Poll::Pending => {
+                self.pending_children.insert(child, smallvec![slot]);
+            }
+        }
+        self.next = slot + 1;
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for GatherCommit {
+    fn drop_with(self, heap: &mut C) {
+        self.results.drop_with(heap);
+        self.awaiter.drop_with(heap);
+    }
+}
+
+/// Preflights the commit stack's next reallocation against `max_memory`.
+///
+/// A `Vec` grows by allocating the new buffer while the old one is still live,
+/// so one growth part-way through a deep walk can add several MiB at once —
+/// enough to clear the allocator's hard ceiling between two periodic checks,
+/// which kills the worker rather than ending the run.
+fn check_commit_stack_growth(len: usize, capacity: usize, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+    if len == capacity {
+        tracker.check_allocation(2 * capacity * size_of::<GatherCommit>())
+    } else {
+        Ok(())
+    }
+}
+
+/// Polls a gather that may already have settled, returning `None` when it is
+/// still `Pending` and so needs committing.
+///
+/// Shared by the `await` site and the commit walk, which face the same four
+/// states: a cached result to replay, a cached error to re-raise, an in-flight
+/// gather someone else owns, or work to do.
+fn poll_settled_gather<'h>(
+    gather: &HeapRead<'h, GatherFuture>,
+    heap: &HeapReader<'h>,
+) -> Result<Option<Value>, RunError> {
+    match &gather.get(heap).state {
+        GatherState::Pending => Ok(None),
+        GatherState::Completed(value) => Ok(Some(value.clone_with_heap(heap))),
+        GatherState::Failed(err) => Err(err.clone()),
+        // TODO: support concurrent re-await (CPython does).
+        GatherState::Awaited(_) => Err(SimpleException::new_msg(
+            ExcType::RuntimeError,
+            "cannot reuse gather that is currently being awaited",
+        )
+        .into()),
     }
 }
 

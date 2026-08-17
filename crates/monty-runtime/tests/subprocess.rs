@@ -473,6 +473,55 @@ fn async_accumulation_reaches_the_soft_limit() {
     child.shutdown();
 }
 
+/// Gathers nested as *items* of one another (`g = asyncio.gather(g)`) cost no
+/// Python frames, so nothing but `max_memory` bounds how deep a nest gets built.
+/// Building one too large for the limit must end the run with a `MemoryError`,
+/// and the worker must survive it.
+#[test]
+fn building_a_deep_gather_nest_reaches_the_soft_limit() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    // Built inside a function so unwinding releases the partial nest — a nest
+    // left bound at module level keeps the session over its limit.
+    let code = "import asyncio\nasync def leaf():\n    return 1\ndef build():\n    g = leaf()\n    for _ in range(50_000):\n        g = asyncio.gather(g)\n    return g\nbuild()";
+    let (_, event) = child.feed(code);
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// Committing a nest costs a walk frame per level on the way down and a result
+/// list per level on the way back up, none of it between bytecode instructions.
+/// So a nest that *fits* under `max_memory` can still exceed it when awaited,
+/// and that has to arrive as a `MemoryError` rather than as a dead worker: the
+/// walk polls the limit as it goes, and preflights its own reallocations.
+///
+/// Both depths build inside the limit. The small one crosses it during the walk;
+/// the large one is where a single `Vec` growth of the walk's stack used to jump
+/// clear over the allocator's hard ceiling in one allocation.
+#[test]
+fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
+    for (limit, depth) in [(1024 * 1024, 3_500), (32 * 1024 * 1024, 100_000)] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(limit));
+        let build = format!(
+            "import asyncio\nasync def leaf():\n    return 1\ng = leaf()\nfor _ in range({depth}):\n    g = asyncio.gather(g)\n1"
+        );
+        assert_eq!(child.feed_complete(&build), MontyObject::Int(1), "depth {depth}");
+
+        let (_, event) = child.feed("await g");
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "depth {depth}");
+        // Dropping the nest brings the session back under its limit, which it
+        // could not do if the worker had died on the hard ceiling instead.
+        assert_eq!(
+            child.feed_complete("g = None\n1 + 1"),
+            MontyObject::Int(2),
+            "depth {depth}"
+        );
+        child.shutdown();
+    }
+}
+
 /// Known large results are rejected against allocator usage before they can
 /// jump from below the soft limit past the hard ceiling. The reported figure is
 /// what each result really costs, so it pins down that the refusal accounted for

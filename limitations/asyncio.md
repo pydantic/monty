@@ -106,3 +106,13 @@ CPython prints `_GatheringFuture exception was never retrieved`, a `future:` lin
 gather holding an unretrieved exception is collected.
 In Monty that gather never ran, and no sandboxed code can write to stderr in any case — `print()` rejects its `file`
 argument.
+
+### Nesting `gather` inside `gather` is bounded by `max_memory`
+
+CPython nests gathers as deeply as memory allows, and the depth costs nothing beyond the futures themselves.
+Monty holds a walk frame per level while it commits the nest, so awaiting a deep nest costs memory on top of what the
+nest already occupies.
+A session with `max_memory` set can therefore build a nest it cannot await: the `await` ends the run with
+`MemoryError: memory limit exceeded`, which sandboxed code cannot catch (see ./resource_limits.md).
+The nesting is not charged against the recursion limit in either interpreter, and a session with no memory limit has
+no bound to hit.

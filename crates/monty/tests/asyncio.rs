@@ -1042,21 +1042,128 @@ await main()
     assert_eq!(result, MontyObject::Int(333));
 }
 
+// === Test: Gathers nested directly inside one another commit without recursing ===
+
+/// Nesting a gather as an *item* of another costs no Python frames
+/// (`g = asyncio.gather(g)` in a loop), so the recursion limit never sees the
+/// commit walk that descends through it. Committing 5,000 levels must work.
+///
+/// Runs on a 2 MiB thread — a worker's budget, and where the abort was seen;
+/// libtest's 8 MiB would only move the depth at which it aborts.
+#[test]
+fn deeply_nested_gather_commit_does_not_overflow_the_stack() {
+    run_on_a_worker_stack(await_deeply_nested_gathers);
+}
+
+/// Wraps `leaf()` in 5,000 gathers, awaits the outermost, and unwraps the
+/// 5,000 single-item result lists back down to the leaf's `1`.
+///
+/// The leaf coroutine parks the whole chain (it is spawned as a task), so this
+/// covers both directions: the commit walk down, and the resolution walk back
+/// up through 5,000 `GatherSlot` links.
+fn await_deeply_nested_gathers() {
+    let code = r"
+import asyncio
+
+async def leaf():
+    return 1
+
+g = leaf()
+for _ in range(5000):
+    g = asyncio.gather(g)
+result = await g
+for _ in range(5000):
+    result = result[0]
+result
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let result = runner.run_no_limits(vec![]).expect("a deep gather nest should resolve");
+    assert_eq!(result, MontyObject::Int(1));
+}
+
+/// Companion to the parked chain: every level settles *during* the commit walk,
+/// which is the path that hands each nested result straight back to the frame
+/// holding its slot.
+#[test]
+fn deeply_nested_gather_settling_synchronously_does_not_overflow_the_stack() {
+    run_on_a_worker_stack(|| {
+        // An empty `gather()` completes on the spot, so all 5,000 levels settle
+        // as the walk unwinds rather than parking on a task.
+        let code = r"
+import asyncio
+
+g = asyncio.gather()
+for _ in range(5000):
+    g = asyncio.gather(g)
+result = await g
+for _ in range(5000):
+    result = result[0]
+result
+";
+        let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+        let result = runner
+            .run_no_limits(vec![])
+            .expect("a synchronously settling nest should resolve");
+        assert_eq!(result, MontyObject::List(vec![]));
+    });
+}
+
+/// The error path unwinds the same depth: the innermost gather holds an
+/// already-awaited coroutine, so the commit fails 5,000 levels down and every
+/// level above must be rolled back.
+#[test]
+fn deeply_nested_gather_commit_failure_does_not_overflow_the_stack() {
+    run_on_a_worker_stack(|| {
+        let code = r"
+import asyncio
+
+async def leaf():
+    return 1
+
+spent = leaf()
+await spent
+
+g = asyncio.gather(spent)
+for _ in range(5000):
+    g = asyncio.gather(g)
+
+caught = ''
+try:
+    await g
+except RuntimeError as exc:
+    caught = str(exc)
+caught
+";
+        let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+        let result = runner.run_no_limits(vec![]).expect("the reuse error should be caught");
+        assert_eq!(
+            result,
+            MontyObject::String("cannot reuse already awaited coroutine".to_owned())
+        );
+    });
+}
+
+/// Runs `body` on a 2 MiB thread, the stack a worker gets — libtest's own 8 MiB
+/// would hide an overflow that a real session hits.
+fn run_on_a_worker_stack(body: impl FnOnce() + Send + 'static) {
+    thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(body)
+        .expect("spawning the bounded-stack thread")
+        .join()
+        .expect("the bounded stack must be enough");
+}
+
 // === Test: Deep blocked task chains are torn down without recursing ===
 
 /// A chain of blocked tasks costs no native stack to *build*, so teardown must
 /// not turn that stored depth back into frames.
-///
-/// Runs on a 2 MiB thread — a worker's budget, and where the abort was seen;
-/// libtest's 8 MiB would need a far deeper, slower chain to prove the same.
 #[test]
 fn deep_blocked_task_chain_teardown_does_not_overflow_the_stack() {
-    thread::Builder::new()
-        .stack_size(2 * 1024 * 1024)
-        .spawn(fail_sibling_of_deep_task_chain)
-        .expect("spawning the bounded-stack thread")
-        .join()
-        .expect("tearing down a deep blocked chain must not overflow the stack");
+    run_on_a_worker_stack(fail_sibling_of_deep_task_chain);
 }
 
 /// Wraps `leaf()` in 20,000 nested gathers and awaits that chain alongside a
