@@ -7,26 +7,25 @@ client to another.
 `pydantic_monty.AsyncMontyWebsocket` connects directly from Python; the TypeScript package (`@pydantic/monty`) is
 subprocess-only today and cannot dial a remote server.
 The server adds capacity limits, timeouts, per-caller quotas, health probes, graceful drain and tracing to [Pydantic
-Logfire](https://pydantic.dev/logfire); the sandboxing itself is entirely the `monty` worker's.
+Logfire](https://pydantic.dev/logfire). The `monty` worker provides the sandboxing.
 
 The server is closed-source and distributed as a container image.
 For access and licensing, [contact us](https://pydantic.dev/contact).
 
 ## Why Monty over WebSocket
 
-This is not a sales document, but it's worth briefly enumerating why someone would want to use Monty running on a remote
-server:
+Running Monty on a remote server provides:
 
-- **Security**: escaping the sandbox gets you the machine running Monty, not the machine running the agent / application
-  code — and that machine is an empty container.
+- **Security**: escaping the sandbox gets you the machine running Monty, not the machine running the agent or
+  application code. That machine is an empty container.
 - **Centralized monitoring, observability, and scaling**: one horizontally scalable service for all Monty code
   execution, instead of every service running its own worker pool.
 - **Density**: Monty workers have a small baseline footprint (as little as 2MB), plus additional memory for limits and
   optional type checking, so a single machine can run hundreds.
 - **Same behavior as local Monty**: the wire protocol carries host callbacks, name lookups, async futures and mounted
   client directories, so code that runs against a local pool runs unchanged against the server.
-- **(In future) switch to a full monty sandbox with a parameter**: the same interface, but a full VM running CPython —
-  for code that needs dependencies, bash and a real filesystem.
+- **Future full sandbox option**: a VM running CPython for code that needs dependencies, bash or a real filesystem,
+  exposed through the same interface.
 
 ## Quickstart
 
@@ -106,10 +105,10 @@ It should print:
 2
 ```
 
-An ordinary `GET /` on the server URL answers with a short info page.
+`GET /` on the server URL returns a short info page.
 
-The image bundles the matching `monty` worker binary and runs as non-root uid 65532 on a `scratch` base — no shell, no
-package manager. The bound URL is the only line written to stdout; all logging goes to stderr.
+The image bundles the matching `monty` worker binary and runs as non-root uid 65532 on a `scratch` base with no shell or
+package manager. The bound URL is the only line written to stdout. All logging goes to stderr.
 
 ### Kubernetes
 
@@ -150,7 +149,7 @@ container's loopback interface and is not reachable through `-p 8000:8000`.
 | `--max-duration <seconds>`          | cumulative sandbox execution time per session; 0 disables                | 60                                         |
 | `--max-recursion-depth <n>`         | per-session call-stack ceiling                                           | 1000                                       |
 | `--trust-forwarded-for`             | use the last `X-Forwarded-For` entry as the caller identity               | off                                        |
-| `--dump-key <key>`                  | required key of at least 16 bytes for signing session dumps              | —                                          |
+| `--dump-key <key>`                  | required key of at least 16 bytes for signing session dumps              | none (required)                            |
 | `--logfire-token <token>`           | export traces to Logfire                                                 | off                                        |
 
 When the global session limit is full, a new WebSocket upgrade gets `503 Service Unavailable`; exceeding the
@@ -170,8 +169,8 @@ Prefer environment variables for container configuration so the image's `CMD` re
 
 ### Resource limits
 
-The server's three sandbox resource limits are ceilings. A client that configures no value gets the server's limit; a
-client that asks for more is clamped to it; a lower requested value is accepted and becomes the effective ceiling.
+The server's three sandbox resource limits are ceilings. If a client omits a limit, the server limit applies. A higher
+value is clamped to the server limit. A lower value is accepted and becomes the effective ceiling.
 
 The server flags and Python client keys use different names and, for memory, different units:
 
@@ -211,19 +210,21 @@ Save this as `limits_client.py` and run `uv run limits_client.py`; with the defa
 `2`.
 
 `--max-duration` counts cumulative interpreter execution across the session and excludes time suspended waiting for
-the client. `--turn-timeout` is instead wall-clock time for one complete request, including time waiting for a client
+the client. `--turn-timeout` measures wall-clock time for one complete request, including time waiting for a client
 callback. Keep the server's turn timeout above the clients' `request_timeout` so the client watchdog can report a more
-specific failure first. A keepalive ping that goes unanswered for one further `--keepalive` interval ends the session;
-keep that interval below half of `--idle-timeout` if keepalive should detect a vanished client first.
+specific failure first.
+
+A keepalive ping that goes unanswered for one further `--keepalive` interval ends the session. Keep that interval below
+half of `--idle-timeout` if keepalive should detect a vanished client first.
 
 The worker enforces the effective limits. Memory and duration errors include the effective byte or time ceiling in
 their messages.
 
 ## Sizing the container
 
-Workers are created on demand for active connections and exit when their sessions close; `--max-sessions` is a capacity
+Workers are created on demand for active connections and exit when their sessions close. `--max-sessions` is a capacity
 limit, not a number of preallocated workers. Each worker's process memory is capped at roughly `--max-memory-mib` plus a
-small baseline and headroom (4 MiB, or 32 MiB with type checking), so a peak-capacity planning estimate is:
+small baseline and headroom (4 MiB, or 32 MiB with type checking). Estimate peak memory as:
 
 ```
 peak container memory ≈ --max-sessions × (--max-memory-mib + baseline + headroom) + server overhead
@@ -250,23 +251,23 @@ the restored snapshot re-announces it. Make such callbacks idempotent or dedupli
 shutdown.
 
 Sessions that remain silent through `--drain-grace` (default 30s) are dropped without a dump.
-Set the pod's `terminationGracePeriodSeconds` above `--drain-grace`, and use the same `MONTY_SERVER_DUMP_KEY` on every
-replica — a dump signed by one replica must verify on the one the client reconnects to.
+Set the pod's `terminationGracePeriodSeconds` above `--drain-grace`. Use the same `MONTY_SERVER_DUMP_KEY` on every
+replica so the client can restore a dump after reconnecting to a different one.
 Dumps only load into a worker of the same Monty version, so roll clients and servers together.
 
 ## Tracing
 
 Pass `--logfire-token` (or set `LOGFIRE_TOKEN`) to export traces to [Pydantic Logfire](https://pydantic.dev/logfire).
-Without a token the server behaves identically and emits its console traces and logs to stderr only.
+Without a token, execution is unchanged. Traces and logs are written to stderr but not exported.
 
-The server records one span per connection, and beneath it the same session, run and host-call spans every monty client
-emits — a dashboard built against any monty client works here.
+The server records one span per connection. Beneath it are the same session, run and host-call spans emitted by other
+Monty clients, so existing Monty dashboards work with the server.
 Policy outcomes (capacity rejections, timeouts, drain) are logged as events on the connection span, one line each naming
 the limit that fired.
 
-Traces carry caller data — WebSocket handshake request headers, the code fed to each session, call arguments, results
-and print output — with no flag to turn that off.
-Point the token only at a backend those callers may be exposed to.
+Traces carry WebSocket handshake request headers, the code fed to each session, call arguments, results and print
+output. There is no option to disable collection of these fields.
+Only export to a Logfire project that is authorized to receive this caller data.
 
 ## Security
 
