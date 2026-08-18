@@ -46,8 +46,8 @@ excluded because they would breach the sandbox. Others (`functools`, `enum`)
 are unimplemented and may appear over time.
 
 Some available modules cover only part of their CPython surface: `itertools`
-implements just `count` and `repeat` so far, and `collections` only the four
-types above. The absent names are missing from the module namespace rather than
+implements seven of its callables, and `collections` only the four types
+above. The absent names are missing from the module namespace rather than
 stubbed, so they fail type checking as well as raising `AttributeError` at
 runtime; see each module's page for the specifics.
 
