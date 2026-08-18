@@ -183,7 +183,7 @@ Exceeding the cap rejects the feed with `MontyRuntimeError` / `MemoryError`
 Mount host directories into the sandbox at virtual POSIX paths:
 
 ```ts
-import { MountDir } from '@pydantic/monty'
+import { MountDir } from '@pydantic/monty/node'
 
 const mount = new MountDir({ hostPath: '/path/on/host', virtualPath: '/mnt/data', mode: 'read-only' })
 await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
