@@ -77,7 +77,8 @@ These raise `NameError`:
 - **`bytes(source)`** — an iterable of ints is not supported: CPython's
   `bytes([65, 66])` == `b'AB'`, Monty raises `TypeError: cannot convert
   'list' object to bytes`. The int / str-with-encoding / bytes source forms
-  all work.
+  all work. A count above `i64` (`bytes(2**70)`) gives that same `TypeError`,
+  not CPython's `OverflowError: cannot fit 'int' into an index-sized integer`.
 - **`isinstance(obj, T)`** — `T` must be a built-in type (`int`, `str`,
   `list`, ...), a built-in exception class, a sandbox-defined class (see
   ./classes.md), or a tuple of those. Passing a host-supplied
