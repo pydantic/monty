@@ -975,6 +975,16 @@ pub enum StaticStrings {
     Filterfalse,
     /// `itertools.starmap()` function.
     Starmap,
+
+    // ==========================
+    // functools module strings
+    // Appended, per the "new variants go at the end" rule above.
+    /// Module name for `import functools`.
+    Functools,
+    /// `functools.reduce()` function.
+    Reduce,
+    /// `initial` keyword argument of `functools.reduce()`.
+    Initial,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.
