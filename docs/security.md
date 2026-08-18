@@ -99,8 +99,8 @@ From Rust, this is why [`monty-pool`](quickstart/rust.md) is the recommended ent
 Untrusted code will try to allocate forever or loop forever.
 See [resource limits](resource-limits.md) for the full picture; the security-relevant parts:
 
-- `max_memory` is a budget on **user-visible data**, not a hard ceiling on process RSS.
-  Per-object sizing is approximate and elides bookkeeping overhead.
+- `max_memory` budgets the bytes a worker requests from its global allocator, not process RSS.
+  Per-allocation overhead, fragmentation, and memory obtained without the allocator sit outside the count.
   Size the limit with headroom, and keep the worker-level backstop.
 - `max_duration_secs` counts **cumulative execution time**, not wall clock.
   The clock is paused while the sandbox waits on a host function, so a slow host function does not consume the budget.

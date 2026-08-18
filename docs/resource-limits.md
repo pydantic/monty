@@ -42,10 +42,13 @@ In Rust they are the fields of `monty_types::ResourceLimits`, where the duration
 
 ## Memory
 
-`max_memory` is a budget on **user-visible data**, not a hard ceiling on process RSS.
-Per-object sizing is approximate: it elides bookkeeping overhead such as HashMap bucket padding, `Vec` capacity slack
-and inline `SmallVec` buffers.
-Size the limit with headroom.
+`max_memory` budgets the bytes a worker requests from its global allocator, counted from the leanest the worker process
+has been.
+Everything the session allocates counts against it, including retained compiled code and interpreter internals.
+It is not a ceiling on process RSS.
+Allocations are counted as requested, so per-allocation overhead and fragmentation sit outside the count, as does memory
+obtained without the allocator: thread stacks, the binary's mapped image, a direct `mmap`.
+Size the limit with headroom, and use an OS or cgroup limit to bound the process itself.
 
 Operations whose result size is predictable from their inputs are **pre-checked before allocating**, above a 100 KB
 threshold: integer multiplication, left shift, integer power, sequence repeat (`'x' * n`), `str.replace` /
