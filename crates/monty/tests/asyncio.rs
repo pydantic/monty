@@ -971,7 +971,6 @@ await main()
     assert_eq!(result, MontyObject::Int(333));
 }
 
-
 // === Test: Deep blocked task chains are torn down without recursing ===
 
 /// A chain of blocked tasks costs no native stack to *build*, so teardown must
@@ -1035,7 +1034,6 @@ await asyncio.gather(g, sibling())
     let exc = result.expect_err("the failed sibling should surface as an exception");
     assert_eq!(exc.exc_type(), ExcType::ValueError);
 }
-
 
 /// Propagating a failure through deeply nested gather waiters must not recurse
 /// on the native Rust stack.
