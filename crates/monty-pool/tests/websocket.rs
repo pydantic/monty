@@ -3,32 +3,44 @@
 //! session. This exercises `Worker::websocket` (the async dial) and the WS
 //! send/recv path end-to-end without needing a real remote child.
 
-// only the windows-gated capacity test wedges a socket with a blocked channel
-#[cfg(not(windows))]
-use std::sync::mpsc;
 use std::{
     fs,
     future::ready,
     net::{TcpListener, TcpStream},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
     thread,
     time::Duration,
 };
 
 use monty_pool::{
-    Checkout, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    Checkout, ConnectHeaders, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
+    ResumeValue, TurnEvent,
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, WireObject, decode_frame, encode_to_capped_vec, pb};
 use monty_types::{MontyObject, PrintStream, ResourceLimits};
 use tokio::task::spawn_blocking;
 #[cfg(not(windows))]
 use tokio::time::timeout;
-use tungstenite::{Message, WebSocket};
+use tungstenite::{
+    Message, WebSocket,
+    handshake::server::{Request, Response},
+};
 
 /// A mock child: accepts one WebSocket connection and answers each request with
 /// the obvious turn-ender (`Ok` for control requests, `Complete(42)` for a feed).
 fn serve_mock_child(listener: &TcpListener) {
     let (stream, _peer) = listener.accept().expect("accept");
     let mut socket = tungstenite::accept(stream).expect("ws handshake");
+    answer_requests(&mut socket);
+}
+
+/// Answers each request on an accepted socket with the obvious turn-ender
+/// (`Ok` for control requests, `Complete(42)` for a feed) until the peer
+/// disconnects.
+fn answer_requests(socket: &mut WebSocket<TcpStream>) {
     while let Ok(Message::Binary(data)) = socket.read() {
         let request = decode_frame::<pb::ParentRequest>(data.as_ref()).expect("decode request");
         let kind = match request.kind.expect("request kind") {
@@ -96,6 +108,99 @@ async fn drives_a_session_over_websocket() {
 
     checkout.finish().await.expect("finish");
     join_server(server).await;
+}
+
+/// The `connect_headers` callback runs afresh for every dial: WebSocket
+/// workers are single-use, so two checkouts are two dials, and each upgrade
+/// request must carry the value rendered for *that* dial (a `traceparent`
+/// rendered at checkout time is the motivating case).
+#[tokio::test]
+async fn connect_headers_are_computed_per_dial() {
+    // Capture each upgrade request's traceparent from the handshake callback —
+    // the exact place a server extracts trace context.
+    let (header_tx, header_rx) = mpsc::channel::<Option<String>>();
+    let (listener, mut config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        for _ in 0..2 {
+            let (stream, _peer) = listener.accept().expect("accept");
+            // the Err type (an ErrorResponse) is tungstenite's callback contract
+            #[expect(clippy::result_large_err)]
+            let callback = |req: &Request, resp: Response| {
+                let seen = req
+                    .headers()
+                    .get("traceparent")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
+                header_tx.send(seen).expect("send captured header");
+                Ok(resp)
+            };
+            let mut socket = tungstenite::accept_hdr(stream, callback).expect("ws handshake");
+            answer_requests(&mut socket);
+        }
+    });
+
+    config.request_timeout = Some(Duration::from_secs(10));
+    let dials = AtomicUsize::new(0);
+    config.connect_headers = Some(ConnectHeaders::new(move || {
+        let dial = dials.fetch_add(1, Ordering::Relaxed) + 1;
+        vec![("traceparent".to_owned(), format!("00-dial-{dial}"))]
+    }));
+    let pool = Pool::new(config).await.expect("pool");
+
+    for dial in 1..=2 {
+        let mut checkout = pool
+            .checkout(&ReplConfig {
+                script_name: "test.py".to_owned(),
+                ..ReplConfig::default()
+            })
+            .await
+            .expect("checkout");
+        assert_eq!(
+            header_rx.recv().expect("captured header"),
+            Some(format!("00-dial-{dial}")),
+            "each dial must carry the value computed for it"
+        );
+        // the session still works normally with extra headers on the dial
+        let event = checkout
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .expect("feed");
+        assert!(
+            matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
+            "got {event:?}"
+        );
+        checkout.finish().await.expect("finish");
+    }
+    join_server(server).await;
+}
+
+/// A malformed header name or value is validated before any I/O, so no server
+/// is needed: the checkout fails loudly with the promised dial error instead
+/// of the pair being silently dropped.
+#[tokio::test]
+async fn malformed_connect_headers_fail_the_dial() {
+    let cases = [
+        (
+            ("bad name", "v"),
+            "ws://127.0.0.1:9: connect header \"bad name\": invalid HTTP header name",
+        ),
+        (
+            ("traceparent", "line\nbreak"),
+            "ws://127.0.0.1:9: connect header \"traceparent\" value: failed to parse header value",
+        ),
+    ];
+    for ((name, value), expected) in cases {
+        let mut config = PoolConfig::websocket("ws://127.0.0.1:9");
+        config.connect_headers = Some(ConnectHeaders::new(move || vec![(name.to_owned(), value.to_owned())]));
+        let pool = Pool::new(config).await.expect("pool");
+        let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+            panic!("malformed header must fail the dial");
+        };
+        let PoolError::Spawn(msg) = err else {
+            panic!("expected Spawn error, got {err:?}");
+        };
+        assert_eq!(msg, expected);
+    }
 }
 
 /// Binds a listener and returns it with a websocket pool config pointing at it.
