@@ -203,6 +203,28 @@ async fn malformed_connect_headers_fail_the_dial() {
     }
 }
 
+/// A URL that cannot form an upgrade request fails the dial with the same
+/// `{url}: {err}` shape as every other dial failure.
+#[tokio::test]
+async fn an_unparseable_url_fails_the_dial() {
+    let pool = Pool::new(PoolConfig::websocket("not a url")).await.expect("pool");
+    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+        panic!("unparseable URL must fail the dial");
+    };
+    let PoolError::Spawn(msg) = err else {
+        panic!("expected Spawn error, got {err:?}");
+    };
+    assert_eq!(msg, "not a url: HTTP format error: invalid uri character");
+}
+
+/// `Debug` for [`ConnectHeaders`] names the type and never a computed value —
+/// header values may carry auth material, and configs get logged.
+#[test]
+fn connect_headers_debug_is_redacted() {
+    let headers = ConnectHeaders::new(|| vec![("authorization".to_owned(), "Bearer secret".to_owned())]);
+    assert_eq!(format!("{headers:?}"), "ConnectHeaders(..)");
+}
+
 /// Binds a listener and returns it with a websocket pool config pointing at it.
 fn ws_pool_config() -> (TcpListener, PoolConfig) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");

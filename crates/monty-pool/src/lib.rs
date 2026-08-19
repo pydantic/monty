@@ -63,7 +63,9 @@ pub struct ConnectHeaders(Arc<dyn Fn() -> Vec<(String, String)> + Send + Sync>);
 impl ConnectHeaders {
     /// Wraps a callback producing `(name, value)` pairs for one dial.
     /// Duplicate names are last-wins, and a pair naming a handshake-generated
-    /// header (`host`, `sec-websocket-key`, ...) replaces it.
+    /// header (`host`, `sec-websocket-key`, ...) replaces it. The callback
+    /// runs synchronously on the dialing task, outside the dial timeout, so
+    /// keep it cheap and non-blocking.
     pub fn new(f: impl Fn() -> Vec<(String, String)> + Send + Sync + 'static) -> Self {
         Self(Arc::new(f))
     }
