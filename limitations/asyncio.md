@@ -54,6 +54,11 @@ every branch is blocked on an external call, hands the pending calls to the
 host, and resumes when the host returns results. There is no preemption, no
 threads, and no in-sandbox scheduler.
 
+If the scheduler ends a resume with nothing ready to run and no external calls
+outstanding, the turn fails with `RuntimeError: Internal error in monty:
+asyncio scheduler stalled: no ready tasks and no pending external calls`, which
+`try`/`except` cannot catch.
+
 ### A failing `gather` cancels its siblings
 
 When one child of a `gather` raises, every sibling still running is cancelled where it is blocked and never resumes.

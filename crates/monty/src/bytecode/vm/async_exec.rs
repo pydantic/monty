@@ -828,6 +828,10 @@ impl<'h> VM<'h> {
     /// 2. Attempt to resume the current task (or fail it if any future resolution caused it to fail)
     /// 3. Load a ready task if needed (current task still blocked)
     /// 4. If no task is ready, return `ResolveFutures` with remaining pending call IDs
+    ///
+    /// # Errors
+    /// Returns [`RunError::Internal`] if nothing is ready to run and nothing is
+    /// pending: unreachable by design, but ends the turn rather than the worker.
     pub fn resume_with_resolved_futures(&mut self, results: Vec<(u32, ExtFunctionResult)>) -> RunResult<FrameExit> {
         for (call_id, ext_result) in results {
             match ext_result {
@@ -887,12 +891,14 @@ impl<'h> VM<'h> {
 
         let pending_call_ids = self.get_pending_call_ids();
 
-        assert!(
-            !pending_call_ids.is_empty(),
-            "resume_with_resolved_futures called but no pending calls and no ready tasks"
-        );
-
-        Ok(FrameExit::ResolveFutures(pending_call_ids))
+        if pending_call_ids.is_empty() {
+            // A stalled turn loses one `feed_run`, aborting loses the session.
+            Err(RunError::internal(
+                "asyncio scheduler stalled: no ready tasks and no pending external calls",
+            ))
+        } else {
+            Ok(FrameExit::ResolveFutures(pending_call_ids))
+        }
     }
 }
 
