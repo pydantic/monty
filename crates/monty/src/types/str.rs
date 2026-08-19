@@ -17,7 +17,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
+    heap::{
+        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, heap_read_ref_as_field,
+    },
     intern::{Interns, StaticStrings, StringId},
     resource_checks::{check_repeat_size, check_replace_size},
     string_builder::StringBuilder,
@@ -261,13 +263,13 @@ impl ops::Deref for Str {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
 
     /// Substring search; `in` on a str requires a str on the left.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let container = self.get(vm.heap).as_str();
         str_contains(container, item, vm.heap, vm.interns).map(Some)
     }
@@ -276,9 +278,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Type::Str
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         Ok(StringIterator::from_heap(
-            self_id.expect("heap values have an id"),
+            self.id(),
             self.get(vm.heap).as_str().is_ascii(),
             vm,
         ))
@@ -311,7 +313,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(eq_str(self.get(vm.heap).as_str(), other, vm))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let s = self.get(vm.heap);
         if let Some(cached) = s.1.get() {
             return Ok(Some(cached));
@@ -340,7 +342,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let other = match other {
             Value::InternString(id) => vm.interns.get_str(*id),
             Value::Ref(id) if let HeapData::Str(value) = vm.heap.get(*id) => value.as_str(),
@@ -360,13 +362,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         self.py_mul_impl(other, vm)
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
@@ -2106,7 +2102,7 @@ impl HeapItem for StringIterator {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, StringIterator> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIterator> {
     fn py_is_iterable(&self, _: &VM<'h>) -> bool {
         true
     }
@@ -2123,13 +2119,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, StringIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        let self_id = self_id.expect("heap values have an id");
-        vm.heap.inc_ref(self_id);
-        Ok(Value::Ref(self_id))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(self.clone_value(vm.heap))
     }
 
-    fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let next = self.get(vm.heap).as_str(vm).chars().next();
         if let Some(character) = next {
             let value = allocate_char(character, vm.heap);

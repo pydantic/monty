@@ -9,8 +9,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput,
-        heap_read_ref_as_field_mut,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
+        HeapReadOutput, heap_read_ref_as_field_mut,
     },
     intern::Interns,
     modules::dataclasses,
@@ -77,11 +77,11 @@ impl<'h> HeapRead<'h, Instance> {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     /// The class's `__contains__`, or `None` when it defines none — `in` then
     /// falls back to iteration, matching CPython's `sq_contains` before `tp_iter`.
-    fn py_contains_impl(&self, self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        instance_contains(self_id, item, vm)
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        instance_contains(self.id(), item, vm)
     }
 
     fn py_type(&self, vm: &VM<'h>) -> Type {
@@ -114,18 +114,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
     /// sets `__hash__ = None` implicitly whenever `__eq__` is defined — as is a
     /// default `@dataclass` (`eq=True, frozen=False`). Everything else hashes by
     /// identity.
-    fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let class_id = self.get(vm.heap).class();
         if class_defines(class_id, "__hash__", vm) {
             if class_defines_not_none(class_id, "__hash__", vm) {
-                instance_user_hash(self_id, vm)
+                instance_user_hash(self.id(), vm)
             } else {
                 Ok(None)
             }
         } else if class_defines(class_id, "__eq__", vm) || dataclasses::is_dataclass_class(class_id, vm) {
             Ok(None)
         } else {
-            Ok(Some(identity_hash(self_id)))
+            Ok(Some(identity_hash(self.id())))
         }
     }
 
@@ -140,13 +140,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         Ok(write!(f, "<{} object>", class_name(class_id, vm.heap, vm.interns))?)
     }
 
-    fn py_call_attr(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
 
         // 1. An instance attribute shadows class methods; call it as-is (unbound).
@@ -164,7 +158,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         let class_id = self.get(vm.heap).class;
         if let Some(member) = class_member(class_id, attr_str, vm) {
             defer_drop!(member, vm);
-            return call_member_bound(member, self_id, args, vm);
+            return call_member_bound(member, self.id(), args, vm);
         }
 
         // 3. `obj.__class__(...)` constructs a new instance — the callable form of
@@ -207,20 +201,19 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
     /// exactly as in CPython. The result must itself be an iterator, mirroring
     /// `PyObject_GetIter`'s `PyIter_Check` — raising here rather than deferring
     /// the failure to the first `next()`.
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        let self_id = self_id.expect("heap values have an id");
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         // `py_is_iterable` is the single source of truth for "does this class
         // iterate", so an opted-out `__iter__ = None` reports not-iterable here
         // instead of reaching the call and raising "'NoneType' object is not
         // callable" — CPython's `slot_tp_iter` rejects it the same way.
         let dispatched = if self.py_is_iterable(vm) {
-            instance_call_dunder_sync(self_id, "__iter__", None, vm)?
+            instance_call_dunder_sync(self.id(), "__iter__", None, vm)?
         } else {
             None
         };
         let Some(iterator) = dispatched else {
             return Err(ExcType::type_error_not_iterable(&class_name(
-                instance_class(self_id, vm),
+                instance_class(self.id(), vm),
                 vm.heap,
                 vm.interns,
             )));
@@ -240,14 +233,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
     /// resource limit — see [`RunError::is_stop_iteration`]. No heap borrow is
     /// held across the call: `__next__` runs Python, which may re-enter this
     /// same instance through a nested `next()`.
-    fn py_next(&mut self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let self_id = self_id.expect("heap values have an id");
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         // The absent case doubles as the not-an-iterator check, halving the
         // lookups — this runs for every item of every user iterator.
-        match instance_call_dunder_sync(self_id, "__next__", None, vm) {
+        match instance_call_dunder_sync(self.id(), "__next__", None, vm) {
             Ok(Some(value)) => Ok(Some(value)),
             Ok(None) => Err(ExcType::type_error_not_iterator(&class_name(
-                instance_class(self_id, vm),
+                instance_class(self.id(), vm),
                 vm.heap,
                 vm.interns,
             ))),
@@ -264,7 +256,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         class_defines(self.get(vm.heap).class, "__exit__", vm)
     }
 
-    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn py_enter(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let class_id = self.get(vm.heap).class;
         let Some(enter) = class_member(class_id, "__enter__", vm) else {
             return Err(ExcType::type_error_not_context_manager(
@@ -277,10 +269,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         // (`CallResult::FramePushed`), so — unlike `__repr__`/`__str__` — it
         // can suspend on external/OS calls; the frame's return value becomes
         // the `as` target via the normal `ReturnValue` push.
-        call_member_bound(enter, self_id, ArgValues::Empty, vm)
+        call_member_bound(enter, self.id(), ArgValues::Empty, vm)
     }
 
-    fn py_exit(&mut self, self_id: HeapId, vm: &mut VM<'h>, exc: Option<HeapId>) -> RunResult<CallResult> {
+    fn py_exit(&mut self, vm: &mut VM<'h>, exc: Option<HeapId>) -> RunResult<CallResult> {
         let class_id = self.get(vm.heap).class;
         let Some(exit) = class_member(class_id, "__exit__", vm) else {
             // Defensive tripwire — unreachable via `with`. `py_is_context_manager`
@@ -318,7 +310,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
             args: vec![typ, val, Value::None],
             kwargs: KwargsValues::Empty,
         };
-        call_member_bound(exit, self_id, args, vm)
+        call_member_bound(exit, self.id(), args, vm)
     }
 }
 
@@ -329,7 +321,7 @@ impl HeapItem for Instance {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, BoundMethod> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         // Monty has no dedicated `method` type; bound methods report `function`.
         Type::Function
@@ -343,10 +335,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BoundMethod> {
         Ok(None)
     }
 
-    fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         // Bound methods hash by identity, consistent with their identity-only
         // equality (CPython hashes by `(instance, func)` — see limitations/classes.md).
-        Ok(Some(identity_hash(self_id)))
+        Ok(Some(identity_hash(self.id())))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, _vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {

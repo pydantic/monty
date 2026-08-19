@@ -21,7 +21,7 @@ use crate::{
     bytecode::vm::scheduler::{Scheduler, SerializedTaskFrame, TaskState},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapRead, HeapReadOutput, HeapReader},
+    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadOutput, HeapReader},
     intern::FunctionId,
     object_bridge::MontyObjectExt,
     run_progress::{ExtFunctionResult, ExtFunctionResultExt},
@@ -74,7 +74,7 @@ impl<'h> VM<'h> {
     ///
     /// Validates the coroutine is in `New` state, extracts its captured namespace
     /// and cells, marks it as `Running`, and pushes a frame to execute the coroutine body.
-    fn await_coroutine(&mut self, mut coro: HeapRead<'h, Coroutine>) -> Result<AwaitResult, RunError> {
+    fn await_coroutine(&mut self, mut coro: HeapObjectRead<'h, Coroutine>) -> Result<AwaitResult, RunError> {
         // Check if coroutine can be awaited (must be New)
         if coro.get(self.heap).state != CoroutineState::New {
             return Err(ExcType::cannot_reuse_already_awaited_coroutine());
@@ -102,7 +102,7 @@ impl<'h> VM<'h> {
     fn await_gather_future(
         &mut self,
         gather_id: HeapId,
-        mut gather: HeapRead<'h, GatherFuture>,
+        mut gather: HeapObjectRead<'h, GatherFuture>,
         awaiter: Awaiter,
     ) -> Result<Poll<Value>, RunError> {
         let mut awaiter_guard = DropGuard::new(awaiter, self);

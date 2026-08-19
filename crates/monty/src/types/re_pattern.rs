@@ -20,7 +20,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource_checks::check_estimated_size,
@@ -359,7 +359,7 @@ impl RePattern {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::RePattern
     }
@@ -414,13 +414,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         }
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let result = match attr.static_string() {
             Some(StaticStrings::Search) => {
                 let arg = args.get_one_arg("Pattern.search", vm.heap)?;
