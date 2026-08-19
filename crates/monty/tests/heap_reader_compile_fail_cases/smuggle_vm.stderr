@@ -1,8 +1,8 @@
 error: lifetime may not live long enough
    --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:155:36
     |
-155 |         |reader, (interns, print)| VM::new(Vec::new(), reader, *interns, print.reborrow(), 120),
-    |          ------                  - ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+155 |         |reader, (interns, print)| VM::new(Vec::new(), code, reader, *interns, print.reborrow(), 120),
+    |          ------                  - ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
     |          |                       |
     |          |                       return type of closure is VM<'2>
     |          has type `&'1 mut heap::HeapReader<'1>`
@@ -13,12 +13,12 @@ error: lifetime may not live long enough
 error: lifetime may not live long enough
    --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:152:5
     |
-151 |   fn smuggle_vm(heap: &mut Heap, interns: &crate::intern::Interns) -> VM<'static> {
+151 |   fn smuggle_vm(heap: &mut Heap, interns: &crate::intern::Interns, code: &'static crate::bytecode::Code) -> VM<'static> {
     |                                           - let's call the lifetime of this reference `'1`
 152 | /     HeapReader::with(
 153 | |         heap,
 154 | |         &mut (interns, monty_types::PrintWriter::Disabled),
-155 | |         |reader, (interns, print)| VM::new(Vec::new(), reader, *interns, print.reborrow(), 120),
+155 | |         |reader, (interns, print)| VM::new(Vec::new(), code, reader, *interns, print.reborrow(), 120),
 156 | |     )
     | |_____^ returning this value requires that `'1` must outlive `'static`
     |

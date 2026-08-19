@@ -14,7 +14,7 @@ use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErr
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::CallId,
-    bytecode::{VM, VMSnapshot},
+    bytecode::{Code, VM, VMSnapshot},
     defer_drop,
     exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapData, HeapReader},
@@ -58,6 +58,9 @@ pub struct MontyRepl {
     /// at construction so all snippets compile consistently.
     #[serde(default)]
     options: CompileOptions,
+    /// Empty root code used while a host-initiated function call is active.
+    #[serde(default = "Code::empty")]
+    host_code: Code,
     /// Persistent heap across snippets.
     heap: Heap,
     /// Persistent global variable values across snippets.
@@ -85,6 +88,7 @@ impl MontyRepl {
             interns: Interns::new(InternerBuilder::default(), Vec::new()),
             sources: AHashMap::new(),
             options,
+            host_code: Code::empty(),
             heap,
             globals: Vec::new(),
         }
@@ -167,6 +171,7 @@ impl MontyRepl {
         match HeapReader::with(&mut this.heap, &mut (&executor, print), |reader, (executor, print)| {
             let mut vm = VM::new(
                 mem::take(&mut this.globals),
+                &executor.module_code,
                 reader,
                 &executor.interns,
                 print.reborrow(),
@@ -179,7 +184,7 @@ impl MontyRepl {
                 return Err(error);
             }
 
-            let vm_result = vm.run_module(&executor.module_code);
+            let vm_result = vm.run_module();
 
             // Convert while VM alive, then snapshot or reclaim globals
             let converted = convert_frame_exit(vm_result, &mut vm);
@@ -238,6 +243,7 @@ impl MontyRepl {
         let result = HeapReader::with(&mut self.heap, &mut (&executor, print), |reader, (executor, print)| {
             let mut vm = VM::new(
                 mem::take(&mut self.globals),
+                &executor.module_code,
                 reader,
                 &executor.interns,
                 print.reborrow(),
@@ -298,10 +304,11 @@ impl MontyRepl {
         let assert_repr_max_bytes = self.options.assert_message_annotations.max_bytes();
         HeapReader::with(
             &mut self.heap,
-            &mut (&self.interns, print),
-            |reader, (interns, print)| {
-                let vm = &mut VM::new(
+            &mut (&self.interns, &self.host_code, print),
+            |reader, (interns, host_code, print)| {
+                let vm = &mut VM::new_host(
                     mem::take(&mut self.globals),
+                    host_code,
                     reader,
                     interns,
                     print.reborrow(),

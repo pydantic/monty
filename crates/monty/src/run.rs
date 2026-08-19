@@ -160,6 +160,7 @@ impl MontyRun {
             HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
                 let mut vm = VM::new(
                     globals,
+                    &executor.module_code,
                     reader,
                     &executor.interns,
                     print.reborrow(),
@@ -168,7 +169,7 @@ impl MontyRun {
                 executor.populate_inputs(inputs, &mut vm)?;
 
                 // Start execution
-                let vm_result = vm.run_module(&executor.module_code);
+                let vm_result = vm.run_module();
 
                 // Three-phase conversion: convert while VM alive, then snapshot, then build progress
                 let converted = convert_frame_exit(vm_result, &mut vm);
@@ -356,6 +357,7 @@ impl Executor {
         let result = HeapReader::with(&mut heap, &mut (self, print), |reader, (executor, print)| {
             let mut vm = VM::new(
                 globals,
+                &executor.module_code,
                 reader,
                 &executor.interns,
                 print.reborrow(),
@@ -383,7 +385,7 @@ impl Executor {
     /// This is the shared non-iterative execution core used by both the standard
     /// `run` path and the REPL's `feed_run` path.
     pub(crate) fn run_to_completion<'h>(&'h self, vm: &mut VM<'h>) -> RunResult<MontyObject> {
-        let mut frame_exit_result = vm.run_module(&self.module_code);
+        let mut frame_exit_result = vm.run_module();
 
         // Handle NameLookup and ExternalCall exits by raising NameError through the VM
         // so that traceback information is properly captured. In the non-iterative path,
@@ -449,13 +451,14 @@ impl Executor {
             // Create VM, populate inputs, and run
             let mut vm = VM::new(
                 globals,
+                &executor.module_code,
                 reader,
                 &executor.interns,
                 PrintWriter::Stdout,
                 executor.assert_repr_max_bytes,
             );
             executor.populate_inputs(inputs, &mut vm)?;
-            let frame_exit_result = vm.run_module(&executor.module_code);
+            let frame_exit_result = vm.run_module();
 
             vm.__force_gc_for_tests();
 

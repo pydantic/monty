@@ -40,8 +40,7 @@ use crate::{
 pub(crate) enum CallResult {
     /// Call completed synchronously with a return value.
     Value(Value),
-    /// A new frame was pushed for a defined function call.
-    /// The VM should reload its cached frame state.
+    /// A defined function became the VM's current frame.
     FramePushed,
     /// External function call requested - VM should pause and return to caller.
     /// The `EitherStr` is the name of the external function (interned or heap-owned).
@@ -390,7 +389,7 @@ impl VM<'_> {
             CallResult::FramePushed => {
                 // A new frame was pushed for a defined function call - we need to run it
                 // to completion.
-                let stack_depth = this.frames.len();
+                let stack_depth = this.suspended_frames.len();
                 // Mark the frame as an exit point from the `run()` loop
                 this.current_frame_mut().should_return = true;
                 match this.run()? {
@@ -398,7 +397,7 @@ impl VM<'_> {
                     exit => {
                         // Pop frames off the stack from this failed evaluation
                         // (including the one just pushed)
-                        while this.frames.len() >= stack_depth {
+                        while this.suspended_frames.len() >= stack_depth {
                             this.pop_frame();
                         }
                         exit

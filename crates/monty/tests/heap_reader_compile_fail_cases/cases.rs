@@ -148,11 +148,11 @@ fn read_while_ref_alive(id_a: HeapId, id_b: HeapId, heap: &mut Heap) {
 ///
 /// Expected: a borrow-check error preventing the VM from escaping.
 #[cfg(heap_reader_compile_fail_test_smuggle_vm)]
-fn smuggle_vm(heap: &mut Heap, interns: &crate::intern::Interns) -> VM<'static> {
+fn smuggle_vm(heap: &mut Heap, interns: &crate::intern::Interns, code: &'static crate::bytecode::Code) -> VM<'static> {
     HeapReader::with(
         heap,
         &mut (interns, monty_types::PrintWriter::Disabled),
-        |reader, (interns, print)| VM::new(Vec::new(), reader, *interns, print.reborrow(), 120),
+        |reader, (interns, print)| VM::new(Vec::new(), code, reader, *interns, print.reborrow(), 120),
     )
 }
 

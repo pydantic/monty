@@ -2474,7 +2474,7 @@ mod tests {
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{heap::HeapReader, intern::InternerBuilder};
+    use crate::{bytecode::Code, heap::HeapReader, intern::InternerBuilder};
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
@@ -2504,9 +2504,11 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let code = Code::empty();
+        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
             let vm = VM::new(
                 Vec::new(),
+                code,
                 reader,
                 interns,
                 PrintWriter::Disabled,
@@ -2525,9 +2527,11 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let code = Code::empty();
+        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
             let vm = VM::new(
                 Vec::new(),
+                code,
                 reader,
                 interns,
                 PrintWriter::Disabled,
@@ -2548,9 +2552,11 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let code = Code::empty();
+        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
             let vm = VM::new(
                 Vec::new(),
+                code,
                 reader,
                 interns,
                 PrintWriter::Disabled,
@@ -2571,9 +2577,11 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let code = Code::empty();
+        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
             let vm = VM::new(
                 Vec::new(),
+                code,
                 reader,
                 interns,
                 PrintWriter::Disabled,
@@ -2593,9 +2601,11 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let code = Code::empty();
+        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
             let vm = VM::new(
                 Vec::new(),
+                code,
                 reader,
                 interns,
                 PrintWriter::Disabled,
@@ -2614,9 +2624,11 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let code = Code::empty();
+        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
             let vm = VM::new(
                 Vec::new(),
+                code,
                 reader,
                 interns,
                 PrintWriter::Disabled,
@@ -2635,9 +2647,11 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let code = Code::empty();
+        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
             let vm = VM::new(
                 Vec::new(),
+                code,
                 reader,
                 interns,
                 PrintWriter::Disabled,
@@ -2657,9 +2671,11 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let code = Code::empty();
+        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
             let vm = VM::new(
                 Vec::new(),
+                code,
                 reader,
                 interns,
                 PrintWriter::Disabled,
@@ -2679,9 +2695,11 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let code = Code::empty();
+        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
             let vm = VM::new(
                 Vec::new(),
+                code,
                 reader,
                 interns,
                 PrintWriter::Disabled,

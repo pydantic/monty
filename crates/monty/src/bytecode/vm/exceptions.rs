@@ -27,14 +27,9 @@ enum ExceptionHandlingResult {
 
 impl VM<'_> {
     /// Returns the current function name, or `<module>` outside a function.
-    /// The empty-stack fallback keeps traceback generation total after async
-    /// paths drain their frames.
     fn current_frame_name(&self) -> StringId {
-        match self.frames.last() {
-            Some(frame) => match frame.function_id {
-                Some(func_id) => self.interns.get_function(func_id).name.name_id,
-                None => StaticStrings::Module.into(),
-            },
+        match self.current_frame().function_id {
+            Some(func_id) => self.interns.get_function(func_id).name.name_id,
             None => StaticStrings::Module.into(),
         }
     }
@@ -43,11 +38,7 @@ impl VM<'_> {
     ///
     /// Used when raising exceptions to capture traceback information.
     fn make_stack_frame(&self) -> RawStackFrame {
-        RawStackFrame::new(
-            self.current_position().unwrap_or_default(),
-            self.current_frame_name(),
-            None,
-        )
+        RawStackFrame::new(self.current_position(), self.current_frame_name(), None)
     }
 
     /// Attaches initial frame information to an error if it doesn't have any.
@@ -106,7 +97,7 @@ impl VM<'_> {
 
         // Create frame with appropriate hide_caret setting
         let frame = if is_raise {
-            RawStackFrame::from_raise(self.current_position().unwrap_or_default(), self.current_frame_name())
+            RawStackFrame::from_raise(self.current_position(), self.current_frame_name())
         } else {
             self.make_stack_frame()
         };
@@ -228,7 +219,7 @@ impl VM<'_> {
 
     /// Creates an `AssertionError` raised at the current source position.
     fn assertion_error(&self, msg: Option<String>) -> RunError {
-        let frame = RawStackFrame::from_raise(self.current_position().unwrap_or_default(), self.current_frame_name());
+        let frame = RawStackFrame::from_raise(self.current_position(), self.current_frame_name());
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new(ExcType::AssertionError, msg),
             frame: Some(frame),
@@ -346,7 +337,7 @@ impl VM<'_> {
             }
 
             // No handler in this frame - pop frame and try outer
-            if this.frames.len() <= 1 {
+            if this.suspended_frames.is_empty() {
                 // No more frames - exception is unhandled
                 let is_spawned = this.is_spawned_task();
 
@@ -399,7 +390,7 @@ impl VM<'_> {
     /// but still need a complete traceback showing all active call frames.
     fn unwind_for_traceback(&mut self, mut error: RunError) -> RunError {
         // Pop frames and add caller frame info to the traceback
-        while self.frames.len() > 1 {
+        while !self.suspended_frames.is_empty() {
             // Get the caller's call-site offset before popping frame
             let call_offset = self.current_frame().call_offset;
 
