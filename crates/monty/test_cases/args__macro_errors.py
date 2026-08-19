@@ -10,6 +10,8 @@
 # qualifies method names that CPython leaves bare (e.g. `str.expandtabs()`
 # vs `expandtabs()`).
 import asyncio
+import base64
+import binascii
 import datetime
 import json
 import re
@@ -697,3 +699,138 @@ try:
     assert False, 'enumerate lone non-string key should raise'
 except TypeError as e:
     assert str(e) == 'keywords must be strings'
+
+# =====================================================================
+# === def style: the base64 module (pure-Python defs in CPython) ===
+# =====================================================================
+
+try:
+    base64.b64encode()
+    assert False, 'b64encode() with no args should raise'
+except TypeError as e:
+    assert str(e) == "b64encode() missing 1 required positional argument: 's'"
+
+try:
+    base64.b64encode(b'a', b'-_', 1)
+    assert False, 'b64encode() with 3 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'b64encode() takes from 1 to 2 positional arguments but 3 were given'
+
+try:
+    base64.b64encode(b'a', bogus=1)
+    assert False, 'b64encode() with unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "b64encode() got an unexpected keyword argument 'bogus'"
+
+try:
+    base64.b64decode(b'a', b'-_', True, 9)
+    assert False, 'b64decode() with 4 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'b64decode() takes from 1 to 3 positional arguments but 4 were given'
+
+try:
+    base64.b64decode(b'a', s=b'x')
+    assert False, 'b64decode() with a duplicated first argument should raise'
+except TypeError as e:
+    assert str(e) == "b64decode() got multiple values for argument 's'"
+
+# single-parameter functions report the fixed-arity form, not a range
+try:
+    base64.encodebytes(b'a', b'b')
+    assert False, 'encodebytes() with 2 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'encodebytes() takes 1 positional argument but 2 were given'
+
+try:
+    base64.b32decode()
+    assert False, 'b32decode() with no args should raise'
+except TypeError as e:
+    assert str(e) == "b32decode() missing 1 required positional argument: 's'"
+
+# =====================================================================
+# === binascii: the C parser families base64's pure Python delegates to ===
+# =====================================================================
+
+# === c_named + at_most_total: hexlify ===
+try:
+    binascii.hexlify()
+    assert False, 'hexlify() with no args should raise'
+except TypeError as e:
+    assert str(e) == "hexlify() missing required argument 'data' (pos 1)"
+
+try:
+    binascii.hexlify(b'a', b'-', 1, 2)
+    assert False, 'hexlify() with 4 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'hexlify() takes at most 3 arguments (4 given)'
+
+try:
+    binascii.hexlify(b'a', bogus=1)
+    assert False, 'hexlify() with unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "hexlify() got an unexpected keyword argument 'bogus'"
+
+# === c_named: a required positional-only slot before keyword-only ones
+# reports the exact count in both directions, never a range ===
+try:
+    binascii.b2a_base64()
+    assert False, 'b2a_base64() with no args should raise'
+except TypeError as e:
+    assert str(e) == 'b2a_base64() takes exactly 1 positional argument (0 given)'
+
+try:
+    binascii.b2a_base64(b'a', False)
+    assert False, 'b2a_base64() with 2 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'b2a_base64() takes exactly 1 positional argument (2 given)'
+
+# `data` is positional-only, so naming it is an unfilled slot, not a conflict
+try:
+    binascii.b2a_base64(data=b'a')
+    assert False, 'b2a_base64() with data as a keyword should raise'
+except TypeError as e:
+    assert str(e) == 'b2a_base64() takes exactly 1 positional argument (0 given)'
+
+try:
+    binascii.a2b_base64(b'YWJj', True)
+    assert False, 'a2b_base64() with 2 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'a2b_base64() takes exactly 1 positional argument (2 given)'
+
+# === METH_O: unhexlify rejects keywords before counting positionals ===
+try:
+    binascii.unhexlify()
+    assert False, 'unhexlify() with no args should raise'
+except TypeError as e:
+    assert str(e) == 'binascii.unhexlify() takes exactly one argument (0 given)'
+
+try:
+    binascii.unhexlify(b'ab', 1)
+    assert False, 'unhexlify() with 2 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'binascii.unhexlify() takes exactly one argument (2 given)'
+
+try:
+    binascii.unhexlify(data=b'ab')
+    assert False, 'unhexlify() with a keyword should raise'
+except TypeError as e:
+    assert str(e) == 'binascii.unhexlify() takes no keyword arguments'
+
+# === unpack: crc32's `{name} expected …` arity, kwargs rejected wholesale ===
+try:
+    binascii.crc32()
+    assert False, 'crc32() with no args should raise'
+except TypeError as e:
+    assert str(e) == 'crc32 expected at least 1 argument, got 0'
+
+try:
+    binascii.crc32(b'a', 1, 2)
+    assert False, 'crc32() with 3 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'crc32 expected at most 2 arguments, got 3'
+
+try:
+    binascii.crc32(data=b'a')
+    assert False, 'crc32() with a keyword should raise'
+except TypeError as e:
+    assert str(e) == 'binascii.crc32() takes no keyword arguments'

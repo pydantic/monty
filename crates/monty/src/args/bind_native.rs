@@ -146,11 +146,14 @@ fn bind_slow<const N: usize>(
         return Err(total_overflow_error(spec, n_pos, n_kw));
     }
     if spec.uses_c_method_arity() && n_pos < spec.n_required_pos_only {
-        return Err(ExcType::type_error_at_least_positional(
-            spec.func_name,
-            spec.n_required_pos_only,
-            n_pos,
-        ));
+        // The exact form outranks "at least" when every positional slot is
+        // required, even though these are positional-only — CPython counts
+        // the slots, not how they may be passed.
+        return Err(if spec.uses_exact_positional_arity() {
+            ExcType::type_error_named_positional(spec.func_name, spec.n_positional, n_pos, true)
+        } else {
+            ExcType::type_error_at_least_positional(spec.func_name, spec.n_required_pos_only, n_pos)
+        });
     }
 
     // Positional overflow: every C parser checks arity before touching kwargs,
@@ -318,6 +321,15 @@ impl ParamSpec {
     /// own range pre-check.
     fn uses_c_method_arity(&self) -> bool {
         self.n_required_pos_only > 0 && !matches!(self.family, ErrorFamily::Def | ErrorFamily::Unpack)
+    }
+
+    /// True when `_PyArg_UnpackKeywords` words arity as `takes exactly N
+    /// positional argument(s)`: a named C parser whose positional slots are
+    /// every one required and followed by keyword-only params
+    /// (`binascii.b2a_base64`, `os.stat`).
+    fn uses_exact_positional_arity(&self) -> bool {
+        matches!(self.family, ErrorFamily::CNamed { positional_pivot: true })
+            && self.n_required_positional == self.n_positional
     }
 }
 
@@ -651,6 +663,14 @@ fn positional_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> Run
         // Unreachable: `def` defers, the unpack pre-check already covered both
         // directions. Match unpack's wording anyway rather than panicking.
         ErrorFamily::Def | ErrorFamily::Unpack => ExcType::type_error_at_most(spec.func_name, max, n_pos),
+        // The exact form again outranks the generic C-method wording for
+        // required positional-only slots; the total-count fallback below still
+        // applies once the overflow exceeds every slot.
+        ErrorFamily::CNamed { positional_pivot: true }
+            if spec.uses_exact_positional_arity() && n_pos + n_kw <= spec.params.len() =>
+        {
+            ExcType::type_error_named_positional(spec.func_name, max, n_pos, true)
+        }
         _ if spec.uses_c_method_arity() => ExcType::type_error_method_at_most(spec.func_name, max, n_pos + n_kw, false),
         ErrorFamily::C {
             positional_pivot: false,

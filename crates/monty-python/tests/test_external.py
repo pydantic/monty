@@ -1,3 +1,4 @@
+import binascii
 import datetime
 import io
 import json
@@ -394,6 +395,7 @@ def test_external_function_json_decode_error_missing_attributes(monty_run: RunMo
         (AssertionError, 'AssertionError'),
         (StopIteration, 'StopIteration'),
         (re.error, 're.PatternError'),
+        (binascii.Error, 'binascii.Error'),
     ],
 )
 def test_external_function_exception_hierarchy(

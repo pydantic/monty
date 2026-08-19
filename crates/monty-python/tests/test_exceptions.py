@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import binascii
 import json
 
 import pytest
@@ -118,6 +119,35 @@ def test_json_decode_error_message_only_fallback(monty_run: RunMonty):
     assert isinstance(inner, ValueError)
     assert not isinstance(inner, json.JSONDecodeError)
     assert str(inner) == snapshot('nope')
+
+
+def test_binascii_error(monty_run: RunMonty):
+    # A sandbox `base64` failure surfaces as the real stdlib class, not a bare `ValueError`.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import base64\nbase64.b64decode(b'YWJ')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, binascii.Error)
+    assert isinstance(inner, ValueError)
+    assert str(inner) == snapshot('Incorrect padding')
+
+
+def test_binascii_error_from_host_is_catchable_in_sandbox(monty_run: RunMonty):
+    # The other direction: a host callback's `binascii.Error` must reach the
+    # sandbox as itself, or `except binascii.Error:` there would silently miss it.
+    def fail() -> None:
+        raise binascii.Error('Incorrect padding')
+
+    code = """
+import binascii
+try:
+    fail()
+except binascii.Error as exc:
+    caught = f'binascii.Error: {exc}'
+except ValueError as exc:
+    caught = f'ValueError: {exc}'
+caught
+"""
+    assert monty_run(code, external_lookup={'fail': fail}) == snapshot('binascii.Error: Incorrect padding')
 
 
 def test_type_error(monty_run: RunMonty):

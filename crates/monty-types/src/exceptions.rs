@@ -355,6 +355,14 @@ pub enum ExcType {
     /// representations into the required attributes.
     #[strum(serialize = "re.PatternError")]
     RePatternError,
+
+    // --- binascii module ---
+    /// `binascii.Error` - raised by the `base64` codecs for malformed input.
+    ///
+    /// A `ValueError` subclass in CPython, so `except ValueError:` catches it.
+    /// Monty's `binascii` module exposes this class and nothing else.
+    #[strum(serialize = "binascii.Error")]
+    BinasciiError,
 }
 impl ExcType {
     /// Checks if this exception type is a subclass of another exception type.
@@ -386,13 +394,14 @@ impl ExcType {
             Self::AttributeError => matches!(self, Self::FrozenInstanceError),
             // NameError catches UnboundLocalError
             Self::NameError => matches!(self, Self::UnboundLocalError),
-            // ValueError catches UnicodeDecodeError, UnicodeEncodeError, json.JSONDecodeError,
-            // and io.UnsupportedOperation (which in CPython has dual OSError + ValueError parentage)
+            // io.UnsupportedOperation is here because CPython gives it dual
+            // OSError + ValueError parentage
             Self::ValueError => matches!(
                 self,
                 Self::UnicodeDecodeError
                     | Self::UnicodeEncodeError
                     | Self::JsonDecodeError
+                    | Self::BinasciiError
                     | Self::UnsupportedOperation
             ),
             // ImportError catches ModuleNotFoundError

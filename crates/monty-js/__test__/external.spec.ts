@@ -197,6 +197,28 @@ caught
   t.is(await run(code, { externalLookup: { fail } }), true)
 })
 
+test('external function raising binascii.Error is catchable by name', async () => {
+  // A dotted name only survives the crossing if it is in PYTHON_EXC_NAMES;
+  // without it the sandbox sees RuntimeError and both handlers below miss.
+  const code = `
+import binascii
+try:
+    fail()
+except binascii.Error as exc:
+    caught = f'binascii.Error: {exc}'
+except ValueError as exc:
+    caught = f'ValueError: {exc}'
+caught
+`
+  const fail = () => {
+    const error = new Error('Incorrect padding')
+    error.name = 'binascii.Error'
+    throw error
+  }
+
+  t.is(await run(code, { externalLookup: { fail } }), 'binascii.Error: Incorrect padding')
+})
+
 test('external function exception type preserved', async () => {
   const fail = () => {
     const error = new Error('type error message')

@@ -171,14 +171,15 @@ ExcType = Literal[
     'TimeoutError',
     'TypeError',
     're.PatternError',
+    'binascii.Error',
 ]
 """String names of Python exception types that Monty understands.
 
 Used by `ExternalExceptionData` to identify an exception by name rather than
 passing a concrete Python exception instance. Names match Python's built-in
-exception classes, except for `json.JSONDecodeError` and `re.PatternError`
-which are dotted to disambiguate from their `ValueError` / `Exception`
-parents.
+exception classes, except for `json.JSONDecodeError`, `re.PatternError` and
+`binascii.Error`, which are dotted to disambiguate from their `ValueError` /
+`Exception` parents.
 """
 
 
