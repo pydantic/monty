@@ -79,8 +79,9 @@ impl ConnectHeaders {
 
 impl fmt::Debug for ConnectHeaders {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // the callback is opaque, and its output may be sensitive (auth
-        // headers) — name the type, never a computed value
+        // The callback is opaque and its output may be sensitive: monty never
+        // interprets the values, but a caller may send e.g. a token for a
+        // proxy/relay in front of the child. Name the type, never a value.
         f.write_str("ConnectHeaders(..)")
     }
 }

@@ -218,7 +218,8 @@ async fn an_unparseable_url_fails_the_dial() {
 }
 
 /// `Debug` for [`ConnectHeaders`] names the type and never a computed value —
-/// header values may carry auth material, and configs get logged.
+/// monty's protocol has no auth, but a caller may send tokens for
+/// authenticating infrastructure in front of the child, and configs get logged.
 #[test]
 fn connect_headers_debug_is_redacted() {
     let headers = ConnectHeaders::new(|| vec![("authorization".to_owned(), "Bearer secret".to_owned())]);
