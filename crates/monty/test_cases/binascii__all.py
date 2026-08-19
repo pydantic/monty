@@ -50,6 +50,33 @@ try:
 except TypeError as exc:
     assert str(exc) == "object of type 'int' has no len()"
 
+# a sized object of length one is still only accepted as `str` or `bytes`,
+# and the length is measured first, so a longer one is a ValueError instead
+try:
+    binascii.hexlify(b'ab', [1])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'sep must be str or bytes.'
+
+try:
+    binascii.hexlify(b'ab', (1,))
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'sep must be str or bytes.'
+
+try:
+    binascii.hexlify(b'ab', [1, 2])
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'sep must be length 1.'
+
+# `sep` defaults to unset, not None, so an explicit None has no length
+try:
+    binascii.hexlify(b'ab', None)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "object of type 'NoneType' has no len()"
+
 try:
     binascii.hexlify('abc')
     assert False, 'expected TypeError'
@@ -151,6 +178,13 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == "'str' object cannot be interpreted as an integer"
+
+# `crc` defaults to unset, so an explicit None is converted and rejected
+try:
+    binascii.crc32(b'x', None)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'NoneType' object cannot be interpreted as an integer"
 
 # === round trips over every byte value ===
 _hex_digits = '0123456789abcdef'

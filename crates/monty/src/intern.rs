@@ -1095,7 +1095,7 @@ pub enum StaticStrings {
     /// `pad` parameter of `base64.b85encode()`.
     #[strum(serialize = "pad")]
     Pad,
-    /// `sep` parameter of `binascii.hexlify()`.
+    /// `bytes_per_sep` parameter of `binascii.hexlify()`.
     #[strum(serialize = "bytes_per_sep")]
     BytesPerSep,
     /// `strict_mode` parameter of `binascii.a2b_base64()`.

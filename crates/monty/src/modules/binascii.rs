@@ -122,7 +122,7 @@ fn call_hexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value
     defer_drop!(data, vm);
     defer_drop!(sep, vm);
 
-    let separator = hex_separator(sep, vm)?;
+    let separator = hex_separator(sep.as_ref(), vm)?;
     let encoded = hex_encode(encode_input(data, vm)?.as_ref(), separator, bytes_per_sep);
     Ok(allocate_bytes(encoded, vm.heap))
 }
@@ -182,8 +182,8 @@ fn call_crc32(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // CPython converts `crc` with the `I` format, which takes any int modulo
     // 2**32 rather than rejecting one out of range.
     let seed = match crc {
-        Value::None => 0,
-        value => wrapping_u32(value, vm)?,
+        None => 0,
+        Some(value) => wrapping_u32(value, vm)?,
     };
     let checksum = crc32(encode_input(data, vm)?.as_ref(), seed);
     Ok(Value::Int(i64::from(checksum)))
@@ -197,8 +197,8 @@ fn call_crc32(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 #[from_args(name = "hexlify", style = c_named, at_most_total)]
 struct HexlifyArgs {
     data: Value,
-    #[from_args(default = Value::None)]
-    sep: Value,
+    #[from_args(default)]
+    sep: Option<Value>,
     #[from_args(default = 1)]
     bytes_per_sep: i32,
 }
@@ -208,8 +208,8 @@ struct HexlifyArgs {
 #[from_args(name = "b2a_hex", style = c_named, at_most_total)]
 struct B2aHexArgs {
     data: Value,
-    #[from_args(default = Value::None)]
-    sep: Value,
+    #[from_args(default)]
+    sep: Option<Value>,
     #[from_args(default = 1)]
     bytes_per_sep: i32,
 }
@@ -241,8 +241,10 @@ struct A2bBase64Args {
 struct Crc32Args {
     #[from_args(pos_only)]
     data: Value,
-    #[from_args(pos_only, default = Value::None)]
-    crc: Value,
+    // Absent rather than `None`: CPython's `crc` defaults to unset, so an
+    // explicit `None` reaches the integer conversion and is rejected there.
+    #[from_args(pos_only, default)]
+    crc: Option<Value>,
 }
 
 /// Reduces an `int` to the `unsigned int` CPython's `I` format takes, which
@@ -328,25 +330,42 @@ fn hex_digit(byte: u8) -> Option<u8> {
 
 /// Extracts `hexlify`'s separator: one byte, from a `bytes` or a `str` whose
 /// single character is Latin-1, which is what CPython's `sep` accepts.
-fn hex_separator(sep: &Value, vm: &VM<'_>) -> RunResult<Option<u8>> {
-    if matches!(sep, Value::None) {
-        Ok(None)
+///
+/// CPython measures the length before it looks at the type, so an unsized
+/// separator reports "has no len()" and a sized one of the wrong length is a
+/// `ValueError` — "sep must be str or bytes." only applies to a sized object
+/// of length one. `None` is not "no separator": omitting `sep` leaves it
+/// unset, so an explicit `None` fails the length check as any other object.
+fn hex_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<Option<u8>> {
+    let Some(sep) = sep else {
+        return Ok(None);
+    };
+    let length = sep
+        .py_len(vm)
+        .ok_or_else(|| ExcType::type_error(format!("object of type '{}' has no len()", sep.py_type_name(vm))))?;
+
+    if length != 1 {
+        Err(value_error("sep must be length 1."))
     } else if sep.is_str(vm.heap) {
-        let text = sep.to_str(vm)?;
-        match text.chars().count() {
-            1 => u8::try_from(u32::from(text.chars().next().expect("one character")))
-                .map(Some)
-                .map_err(|_| value_error("sep must be ASCII.")),
-            _ => Err(value_error("sep must be length 1.")),
-        }
+        // Latin-1, not ASCII: `hexlify` returns bytes, so CPython only rejects
+        // a character that does not fit a byte, under an "ASCII" message.
+        u8::try_from(u32::from(sep.to_str(vm)?.chars().next().expect("one character")))
+            .map(Some)
+            .map_err(|_| value_error("sep must be ASCII."))
+    } else if is_bytes(sep, vm) {
+        Ok(Some(encode_input(sep, vm)?[0]))
     } else {
-        let bytes = sep
-            .py_len(vm)
-            .ok_or_else(|| ExcType::type_error(format!("object of type '{}' has no len()", sep.py_type_name(vm))))?;
-        match bytes {
-            1 => Ok(Some(encode_input(sep, vm)?[0])),
-            _ => Err(value_error("sep must be length 1.")),
-        }
+        Err(ExcType::type_error("sep must be str or bytes."))
+    }
+}
+
+/// Whether a value is `bytes`, which is all `hexlify` accepts as a separator
+/// besides `str` — a buffer that `encode_input` would take is still rejected.
+fn is_bytes(value: &Value, vm: &VM<'_>) -> bool {
+    match value {
+        Value::InternBytes(_) => true,
+        Value::Ref(heap_id) => matches!(vm.heap.get(*heap_id), HeapData::Bytes(_)),
+        _ => false,
     }
 }
 
