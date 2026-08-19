@@ -58,9 +58,6 @@ pub struct MontyRepl {
     /// at construction so all snippets compile consistently.
     #[serde(default)]
     options: CompileOptions,
-    /// Empty root code used while a host-initiated function call is active.
-    #[serde(default = "Code::empty")]
-    host_code: Code,
     /// Persistent heap across snippets.
     heap: Heap,
     /// Persistent global variable values across snippets.
@@ -88,7 +85,6 @@ impl MontyRepl {
             interns: Interns::new(InternerBuilder::default(), Vec::new()),
             sources: AHashMap::new(),
             options,
-            host_code: Code::empty(),
             heap,
             globals: Vec::new(),
         }
@@ -302,9 +298,10 @@ impl MontyRepl {
         };
 
         let assert_repr_max_bytes = self.options.assert_message_annotations.max_bytes();
+        let host_code = Code::empty();
         HeapReader::with(
             &mut self.heap,
-            &mut (&self.interns, &self.host_code, print),
+            &mut (&self.interns, &host_code, print),
             |reader, (interns, host_code, print)| {
                 let vm = &mut VM::new_host(
                     mem::take(&mut self.globals),

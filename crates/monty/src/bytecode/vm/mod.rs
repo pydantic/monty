@@ -687,7 +687,7 @@ pub struct VM<'h> {
     /// Remaining native Rust call-stack re-entry budget, counted down from
     /// [`recursion::MAX_RUN_REENTRY_DEPTH`] only around `evaluate_function`'s
     /// nested call into [`Self::run`] (the one place the interpreter recurses
-    /// on its own stack instead of the heap-allocated `frames` vec).
+    /// on its own stack instead of switching `current_frame`).
     ///
     /// Not serialized: a nested `run()` never reaches a snapshot boundary (its
     /// non-`Return` exits are converted to `NotImplementedError` in
@@ -824,7 +824,7 @@ impl<'h> VM<'h> {
         // The root frame does not contribute to recursion depth.
         let current_frame_depth = frames.len().saturating_sub(1);
         let mut frames = frames;
-        let current_frame = frames.pop().expect("snapshot contains no active frame");
+        let current_frame = frames.pop().unwrap_or_else(|| CallFrame::new_host(module_code));
 
         Self {
             stack: snapshot.stack,
@@ -876,12 +876,15 @@ impl<'h> VM<'h> {
             // (the VM owned them, now the snapshot owns them)
             stack: mem::take(&mut self.stack),
             globals: mem::take(&mut self.globals),
-            frames: self
-                .suspended_frames
-                .iter()
-                .chain([&self.current_frame])
-                .map(CallFrame::serialize)
-                .collect(),
+            frames: if self.current_frame.is_host {
+                Vec::new()
+            } else {
+                self.suspended_frames
+                    .iter()
+                    .chain([&self.current_frame])
+                    .map(CallFrame::serialize)
+                    .collect()
+            },
             exception_stack: mem::take(&mut self.exception_stack),
             instruction_ip: self.instruction_ip,
             scheduler: mem::take(&mut self.scheduler),
@@ -2006,11 +2009,13 @@ impl<'h> VM<'h> {
     /// Cleans up all frames and stack values for the current task.
     ///
     /// Used when a task completes or fails and we need to switch to another task.
-    /// Drains the stack with proper `drop_with` for each value (since locals
-    /// are inlined on the stack), then cleans up each frame's cell references.
+    /// Drains the stack with proper `drop_with`, then leaves a non-executing
+    /// host frame until another task is loaded.
     pub(super) fn cleanup_current_task(&mut self) {
         self.stack.drain(..).drop_with(self.heap);
         self.suspended_frames.clear();
+        let code = self.module_code.unwrap_or(self.current_frame.code);
+        self.current_frame = CallFrame::new_host(code);
     }
 
     /// Runs the trial-deletion cycle collector.
@@ -2051,7 +2056,11 @@ impl<'h> VM<'h> {
     /// no location-table scan, so it is affordable on every call. Out-of-range
     /// offsets (an invariant violation) degrade to `None` rather than panic.
     pub(super) fn current_offset(&self) -> Option<u32> {
-        u32::try_from(self.instruction_ip).ok()
+        if self.current_frame.is_host {
+            None
+        } else {
+            u32::try_from(self.instruction_ip).ok()
+        }
     }
 
     /// Resolves a raw caller offset (`CallFrame::call_offset`) to a source

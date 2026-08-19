@@ -482,7 +482,7 @@ impl<'h> VM<'h> {
             self.scheduler.set_current_task(Some(next_task_id));
             self.load_or_init_task(next_task_id)?;
         }
-        // If no ready tasks, frames will be empty and run loop will yield
+        // If no task is ready, the host frame remains parked until resume.
 
         Ok(())
     }
@@ -586,11 +586,9 @@ impl<'h> VM<'h> {
         } else if let Some(coro_id) = coroutine_id {
             // New task: pre-check the coroutine state here rather than letting
             // `init_task_from_coroutine` raise. By this point the calling task's
-            // frames have already been saved away, so any error raised from
-            // inside `init_task_from_coroutine` would reach `handle_exception`
-            // with no active frame and panic. Instead, route already-awaited
-            // failures through `handle_task_failure`, which restores the waiter's
-            // (or next task's) frames before the error propagates.
+            // frames have already been saved, so route already-awaited failures
+            // through `handle_task_failure`, which restores the waiter before
+            // the error propagates.
             let HeapReadOutput::Coroutine(coro) = self.heap.read(coro_id) else {
                 panic!("task coroutine_id doesn't point to a Coroutine")
             };
