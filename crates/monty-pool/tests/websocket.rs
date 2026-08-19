@@ -206,10 +206,10 @@ async fn malformed_connect_headers_fail_the_dial() {
 /// A URL that cannot form an upgrade request fails the dial with the same
 /// `{url}: {err}` shape as every other dial failure.
 #[tokio::test]
-async fn an_unparseable_url_fails_the_dial() {
+async fn an_unparsable_url_fails_the_dial() {
     let pool = Pool::new(PoolConfig::websocket("not a url")).await.expect("pool");
     let Err(err) = pool.checkout(&ReplConfig::default()).await else {
-        panic!("unparseable URL must fail the dial");
+        panic!("unparsable URL must fail the dial");
     };
     let PoolError::Spawn(msg) = err else {
         panic!("expected Spawn error, got {err:?}");
