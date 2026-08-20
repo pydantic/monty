@@ -30,7 +30,7 @@ use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
-    modules::dataclasses::DataclassField,
+    modules::dataclasses::{DataclassField, DataclassParams},
     types::{
         BoundMethod, Bytes, BytesIterator, Class, Dataclass, Deque, Dict, DictItemIterator, DictItemsView,
         DictKeyIterator, DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance,
@@ -245,6 +245,7 @@ pub enum HeapReadOutput<'a> {
     Instance(HeapObjectRead<'a, Instance>),
     BoundMethod(HeapObjectRead<'a, BoundMethod>),
     DataclassField(HeapObjectRead<'a, DataclassField>),
+    DataclassParams(HeapObjectRead<'a, DataclassParams>),
     ListIterator(HeapObjectRead<'a, ListIterator>),
     DequeIterator(HeapObjectRead<'a, DequeIterator>),
     TupleIterator(HeapObjectRead<'a, TupleIterator>),
@@ -730,6 +731,7 @@ impl<'a> HeapPtr<'a> {
                 HeapReadOutput::BoundMethod(heap_read(id, base, bound_method, readers))
             }
             HeapData::DataclassField(field) => HeapReadOutput::DataclassField(heap_read(id, base, field, readers)),
+            HeapData::DataclassParams(params) => HeapReadOutput::DataclassParams(heap_read(id, base, params, readers)),
             HeapData::ListIterator(iter) => HeapReadOutput::ListIterator(heap_read(id, base, iter, readers)),
             HeapData::DequeIterator(iter) => HeapReadOutput::DequeIterator(heap_read(id, base, iter, readers)),
             HeapData::TupleIterator(iter) => HeapReadOutput::TupleIterator(heap_read(id, base, iter, readers)),
@@ -1931,6 +1933,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
         HeapData::DataclassField(field) => field.py_dec_ref_ids(stack),
+        HeapData::DataclassParams(params) => params.py_dec_ref_ids(stack),
         HeapData::ListIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::DequeIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::TupleIterator(iter) => iter.py_dec_ref_ids(stack),

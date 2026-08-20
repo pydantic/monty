@@ -15,6 +15,31 @@ use crate::{
     value::{EitherStr, Value},
 };
 
+/// The `@dataclass(...)` options Monty implements.
+///
+/// Small and `Copy`, so it doubles as the payload of the *configured decorator*
+/// (`dataclass(frozen=True)`) without a heap allocation. Every other CPython
+/// flag is rejected at the call, so each is either stored here or known to hold
+/// its default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DataclassOptions {
+    /// Synthesize a field-wise `__eq__` (CPython's `eq`, default `True`).
+    pub eq: bool,
+    /// Reject attribute assignment, and hash by field values when `eq` is also
+    /// set (CPython's `frozen`, default `False`).
+    pub frozen: bool,
+}
+
+impl Default for DataclassOptions {
+    /// CPython's defaults: `eq=True, frozen=False`.
+    fn default() -> Self {
+        Self {
+            eq: true,
+            frozen: false,
+        }
+    }
+}
+
 /// A user-defined class object created by a `class Foo: ...` statement.
 ///
 /// Holds the class name and a `namespace` [`Dict`] mapping member names to values:
@@ -35,13 +60,35 @@ pub(crate) struct Class {
     name: EitherStr,
     /// Members: method name / class-variable name -> value.
     namespace: Dict,
+    /// The `@dataclass(...)` options this class was decorated with, left at
+    /// CPython's defaults for a class that was not. Stands in for the dunders
+    /// CPython generates and Monty cannot yet install: baked in at decoration
+    /// so `__dataclass_params__` stays a report, not a rewritable control.
+    options: DataclassOptions,
 }
 
 impl Class {
     /// Creates a new class object from its name and member namespace.
+    ///
+    /// Dataclass options start at their defaults; `@dataclass` sets them with
+    /// [`HeapRead::set_dataclass_options`] once it has built the class.
     #[must_use]
     pub fn new(name: EitherStr, namespace: Dict) -> Self {
-        Self { name, namespace }
+        Self {
+            name,
+            namespace,
+            options: DataclassOptions::default(),
+        }
+    }
+
+    /// The `@dataclass(...)` options in force for this class.
+    ///
+    /// Meaningful only once [`dataclass_options`](crate::modules::dataclasses::dataclass_options)
+    /// has confirmed the class is a dataclass — a plain class reports the
+    /// defaults it was never decorated with.
+    #[must_use]
+    pub fn dataclass_options(&self) -> DataclassOptions {
+        self.options
     }
 
     /// Returns the class name (interned or heap-owned).
@@ -69,6 +116,16 @@ impl<'h> HeapRead<'h, Class> {
     /// fall through to this namespace.
     pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.namespace_mut().set(name, value, vm)
+    }
+
+    /// Records what `@dataclass(...)` decorated this class with.
+    ///
+    /// Called once per decoration, so re-decorating replaces the options as it
+    /// replaces the fields. Assigning to `__dataclass_params__` afterwards does
+    /// not reach here, which is what makes that object a report rather than a
+    /// control.
+    pub fn set_dataclass_options(&mut self, options: DataclassOptions, vm: &mut VM<'h>) {
+        self.get_mut(vm.heap).options = options;
     }
 }
 
