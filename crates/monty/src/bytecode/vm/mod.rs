@@ -62,7 +62,7 @@ enum AwaitResult {
 }
 
 /// Tries an operation and routes a Python exception through the active frames.
-macro_rules! try_catch_sync {
+macro_rules! try_catch {
     ($self:expr, $expr:expr) => {
         if let Err(e) = $expr
             && let Some(result) = $self.handle_exception(e)
@@ -75,7 +75,7 @@ macro_rules! try_catch_sync {
 /// Routes a Python exception through the active frames.
 ///
 /// Wrapped in a block to allow use in match arm expressions.
-macro_rules! catch_sync {
+macro_rules! catch {
     ($self:expr, $err:expr) => {{
         if let Some(result) = $self.handle_exception($err) {
             return Err(result);
@@ -106,7 +106,7 @@ macro_rules! handle_load_result {
         match $result {
             Ok(None) => {}
             Ok(Some(frame_exit)) => return Ok(frame_exit),
-            Err(e) => catch_sync!($self, e),
+            Err(e) => catch!($self, e),
         }
     };
 }
@@ -124,7 +124,7 @@ macro_rules! handle_load_result {
 /// - `OsCall(call)`: Return `FrameExit::OsCall` to yield to host
 /// - `MethodCall(name, args)`: Return `FrameExit::MethodCall` to yield to host
 /// - `AwaitValue(value)`: Push value, then implicitly await it via `exec_get_awaitable`
-/// - `Err(err)`: Handle the exception via `catch_sync!`
+/// - `Err(err)`: Handle the exception via `catch!`
 macro_rules! handle_call_result {
     ($self:expr, $result:expr) => {
         match $result {
@@ -175,10 +175,10 @@ macro_rules! handle_call_result {
                     Ok(AwaitResult::Yield(pending_calls)) => {
                         return Ok(FrameExit::ResolveFutures(pending_calls));
                     }
-                    Err(e) => catch_sync!($self, e),
+                    Err(e) => catch!($self, e),
                 }
             }
-            Err(err) => catch_sync!($self, err),
+            Err(err) => catch!($self, err),
         }
     };
 }
@@ -1113,18 +1113,18 @@ impl<'h> VM<'h> {
                     self.push(Value::Int(i64::from(n)));
                 }
                 // Variables - Specialized Local Loads (no operand)
-                Opcode::LoadLocal0 => try_catch_sync!(self, self.load_local(0)),
-                Opcode::LoadLocal1 => try_catch_sync!(self, self.load_local(1)),
-                Opcode::LoadLocal2 => try_catch_sync!(self, self.load_local(2)),
-                Opcode::LoadLocal3 => try_catch_sync!(self, self.load_local(3)),
+                Opcode::LoadLocal0 => try_catch!(self, self.load_local(0)),
+                Opcode::LoadLocal1 => try_catch!(self, self.load_local(1)),
+                Opcode::LoadLocal2 => try_catch!(self, self.load_local(2)),
+                Opcode::LoadLocal3 => try_catch!(self, self.load_local(3)),
                 // Variables - General Local Operations
                 Opcode::LoadLocal => {
                     let slot = u16::from(self.current_frame.fetch_u8());
-                    try_catch_sync!(self, self.load_local(slot));
+                    try_catch!(self, self.load_local(slot));
                 }
                 Opcode::LoadLocalW => {
                     let slot = self.current_frame.fetch_u16();
-                    try_catch_sync!(self, self.load_local(slot));
+                    try_catch!(self, self.load_local(slot));
                 }
                 Opcode::StoreLocal => {
                     let slot = u16::from(self.current_frame.fetch_u8());
@@ -1146,7 +1146,7 @@ impl<'h> VM<'h> {
                 Opcode::RaiseUnboundLocal => {
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
-                    catch_sync!(self, self.unbound_local_error(0, Some(name_id)));
+                    catch!(self, self.unbound_local_error(0, Some(name_id)));
                 }
                 Opcode::DeleteLocal => {
                     let slot = u16::from(self.current_frame.fetch_u8());
@@ -1154,7 +1154,7 @@ impl<'h> VM<'h> {
                 }
                 Opcode::DeleteGlobal => {
                     let slot = self.current_frame.fetch_u16();
-                    try_catch_sync!(self, self.delete_global(slot));
+                    try_catch!(self, self.delete_global(slot));
                 }
                 // Variables - Global Operations
                 Opcode::LoadGlobal => {
@@ -1173,7 +1173,7 @@ impl<'h> VM<'h> {
                 // Variables - Cell Operations (closures)
                 Opcode::LoadCell => {
                     let slot = self.current_frame.fetch_u16();
-                    try_catch_sync!(self, self.load_cell(slot));
+                    try_catch!(self, self.load_cell(slot));
                 }
                 Opcode::StoreCell => {
                     let slot = self.current_frame.fetch_u16();
@@ -1184,35 +1184,35 @@ impl<'h> VM<'h> {
                     self.delete_cell(slot);
                 }
                 // Binary Operations - route through exception handling for tracebacks
-                Opcode::BinaryAdd => try_catch_sync!(self, self.binary_add()),
-                Opcode::BinarySub => try_catch_sync!(self, self.binary_sub()),
-                Opcode::BinaryMul => try_catch_sync!(self, self.binary_mult()),
-                Opcode::BinaryDiv => try_catch_sync!(self, self.binary_div()),
-                Opcode::BinaryFloorDiv => try_catch_sync!(self, self.binary_floordiv()),
-                Opcode::BinaryMod => try_catch_sync!(self, self.binary_mod()),
-                Opcode::BinaryPow => try_catch_sync!(self, self.binary_pow()),
+                Opcode::BinaryAdd => try_catch!(self, self.binary_add()),
+                Opcode::BinarySub => try_catch!(self, self.binary_sub()),
+                Opcode::BinaryMul => try_catch!(self, self.binary_mult()),
+                Opcode::BinaryDiv => try_catch!(self, self.binary_div()),
+                Opcode::BinaryFloorDiv => try_catch!(self, self.binary_floordiv()),
+                Opcode::BinaryMod => try_catch!(self, self.binary_mod()),
+                Opcode::BinaryPow => try_catch!(self, self.binary_pow()),
                 // Bitwise operations - only work on integers
-                Opcode::BinaryAnd => try_catch_sync!(self, self.binary_and()),
-                Opcode::BinaryOr => try_catch_sync!(self, self.binary_or()),
-                Opcode::BinaryXor => try_catch_sync!(self, self.binary_xor()),
+                Opcode::BinaryAnd => try_catch!(self, self.binary_and()),
+                Opcode::BinaryOr => try_catch!(self, self.binary_or()),
+                Opcode::BinaryXor => try_catch!(self, self.binary_xor()),
                 Opcode::BinaryLShift => {
-                    try_catch_sync!(self, self.binary_lshift());
+                    try_catch!(self, self.binary_lshift());
                 }
                 Opcode::BinaryRShift => {
-                    try_catch_sync!(self, self.binary_rshift());
+                    try_catch!(self, self.binary_rshift());
                 }
-                Opcode::BinaryMatMul => try_catch_sync!(self, self.binary_matmul()),
+                Opcode::BinaryMatMul => try_catch!(self, self.binary_matmul()),
                 // Comparison Operations
-                Opcode::CompareEq => try_catch_sync!(self, self.compare_eq()),
-                Opcode::CompareNe => try_catch_sync!(self, self.compare_ne()),
-                Opcode::CompareLt => try_catch_sync!(self, self.compare_lt()),
-                Opcode::CompareLe => try_catch_sync!(self, self.compare_le()),
-                Opcode::CompareGt => try_catch_sync!(self, self.compare_gt()),
-                Opcode::CompareGe => try_catch_sync!(self, self.compare_ge()),
-                Opcode::CompareIs => try_catch_sync!(self, self.compare_is()),
-                Opcode::CompareIsNot => try_catch_sync!(self, self.compare_is_not()),
-                Opcode::CompareIn => try_catch_sync!(self, self.compare_in()),
-                Opcode::CompareNotIn => try_catch_sync!(self, self.compare_not_in()),
+                Opcode::CompareEq => try_catch!(self, self.compare_eq()),
+                Opcode::CompareNe => try_catch!(self, self.compare_ne()),
+                Opcode::CompareLt => try_catch!(self, self.compare_lt()),
+                Opcode::CompareLe => try_catch!(self, self.compare_le()),
+                Opcode::CompareGt => try_catch!(self, self.compare_gt()),
+                Opcode::CompareGe => try_catch!(self, self.compare_ge()),
+                Opcode::CompareIs => try_catch!(self, self.compare_is()),
+                Opcode::CompareIsNot => try_catch!(self, self.compare_is_not()),
+                Opcode::CompareIn => try_catch!(self, self.compare_in()),
+                Opcode::CompareNotIn => try_catch!(self, self.compare_not_in()),
                 // Unary Operations
                 Opcode::UnaryNot => {
                     let value = self.pop();
@@ -1220,11 +1220,11 @@ impl<'h> VM<'h> {
                     value.drop_with(self);
                     match result {
                         Ok(value) => self.push(Value::Bool(!value)),
-                        Err(error) => catch_sync!(self, error),
+                        Err(error) => catch!(self, error),
                     }
                 }
-                Opcode::UnaryNeg => try_catch_sync!(self, self.unary_neg()),
-                Opcode::UnaryPos => try_catch_sync!(self, self.unary_pos()),
+                Opcode::UnaryNeg => try_catch!(self, self.unary_neg()),
+                Opcode::UnaryPos => try_catch!(self, self.unary_pos()),
                 Opcode::UnaryInvert => {
                     // Bitwise NOT
                     let value = self.pop();
@@ -1241,13 +1241,13 @@ impl<'h> VM<'h> {
                             } else {
                                 let value_type = value.py_type_name(self);
                                 value.drop_with(self);
-                                catch_sync!(self, ExcType::unary_type_error("~", &value_type));
+                                catch!(self, ExcType::unary_type_error("~", &value_type));
                             }
                         }
                         _ => {
                             let value_type = value.py_type_name(self);
                             value.drop_with(self);
-                            catch_sync!(self, ExcType::unary_type_error("~", &value_type));
+                            catch!(self, ExcType::unary_type_error("~", &value_type));
                         }
                     }
                 }
@@ -1256,25 +1256,25 @@ impl<'h> VM<'h> {
                 // (mutating the left operand); everything else — and the
                 // non-Counter fallback — reuses the binary implementation, since
                 // Monty's other types have no distinct in-place form.
-                Opcode::InplaceAdd => try_catch_sync!(self, self.inplace_add()),
-                Opcode::InplaceSub => try_catch_sync!(self, self.inplace_sub()),
-                Opcode::InplaceMul => try_catch_sync!(self, self.binary_mult()),
-                Opcode::InplaceDiv => try_catch_sync!(self, self.binary_div()),
-                Opcode::InplaceFloorDiv => try_catch_sync!(self, self.binary_floordiv()),
-                Opcode::InplaceMod => try_catch_sync!(self, self.binary_mod()),
-                Opcode::InplacePow => try_catch_sync!(self, self.binary_pow()),
+                Opcode::InplaceAdd => try_catch!(self, self.inplace_add()),
+                Opcode::InplaceSub => try_catch!(self, self.inplace_sub()),
+                Opcode::InplaceMul => try_catch!(self, self.binary_mult()),
+                Opcode::InplaceDiv => try_catch!(self, self.binary_div()),
+                Opcode::InplaceFloorDiv => try_catch!(self, self.binary_floordiv()),
+                Opcode::InplaceMod => try_catch!(self, self.binary_mod()),
+                Opcode::InplacePow => try_catch!(self, self.binary_pow()),
                 Opcode::InplaceAnd => {
-                    try_catch_sync!(self, self.inplace_and());
+                    try_catch!(self, self.inplace_and());
                 }
-                Opcode::InplaceOr => try_catch_sync!(self, self.inplace_or()),
+                Opcode::InplaceOr => try_catch!(self, self.inplace_or()),
                 Opcode::InplaceXor => {
-                    try_catch_sync!(self, self.binary_xor());
+                    try_catch!(self, self.binary_xor());
                 }
                 Opcode::InplaceLShift => {
-                    try_catch_sync!(self, self.binary_lshift());
+                    try_catch!(self, self.binary_lshift());
                 }
                 Opcode::InplaceRShift => {
-                    try_catch_sync!(self, self.binary_rshift());
+                    try_catch!(self, self.binary_rshift());
                 }
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
@@ -1287,58 +1287,58 @@ impl<'h> VM<'h> {
                 }
                 Opcode::BuildDict => {
                     let count = self.current_frame.fetch_u16() as usize;
-                    try_catch_sync!(self, self.build_dict(count));
+                    try_catch!(self, self.build_dict(count));
                 }
                 Opcode::BuildSet => {
                     let count = self.current_frame.fetch_u16() as usize;
-                    try_catch_sync!(self, self.build_set(count));
+                    try_catch!(self, self.build_set(count));
                 }
                 Opcode::FormatValue => {
                     let flags = self.current_frame.fetch_u8();
-                    try_catch_sync!(self, self.format_value(flags));
+                    try_catch!(self, self.format_value(flags));
                 }
                 Opcode::BuildFString => {
                     let count = self.current_frame.fetch_u16() as usize;
-                    try_catch_sync!(self, self.build_fstring(count));
+                    try_catch!(self, self.build_fstring(count));
                 }
                 Opcode::BuildSlice => {
-                    try_catch_sync!(self, self.build_slice());
+                    try_catch!(self, self.build_slice());
                 }
                 Opcode::ListExtend => {
-                    try_catch_sync!(self, self.list_extend());
+                    try_catch!(self, self.list_extend());
                 }
                 Opcode::ListToTuple => {
-                    try_catch_sync!(self, self.list_to_tuple());
+                    try_catch!(self, self.list_to_tuple());
                 }
                 Opcode::DictMerge => {
                     let func_name_id = self.current_frame.fetch_u16();
-                    try_catch_sync!(self, self.dict_merge(func_name_id));
+                    try_catch!(self, self.dict_merge(func_name_id));
                 }
                 Opcode::MethodDictMerge => {
                     let func_name_id = self.current_frame.fetch_u16();
-                    try_catch_sync!(self, self.method_dict_merge(func_name_id));
+                    try_catch!(self, self.method_dict_merge(func_name_id));
                 }
                 // PEP 448 literal building
                 Opcode::DictUpdate => {
                     let depth = self.current_frame.fetch_u8() as usize;
-                    try_catch_sync!(self, self.dict_update(depth));
+                    try_catch!(self, self.dict_update(depth));
                 }
                 Opcode::SetExtend => {
                     let depth = self.current_frame.fetch_u8() as usize;
-                    try_catch_sync!(self, self.set_extend(depth));
+                    try_catch!(self, self.set_extend(depth));
                 }
                 // Comprehension Building - append/add/set items during iteration
                 Opcode::ListAppend => {
                     let depth = self.current_frame.fetch_u8() as usize;
-                    try_catch_sync!(self, self.list_append(depth));
+                    try_catch!(self, self.list_append(depth));
                 }
                 Opcode::SetAdd => {
                     let depth = self.current_frame.fetch_u8() as usize;
-                    try_catch_sync!(self, self.set_add(depth));
+                    try_catch!(self, self.set_add(depth));
                 }
                 Opcode::DictSetItem => {
                     let depth = self.current_frame.fetch_u8() as usize;
-                    try_catch_sync!(self, self.dict_set_item(depth));
+                    try_catch!(self, self.dict_set_item(depth));
                 }
                 // Subscript & Attribute - route through exception handling
                 Opcode::BinarySubscr => {
@@ -1349,7 +1349,7 @@ impl<'h> VM<'h> {
                     index.drop_with(self);
                     match result {
                         Ok(v) => self.push(v),
-                        Err(e) => catch_sync!(self, e),
+                        Err(e) => catch!(self, e),
                     }
                 }
                 Opcode::StoreSubscr => {
@@ -1360,7 +1360,7 @@ impl<'h> VM<'h> {
                     let result = obj.py_setitem(index, value, self);
                     obj.drop_with(self);
                     if let Err(e) = result {
-                        catch_sync!(self, e);
+                        catch!(self, e);
                     }
                 }
                 Opcode::LoadAttr => {
@@ -1376,7 +1376,7 @@ impl<'h> VM<'h> {
                 Opcode::StoreAttr => {
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
-                    try_catch_sync!(self, self.store_attr(name_id));
+                    try_catch!(self, self.store_attr(name_id));
                 }
                 // Control Flow - use self.current_frame.ip directly for jumps
                 Opcode::Jump => {
@@ -1391,7 +1391,7 @@ impl<'h> VM<'h> {
                     match result {
                         Ok(true) => jump_relative!(self.current_frame.ip, offset),
                         Ok(false) => {}
-                        Err(error) => catch_sync!(self, error),
+                        Err(error) => catch!(self, error),
                     }
                 }
                 Opcode::JumpIfFalse => {
@@ -1402,7 +1402,7 @@ impl<'h> VM<'h> {
                     match result {
                         Ok(false) => jump_relative!(self.current_frame.ip, offset),
                         Ok(true) => {}
-                        Err(error) => catch_sync!(self, error),
+                        Err(error) => catch!(self, error),
                     }
                 }
                 Opcode::JumpIfTrueOrPop => {
@@ -1416,7 +1416,7 @@ impl<'h> VM<'h> {
                         Ok(false) => value.drop_with(self),
                         Err(error) => {
                             value.drop_with(self);
-                            catch_sync!(self, error);
+                            catch!(self, error);
                         }
                     }
                 }
@@ -1431,7 +1431,7 @@ impl<'h> VM<'h> {
                         }
                         Err(error) => {
                             value.drop_with(self);
-                            catch_sync!(self, error);
+                            catch!(self, error);
                         }
                     }
                 }
@@ -1442,7 +1442,7 @@ impl<'h> VM<'h> {
                     value.drop_with(self);
                     match iterator {
                         Ok(iterator) => self.push(iterator),
-                        Err(e) => catch_sync!(self, e),
+                        Err(e) => catch!(self, e),
                     }
                 }
                 Opcode::ForIter => {
@@ -1469,7 +1469,7 @@ impl<'h> VM<'h> {
                             // Error during iteration (e.g., dict size changed)
                             let iter = self.pop();
                             iter.drop_with(self);
-                            catch_sync!(self, e);
+                            catch!(self, e);
                         }
                     }
                 }
@@ -1489,8 +1489,7 @@ impl<'h> VM<'h> {
 
                     match self.exec_call_builtin_type(type_id, arg_count) {
                         Ok(result) => self.push(result),
-                        // IP sync deferred to error path (no frame push possible)
-                        Err(err) => catch_sync!(self, err),
+                        Err(err) => catch!(self, err),
                     }
                 }
                 Opcode::CallFunctionKw => {
@@ -1626,15 +1625,15 @@ impl<'h> VM<'h> {
                 Opcode::Assert => {
                     match decode_assert_flags(self.current_frame.fetch_u8()).expect("invalid assert flags in bytecode")
                     {
-                        Some(op) => try_catch_sync!(self, self.assert_cmp(op)),
-                        None => try_catch_sync!(self, self.assert_test()),
+                        Some(op) => try_catch!(self, self.assert_cmp(op)),
+                        None => try_catch!(self, self.assert_test()),
                     }
                 }
                 Opcode::AssertFailed => {
                     let cmp_op =
                         decode_assert_flags(self.current_frame.fetch_u8()).expect("invalid assert flags in bytecode");
                     let error = self.assert_failed_msg(cmp_op);
-                    catch_sync!(self, error);
+                    catch!(self, error);
                 }
                 Opcode::Reraise => {
                     // Clone rather than pop: a locally caught bare raise must
@@ -1672,7 +1671,7 @@ impl<'h> VM<'h> {
                         // clause: it propagates out of the whole `try` and may be
                         // caught by an enclosing handler, so route it through the
                         // exception machinery rather than aborting the run.
-                        Err(err) => catch_sync!(self, err),
+                        Err(err) => catch!(self, err),
                     }
                 }
                 // Return
@@ -1698,9 +1697,7 @@ impl<'h> VM<'h> {
                                 // All tasks blocked - return to host
                                 return Ok(FrameExit::ResolveFutures(pending));
                             }
-                            Err(e) => {
-                                catch_sync!(self, e);
-                            }
+                            Err(e) => catch!(self, e),
                         }
                         continue;
                     }
@@ -1727,7 +1724,7 @@ impl<'h> VM<'h> {
                                 // stack drain (or final teardown).
                                 return Err(err);
                             }
-                            catch_sync!(self, err);
+                            catch!(self, err);
                             continue;
                         }
                         // `__init__` returned None — discard it. The instance was
@@ -1760,18 +1757,18 @@ impl<'h> VM<'h> {
                             return Ok(FrameExit::ResolveFutures(pending_calls));
                         }
                         Err(e) => {
-                            catch_sync!(self, e);
+                            catch!(self, e);
                         }
                     }
                 }
                 // Unpacking - route through exception handling
                 Opcode::UnpackSequence => {
                     let count = self.current_frame.fetch_u8() as usize;
-                    try_catch_sync!(self, self.unpack_sequence(count));
+                    try_catch!(self, self.unpack_sequence(count));
                 }
                 Opcode::UnpackEx => {
                     let (before, after) = self.current_frame.fetch_u8_u8();
-                    try_catch_sync!(self, self.unpack_ex(before as usize, after as usize));
+                    try_catch!(self, self.unpack_ex(before as usize, after as usize));
                 }
                 // Special
                 Opcode::Nop => {
@@ -1792,7 +1789,7 @@ impl<'h> VM<'h> {
                         _ => "<unknown>",
                     };
                     let error = ExcType::module_not_found_error(name_str);
-                    catch_sync!(self, error);
+                    catch!(self, error);
                 }
                 // Context Managers
                 Opcode::BeforeWith => {
