@@ -1091,6 +1091,22 @@ await main()
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap()
 }
 
+/// Drives the runner above to the suspension where both externals are pending,
+/// returning their call ids keyed by name: the order the scheduler hands them
+/// over is not part of the contract under test, so positions must not be relied on.
+fn orphan_and_live_ids(progress: RunProgress) -> (ResolveFutures, u32, u32) {
+    let (state, calls) = drive_collecting_calls(progress);
+    assert_eq!(calls.len(), 2, "orphaned foo() and live bar() should both be pending");
+
+    let id_of = |name: &str| {
+        calls
+            .iter()
+            .find_map(|(id, called)| (called == name).then_some(*id))
+            .unwrap_or_else(|| panic!("{name}() should be pending"))
+    };
+    (state, id_of("foo"), id_of("bar"))
+}
+
 #[test]
 fn orphaned_external_resolved_alongside_live_one() {
     let runner = create_orphaned_external_runner();
@@ -1098,18 +1114,13 @@ fn orphaned_external_resolved_alongside_live_one() {
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
-    let (state, call_ids) = drive_to_resolve_futures(progress);
-    assert_eq!(
-        call_ids.len(),
-        2,
-        "orphaned foo() and live bar() should both be pending"
-    );
+    let (state, orphan, live) = orphan_and_live_ids(progress);
 
-    // One resolution readies `main`, the other is discarded; the scheduler must
-    // still find `main` to run.
+    // Resolving `bar()` readies `main`, `foo()`'s result is discarded; the
+    // scheduler must still find `main` to run.
     let results = vec![
-        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(1))),
-        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(7))),
+        (orphan, ExtFunctionResult::Return(MontyObject::Int(1))),
+        (live, ExtFunctionResult::Return(MontyObject::Int(7))),
     ];
 
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
@@ -1124,17 +1135,17 @@ fn orphaned_external_failed_alongside_live_one() {
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
-    let (state, call_ids) = drive_to_resolve_futures(progress);
+    let (state, orphan, live) = orphan_and_live_ids(progress);
 
     // The orphan's awaiter chain terminates at a cancelled task, so it fails
     // nothing; only `bar()`'s failure reaches a task.
     let results = vec![
         (
-            call_ids[0],
+            orphan,
             ExtFunctionResult::Error(MontyException::new(ExcType::RuntimeError, Some("orphan".to_string()))),
         ),
         (
-            call_ids[1],
+            live,
             ExtFunctionResult::Error(MontyException::new(ExcType::RuntimeError, Some("live".to_string()))),
         ),
     ];
