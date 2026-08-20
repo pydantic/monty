@@ -7,8 +7,8 @@ use ahash::AHashSet;
 /// in the heap, providing a unified interface for operations like length,
 /// equality, reference counting support, and attribute dispatch.
 ///
-/// The lifetime `'h` ties methods to the heap lifetime so that `HeapRead<'h, T>`
-/// types can implement the trait with access to the `VM<'h, …>`.
+/// The lifetime `'h` ties methods to the heap lifetime so that
+/// `HeapObjectRead<'h, T>` types can implement the trait with access to the `VM<'h, …>`.
 ///
 /// The trait is designed to work with `enum_dispatch` for efficient virtual
 /// dispatch on `HeapData` without boxing overhead.

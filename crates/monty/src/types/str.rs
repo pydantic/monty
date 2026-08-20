@@ -396,7 +396,7 @@ pub fn call_str_method(s: &str, method_id: StringId, args: ArgValues, vm: &mut V
 /// Dispatches a method call on a string value.
 ///
 /// This is the unified implementation for string method calls, used by both:
-/// - `HeapRead<Str>::py_call_attr()` for heap-allocated strings
+/// - `HeapObjectRead<Str>::py_call_attr()` for heap-allocated strings
 /// - `call_str_method()` for interned string literals from the VM
 ///
 /// # Not Yet Implemented
@@ -2137,7 +2137,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIterator> {
 
 /// Helper for substring containment check in strings.
 ///
-/// Called by `HeapRead<Str>::py_contains_impl` and, for interned strings, by
+/// Called by `HeapObjectRead<Str>::py_contains_impl` and, for interned strings, by
 /// `Value::py_contains`. A non-str probe reports its own type, as CPython does.
 pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, interns: &Interns) -> RunResult<bool> {
     match item {

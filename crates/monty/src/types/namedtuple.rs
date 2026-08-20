@@ -331,8 +331,8 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for NamedTupleIter<'_, 'h> {
     }
 }
 
-/// `PyTrait` implementation for `HeapRead<NamedTuple>`, providing all Python operations
-/// on heap-allocated named tuples via short-lived borrow patterns.
+/// `PyTrait` implementation for `HeapObjectRead<NamedTuple>`, providing all Python
+/// operations on heap-allocated named tuples via short-lived borrow patterns.
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true

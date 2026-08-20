@@ -665,7 +665,7 @@ pub(crate) fn instance_user_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) 
 /// `Ok(None)` when `self_id` is not one — or is one declared `eq=False` — which
 /// leaves the caller on identity.
 ///
-/// Not in `HeapRead<Instance>::py_eq_impl` because fields are read as
+/// Not in `HeapObjectRead<Instance>::py_eq_impl` because fields are read as
 /// `self.field` is (see [`instance_attr`]), which needs the instance's `HeapId`.
 pub(crate) fn instance_dataclass_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
     if !matches!(vm.heap.get(self_id), HeapData::Instance(_)) {

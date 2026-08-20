@@ -285,14 +285,14 @@ pub struct HeapObjectRead<'a, T: ?Sized> {
     read: HeapRead<'a, T>,
 }
 
-impl<T: ?Sized> HeapObjectRead<'_, T> {
+impl<'a, T: ?Sized> HeapObjectRead<'a, T> {
     /// Returns the heap entry containing this object.
     pub fn id(&self) -> HeapId {
         self.id
     }
 
     /// Returns a new owned reference to this object.
-    pub fn clone_value(&self, heap: &Heap) -> Value {
+    pub fn clone_value(&self, heap: &HeapReader<'a>) -> Value {
         heap.inc_ref(self.id);
         Value::Ref(self.id)
     }
@@ -2191,7 +2191,7 @@ mod tests {
     /// Pure `cargo test` cannot observe this — the pointer arithmetic still
     /// reads valid bytes — but `cargo +nightly miri test` flags the access.
     /// The branch is reachable from normal Monty code (e.g. `list.remove`
-    /// on a self-referential list holds a `HeapRead<List>`, clones the
+    /// on a self-referential list holds a `HeapObjectRead<List>`, clones the
     /// matching element, and the deferred drop of that clone calls
     /// `dec_ref` on the same `HeapId` while the list reader is still live).
     #[test]

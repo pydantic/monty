@@ -54,7 +54,7 @@ impl<'h> VM<'h> {
                 let heap_id = *heap_id;
                 let poll = match this.heap.read(heap_id) {
                     HeapReadOutput::Coroutine(coro) => return this.await_coroutine(coro),
-                    HeapReadOutput::GatherFuture(gather) => this.await_gather_future(heap_id, gather, awaiter)?,
+                    HeapReadOutput::GatherFuture(gather) => this.await_gather_future(gather, awaiter)?,
                     HeapReadOutput::ExternalFuture(mut fut) => this.await_external_future(&mut fut, awaiter)?,
                     _ => return Err(ExcType::object_not_awaitable(&awaitable.py_type_name(this))),
                 };
@@ -101,7 +101,6 @@ impl<'h> VM<'h> {
     /// Awaits a gather future from the user's `await gather` site.
     fn await_gather_future(
         &mut self,
-        gather_id: HeapId,
         mut gather: HeapObjectRead<'h, GatherFuture>,
         awaiter: Awaiter,
     ) -> Result<Poll<Value>, RunError> {
@@ -144,7 +143,7 @@ impl<'h> VM<'h> {
         // Roll back already-committed siblings if a later child fails during
         // this commit pass; otherwise spawned tasks or awaiters can outlive a
         // gather that never reached `Awaited`.
-        if let Err(err) = this.commit_gather_items(gather_id, &gather, &mut pending_children, results) {
+        if let Err(err) = this.commit_gather_items(&gather, &mut pending_children, results) {
             gather.get_mut(this.heap).state = GatherState::Failed(err.clone());
             drop_committed_children(pending_children, &mut this.scheduler, this.heap, &err);
             return Err(err);
@@ -181,11 +180,11 @@ impl<'h> VM<'h> {
     /// [`drop_committed_children`] before propagating the error.
     fn commit_gather_items(
         &mut self,
-        gather_id: HeapId,
-        gather: &HeapRead<'h, GatherFuture>,
+        gather: &HeapObjectRead<'h, GatherFuture>,
         pending_children: &mut AHashMap<HeapId, SmallVec<[usize; 1]>>,
         results: &mut [Option<Value>],
     ) -> Result<(), RunError> {
+        let gather_id = gather.id();
         for (idx, result) in results.iter_mut().enumerate() {
             let item_id = gather.get(self.heap).items[idx];
             let vacant_entry = match pending_children.entry(item_id) {
@@ -225,7 +224,7 @@ impl<'h> VM<'h> {
                         gather: gather_id,
                         source: item_id,
                     };
-                    self.await_gather_future(item_id, child_gather, sub_awaiter)?
+                    self.await_gather_future(child_gather, sub_awaiter)?
                 }
                 _ => panic!("gather item is not a Coroutine, ExternalFuture, or GatherFuture"),
             };
