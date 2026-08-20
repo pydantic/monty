@@ -163,7 +163,8 @@ impl LongInt {
         if self.is_negative() {
             Ok(0)
         } else {
-            self.to_usize().ok_or_else(|| ExcType::overflow_repeat_count().into())
+            self.to_usize()
+                .ok_or_else(|| ExcType::overflow_index_sized_int().into())
         }
     }
 
@@ -223,7 +224,7 @@ pub(crate) fn repeat_count(value: &Value, vm: &VM<'_>) -> RunResult<Option<usize
         Value::Int(value) => Ok(Some(if *value <= 0 {
             0
         } else {
-            usize::try_from(*value).map_err(|_| ExcType::overflow_repeat_count())?
+            usize::try_from(*value).map_err(|_| ExcType::overflow_index_sized_int())?
         })),
         Value::Bool(value) => Ok(Some(usize::from(*value))),
         Value::Ref(id) if let HeapData::LongInt(value) = vm.heap.get(*id) => Ok(Some(value.repeat_count()?)),

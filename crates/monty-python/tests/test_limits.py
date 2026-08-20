@@ -104,6 +104,53 @@ def test_limits_wrong_type_raises_error(pool: Monty):
             pass
 
 
+def test_limits_unknown_key_raises_error(pool: Monty):
+    with pytest.raises(ValueError) as exc_info:
+        with pool.checkout(limits={'max_memroy': 10_000_000}):  # pyright: ignore[reportArgumentType]
+            pass
+    assert exc_info.value.args[0] == snapshot(
+        "unknown limits key 'max_memroy'; accepted keys are 'max_duration_secs', 'max_memory', "
+        "'gc_interval', 'max_recursion_depth'"
+    )
+
+
+def test_limits_non_string_key_raises_error(pool: Monty):
+    with pytest.raises(ValueError) as exc_info:
+        with pool.checkout(limits={1: 100}):  # pyright: ignore[reportArgumentType]
+            pass
+    assert exc_info.value.args[0] == snapshot(
+        "unknown limits key 1; accepted keys are 'max_duration_secs', 'max_memory', "
+        "'gc_interval', 'max_recursion_depth'"
+    )
+
+
+def test_limits_unprintable_key_still_raises_value_error(pool: Monty):
+    class BadRepr:
+        def __repr__(self) -> str:
+            raise RuntimeError('boom')
+
+    with pytest.raises(ValueError) as exc_info:
+        with pool.checkout(limits={BadRepr(): 1}):  # pyright: ignore[reportArgumentType]
+            pass
+    assert exc_info.value.args[0] == snapshot(
+        "unknown limits key <unprintable key>; accepted keys are 'max_duration_secs', 'max_memory', "
+        "'gc_interval', 'max_recursion_depth'"
+    )
+
+
+def test_limits_str_subclass_key_is_honored(monty_run: RunMonty):
+    # A str subclass with a custom __hash__ passes a name check but dodges a
+    # dict re-lookup under the plain string's hash; extraction reads the value
+    # from the same entry as the key, so the limit must still be enforced.
+    class WeirdHashKey(str):
+        def __hash__(self) -> int:
+            return 0
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('2 ** 10000000', limits={WeirdHashKey('max_memory'): 1_000_000})  # pyright: ignore[reportArgumentType]
+    assert isinstance(exc_info.value.exception(), MemoryError)
+
+
 def test_limits_none_value_allowed(monty_run: RunMonty):
     # None is valid to explicitly disable a limit
     assert monty_run('1 + 1', limits={'max_memory': None}) == snapshot(2)

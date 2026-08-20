@@ -16,6 +16,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{Heap, HeapReader},
     object_bridge::MontyObjectExt,
+    os_dispatch::release_pending_effect,
     run::Executor,
 };
 
@@ -643,6 +644,13 @@ impl ConvertedExit {
 /// All `Value` → `MontyObject` and `StringId` → `String` conversions happen here,
 /// while the VM (and its heap/interns) are still accessible.
 pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) -> ConvertedExit {
+    // An effect still armed on arrival belongs to an OS call that was answered
+    // without consuming it — a host may reply `ExtFunctionResult::Future`,
+    // whose resume never takes it. It can never apply to whatever suspends
+    // next, so release it here rather than let it reshape an unrelated result
+    // (or leak its file pin when the next OS call overwrites the slot).
+    // Arming for *this* exit happens below, after the slot is clear.
+    release_pending_effect(vm.pending_os_effect.take(), vm.heap);
     match result {
         Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::new(value, vm)),
         Ok(FrameExit::ExternalCall {
@@ -661,10 +669,19 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 method_call: false,
             }
         }
-        Ok(FrameExit::OsCall { function_call, call_id }) => ConvertedExit::OsCall {
+        Ok(FrameExit::OsCall {
             function_call,
-            call_id: call_id.raw(),
-        },
+            call_id,
+            effect,
+        }) => {
+            // The point of no return: the call is the host's, so a matching
+            // `resume` is guaranteed. Every other destination drops it.
+            vm.pending_os_effect = effect;
+            ConvertedExit::OsCall {
+                function_call,
+                call_id: call_id.raw(),
+            }
+        }
         Ok(FrameExit::MethodCall {
             method_name,
             args,

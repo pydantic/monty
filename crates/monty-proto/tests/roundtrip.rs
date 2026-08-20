@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use insta::assert_snapshot;
 use monty::MontyRun;
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use monty_types::{
@@ -266,6 +267,32 @@ fn invalid_stack_frame_coordinates_are_rejected() {
         })
     ));
     StackFrame::try_from(frame(1, 6)).expect("in-range columns must convert");
+}
+
+/// Multi-line spans render their preview as a pre-computed block with no
+/// caret math, and legitimately end on a lower column than they start (a
+/// call closed by a hanging `)`), so the same-line column validation must
+/// not reject them — regression test for issue #631, where such frames were
+/// discarded as "invalid exception payload", replacing the real exception.
+#[test]
+fn multiline_stack_frame_with_lower_end_column_converts() {
+    let frame = pb::StackFrame {
+        filename: "main.py".to_owned(),
+        start: Some(pb::CodeLoc { line: 4, column: 5 }),
+        end: Some(pb::CodeLoc { line: 6, column: 2 }),
+        frame_name: None,
+        preview_line: Some("r = f(\n    a=1,\n)".to_owned()),
+        hide_caret: false,
+        hide_frame_name: false,
+    };
+    let frame = StackFrame::try_from(frame).expect("multi-line span must convert");
+    // rendering takes the caret-free block path, so hostile columns are inert
+    assert_snapshot!(frame, @r#"
+      File "main.py", line 4, in <module>
+        r = f(
+            a=1,
+        )
+    "#);
 }
 
 #[test]

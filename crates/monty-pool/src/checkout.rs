@@ -129,7 +129,12 @@ impl MountSpec {
 /// Access mode for a [`MountSpec`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MountSpecMode {
+    /// Reads only; writes raise `PermissionError` in the sandbox.
     ReadOnly,
+    /// Files written by sandboxed code persist on the host and are untrusted;
+    /// the host must not execute them, including indirectly via a Python
+    /// `import` when the directory is on `sys.path`. [`Self::Overlay`] keeps
+    /// writes in memory instead.
     ReadWrite,
     /// Copy-on-write overlay in parent memory; writes are discarded when the
     /// feed ends.

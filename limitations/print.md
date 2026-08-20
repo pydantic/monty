@@ -1,8 +1,8 @@
 # `print()`
 
-Output always goes to the host via a print callback (`vm.print_writer`).
-The host decides where it ends up — there is no real `sys.stdout`
-underneath (see [sys.md](sys.md)).
+Output always goes to the host via a print callback (`vm.print_writer`). The
+host decides where it ends up; there is no real `sys.stdout` underneath (see
+./sys.md).
 
 ## Supported keyword arguments
 
@@ -13,30 +13,30 @@ underneath (see [sys.md](sys.md)).
 
 ## Rejected / ignored
 
-- `file=...` — explicitly rejected with `TypeError: "print() 'file'
-  argument is not supported"`. Code that does `print(..., file=sys.stderr)`
-  will not work; `sys.stderr` is an opaque marker (see [sys.md](sys.md)).
-- `flush=...` — silently accepted but ignored. Output is delivered to the
-  host through the subprocess protocol, which line-buffers and also flushes
-  large partial lines.
+- `file=...` — rejected with `TypeError: "print() 'file' argument is not
+  supported"`. Code that does `print(..., file=sys.stderr)` will not work;
+  `sys.stderr` is an opaque marker (see ./sys.md).
+- `flush=...` — accepted and ignored. Output is delivered to the host through
+  the subprocess protocol, which line-buffers and also flushes large partial
+  lines.
 - Any other keyword raises `TypeError: ... unexpected keyword argument`.
 
 ## Behaviour
 
-- Each positional argument is converted via `py_str` (equivalent to
-  `str(x)`) before being written.
-- The host callback receives formatted chunks. In subprocess execution,
-  chunks are flushed on newline or after an internal buffer reaches roughly
-  8 KiB; a single `print()` call can therefore arrive in more than one
-  callback. There is no atomicity guarantee across multiple `print()` calls
-  if the host interleaves with other output.
+- Each positional argument is converted via `py_str` (equivalent to `str(x)`)
+  before being written.
+- The host callback receives formatted chunks. In subprocess execution, chunks
+  are flushed on newline or after an internal buffer reaches roughly 8 KiB, so
+  a single `print()` call can arrive in more than one callback. There is no
+  atomicity guarantee across multiple `print()` calls if the host interleaves
+  with other output.
 
 ## CollectString / CollectStreams caps
 
 `CollectString` and `CollectStreams` (Rust `PrintWriter` variants and the
 matching `pydantic_monty` collectors) accumulate print output in **host-side**
-buffers. That growth is **not** covered by
-`ResourceLimits.max_memory` (heap-only, and in the pool only on the worker).
+buffers. That growth is **not** covered by `ResourceLimits.max_memory`
+(heap-only, and in the pool only on the worker).
 
 - Default cap: **10 MiB** (`DEFAULT_MAX_PRINT_COLLECT_BYTES`).
 - Exceeding the cap raises host-visible `MemoryError` with
@@ -44,8 +44,8 @@ buffers. That growth is **not** covered by
   heap `ResourceError::Memory`).
 - Pass `max_bytes=None` to disable the cap (trusted hosts only).
 - Python `CollectStreams` also charges a fixed per-entry overhead toward the
-  cap (many tiny fragments would otherwise OOM the host before payload bytes
-  hit the limit). Rust `PrintWriter::CollectStreams` merges consecutive
+  cap, since many tiny fragments would otherwise OOM the host before payload
+  bytes hit the limit. Rust `PrintWriter::CollectStreams` merges consecutive
   same-stream fragments, so entry count stays small for normal `print()`.
 - JS (`@pydantic/monty`): `CollectString` / `CollectStreams` accept `maxBytes`
   (camelCase), same 10 MiB default and message; `CollectStreams` charges the
@@ -53,7 +53,7 @@ buffers. That growth is **not** covered by
   merge consecutive same-stream fragments (unlike Rust in-process
   `PrintWriter::CollectStreams`). Output entries are `{ stream, text }` objects
   rather than Python tuples. The cap is a **logical UTF-8 charge**, not a hard
-  V8/host-RSS bound (JS stores strings as UTF-16, so host RSS can exceed the
-  stated cap).
-- `Stdout` / `Disabled` / `Callback` are unchanged — `Callback` hosts can
+  V8/host-RSS bound: JS stores strings as UTF-16, so host RSS can exceed the
+  stated cap.
+- `Stdout` / `Disabled` / `Callback` are unchanged; `Callback` hosts can
   already self-limit by returning an error.

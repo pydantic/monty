@@ -25,8 +25,19 @@ def count_cycle():
     return len(items)
 
 
+def chain_cycle():
+    # A chain ends by RELEASING its arguments, and here an argument is the list
+    # that holds the chain: the release runs while the chain is mid-`next`, so
+    # it must cope with dropping objects that refer back to it.
+    items = []
+    items.append(itertools.chain(items))
+    drained = list(items[0])
+    return len(drained)
+
+
 assert repeat_cycle() == 1
 assert count_cycle() == 2
+assert chain_cycle() == 1
 gc.collect()
 
 # Iterators still work after a collection.

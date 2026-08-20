@@ -193,6 +193,10 @@ pub enum Type {
     ItertoolsChain,
     #[strum(serialize = "itertools.cycle")]
     ItertoolsCycle,
+    /// The `__dataclass_params__` of a `@dataclass`, named as CPython's
+    /// private `dataclasses._DataclassParams` reports itself.
+    #[strum(serialize = "_DataclassParams")]
+    DataclassParams,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)

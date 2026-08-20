@@ -16,6 +16,19 @@ import {
  * Retained overlay data and filesystem results share a per-mount memory
  * budget, `memoryUsageLimit` (100 MB by default).
  *
+ * Warning: with `mode: 'read-write'`, files written by sandboxed code persist
+ * on the host and are untrusted; do not execute them. Importing counts as
+ * executing, and the import can be indirect: Node resolves imports from
+ * `node_modules` directories up the tree, so a writable mount inside a project
+ * lets sandboxed code shadow a package that has not been loaded yet. Tools
+ * also read files without an explicit import: `.git/hooks/*`, `Makefile`,
+ * `.env`, CI config. If Python runs against the directory, the same applies to
+ * `sys.path` imports; see the `MountDir` docs in the Python package.
+ *
+ * The `'overlay'` default keeps writes in memory, so nothing reaches the host
+ * filesystem. Use `'read-write'` only with a directory that contains no code
+ * or config.
+ *
  * ```ts
  * const mount = new MountDir({ hostPath: '/path/on/host', virtualPath: '/mnt/data', mode: 'read-only' })
  * await session.feedRun("open('/mnt/data/file.txt').read()", { mount })

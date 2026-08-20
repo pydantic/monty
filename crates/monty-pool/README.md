@@ -82,11 +82,11 @@ and restored later — including on a different worker or machine — with `Chec
   the impact of any slow leak.
 - **Memory limits** — a session's `max_memory` also caps the worker's live allocations,
   enforced in the worker's own global allocator
-  ([`monty-alloc`](https://crates.io/crates/monty-alloc)) with generous headroom, rather
-  than letting a worker grow the host until the OOM killer intervenes. Exceeding it, or a
-  refused allocation, exits the worker with a dedicated code so it surfaces as
-  `PoolError::Runtime`/`MemoryError` instead of an unclassifiable abort — the one
-  `Runtime` error whose worker does not survive.
+  ([`monty-alloc`](https://crates.io/crates/monty-alloc)) plus 4 MB of headroom (32 MB with
+  type checking), rather than letting a worker grow the host until the OOM killer
+  intervenes. Exceeding it, or a refused allocation, exits the worker with a dedicated code
+  so it is reported as `PoolError::Runtime`/`MemoryError` instead of an unclassifiable
+  abort — the one `Runtime` error whose worker does not survive.
 
 Runtime errors inside the sandbox (`PoolError::Runtime`) are not crashes: the worker and its
 session remain alive and usable — the one exception being the `MemoryError` above, raised for

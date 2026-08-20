@@ -6,8 +6,8 @@
 
 use monty::{MontyRun, RunProgress};
 use monty_types::{
-    CompileOptions, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, OsFunctionCall, PrintWriter,
-    ResourceTracker, file_stat,
+    CompileOptions, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject,
+    OsFunctionCall, PrintWriter, ResourceTracker, file_stat,
 };
 
 /// Helper to run code and extract the OsCall progress.
@@ -764,4 +764,184 @@ os.getenv('PROBE')
     let (func, _, result) = run_oscall_with_result(code, MontyObject::String("value".to_owned()));
     assert_eq!(func, "os.getenv");
     assert_eq!(result, MontyObject::String("value".to_owned()));
+}
+
+/// Drives `code` through a scripted sequence of OS calls, checking each call's
+/// stable name and answering it with the paired mock result. Returns the final
+/// completed value.
+fn run_oscall_sequence(code: &str, steps: Vec<(&str, MontyObject)>) -> MontyObject {
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    for (expected, result) in steps {
+        let RunProgress::OsCall(call) = progress else {
+            panic!("expected OsCall {expected}, got {progress:?}");
+        };
+        assert_eq!(call.function_call.name(), expected);
+        progress = call.resume(result, PrintWriter::Stdout).unwrap();
+    }
+    progress.into_complete().expect("expected Complete")
+}
+
+/// A read-mode handle for `path`, the host's answer to an `open` OS call.
+fn mock_file_handle(path: &str) -> MontyObject {
+    MontyObject::FileHandle(MontyFileHandle {
+        path: path.to_owned(),
+        mode: "r".parse::<FileMode>().unwrap(),
+        position: 0,
+    })
+}
+
+#[test]
+fn buffered_read_rejected_in_sync_context_leaves_no_stale_effect() {
+    // Regression: a `sorted()` key runs in a synchronous context, so the
+    // buffered read's OsCall is rejected after the nested `run()` already
+    // returned `FrameExit::OsCall`. A `BufferStore` outliving that rejection
+    // diverts the *next* OS result into the abandoned file's buffer.
+    let code = r"
+from pathlib import Path
+
+f = open('/data/sample.txt')
+try:
+    sorted([1], key=lambda x: f.read(5))
+except NotImplementedError:
+    pass
+Path('/data/config.json').read_text()
+";
+    let result = run_oscall_sequence(
+        code,
+        vec![
+            ("open", mock_file_handle("/data/sample.txt")),
+            ("Path.read_text", MontyObject::String("victim contents".to_owned())),
+        ],
+    );
+    assert_eq!(result, MontyObject::String("victim contents".to_owned()));
+}
+
+#[test]
+fn buffered_read_in_sync_context_reports_the_rejected_os_function() {
+    // The rejection users actually see (see `limitations/open.md`): the read
+    // never reaches the host, so it names the OS call it would have made.
+    let code = r"
+f = open('/data/sample.txt')
+try:
+    sorted([1], key=lambda x: f.read(5))
+except NotImplementedError as exc:
+    msg = str(exc)
+msg
+";
+    let result = run_oscall_sequence(code, vec![("open", mock_file_handle("/data/sample.txt"))]);
+    assert_eq!(
+        result,
+        MontyObject::String(
+            "sorted() key argument: OS function 'Path.read_text' is not yet supported in this context".to_owned()
+        )
+    );
+}
+
+#[test]
+fn buffered_readlines_rejected_in_sync_context_does_not_retype_next_result() {
+    // The same stale `BufferStore` armed by `readlines()` reshapes the next
+    // result, handing Python a `list` where `read_text()` promises a `str`.
+    let code = r"
+from pathlib import Path
+
+f = open('/data/sample.txt')
+try:
+    sorted([1], key=lambda x: f.readlines())
+except NotImplementedError:
+    pass
+type(Path('/data/config.json').read_text()).__name__
+";
+    let result = run_oscall_sequence(
+        code,
+        vec![
+            ("open", mock_file_handle("/data/sample.txt")),
+            ("Path.read_text", MontyObject::String("a\nb\n".to_owned())),
+        ],
+    );
+    assert_eq!(result, MontyObject::String("str".to_owned()));
+}
+
+#[test]
+fn os_call_answered_with_a_future_does_not_strand_its_effect() {
+    // A host may answer an OS call with `Future` instead of a value, and that
+    // resume never consumes the armed effect. The next OS call must release
+    // the stale one rather than overwrite it (leaking the file's pin) — and
+    // must not let it reshape its own result, as it did before #711.
+    let code = r"
+import os
+f = open('/data/sample.txt')
+f.read(5)
+os.getenv('PROBE')
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected open, got {progress:?}")
+    };
+    progress = call
+        .resume(mock_file_handle("/data/sample.txt"), PrintWriter::Stdout)
+        .unwrap();
+
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected the buffered read, got {progress:?}")
+    };
+    assert_eq!(call.function_call.name(), "Path.read_text");
+    progress = call.resume(ExtFunctionResult::Future(7), PrintWriter::Stdout).unwrap();
+
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected getenv, got {progress:?}")
+    };
+    assert_eq!(call.function_call.name(), "os.getenv");
+    let progress = call
+        .resume(MontyObject::String("env-value".to_owned()), PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(
+        progress.into_complete().expect("expected Complete"),
+        MontyObject::String("env-value".to_owned())
+    );
+}
+
+#[test]
+fn future_answered_os_call_does_not_reshape_a_later_external_result() {
+    // The same stranded effect, reached through a *non-OS* suspension: the
+    // external call's return value must come back whole, not sliced by the
+    // abandoned file's `BufferStore`.
+    let code = r"
+f = open('/data/sample.txt')
+f.read(5)
+some_external('x')
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected open, got {progress:?}")
+    };
+    progress = call
+        .resume(mock_file_handle("/data/sample.txt"), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected the buffered read, got {progress:?}")
+    };
+    assert_eq!(call.function_call.name(), "Path.read_text");
+    progress = call.resume(ExtFunctionResult::Future(7), PrintWriter::Stdout).unwrap();
+
+    let RunProgress::FunctionCall(call) = progress else {
+        panic!("expected the external call, got {progress:?}")
+    };
+    assert_eq!(call.function_name, "some_external");
+    let progress = call
+        .resume(MontyObject::String("external-result".to_owned()), PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(
+        progress.into_complete().expect("expected Complete"),
+        MontyObject::String("external-result".to_owned())
+    );
 }

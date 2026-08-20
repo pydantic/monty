@@ -277,7 +277,7 @@ with Monty() as pool:
 
 ### Crash/failure isolation
 
-All failures in monty code execution should surface as a subclass of `MontyError`.
+Every failure in monty code execution raises a subclass of `MontyError`.
 
 ```python test="skip"
 from pydantic_monty import Monty, MontyError

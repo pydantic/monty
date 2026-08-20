@@ -175,6 +175,110 @@ result
     );
 }
 
+/// `map()` must contextually drop earlier heap results when a later callback
+/// raises instead of leaking the native output vector.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn map_callback_error_drops_prior_heap_results() {
+    let code = r"
+def build(value):
+    if value == 2:
+        raise ValueError('stop')
+    return [value]
+
+try:
+    map(build, [1, 2])
+except ValueError:
+    pass
+
+result = 'done'
+result
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
+/// The two-iterable fast path owns the first argument while advancing the
+/// second iterator. If that iterator raises, the first value must be dropped.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn map_second_iterator_error_drops_current_argument() {
+    let code = r"
+class RaisingIterator:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise ValueError('stop')
+
+def combine(a, b):
+    return (a, b)
+
+try:
+    map(combine, [[1]], RaisingIterator())
+except ValueError:
+    pass
+
+result = 'done'
+result
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
+/// The generic multi-iterable path accumulates arguments in a native vector.
+/// A later iterator error must drop every value already collected for the call.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn map_later_iterator_error_drops_current_arguments() {
+    let code = r"
+class RaisingIterator:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise ValueError('stop')
+
+def combine(a, b, c):
+    return (a, b, c)
+
+try:
+    map(combine, [[1]], [[2]], RaisingIterator())
+except ValueError:
+    pass
+
+result = 'done'
+result
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
+/// The generic multi-iterable path must also drop arguments already collected
+/// for a call when a later iterator is exhausted normally.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn map_later_iterator_exhaustion_drops_current_arguments() {
+    let code = r"
+def combine(a, b, c):
+    return a[0] + b[0] + c[0]
+
+result = map(combine, [[1], [4]], [[2], [5]], [[3]])
+result
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.py_object, MontyObject::List(vec![MontyObject::Int(6)]));
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
 /// Test that GC properly collects self-referencing list cycles.
 ///
 /// Each iteration's `a.append(a)` produces a self-referencing list; the next

@@ -16,7 +16,12 @@ use super::overlay_state::OverlayState;
 #[derive(Debug)]
 pub enum MountMode {
     /// Full read and write access to the host directory.
-    /// Use with caution — sandbox code can modify real files.
+    ///
+    /// Files written by sandboxed code persist on the host and are untrusted;
+    /// the host must not execute them. That includes indirect execution: a
+    /// Python `import` when the directory is on `sys.path`, or a tool reading
+    /// `conftest.py` or `.git/hooks/*`. [`Self::OverlayMemory`] behaves the
+    /// same inside the sandbox but keeps writes in memory.
     ReadWrite,
 
     /// Read-only access. Write operations raise `PermissionError`.

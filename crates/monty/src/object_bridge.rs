@@ -599,6 +599,7 @@ impl MontyTypeExt for MontyType {
             Self::RePattern => Some(Type::RePattern),
             Self::ReMatch => Some(Type::ReMatch),
             Self::Field => Some(Type::DataclassField),
+            Self::DataclassParams => Some(Type::DataclassParams),
         }
     }
 
@@ -679,6 +680,7 @@ impl MontyTypeExt for MontyType {
             Type::RePattern => Self::RePattern,
             Type::ReMatch => Self::ReMatch,
             Type::DataclassField => Self::Field,
+            Type::DataclassParams => Self::DataclassParams,
         }
     }
 

@@ -325,8 +325,8 @@ When the input *is* already bounded (e.g. `s.to_lowercase()`, slicing, `to_owned
 
 ### Soft memory-limit checks — when and why
 
-`max_memory` is a **soft** limit: the VM polls allocator-backed usage before every
-instruction (`check_time`), and everything pathological is caught by the hard
+`max_memory` is a **soft** limit: the VM polls allocator-backed usage every 255
+instructions (`check_memory_time`), and everything pathological is caught by the hard
 limits — the allocator's hard ceiling (soft + headroom, worker exits with
 `OOM_EXIT_CODE` and the pool replaces it) and the pool's turn timeout. Soft
 checks exist ONLY to turn *common* overshoots into a graceful `MemoryError`
@@ -381,8 +381,6 @@ make generate-proto       Regenerate monty-proto's checked-in code from the .pro
 make check-proto          Verify monty-proto's checked-in code matches the .proto schema
 make lint-py              Lint Python code with ruff
 make lint                 Lint the code with ruff and clippy
-make format-lint-rs       Format and lint Rust code with fmt and clippy
-make format-lint-py       Format and lint Python code with ruff
 make test-no-features     Run rust tests without any features enabled
 make test-memory-model-checks Run rust tests with memory-model-checks enabled - THIS IS EXTREMELY SLOW, SHOULD MOSTLY BE RUN IN CI OR IF ABSOLUTELY NECESSARY
 make test-ref-count-return Run rust tests with ref-count-return enabled

@@ -57,9 +57,10 @@ malformed wire data.
 
 ## Worker state machine
 
-This crate includes the `worker` feature and module
-
-A transport-agnostic Monty protocol-child state machine, shared by the native subprocess and the wasm worker.
+The `worker` cargo feature (off by default) adds the `worker` module: the
+transport-agnostic child state machine, shared by the native `monty subprocess`
+worker and the wasm worker. It links the `monty` interpreter, so only
+worker-side crates enable it.
 
 ## Monty crates
 

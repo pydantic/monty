@@ -87,6 +87,23 @@ class MountDir:
     that same directory — so build one and reuse it. `'overlay'` writes live in
     each feed's own table and are discarded when the feed ends.
 
+    **Warning: `mode='read-write'` writes files from untrusted code to your
+    real filesystem.**
+
+    Those files are untrusted input; do not execute them. Importing counts as
+    executing, and the import can be indirect: with a directory on `sys.path`
+    mounted, sandboxed code can write `json.py`, or any module not yet
+    imported, and the next `import` runs it. That includes imports made by
+    `pydantic_monty` itself. `sys.path[0]` is the script's directory, or the
+    cwd for `python -m`, `python -c` and the REPL.
+
+    Tools also read files without an explicit import: `conftest.py`,
+    `sitecustomize.py`, `.git/hooks/*`, `Makefile`, `.env`, `__pycache__`.
+
+    The `'overlay'` default keeps writes in memory, so nothing reaches the host
+    filesystem. Use `'read-write'` only with a directory that contains no code
+    or config and is not on `sys.path` or any other execution path.
+
     ```python
     from pathlib import Path
 
@@ -142,7 +159,8 @@ class MountDir:
                 (e.g. `'/data'`), regardless of host OS. Raises `ValueError`
                 if not absolute.
             mode: `'read-only'` — reads only, writes raise `PermissionError`;
-                `'read-write'` — writes through to the host directory;
+                `'read-write'` — writes through to the host directory, where
+                the files persist after the feed (see the warning above);
                 `'overlay'` (default) — reads fall through to the host, writes
                 are captured in memory per feed and discarded when it ends.
             write_bytes_limit: Cap on cumulative bytes written through the

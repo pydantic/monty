@@ -101,5 +101,24 @@ drained_source = iter([1, 2])
 drained_islice = itertools.islice(drained_source, 5)
 list(drained_islice)
 
+# chain holds its arguments UNRESOLVED, so what an ended chain must release is
+# the ARGUMENT itself, not just the iterator it resolved from it. Both ways a
+# chain ends have to release: draining the last argument...
+chain_drained_source = [1, 2]
+chain_drained = itertools.chain(chain_drained_source)
+list(chain_drained)
+
+# ...and an argument that fails `iter()`, which ends the chain for good. The
+# arguments after the bad one are unreachable, so pinning them keeps objects
+# alive that nothing can ever yield.
+chain_unreached_source = [3, 4]
+chain_failed = itertools.chain([1], 5, chain_unreached_source)
+next(chain_failed)
+try:
+    next(chain_failed)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
+
 len('done')
-# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1}
+# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1}

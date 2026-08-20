@@ -214,11 +214,16 @@ impl Deque {
 }
 
 /// Rejects a negative `maxlen`, converting a validated one to `usize`.
+///
+/// The conversion is fallible on a 32-bit target (`wasm32-wasip1`), where an
+/// `i64` `maxlen` above `usize::MAX` is a real input — `deque([], 2**40)`. It
+/// reports the same `OverflowError` [`read_ssize`] gives a `maxlen` too large
+/// for `i64`, so the two ways of overflowing an index-sized integer agree.
 fn check_maxlen(n: i64) -> RunResult<usize> {
     if n < 0 {
         Err(ExcType::value_error_maxlen_negative())
     } else {
-        Ok(usize::try_from(n).expect("maxlen validated non-negative"))
+        usize::try_from(n).map_err(|_| ExcType::overflow_c_ssize_t())
     }
 }
 

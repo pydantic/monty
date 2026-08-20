@@ -1268,11 +1268,13 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ZeroDivisionError, "division by zero")
     }
 
-    /// Creates an OverflowError for string/sequence repetition with count too large.
+    /// Creates an OverflowError for an int too large for an index-sized integer.
     ///
-    /// Matches CPython's format: `OverflowError('cannot fit 'int' into an index-sized integer')`
+    /// This is CPython's `PyNumber_AsSsize_t` wording, used wherever a count or
+    /// size goes through `__index__` (repetition counts, `bytes(n)`) — unlike
+    /// [`Self::overflow_c_ssize_t`], which is `PyLong_AsSsize_t`'s.
     #[must_use]
-    fn overflow_repeat_count() -> SimpleException {
+    fn overflow_index_sized_int() -> SimpleException {
         SimpleException::new_msg(ExcType::OverflowError, "cannot fit 'int' into an index-sized integer")
     }
 

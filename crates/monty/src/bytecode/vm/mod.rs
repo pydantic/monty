@@ -37,7 +37,7 @@ use crate::{
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingOsEffect, listdir_names},
+    os_dispatch::{PendingOsEffect, listdir_names, release_pending_effect},
     parse::CodeRange,
     types::{
         Dict, LongInt, PyTrait,
@@ -171,19 +171,22 @@ macro_rules! handle_call_result {
                 let call_id = $self.allocate_call_id();
                 // Sync cached IP back to frame before snapshot for resume
                 $self.current_frame_mut().ip = $cached_frame.ip;
-                return Ok(FrameExit::OsCall { function_call, call_id });
+                return Ok(FrameExit::OsCall {
+                    function_call,
+                    call_id,
+                    effect: None,
+                });
             }
             Ok(CallResult::OsCallWithEffect { call, effect }) => {
                 let call_id = $self.allocate_call_id();
-                // Arm the resume effect only here, at dispatch — a rejected
-                // and dropped `CallResult` must never leave a stale effect
-                // (see `CallResult::OsCallWithEffect`).
-                $self.pending_os_effect = Some(effect);
                 // Sync cached IP back to frame before snapshot for resume
                 $self.current_frame_mut().ip = $cached_frame.ip;
+                // Not armed here — this exit may still be rejected on its
+                // way out, and only a dispatched call earns a `resume`.
                 return Ok(FrameExit::OsCall {
                     function_call: call,
                     call_id,
+                    effect: Some(effect),
                 });
             }
             Ok(CallResult::MethodCall(method_name, args)) => {
@@ -258,6 +261,10 @@ pub enum FrameExit {
         function_call: OsFunctionCall,
         /// Unique ID for this call, used for async correlation.
         call_id: CallId,
+        /// Post-processing for this call's result, armed on
+        /// [`VM::pending_os_effect`] only once the call reaches the host
+        /// (`convert_frame_exit`); dropping the exit releases it instead.
+        effect: Option<PendingOsEffect>,
     },
 
     /// Execution paused for a dataclass method call.
@@ -308,7 +315,13 @@ impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
             Self::ExternalCall { args, .. } | Self::MethodCall { args, .. } => {
                 args.drop_with(heap);
             }
-            Self::OsCall { function_call, .. } => function_call.drop_with(heap),
+            Self::OsCall {
+                function_call, effect, ..
+            } => {
+                function_call.drop_with(heap);
+                // Never reached the host, so no `resume` will consume it.
+                release_pending_effect(effect, heap);
+            }
             Self::ResolveFutures(_) | Self::NameLookup { .. } => {}
         }
     }
@@ -2453,9 +2466,7 @@ impl ContainsHeap for VM<'_> {
 /// `take_globals`) are harmlessly drained as empty.
 impl Drop for VM<'_> {
     fn drop(&mut self) {
-        if let Some(file_id) = self.pending_os_effect.take().and_then(PendingOsEffect::pinned_file) {
-            self.heap.dec_ref(file_id);
-        }
+        release_pending_effect(self.pending_os_effect.take(), self.heap);
         self.exception_stack.drain(..).drop_with(self.heap);
         self.cleanup_current_task();
         self.scheduler.cleanup(self.heap);
