@@ -1,7 +1,19 @@
+from dataclasses import dataclass
+
+
 # === object.__setattr__ writes an instance attribute ===
 class Point:
     def __init__(self, x):
         self.x = x
+
+
+@dataclass(frozen=True)
+class FrozenPoint:
+    x: int
+
+
+def make_frozen_point():
+    return FrozenPoint(1)
 
 
 p = Point(1)
@@ -77,6 +89,23 @@ try:
     assert False, 'expected TypeError for a keyword argument'
 except TypeError as exc:
     assert str(exc) == 'wrapper __setattr__() takes no keyword arguments'
+
+# === It bypasses a frozen dataclass, the escape hatch CPython's own
+# generated `__init__` uses ===
+frozen = make_frozen_point()
+try:
+    frozen.x = 5
+    assert False, 'expected FrozenInstanceError for a direct assignment'
+except AttributeError as exc:
+    assert str(exc) == "cannot assign to field 'x'"
+object.__setattr__(frozen, 'x', 5)
+assert frozen.x == 5
+object.__setattr__(frozen, 'z', 'new')
+assert frozen.z == 'new'
+
+# === `__name__` resolves; the rest of object's members do not (see
+# limitations/classes.md — CPython has them, so only `__name__` is testable here) ===
+assert object.__name__ == 'object'
 
 # === `object` is the universal base, so isinstance always says yes ===
 assert isinstance(p, object)
