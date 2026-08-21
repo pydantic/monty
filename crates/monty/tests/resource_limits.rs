@@ -1112,3 +1112,31 @@ a < b
         assert_eq!(exc.exc_type(), ExcType::RecursionError, "build: {build}");
     }
 }
+
+/// Every `itertools` adaptor whose `next` can loop natively without yielding.
+///
+/// Each pairs a discarding or draining adaptor with an infinite source, so the
+/// loop never returns to the VM. `dropwhile` appears twice because a builtin
+/// predicate and a short user-defined one fail the same way: the dispatch
+/// checkpoint is per-`run()`, so a callback under `CHECK_INTERVAL`
+/// instructions restarts the countdown instead of reaching it.
+const ITERTOOLS_INFINITE_LOOPS: &[&str] = &[
+    "next(itertools.dropwhile(bool, itertools.count(1)))",
+    "def always(x):\n    return True\nnext(itertools.dropwhile(always, itertools.count(1)))",
+    "next(itertools.filterfalse(bool, itertools.count(1)))",
+    "next(itertools.compress(itertools.count(1), itertools.repeat(0)))",
+    "next(itertools.islice(itertools.count(1), 10**18, None))",
+    "next(itertools.starmap(max, itertools.repeat(itertools.count(1))))",
+];
+
+/// Test that adaptors discarding items from an infinite source still time out.
+///
+/// These loops sit inside one bytecode instruction and drive native sources, so
+/// nothing returns to the dispatch checkpoint; each must poll the tracker
+/// itself or `max_duration` is unenforceable.
+#[test]
+fn timeout_in_itertools_adaptor_loops() {
+    for expr in ITERTOOLS_INFINITE_LOOPS {
+        assert_timeout_in_builtin(&format!("import itertools\n{expr}"), expr);
+    }
+}

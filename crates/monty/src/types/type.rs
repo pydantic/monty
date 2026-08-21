@@ -197,6 +197,14 @@ pub enum Type {
     /// private `dataclasses._DataclassParams` reports itself.
     #[strum(serialize = "_DataclassParams")]
     DataclassParams,
+    #[strum(serialize = "itertools.takewhile")]
+    ItertoolsTakeWhile,
+    #[strum(serialize = "itertools.dropwhile")]
+    ItertoolsDropWhile,
+    #[strum(serialize = "itertools.filterfalse")]
+    ItertoolsFilterFalse,
+    #[strum(serialize = "itertools.starmap")]
+    ItertoolsStarMap,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -335,6 +343,10 @@ impl Type {
                 | Self::ItertoolsIslice
                 | Self::ItertoolsChain
                 | Self::ItertoolsCycle
+                | Self::ItertoolsTakeWhile
+                | Self::ItertoolsDropWhile
+                | Self::ItertoolsFilterFalse
+                | Self::ItertoolsStarMap
         )
     }
 

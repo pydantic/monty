@@ -967,6 +967,14 @@ pub enum StaticStrings {
     /// The class parameter of the decorator `@dataclass(...)` returns, which
     /// CPython spells `def wrap(cls)` and so accepts by keyword.
     Cls,
+    /// `itertools.takewhile()` function.
+    Takewhile,
+    /// `itertools.dropwhile()` function.
+    Dropwhile,
+    /// `itertools.filterfalse()` function.
+    Filterfalse,
+    /// `itertools.starmap()` function.
+    Starmap,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

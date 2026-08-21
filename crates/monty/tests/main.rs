@@ -155,6 +155,40 @@ fn external_function_in_next_raises_not_implemented() {
     );
 }
 
+/// The `itertools` adaptors that apply a callable drive it through
+/// `evaluate_function`, so one reaching an external function cannot suspend and
+/// raises `NotImplementedError` (see `limitations/itertools.md`). Rust-side for
+/// the same reason as the tests above: on CPython the external is an ordinary
+/// function and the call would succeed.
+///
+/// Both call sites are covered — the predicate helper shared by `takewhile`,
+/// `dropwhile` and `filterfalse`, and `starmap`, which calls its function
+/// itself and so names itself in the error separately.
+#[test]
+fn external_function_as_itertools_callable_raises_not_implemented() {
+    for (call, adaptor) in [
+        ("itertools.takewhile(ext_fn, [1])", "takewhile"),
+        ("itertools.starmap(ext_fn, [(1,)])", "starmap"),
+    ] {
+        let expr = format!("list({call})");
+        let code = format!("import itertools\n\n{expr}");
+        let ex = MontyRun::new(code, "test.py", vec!["ext_fn".to_owned()], CompileOptions::default()).unwrap();
+        let err = ex
+            .run_no_limits(vec![MontyObject::Function {
+                name: "ext_fn".to_owned(),
+                docstring: None,
+            }])
+            .unwrap_err();
+        let carets = "~".repeat(expr.len());
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Traceback (most recent call last):\n  File \"test.py\", line 3, in <module>\n    {expr}\n    {carets}\nNotImplementedError: {adaptor}(): external function 'ext_fn' is not yet supported in this context"
+            )
+        );
+    }
+}
+
 /// The 3-arg `type()` form rejects non-empty bases because Monty classes
 /// cannot inherit (documented in `limitations/classes.md`). Kept as a
 /// Rust-side test because CPython accepts bases, so the comparative

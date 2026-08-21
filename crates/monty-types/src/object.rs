@@ -834,6 +834,14 @@ pub enum MontyType {
     /// decorated with, named as CPython's private class reports itself.
     #[strum(serialize = "_DataclassParams")]
     DataclassParams,
+    #[strum(serialize = "itertools.takewhile")]
+    ItertoolsTakeWhile,
+    #[strum(serialize = "itertools.dropwhile")]
+    ItertoolsDropWhile,
+    #[strum(serialize = "itertools.filterfalse")]
+    ItertoolsFilterFalse,
+    #[strum(serialize = "itertools.starmap")]
+    ItertoolsStarMap,
 }
 
 impl fmt::Display for MontyType {
