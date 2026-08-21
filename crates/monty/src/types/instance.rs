@@ -94,10 +94,30 @@ impl<'h> HeapRead<'h, Instance> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
-    /// The class's `__contains__`, or `None` when it defines none — `in` then
-    /// falls back to iteration, matching CPython's `sq_contains` before `tp_iter`.
+    /// Evaluates `item in self` through the class's `__contains__`.
+    ///
+    /// `None` leaves the caller to fall back to iteration. An explicit
+    /// `__contains__ = None` instead reports that the object is not a container.
+    /// Results use `py_bool`, whose handling of user objects is documented in
+    /// `limitations/classes.md`.
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        instance_contains(self.id(), item, vm)
+        let class_id = self.get(vm.heap).class();
+        if matches!(class_dunder(class_id, "__contains__", vm), Some(Value::None)) {
+            Err(ExcType::type_error_object_not_container(&class_name(
+                class_id, vm.heap, vm.interns,
+            )))
+        } else {
+            // The callee owns its argument, so the borrowed `item` is cloned;
+            // `instance_call_dunder_sync` drops it again if there is no `__contains__`.
+            let item = item.clone_with_heap(vm.heap);
+            match instance_call_dunder_sync(self.id(), "__contains__", Some(item), vm)? {
+                Some(result) => {
+                    defer_drop!(result, vm);
+                    Ok(Some(result.py_bool(vm)?))
+                }
+                None => Ok(None),
+            }
+        }
     }
 
     fn py_type(&self, vm: &VM<'h>) -> Type {
@@ -479,36 +499,6 @@ pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value>
     match instance_call_str_dunder(self_id, "__str__", vm)? {
         Some(s) => Ok(s),
         None => instance_repr(self_id, vm),
-    }
-}
-
-/// Evaluates `item in instance` through the class's `__contains__`.
-///
-/// `Ok(None)` means the class does not define it, leaving the caller to fall
-/// back to iteration — CPython checks `sq_contains` before `tp_iter`, so a
-/// class defining both is never iterated by `in`. `__contains__ = None` is an
-/// opt-out rather than an absence: it errors here instead of falling back.
-///
-/// The result is coerced with `py_bool`, which reports every instance as truthy
-/// — so a `__contains__` returning a user object with a false `__bool__` /
-/// `__len__` diverges from CPython's `PyObject_IsTrue` (see
-/// `limitations/classes.md`).
-pub(crate) fn instance_contains(self_id: HeapId, item: &Value, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
-    let class_id = instance_class(self_id, vm);
-    if matches!(class_dunder(class_id, "__contains__", vm), Some(Value::None)) {
-        return Err(ExcType::type_error_object_not_container(&class_name(
-            class_id, vm.heap, vm.interns,
-        )));
-    }
-    // The callee owns its argument, so the borrowed `item` is cloned;
-    // `instance_call_dunder_sync` drops it again if there is no `__contains__`.
-    let item = item.clone_with_heap(vm.heap);
-    match instance_call_dunder_sync(self_id, "__contains__", Some(item), vm)? {
-        Some(result) => {
-            defer_drop!(result, vm);
-            Ok(Some(result.py_bool(vm)?))
-        }
-        None => Ok(None),
     }
 }
 
