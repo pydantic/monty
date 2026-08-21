@@ -50,11 +50,12 @@ You MUST return only one code block to execute. DO NOT return multiple code bloc
 You MUST use the `record_model_info` function to record information about every model you find.
 
 The runtime uses a restricted Python subset:
-- you cannot use the standard library except builtin functions and the following modules: `sys`, `typing`, `asyncio`
-- this means `json`, `collections`, `json`, `re`, `math`, `datetime`, `itertools`, `functools`, etc. are NOT available  use plain dicts, lists, and builtins instead
+- the only modules available are `asyncio`, `collections`, `dataclasses`, `datetime`, `itertools`, `json`, `math`, `os`, `pathlib`, `re`, `sys`, `typing` and `unicodedata`
+- this means `functools`, `statistics`, `random`, `time`, `csv`, `enum` and the rest of the standard library are NOT available
 - you cannot use third party libraries
-- you cannot define classes
-- the python executor is NOT a REPL, you must define all values each time you call python
+- classes work but cannot inherit or use `@property`/`@classmethod`/`@staticmethod`, so you cannot define your own exception classes
+- use f-strings for formatting; `str.format()` and `%` formatting do not exist
+- this example runs each code block in a fresh session, so nothing you define persists to the next one; define every value each time
 
 The last expression evaluated is the return value.
 
