@@ -223,7 +223,6 @@ impl<T> StableHeap<T> {
 }
 
 /// Allocates a new page of uninitialized slots directly on the heap.
-#[expect(clippy::unnecessary_box_returns, reason = "entire intent is to heap-allocate")]
 fn create_page<T>() -> Box<[Slot<T>; PAGE_SIZE]> {
     let raw = Box::into_raw(Box::<[Slot<T>]>::new_uninit_slice(PAGE_SIZE)).cast();
     // SAFETY: [DH] - allocation is known to be exactly PAGE_SIZE slots, so
