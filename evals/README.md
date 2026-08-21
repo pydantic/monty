@@ -171,8 +171,50 @@ Two comparisons carry most of the information. **v2 vs v3**: negative enumeratio
 expensive and may prime the model toward the very constructs it forbids, so v3 tests whether
 positive idiom recipes beat it. **v4 vs v5**: how much of v4 is load-bearing, per axis.
 
-Prompts are files, not string constants, and the runner takes a variant name — so an
-optimiser can generate and score new ones without touching the harness.
+## Automated prompt optimisation (future)
+
+The hand-written variants above are a starting grid, not the finish. The intended follow-up
+is to point an automated optimiser — **GEPA**, or DSPy/MIPRO-style search — at this suite,
+using the per-axis scores as the fitness signal and letting it evolve the prompt text. That
+is out of scope for the current change.
+
+It is also the reason the harness is shaped the way it is, and those choices are worth
+keeping:
+
+- Prompts are plain files in `evals/prompts/`, and the runner takes a variant *name*, so new
+  prompts can be generated and scored without touching any code.
+- Scoring returns a per-axis dict rather than a pass/fail bool, so a search has a gradient to
+  follow instead of a single bit.
+- `report.py` writes `scoreboard.json` next to the markdown, because an optimiser consumes
+  the JSON and a human reads the table.
+
+Two prerequisites are worth naming now. Thirteen tasks is too few for a real train/test
+split — an optimiser given all of them will memorise them, so a hold-out set has to come
+first. And `--repeat` exists so per-task variance is measurable; without it a search happily
+chases noise.
+
+## Where the winning prompt ends up
+
+The suite is a means, not the product. Once a variant wins it should ship in the library, so
+callers get a good prompt by default instead of each reconstructing one from `limitations/`:
+
+- `pydantic_monty.SYSTEM_PROMPT` — a static string, for the common case.
+- `system_prompt(...)` — a function, added only if the evidence shows the text genuinely must
+  vary. Likely axes: `objective` (correctness / cost / time / simplicity, per the table
+  above), whether mounts or `os` access are enabled, whether async host functions are in
+  play, and appended tool stubs.
+
+**Session persistence is the concrete reason it may have to be a function**, and it is not
+hypothetical: `examples/web_scraper` checks out a fresh session per turn so nothing persists
+there, while this harness holds one session open so globals survive between turns. Both
+prompts are correct about their own integration, and no single static string is correct about
+both.
+
+This is deliberately deferred until a variant has actually won — shipping a prompt the suite
+has not ranked would defeat the point of having a suite. When it lands it needs a test
+asserting the module list in `SYSTEM_PROMPT` matches `StandardLib` in
+`crates/monty/src/modules/mod.rs`: silent drift is exactly what happened to the
+`examples/web_scraper` prompt, and a shipped prompt drifting is worse than an example doing so.
 
 ## Adding a task
 
