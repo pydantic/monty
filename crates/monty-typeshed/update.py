@@ -148,7 +148,7 @@ builtins: 3.0-
 collections: 3.0-
 dataclasses: 3.7-
 datetime: 3.0-
-functools: 3.2-
+functools: 3.0-
 itertools: 3.0-
 json: 3.0-
 math: 3.0-

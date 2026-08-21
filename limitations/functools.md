@@ -20,5 +20,7 @@ These names are absent from the module namespace rather than stubbed, so they ar
 ## Behavioural divergences
 
 - **`reduce()` cannot call a host function.** The reduction function runs through the same synchronous path as
-  `map()`'s, which cannot suspend the VM, so an external function or one that performs an `os` call raises
-  `NotImplementedError: reduce(): external function 'f' is not yet supported in this context`.
+  `map()`'s, which cannot suspend the VM. An external function raises `NotImplementedError: reduce(): external
+  function 'f' is not yet supported in this context`; one that touches the filesystem raises the same error naming
+  the OS function it maps to, e.g. `reduce(): OS function 'Path.iterdir' is not yet supported in this context` for
+  `os.listdir()`.
