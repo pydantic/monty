@@ -203,3 +203,12 @@ try:
     raise ValueError('test')
 except ValueError as e:
     assert type(e).__name__ == 'ValueError'
+
+# regression for #719: heap-backed arg must be released on non-callable type
+import json
+
+try:
+    type(json)([1, 2])
+    assert False, 'type(json)([1, 2]) should raise'
+except TypeError as e:
+    assert str(e) == "cannot create 'module' instances"

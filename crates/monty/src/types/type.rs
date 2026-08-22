@@ -542,7 +542,11 @@ impl Type {
             }
 
             // Non-callable types - raise TypeError
-            _ => Err(ExcType::type_error_not_callable(&self.name(vm.heap, vm.interns))),
+            _ => {
+                let type_name = self.name(vm.heap, vm.interns);
+                args.drop_with(vm.heap);
+                Err(ExcType::type_error_not_callable(&type_name))
+            }
         }
     }
 }
