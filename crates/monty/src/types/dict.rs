@@ -1090,7 +1090,7 @@ impl<'h> HeapRead<'h, Dict> {
     ///
     /// Preflights the slot bytes so an over-budget clone raises a graceful
     /// `MemoryError` instead of bursting past the allocator's hard limit.
-    fn clone_all_pairs(&self, vm: &mut VM<'h>) -> RunResult<Vec<(Value, Value)>> {
+    pub(crate) fn clone_all_pairs(&self, vm: &mut VM<'h>) -> RunResult<Vec<(Value, Value)>> {
         let len = self.get(vm.heap).len();
         vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
         let mut pairs = Vec::with_capacity(len);
@@ -1172,8 +1172,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             Some(HeapReadOutput::Dict(other)) => {
                 // Two Counters compare as multisets (zero counts ignored); any
                 // other pairing is plain dict equality.
-                let both_counters = self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter();
-                if both_counters {
+                if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
                     Ok(Some(self.eq_counter(&other, vm)?))
                 } else {
                     Ok(Some(self.eq_dict(&other, vm)?))
@@ -1200,56 +1199,54 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             // Only the four ordering operators reach `py_cmp_op`.
             _ => return Ok(None),
         };
-        match other.ref_id() {
-            Some(other_id) if self.both_counters(other_id, vm) => {
-                Ok(Some(counter_compare(self.id(), other_id, cmp, vm)?))
-            }
-            _ => Ok(None),
+        let Some(HeapReadOutput::Dict(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
+            Ok(Some(counter_compare(self, &other, cmp, vm)?))
+        } else {
+            Ok(None)
         }
     }
 
     fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.counter_unary(true, vm, self.id())
+        self.counter_unary(true, vm)
     }
 
     fn py_pos_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.counter_unary(false, vm, self.id())
+        self.counter_unary(false, vm)
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.counter_binary(other, CounterOp::Add, vm, self.id())
+        self.counter_binary(other, CounterOp::Add, vm)
     }
 
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.counter_binary(other, CounterOp::Sub, vm, self.id())
+        self.counter_binary(other, CounterOp::Sub, vm)
     }
 
     fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.counter_binary(other, CounterOp::And, vm, self.id())
+        self.counter_binary(other, CounterOp::And, vm)
     }
 
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.counter_binary(other, CounterOp::Or, vm, self.id())
+        self.counter_binary(other, CounterOp::Or, vm)
     }
 
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
-        let self_id = self.id();
-        self.counter_inplace(other, CounterOp::Add, vm, self_id)
+        self.counter_inplace(other, CounterOp::Add, vm)
     }
 
     fn py_isub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
-        let self_id = self.id();
-        self.counter_inplace(other, CounterOp::Sub, vm, self_id)
+        self.counter_inplace(other, CounterOp::Sub, vm)
     }
 
     fn py_iand_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
-        let self_id = self.id();
-        self.counter_inplace(other, CounterOp::And, vm, self_id)
+        self.counter_inplace(other, CounterOp::And, vm)
     }
 
     fn py_ior_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
-        let self_id = self.id();
-        self.counter_inplace(other, CounterOp::Or, vm, self_id)
+        self.counter_inplace(other, CounterOp::Or, vm)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -1323,19 +1320,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
 
         let value = match method {
             // Counter-only methods (a plain dict falls through to AttributeError).
-            StaticStrings::MostCommon if self.get(vm.heap).is_counter() => counter_most_common(self.id(), args, vm),
-            StaticStrings::Elements if self.get(vm.heap).is_counter() => counter_elements(self.id(), args, vm),
+            StaticStrings::MostCommon if self.get(vm.heap).is_counter() => counter_most_common(self, args, vm),
+            StaticStrings::Elements if self.get(vm.heap).is_counter() => counter_elements(self, args, vm),
             StaticStrings::Total if self.get(vm.heap).is_counter() => {
                 args.check_zero_args("total", vm.heap)?;
-                counter_total(self.id(), vm)
+                counter_total(self, vm)
             }
-            StaticStrings::Subtract if self.get(vm.heap).is_counter() => {
-                counter_update_method(self.id(), args, true, vm)
-            }
+            StaticStrings::Subtract if self.get(vm.heap).is_counter() => counter_update_method(self, args, true, vm),
             // Counter overrides `update` to add counts, and disables `fromkeys`.
-            StaticStrings::Update if self.get(vm.heap).is_counter() => {
-                counter_update_method(self.id(), args, false, vm)
-            }
+            StaticStrings::Update if self.get(vm.heap).is_counter() => counter_update_method(self, args, false, vm),
             StaticStrings::Fromkeys if self.get(vm.heap).is_counter() => {
                 args.drop_with(vm);
                 return Err(ExcType::not_implemented(
@@ -1426,7 +1419,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             StaticStrings::DunderMissing if self.get(vm.heap).is_defaultdict() => {
                 let key = args.get_one_arg("__missing__", vm.heap)?;
                 defer_drop!(key, vm);
-                defaultdict_missing(self.id(), key, vm)
+                defaultdict_missing(self, key, vm)
             }
             _ => {
                 let type_name = self.py_type(vm).name(vm.heap, vm.interns);
@@ -1438,25 +1431,21 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
     }
 }
 
-impl<'h> HeapRead<'h, Dict> {
+impl<'h> HeapObjectRead<'h, Dict> {
     /// Runs a binary `Counter` operator (`+ - & |`), which needs *both* operands
     /// to be Counters.
     ///
     /// Any other pairing reports `None` so the caller raises its ordinary
     /// `TypeError`, matching CPython: `Counter.__add__` returns `NotImplemented`
     /// for a non-Counter, and a plain dict has no `+` of its own.
-    fn counter_binary(
-        &self,
-        other: &Value,
-        op: CounterOp,
-        vm: &mut VM<'h>,
-        self_id: HeapId,
-    ) -> RunResult<Option<Value>> {
-        match other.ref_id() {
-            Some(other_id) if self.both_counters(other_id, vm) => {
-                Ok(Some(counter_binary_op(self_id, other_id, op, vm)?))
-            }
-            _ => Ok(None),
+    fn counter_binary(&self, other: &Value, op: CounterOp, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(HeapReadOutput::Dict(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
+            Ok(Some(counter_binary_op(self, &other, op, vm)?))
+        } else {
+            Ok(None)
         }
     }
 
@@ -1468,9 +1457,9 @@ impl<'h> HeapRead<'h, Dict> {
     /// `other[elem]` raises — so once the left is a Counter this owns the
     /// operation, error paths included. A plain dict reports `false`, falling
     /// back to the binary operator.
-    fn counter_inplace(&mut self, other: &Value, op: CounterOp, vm: &mut VM<'h>, self_id: HeapId) -> RunResult<bool> {
+    fn counter_inplace(&mut self, other: &Value, op: CounterOp, vm: &mut VM<'h>) -> RunResult<bool> {
         if self.get(vm.heap).is_counter() {
-            counter_inplace_op(self_id, other, op, vm)?;
+            counter_inplace_op(self, other, op, vm)?;
             Ok(true)
         } else {
             Ok(false)
@@ -1482,17 +1471,12 @@ impl<'h> HeapRead<'h, Dict> {
     ///
     /// A plain dict has no unary form and reports `None` for the caller's
     /// `TypeError`.
-    fn counter_unary(&self, negate: bool, vm: &mut VM<'h>, self_id: HeapId) -> RunResult<Option<Value>> {
+    fn counter_unary(&self, negate: bool, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         if self.get(vm.heap).is_counter() {
-            Ok(Some(counter_unary_op(self_id, negate, vm)?))
+            Ok(Some(counter_unary_op(self, negate, vm)?))
         } else {
             Ok(None)
         }
-    }
-
-    /// Whether this dict and the heap value `other_id` are both Counters.
-    fn both_counters(&self, other_id: HeapId, vm: &VM<'h>) -> bool {
-        self.get(vm.heap).is_counter() && matches!(vm.heap.get(other_id), HeapData::Dict(d) if d.is_counter())
     }
 }
 

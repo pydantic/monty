@@ -1251,9 +1251,9 @@ impl<'h> PyTrait<'h> for Value {
     fn py_getitem(&self, key: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
         let interns = vm.interns;
         match self {
-            // `heap_subscript` owns the one case a heap read cannot: a
-            // defaultdict miss, which calls its factory and re-enters the VM.
-            Self::Ref(id) => heap_subscript(*id, key, vm),
+            // `heap_subscript` owns the mutating defaultdict-miss path outside
+            // the read-only `PyTrait::py_getitem` interface.
+            Self::Ref(id) => heap_subscript(vm.heap.read(*id), key, vm),
             Self::InternString(string_id) => {
                 // Check for slice first
                 if let Self::Ref(key_id) = key

@@ -534,32 +534,19 @@ macro_rules! heap_read_output_py_trait_forward {
     };
 }
 
-/// Subscripts the heap value `id`, routing a `defaultdict` miss through
-/// `__missing__` and everything else — Counter included — to `py_getitem`.
+/// Subscripts a heap value, routing a `defaultdict` miss through `__missing__`
+/// and everything else — Counter included — to `py_getitem`.
 ///
-/// A defaultdict's miss stores `factory()`, and calling the factory re-enters
-/// the VM, which is impossible both while a `HeapRead` handle is alive and
-/// behind [`PyTrait::py_getitem`]'s `&self`. Taking the [`HeapId`] here keeps
-/// that one mutating case out of the read-only trait; `Value::py_getitem`'s
-/// `Ref` arm calls this instead of reading the heap itself.
-pub(crate) fn heap_subscript(id: HeapId, key: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    if matches!(vm.heap.get(id), HeapData::Dict(d) if d.is_defaultdict()) {
-        // The read handle is scoped to the lookup: `defaultdict_missing` runs the
-        // factory, which re-enters the VM and can drop the last reference to this
-        // dict — and `dec_ref` asserts that an entry has no active readers when it
-        // is freed.
-        let found = {
-            let HeapReadOutput::Dict(dict) = vm.heap.read(id) else {
-                unreachable!("a defaultdict is a dict");
-            };
-            dict.dict_get(key, vm)?
-        };
-        match found {
+/// A defaultdict's miss stores `factory()`, so that mutating case stays outside
+/// [`PyTrait::py_getitem`]'s read-only interface while retaining the identity-aware
+/// object handle supplied by `Value::py_getitem`.
+pub(crate) fn heap_subscript<'h>(value: HeapReadOutput<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    match value {
+        HeapReadOutput::Dict(mut dict) if dict.get(vm.heap).is_defaultdict() => match dict.dict_get(key, vm)? {
             Some(value) => Ok(value),
-            None => defaultdict_missing(id, key, vm),
-        }
-    } else {
-        vm.heap.read(id).py_getitem(key, vm)
+            None => defaultdict_missing(&mut dict, key, vm),
+        },
+        value => value.py_getitem(key, vm),
     }
 }
 
