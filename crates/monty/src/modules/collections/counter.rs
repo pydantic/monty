@@ -908,7 +908,7 @@ fn counter_retain_positive<'h>(counter: &mut HeapObjectRead<'h, Dict>, vm: &mut 
             defer_drop_mut!(count, vm);
             let mut key_guard = DropGuard::new(key, vm);
             if !count_is_positive(count, key_guard.ctx())? {
-                let (key, vm) = key_guard.into_parts();
+                let key = key_guard.into_inner();
                 remove.push(key);
             }
         }
