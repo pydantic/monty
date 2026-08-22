@@ -296,6 +296,11 @@ pub struct CallFrame<'code> {
     /// Bytecode being executed.
     code: &'code Code,
 
+    /// `code.bytecode()`, hoisted into the frame so the dispatch loop reaches
+    /// the instruction stream with one load instead of chasing
+    /// `frame -> Code -> Vec` on every opcode and operand fetch.
+    bytecode: &'code [u8],
+
     /// Instruction pointer within this frame's bytecode.
     ip: usize,
 
@@ -349,6 +354,7 @@ impl<'code> CallFrame<'code> {
     pub fn new_module(code: &'code Code, exception_stack_base: usize) -> Self {
         Self {
             code,
+            bytecode: code.bytecode(),
             ip: 0,
             stack_base: 0,
             locals_count: 0,
@@ -386,6 +392,7 @@ impl<'code> CallFrame<'code> {
     ) -> Self {
         Self {
             code,
+            bytecode: code.bytecode(),
             ip: 0,
             stack_base,
             locals_count,
@@ -408,7 +415,7 @@ impl CallFrame<'_> {
     /// bounds check.
     #[inline]
     fn fetch_array<const N: usize>(&mut self) -> [u8; N] {
-        let Some(bytes) = self.code.bytecode().get(self.ip..).and_then(<[u8]>::first_chunk::<N>) else {
+        let Some(bytes) = self.bytecode.get(self.ip..).and_then(<[u8]>::first_chunk::<N>) else {
             unreachable!("instruction IP is out of bounds of the bytecode")
         };
         self.ip += N;
@@ -807,6 +814,7 @@ impl<'h> VM<'h> {
                 };
                 CallFrame {
                     code,
+                    bytecode: code.bytecode(),
                     ip: sf.ip,
                     stack_base: sf.stack_base,
                     locals_count: sf.locals_count,
@@ -1051,7 +1059,7 @@ impl<'h> VM<'h> {
 
             // Fetch the opcode and advance the authoritative frame IP.
             let opcode = {
-                let byte = self.current_frame.code.bytecode()[self.current_frame.ip];
+                let byte = self.current_frame.bytecode[self.current_frame.ip];
                 self.current_frame.ip += 1;
                 Opcode::from_repr(byte).expect("invalid opcode in bytecode")
             };

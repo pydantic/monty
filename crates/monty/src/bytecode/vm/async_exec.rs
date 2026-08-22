@@ -568,6 +568,7 @@ impl<'h> VM<'h> {
                     };
                     CallFrame {
                         code,
+                        bytecode: code.bytecode(),
                         ip: sf.ip,
                         stack_base: sf.stack_base,
                         locals_count: sf.locals_count,
