@@ -20,7 +20,7 @@ use crate::{
     hash::HashValue,
     heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{CmpOrder, LazyHeapSet, PyTrait, Type, date, datetime, str::allocate_string},
+    types::{LazyHeapSet, PyTrait, RichCmpOp, RichCmpVtable, Type, date, datetime, str::allocate_string},
     value::{EitherStr, Value},
 };
 
@@ -294,9 +294,23 @@ impl HeapItem for TimeDelta {
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}
 }
 
+impl<'h> HeapObjectRead<'h, TimeDelta> {
+    /// Compares normalized durations by total microseconds.
+    #[expect(clippy::unnecessary_wraps)]
+    fn rich_compare(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
+            return Ok(Value::NotImplemented);
+        };
+        let ordering = total_microseconds(self.get(vm.heap)).cmp(&total_microseconds(other.get(vm.heap)));
+        Ok(Value::Bool(op.holds(ordering)))
+    }
+}
+
 /// `HeapRead`-based dispatch for `TimeDelta`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident timedeltas.
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::all(Self::rich_compare);
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::TimeDelta
     }
@@ -305,25 +319,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
-            return Ok(None);
-        };
-        Ok(Some(
-            total_microseconds(self.get(vm.heap)) == total_microseconds(other.get(vm.heap)),
-        ))
-    }
-
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
-    }
-
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        Ok(CmpOrder::Ordered(
-            total_microseconds(self.get(vm.heap)).cmp(&total_microseconds(other.get(vm.heap))),
-        ))
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {

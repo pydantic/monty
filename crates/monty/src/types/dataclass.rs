@@ -5,7 +5,7 @@ use std::{
 
 use serde::ser::SerializeStruct;
 
-use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value};
+use super::{Dict, LazyHeapSet, PyTrait, RichCmpOp, RichCmpVtable, attribute_name_value};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -147,7 +147,21 @@ impl<'h> HeapRead<'h, Dataclass> {
     }
 }
 
+impl<'h> HeapObjectRead<'h, Dataclass> {
+    /// Compares host dataclasses by class and attributes.
+    fn rich_eq(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        let Some(HeapReadOutput::Dataclass(other)) = other.read_heap(vm) else {
+            return Ok(Value::NotImplemented);
+        };
+        let equal =
+            self.get(vm.heap).type_id() == other.get(vm.heap).type_id() && self.attrs().eq_dict(&other.attrs(), vm)?;
+        Ok(op.equality_result(Some(equal)))
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dataclass> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::equality(Self::rich_eq);
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Dataclass
     }
@@ -164,17 +178,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dataclass> {
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
         Ok(())
-    }
-
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::Dataclass(other)) = other.read_heap(vm) else {
-            return Ok(None);
-        };
-        // Dataclasses are equal only if they are the same class and have equal attrs.
-        if self.get(vm.heap).type_id() != other.get(vm.heap).type_id() {
-            return Ok(Some(false));
-        }
-        Ok(Some(self.attrs().eq_dict(&other.attrs(), vm)?))
     }
 
     /// Hashes a frozen dataclass by its class name and the values of declared fields.

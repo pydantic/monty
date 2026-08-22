@@ -155,6 +155,14 @@ assert 'z' < 'é'
 assert '日' < '本'
 assert '😀' < '😁'
 
+# Literals are interned while multi-character join results are heap allocated.
+heap_abc = ''.join(['a', 'b', 'c'])
+heap_abd = ''.join(['a', 'b', 'd'])
+assert 'abc' < heap_abd
+assert heap_abc < 'abd'
+assert heap_abc < heap_abd
+assert heap_abc <= 'abc'
+
 # Sorting
 assert sorted('cba') == ['a', 'b', 'c']
 assert sorted(['b', 'c', 'a']) == ['a', 'b', 'c']

@@ -54,7 +54,9 @@ pub(crate) use module::Module;
 pub(crate) use namedtuple::{NamedTuple, NamedTupleClass, construct_namedtuple};
 pub(crate) use path::Path;
 pub(crate) use property::Property;
-pub(crate) use py_trait::{AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, attribute_name_value};
+pub(crate) use py_trait::{
+    AttrCallResult, LazyHeapSet, PyTrait, RichCmpOp, RichCmpVtable, attribute_name_value, invoke_rich_cmp_slot,
+};
 pub(crate) use range::{Range, RangeIterator};
 pub(crate) use re_match::ReMatch;
 pub(crate) use re_pattern::{BoundedCompileError, RePattern};

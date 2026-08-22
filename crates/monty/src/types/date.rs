@@ -21,7 +21,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     types::{
-        AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type,
+        AttrCallResult, LazyHeapSet, PyTrait, RichCmpOp, RichCmpVtable, TimeDelta, Type,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
     },
@@ -182,9 +182,22 @@ impl HeapItem for Date {
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}
 }
 
+impl<'h> HeapObjectRead<'h, Date> {
+    /// Compares dates without exposing representation-specific methods to dispatch.
+    #[expect(clippy::unnecessary_wraps)]
+    fn rich_compare(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        let Some(HeapReadOutput::Date(other)) = other.read_heap(vm) else {
+            return Ok(Value::NotImplemented);
+        };
+        Ok(Value::Bool(op.holds(self.get(vm.heap).cmp(other.get(vm.heap)))))
+    }
+}
+
 /// `HeapRead`-based dispatch for `Date`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident dates.
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::all(Self::rich_compare);
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Date
     }
@@ -193,21 +206,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::Date(other)) = other.read_heap(vm) else {
-            return Ok(None);
-        };
-        Ok(Some(*self.get(vm.heap) == *other.get(vm.heap)))
-    }
-
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
-    }
-
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        Ok(CmpOrder::from_total(self.get(vm.heap).partial_cmp(other.get(vm.heap))))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {

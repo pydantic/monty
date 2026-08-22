@@ -120,6 +120,13 @@ assert (Counter(a=1) < Counter(a=1)) is False, '< is false when equal'
 assert (Counter(a=3) >= Counter(a=1, b=1)) is False, '>= fails on a key present only on the right'
 assert (Counter(a=2) > Counter(a=1)) is True, '> is >= and not equal'
 
+# Sorting and extrema use the same operator-specific partial ordering.
+small_counter = Counter(a=1)
+large_counter = Counter(a=2)
+assert sorted([large_counter, small_counter]) == [small_counter, large_counter]
+assert min(large_counter, small_counter) is small_counter
+assert max(small_counter, large_counter) is large_counter
+
 # === NaN counts follow IEEE: every ordering comparison is false, and NaN != NaN ===
 nan = float('nan')
 assert (Counter(a=nan) <= Counter(a=nan)) is False, 'nan <= nan is false'

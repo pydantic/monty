@@ -26,7 +26,7 @@ use crate::{
     hash::{HashValue, hash_python_long_int},
     heap::{Heap, HeapData, HeapObjectRead, HeapRead},
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
-    types::{LazyHeapSet, PyTrait, Type, str::allocate_string},
+    types::{LazyHeapSet, PyTrait, RichCmpOp, RichCmpVtable, Type, str::allocate_string},
     value::{Value, eq_bigint},
 };
 
@@ -374,9 +374,31 @@ fn int_max_str_digits_threshold() -> &'static BigInt {
     })
 }
 
+impl<'h> HeapObjectRead<'h, LongInt> {
+    /// Compares arbitrary-precision integers with every numeric representation.
+    #[expect(clippy::unnecessary_wraps)]
+    fn rich_compare(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            return Ok(op.equality_result(eq_bigint(self.get(vm.heap).inner(), other, vm)));
+        }
+        let lhs = self.get(vm.heap);
+        let ordering = match other {
+            Value::Bool(rhs) => Some(bigint_cmp_i64(lhs.inner(), i64::from(*rhs))),
+            Value::Int(rhs) => Some(bigint_cmp_i64(lhs.inner(), *rhs)),
+            Value::Float(rhs) => lhs.partial_cmp_f64(*rhs),
+            Value::InternLongInt(rhs) => Some(lhs.inner().cmp(vm.interns.get_long_int(*rhs))),
+            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => Some(lhs.inner().cmp(rhs.inner())),
+            _ => return Ok(Value::NotImplemented),
+        };
+        Ok(Value::Bool(ordering.is_some_and(|ordering| op.holds(ordering))))
+    }
+}
+
 // === Trait Implementations ===
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::all(Self::rich_compare);
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Int
     }
@@ -387,10 +409,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
         Ok(!self.get(vm.heap).is_zero())
-    }
-
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(eq_bigint(self.get(vm.heap).inner(), other, vm))
     }
 
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {

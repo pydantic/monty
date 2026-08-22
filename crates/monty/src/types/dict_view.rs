@@ -10,7 +10,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     types::{
-        Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple,
+        Dict, FrozenSet, LazyHeapSet, PyTrait, RichCmpOp, RichCmpVtable, Set, Type, allocate_tuple,
         dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
         iter::checked_preallocation_hint,
     },
@@ -155,7 +155,35 @@ impl DictView for DictKeysView {
     }
 }
 
+impl<'h> HeapObjectRead<'h, DictKeysView> {
+    /// Compares key views with other set-like values.
+    fn rich_eq(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        let equal = match other.read_heap(vm) {
+            Some(HeapReadOutput::DictKeysView(other)) => {
+                if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
+                    Some(true)
+                } else {
+                    let left = self.dict(vm);
+                    let right = other.dict(vm);
+                    Some(dict_keys_eq_set_like(
+                        &left,
+                        right.get(vm.heap).len(),
+                        |key, vm| right.contains_key(key, vm),
+                        vm,
+                    )?)
+                }
+            }
+            Some(HeapReadOutput::Set(other)) => Some(self.eq_set(&other, vm)?),
+            Some(HeapReadOutput::FrozenSet(other)) => Some(self.eq_frozenset(&other, vm)?),
+            _ => None,
+        };
+        Ok(op.equality_result(equal))
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::equality(Self::rich_eq);
+
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
@@ -184,28 +212,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).dict(vm.heap).len())
-    }
-
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        match other.read_heap(vm) {
-            Some(HeapReadOutput::DictKeysView(other)) => {
-                if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
-                    return Ok(Some(true));
-                }
-                let left = self.dict(vm);
-                let right = other.dict(vm);
-                dict_keys_eq_set_like(
-                    &left,
-                    right.get(vm.heap).len(),
-                    |key, vm| right.contains_key(key, vm),
-                    vm,
-                )
-                .map(Some)
-            }
-            Some(HeapReadOutput::Set(other)) => Ok(Some(self.eq_set(&other, vm)?)),
-            Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.eq_frozenset(&other, vm)?)),
-            _ => Ok(None),
-        }
     }
 
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -422,7 +428,30 @@ impl DictView for DictItemsView {
     }
 }
 
+impl<'h> HeapObjectRead<'h, DictItemsView> {
+    /// Compares item views with other set-like values.
+    fn rich_eq(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        let equal = match other.read_heap(vm) {
+            Some(HeapReadOutput::DictItemsView(other)) => {
+                if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
+                    Some(true)
+                } else {
+                    let left = self.dict(vm);
+                    let right = other.dict(vm);
+                    Some(left.eq_dict(&right, vm)?)
+                }
+            }
+            Some(HeapReadOutput::Set(other)) => Some(self.eq_set(&other, vm)?),
+            Some(HeapReadOutput::FrozenSet(other)) => Some(self.eq_frozenset(&other, vm)?),
+            _ => None,
+        };
+        Ok(op.equality_result(equal))
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictItemsView> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::equality(Self::rich_eq);
+
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
@@ -466,22 +495,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictItemsView> {
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).dict(vm.heap).len())
-    }
-
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        match other.read_heap(vm) {
-            Some(HeapReadOutput::DictItemsView(other)) => {
-                if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
-                    return Ok(Some(true));
-                }
-                let left = self.dict(vm);
-                let right = other.dict(vm);
-                Ok(Some(left.eq_dict(&right, vm)?))
-            }
-            Some(HeapReadOutput::Set(other)) => Ok(Some(self.eq_set(&other, vm)?)),
-            Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.eq_frozenset(&other, vm)?)),
-            _ => Ok(None),
-        }
     }
 
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -616,11 +629,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictValuesView> {
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).dict(vm.heap).len())
-    }
-
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        // `dict_values` views use identity equality (handled before the heap read).
-        Ok(None)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {

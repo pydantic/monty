@@ -65,63 +65,187 @@ impl From<AttrCallResult> for CallResult {
     }
 }
 
-/// Outcome of an ordering comparison ([`PyTrait::py_cmp`] / [`Value::py_cmp`]).
+/// One of Python's six rich-comparison operations.
 ///
-/// A plain `Option<Ordering>` conflated two very different "no ordering" cases;
-/// this enum splits them so callers reproduce CPython exactly:
-///
-/// - [`Ordered`](Self::Ordered) — a definite `<` / `==` / `>` result.
-/// - [`Unordered`](Self::Unordered) — the operands *are* valid comparison
-///   partners but have no ordering because a `NaN` is involved (directly, or as
-///   the first differing element of a list/tuple). CPython's ordering operators
-///   (`<`, `<=`, `>`, `>=`) all yield `False` here rather than raising, and
-///   `sorted`/`min`/`max` treat it as "no swap".
-/// - [`Incomparable`](Self::Incomparable) — the operand types (or the types of
-///   their first differing elements) have no defined ordering at all; ordering
-///   operators raise `TypeError`.
-///
-/// Collapsing `Unordered` into `Incomparable` is exactly the bug that made
-/// `float('nan') < 1` raise instead of returning `False`.
+/// Identity and containment operators use separate protocols and deliberately
+/// cannot reach the rich-comparison vtable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CmpOrder {
-    /// A definite ordering between the two operands.
-    Ordered(Ordering),
-    /// Valid partners, but unordered because a `NaN` is involved.
-    Unordered,
-    /// The operand types have no defined ordering.
-    Incomparable,
+pub(crate) enum RichCmpOp {
+    /// Less than (`<`).
+    Lt,
+    /// Less than or equal (`<=`).
+    Le,
+    /// Equal (`==`).
+    Eq,
+    /// Not equal (`!=`).
+    Ne,
+    /// Greater than (`>`).
+    Gt,
+    /// Greater than or equal (`>=`).
+    Ge,
 }
 
-impl CmpOrder {
-    /// Maps an `Option<Ordering>` from a numeric comparison helper, where `None`
-    /// can *only* mean a `NaN` operand (`f64::partial_cmp`, `i64_cmp_f64`,
-    /// `bigint_cmp_f64`, and `LongInt::partial_cmp_f64` all return `None`
-    /// exclusively for `NaN`). `None` therefore becomes [`Unordered`], never
-    /// [`Incomparable`].
-    ///
-    /// [`Unordered`]: Self::Unordered
-    /// [`Incomparable`]: Self::Incomparable
-    pub(crate) fn from_numeric(ordering: Option<Ordering>) -> Self {
-        match ordering {
-            Some(ordering) => Self::Ordered(ordering),
-            None => Self::Unordered,
+impl RichCmpOp {
+    /// Converts a source comparison operator when it is a rich comparison.
+    pub(crate) fn from_cmp_operator(op: CmpOperator) -> Option<Self> {
+        match op {
+            CmpOperator::Lt => Some(Self::Lt),
+            CmpOperator::LtE => Some(Self::Le),
+            CmpOperator::Eq => Some(Self::Eq),
+            CmpOperator::NotEq => Some(Self::Ne),
+            CmpOperator::Gt => Some(Self::Gt),
+            CmpOperator::GtE => Some(Self::Ge),
+            CmpOperator::Is | CmpOperator::IsNot | CmpOperator::In | CmpOperator::NotIn => None,
         }
     }
 
-    /// Maps an `Option<Ordering>` from a *total*-order comparison (strings,
-    /// bytes, dates, timedeltas), where `None` never arises from a valid pair —
-    /// so `None` means the types don't compare at all ([`Incomparable`]).
-    ///
-    /// [`Incomparable`]: Self::Incomparable
-    pub(crate) fn from_total(ordering: Option<Ordering>) -> Self {
-        match ordering {
-            Some(ordering) => Self::Ordered(ordering),
-            None => Self::Incomparable,
+    /// Returns the operation tried on the right operand after `NotImplemented`.
+    pub(crate) fn reflected(self) -> Self {
+        match self {
+            Self::Lt => Self::Gt,
+            Self::Le => Self::Ge,
+            Self::Eq => Self::Eq,
+            Self::Ne => Self::Ne,
+            Self::Gt => Self::Lt,
+            Self::Ge => Self::Le,
+        }
+    }
+
+    /// Whether this operation belongs to the equality pair.
+    pub(crate) fn is_equality(self) -> bool {
+        matches!(self, Self::Eq | Self::Ne)
+    }
+
+    /// Returns the special method implementing this operation on an instance.
+    pub(crate) fn dunder(self) -> &'static str {
+        match self {
+            Self::Lt => "__lt__",
+            Self::Le => "__le__",
+            Self::Eq => "__eq__",
+            Self::Ne => "__ne__",
+            Self::Gt => "__gt__",
+            Self::Ge => "__ge__",
+        }
+    }
+
+    /// Evaluates this operation against an existing total ordering.
+    pub(crate) fn holds(self, ordering: Ordering) -> bool {
+        match self {
+            Self::Lt => ordering.is_lt(),
+            Self::Le => ordering.is_le(),
+            Self::Eq => ordering.is_eq(),
+            Self::Ne => !ordering.is_eq(),
+            Self::Gt => ordering.is_gt(),
+            Self::Ge => ordering.is_ge(),
+        }
+    }
+
+    /// Converts one-sided boolean equality into a rich-comparison result.
+    pub(crate) fn equality_result(self, equal: Option<bool>) -> Value {
+        debug_assert!(self.is_equality());
+        match equal {
+            Some(equal) => Value::Bool(if self == Self::Ne { !equal } else { equal }),
+            None => Value::NotImplemented,
+        }
+    }
+
+    /// Returns the spelling used in ordering `TypeError` messages.
+    pub(crate) fn symbol(self) -> &'static str {
+        match self {
+            Self::Lt => "<",
+            Self::Le => "<=",
+            Self::Eq => "==",
+            Self::Ne => "!=",
+            Self::Gt => ">",
+            Self::Ge => ">=",
         }
     }
 }
 
-/// Common operations for Python values.
+/// A native implementation of one rich-comparison slot.
+pub(crate) type RichCmpFn<'h, T> = fn(&T, &Value, RichCmpOp, &mut VM<'h>) -> RunResult<Value>;
+
+/// Static rich-comparison slots exposed by a Rust value implementation.
+///
+/// A missing pointer means the type does not define that operation. Multiple
+/// slots may share one function when their type checks and comparison work are
+/// common; the operation is passed to the function for that purpose.
+pub(crate) struct RichCmpVtable<'h, T> {
+    /// Native `<` implementation, if defined.
+    lt: Option<RichCmpFn<'h, T>>,
+    /// Native `<=` implementation, if defined.
+    le: Option<RichCmpFn<'h, T>>,
+    /// Native `==` implementation, if defined.
+    eq: Option<RichCmpFn<'h, T>>,
+    /// Native `!=` implementation, if defined.
+    ne: Option<RichCmpFn<'h, T>>,
+    /// Native `>` implementation, if defined.
+    gt: Option<RichCmpFn<'h, T>>,
+    /// Native `>=` implementation, if defined.
+    ge: Option<RichCmpFn<'h, T>>,
+}
+
+impl<'h, T> RichCmpVtable<'h, T> {
+    /// A type with no native rich-comparison methods.
+    pub(crate) const EMPTY: Self = Self::new(None, None, None, None, None, None);
+
+    /// Creates an arbitrary combination of rich-comparison slots.
+    pub(crate) const fn new(
+        lt: Option<RichCmpFn<'h, T>>,
+        le: Option<RichCmpFn<'h, T>>,
+        eq: Option<RichCmpFn<'h, T>>,
+        ne: Option<RichCmpFn<'h, T>>,
+        gt: Option<RichCmpFn<'h, T>>,
+        ge: Option<RichCmpFn<'h, T>>,
+    ) -> Self {
+        Self { lt, le, eq, ne, gt, ge }
+    }
+
+    /// Exposes only equality, deriving `!=` through the same implementation.
+    pub(crate) const fn equality(compare: RichCmpFn<'h, T>) -> Self {
+        Self::new(None, None, Some(compare), Some(compare), None, None)
+    }
+
+    /// Exposes all six operations through one shared implementation.
+    pub(crate) const fn all(compare: RichCmpFn<'h, T>) -> Self {
+        Self::new(
+            Some(compare),
+            Some(compare),
+            Some(compare),
+            Some(compare),
+            Some(compare),
+            Some(compare),
+        )
+    }
+
+    /// Resolves the native function for one operation.
+    fn get(&self, op: RichCmpOp) -> Option<RichCmpFn<'h, T>> {
+        match op {
+            RichCmpOp::Lt => self.lt,
+            RichCmpOp::Le => self.le,
+            RichCmpOp::Eq => self.eq,
+            RichCmpOp::Ne => self.ne,
+            RichCmpOp::Gt => self.gt,
+            RichCmpOp::Ge => self.ge,
+        }
+    }
+}
+
+/// Invokes one statically resolved rich-comparison slot.
+pub(crate) fn invoke_rich_cmp_slot<'h>(
+    receiver: &impl PyTrait<'h>,
+    other: &Value,
+    op: RichCmpOp,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    if let Some(compare) = <_ as PyTrait<'h>>::RICH_COMPARE.get(op) {
+        compare(receiver, other, op, vm)
+    } else {
+        Ok(Value::NotImplemented)
+    }
+}
+
+/// Common operations for heap-allocated Python values.
 ///
 /// Implementers should provide Python-compatible semantics for all operations.
 /// Most methods take a `&VM` or `&mut VM` reference to access the heap and interned
@@ -136,7 +260,10 @@ impl CmpOrder {
 /// The lifetime `'h` connects [`crate::heap::HeapObjectRead`] implementations
 /// to the VM's heap reference; immediate [`Value`] implementations use it only
 /// through the VM argument.
-pub(crate) trait PyTrait<'h> {
+pub(crate) trait PyTrait<'h>: Sized {
+    /// Native rich-comparison methods supplied by this type.
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::EMPTY;
+
     /// Returns the Python type name for this value (e.g., "list", "str").
     ///
     /// Used for error messages and the `type()` builtin.
@@ -169,56 +296,6 @@ pub(crate) trait PyTrait<'h> {
     /// `Ok(None)` means the type has no containment logic of its own, so
     /// [`Value::py_contains`] falls back to iteration and then `TypeError`.
     fn py_contains_impl(&self, _item: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(None)
-    }
-
-    /// One-sided equality normalized for identity-or-equality operations.
-    ///
-    /// Returns `Some(bool)` when this type handles `other`, or `None` for
-    /// `NotImplemented`. User instances truth-test arbitrary `__eq__` results
-    /// here, while [`Value::py_rich_eq`] uses a separate path to preserve them.
-    /// This mirrors the `NotImplemented` half of [`py_cmp`](Self::py_cmp)'s
-    /// [`CmpOrder::Incomparable`].
-    ///
-    /// Cross-type equality (e.g. `int`/`float`, `namedtuple`/`tuple`,
-    /// `dict_keys`/`set`) is handled here in-situ: each type inspects `other`
-    /// directly. For containers this performs element-wise comparison using the
-    /// heap to resolve nested references; `&mut VM` allows lazy hash computation
-    /// for dict key lookups and access to interned string content.
-    ///
-    /// Recursion depth is tracked via `vm.recursion_guard()`; returns
-    /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>>;
-
-    /// Python comparison (`<`, `>`, etc.).
-    ///
-    /// For containers, this performs element-wise comparison using the heap
-    /// to resolve nested references. Takes `&mut VM` to allow lazy hash
-    /// computation for dict key lookups and access to interned string content.
-    ///
-    /// Recursion depth is tracked via `vm.recursion_guard()`.
-    ///
-    /// Returns a [`CmpOrder`] distinguishing a definite ordering, a
-    /// `NaN`-driven unordered-but-valid result (ordering operators yield
-    /// `False`), and a genuine type mismatch (ordering operators raise
-    /// `TypeError`) — see [`CmpOrder`] for why the distinction matters. The
-    /// default is [`CmpOrder::Incomparable`] (the type has no ordering).
-    /// Returns `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_cmp(&self, _other: &Self, _vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        Ok(CmpOrder::Incomparable)
-    }
-
-    /// Answers a single ordering operator (`<` `<=` `>` `>=`) for types that a
-    /// [`CmpOrder`] cannot describe, taking precedence over [`py_cmp`](Self::py_cmp).
-    ///
-    /// A `Counter` compares as a multiset, where `<=` and `>=` are independent
-    /// containment tests (neither need hold) and each operator names *itself* in
-    /// the `TypeError` an unorderable count raises — so the answer depends on
-    /// which operator was written, which a single `CmpOrder` cannot carry.
-    ///
-    /// Only the four ordering operators reach here. `Ok(None)` — the default —
-    /// defers to `py_cmp`.
-    fn py_cmp_op(&self, _other: &Value, _op: CmpOperator, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

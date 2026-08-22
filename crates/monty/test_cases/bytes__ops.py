@@ -85,6 +85,14 @@ assert b'abc' > b'ab'
 assert b'\x00' < b'\xff'
 assert b'\xfe' < b'\xff'
 
+# Literals are interned while bytes() results are heap allocated.
+heap_abc = bytes(b'abc')
+heap_abd = bytes(b'abd')
+assert b'abc' < heap_abd
+assert heap_abc < b'abd'
+assert heap_abc < heap_abd
+assert heap_abc <= b'abc'
+
 # Sorting
 assert sorted([b'c', b'a', b'b']) == [b'a', b'b', b'c']
 assert sorted([b'bb', b'a', b'ba']) == [b'a', b'ba', b'bb']

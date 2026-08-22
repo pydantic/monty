@@ -25,7 +25,7 @@ use crate::{
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource_checks::check_estimated_size,
     types::{
-        LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple,
+        LazyHeapSet, List, PyTrait, ReMatch, RichCmpOp, RichCmpVtable, Type, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
         tuple::TupleVec,
     },
@@ -359,20 +359,26 @@ impl RePattern {
     }
 }
 
+impl<'h> HeapObjectRead<'h, RePattern> {
+    /// Compares compiled patterns by source and flags.
+    #[expect(clippy::unnecessary_wraps)]
+    fn rich_eq(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        let Some(HeapReadOutput::RePattern(other)) = other.read_heap(vm) else {
+            return Ok(Value::NotImplemented);
+        };
+        Ok(op.equality_result(Some(self.get(vm.heap) == other.get(vm.heap))))
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::equality(Self::rich_eq);
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::RePattern
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
-    }
-
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::RePattern(other)) = other.read_heap(vm) else {
-            return Ok(None);
-        };
-        Ok(Some(self.get(vm.heap) == other.get(vm.heap)))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {

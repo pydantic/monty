@@ -19,7 +19,7 @@ use crate::{
     hash::HashValue,
     heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{PyTrait, Type},
+    types::{PyTrait, RichCmpOp, RichCmpVtable, Type},
     value::{EitherStr, Value},
 };
 
@@ -157,7 +157,22 @@ fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
     normalized.clamp(lower, upper)
 }
 
+impl<'h> HeapObjectRead<'h, Slice> {
+    /// Compares the three normalized slice components.
+    #[expect(clippy::unnecessary_wraps)]
+    fn rich_eq(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        let Some(HeapReadOutput::Slice(other)) = other.read_heap(vm) else {
+            return Ok(Value::NotImplemented);
+        };
+        let a = self.get(vm.heap);
+        let b = other.get(vm.heap);
+        Ok(op.equality_result(Some(a.start == b.start && a.stop == b.stop && a.step == b.step)))
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::equality(Self::rich_eq);
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Slice
     }
@@ -165,15 +180,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         // Slices don't have a length in Python
         None
-    }
-
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::Slice(other)) = other.read_heap(vm) else {
-            return Ok(None);
-        };
-        let a = self.get(vm.heap);
-        let b = other.get(vm.heap);
-        Ok(Some(a.start == b.start && a.stop == b.stop && a.step == b.step))
     }
 
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {

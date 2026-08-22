@@ -183,6 +183,133 @@ self_result_eq = SelfResultEq()
 assert (self_result_eq == 1) is self_result_eq, 'direct equality preserves a self result'
 assert self_result_eq in [1], 'container membership truth-tests a self result'
 
+# === Rich ordering methods ===
+
+
+class OrderedValue:
+    def __init__(self, value):
+        self.value = value
+
+    def __lt__(self, other):
+        if not isinstance(other, OrderedValue):
+            return NotImplemented
+        return self.value < other.value
+
+    def __le__(self, other):
+        if not isinstance(other, OrderedValue):
+            return NotImplemented
+        return self.value <= other.value
+
+    def __gt__(self, other):
+        if not isinstance(other, OrderedValue):
+            return NotImplemented
+        return self.value > other.value
+
+    def __ge__(self, other):
+        if not isinstance(other, OrderedValue):
+            return NotImplemented
+        return self.value >= other.value
+
+
+low = OrderedValue(1)
+high = OrderedValue(2)
+assert (low < high) is True
+assert (low <= high) is True
+assert (high > low) is True
+assert (high >= low) is True
+assert sorted([high, low]) == [low, high]
+assert min(high, low) is low
+assert max(low, high) is high
+
+
+class LeftOrdering:
+    def __lt__(self, other):
+        return NotImplemented
+
+
+class ReflectedOrdering:
+    def __lt__(self, other):
+        return 'reflected lt'
+
+    def __le__(self, other):
+        return 'reflected le'
+
+    def __gt__(self, other):
+        return 'reflected gt'
+
+    def __ge__(self, other):
+        return 'reflected ge'
+
+
+assert (LeftOrdering() < ReflectedOrdering()) == 'reflected gt'
+assert (LeftOrdering() <= ReflectedOrdering()) == 'reflected ge'
+assert (LeftOrdering() > ReflectedOrdering()) == 'reflected lt'
+assert (LeftOrdering() >= ReflectedOrdering()) == 'reflected le'
+assert (1 < ReflectedOrdering()) == 'reflected gt'
+
+
+class MutableReflectedOrdering:
+    def __gt__(self, other):
+        return 'old result'
+
+
+def replacement_gt(self, other):
+    return 'new result'
+
+
+class MutatingLeftOrdering:
+    def __lt__(self, other):
+        setattr(MutableReflectedOrdering, '__gt__', replacement_gt)
+        return NotImplemented
+
+
+assert (MutatingLeftOrdering() < MutableReflectedOrdering()) == 'new result'
+
+
+class DisabledOrdering:
+    __lt__ = None
+
+
+try:
+    DisabledOrdering() < DisabledOrdering()
+    assert False, 'expected a None ordering method to fail'
+except TypeError as exc:
+    assert str(exc) == "'NoneType' object is not callable"
+
+
+class HeapOrderingResult:
+    def __lt__(self, other):
+        return []
+
+
+heap_ordering_result = HeapOrderingResult() < HeapOrderingResult()
+assert heap_ordering_result == []
+assert ([HeapOrderingResult()] < [HeapOrderingResult()]) == []
+
+
+class CustomNe:
+    def __eq__(self, other):
+        return True
+
+    def __ne__(self, other):
+        return 'custom ne'
+
+
+assert (CustomNe() != CustomNe()) == 'custom ne'
+
+
+class DeclinedNe:
+    def __eq__(self, other):
+        return True
+
+    def __ne__(self, other):
+        return NotImplemented
+
+
+declined_ne = DeclinedNe()
+assert (declined_ne != DeclinedNe()) is True
+assert (declined_ne != declined_ne) is False
+
 # === Instances are always truthy ===
 assert bool(p) is True
 if q:

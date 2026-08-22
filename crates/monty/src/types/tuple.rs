@@ -1,6 +1,5 @@
 use std::{
     cell::Cell,
-    cmp::Ordering,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -25,7 +24,7 @@ use std::{
 /// All tuple methods from Python's builtins are implemented.
 use smallvec::SmallVec;
 
-use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
+use super::{PyTrait, RichCmpOp, RichCmpVtable, iter::collect_owned_iterable};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -39,6 +38,7 @@ use crate::{
         LazyHeapSet, Type,
         list::repr_sequence_fmt,
         long_int::repeat_count,
+        namedtuple::rich_compare_item_seqs,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -166,7 +166,7 @@ impl<'h> HeapRead<'h, Tuple> {
     }
 
     /// Clones every item into a plain `Vec`, for the namedtuple orderings in
-    /// [`cmp_item_seqs`](crate::types::namedtuple::cmp_item_seqs).
+    /// [`rich_compare_item_seqs`](crate::types::namedtuple::rich_compare_item_seqs).
     pub(crate) fn cloned_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
         Ok(self.clone_all_items(vm)?.into_vec())
     }
@@ -279,7 +279,67 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for TupleIter<'_, 'h> {
     }
 }
 
+impl<'h> HeapObjectRead<'h, Tuple> {
+    /// Compares tuple elements for the equality slots.
+    fn eq_bool(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
+            return Ok(Some(false));
+        }
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((i, a)) = iter.next_with_index(vm)? {
+            let b = other.clone_item(i, vm);
+            defer_drop!(b, vm);
+            if !a.py_eq(b, vm)? {
+                return Ok(Some(false));
+            }
+        }
+        Ok(Some(true))
+    }
+
+    /// Compares tuples lexicographically, including against named tuples.
+    ///
+    /// Equality identifies the shared prefix; the first unequal pair receives
+    /// the original operator and may return any Python value. Lengths decide
+    /// only when every shared element compares equal.
+    fn rich_compare(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            return Ok(op.equality_result(self.eq_bool(other, vm)?));
+        }
+        let other = match other.read_heap(vm) {
+            Some(HeapReadOutput::Tuple(other)) => other,
+            Some(HeapReadOutput::NamedTuple(other)) => {
+                let (a, b) = (self.cloned_items(vm)?, other.cloned_items(vm)?);
+                return rich_compare_item_seqs(a, b, op, vm);
+            }
+            _ => return Ok(Value::NotImplemented),
+        };
+
+        let a_len = self.get(vm.heap).items.len();
+        let b_len = other.get(vm.heap).items.len();
+        let min_len = a_len.min(b_len);
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((i, av)) = iter.next_with_index(vm)? {
+            if i >= min_len {
+                break;
+            }
+            let bv = other.clone_item(i, vm);
+            defer_drop!(bv, vm);
+            if !av.py_lex_eq(bv, vm)? {
+                return av.py_rich_compare(bv, op, vm);
+            }
+        }
+        Ok(Value::Bool(op.holds(a_len.cmp(&b_len))))
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::all(Self::rich_compare);
+
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
@@ -334,27 +394,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
         Ok(self.clone_item(idx, vm))
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        // A tuple equals another tuple; `tuple == namedtuple` is handled by the
-        // reflected pass via `NamedTuple::py_eq_impl`.
-        let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
-            return Ok(None);
-        };
-        if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
-            return Ok(Some(false));
-        }
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some((i, a)) = iter.next_with_index(vm)? {
-            let b = other.clone_item(i, vm);
-            defer_drop!(b, vm);
-            if !a.py_eq(b, vm)? {
-                return Ok(Some(false));
-            }
-        }
-        Ok(Some(true))
-    }
-
     /// Hashes the tuple as the combined hash of its elements.
     ///
     /// Identical to `NamedTuple::py_hash`, so a `Tuple` and a `NamedTuple` with
@@ -380,54 +419,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
         let hash = HashValue::new(hasher.finish());
         self.get(vm.heap).cached_hash.set(Some(hash));
         Ok(Some(hash))
-    }
-
-    /// Lexicographic comparison for tuples.
-    ///
-    /// Compares element-by-element left-to-right. The first non-equal pair
-    /// determines the result. If all compared elements are equal, the shorter
-    /// tuple is considered less than the longer one — matching Python semantics:
-    /// `(1, 2) < (1, 2, 3)` is `True`.
-    ///
-    /// The result of the first differing pair propagates directly: a `NaN`
-    /// element yields [`CmpOrder::Unordered`] (`(nan,) < (1,)` is `False`, not a
-    /// `TypeError`), while a type-mismatched element yields
-    /// [`CmpOrder::Incomparable`] (`(1,) < ('a',)` raises) — this element-level
-    /// distinction is exactly why [`CmpOrder`] exists.
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        let a_len = self.get(vm.heap).items.len();
-        let b_len = other.get(vm.heap).items.len();
-        let min_len = a_len.min(b_len);
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some((i, av)) = iter.next_with_index(vm)? {
-            if i >= min_len {
-                // `self` was longer than `other`; remaining items don't
-                // participate in element-wise comparison.
-                break;
-            }
-            let bv = other.clone_item(i, vm);
-            defer_drop!(bv, vm);
-            match av.py_cmp(bv, vm)? {
-                CmpOrder::Ordered(Ordering::Equal) => {}
-                CmpOrder::Ordered(ord) => return Ok(CmpOrder::Ordered(ord)),
-                // A `NaN` element: elements are never `==`-equal to a `NaN`, so
-                // this is the first differing pair and the tuple is unordered.
-                CmpOrder::Unordered => return Ok(CmpOrder::Unordered),
-                CmpOrder::Incomparable => {
-                    // The elements don't support ordering. CPython checks
-                    // `__eq__` first and only calls `__lt__` for non-equal
-                    // pairs, so equal-but-unorderable elements (e.g.
-                    // `None == None`) are treated as equal and don't block the
-                    // comparison; a genuinely differing pair makes the tuple
-                    // incomparable.
-                    if !av.py_eq(bv, vm)? {
-                        return Ok(CmpOrder::Incomparable);
-                    }
-                }
-            }
-        }
-        Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -658,10 +649,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TupleIterator> {
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
         None
-    }
-
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(None)
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {

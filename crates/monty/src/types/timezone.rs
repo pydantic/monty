@@ -17,7 +17,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::Interns,
     types::{
-        LazyHeapSet, PyTrait, Type,
+        LazyHeapSet, PyTrait, RichCmpOp, RichCmpVtable, Type,
         str::{StringRepr, allocate_string},
         timedelta,
         timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
@@ -214,24 +214,30 @@ impl HeapItem for TimeZone {
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}
 }
 
+impl<'h> HeapObjectRead<'h, TimeZone> {
+    /// Compares fixed-offset timezones by UTC offset.
+    #[expect(clippy::unnecessary_wraps)]
+    fn rich_eq(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        let Some(HeapReadOutput::TimeZone(other)) = other.read_heap(vm) else {
+            return Ok(Value::NotImplemented);
+        };
+        Ok(op.equality_result(Some(
+            self.get(vm.heap).offset_seconds == other.get(vm.heap).offset_seconds,
+        )))
+    }
+}
+
 /// `HeapRead`-based dispatch for `TimeZone`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident timezone objects.
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::equality(Self::rich_eq);
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::TimeZone
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
-    }
-
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::TimeZone(other)) = other.read_heap(vm) else {
-            return Ok(None);
-        };
-        Ok(Some(
-            self.get(vm.heap).offset_seconds == other.get(vm.heap).offset_seconds,
-        ))
     }
 
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {

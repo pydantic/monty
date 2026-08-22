@@ -1,9 +1,9 @@
-use std::{cmp::Ordering, fmt::Write, mem};
+use std::{fmt::Write, mem};
 
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
+use super::{PyTrait, RichCmpOp, RichCmpVtable, iter::collect_owned_iterable};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -206,45 +206,6 @@ impl<'h> HeapRead<'h, List> {
         self.get(vm.heap).items[index].clone_with_heap(vm.heap)
     }
 
-    /// Lexicographic comparison for lists — the ordering behind `<`/`<=`/`>`/`>=`.
-    ///
-    /// Element-by-element left-to-right; the first non-equal pair decides. If all
-    /// compared elements are equal, the shorter list is less (`[1] < [1, 2]`).
-    /// The first differing pair's [`CmpOrder`] propagates: a `NaN` element makes
-    /// the list [`CmpOrder::Unordered`] (`[nan] < [1]` is `False`), a
-    /// type-mismatched element makes it [`CmpOrder::Incomparable`] (`[1] < ['a']`
-    /// raises `TypeError`). Mirrors [`Tuple::py_cmp`](super::Tuple) — the
-    /// `ListIter` holds the recursion token that bounds nested-container depth.
-    pub(crate) fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        let a_len = self.get(vm.heap).items.len();
-        let b_len = other.get(vm.heap).items.len();
-        let min_len = a_len.min(b_len);
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some((i, av)) = iter.next_with_index(vm)? {
-            if i >= min_len {
-                break;
-            }
-            let bv = other.clone_item(i, vm);
-            defer_drop!(bv, vm);
-            match av.py_cmp(bv, vm)? {
-                CmpOrder::Ordered(Ordering::Equal) => {}
-                CmpOrder::Ordered(ord) => return Ok(CmpOrder::Ordered(ord)),
-                // A `NaN` element is never `==`-equal, so it is the first
-                // differing pair and the list is unordered (yields `False`).
-                CmpOrder::Unordered => return Ok(CmpOrder::Unordered),
-                // CPython checks `__eq__` first and only orders non-equal pairs, so
-                // equal-but-unorderable elements (e.g. `None == None`) don't block.
-                CmpOrder::Incomparable => {
-                    if !av.py_eq(bv, vm)? {
-                        return Ok(CmpOrder::Incomparable);
-                    }
-                }
-            }
-        }
-        Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
-    }
-
     /// Clones all items from this list with proper refcount management.
     ///
     /// Preflights the slot bytes so an over-budget clone raises a graceful
@@ -292,7 +253,7 @@ impl<'h> HeapRead<'h, List> {
 /// [`defer_drop_mut!`] so the token (and any in-flight item) is released on
 /// every exit path (success, early `return`, error via `?`). The token is
 /// intentionally non-optional — every iteration of a Python container can
-/// transitively trigger `py_eq` / `py_hash` / `py_repr` / `py_cmp` /
+/// transitively trigger equality / hashing / repr / rich comparison /
 /// dict-or-set membership, all of which recurse on cyclic structures.
 ///
 /// **Mutation safety.** The list length is re-read on every call to `next`,
@@ -363,7 +324,61 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for ListIter<'_, 'h> {
     }
 }
 
+impl<'h> HeapObjectRead<'h, List> {
+    /// Compares list elements for the equality slots.
+    fn eq_bool(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
+            return Ok(Some(false));
+        }
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((i, a)) = iter.next_with_index(vm)? {
+            let b = other.clone_item(i, vm);
+            defer_drop!(b, vm);
+            if !a.py_eq(b, vm)? {
+                return Ok(Some(false));
+            }
+        }
+        Ok(Some(true))
+    }
+
+    /// Compares lists lexicographically while bounding nested-container depth.
+    ///
+    /// Equality identifies the shared prefix; the first unequal pair receives
+    /// the original operator and may return any Python value. Lengths decide
+    /// only when every shared element compares equal.
+    fn rich_compare(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            return Ok(op.equality_result(self.eq_bool(other, vm)?));
+        }
+        let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
+            return Ok(Value::NotImplemented);
+        };
+        let a_len = self.get(vm.heap).items.len();
+        let b_len = other.get(vm.heap).items.len();
+        let min_len = a_len.min(b_len);
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((i, av)) = iter.next_with_index(vm)? {
+            if i >= min_len {
+                break;
+            }
+            let bv = other.clone_item(i, vm);
+            defer_drop!(bv, vm);
+            if !av.py_lex_eq(bv, vm)? {
+                return av.py_rich_compare(bv, op, vm);
+            }
+        }
+        Ok(Value::Bool(op.holds(a_len.cmp(&b_len))))
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::all(Self::rich_compare);
+
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
@@ -389,10 +404,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).items.len())
-    }
-
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        HeapRead::py_cmp(self, other, vm)
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -472,25 +483,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         mem::swap(&mut self.get_mut(vm.heap).items[idx], value);
 
         Ok(())
-    }
-
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
-            return Ok(None);
-        };
-        if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
-            return Ok(Some(false));
-        }
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some((i, a)) = iter.next_with_index(vm)? {
-            let b = other.clone_item(i, vm);
-            defer_drop!(b, vm);
-            if !a.py_eq(b, vm)? {
-                return Ok(Some(false));
-            }
-        }
-        Ok(Some(true))
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
@@ -1023,10 +1015,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
         None
-    }
-
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(None)
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {

@@ -148,12 +148,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         Ok(())
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        // Classes return `NotImplemented`; rich equality's final identity
-        // fallback makes a class equal only to itself.
-        Ok(None)
-    }
-
     fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         // Class objects hash by identity (like CPython type objects).
         Ok(Some(identity_hash(self.id())))

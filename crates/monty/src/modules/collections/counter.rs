@@ -7,7 +7,7 @@
 //! missing-key read (`0`, no insert), `most_common`/`elements`/`total`/`update`/
 //! `subtract`, and the `+ - & |` algebra are added on top.
 
-use std::{cmp::Ordering, mem};
+use std::mem;
 
 use smallvec::smallvec;
 
@@ -18,7 +18,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     resource_checks::check_repeat_size,
-    types::{Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
+    sorting::sort_indices,
+    types::{Dict, List, PyTrait, RichCmpOp, allocate_tuple, iter::collect_owned_iterable},
     value::{VALUE_SIZE, Value},
 };
 
@@ -54,61 +55,20 @@ enum CountCmp {
 }
 
 impl CountCmp {
-    /// The operator symbol CPython names in the `TypeError`.
-    fn symbol(self) -> &'static str {
+    /// Converts the algebra's comparison choice into the runtime protocol op.
+    fn rich_op(self) -> RichCmpOp {
         match self {
-            Self::Le => "<=",
-            Self::Lt => "<",
-            Self::Ge => ">=",
-            Self::Gt => ">",
-        }
-    }
-
-    /// Whether `lhs <op> rhs` holds given the three-way `ordering` of the pair.
-    fn holds(self, ordering: Ordering) -> bool {
-        match self {
-            Self::Le => ordering != Ordering::Greater,
-            Self::Lt => ordering == Ordering::Less,
-            Self::Ge => ordering != Ordering::Less,
-            Self::Gt => ordering == Ordering::Greater,
+            Self::Le => RichCmpOp::Le,
+            Self::Lt => RichCmpOp::Lt,
+            Self::Ge => RichCmpOp::Ge,
+            Self::Gt => RichCmpOp::Gt,
         }
     }
 }
 
-/// Evaluates `lhs <op> rhs` between two counts, raising CPython's operator-
-/// specific `TypeError` when the pair has no ordering at all.
-///
-/// `NaN` makes a pair *unordered* rather than incomparable, and every IEEE
-/// ordering comparison against `NaN` is false — so `nan <= nan` is `false`, which
-/// is exactly what CPython's element-wise `Counter` comparisons observe.
+/// Evaluates the requested Python ordering operation between two counts.
 fn count_holds(lhs: &Value, rhs: &Value, op: CountCmp, vm: &mut VM<'_>) -> RunResult<bool> {
-    match lhs.py_cmp(rhs, vm)? {
-        CmpOrder::Ordered(ordering) => Ok(op.holds(ordering)),
-        CmpOrder::Unordered => Ok(false),
-        CmpOrder::Incomparable => Err(ExcType::type_error_ordering(
-            op.symbol(),
-            &lhs.py_type_name(vm),
-            &rhs.py_type_name(vm),
-        )),
-    }
-}
-
-/// Orders two counts for *sorting* (`most_common`, Counter repr), raising the
-/// sort's `<` `TypeError` when they are incomparable.
-///
-/// Unlike the algebra's [`count_holds`], a `NaN` pair is treated as **equal**
-/// here: Python's `sorted`/`heapq` never raise on `NaN`, they just leave it
-/// wherever the (ill-defined for `NaN`) ordering happens to place it.
-fn count_sort_cmp(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<Ordering> {
-    match lhs.py_cmp(rhs, vm)? {
-        CmpOrder::Ordered(ordering) => Ok(ordering),
-        CmpOrder::Unordered => Ok(Ordering::Equal),
-        CmpOrder::Incomparable => Err(ExcType::type_error_ordering(
-            "<",
-            &lhs.py_type_name(vm),
-            &rhs.py_type_name(vm),
-        )),
-    }
+    lhs.py_rich_compare_bool(rhs, op.rich_op(), vm)
 }
 
 /// Whether a count is strictly greater than zero (the `Counter` algebra keeps
@@ -339,27 +299,9 @@ pub(crate) fn counter_total(dict_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value
 /// Consumes `counts`.
 pub(crate) fn counter_order(counts: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
     let mut order: Vec<usize> = (0..counts.len()).collect();
-    // `sort_by` needs an infallible comparator, so a comparison error is stashed
-    // and reported once the sort finishes; the ordering it produces in that case
-    // is discarded.
-    let mut failure = None;
-    order.sort_by(|&a, &b| {
-        if failure.is_some() {
-            return Ordering::Equal;
-        }
-        match count_sort_cmp(&counts[b], &counts[a], vm) {
-            Ok(ordering) => ordering,
-            Err(e) => {
-                failure = Some(e);
-                Ordering::Equal
-            }
-        }
-    });
-    counts.drop_with(vm);
-    match failure {
-        Some(e) => Err(e),
-        None => Ok(order),
-    }
+    defer_drop!(counts, vm);
+    sort_indices(&mut order, counts, true, vm)?;
+    Ok(order)
 }
 
 /// Snapshots a Counter's counts as owned clones, releasing the heap borrow so
@@ -621,44 +563,25 @@ pub(crate) fn counter_compare(l_id: HeapId, r_id: HeapId, cmp: CounterCmp, vm: &
         CounterCmp::Ge => (CountCmp::Ge, false),
         CounterCmp::Gt => (CountCmp::Ge, true),
     };
-    // `holds` is false as soon as any pair breaks the loose ordering; `equal`
-    // tracks whether every compared pair matched, which the strict forms need.
-    let mut holds = true;
+    // Strict comparisons additionally need count equality after the loose
+    // relation holds for every key.
     let mut equal = true;
     // `counter_union_counts` hands back owned pairs the caller must drop. The
-    // guard covers every exit — a short-circuit (`!holds`), a failing comparison,
+    // guard covers every exit — a failed loose comparison, an exception,
     // and normal exhaustion — releasing whatever the loop never compared.
     let pairs = counter_union_counts(l_id, r_id, vm)?.into_iter();
     defer_drop_mut!(pairs, vm);
     for pair in pairs.by_ref() {
         defer_drop!(pair, vm);
         let (l, r) = pair;
-        // One `py_cmp` yields both the loose check and the equality the strict
-        // forms need. A `NaN` pair is unordered: the loose comparison fails (as
-        // in CPython, `nan <= x` is false) and the pair counts as not-equal.
-        match l.py_cmp(r, vm)? {
-            CmpOrder::Ordered(Ordering::Equal) => {}
-            CmpOrder::Ordered(ordering) => {
-                holds &= op.holds(ordering);
-                equal = false;
-            }
-            CmpOrder::Unordered => {
-                holds = false;
-                equal = false;
-            }
-            CmpOrder::Incomparable => {
-                return Err(ExcType::type_error_ordering(
-                    op.symbol(),
-                    &l.py_type_name(vm),
-                    &r.py_type_name(vm),
-                ));
-            }
+        if !count_holds(l, r, op, vm)? {
+            return Ok(false);
         }
-        if !holds {
-            break;
+        if strict && !l.py_eq(r, vm)? {
+            equal = false;
         }
     }
-    Ok(holds && (!strict || !equal))
+    Ok(!strict || !equal)
 }
 
 /// Pairs up the counts of two Counters over the union of their keys, with a

@@ -230,10 +230,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(None)
-    }
-
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         Ok(self.clone_value(vm.heap))
     }

@@ -1,14 +1,14 @@
 //! Implementation of the min() and max() builtin functions.
 
-use std::{cmp::Ordering, mem};
+use std::mem;
 
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::DropGuard,
-    types::{CmpOrder, PyTrait},
+    types::RichCmpOp,
     value::Value,
 };
 
@@ -217,16 +217,8 @@ fn evaluate_key(item: Value, key_fn: &Value, key_context: &'static str, vm: &mut
 /// while `max()` replaces it when the new candidate compares larger. Equal values
 /// keep the existing winner so ties preserve the first-seen item, matching CPython.
 fn candidate_wins(current: &Value, candidate: &Value, is_min: bool, vm: &mut VM<'_>) -> RunResult<bool> {
-    let ordering = match candidate.py_cmp(current, vm)? {
-        CmpOrder::Ordered(ordering) => ordering,
-        // A `NaN` candidate (or `NaN`-carrying container) is neither smaller nor
-        // larger, so it never displaces the incumbent — matching CPython, where
-        // `min`/`max` only swap on a strict `<`/`>` and `NaN` yields neither.
-        CmpOrder::Unordered => return Ok(false),
-        CmpOrder::Incomparable => return Err(ord_not_supported(candidate, current, is_min, vm)),
-    };
-
-    Ok((is_min && ordering == Ordering::Less) || (!is_min && ordering == Ordering::Greater))
+    let op = if is_min { RichCmpOp::Lt } else { RichCmpOp::Gt };
+    candidate.py_rich_compare_bool(current, op, vm)
 }
 
 /// Creates the CPython-compatible error for `default=` with multiple positional args.
@@ -237,12 +229,4 @@ fn default_with_multiple_args(func_name: &str) -> RunError {
         format!("Cannot specify a default for {func_name}() with multiple positional arguments"),
     )
     .into()
-}
-
-#[cold]
-fn ord_not_supported(left: &Value, right: &Value, is_min: bool, vm: &VM<'_>) -> RunError {
-    let left_type = left.py_type_name(vm);
-    let right_type = right.py_type_name(vm);
-    let operator = if is_min { "<" } else { ">" };
-    ExcType::type_error_ordering(operator, &left_type, &right_type)
 }

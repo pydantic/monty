@@ -9,13 +9,15 @@ use hashbrown::HashTable;
 use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
 
-use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, list::repr_check_time};
+use super::{
+    DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, RichCmpOp, RichCmpVtable, allocate_tuple,
+    list::repr_check_time,
+};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    expressions::CmpOperator,
     heap::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
         HeapReadOutput,
@@ -377,7 +379,7 @@ fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap, interns: &Inter
 impl<'h> HeapRead<'h, Dict> {
     /// Element-wise equality against another dict (matching keys and values).
     ///
-    /// Shared by `Dict::py_eq_impl` and `Dataclass::py_eq_impl` (which compares
+    /// Shared by dict and host-dataclass rich equality (the latter compares
     /// the dataclasses' attribute dicts).
     pub(crate) fn eq_dict(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<bool> {
         if self.get(vm.heap).len() != other.get(vm.heap).len() {
@@ -1134,12 +1136,49 @@ impl<'h> HeapRead<'h, Dict> {
     }
 }
 
+impl<'h> HeapObjectRead<'h, Dict> {
+    /// Compares dicts by mapping contents, with Counter's zero-count semantics.
+    fn eq_bool(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::Dict(other)) => {
+                let both_counters = self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter();
+                if both_counters {
+                    Ok(Some(self.eq_counter(&other, vm)?))
+                } else {
+                    Ok(Some(self.eq_dict(&other, vm)?))
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Two Counters compare as multisets; ordinary dicts decline ordering.
+    fn rich_compare(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            return Ok(op.equality_result(self.eq_bool(other, vm)?));
+        }
+        let cmp = match op {
+            RichCmpOp::Lt => CounterCmp::Lt,
+            RichCmpOp::Le => CounterCmp::Le,
+            RichCmpOp::Gt => CounterCmp::Gt,
+            RichCmpOp::Ge => CounterCmp::Ge,
+            RichCmpOp::Eq | RichCmpOp::Ne => unreachable!("equality handled above"),
+        };
+        match other.ref_id() {
+            Some(rhs) if self.both_counters(rhs, vm) => Ok(Value::Bool(counter_compare(self.id(), rhs, cmp, vm)?)),
+            _ => Ok(Value::NotImplemented),
+        }
+    }
+}
+
 /// `PyTrait` implementation for a heap-backed `Dict` object.
 ///
 /// All methods access the dict data through short-lived borrows from the heap via
 /// `self.get(vm.heap)`, and mutation methods use `self.get_mut(vm.heap)`. This avoids
 /// taking the dict out of the heap, enabling self-referential operations like `d.update(d)`.
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::all(Self::rich_compare);
+
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
@@ -1167,45 +1206,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        match other.read_heap(vm) {
-            Some(HeapReadOutput::Dict(other)) => {
-                // Two Counters compare as multisets (zero counts ignored); any
-                // other pairing is plain dict equality.
-                let both_counters = self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter();
-                if both_counters {
-                    Ok(Some(self.eq_counter(&other, vm)?))
-                } else {
-                    Ok(Some(self.eq_dict(&other, vm)?))
-                }
-            }
-            _ => Ok(None),
-        }
-    }
-
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
         Ok(!self.get(vm.heap).is_empty())
-    }
-
-    /// Two Counters compare as multisets; every other pairing defers to `py_cmp`,
-    /// which has no dict ordering and so raises `TypeError` — CPython's
-    /// `Counter.__lt__` likewise returns `NotImplemented` for a non-Counter,
-    /// which is why `Counter(a=1) < {'a': 2}` never becomes a dict comparison.
-    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let cmp = match op {
-            CmpOperator::Lt => CounterCmp::Lt,
-            CmpOperator::LtE => CounterCmp::Le,
-            CmpOperator::Gt => CounterCmp::Gt,
-            CmpOperator::GtE => CounterCmp::Ge,
-            // Only the four ordering operators reach `py_cmp_op`.
-            _ => return Ok(None),
-        };
-        match other.ref_id() {
-            Some(other_id) if self.both_counters(other_id, vm) => {
-                Ok(Some(counter_compare(self.id(), other_id, cmp, vm)?))
-            }
-            _ => Ok(None),
-        }
     }
 
     fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1917,10 +1919,6 @@ macro_rules! impl_dict_iterator {
 
             fn py_len(&self, _: &VM<'h>) -> Option<usize> {
                 None
-            }
-
-            fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
-                Ok(None)
             }
 
             fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {

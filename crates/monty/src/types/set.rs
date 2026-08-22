@@ -4,7 +4,7 @@ use hashbrown::HashTable;
 use monty_types::{ResourceError, ResourceTracker};
 use smallvec::SmallVec;
 
-use super::{PyTrait, iter::checked_preallocation_hint};
+use super::{PyTrait, RichCmpOp, RichCmpVtable, iter::checked_preallocation_hint};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -961,7 +961,21 @@ impl<C: ContainsHeap> DropWithContext<C> for SetEntry {
     }
 }
 
+impl<'h> HeapObjectRead<'h, Set> {
+    /// Compares sets and frozensets by their members.
+    fn rich_eq(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        let equal = match other.read_heap(vm) {
+            Some(HeapReadOutput::Set(other)) => Some(self.storage().eq(&other.storage(), vm)?),
+            Some(HeapReadOutput::FrozenSet(other)) => Some(self.storage().eq(&other.storage(), vm)?),
+            _ => None,
+        };
+        Ok(op.equality_result(equal))
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::equality(Self::rich_eq);
+
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
@@ -980,17 +994,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).len())
-    }
-
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        // `set` and `frozenset` compare equal by their members, regardless of
-        // mutability. `set == dict_keys`/`dict_items` is handled by the reflected
-        // pass via the dict-view impls.
-        match other.read_heap(vm) {
-            Some(HeapReadOutput::Set(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
-            Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
-            _ => Ok(None),
-        }
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
@@ -1270,7 +1273,21 @@ impl FrozenSet {
     }
 }
 
+impl<'h> HeapObjectRead<'h, FrozenSet> {
+    /// Compares frozensets and sets by their members.
+    fn rich_eq(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        let equal = match other.read_heap(vm) {
+            Some(HeapReadOutput::FrozenSet(other)) => Some(self.storage().eq(&other.storage(), vm)?),
+            Some(HeapReadOutput::Set(other)) => Some(self.storage().eq(&other.storage(), vm)?),
+            _ => None,
+        };
+        Ok(op.equality_result(equal))
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::equality(Self::rich_eq);
+
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
@@ -1289,17 +1306,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).len())
-    }
-
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        // `frozenset` and `set` compare equal by their members, regardless of
-        // mutability. `frozenset == dict_keys`/`dict_items` is handled by the
-        // reflected pass via the dict-view impls.
-        match other.read_heap(vm) {
-            Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
-            Some(HeapReadOutput::Set(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
-            _ => Ok(None),
-        }
     }
 
     /// Hashes the frozenset by XORing all element hashes.
@@ -1563,10 +1569,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
         None
-    }
-
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(None)
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {

@@ -13,7 +13,6 @@ use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     bytecode::{CallResult, VM},
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
-    expressions::CmpOperator,
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
@@ -25,9 +24,9 @@ use crate::{
         BoundMethod, Bytes, BytesIterator, Class, Dataclass, Deque, Dict, DictItemIterator, DictItemsView,
         DictKeyIterator, DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance,
         ItertoolsIter, LazyHeapSet, List, LongInt, Module, NamedTuple, NamedTupleClass, OpenFile, Path, PyTrait, Range,
-        RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice, Str, StringIterator, Tuple, TupleIterator, Type,
-        callable_iterator::CallableIterator, date, datetime, deque::DequeIterator, list::ListIterator,
-        str::allocate_string, timedelta, timezone,
+        RangeIterator, ReMatch, RePattern, RichCmpOp, RichCmpVtable, Set, SetIterator, Slice, Str, StringIterator,
+        Tuple, TupleIterator, Type, callable_iterator::CallableIterator, date, datetime, deque::DequeIterator,
+        invoke_rich_cmp_slot, list::ListIterator, str::allocate_string, timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -563,7 +562,52 @@ pub(crate) fn heap_subscript(id: HeapId, key: &Value, vm: &mut VM<'_>) -> RunRes
     }
 }
 
+impl<'h> HeapReadOutput<'h> {
+    /// Dispatches rich comparison through the concrete heap variant's vtable.
+    fn rich_compare(&self, other: &Value, op: RichCmpOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        heap_read_output_py_trait_forward!(
+            self,
+            |value| invoke_rich_cmp_slot(value, other, op, vm),
+            else {
+                if op.is_equality() {
+                    Ok(op.equality_result(self.fallback_eq(other, vm)))
+                } else {
+                    Ok(Value::NotImplemented)
+                }
+            }
+        )
+    }
+
+    /// Implements equality for heap variants without their own `PyTrait` implementation.
+    fn fallback_eq(&self, other: &Value, vm: &VM<'h>) -> Option<bool> {
+        match self {
+            Self::Closure(a) => match other.read_heap(vm) {
+                Some(Self::Closure(b)) => {
+                    let a = a.get(vm.heap);
+                    let b = b.get(vm.heap);
+                    Some(a.func_id == b.func_id && a.cells == b.cells)
+                }
+                _ => None,
+            },
+            Self::FunctionDefaults(a) => match other.read_heap(vm) {
+                Some(Self::FunctionDefaults(b)) => Some(a.get(vm.heap).func_id == b.get(vm.heap).func_id),
+                _ => None,
+            },
+            Self::ExtFunction(_)
+            | Self::Cell(_)
+            | Self::Exception(_)
+            | Self::Module(_)
+            | Self::Coroutine(_)
+            | Self::GatherFuture(_)
+            | Self::ExternalFuture(_) => None,
+            _ => unreachable!("concrete heap variants dispatch their own rich-comparison slots"),
+        }
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
+    const RICH_COMPARE: RichCmpVtable<'h, Self> = RichCmpVtable::all(Self::rich_compare);
+
     /// Delegates to the types defining their own `in`; the rest keep the trait
     /// default (`None`), leaving `Value::py_contains` to iterate or raise.
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
@@ -762,37 +806,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_len(vm), else None)
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        heap_read_output_py_trait_forward!(
-            self,
-            |value| value.py_eq_impl(other, vm),
-            else {
-                match self {
-                    Self::Closure(a) => Ok(match other.read_heap(vm) {
-                        Some(Self::Closure(b)) => {
-                            let a = a.get(vm.heap);
-                            let b = b.get(vm.heap);
-                            Some(a.func_id == b.func_id && a.cells == b.cells)
-                        }
-                        _ => None,
-                    }),
-                    Self::FunctionDefaults(a) => Ok(match other.read_heap(vm) {
-                        Some(Self::FunctionDefaults(b)) => Some(a.get(vm.heap).func_id == b.get(vm.heap).func_id),
-                        _ => None,
-                    }),
-                    Self::ExtFunction(_)
-                    | Self::Cell(_)
-                    | Self::Exception(_)
-                    | Self::Module(_)
-                    | Self::Coroutine(_)
-                    | Self::GatherFuture(_)
-                    | Self::ExternalFuture(_) => Ok(None),
-                    _ => unreachable!("py-trait variants handled by heap_read_output_py_trait_forward"),
-                }
-            }
-        )
-    }
-
     /// Dispatches hashing to per-type `PyTrait` implementations where possible.
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         heap_read_output_py_trait_forward!(
@@ -907,10 +920,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
 
     fn py_ior_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         heap_read_output_py_trait_forward!(self, |value| value.py_ior_impl(other, vm), else Ok(false))
-    }
-
-    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_cmp_op(other, op, vm), else Ok(None))
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {

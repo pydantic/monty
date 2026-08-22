@@ -967,7 +967,7 @@ assert repr(aware_rep_result) == 'datetime.datetime(2025, 6, 15, 12, 30, tzinfo=
 assert bool(datetime.date(2024, 1, 1))
 assert bool(datetime.date(1, 1, 1))
 
-# === date ordering comparisons (date.rs py_cmp) ===
+# === date ordering comparisons ===
 
 assert datetime.date(2024, 1, 1) < datetime.date(2024, 1, 2)
 assert datetime.date(2024, 1, 2) > datetime.date(2024, 1, 1)
@@ -1162,7 +1162,7 @@ assert str(datetime.timedelta(seconds=1, microseconds=500)) == '0:00:01.000500'
 assert str(datetime.timedelta(microseconds=1)) == '0:00:00.000001'
 assert str(datetime.timedelta(days=1, microseconds=123456)) == '1 day, 0:00:00.123456'
 
-# === timedelta ordering comparisons (timedelta.rs py_cmp) ===
+# === timedelta ordering comparisons ===
 
 assert datetime.timedelta(days=1) < datetime.timedelta(days=2)
 assert datetime.timedelta(days=2) > datetime.timedelta(days=1)
