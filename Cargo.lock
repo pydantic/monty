@@ -2544,6 +2544,7 @@ dependencies = [
  "prost-build",
  "protox",
  "pyo3",
+ "serde_json",
 ]
 
 [[package]]

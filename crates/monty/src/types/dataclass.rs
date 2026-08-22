@@ -13,8 +13,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{
-        BorrowedHeapRead, BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapRead, HeapReadOutput,
-        heap_read_ref_as_field, heap_read_ref_as_field_mut,
+        BorrowedHeapRead, BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead,
+        HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::Interns,
     types::Type,
@@ -147,7 +147,7 @@ impl<'h> HeapRead<'h, Dataclass> {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dataclass> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Dataclass
     }
@@ -180,7 +180,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
     /// Hashes a frozen dataclass by its class name and the values of declared fields.
     ///
     /// Mutable (non-frozen) dataclasses return `None` (unhashable).
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         // Only frozen (immutable) dataclasses are hashable
         if !self.get(vm.heap).frozen {
             return Ok(None);
@@ -234,13 +234,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
     /// Otherwise handles the call directly:
     /// - Attributes that exist in attrs but aren't callable produce `TypeError`
     /// - Private/dunder attributes that aren't in attrs produce `AttributeError`
-    fn py_call_attr(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
         // Only public methods (no underscore prefix = no dunders, no private)
         if !attr_str.starts_with('_')
@@ -252,8 +246,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         {
             // Clone self and prepend to args for the method call
             // inc_ref works even when data is taken out (refcount metadata is separate)
-            vm.heap.inc_ref(self_id);
-            let self_arg = Value::Ref(self_id);
+            let self_arg = self.clone_value(vm.heap);
             let args_with_self = args.prepend(self_arg);
             Ok(CallResult::MethodCall(attr.clone(), args_with_self))
         } else {

@@ -935,6 +935,46 @@ pub enum StaticStrings {
     /// Python's `NotImplemented` singleton representation.
     #[strum(serialize = "NotImplemented")]
     NotImplementedRepr,
+    /// The `__dataclass_params__` class attribute `@dataclass` writes: the
+    /// options the class was decorated with.
+    #[strum(serialize = "__dataclass_params__")]
+    DataclassParams,
+    // `@dataclass(...)` keyword options. Recognised even where unimplemented,
+    // so an unsupported option reports itself rather than looking misspelled.
+    /// `@dataclass(init=...)`.
+    Init,
+    /// `@dataclass(eq=...)`.
+    Eq,
+    /// `@dataclass(repr=...)`.
+    Repr,
+    /// `@dataclass(order=...)`.
+    Order,
+    /// `@dataclass(unsafe_hash=...)`.
+    UnsafeHash,
+    /// `@dataclass(frozen=...)`.
+    Frozen,
+    /// `@dataclass(match_args=...)`.
+    MatchArgs,
+    /// `@dataclass(kw_only=...)`.
+    KwOnly,
+    /// `@dataclass(slots=...)`.
+    Slots,
+    /// `@dataclass(weakref_slot=...)`.
+    WeakrefSlot,
+    /// `dataclasses.FrozenInstanceError` exception.
+    #[strum(serialize = "FrozenInstanceError")]
+    FrozenInstanceError,
+    /// The class parameter of the decorator `@dataclass(...)` returns, which
+    /// CPython spells `def wrap(cls)` and so accepts by keyword.
+    Cls,
+    /// `itertools.takewhile()` function.
+    Takewhile,
+    /// `itertools.dropwhile()` function.
+    Dropwhile,
+    /// `itertools.filterfalse()` function.
+    Filterfalse,
+    /// `itertools.starmap()` function.
+    Starmap,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

@@ -76,15 +76,15 @@ fn dec_ref_while_reading(list_id: HeapId, heap: &mut Heap) {
     });
 }
 
-/// Must not compile: smuggling a `HeapRead` out of the `HeapReader::with` closure.
+/// Must not compile: smuggling a `HeapObjectRead` out of the `HeapReader::with` closure.
 ///
 /// The `for<'a>` bound on `HeapReader::with` means `'a` is universally quantified,
-/// so `HeapRead<'a, _>` cannot outlive the closure.
+/// so `HeapObjectRead<'a, _>` cannot outlive the closure.
 ///
 /// Expected: E0521 (borrowed data escapes outside of closure)
 #[cfg(heap_reader_compile_fail_test_smuggle_heap_read)]
 fn smuggle_heap_read(list_id: HeapId, heap: &mut Heap) {
-    let mut smuggled: Option<HeapRead<'_, List>> = None;
+    let mut smuggled: Option<HeapObjectRead<'_, List>> = None;
     HeapReader::with(heap, &mut (), |heap, ()| {
         let a = match heap.read(list_id) {
             HeapReadOutput::List(list) => list,

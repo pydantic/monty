@@ -76,7 +76,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::PendingOsEffect,
     types::str::StringRepr,
@@ -299,7 +299,7 @@ impl HeapItem for OpenFile {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
     fn py_type(&self, vm: &VM<'h>) -> Type {
         self.get(vm.heap).file_type()
     }
@@ -329,13 +329,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         Ok(())
     }
 
-    fn py_call_attr(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(
@@ -344,6 +338,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
             ));
         };
 
+        let self_id = self.id();
         match method {
             StaticStrings::Read => self.read(self_id, vm, args),
             StaticStrings::Readline => self.readline(self_id, vm, args),
@@ -370,7 +365,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         true
     }
 
-    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn py_enter(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         // Match CPython: entering on a closed file raises before the body runs.
         // (Reusing a closed file as a context manager is rare but the error
         // message is part of the user contract.)
@@ -379,11 +374,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         // Value::Ref its own count — constructing a fresh Value::Ref without
         // an inc_ref would let the Drop impl panic when an in-flight value
         // is later discarded without a matching drop_with.
-        vm.heap.inc_ref(self_id);
-        Ok(CallResult::Value(Value::Ref(self_id)))
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_exit(&mut self, _self_id: HeapId, vm: &mut VM<'h>, _exc: Option<HeapId>) -> RunResult<CallResult> {
+    fn py_exit(&mut self, vm: &mut VM<'h>, _exc: Option<HeapId>) -> RunResult<CallResult> {
         // `with open(...) as f:` always closes the file on exit, success or
         // failure. We don't suppress exceptions: returning `None` is falsy, so
         // any in-flight exception propagates as it would in CPython.

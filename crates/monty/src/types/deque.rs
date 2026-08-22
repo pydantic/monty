@@ -6,7 +6,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource_checks::{check_estimated_size, check_repeat_size},
     types::{LazyHeapSet, Type, list::repr_items_fmt, long_int::repeat_count},
@@ -330,13 +330,13 @@ fn evict_back_if_full(deque: &mut Deque) -> Option<Value> {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
 
     /// `in` walks the deque comparing each item by `==`, like `list`.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let len = self.get(vm.heap).len();
         for i in 0..len {
             let el = self
@@ -367,8 +367,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         }
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        let deque_id = self_id.expect("heap values have an id");
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        let deque_id = self.id();
         let iterator = vm
             .heap
             .allocate(HeapData::DequeIterator(DequeIterator::new(deque_id, vm)));
@@ -493,7 +493,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
     /// `deque + deque` — concatenation, keeping the LEFT operand's `maxlen`
     /// (so the result can truncate). Any non-deque right operand returns `None`,
     /// yielding CPython's "can only concatenate deque" `TypeError`.
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(HeapReadOutput::Deque(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -511,13 +511,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
     /// iterator protocol's `TypeError` rather than falling back to `+`'s
     /// concatenation error. The deque keeps its identity, so aliases see the
     /// update.
-    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
-        let Some(self_id) = self_id else {
-            return Ok(false);
-        };
+    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         // `deque_extend` consumes the iterable, so hand it an owned clone.
         let iterable = other.clone_with_heap(vm.heap);
-        deque_extend(self_id, iterable, ExtendEnd::Right, vm)?;
+        deque_extend(self.id(), iterable, ExtendEnd::Right, vm)?;
         Ok(true)
     }
 
@@ -557,17 +554,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         Ok(None)
     }
 
-    fn py_call_attr(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Deque, attr.as_str(vm.interns)));
         };
+        let self_id = self.id();
         call_deque_method(self, self_id, method, args, vm).map(CallResult::Value)
     }
 }
@@ -643,7 +635,7 @@ impl HeapItem for DequeIterator {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, DequeIterator> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
     fn py_is_iterator(&self, _: &VM<'h>) -> bool {
         true
     }
@@ -664,13 +656,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DequeIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        let self_id = self_id.expect("heap values have an id");
-        vm.heap.inc_ref(self_id);
-        Ok(Value::Ref(self_id))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(self.clone_value(vm.heap))
     }
 
-    fn py_next(&mut self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let (deque_id, index, state) = {
             let iterator = self.get(vm.heap);
             (iterator.deque, iterator.index, iterator.state)

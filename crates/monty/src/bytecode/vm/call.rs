@@ -334,7 +334,7 @@ impl VM<'_> {
         match obj {
             Value::Ref(heap_id) => {
                 defer_drop!(obj, this);
-                this.heap.read(heap_id).py_call_attr(heap_id, this, &attr, args)
+                this.heap.read(heap_id).py_call_attr(this, &attr, args)
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
@@ -1077,7 +1077,7 @@ fn dispatch_dunder(
         StaticStrings::Enter => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
             args.check_zero_args("__enter__", vm.heap)
-                .and_then(|()| vm.heap.read(heap_id).py_enter(heap_id, vm))
+                .and_then(|()| vm.heap.read(heap_id).py_enter(vm))
         }
         StaticStrings::Exit => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
@@ -1117,5 +1117,5 @@ fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<Ca
         Value::Ref(id) => Some(*id),
         _ => None,
     };
-    vm.heap.read(heap_id).py_exit(heap_id, vm, exc)
+    vm.heap.read(heap_id).py_exit(vm, exc)
 }

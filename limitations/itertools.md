@@ -8,13 +8,15 @@ notes below.
 
 `count(start=0, step=1)`, `repeat(object, times=?)`, `pairwise(iterable)`,
 `compress(data, selectors)`, `islice(iterable, [start,] stop[, step])`,
-`chain(*iterables)`, `cycle(iterable)`.
+`chain(*iterables)`, `cycle(iterable)`, `takewhile(predicate, iterable)`,
+`dropwhile(predicate, iterable)`, `filterfalse(predicate, iterable)`,
+`starmap(function, iterable)`.
 
 ## Not implemented
 
 Everything else: `accumulate`, `batched`, `combinations`,
-`combinations_with_replacement`, `dropwhile`, `filterfalse`, `groupby`,
-`permutations`, `product`, `starmap`, `takewhile`, `tee`, `zip_longest`.
+`combinations_with_replacement`, `groupby`, `permutations`, `product`, `tee`,
+`zip_longest`.
 
 `chain.from_iterable` is also absent, even though `chain` itself is
 implemented: it is a classmethod reached through an attribute on the `chain`
@@ -53,6 +55,16 @@ raise `AttributeError` at runtime.
   is `<itertools.pairwise object>`, where CPython appends ` at 0x...`. This is
   Monty's general iterator treatment (see ./iter.md), not specific
   to `itertools`.
+- **A callable that suspends is rejected, not paused.** `takewhile`,
+  `dropwhile`, `filterfalse` and `starmap` apply their callable through the
+  synchronous `evaluate_function` path, which runs a frame to completion and
+  cannot yield to the host. A callable that reaches an external function, an
+  `os` operation, or a host method call therefore raises
+  `NotImplementedError: takewhile(): external function 'f' is not yet supported
+  in this context` where CPython would simply call it. This is the same
+  restriction that applies to `__init__`, `__next__` and `__repr__` (see
+  `limitations/classes.md`); ordinary sandbox-defined functions and lambdas are
+  unaffected.
 - **Crossing the host boundary loses the repr.** A `count` / `repeat` object
   returned to the host arrives as `<itertools.count object>` /
   `<itertools.repeat object>` rather than its in-sandbox `repr()`
@@ -86,6 +98,14 @@ or duration limit, and then raises `MemoryError` rather than exhausting. Under
 `ResourceLimits::default()`, which sets neither (only a recursion depth), it
 runs until the host itself runs out of memory. This is the same exposure as a
 `while True:` loop, not something specific to `itertools`.
+
+The adaptors that discard items without yielding — `dropwhile` and
+`filterfalse` before their first accepted item, `compress` past a falsy run,
+`islice` skipping to `start`, `chain` crossing an exhausted source — poll
+`max_duration` themselves while looping, so a discarding pass over an infinite
+source raises `TimeoutError` instead of spinning. The poll is amortized (once
+per 64 items), so the limit can be overshot by up to that much work. CPython
+has no duration limit at all and would loop forever.
 
 `cycle(iterable)` must buffer every item it has seen so far in order to replay
 them, and that buffer is charged against `max_memory` as it grows, so cycling
