@@ -334,7 +334,7 @@ pub struct CallFrame<'code> {
     should_return: bool,
 
     /// Whether this is a non-executing frame parked between active tasks.
-    is_host: bool,
+    is_parked: bool,
 
     /// Whether this frame is a class `__init__` running for `Foo(...)`.
     ///
@@ -362,15 +362,15 @@ impl<'code> CallFrame<'code> {
             function_id: None,
             call_offset: None,
             should_return: false,
-            is_host: false,
+            is_parked: false,
             is_initializer: false,
         }
     }
 
     /// Creates a non-executing frame for a VM with no active Python task.
-    fn new_host(code: &'code Code) -> Self {
+    fn new_parked(code: &'code Code) -> Self {
         let mut frame = Self::new_module(code, 0);
-        frame.is_host = true;
+        frame.is_parked = true;
         frame
     }
 
@@ -400,7 +400,7 @@ impl<'code> CallFrame<'code> {
             function_id: Some(function_id),
             call_offset,
             should_return: false,
-            is_host: false,
+            is_parked: false,
             is_initializer: false,
         }
     }
@@ -522,7 +522,7 @@ pub struct SerializedFrame {
 impl CallFrame<'_> {
     /// Converts this frame to a serializable representation.
     fn serialize(&self) -> SerializedFrame {
-        assert!(!self.is_host, "cannot serialize a host root frame");
+        assert!(!self.is_parked, "cannot serialize a parked frame");
         assert!(
             !self.should_return,
             "cannot serialize frame marked for return - not yet supported"
@@ -609,7 +609,7 @@ pub struct VM<'h> {
     /// and are accessed via dedicated opcodes.
     pub(crate) globals: Vec<Value>,
 
-    /// Frame currently executing or parked at a host boundary.
+    /// Frame currently executing, or a placeholder while no task is active.
     current_frame: CallFrame<'h>,
 
     /// Caller frames suspended below `current_frame`.
@@ -803,7 +803,7 @@ impl<'h> VM<'h> {
                     function_id: sf.function_id,
                     call_offset: sf.call_offset,
                     should_return: false,
-                    is_host: false,
+                    is_parked: false,
                     is_initializer: sf.is_initializer,
                 }
             })
@@ -813,7 +813,7 @@ impl<'h> VM<'h> {
         // The root frame does not contribute to recursion depth.
         let current_frame_depth = frames.len().saturating_sub(1);
         let mut frames = frames;
-        let current_frame = frames.pop().unwrap_or_else(|| CallFrame::new_host(module_code));
+        let current_frame = frames.pop().unwrap_or_else(|| CallFrame::new_parked(module_code));
 
         Self {
             stack: snapshot.stack,
@@ -865,7 +865,7 @@ impl<'h> VM<'h> {
             // (the VM owned them, now the snapshot owns them)
             stack: mem::take(&mut self.stack),
             globals: mem::take(&mut self.globals),
-            frames: if self.current_frame.is_host {
+            frames: if self.current_frame.is_parked {
                 Vec::new()
             } else {
                 self.suspended_frames
@@ -1936,7 +1936,7 @@ impl<'h> VM<'h> {
     // Frame Operations
     // ========================================================================
 
-    /// Returns the frame currently executing or parked at a host boundary.
+    /// Returns the frame currently executing, or the parked placeholder.
     #[inline]
     pub(crate) fn current_frame(&self) -> &CallFrame<'h> {
         &self.current_frame
@@ -1952,7 +1952,7 @@ impl<'h> VM<'h> {
     ///
     /// Returns an error if the recursion depth limit is exceeded by pushing this frame.
     pub(super) fn push_frame(&mut self, frame: CallFrame<'h>) -> RunResult<()> {
-        if !self.current_frame.is_host
+        if !self.current_frame.is_parked
             && let Err(e) = self.incr_recursion()
         {
             self.cleanup_frame_state(&frame);
@@ -1977,7 +1977,7 @@ impl<'h> VM<'h> {
         // Sync instruction_ip to the restored caller so exception table lookups
         // target the correct frame after returning from a nested run() call.
         self.instruction_ip = self.current_frame.ip;
-        if !self.current_frame.is_host {
+        if !self.current_frame.is_parked {
             self.decr_recursion();
         }
         frame.should_return
@@ -1996,12 +1996,12 @@ impl<'h> VM<'h> {
     ///
     /// Used when a task completes or fails and we need to switch to another task.
     /// Drains the stack with proper `drop_with`, then leaves a non-executing
-    /// host frame until another task is loaded.
+    /// parked frame until another task is loaded.
     pub(super) fn cleanup_current_task(&mut self) {
         self.stack.drain(..).drop_with(self.heap);
         self.suspended_frames.clear();
         let code = self.module_code.unwrap_or(self.current_frame.code);
-        self.current_frame = CallFrame::new_host(code);
+        self.current_frame = CallFrame::new_parked(code);
     }
 
     /// Runs the trial-deletion cycle collector.
@@ -2042,7 +2042,7 @@ impl<'h> VM<'h> {
     /// no location-table scan, so it is affordable on every call. Out-of-range
     /// offsets (an invariant violation) degrade to `None` rather than panic.
     pub(super) fn current_offset(&self) -> Option<u32> {
-        if self.current_frame.is_host {
+        if self.current_frame.is_parked {
             None
         } else {
             u32::try_from(self.instruction_ip).ok()

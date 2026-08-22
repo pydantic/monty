@@ -337,6 +337,10 @@ impl Executor {
     ///
     /// The argument tuple occupies a temporary namespace slot whose name mapping
     /// must not be committed; appended interns remain valid session metadata.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "synthetic calls combine existing REPL and call-site metadata"
+    )]
     pub(crate) fn new_repl_function_call(
         name: &str,
         name_id: StringId,

@@ -481,7 +481,7 @@ impl<'h> VM<'h> {
             self.scheduler.set_current_task(Some(next_task_id));
             self.load_or_init_task(next_task_id)?;
         }
-        // If no task is ready, the host frame remains parked until resume.
+        // If no task is ready, the placeholder frame remains parked until resume.
 
         Ok(())
     }
@@ -576,7 +576,7 @@ impl<'h> VM<'h> {
                         function_id: sf.function_id,
                         call_offset: sf.call_offset,
                         should_return: false,
-                        is_host: false,
+                        is_parked: false,
                         is_initializer: sf.is_initializer,
                     }
                 })
