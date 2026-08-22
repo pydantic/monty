@@ -333,7 +333,7 @@ pub struct CallFrame<'code> {
     /// and return to the caller. Supports `evaluate_function`.
     should_return: bool,
 
-    /// Whether this is a non-executing root for a host-initiated call.
+    /// Whether this is a non-executing frame parked between active tasks.
     is_host: bool,
 
     /// Whether this frame is a class `__init__` running for `Foo(...)`.
@@ -367,7 +367,7 @@ impl<'code> CallFrame<'code> {
         }
     }
 
-    /// Creates a non-executing root frame for a host-initiated function call.
+    /// Creates a non-executing frame for a VM with no active Python task.
     fn new_host(code: &'code Code) -> Self {
         let mut frame = Self::new_module(code, 0);
         frame.is_host = true;
@@ -724,25 +724,6 @@ impl<'h> VM<'h> {
         Self::new_with_frame(
             globals,
             CallFrame::new_module(code, 0),
-            heap,
-            interns,
-            print_writer,
-            assert_repr_max_bytes,
-        )
-    }
-
-    /// Creates a VM rooted outside Python for a host-initiated function call.
-    pub(crate) fn new_host(
-        globals: Vec<Value>,
-        code: &'h Code,
-        heap: &'h mut HeapReader<'h>,
-        interns: &'h Interns,
-        print_writer: PrintWriter<'h>,
-        assert_repr_max_bytes: u32,
-    ) -> Self {
-        Self::new_with_frame(
-            globals,
-            CallFrame::new_host(code),
             heap,
             interns,
             print_writer,
@@ -2055,7 +2036,7 @@ impl<'h> VM<'h> {
     }
 
     /// Captures the caller's current bytecode offset for a call site, or `None`
-    /// when no frame is on the stack (host-initiated calls).
+    /// while the VM is parked with no active Python task.
     ///
     /// The cheap counterpart to [`current_position`](Self::current_position):
     /// no location-table scan, so it is affordable on every call. Out-of-range

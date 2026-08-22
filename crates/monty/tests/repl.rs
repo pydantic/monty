@@ -539,6 +539,27 @@ fn call_function_no_args() {
 }
 
 #[test]
+fn call_function_runs_asyncio_gather() {
+    let mut repl = repl_with_code(
+        "\
+import asyncio
+async def double(value):
+    return value * 2
+async def gather_values():
+    return await asyncio.gather(double(1), double(2), double(3))
+def run():
+    return asyncio.run(gather_values())
+",
+    );
+
+    let result = repl.call_function("run", vec![], PrintWriter::Stdout).unwrap();
+    assert_eq!(
+        result,
+        MontyObject::List(vec![MontyObject::Int(2), MontyObject::Int(4), MontyObject::Int(6)])
+    );
+}
+
+#[test]
 fn call_function_returns_none() {
     let mut s = repl_with_code("def noop(): pass");
     let result = s.call_function("noop", vec![], PrintWriter::Stdout).unwrap();
@@ -579,6 +600,23 @@ fn call_function_multiple_times() {
             .unwrap();
         assert_eq!(result, MontyObject::Int(i + 1));
     }
+}
+
+#[test]
+fn call_function_survives_repl_round_trip() {
+    let mut repl = repl_with_code("def double(value): return value * 2");
+    assert_eq!(
+        repl.call_function("double", vec![MontyObject::Int(2)], PrintWriter::Stdout)
+            .unwrap(),
+        MontyObject::Int(4)
+    );
+
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(
+        repl.call_function("double", vec![MontyObject::Int(3)], PrintWriter::Stdout)
+            .unwrap(),
+        MontyObject::Int(6)
+    );
 }
 
 #[test]
@@ -707,7 +745,13 @@ fn call_nonexistent_function() {
 fn call_non_callable() {
     let mut s = repl_with_code("x = 42");
     let err = s.call_function("x", vec![], PrintWriter::Stdout).unwrap_err();
-    assert_snapshot!(err, @"TypeError: 'int' object is not callable");
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "<python-input-1>", line 1, in <module>
+        x()
+        ~~~
+    TypeError: 'int' object is not callable
+    "#);
 }
 
 #[test]
@@ -716,6 +760,9 @@ fn call_function_raises_exception() {
     let err = s.call_function("boom", vec![], PrintWriter::Stdout).unwrap_err();
     assert_snapshot!(err, @r#"
     Traceback (most recent call last):
+      File "<python-input-1>", line 1, in <module>
+        boom()
+        ~~~~~~
       File "<python-input-0>", line 1, in boom
         def boom(): raise ValueError('kaboom')
     ValueError: kaboom

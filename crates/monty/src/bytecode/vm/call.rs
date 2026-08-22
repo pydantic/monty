@@ -441,7 +441,7 @@ impl VM<'_> {
 
     /// Converts a nested VM suspension into a specific synchronous-context error.
     #[cold]
-    fn unsupported_frame_exit(&mut self, ctx: &'static str, exit: FrameExit) -> RunError {
+    pub(crate) fn unsupported_frame_exit(&mut self, ctx: &'static str, exit: FrameExit) -> RunError {
         let error = match &exit {
             FrameExit::Return(_) => unreachable!("return exits are handled above"),
             FrameExit::ExternalCall { function_name, .. } => ExcType::not_implemented(format!(

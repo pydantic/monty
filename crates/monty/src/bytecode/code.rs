@@ -57,7 +57,8 @@ pub struct Code {
 }
 
 impl Code {
-    /// Creates an empty code object for host-initiated VM contexts.
+    /// Creates an empty code object for tests that only need VM context.
+    #[cfg(test)]
     pub(crate) fn empty() -> Self {
         Self::new(
             Vec::new(),
