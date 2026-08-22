@@ -296,6 +296,11 @@ impl MontyRepl {
             return Err(RunError::from(ExcType::name_error(name))
                 .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
         };
+        if matches!(self.globals[slot_idx.index()], Value::Undefined) {
+            return Err(RunError::from(ExcType::name_error(name))
+                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
+        }
+        };
 
         let input_script_name = self.next_input_script_name();
         let executor = Executor::new_repl_function_call(
