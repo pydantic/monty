@@ -14,7 +14,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::Interns,
     types::{
         LazyHeapSet, PyTrait, Type,
@@ -216,7 +216,7 @@ impl HeapItem for TimeZone {
 
 /// `HeapRead`-based dispatch for `TimeZone`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident timezone objects.
-impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::TimeZone
     }
@@ -234,7 +234,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         ))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))

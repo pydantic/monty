@@ -80,7 +80,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
+    heap::{
+        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, heap_read_ref_as_field,
+    },
     intern::{BytesId, StaticStrings, StringId},
     resource_checks::{check_repeat_size, check_replace_size},
     types::{
@@ -282,9 +284,9 @@ impl ops::Deref for Bytes {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
     /// One-sided implementation of Python membership (`__contains__`).
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         bytes_contains(self.get(vm.heap).as_slice(), item, vm).map(Some)
     }
 
@@ -296,8 +298,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Type::Bytes
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(BytesIterator::from_heap(self_id.expect("heap values have an id"), vm))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(BytesIterator::from_heap(self.id(), vm))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -329,7 +331,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Ok(eq_bytes(self.get(vm.heap).as_slice(), other, vm))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let b = self.get(vm.heap);
         if let Some(cached) = b.1.get() {
             return Ok(Some(cached));
@@ -354,7 +356,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Ok(bytes_repr_fmt(&self.get(vm.heap).0, f)?)
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let other = match other {
             Value::InternBytes(id) => vm.interns.get_bytes(*id),
             Value::Ref(id) if let HeapData::Bytes(value) = vm.heap.get(*id) => value.as_slice(),
@@ -374,13 +376,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         self.py_mul_impl(other, vm)
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
@@ -2367,7 +2363,7 @@ impl HeapItem for BytesIterator {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, BytesIterator> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIterator> {
     fn py_is_iterable(&self, _: &VM<'h>) -> bool {
         true
     }
@@ -2384,13 +2380,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BytesIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        let self_id = self_id.expect("heap values have an id");
-        vm.heap.inc_ref(self_id);
-        Ok(Value::Ref(self_id))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(self.clone_value(vm.heap))
     }
 
-    fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let byte = {
             let iter = self.get(vm.heap);
             iter.as_slice(vm).get(iter.index).copied()

@@ -53,3 +53,21 @@ Concurrency is cooperative and host-driven. `gather` suspends Monty whenever
 every branch is blocked on an external call, hands the pending calls to the
 host, and resumes when the host returns results. There is no preemption, no
 threads, and no in-sandbox scheduler.
+
+### A failing `gather` cancels its siblings
+
+When one child of a `gather` raises, every sibling still running is cancelled where it is blocked and never resumes.
+That includes the tasks of any gather a sibling was itself awaiting.
+CPython leaves those siblings running as tasks on the loop, so:
+
+```python
+async def worker():
+    for _ in range(3):
+        await asyncio.gather(step())
+    done.append('finished')
+```
+
+appends `'finished'` under CPython after a sibling of `worker()` raises, but not under Monty.
+
+External calls already passed to the host are not cancelled.
+The host still resolves them and the results are discarded.

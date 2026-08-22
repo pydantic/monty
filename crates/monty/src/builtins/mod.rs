@@ -21,6 +21,7 @@ mod len;
 mod map;
 mod min_max; // min and max share implementation
 mod next;
+pub(crate) mod object_setattr;
 mod oct;
 pub(crate) mod open;
 mod ord;
@@ -160,6 +161,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Reversed => reversed::builtin_reversed(vm, args),
             Self::Round => round::builtin_round(vm, args),
             Self::Setattr => setattr::builtin_setattr(vm, args),
+            Self::ObjectSetattr => object_setattr::builtin_object_setattr(vm, args),
             Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),

@@ -17,7 +17,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     types::{PyTrait, Type},
     value::{EitherStr, Value},
@@ -157,7 +157,7 @@ fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
     normalized.clamp(lower, upper)
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Slice
     }
@@ -176,7 +176,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         Ok(Some(a.start == b.start && a.stop == b.stop && a.step == b.step))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))

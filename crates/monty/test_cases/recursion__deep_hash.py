@@ -2,6 +2,7 @@
 
 # Test that hashing deeply nested containers raises RecursionError instead
 # of crashing with a Rust stack overflow.
+from dataclasses import dataclass
 
 # === Deep tuple hash ===
 x = (1,)
@@ -44,5 +45,23 @@ for _ in range(10000):
 s = set()
 try:
     s.add(w)
+except RecursionError:
+    pass  # acceptable if depth guard triggers
+
+
+# === Deep frozen dataclass hash ===
+# The synthesized `__hash__` hashes the fields, so nesting recurses through it.
+@dataclass(frozen=True)
+class Node:
+    v: object
+
+
+n = Node(1)
+for _ in range(10000):
+    n = Node(n)
+
+try:
+    h = hash(n)
+    assert isinstance(h, int)
 except RecursionError:
     pass  # acceptable if depth guard triggers
