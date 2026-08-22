@@ -742,6 +742,17 @@ fn call_nonexistent_function() {
 }
 
 #[test]
+fn call_conditionally_undefined_functions() {
+    let mut s = repl_with_code("if False:\n    def foo(): return 1\n    def len(): return 1");
+
+    let err = s.call_function("foo", vec![], PrintWriter::Stdout).unwrap_err();
+    assert_snapshot!(err, @"NameError: name 'foo' is not defined");
+
+    let err = s.call_function("len", vec![], PrintWriter::Stdout).unwrap_err();
+    assert_snapshot!(err, @"NameError: name 'len' is not defined");
+}
+
+#[test]
 fn call_non_callable() {
     let mut s = repl_with_code("x = 42");
     let err = s.call_function("x", vec![], PrintWriter::Stdout).unwrap_err();
