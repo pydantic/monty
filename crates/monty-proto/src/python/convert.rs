@@ -251,6 +251,7 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::Property,
             MontyType::Date,
             MontyType::DateTime,
+            MontyType::Time,
             MontyType::TimeDelta,
             MontyType::TimeZone,
             MontyType::RePattern,
@@ -464,6 +465,7 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
     match t {
         MontyType::Date => cached!("datetime", "date"),
         MontyType::DateTime => cached!("datetime", "datetime"),
+        MontyType::Time => cached!("datetime", "time"),
         MontyType::Deque => cached!("collections", "deque"),
         MontyType::TimeDelta => cached!("datetime", "timedelta"),
         MontyType::TimeZone => cached!("datetime", "timezone"),

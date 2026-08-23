@@ -105,8 +105,9 @@ raising, matching CPython. The same wording divergence applies to
 `strftime`, the same as `date` and `datetime`.
 
 `date`, `datetime`, `timedelta` and `timezone` cross the host boundary as
-typed objects. `time` has no such representation, so returning one from a
-session yields its `repr()` string.
+typed objects. A `time` *instance* has no such representation, so returning
+one from a session yields its `repr()` string. The class object itself is
+unaffected.
 
 ## `timedelta`
 
