@@ -712,6 +712,7 @@ impl AsRef<Self> for MontyObject {
     strum::EnumIter,
     strum::EnumString,
     strum::IntoStaticStr,
+    strum::VariantNames,
 )]
 #[strum(serialize_all = "lowercase")]
 pub enum MontyType {
@@ -845,6 +846,8 @@ pub enum MontyType {
     /// The builtin `object`, which the sandbox exposes as a name only — it is
     /// not a base class and cannot be constructed.
     Object,
+    #[strum(serialize = "datetime.time")]
+    Time,
 }
 
 impl fmt::Display for MontyType {

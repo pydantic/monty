@@ -1915,6 +1915,12 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(tz_id);
             }
         }
+        HeapData::Time(t) => {
+            // Same retained-tzinfo contract as `DateTime` above.
+            if let Some(tz_id) = t.tzinfo_ref() {
+                on_child(tz_id);
+            }
+        }
         HeapData::OpenFile(file) => {
             // Kept in sync with `py_dec_ref_ids_for_data`: the file owns one
             // ref on its loaded buffer. (`OpenFile` is not GC-tracked today, so
@@ -2027,6 +2033,12 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             // Mirror `for_each_child_id`: when an aware datetime is freed we must
             // also drop the retained tzinfo reference so its refcount is balanced.
             if let Some(tz_id) = dt.tzinfo_ref() {
+                stack.push(tz_id);
+            }
+        }
+        HeapData::Time(t) => {
+            // Mirror `for_each_child_id`: an aware time owns its tzinfo reference.
+            if let Some(tz_id) = t.tzinfo_ref() {
                 stack.push(tz_id);
             }
         }

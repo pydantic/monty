@@ -407,6 +407,7 @@ impl<'h> PyTrait<'h> for Value {
                     Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
                 }
                 (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => a.py_cmp(&b, vm),
+                (HeapReadOutput::Time(a), HeapReadOutput::Time(b)) => a.py_cmp(&b, vm),
                 (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
                     Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
                 }

@@ -1,8 +1,8 @@
 # `datetime` module
 
-Provides four classes: `date`, `datetime`, `timedelta`, `timezone`. The
-module-level `time`, `tzinfo`, and `MINYEAR` / `MAXYEAR` symbols are not
-exposed.
+Provides five classes: `date`, `datetime`, `time`, `timedelta`,
+`timezone`. The module-level `tzinfo`, `MINYEAR` / `MAXYEAR` symbols are
+not exposed.
 
 ## `date`
 
@@ -32,7 +32,7 @@ the stored value: Monty does not track DST-fold disambiguation.
 Attributes: `year`, `month`, `day`, `hour`, `minute`, `second`,
 `microsecond`, `tzinfo`.
 Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`,
-`date`, `timestamp`.
+`date`, `time`, `timetz`, `timestamp`.
 
 Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
 `fromisoformat(date_string)`.
@@ -47,15 +47,66 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
   implemented.
 - `combine()`, `fromtimestamp()`, `fromordinal()`, `utcfromtimestamp()`
   are not implemented.
+- `time()` and `timetz()` return a `time` whose `fold` is always 0, since
+  `datetime` does not store the flag (above).
 
 Subclassing `datetime` is not possible, since there is no class inheritance
 (see ./classes.md).
 
-`datetime.replace()` and `date.replace()` accept **only keyword
-arguments** in Monty. CPython accepts positional args too
+`datetime.replace()`, `date.replace()` and `time.replace()` accept **only
+keyword arguments** in Monty. CPython accepts positional args too
 (`d.replace(2025)` is valid in CPython 3.14). Calling with positionals
 in Monty raises `TypeError: replace expected at most 0 arguments,
 got N`.
+
+## `time`
+
+Constructor: `time(hour=0, minute=0, second=0, microsecond=0,
+tzinfo=None, *, fold=0)`.
+Attributes: `hour`, `minute`, `second`, `microsecond`, `tzinfo`, `fold`.
+Methods: `isoformat(timespec='auto')`, `strftime`, `replace`,
+`utcoffset`, `tzname`, `dst`.
+Class methods: `fromisoformat(time_string)`. `strptime(string, format)`
+— which CPython added in 3.14 — is not implemented and raises
+`AttributeError`.
+
+The `min`, `max` and `resolution` class constants are not defined, and
+raise `AttributeError`. Type checking will not warn you: it resolves
+`time` against typeshed, which declares them, so `monty -t` passes on
+`time.min` and the lookup fails at runtime.
+
+`fromisoformat()` parses with [speedate](https://docs.rs/speedate), the
+same parser `date` and `datetime` use, so it accepts a narrower grammar
+than CPython 3.11+. The compact form (`'123005'`), a leading `T`
+(`'T12:30'`), a sub-minute UTC offset (`'12:30:05+01:00:30'`) and more
+than 6 fractional-second digits (`'12:30:05.1234567'`) are all rejected
+with `ValueError: Invalid isoformat string: '...'`. CPython instead names
+the offending component of a syntactically valid but out-of-range string:
+`time.fromisoformat('25:00')` raises `hour must be in 0..23, not 25`
+there.
+
+`tzinfo` accepts only `None` or a built-in `timezone` instance. The
+`tzinfo` ABC is not implemented, so custom subclasses are rejected, the
+same restriction as `datetime`.
+
+`fold` is stored and reported by `.fold` and `repr()`, but never read:
+Monty has no DST model, so it cannot use the flag to pick between the two
+readings of a repeated wall clock. As in CPython, `fold` is excluded from
+`==` and `hash()`.
+
+Ordering an aware `time` against a naive one raises
+`TypeError: '<' not supported between instances of 'datetime.time' and
+'datetime.time'`, where CPython raises `TypeError: can't compare
+offset-naive and offset-aware times`. `==` returns `False` without
+raising, matching CPython. The same wording divergence applies to
+`datetime`.
+
+`f'{t}'` goes through `str()`, and a non-empty spec goes through
+`strftime`, the same as `date` and `datetime`.
+
+`date`, `datetime`, `timedelta` and `timezone` cross the host boundary as
+typed objects. `time` has no such representation, so returning one from a
+session yields its `repr()` string.
 
 ## `timedelta`
 
@@ -114,13 +165,14 @@ the way CPython does. The known cases:
 - Time directives (`%H`, `%M`, `%S`, `%p`, …) on a bare `date`: Monty stores a
   `date` with no time component, so these raise; CPython fills zeros (`'00'`,
   `'AM'`).
-- `%z` / `%Z` on a naive `date`/`datetime`: Monty raises; CPython yields `''`.
-- `%z` / `%Z` on an **aware** `datetime`: Monty formats the wall-clock (naive)
-  components and so raises rather than emitting the offset/name; CPython yields
-  `'+0200'` / `'CEST'`. Threading the timezone through formatting is not yet
-  implemented.
+- `%z` / `%Z` on a naive `date`, `datetime` or `time`: Monty raises; CPython
+  yields `''`.
+- `%z` / `%Z` on an **aware** `datetime` or `time`: Monty formats the wall-clock
+  (naive) components and so raises rather than emitting the offset/name; CPython
+  yields `'+0200'` / `'CEST'`. Threading the timezone through formatting is not
+  yet implemented.
 
-f-strings format `date`/`datetime` values through `strftime`, matching
+f-strings format `date`, `datetime` and `time` values through `strftime`, matching
 CPython's `__format__`: `f'{dt:%Y-%m-%d}'` is equivalent to
 `dt.strftime('%Y-%m-%d')`, and an empty spec (`f'{dt}'` or `f'{dt:}'`) uses
 `str(dt)`. One edge-case divergence: a spec that also happens to be a valid

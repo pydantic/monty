@@ -1107,6 +1107,20 @@ pub enum StaticStrings {
     /// `hexstr` parameter of `binascii.unhexlify()`.
     #[strum(serialize = "hexstr")]
     Hexstr,
+
+    /// `datetime.time` class name. Appended rather than filed with the other
+    /// datetime strings so existing discriminants — which dumps encode by
+    /// value — keep their numbering.
+    Time,
+    /// `datetime.timetz` method name.
+    Timetz,
+    /// `utcoffset()` method of `time`, `datetime` and `timezone`.
+    Utcoffset,
+    /// `tzname()` method of `time`, `datetime` and `timezone`. (`dst()` reuses
+    /// the `Dst` variant already interned for the `os` kwarg of the same name.)
+    Tzname,
+    /// `timespec` keyword of `time.isoformat()`.
+    Timespec,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

@@ -10,7 +10,10 @@ use crate::{
     },
     heap::HeapReadOutput,
     resource_checks::check_repeat_size,
-    types::{PyTrait, date::format_date_strftime, datetime::format_datetime_strftime, str::allocate_string},
+    types::{
+        PyTrait, date::format_date_strftime, datetime::format_datetime_strftime, str::allocate_string,
+        time::format_time_strftime,
+    },
     value::Value,
 };
 
@@ -135,7 +138,7 @@ impl VM<'_> {
         let id = *id;
         let temporal = matches!(
             this.heap.read(id),
-            HeapReadOutput::Date(_) | HeapReadOutput::DateTime(_)
+            HeapReadOutput::Date(_) | HeapReadOutput::DateTime(_) | HeapReadOutput::Time(_)
         );
         if !temporal {
             return Ok(None);
@@ -153,6 +156,7 @@ impl VM<'_> {
         let formatted = match this.heap.read(id) {
             HeapReadOutput::Date(d) => format_date_strftime(*d.get(this.heap), spec_str),
             HeapReadOutput::DateTime(d) => format_datetime_strftime(d.get(this.heap), spec_str),
+            HeapReadOutput::Time(t) => format_time_strftime(t.get(this.heap), spec_str),
             _ => unreachable!("temporal-ness checked above"),
         };
         formatted.map(Some)

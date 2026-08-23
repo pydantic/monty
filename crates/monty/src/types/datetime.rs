@@ -26,7 +26,7 @@ use crate::{
         AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
         date::{self, StrftimeArgs},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
-        timedelta, timezone,
+        time, timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -190,6 +190,25 @@ pub(crate) fn to_components(datetime: &DateTime) -> Option<(i32, u8, u8, u8, u8,
         u8::try_from(datetime.naive.time().second()).expect("second is always in 0..=59"),
         datetime.naive.and_utc().timestamp_subsec_micros(),
     ))
+}
+
+/// The `tzinfo` of a datetime as an owned value, or `Value::None` if it is naive.
+///
+/// Prefers the retained object so `dt.tzinfo is tz` holds and repeated access
+/// returns one object. A datetime that has an offset but no retained reference —
+/// `tzinfo_ref` is absent from dumps written before it existed — rebuilds an equal
+/// `timezone` instead of reporting itself naive.
+fn tzinfo_value(dt: &DateTime, vm: &mut VM<'_>) -> Value {
+    if let Some(tzinfo_ref) = dt.tzinfo_ref {
+        vm.heap.inc_ref(tzinfo_ref);
+        Value::Ref(tzinfo_ref)
+    } else {
+        match timezone_info(dt) {
+            Some(tz) if tz.offset_seconds == 0 && tz.name.is_none() => vm.heap.get_timezone_utc(),
+            Some(tz) => Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))),
+            None => Value::None,
+        }
+    }
 }
 
 /// Constructor for `datetime(...)`.
@@ -506,7 +525,20 @@ pub(crate) fn py_sub_datetime(a: &DateTime, b: &DateTime, heap: &mut Heap) -> Op
     Some(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))))
 }
 
-fn tzinfo_from_value(value: &Value, heap: &Heap, interns: &Interns) -> RunResult<(Option<TimeZone>, Option<HeapId>)> {
+/// Validates a `tzinfo` argument and extracts its timezone data plus heap identity.
+///
+/// Returns `(None, None)` for `None` and `(Some(tz), Some(id))` for a `timezone`
+/// instance — the two are always both present or both absent, which is what lets
+/// callers keep "aware implies an attached tzinfo object" as an invariant. Any
+/// other type is rejected with CPython's wording. Shared with [`time`] so both
+/// constructors accept exactly the same tzinfo surface.
+///
+/// [`time`]: crate::types::time
+pub(crate) fn tzinfo_from_value(
+    value: &Value,
+    heap: &Heap,
+    interns: &Interns,
+) -> RunResult<(Option<TimeZone>, Option<HeapId>)> {
     match value {
         Value::None => Ok((None, None)),
         Value::Ref(id) => match heap.get(*id) {
@@ -539,7 +571,10 @@ fn attach_or_allocate_tzinfo_ref(datetime: &mut DateTime, preferred_tzinfo_ref: 
 
 /// Allocates a timezone object for datetime storage, canonicalizing UTC to the
 /// shared singleton object.
-fn allocate_tzinfo_ref(offset_seconds: i32, timezone_name: Option<String>, heap: &mut Heap) -> HeapId {
+///
+/// Returns an *owned* reference, so the caller must hand it to a field that
+/// releases it (`DateTime::tzinfo_ref`, `Time::tzinfo_ref`).
+pub(crate) fn allocate_tzinfo_ref(offset_seconds: i32, timezone_name: Option<String>, heap: &mut Heap) -> HeapId {
     if offset_seconds == 0 && timezone_name.is_none() {
         let utc = heap.get_timezone_utc();
         defer_drop!(utc, heap);
@@ -910,6 +945,28 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                 )?;
                 Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(d)))))
             }
+            Some(id) if id == StaticStrings::Time || id == StaticStrings::Timetz => {
+                // `time()` drops the timezone, `timetz()` keeps it — the only
+                // difference between the two in CPython.
+                let keep_tz = id == StaticStrings::Timetz;
+                args.check_zero_args(if keep_tz { "datetime.timetz" } else { "datetime.time" }, vm.heap)?;
+                // Owned, so it must be released whether or not the time attaches it.
+                let tzinfo = if keep_tz { tzinfo_value(&dt, vm) } else { Value::None };
+                defer_drop!(tzinfo, vm);
+                let naive = dt.naive.time();
+                let micros = i32::try_from(dt.naive.and_utc().timestamp_subsec_micros())
+                    .expect("microsecond is always in 0..=999_999");
+                Ok(CallResult::Value(time::allocate(
+                    vm,
+                    i32::try_from(naive.hour()).expect("hour is always in 0..=23"),
+                    i32::try_from(naive.minute()).expect("minute is always in 0..=59"),
+                    i32::try_from(naive.second()).expect("second is always in 0..=59"),
+                    micros,
+                    // `DateTime` does not store `fold`, so the time is always unfolded.
+                    0,
+                    tzinfo,
+                )?))
+            }
             Some(id) if id == StaticStrings::Timestamp => {
                 args.check_zero_args("datetime.timestamp", vm.heap)?;
                 let ts = compute_timestamp(&dt);
@@ -945,21 +1002,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             Some(id) if id == StaticStrings::Microsecond => Ok(Some(CallResult::Value(Value::Int(i64::from(
                 dt.naive.and_utc().timestamp_subsec_micros(),
             ))))),
-            Some(id) if id == StaticStrings::Tzinfo => {
-                if let Some(tzinfo_ref) = dt.tzinfo_ref {
-                    vm.heap.inc_ref(tzinfo_ref);
-                    return Ok(Some(CallResult::Value(Value::Ref(tzinfo_ref))));
-                }
-                if let Some(tz) = timezone_info(&dt) {
-                    if tz.offset_seconds == 0 && tz.name.is_none() {
-                        return Ok(Some(CallResult::Value(vm.heap.get_timezone_utc())));
-                    }
-                    return Ok(Some(CallResult::Value(Value::Ref(
-                        vm.heap.allocate(HeapData::TimeZone(tz)),
-                    ))));
-                }
-                Ok(Some(CallResult::Value(Value::None)))
-            }
+            Some(id) if id == StaticStrings::Tzinfo => Ok(Some(CallResult::Value(tzinfo_value(&dt, vm)))),
             _ => Ok(None),
         }
     }
