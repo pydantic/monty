@@ -2458,6 +2458,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "monty-doctest"
+version = "0.0.21"
+dependencies = [
+ "monty",
+ "monty-pool",
+ "monty-types",
+ "tokio",
+]
+
+[[package]]
 name = "monty-fs"
 version = "0.0.21"
 dependencies = [

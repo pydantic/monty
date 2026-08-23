@@ -966,9 +966,9 @@ where they are. Change one and you must change all of them:
 
 ### Rules for `docs/`
 
-- Every Python snippet is executed by `make test-docs` (pytest-examples over `docs/`,
-  `README.md` and `crates/monty-python/README.md`). Snippets that cannot run are marked
-  ```` ```python test="skip" ````; they are still ruff-linted.
+- `make test-docs` checks every Python snippet in `docs/`, `README.md`,
+  `packages/pydantic-monty/README.md`, and `crates/monty-python/README.md`.
+  It executes each snippet unless marked ```` ```python test="skip" ````; skipped snippets are still ruff-linted.
 - Sandbox-side Python (code fed to Monty, not host code) belongs inside a host snippet as
   a string, or in a `test="skip"` block. It must never be a runnable top-level block —
   CPython would execute it.
@@ -979,7 +979,8 @@ where they are. Change one and you must change all of them:
 
 ### Enforcement
 
-- `make test-docs` runs every snippet in `docs/` and both Python READMEs.
+- `make test-docs` applies the Python checks above and compiles Rust snippets in `docs/quickstart/rust.md`.
+  TypeScript snippets are not checked.
 - `make docs` builds the site with `--strict`, which fails on a broken internal link or a
   page missing from the nav. `make docs-serve` previews it.
 - The `docs-parity-reviewer` subagent (`.agents/agents/docs-parity-reviewer.md`) is the

@@ -147,9 +147,9 @@ jobs:
           if-no-files-found: error
 
   # The crates layered on top of the interpreter: the type checker (which does
-  # not depend on `monty` at all) and the subprocess stack. Both build `monty`
-  # only with default features, so this job pays no feature-flag rebuilds and
-  # runs in parallel with `test-rust`.
+  # not depend on `monty` at all), the subprocess stack and the docs harness.
+  # They build `monty` only with default features, so this job pays no
+  # feature-flag rebuilds and runs in parallel with `test-rust`.
   test-rust-crates:
     runs-on: ubuntu-latest
 
@@ -192,6 +192,8 @@ jobs:
       - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
+      - name: Compile Rust documentation examples
+        run: cargo test --doc -p monty-doctest
       # Generating text report:
       - run: cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
       # Generate codecov report (use `report` subcommand to avoid recompilation)
