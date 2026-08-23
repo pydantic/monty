@@ -154,9 +154,9 @@ pub(crate) fn value_to_option_i64(value: &Value, vm: &mut VM<'_>) -> RunResult<O
         // This arm also catches an `__index__` that returns a `LongInt`, which
         // the recursion below funnels back through here.
         _ if let Some(index) = value.long_int_to_i64_saturating(vm) => Ok(Some(index)),
-        _ => match value.try_index(vm)? {
-            // Recurses exactly once: `try_index` validates an int result, so the
-            // arms above take it on the way back in.
+        _ => match value.py_index_impl(vm)? {
+            // Recurses exactly once: `py_index_impl` validates an int result, so
+            // the arms above take it on the way back in.
             Some(index) => {
                 defer_drop!(index, vm);
                 value_to_option_i64(index, vm)

@@ -128,6 +128,30 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         }
     }
 
+    /// Coerces the instance to an integer through the class's `__index__`.
+    ///
+    /// Validating the result here is both CPython's `__index__ returned non-int`
+    /// check and what stops a class whose `__index__` returns another such
+    /// instance from recursing — the caller converts a real int without
+    /// re-entering the protocol.
+    ///
+    /// Runs synchronously like the other dunders here, so an `__index__` that
+    /// calls an external/OS function raises rather than suspending.
+    fn py_index_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(result) = instance_call_dunder_sync(self.id(), "__index__", None, vm)? else {
+            return Ok(None);
+        };
+        if matches!(result, Value::Int(_) | Value::Bool(_) | Value::InternLongInt(_))
+            || matches!(&result, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)))
+        {
+            Ok(Some(result))
+        } else {
+            let exc = ExcType::type_error(format!("__index__ returned non-int (type {})", result.py_type_name(vm)));
+            result.drop_with(vm);
+            Err(exc)
+        }
+    }
+
     fn py_type(&self, vm: &VM<'h>) -> Type {
         Type::Instance(self.get(vm.heap).class)
     }
@@ -507,36 +531,6 @@ pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value>
     match instance_call_str_dunder(self_id, "__str__", vm)? {
         Some(s) => Ok(s),
         None => instance_repr(self_id, vm),
-    }
-}
-
-/// Coerces an instance to an integer through the class's `__index__`.
-///
-/// `Ok(None)` means the class does not define it, leaving the caller to raise
-/// its own `TypeError` — the message differs per consumer (`list indices must
-/// be integers`, `cannot be interpreted as an integer`, ...), so it is not
-/// raised here.
-///
-/// The returned value is validated to be a real `int` (`Int`/`Bool`/`LongInt`),
-/// which is both CPython's `__index__ returned non-int` check and what stops a
-/// class whose `__index__` returns another such instance from recursing: the
-/// caller can convert the result without re-entering this path. Out-of-range
-/// policy stays with the caller, since `as_int` and `as_index` differ on it.
-///
-/// Runs synchronously like the other dunders here, so an `__index__` that calls
-/// an external/OS function raises rather than suspending.
-pub(crate) fn instance_index(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
-    let Some(result) = instance_call_dunder_sync(self_id, "__index__", None, vm)? else {
-        return Ok(None);
-    };
-    if matches!(result, Value::Int(_) | Value::Bool(_) | Value::InternLongInt(_))
-        || matches!(&result, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)))
-    {
-        Ok(Some(result))
-    } else {
-        let exc = ExcType::type_error(format!("__index__ returned non-int (type {})", result.py_type_name(vm)));
-        result.drop_with(vm);
-        Err(exc)
     }
 }
 

@@ -26,9 +26,7 @@ use crate::{
     types::{
         Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
         bytes::{bytes_contains, bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
-        instance::{
-            instance_dataclass_eq, instance_getattr, instance_index, instance_repr_fmt, instance_str, instance_user_eq,
-        },
+        instance::{instance_dataclass_eq, instance_getattr, instance_repr_fmt, instance_str, instance_user_eq},
         long_int::{
             bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
             repeat_count, wide_i128_into_value,
@@ -602,6 +600,16 @@ impl<'h> PyTrait<'h> for Value {
             vm.heap.read(*id).py_cmp_op(other, op, vm)
         } else {
             Ok(None)
+        }
+    }
+
+    fn py_index_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        match self {
+            // `bool` is an `int` subclass in CPython, so it satisfies the
+            // protocol directly rather than through a dunder.
+            Self::Int(_) | Self::Bool(_) | Self::InternLongInt(_) => Ok(Some(self.clone_with_heap(vm.heap))),
+            Self::Ref(id) => vm.heap.read(*id).py_index_impl(vm),
+            _ => Ok(None),
         }
     }
 
@@ -1795,18 +1803,14 @@ impl Value {
     /// this only makes the message theirs to choose.
     pub(crate) fn as_int_with_overflow(&self, vm: &mut VM<'_>, on_overflow: fn() -> RunError) -> RunResult<i64> {
         match self {
+            // Fast path for the common case; `py_index_impl` answers identically
+            // for a plain `int`, just via a clone the caller then drops.
             Self::Int(i) => Ok(*i),
-            // `bool` is an `int` subclass in CPython, so it satisfies every
-            // integer argument directly rather than via `__index__` — which
-            // `try_index` below only dispatches for user instances.
-            Self::Bool(b) => Ok(i64::from(*b)),
-            Self::Ref(heap_id) if let HeapData::LongInt(li) = vm.heap.get(*heap_id) => {
-                li.to_i64().ok_or_else(on_overflow)
-            }
-            // Everything else is either `__index__`-able or a type error, and
-            // `try_index` answers which without this arm inspecting the heap.
+            // Everything else is either `__index__`-able — `bool` and `LongInt`
+            // included, since both are ints — or a type error, and the protocol
+            // answers which without this arm inspecting the heap.
             _ => {
-                if let Some(index) = self.try_index(vm)? {
+                if let Some(index) = self.py_index_impl(vm)? {
                     Self::narrow_index_to_i64(index, vm, on_overflow)
                 } else {
                     let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type_name(vm));
@@ -1832,15 +1836,13 @@ impl Value {
     pub fn as_index(&self, vm: &mut VM<'_>, container_type: Type) -> RunResult<i64> {
         match self {
             Self::Int(i) => Ok(*i),
-            Self::Bool(b) => Ok(i64::from(*b)),
-            Self::Ref(heap_id) if let HeapData::LongInt(li) = vm.heap.get(*heap_id) => {
-                li.to_i64().ok_or_else(ExcType::index_error_int_too_large)
-            }
             // Shaped like [`Self::as_int`]'s fallback, differing only in messages.
-            _ => match self.try_index(vm)? {
+            _ => match self.py_index_impl(vm)? {
                 Some(index) => {
                     // Resolved before narrowing because the closure cannot hold
-                    // `vm` while `narrow_index_to_i64` borrows it mutably.
+                    // `vm` while `narrow_index_to_i64` borrows it mutably. CPython
+                    // names the *original* object, so an over-large `__index__`
+                    // result reports the class, not the `int` it returned.
                     let name = self.py_type_name(vm).into_owned();
                     Self::narrow_index_to_i64(index, vm, move || ExcType::index_error_cannot_fit(&name))
                 }
@@ -1849,31 +1851,12 @@ impl Value {
         }
     }
 
-    /// Calls a user `__index__` when this is an instance whose class defines one.
-    ///
-    /// `Ok(None)` covers both "not an instance" and "no `__index__`", leaving the
-    /// caller to raise its own `TypeError` — the wording differs per consumer
-    /// (`list indices must be integers`, `cannot be interpreted as an integer`,
-    /// `slice indices must be…`), so it is not raised here.
-    ///
-    /// This is the single entry point to the protocol: consumers call it rather
-    /// than testing for `HeapData::Instance` themselves, so how a user class is
-    /// represented on the heap stays known only to this module and `instance.rs`.
-    /// The result is a validated int, so a caller may convert it — or recurse
-    /// once through its own int arms — without re-entering the dunder.
-    pub(crate) fn try_index(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        match self {
-            Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => instance_index(*id, vm),
-            _ => Ok(None),
-        }
-    }
-
     /// Narrows an `__index__` result to `i64`, consuming it.
     ///
     /// Shared by [`Self::as_int`] and [`Self::as_index`], which disagree on the
     /// overflow message (`OverflowError` vs `IndexError`), hence `on_overflow`.
-    /// The value is already validated as an int by [`Self::try_index`], so the
-    /// non-int arms are unreachable.
+    /// The value is already validated as an int by [`PyTrait::py_index_impl`],
+    /// so the non-int arms are unreachable.
     fn narrow_index_to_i64(index: Self, vm: &mut VM<'_>, on_overflow: impl FnOnce() -> RunError) -> RunResult<i64> {
         let converted = match &index {
             Self::Int(i) => Ok(*i),
@@ -1881,9 +1864,9 @@ impl Value {
             Self::InternLongInt(id) => vm.interns.get_long_int(*id).to_i64().ok_or_else(on_overflow),
             Self::Ref(id) => match vm.heap.get(*id) {
                 HeapData::LongInt(li) => li.to_i64().ok_or_else(on_overflow),
-                _ => unreachable!("instance_index validated the result is an int"),
+                _ => unreachable!("py_index_impl validated the result is an int"),
             },
-            _ => unreachable!("instance_index validated the result is an int"),
+            _ => unreachable!("py_index_impl validated the result is an int"),
         };
         index.drop_with(vm);
         converted

@@ -236,15 +236,15 @@ impl FromValue for i64 {
     }
 }
 
-/// Replaces a user instance with the `int` its `__index__` returns, leaving
-/// every other value untouched.
+/// Replaces a value with the `int` the `__index__` protocol produces, leaving
+/// anything not `__index__`-able untouched.
 ///
 /// Runs before the fixed-width int impls match, so they only ever see real ints
-/// — the `PyNumber_Index` step CPython's `i`/`n` argument converters perform. A
-/// class without `__index__` is returned unchanged, so the caller still reports
-/// its own `WrongType`.
+/// — the `PyNumber_Index` step CPython's `i`/`n` argument converters perform. An
+/// int answers with an equal int, and a class without `__index__` is returned
+/// unchanged, so the caller still reports its own `WrongType`.
 fn resolve_index_dunder(value: Value, vm: &mut VM<'_>) -> Result<Value, FromValueFail> {
-    match value.try_index(vm) {
+    match value.py_index_impl(vm) {
         Ok(Some(index)) => {
             value.drop_with(vm);
             Ok(index)

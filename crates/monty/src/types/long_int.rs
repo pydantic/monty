@@ -389,6 +389,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(!self.get(vm.heap).is_zero())
     }
 
+    /// A `LongInt` *is* an int, so it indexes as itself — the caller narrows it
+    /// (or reports the overflow its own way).
+    fn py_index_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(Some(self.clone_value(vm.heap)))
+    }
+
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(eq_bigint(self.get(vm.heap).inner(), other, vm))
     }

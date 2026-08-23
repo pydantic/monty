@@ -274,6 +274,21 @@ pub(crate) trait PyTrait<'h> {
         self.py_repr(vm)
     }
 
+    /// Coerces this value to an `int` through the `__index__` protocol.
+    ///
+    /// `Ok(None)` — the default — means the type is not `__index__`-able, so
+    /// the caller raises its own `TypeError`; the wording differs per consumer
+    /// (`list indices must be integers`, `cannot be interpreted as an integer`,
+    /// `slice indices must be...`), which is why it is not raised here.
+    ///
+    /// The returned value is always a real `int` (`Int`/`Bool`/`LongInt`), so a
+    /// caller may narrow it — or recurse once through its own int arms — without
+    /// re-entering the protocol. Out-of-range policy stays with the caller,
+    /// since `as_int` and `as_index` disagree on it.
+    fn py_index_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
     /// Python unary minus (`__neg__`).
     ///
     /// `Ok(None)` — the default — means the type has no negation, so the VM

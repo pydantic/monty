@@ -6,6 +6,7 @@ use std::{cell::Cell, fmt::Write, ops};
 /// operations like length and equality comparison.
 use monty_types::ResourceError;
 pub use monty_types::{StringRepr, string_repr_fmt};
+use num_traits::ToPrimitive;
 use ruff_python_stdlib::{identifiers::is_identifier, keyword::is_keyword};
 use smallvec::smallvec;
 
@@ -1205,13 +1206,24 @@ fn optional_index(value: &Value, default: usize, str_len: usize, vm: &mut VM<'_>
         Value::None => Ok(default),
         Value::Int(i) => Ok(normalize_sequence_index(*i, str_len)),
         Value::Bool(b) => Ok(normalize_sequence_index(i64::from(*b), str_len)),
+        // Both `LongInt` representations answer here. As well as sharing one
+        // error, this keeps an interned one out of the `_` arm below, whose
+        // recursion would otherwise hand it straight back to itself.
+        Value::InternLongInt(id) => {
+            let i = vm
+                .interns
+                .get_long_int(*id)
+                .to_i64()
+                .ok_or_else(|| ExcType::type_error("integer too large"))?;
+            Ok(normalize_sequence_index(i, str_len))
+        }
         Value::Ref(heap_id) if let HeapData::LongInt(li) = vm.heap.get(*heap_id) => {
             let i = li.to_i64().ok_or_else(|| ExcType::type_error("integer too large"))?;
             Ok(normalize_sequence_index(i, str_len))
         }
-        _ => match value.try_index(vm)? {
-            // Recurses exactly once: `try_index` validates an int result, so the
-            // arms above take it. Recursing rather than narrowing here keeps a
+        _ => match value.py_index_impl(vm)? {
+            // Recurses exactly once: `py_index_impl` validates an int result, so
+            // the arms above take it. Recursing rather than narrowing here keeps a
             // too-large result on the same path as a directly-passed `LongInt` —
             // which raises `TypeError: integer too large` where CPython clamps,
             // a pre-existing divergence this arm inherits rather than widens.
