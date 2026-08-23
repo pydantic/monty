@@ -61,13 +61,28 @@ enum AwaitResult {
     Yield(Vec<CallId>),
 }
 
+/// Yields to the host when an exception left no task to run.
+///
+/// A spawned task whose exception nobody could receive is discarded with no
+/// successor loaded, leaving the parked frame `cleanup_current_task` installs,
+/// which dispatch must not execute. The surviving tasks are parked on external
+/// calls, so the correct move is to hand those back to the host.
+macro_rules! yield_if_parked {
+    ($self:expr) => {
+        if $self.current_frame.is_parked {
+            return Ok(FrameExit::ResolveFutures($self.scheduler.pending_call_ids()));
+        }
+    };
+}
+
 /// Tries an operation and routes a Python exception through the active frames.
 macro_rules! try_catch {
     ($self:expr, $expr:expr) => {
-        if let Err(e) = $expr
-            && let Some(result) = $self.handle_exception(e)
-        {
-            return Err(result);
+        if let Err(e) = $expr {
+            if let Some(result) = $self.handle_exception(e) {
+                return Err(result);
+            }
+            yield_if_parked!($self);
         }
     };
 }
@@ -80,6 +95,7 @@ macro_rules! catch {
         if let Some(result) = $self.handle_exception($err) {
             return Err(result);
         }
+        yield_if_parked!($self);
     }};
 }
 
@@ -1614,6 +1630,7 @@ impl<'h> VM<'h> {
                     if let Some(result) = self.handle_exception_with_value(error, raised) {
                         return Err(result);
                     }
+                    yield_if_parked!(self);
                 }
                 Opcode::Assert => {
                     match decode_assert_flags(self.current_frame.fetch_u8()).expect("invalid assert flags in bytecode")
@@ -1642,6 +1659,7 @@ impl<'h> VM<'h> {
                     if let Some(result) = self.handle_exception_with_value(error, raised) {
                         return Err(result);
                     }
+                    yield_if_parked!(self);
                 }
                 Opcode::ClearException => {
                     // Pop the current exception from the stack
@@ -1904,6 +1922,7 @@ impl<'h> VM<'h> {
         if let Some(uncaught_error) = self.handle_exception(error) {
             return Err(uncaught_error);
         }
+        yield_if_parked!(self);
         // Exception was caught, continue execution
         self.run_external()
     }
@@ -2028,6 +2047,20 @@ impl<'h> VM<'h> {
     #[cfg(feature = "test-hooks")]
     pub(crate) fn __force_gc_for_tests(&mut self) -> usize {
         self.run_gc()
+    }
+
+    /// Releases everything the scheduler still holds, as dropping the VM
+    /// would.
+    ///
+    /// A run can end with tasks still live — a task detached from a failed
+    /// gather outlives it, and the module can return before that task next
+    /// gets a turn. Their references are real, so the leak check in
+    /// `run_ref_counts_with_tracker` has to run *after* this rather than
+    /// count them as unreachable.
+    #[cfg(feature = "ref-count-return")]
+    pub(crate) fn __finalize_tasks_for_tests(&mut self) {
+        self.cleanup_current_task();
+        self.scheduler.cleanup(self.heap);
     }
 
     /// Returns the source position for the instruction currently executing.

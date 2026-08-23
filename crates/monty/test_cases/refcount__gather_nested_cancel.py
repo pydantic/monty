@@ -1,6 +1,6 @@
-# Test that nested GatherFuture is properly cleaned up when outer task is cancelled.
-# When one task in an outer gather fails, sibling tasks (including those with inner gathers)
-# should be cancelled and all GatherFutures properly cleaned up.
+# Test that a nested GatherFuture is properly cleaned up when the outer gather fails.
+# The sibling task and its inner gather are detached rather than cancelled, and are
+# released when the run ends without the main task ever waiting on them again.
 import asyncio
 
 
