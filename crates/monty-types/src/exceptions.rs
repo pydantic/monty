@@ -9,7 +9,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use strum::{Display, EnumString, IntoStaticStr};
+use strum::{Display, EnumString, IntoStaticStr, VariantNames};
 
 use crate::format::StringRepr;
 
@@ -239,9 +239,28 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
 /// Python exception types supported by the interpreter.
 ///
 /// Uses strum derives for automatic `Display`, `FromStr`, and `Into<&'static str>` implementations.
-/// The string representation matches the variant name exactly (e.g., `ValueError` -> "ValueError").
+/// The string representation matches the variant name exactly (e.g., `ValueError` -> "ValueError"),
+/// except where a `serialize` attribute gives a dotted name to disambiguate a stdlib subclass from
+/// its builtin parent (`binascii.Error` from `ValueError`, say).
+///
+/// `ExcType::VARIANTS` is the canonical list of those names, and the host bridges mirror it:
+/// `PYTHON_EXC_NAMES` in `crates/monty-js/ts/errors.ts` and the `ExcType` literal in
+/// `pydantic_monty/__init__.py`. Both are hand-written, so `monty-proto`'s `exc_type_bridges` test
+/// reads them and pins them here — adding a variant without wiring the bridges fails that test.
 #[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Display, EnumString, IntoStaticStr, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Display,
+    EnumString,
+    IntoStaticStr,
+    VariantNames,
+    Serialize,
+    Deserialize,
 )]
 pub enum ExcType {
     /// primary exception class - matches any exception in isinstance checks.

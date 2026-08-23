@@ -485,6 +485,53 @@ caught
     assert result == expected_result
 
 
+@pytest.mark.parametrize(
+    'exception_class,dotted_name,parent_class',
+    [
+        (binascii.Error, 'binascii.Error', ValueError),
+        (json.JSONDecodeError, 'json.JSONDecodeError', ValueError),
+        (re.error, 're.PatternError', Exception),
+    ],
+)
+def test_external_function_dotted_exception_caught_by_own_name(
+    monty_run: RunMonty,
+    exception_class: type[BaseException],
+    dotted_name: str,
+    parent_class: type[BaseException],
+):
+    """A stdlib exception the bridge identifies by a dotted name must reach the
+    sandbox as itself — otherwise `except binascii.Error:` there silently misses
+    and the broader parent handler swallows it."""
+    module, _, _ = dotted_name.partition('.')
+    code = f"""
+import {module}
+try:
+    fail()
+except {dotted_name}:
+    caught = '{dotted_name}'
+except {parent_class.__name__}:
+    caught = '{parent_class.__name__}'
+caught
+"""
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise make_exception(exception_class)
+
+    assert monty_run(code, external_lookup={'fail': fail}) == dotted_name
+
+
+def make_exception(exception_class: type[BaseException]) -> BaseException:
+    """Builds a `'test message'` instance of any bridged exception class.
+
+    `json.JSONDecodeError` needs its document and position too, and only crosses
+    with the structured payload intact — see
+    `test_external_function_json_decode_error_missing_attributes`.
+    """
+    if exception_class is json.JSONDecodeError:
+        return json.JSONDecodeError('test message', '', 0)
+    return exception_class('test message')
+
+
 def test_external_function_exception_in_expression(monty_run: RunMonty):
     """Test exception from external function in an expression context."""
 

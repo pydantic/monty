@@ -2555,6 +2555,7 @@ dependencies = [
  "protox",
  "pyo3",
  "serde_json",
+ "strum 0.27.2",
 ]
 
 [[package]]
