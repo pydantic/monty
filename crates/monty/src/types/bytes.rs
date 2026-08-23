@@ -88,7 +88,7 @@ use crate::{
     types::{
         List,
         long_int::repeat_count,
-        slice::{normalize_sequence_index, slice_collect_iterator},
+        slice::{optional_sequence_bound, slice_collect_iterator},
     },
     value::{EitherStr, Value, eq_bytes},
 };
@@ -798,13 +798,13 @@ fn parse_bytes_prefix_suffix_args(
         }
         [prefix_value, start_value] => {
             let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            let start = normalize_sequence_index(start_value.as_int(vm)?, len);
+            let start = optional_sequence_bound(start_value, 0, len, vm)?;
             (prefix, start, len)
         }
         [prefix_value, start_value, end_value] => {
             let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            let start = normalize_sequence_index(start_value.as_int(vm)?, len);
-            let end = normalize_sequence_index(end_value.as_int(vm)?, len);
+            let start = optional_sequence_bound(start_value, 0, len, vm)?;
+            let end = optional_sequence_bound(end_value, len, len, vm)?;
             (prefix, start, end)
         }
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
@@ -911,12 +911,12 @@ fn parse_bytes_sub_args(
     let (sub_value, start, end) = match pos.as_slice() {
         [sub_value] => (sub_value, 0, len),
         [sub_value, start_value] => {
-            let start = normalize_sequence_index(start_value.as_int(vm)?, len);
+            let start = optional_sequence_bound(start_value, 0, len, vm)?;
             (sub_value, start, len)
         }
         [sub_value, start_value, end_value] => {
-            let start = normalize_sequence_index(start_value.as_int(vm)?, len);
-            let end = normalize_sequence_index(end_value.as_int(vm)?, len);
+            let start = optional_sequence_bound(start_value, 0, len, vm)?;
+            let end = optional_sequence_bound(end_value, len, len, vm)?;
             (sub_value, start, end)
         }
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),

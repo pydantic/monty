@@ -9,7 +9,12 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource_checks::{check_estimated_size, check_repeat_size},
-    types::{LazyHeapSet, Type, list::repr_items_fmt, long_int::repeat_count},
+    types::{
+        LazyHeapSet, Type,
+        list::repr_items_fmt,
+        long_int::repeat_count,
+        slice::{normalize_sequence_index, value_to_i64_bound},
+    },
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -971,31 +976,11 @@ fn count<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) 
 ///
 /// `None` means "not supplied" and falls back to `default`; an explicit
 /// `Value::None` is a *bad argument*, matching CPython (`index()` bounds go through
-/// `_PyEval_SliceIndexNotNone`, unlike real slicing which accepts `None`). Big ints
-/// clamp by sign rather than erroring, since CPython's `__index__` path accepts any
-/// int and then clamps.
+/// `_PyEval_SliceIndexNotNone`, unlike real slicing which accepts `None`).
 fn bound_arg(value: Option<Value>, default: usize, len: usize, vm: &mut VM<'_>) -> RunResult<usize> {
-    let len_i64 = i64::try_from(len).expect("len fits in i64");
     let Some(value) = value else { return Ok(default) };
-    // Match by reference so there is exactly one `drop_with` for the bound, on
-    // every path — the accepted ones as well as the rejection below.
-    let raw = match &value {
-        Value::Int(i) => Some(*i),
-        Value::Bool(b) => Some(i64::from(*b)),
-        // Out of `i64` range entirely — saturate to the end the sign points at.
-        Value::Ref(heap_id) if let HeapData::LongInt(li) = vm.heap.get(*heap_id) => {
-            Some(li.to_i64().unwrap_or(if li.is_negative() { 0 } else { len_i64 }))
-        }
-        _ => None,
-    };
-    value.drop_with(vm);
-    let raw = raw.ok_or_else(ExcType::type_error_slice_indices_no_none)?;
-    let normalized = if raw < 0 {
-        (raw + len_i64).max(0)
-    } else {
-        raw.min(len_i64)
-    };
-    Ok(usize::try_from(normalized).expect("bound clamped non-negative"))
+    defer_drop!(value, vm);
+    Ok(normalize_sequence_index(value_to_i64_bound(value, vm)?, len))
 }
 
 /// Which end [`deque_extend`] appends each item to.
