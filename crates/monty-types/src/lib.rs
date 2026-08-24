@@ -27,7 +27,7 @@ pub use crate::{
     io::{DEFAULT_MAX_PRINT_COLLECT_BYTES, PrintStream, PrintWriter, PrintWriterCallback, check_print_collect_limit},
     object::{
         ConversionError, DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject,
-        MontyTimeDelta, MontyTimeZone, MontyType,
+        MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
     },
     os::{
         GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,

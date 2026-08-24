@@ -44,6 +44,7 @@ const Tag = {
   Repr: 26,
   Cycle: 27,
   NotImplemented: 29,
+  Time: 30,
 } as const
 
 const I64_MIN = -(2n ** 63n)
@@ -122,6 +123,9 @@ function writeMarked(w: Writer, obj: Record<string, unknown>): void {
     case 'DateTime':
       w.lengthDelimited(Tag.DateTime, encodeDateTime(obj))
       break
+    case 'Time':
+      w.lengthDelimited(Tag.Time, encodeTime(obj))
+      break
     case 'TimeDelta':
       w.lengthDelimited(Tag.TimeDelta, encodeTimeDelta(obj))
       break
@@ -194,6 +198,20 @@ function encodeDate(obj: Record<string, unknown>): Uint8Array {
   w.int32(1, num(obj.year))
   w.uint(2, num(obj.month))
   w.uint(3, num(obj.day))
+  return w.finish()
+}
+
+function encodeTime(obj: Record<string, unknown>): Uint8Array {
+  const w = new Writer()
+  w.uint(1, num(obj.hour))
+  w.uint(2, num(obj.minute))
+  w.uint(3, num(obj.second))
+  w.uint(4, num(obj.microsecond))
+  if (obj.offsetSeconds !== undefined && obj.offsetSeconds !== null) {
+    w.int32(5, num(obj.offsetSeconds))
+    if (typeof obj.timezoneName === 'string') w.string(6, obj.timezoneName)
+  }
+  w.uint(7, num(obj.fold ?? 0))
   return w.finish()
 }
 
@@ -312,6 +330,8 @@ export function decodeMontyObject(bytes: Uint8Array): unknown {
       return decodeDate(f.bytes)
     case Tag.DateTime:
       return decodeDateTime(f.bytes)
+    case Tag.Time:
+      return decodeTime(f.bytes)
     case Tag.TimeDelta:
       return decodeTimeDelta(f.bytes)
     case Tag.TimeZone:
@@ -450,6 +470,45 @@ function decodeDate(bytes: Uint8Array): MarkedValue {
     else if (f.field === 3) date.day = Number(f.value)
   }
   return date
+}
+
+function decodeTime(bytes: Uint8Array): MarkedValue {
+  const t: MarkedValue = {
+    [TYPE_MARKER]: 'Time',
+    hour: 0,
+    minute: 0,
+    second: 0,
+    microsecond: 0,
+    fold: 0,
+  }
+  const reader = new Reader(bytes)
+  while (!reader.done) {
+    const f = reader.next()
+    switch (f.field) {
+      case 1:
+        t.hour = Number(f.value)
+        break
+      case 2:
+        t.minute = Number(f.value)
+        break
+      case 3:
+        t.second = Number(f.value)
+        break
+      case 4:
+        t.microsecond = Number(f.value)
+        break
+      case 5:
+        t.offsetSeconds = readInt32(f.value)
+        break
+      case 6:
+        t.timezoneName = decodeString(f.bytes)
+        break
+      case 7:
+        t.fold = Number(f.value)
+        break
+    }
+  }
+  return t
 }
 
 function decodeDateTime(bytes: Uint8Array): MarkedValue {

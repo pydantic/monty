@@ -287,6 +287,7 @@ const MARKED_TYPE_NAMES: Readonly<Record<string, string>> = {
   Exception: 'Exception',
   Date: 'date',
   DateTime: 'datetime',
+  Time: 'time',
   TimeDelta: 'timedelta',
   TimeZone: 'timezone',
   Type: 'repr',

@@ -26,7 +26,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type,
@@ -93,6 +93,14 @@ impl Time {
             offset_seconds: tz.offset_seconds,
             name: tz.name.clone(),
         })
+    }
+
+    /// The wall-clock components and `fold`, for a value crossing to the host.
+    ///
+    /// Unlike the `datetime` equivalent this cannot fail: every field is bounded
+    /// by its own type, and there is no date to fall out of range.
+    pub(crate) fn to_components(&self) -> (u8, u8, u8, u32, u8) {
+        (self.hour, self.minute, self.second, self.microsecond, self.fold)
     }
 }
 
@@ -283,6 +291,32 @@ fn from_components(hour: i32, minute: i32, second: i32, microsecond: i32, fold: 
         fold: u8::try_from(fold).expect("fold validated to 0..=1"),
         tzinfo: None,
     })
+}
+
+/// Builds a `Time` from host-supplied components, allocating its `tzinfo`.
+///
+/// The boundary counterpart of [`allocate`]: the host has no heap object to
+/// borrow, so an aware time gets a freshly allocated `timezone` (or the
+/// `timezone.utc` singleton) rather than a reference to an existing one.
+pub(crate) fn from_boundary_components(
+    hour: i32,
+    minute: i32,
+    second: i32,
+    microsecond: i32,
+    fold: i32,
+    tzinfo: Option<TimeZone>,
+    heap: &mut Heap,
+) -> RunResult<Time> {
+    let mut time = from_components(hour, minute, second, microsecond, fold)?;
+    if let Some(tz) = tzinfo {
+        let name = tz.name.clone();
+        time.tzinfo = Some(AttachedTimeZone {
+            offset_seconds: tz.offset_seconds,
+            name: tz.name,
+            tzinfo_ref: allocate_tzinfo_ref(tz.offset_seconds, name, heap),
+        });
+    }
+    Ok(time)
 }
 
 /// Attaches the constructor's timezone, taking an owned reference to it.

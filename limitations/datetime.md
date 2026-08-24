@@ -104,10 +104,25 @@ raising, matching CPython. The same wording divergence applies to
 `f'{t}'` goes through `str()`, and a non-empty spec goes through
 `strftime`, the same as `date` and `datetime`.
 
-`date`, `datetime`, `timedelta` and `timezone` cross the host boundary as
-typed objects. A `time` *instance* has no such representation, so returning
-one from a session yields its `repr()` string. The class object itself is
-unaffected.
+`fold` is stored and reported by `.fold` and `repr()`, and survives the host
+boundary, but nothing reads it: Monty has no DST model, so it never selects
+between a repeated wall clock. As in CPython it takes no part in `==` or
+`hash()`, and `isoformat()` omits it.
+
+A host `datetime.time` carrying a `tzinfo` that is not a `datetime.timezone`
+(a `ZoneInfo`, say) is rejected with `cannot convert datetime.time with
+tzinfo of type '...' to a Monty value`. A bare time has no instant to resolve
+a named zone against — CPython's own `t.utcoffset()` returns `None` there —
+so there is no offset to carry. An aware `datetime` is not affected: it has a
+date, and its zone resolves through `utcoffset(dt)`.
+
+## Type names
+
+`type(t).__name__` is `'datetime.time'`, where CPython gives `'time'`. Monty
+stores one name per type and uses the qualified spelling for `time`, so it
+matches CPython in `repr(datetime.time)` and in every type-naming error
+message and pays only on `__name__`. `datetime` diverges the same way
+(`'datetime.datetime'`); `date` and `timedelta` do not.
 
 ## `timedelta`
 

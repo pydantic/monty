@@ -4,8 +4,8 @@
 use std::borrow::Cow;
 
 use monty_types::{
-    FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone,
-    MontyType, StringRepr,
+    FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
+    MontyTimeZone, MontyType, StringRepr,
 };
 use num_bigint::BigInt;
 use pyo3::{
@@ -15,7 +15,7 @@ use pyo3::{
     sync::PyOnceLock,
     types::{
         PyBool, PyBytes, PyDate, PyDateAccess, PyDateTime, PyDelta, PyDeltaAccess, PyDict, PyFloat, PyFrozenSet, PyInt,
-        PyList, PyModule, PySet, PyString, PyTimeAccess, PyTuple, PyType, PyTzInfo, PyTzInfoAccess,
+        PyList, PyModule, PySet, PyString, PyTime, PyTimeAccess, PyTuple, PyType, PyTzInfo, PyTzInfoAccess,
     },
 };
 
@@ -150,6 +150,8 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
             month: date.get_month(),
             day: date.get_day(),
         }))
+    } else if let Ok(time) = obj.cast::<PyTime>() {
+        py_time_to_monty(time)
     } else if let Ok(delta) = obj.cast::<PyDelta>() {
         Ok(MontyObject::TimeDelta(py_timedelta_to_monty(delta)))
     } else if obj.is_instance(get_datetime_timezone_type(obj.py())?)? {
@@ -391,6 +393,7 @@ pub(crate) fn monty_to_py_inner(
             .map(Bound::into_any)
             .map(Bound::unbind),
         MontyObject::DateTime(datetime) => monty_datetime_to_py(py, datetime),
+        MontyObject::Time(time) => monty_time_to_py(py, time),
         MontyObject::TimeDelta(delta) => PyDelta::new(py, delta.days, delta.seconds, delta.microseconds, true)
             .map(Bound::into_any)
             .map(Bound::unbind),
@@ -577,6 +580,37 @@ fn py_timezone_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyTimeZone> {
 }
 
 /// Converts a Monty datetime payload to a native Python `datetime.datetime`.
+fn monty_time_to_py(py: Python<'_>, time: &MontyTime) -> PyResult<Py<PyAny>> {
+    let tzinfo_obj = match (time.offset_seconds, &time.timezone_name) {
+        (None, None) => None,
+        (Some(offset_seconds), timezone_name) => Some(monty_timezone_to_py(
+            py,
+            &MontyTimeZone {
+                offset_seconds,
+                name: timezone_name.clone(),
+            },
+        )?),
+        (None, Some(_)) => {
+            return Err(PyTypeError::new_err("invalid Monty time: timezone name without offset"));
+        }
+    };
+    let tzinfo = tzinfo_obj
+        .as_ref()
+        .map(|obj| obj.bind(py).cast::<PyTzInfo>())
+        .transpose()?;
+    PyTime::new_with_fold(
+        py,
+        time.hour,
+        time.minute,
+        time.second,
+        time.microsecond,
+        tzinfo,
+        time.fold != 0,
+    )
+    .map(Bound::into_any)
+    .map(Bound::unbind)
+}
+
 fn monty_datetime_to_py(py: Python<'_>, datetime: &MontyDateTime) -> PyResult<Py<PyAny>> {
     match (datetime.offset_seconds, &datetime.timezone_name) {
         (None, None) => PyDateTime::new(
@@ -659,6 +693,38 @@ fn py_datetime_to_monty(datetime: &Bound<'_, PyDateTime>) -> PyResult<MontyObjec
 ///
 /// Unlike `__getinitargs__()`, this always produces a name (since IANA timezones
 /// always have one), so the name is stored as `Some(...)`.
+/// Converts a host `datetime.time`, preserving `fold` and its timezone.
+///
+/// A naive time has no instant for `utcoffset()` to resolve against, so unlike
+/// `datetime` only a `datetime.timezone` is accepted: CPython passes `None` to
+/// `tzinfo.utcoffset(None)`, and a zone that needs a date (`ZoneInfo`) returns
+/// `None` there rather than a usable offset.
+fn py_time_to_monty(time: &Bound<'_, PyTime>) -> PyResult<MontyObject> {
+    let (offset_seconds, timezone_name) = match time.get_tzinfo() {
+        Some(tzinfo) if tzinfo.is_instance(get_datetime_timezone_type(tzinfo.py())?)? => {
+            let timezone = py_timezone_to_monty(&tzinfo)?;
+            (Some(timezone.offset_seconds), timezone.name)
+        }
+        Some(tzinfo) => {
+            return Err(PyTypeError::new_err(format!(
+                "cannot convert datetime.time with tzinfo of type '{}' to a Monty value",
+                tzinfo.get_type().name()?
+            )));
+        }
+        None => (None, None),
+    };
+
+    Ok(MontyObject::Time(MontyTime {
+        hour: time.get_hour(),
+        minute: time.get_minute(),
+        second: time.get_second(),
+        microsecond: time.get_microsecond(),
+        offset_seconds,
+        timezone_name,
+        fold: u8::from(time.get_fold()),
+    }))
+}
+
 fn py_tzinfo_via_utcoffset(
     datetime: &Bound<'_, PyDateTime>,
     tzinfo: &Bound<'_, PyAny>,

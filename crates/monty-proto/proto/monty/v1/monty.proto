@@ -82,6 +82,7 @@ message MontyObject {
     // reconstructed from a name).
     string instance_type = 28;
     Unit not_implemented = 29;
+    Time time = 30;
   }
 }
 
@@ -137,6 +138,24 @@ message DateTime {
   optional int32 offset_seconds = 8;
   // Optional timezone name; only valid when offset_seconds is set.
   optional string timezone_name = 9;
+}
+
+message Time {
+  // 0..=23.
+  uint32 hour = 1;
+  // 0..=59.
+  uint32 minute = 2;
+  // 0..=59.
+  uint32 second = 3;
+  // 0..=999999.
+  uint32 microsecond = 4;
+  // Fixed UTC offset for aware times; absent for naive values.
+  optional int32 offset_seconds = 5;
+  // Optional timezone name; only valid when offset_seconds is set.
+  optional string timezone_name = 6;
+  // Disambiguates a repeated wall clock, 0 or 1. Carried so a time does not
+  // silently lose the flag crossing the boundary; monty never interprets it.
+  uint32 fold = 7;
 }
 
 message TimeDelta {
