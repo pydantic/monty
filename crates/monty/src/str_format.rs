@@ -1,6 +1,5 @@
 use std::fmt;
 
-use num_bigint::BigInt;
 use unicode_general_category::{GeneralCategory, get_general_category};
 
 use crate::{
@@ -8,9 +7,9 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext},
+    heap::{ContainsHeap, DropGuard, DropWithContext},
     string_builder::StringBuilder,
-    types::{LongInt, PyTrait, str::allocate_string},
+    types::{PyTrait, str::allocate_string},
     value::{EitherStr, Value},
 };
 
@@ -133,9 +132,6 @@ fn render_field(
         let Some(conversion) = template[conversion_start..].chars().next() else {
             return Err(value_error("end of string while looking for conversion specifier"));
         };
-        if conversion == '}' {
-            return Err(value_error("unmatched '{' in format spec"));
-        }
         cursor = conversion_start + conversion.len_utf8();
         match template.as_bytes().get(cursor) {
             Some(b':' | b'}') => {}
@@ -164,12 +160,22 @@ fn render_field(
     let value = resolve_field(&template[start..field_end], arguments, numbering, vm)?;
     defer_drop!(value, vm);
     let conversion = match conversion {
-        None => 0,
-        Some('s') => 1,
-        Some('r') => 2,
-        Some('a') => 3,
-        Some(other) => return Err(value_error(format!("Unknown conversion specifier {other}"))),
+        None => None,
+        Some('s') => Some(1),
+        Some('r') => Some(2),
+        Some('a') => Some(3),
+        Some(other) => {
+            let other = if other.is_ascii_graphic() {
+                other.to_string()
+            } else {
+                format!("\\x{:x}", u32::from(other))
+            };
+            return Err(value_error(format!("Unknown conversion specifier {other}")));
+        }
     };
+    let converted = conversion
+        .map(|conversion| vm.convert_value(value, conversion))
+        .transpose()?;
 
     if let Some((spec_start, spec_end)) = spec_range {
         let spec = render(
@@ -179,10 +185,16 @@ fn render_field(
             recursion_remaining - 1,
             vm,
         )?;
-        vm.format_runtime_value(value, conversion, Some(&spec))
-            .map(|formatted| (formatted, spec_end + 1))
+        let formatted = if let Some(converted) = &converted {
+            vm.format_runtime_string(converted, &spec)?
+        } else {
+            vm.format_runtime_value(value, 0, Some(&spec))?
+        };
+        Ok((formatted, spec_end + 1))
+    } else if let Some(converted) = converted {
+        Ok((converted, cursor + 1))
     } else {
-        vm.format_runtime_value(value, conversion, None)
+        vm.format_runtime_value(value, 0, None)
             .map(|formatted| (formatted, cursor + 1))
     }
 }
@@ -235,7 +247,8 @@ fn resolve_field(
         .iter()
         .position(|byte| matches!(byte, b'.' | b'['))
         .unwrap_or(field.len());
-    let mut value = resolve_first(&field[..first_end], arguments, numbering, vm)?;
+    let value = resolve_first(&field[..first_end], arguments, numbering, vm)?;
+    let mut value = DropGuard::new(value, vm);
     let mut cursor = first_end;
 
     while cursor < field.len() {
@@ -247,37 +260,36 @@ fn resolve_field(
                     .position(|byte| matches!(byte, b'.' | b'['))
                     .map_or(field.len(), |offset| start + offset);
                 if start == end {
-                    value.drop_with(vm);
                     return Err(value_error("Empty attribute in format string"));
                 }
-                value = resolve_attribute(value, &field[start..end], vm)?;
+                let (current, vm) = value.into_parts();
+                let next = resolve_attribute(current, &field[start..end], vm)?;
+                value = DropGuard::new(next, vm);
                 cursor = end;
             }
             b'[' => {
                 let start = cursor + 1;
                 let Some(offset) = field[start..].find(']') else {
-                    value.drop_with(vm);
                     return Err(value_error("expected '}' before end of string"));
                 };
                 let end = start + offset;
                 if start == end {
-                    value.drop_with(vm);
                     return Err(value_error("Empty attribute in format string"));
                 }
-                value = resolve_item(value, &field[start..end], vm)?;
+                let (current, vm) = value.into_parts();
+                let next = resolve_item(current, &field[start..end], vm)?;
+                value = DropGuard::new(next, vm);
                 cursor = end + 1;
                 if cursor < field.len() && !matches!(field.as_bytes()[cursor], b'.' | b'[') {
-                    value.drop_with(vm);
                     return Err(value_error("Only '.' or '[' may follow ']' in format field specifier"));
                 }
             }
             _ => {
-                value.drop_with(vm);
                 return Err(value_error("expected '}' before end of string"));
             }
         }
     }
-    Ok(value)
+    Ok(value.into_inner())
 }
 
 fn resolve_first(
@@ -290,7 +302,7 @@ fn resolve_first(
         return resolve_auto(arguments, numbering, vm);
     }
 
-    match decimal_index(field)? {
+    match decimal_index(field, vm)? {
         Some(index) => {
             if matches!(numbering.mode, NumberingMode::Automatic) {
                 return Err(value_error(
@@ -334,7 +346,8 @@ fn resolve_positional(index: usize, arguments: &FormatArguments, vm: &VM<'_>) ->
 }
 
 fn resolve_keyword(name: &str, arguments: &FormatArguments, vm: &mut VM<'_>) -> RunResult<Value> {
-    for (key, value) in &arguments.keywords {
+    for (index, (key, value)) in arguments.keywords.iter().enumerate() {
+        vm.heap.tracker.check_time_every(index)?;
         if key.to_str(vm)? == name {
             return Ok(value.clone_with_heap(vm.heap));
         }
@@ -358,34 +371,32 @@ fn resolve_attribute(value: Value, name: &str, vm: &mut VM<'_>) -> RunResult<Val
 
 fn resolve_item(value: Value, item: &str, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(value, vm);
-    let key = item_key(item, vm);
+    let key = item_key(item, vm)?;
     defer_drop!(key, vm);
     value.py_getitem(key, vm)
 }
 
-fn item_key(item: &str, vm: &VM<'_>) -> Value {
-    let digits = item.chars().map(decimal_digit_value).collect::<Option<Vec<_>>>();
-    if let Some(digits) = digits {
-        let ascii = digits
-            .into_iter()
-            .map(|digit| char::from_digit(digit, 10).expect("decimal digit is in range"))
-            .collect::<String>();
-        let integer = ascii.parse::<BigInt>().expect("ASCII decimal digits parse as BigInt");
-        LongInt::new(integer).into_value(vm.heap)
+fn item_key(item: &str, vm: &VM<'_>) -> RunResult<Value> {
+    if let Some(index) = decimal_index(item, vm)? {
+        Ok(Value::Int(
+            i64::try_from(index).expect("index is bounded by isize::MAX"),
+        ))
     } else {
-        allocate_string(item, vm.heap)
+        Ok(allocate_string(item, vm.heap))
     }
 }
 
-fn decimal_index(field: &str) -> RunResult<Option<usize>> {
+fn decimal_index(field: &str, vm: &VM<'_>) -> RunResult<Option<usize>> {
     let mut index = 0usize;
-    for character in field.chars() {
+    for (offset, character) in field.chars().enumerate() {
+        vm.heap.tracker.check_time_every(offset)?;
         let Some(digit) = decimal_digit_value(character) else {
             return Ok(None);
         };
         index = index
             .checked_mul(10)
             .and_then(|value| value.checked_add(digit as usize))
+            .filter(|value| isize::try_from(*value).is_ok())
             .ok_or_else(|| value_error("Too many decimal digits in format string"))?;
     }
     Ok(Some(index))

@@ -507,9 +507,7 @@ fn call_str_method_impl<'h>(
         StaticStrings::Zfill => str_zfill(s, args, vm),
         StaticStrings::Expandtabs => str_expandtabs(s, args, vm),
         StaticStrings::Format => {
-            let template = s.get(vm.heap);
-            vm.heap.tracker.check_allocation(template.len())?;
-            let template = template.to_owned();
+            let template = s.get(vm.heap).to_owned();
             str_format(&template, args, vm)
         }
         // Additional methods

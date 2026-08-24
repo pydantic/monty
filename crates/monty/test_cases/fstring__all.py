@@ -417,6 +417,8 @@ assert f'{42!r:s}' == '42'
 # and its converted form must raise the *same* error. Valid string flags work:
 assert f'{123!s:05}' == '12300'
 assert f'{123!r:>6}' == '   123'
+width = 6
+assert f'{123!r:>{width}}' == '   123'
 assert f'{3.14159!r:.4}' == '3.14'
 
 

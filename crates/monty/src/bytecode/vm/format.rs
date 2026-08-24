@@ -1,17 +1,17 @@
 //! F-string and value formatting helpers for the VM.
 
+use std::fmt::Write as _;
+
 use super::VM;
 use crate::{
     bytecode::op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC},
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
-    fstring::{
-        ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec, validate_string_spec,
-    },
+    fstring::{ParsedFormatSpec, decode_format_spec, format_string, format_with_spec, validate_string_spec},
     heap::HeapReadOutput,
-    resource_checks::check_repeat_size,
+    string_builder::StringBuilder,
     types::{
-        PyTrait, date::format_date_strftime, datetime::format_datetime_strftime, str::allocate_string,
+        PyTrait, Type, date::format_date_strftime, datetime::format_datetime_strftime, str::allocate_string,
         time::format_time_strftime,
     },
     value::Value,
@@ -39,17 +39,6 @@ impl VM<'_> {
     /// Formats a value for f-string interpolation.
     ///
     /// See `Opcode::FormatValue` for the flag layout.
-    ///
-    /// Python f-string formatting order:
-    /// 1. Apply format spec to original value (type-specific formatting)
-    /// 2. Apply conversion flag to the result
-    ///
-    /// However, conversion flags like !s, !r, !a are applied BEFORE formatting
-    /// if the value would be repr'd. The key insight is:
-    /// - No conversion: format the original value type
-    /// - !s conversion: convert to str first, then format as string
-    /// - !r conversion: convert to repr first, then format as string
-    /// - !a conversion: convert to ascii repr first, then format as string
     pub(super) fn format_value(&mut self, flags: u8) -> Result<(), RunError> {
         let this = self;
         let conversion = flags & 0x03;
@@ -91,19 +80,31 @@ impl VM<'_> {
         conversion: u8,
         format_spec: Option<&str>,
     ) -> Result<String, RunError> {
-        if let Some(format_spec) = format_spec {
-            // Temporal specs are strftime strings, not mini-language specs.
-            if conversion == 0
-                && let Some(formatted) = self.try_format_temporal(value, format_spec)?
-            {
-                return Ok(formatted);
+        if conversion != 0 {
+            let converted = self.convert_value(value, conversion)?;
+            if let Some(format_spec) = format_spec {
+                self.format_runtime_string(&converted, format_spec)
+            } else {
+                Ok(converted)
             }
-
-            let spec = self.parse_runtime_format_spec(format_spec, value)?;
-            self.format_parsed_value(value, conversion, &spec)
+        } else if let Some(format_spec) = format_spec {
+            if let Some(formatted) = self.try_format_temporal(value, format_spec)? {
+                Ok(formatted)
+            } else {
+                let spec = {
+                    let value_type = value.py_type_name(self);
+                    Self::parse_runtime_format_spec(format_spec, &value_type)?
+                };
+                self.format_parsed_value(value, 0, &spec)
+            }
         } else {
-            self.convert_value(value, conversion)
+            self.convert_value(value, 0)
         }
+    }
+
+    pub(crate) fn format_runtime_string(&mut self, value: &str, format_spec: &str) -> Result<String, RunError> {
+        let spec = Self::parse_runtime_format_spec(format_spec, "str")?;
+        self.format_parsed_string(value, &spec)
     }
 
     fn format_parsed_value(
@@ -112,23 +113,46 @@ impl VM<'_> {
         conversion: u8,
         spec: &ParsedFormatSpec,
     ) -> Result<String, RunError> {
-        // Keep pad_string from allocating before the tracker sees the width.
-        check_repeat_size(spec.width, spec.fill.len_utf8(), &self.heap.tracker)?;
-
         if conversion == 0 {
             format_with_spec(value, spec, self)
         } else {
-            // Conversions happen first, so the spec must be valid for strings.
             let s = self.convert_value(value, conversion)?;
-            validate_string_spec(spec)?;
-            Ok(format_string(&s, spec)?)
+            self.format_parsed_string(&s, spec)
         }
     }
 
-    fn convert_value(&mut self, value: &Value, conversion: u8) -> Result<String, RunError> {
+    fn format_parsed_string(&self, value: &str, spec: &ParsedFormatSpec) -> Result<String, RunError> {
+        validate_string_spec(spec)?;
+        format_string(value, spec, &self.heap.tracker)
+    }
+
+    pub(crate) fn convert_value(&mut self, value: &Value, conversion: u8) -> Result<String, RunError> {
         match conversion {
+            0 | 1 if value.py_type(self) == Type::Str => Ok(value.to_str(self)?.to_owned()),
             2 => str_value_into_string(value.py_repr(self)?, self),
-            3 => Ok(ascii_escape(&str_value_into_string(value.py_repr(self)?, self)?)),
+            3 => {
+                let value = str_value_into_string(value.py_repr(self)?, self)?;
+                let mut escaped = StringBuilder::with_capacity(value.len(), &self.heap.tracker)?;
+                for (index, character) in value.chars().enumerate() {
+                    self.heap.tracker.check_time_every(index)?;
+                    if character.is_ascii() {
+                        escaped.push(character)?;
+                    } else {
+                        let code = u32::from(character);
+                        let result = if code <= 0xff {
+                            write!(escaped, "\\x{code:02x}")
+                        } else if code <= 0xffff {
+                            write!(escaped, "\\u{code:04x}")
+                        } else {
+                            write!(escaped, "\\U{code:08x}")
+                        };
+                        if result.is_err() {
+                            return escaped.finish_raw();
+                        }
+                    }
+                }
+                escaped.finish_raw()
+            }
             // No conversion and `!s` both use `str()`.
             _ => str_value_into_string(value.py_str(self)?, self),
         }
@@ -163,14 +187,9 @@ impl VM<'_> {
     }
 
     /// Adds the value type only to errors where CPython does.
-    fn parse_runtime_format_spec(
-        &mut self,
-        format_spec: &str,
-        value_for_error: &Value,
-    ) -> Result<ParsedFormatSpec, RunError> {
+    fn parse_runtime_format_spec(format_spec: &str, value_type: &str) -> Result<ParsedFormatSpec, RunError> {
         format_spec.parse::<ParsedFormatSpec>().map_err(|err| {
             let message = if err.needs_type_suffix() {
-                let value_type = value_for_error.py_type_name(self);
                 format!("{err} for object of type '{value_type}'")
             } else {
                 err.to_string()

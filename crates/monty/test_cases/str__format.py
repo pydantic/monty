@@ -43,9 +43,12 @@ unusual_item_keys = '{0[a:b]} {0[a!b]} {0[a}b]}'
 assert unusual_item_keys.format({'a:b': 1, 'a!b': 2, 'a}b': 3}) == '1 2 3'
 
 assert '{0!s} {0!r} {0!a}'.format('räpr') == "räpr 'räpr' 'r\\xe4pr'"
+assert '{0!a}'.format('😀') == "'\\U0001f600'"
 assert '{0:>10}'.format('test') == '      test'
 assert '{0:_<10.5}'.format('xylophone') == 'xylop_____'
 assert '{0:+06.2f}'.format(3.14159) == '+03.14'
+assert '{:}'.format(True) == 'True'
+assert '{0!r:>6}'.format(123) == '   123'
 assert '{0:{align}{width}}'.format('test', align='^', width=10) == '   test   '
 assert '{0:{width}.{precision}f}'.format(2.7182, width=5, precision=2) == ' 2.72'
 assert '{0:{spec[align]}}'.format('x', spec={'align': '^5'}) == '  x  '
@@ -75,7 +78,14 @@ assert capture_error('{missing}') == ('KeyError', "'missing'")
 assert capture_error('{') == ('ValueError', "Single '{' encountered in format string")
 assert capture_error('}') == ('ValueError', "Single '}' encountered in format string")
 assert capture_error('{0!x}', 'a') == ('ValueError', 'Unknown conversion specifier x')
+assert capture_error('{0!}}', 'a') == ('ValueError', 'Unknown conversion specifier }')
+assert capture_error('{0!}{', 'a') == ('ValueError', "expected ':' after conversion specifier")
+assert capture_error('{0! }', 'a') == ('ValueError', 'Unknown conversion specifier \\x20')
+assert capture_error('{0!é}', 'a') == ('ValueError', 'Unknown conversion specifier \\xe9')
+assert capture_error('{0!😀}', 'a') == ('ValueError', 'Unknown conversion specifier \\x1f600')
 assert capture_error('{0!rs}', 'a') == ('ValueError', "expected ':' after conversion specifier")
+assert capture_error('{0:=5}', 'a') == ('ValueError', "'=' alignment not allowed in string format specifier")
+assert capture_error('{0[foo}', {'foo': 'a'}) == ('ValueError', "expected '}' before end of string")
 assert capture_error('{0!', 'a') == (
     'ValueError',
     'end of string while looking for conversion specifier',
@@ -88,6 +98,15 @@ assert capture_error('{missing!rs}') == (
     "expected ':' after conversion specifier",
 )
 assert capture_error('{missing!x}') == ('KeyError', "'missing'")
+
+
+class BrokenRepr:
+    def __repr__(self):
+        raise RuntimeError('repr failed')
+
+
+assert capture_error('{0!r:{missing}}', BrokenRepr()) == ('RuntimeError', 'repr failed')
+assert capture_error('{0!r:q}', BrokenRepr()) == ('RuntimeError', 'repr failed')
 assert capture_error('{0:.2q}', 1) == (
     'ValueError',
     "Unknown format code 'q' for object of type 'int'",
@@ -116,6 +135,10 @@ assert capture_error('{:{0}}', 1, 2) == (
 )
 assert capture_error('{0:{1:{2}}}', 1, 2, 3) == ('ValueError', 'Max string recursion exceeded')
 assert capture_error('{999999999999999999999999999999999999}', 1) == (
+    'ValueError',
+    'Too many decimal digits in format string',
+)
+assert capture_error('{0[999999999999999999999999999999999999]}', {}) == (
     'ValueError',
     'Too many decimal digits in format string',
 )

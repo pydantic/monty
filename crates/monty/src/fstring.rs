@@ -14,11 +14,12 @@ use monty_types::ResourceTracker;
 use crate::{
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunError, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     expressions::ExprLoc,
     heap::HeapData,
     intern::StringId,
     resource_checks::check_repeat_size,
+    string_builder::StringBuilder,
     types::{LongInt, PyTrait, Type, long_int::check_bits_str_digits_limit},
     value::Value,
 };
@@ -687,7 +688,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         validate_string_spec(spec)?;
         // `value` is already a `str`, so borrow it directly — no `py_str`
         // round-trip (which would allocate a fresh heap copy just to drop it).
-        return Ok(format_string(value.to_str(vm)?, spec)?);
+        return format_string(value.to_str(vm)?, spec, &vm.heap.tracker);
     }
 
     // A grouping option (`,`/`_`) is only legal for certain presentation
@@ -811,7 +812,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         (_, None) => {
             let s = value.py_str(vm)?;
             defer_drop!(s, vm);
-            Ok(format_string(s.to_str(vm)?, spec)?)
+            format_string(s.to_str(vm)?, spec, &vm.heap.tracker)
         }
 
         // Type mismatch errors
@@ -1231,24 +1232,47 @@ pub fn decode_format_spec(encoded: i64) -> ParsedFormatSpec {
 /// 2. Alignment: Pads to `width` using `fill` character (default left-aligned for strings)
 ///
 /// Returns an error if `=` alignment is used (sign-aware padding only valid for numbers).
-pub fn format_string(value: &str, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
-    // Handle precision (string truncation)
-    let value = if let Some(prec) = spec.precision {
-        value.chars().take(prec).collect::<String>()
-    } else {
-        value.to_owned()
-    };
-
-    // Validate alignment for strings (= is only for numbers)
+pub fn format_string(value: &str, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     if spec.align == Some(Align::SignAware) {
-        return Err(FormatError::InvalidAlignment(
-            "'=' alignment not allowed in string format specifier".to_owned(),
-        ));
+        return Err(
+            FormatError::InvalidAlignment("'=' alignment not allowed in string format specifier".to_owned()).into(),
+        );
     }
 
-    // Default alignment for strings is left
+    check_repeat_size(spec.width, spec.fill.len_utf8(), tracker)?;
+    let precision = spec.precision.unwrap_or(usize::MAX);
+    let mut end = value.len();
+    let mut value_len = 0;
+    for (index, (byte_offset, _)) in value.char_indices().enumerate() {
+        tracker.check_time_every(index)?;
+        if value_len == precision {
+            end = byte_offset;
+            break;
+        }
+        value_len += 1;
+    }
+    let value = &value[..end];
+
+    let padding = spec.width.saturating_sub(value_len);
     let align = spec.align.unwrap_or(Align::Left);
-    Ok(pad_string(&value, spec.width, align, spec.fill))
+    let left_padding = match align {
+        Align::Right => padding,
+        Align::Center => padding / 2,
+        Align::Left | Align::SignAware => 0,
+    };
+    let right_padding = padding - left_padding;
+    let capacity = value.len().saturating_add(padding.saturating_mul(spec.fill.len_utf8()));
+    let mut output = StringBuilder::with_capacity(capacity, tracker)?;
+    for index in 0..left_padding {
+        tracker.check_time_every(index)?;
+        output.push(spec.fill)?;
+    }
+    output.push_str(value)?;
+    for index in 0..right_padding {
+        tracker.check_time_every(left_padding + index)?;
+        output.push(spec.fill)?;
+    }
+    output.finish_raw()
 }
 
 /// Formats an integer in decimal with a format specification.

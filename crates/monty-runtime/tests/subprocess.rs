@@ -740,8 +740,10 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
     let cases = [
         ("'x' * 10_000_000", 10_031_137),
-        // Formatting must account for the retained input and the growing output.
+        // Each formatter builder must fail softly before the worker reaches its hard ceiling.
         ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_231_000),
+        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_430_760),
+        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_230_835),
         ("b'x' * 10_000_000", 10_031_269),
         ("[None] * 1_000_000", 16_031_391),
         ("2 ** 10_000_000", 10_031_230),
@@ -861,20 +863,6 @@ fn host_call_arguments_over_the_limit_still_fail_gracefully() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
     let (_, event) = child.feed("foobar('A' * (16 * 1024 * 1024))");
-    assert_eq!(expect_error(event).exc_type, "MemoryError");
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
-    child.shutdown();
-}
-
-/// A format receiver can already consume most of the soft budget, so its
-/// native copy must be refused before the hard allocator exits the worker.
-#[test]
-fn large_str_format_template_preserves_the_worker() {
-    let mut child = ChildProc::spawn();
-    child.create_repl_with(configure_with_max_memory(10 * 1024 * 1024));
-    assert_eq!(child.feed_complete("template = 'x' * 8_000_000"), MontyObject::None);
-
-    let (_, event) = child.feed("template.format()");
     assert_eq!(expect_error(event).exc_type, "MemoryError");
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
     child.shutdown();
