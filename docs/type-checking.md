@@ -24,7 +24,7 @@ The snippet does not run, and the session survives — fix the code and feed aga
 ## Why it matters more here than usual
 
 Monty implements a [deliberately small subset](python-subset.md) of Python.
-A model that writes `import functools` produces code that is perfectly valid CPython and completely unrunnable here.
+A model that writes `import random` produces code that is perfectly valid CPython and completely unrunnable here.
 
 Type checking closes that gap, because Monty does not check against CPython's typeshed.
 It checks against [`monty-typeshed`](https://crates.io/crates/monty-typeshed), a trimmed typeshed describing *Monty's*
