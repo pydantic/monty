@@ -866,6 +866,20 @@ fn host_call_arguments_over_the_limit_still_fail_gracefully() {
     child.shutdown();
 }
 
+/// A format receiver can already consume most of the soft budget, so its
+/// native copy must be refused before the hard allocator exits the worker.
+#[test]
+fn large_str_format_template_preserves_the_worker() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(10 * 1024 * 1024));
+    assert_eq!(child.feed_complete("template = 'x' * 8_000_000"), MontyObject::None);
+
+    let (_, event) = child.feed("template.format()");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
 /// Reading `p.args` off a widely bound partial must raise `MemoryError` and
 /// leave the session usable, not kill the worker.
 ///
