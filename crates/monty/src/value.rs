@@ -7,13 +7,13 @@ use std::{
 };
 
 use num_bigint::{BigInt, Sign};
-use num_traits::FromPrimitive;
+use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
     fstring::FormatFloat,
     hash::{HashValue, hash_one, hash_python_long_int},
@@ -600,6 +600,16 @@ impl<'h> PyTrait<'h> for Value {
             vm.heap.read(*id).py_cmp_op(other, op, vm)
         } else {
             Ok(None)
+        }
+    }
+
+    fn py_index_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        match self {
+            // `bool` is an `int` subclass in CPython, so it satisfies the
+            // protocol directly rather than through a dunder.
+            Self::Int(_) | Self::Bool(_) | Self::InternLongInt(_) => Ok(Some(self.clone_with_heap(vm.heap))),
+            Self::Ref(id) => vm.heap.read(*id).py_index_impl(vm),
+            _ => Ok(None),
         }
     }
 
@@ -1251,9 +1261,9 @@ impl<'h> PyTrait<'h> for Value {
     fn py_getitem(&self, key: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
         let interns = vm.interns;
         match self {
-            // `heap_subscript` owns the one case a heap read cannot: a
-            // defaultdict miss, which calls its factory and re-enters the VM.
-            Self::Ref(id) => heap_subscript(*id, key, vm),
+            // `heap_subscript` owns the mutating defaultdict-miss path outside
+            // the read-only `PyTrait::py_getitem` interface.
+            Self::Ref(id) => heap_subscript(vm.heap.read(*id), key, vm),
             Self::InternString(string_id) => {
                 // Check for slice first
                 if let Self::Ref(key_id) = key
@@ -1264,12 +1274,10 @@ impl<'h> PyTrait<'h> for Value {
                     return Ok(allocate_string(result_str, vm.heap));
                 }
 
-                // Handle interned string indexing, accepting Int and Bool
-                let index = match key {
-                    Self::Int(i) => *i,
-                    Self::Bool(b) => i64::from(*b),
-                    _ => return Err(ExcType::type_error_indices(Type::Str, &key.py_type_name(vm))),
-                };
+                // Shared with the heap-`str` path rather than re-matching here,
+                // so an interned literal accepts the same keys — `LongInt` and a
+                // user `__index__` included.
+                let index = key.as_index(vm, Type::Str)?;
 
                 let s = interns.get_str(*string_id);
                 let c = get_char_at_index(s, index).ok_or_else(ExcType::str_index_error)?;
@@ -1286,12 +1294,8 @@ impl<'h> PyTrait<'h> for Value {
                     return Ok(Self::Ref(heap_id));
                 }
 
-                // Handle interned bytes indexing - returns integer byte value
-                let index = match key {
-                    Self::Int(i) => *i,
-                    Self::Bool(b) => i64::from(*b),
-                    _ => return Err(ExcType::type_error_indices(Type::Bytes, &key.py_type_name(vm))),
-                };
+                // Shared with the heap-`bytes` path, as for `InternString` above.
+                let index = key.as_index(vm, Type::Bytes)?;
 
                 let bytes = interns.get_bytes(*bytes_id);
                 let byte = get_byte_at_index(bytes, index).ok_or_else(ExcType::bytes_index_error)?;
@@ -1771,54 +1775,101 @@ impl Value {
 
     /// Extracts an integer value from the Value.
     ///
-    /// Accepts `Int` and `LongInt` (if it fits in i64). Returns a `TypeError` for other types
-    /// and an `OverflowError` if the `LongInt` value is too large.
+    /// Accepts `Int`, `Bool` (True=1, False=0) and `LongInt` (if it fits in
+    /// i64), and falls back to a user `__index__` — CPython's `PyNumber_Index`,
+    /// which is what every "cannot be interpreted as an integer" consumer uses.
+    /// Returns a `TypeError` for other types and an `OverflowError` if the value
+    /// is too large.
+    ///
+    /// Takes `&mut VM` because `__index__` re-enters the interpreter; it runs
+    /// synchronously, so one calling an external/OS function raises rather than
+    /// suspending (see `limitations/classes.md`).
     ///
     /// Note: The LongInt-to-i64 conversion path is defensive code. In normal execution,
     /// heap-allocated `LongInt` values always exceed i64 range because `LongInt::into_value()`
     /// automatically demotes i64-fitting values to `Value::Int`. However, this path could be
     /// reached via deserialization of crafted snapshot data.
-    pub fn as_int(&self, vm: &VM<'_>) -> RunResult<i64> {
+    pub fn as_int(&self, vm: &mut VM<'_>) -> RunResult<i64> {
+        self.as_int_with_overflow(vm, ExcType::overflow_c_ssize_t)
+    }
+
+    /// [`Self::as_int`] with a caller-chosen overflow error.
+    ///
+    /// The width a value must fit is a property of the *consumer*, not of the
+    /// coercion: CPython's clinic `int` parameters (`str.expandtabs`'s
+    /// `tabsize`) report `... to C int` where an `ssize_t` parameter reports
+    /// `... to C ssize_t`, at every magnitude and through `__index__` alike.
+    /// Callers narrower than `i64` still range-check the result themselves —
+    /// this only makes the message theirs to choose.
+    pub(crate) fn as_int_with_overflow(&self, vm: &mut VM<'_>, on_overflow: fn() -> RunError) -> RunResult<i64> {
         match self {
+            // Fast path for the common case; `py_index_impl` answers identically
+            // for a plain `int`, just via a clone the caller then drops.
             Self::Int(i) => Ok(*i),
-            Self::Ref(heap_id) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*heap_id) {
-                    li.to_i64().ok_or_else(ExcType::overflow_c_ssize_t)
+            // Everything else is either `__index__`-able — `bool` and `LongInt`
+            // included, since both are ints — or a type error, and the protocol
+            // answers which without this arm inspecting the heap.
+            _ => {
+                if let Some(index) = self.py_index_impl(vm)? {
+                    Self::narrow_index_to_i64(index, vm, on_overflow)
                 } else {
                     let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type_name(vm));
                     Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
                 }
-            }
-            _ => {
-                let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type_name(vm));
-                Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
             }
         }
     }
 
     /// Extracts an index value for sequence operations.
     ///
-    /// Accepts `Int`, `Bool` (True=1, False=0), and `LongInt` (if it fits in i64).
-    /// Returns a `TypeError` for other types with the container type name included.
-    /// Returns an `IndexError` if the `LongInt` value is too large to use as an index.
+    /// Accepts `Int`, `Bool` (True=1, False=0), and `LongInt` (if it fits in
+    /// i64), and falls back to a user `__index__` as CPython's subscript path
+    /// does. Returns a `TypeError` for other types with the container type name
+    /// included, and an `IndexError` if the value is too large to use as an index.
+    ///
+    /// Takes `&mut VM` for the same reason as [`Self::as_int`].
     ///
     /// Note: The LongInt-to-i64 conversion path is defensive code. In normal execution,
     /// heap-allocated `LongInt` values always exceed i64 range because `LongInt::into_value()`
     /// automatically demotes i64-fitting values to `Value::Int`. However, this path could be
     /// reached via deserialization of crafted snapshot data.
-    pub fn as_index(&self, vm: &VM<'_>, container_type: Type) -> RunResult<i64> {
+    pub fn as_index(&self, vm: &mut VM<'_>, container_type: Type) -> RunResult<i64> {
         match self {
             Self::Int(i) => Ok(*i),
-            Self::Bool(b) => Ok(i64::from(*b)),
-            Self::Ref(heap_id) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*heap_id) {
-                    li.to_i64().ok_or_else(ExcType::index_error_int_too_large)
-                } else {
-                    Err(ExcType::type_error_indices(container_type, &self.py_type_name(vm)))
+            // Shaped like [`Self::as_int`]'s fallback, differing only in messages.
+            _ => match self.py_index_impl(vm)? {
+                Some(index) => {
+                    // Resolved before narrowing because the closure cannot hold
+                    // `vm` while `narrow_index_to_i64` borrows it mutably. CPython
+                    // names the *original* object, so an over-large `__index__`
+                    // result reports the class, not the `int` it returned.
+                    let name = self.py_type_name(vm).into_owned();
+                    Self::narrow_index_to_i64(index, vm, move || ExcType::index_error_cannot_fit(&name))
                 }
-            }
-            _ => Err(ExcType::type_error_indices(container_type, &self.py_type_name(vm))),
+                None => Err(ExcType::type_error_indices(container_type, &self.py_type_name(vm))),
+            },
         }
+    }
+
+    /// Narrows an `__index__` result to `i64`, consuming it.
+    ///
+    /// Shared by [`Self::as_int`] and [`Self::as_index`], which disagree on the
+    /// overflow message (`OverflowError` vs `IndexError`), hence `on_overflow`.
+    /// The value is already validated as an int by [`PyTrait::py_index_impl`],
+    /// so the non-int arms are unreachable.
+    fn narrow_index_to_i64(index: Self, vm: &mut VM<'_>, on_overflow: impl FnOnce() -> RunError) -> RunResult<i64> {
+        let converted = match &index {
+            Self::Int(i) => Ok(*i),
+            Self::Bool(b) => Ok(i64::from(*b)),
+            Self::InternLongInt(id) => vm.interns.get_long_int(*id).to_i64().ok_or_else(on_overflow),
+            Self::Ref(id) => match vm.heap.get(*id) {
+                HeapData::LongInt(li) => li.to_i64().ok_or_else(on_overflow),
+                _ => unreachable!("py_index_impl validated the result is an int"),
+            },
+            _ => unreachable!("py_index_impl validated the result is an int"),
+        };
+        index.drop_with(vm);
+        converted
     }
 
     /// True when this is a `LongInt`-valued int (interned or heap-allocated)
@@ -1832,6 +1883,26 @@ impl Value {
             Self::InternLongInt(id) => vm.interns.get_long_int(*id).sign() == Sign::Minus,
             Self::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(li) if li.is_negative()),
             _ => false,
+        }
+    }
+
+    /// Saturating `i64` view of a `LongInt`-valued int (interned or
+    /// heap-allocated), for the consumers that clamp rather than raise on
+    /// overflow — slice bounds, where CPython clamps to the sequence so
+    /// `[1, 2, 3][10**30:]` is `[]` rather than an error.
+    ///
+    /// Returns `None` for every other value, `Int`/`Bool` included, so callers
+    /// keep their own fast paths for those. Do NOT use it for arguments that
+    /// must reject out-of-range ints — [`Self::as_int`] and [`Self::as_index`]
+    /// raise there instead.
+    pub(crate) fn long_int_to_i64_saturating(&self, vm: &VM<'_>) -> Option<i64> {
+        match self {
+            Self::InternLongInt(id) => Some(saturating_i64(vm.interns.get_long_int(*id))),
+            Self::Ref(id) => match vm.heap.get(*id) {
+                HeapData::LongInt(li) => Some(saturating_i64(li.inner())),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -2377,6 +2448,18 @@ impl Marker {
     }
 }
 
+/// Clamps a `BigInt` to `i64`, pinning out-of-range values to the bound they
+/// overflowed past. Backs [`Value::long_int_to_i64_saturating`].
+fn saturating_i64(value: &BigInt) -> i64 {
+    value.to_i64().unwrap_or({
+        if value.sign() == Sign::Minus {
+            i64::MIN
+        } else {
+            i64::MAX
+        }
+    })
+}
+
 /// Extracts an immediate integer without promoting it to `BigInt`.
 fn immediate_int(value: &Value) -> Option<i64> {
     match value {
@@ -2500,7 +2583,7 @@ mod tests {
         let mut interns = create_test_interns();
         let code = Code::empty();
         let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let vm = VM::new(
+            let mut vm = VM::new(
                 Vec::new(),
                 code,
                 reader,
@@ -2508,7 +2591,7 @@ mod tests {
                 PrintWriter::Disabled,
                 AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             );
-            value.as_index(&vm, Type::List)
+            value.as_index(&mut vm, Type::List)
         });
         assert_eq!(result.unwrap(), 42);
         value.drop_with(&mut heap);
@@ -2523,7 +2606,7 @@ mod tests {
         let mut interns = create_test_interns();
         let code = Code::empty();
         let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let vm = VM::new(
+            let mut vm = VM::new(
                 Vec::new(),
                 code,
                 reader,
@@ -2531,7 +2614,7 @@ mod tests {
                 PrintWriter::Disabled,
                 AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             );
-            value.as_index(&vm, Type::List)
+            value.as_index(&mut vm, Type::List)
         });
         assert_eq!(result.unwrap(), -100);
         value.drop_with(&mut heap);
@@ -2548,7 +2631,7 @@ mod tests {
         let mut interns = create_test_interns();
         let code = Code::empty();
         let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let vm = VM::new(
+            let mut vm = VM::new(
                 Vec::new(),
                 code,
                 reader,
@@ -2556,7 +2639,7 @@ mod tests {
                 PrintWriter::Disabled,
                 AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             );
-            value.as_index(&vm, Type::List)
+            value.as_index(&mut vm, Type::List)
         });
         assert!(result.is_err());
         value.drop_with(&mut heap);
@@ -2573,7 +2656,7 @@ mod tests {
         let mut interns = create_test_interns();
         let code = Code::empty();
         let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let vm = VM::new(
+            let mut vm = VM::new(
                 Vec::new(),
                 code,
                 reader,
@@ -2581,7 +2664,7 @@ mod tests {
                 PrintWriter::Disabled,
                 AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             );
-            value.as_int(&vm)
+            value.as_int(&mut vm)
         });
         assert_eq!(result.unwrap(), 12345);
         value.drop_with(&mut heap);
@@ -2597,7 +2680,7 @@ mod tests {
         let mut interns = create_test_interns();
         let code = Code::empty();
         let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let vm = VM::new(
+            let mut vm = VM::new(
                 Vec::new(),
                 code,
                 reader,
@@ -2605,7 +2688,7 @@ mod tests {
                 PrintWriter::Disabled,
                 AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             );
-            value.as_int(&vm)
+            value.as_int(&mut vm)
         });
         assert!(result.is_err());
         value.drop_with(&mut heap);
@@ -2620,7 +2703,7 @@ mod tests {
         let mut interns = create_test_interns();
         let code = Code::empty();
         let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let vm = VM::new(
+            let mut vm = VM::new(
                 Vec::new(),
                 code,
                 reader,
@@ -2628,7 +2711,7 @@ mod tests {
                 PrintWriter::Disabled,
                 AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             );
-            value.as_index(&vm, Type::List)
+            value.as_index(&mut vm, Type::List)
         });
         assert_eq!(result.unwrap(), i64::MAX);
         value.drop_with(&mut heap);
@@ -2643,7 +2726,7 @@ mod tests {
         let mut interns = create_test_interns();
         let code = Code::empty();
         let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let vm = VM::new(
+            let mut vm = VM::new(
                 Vec::new(),
                 code,
                 reader,
@@ -2651,7 +2734,7 @@ mod tests {
                 PrintWriter::Disabled,
                 AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             );
-            value.as_index(&vm, Type::List)
+            value.as_index(&mut vm, Type::List)
         });
         assert_eq!(result.unwrap(), i64::MIN);
         value.drop_with(&mut heap);
@@ -2667,7 +2750,7 @@ mod tests {
         let mut interns = create_test_interns();
         let code = Code::empty();
         let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let vm = VM::new(
+            let mut vm = VM::new(
                 Vec::new(),
                 code,
                 reader,
@@ -2675,7 +2758,7 @@ mod tests {
                 PrintWriter::Disabled,
                 AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             );
-            value.as_index(&vm, Type::List)
+            value.as_index(&mut vm, Type::List)
         });
         assert!(result.is_err());
         value.drop_with(&mut heap);
@@ -2691,7 +2774,7 @@ mod tests {
         let mut interns = create_test_interns();
         let code = Code::empty();
         let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let vm = VM::new(
+            let mut vm = VM::new(
                 Vec::new(),
                 code,
                 reader,
@@ -2699,7 +2782,7 @@ mod tests {
                 PrintWriter::Disabled,
                 AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             );
-            value.as_index(&vm, Type::List)
+            value.as_index(&mut vm, Type::List)
         });
         assert!(result.is_err());
         value.drop_with(&mut heap);

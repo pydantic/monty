@@ -1,6 +1,6 @@
 ---
 name: review-general
-description: Review the current branch against its merge base for bugs, CPython divergence, sandbox escapes, resource-limit escapes, performance regressions, verbose comments and missing ./limitations/ updates. Use for a general pre-merge review of a branch or PR.
+description: Review the current branch against its merge base for bugs, CPython divergence, sandbox escapes, resource-limit escapes, performance regressions, verbose comments and missing ./limitations/ or docs/ updates. Use for a general pre-merge review of a branch or PR.
 ---
 
 # General branch review
@@ -26,6 +26,10 @@ Read the changed files in full — a hunk is rarely enough to judge correctness.
 - **Verbose comments** — docstrings and comments should be concise as per `CLAUDE.md`.
 - **Cleanups** — duplication, misplaced logic, functions grown too complex.
 - **`./limitations/`** — a new divergence with no entry is a finding.
+- **Docs parity** — a user-visible change reflected in only one of `README.md`, `docs/`,
+  `limitations/` and the crate READMEs is a finding. `CLAUDE.md` "Documentation surfaces
+  that must stay in sync" has the obligation table. For a full pass, delegate to the
+  `docs-parity-reviewer` subagent.
 
 ## Report
 

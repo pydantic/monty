@@ -128,6 +128,30 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         }
     }
 
+    /// Coerces the instance to an integer through the class's `__index__`.
+    ///
+    /// Validating the result here is both CPython's `__index__ returned non-int`
+    /// check and what stops a class whose `__index__` returns another such
+    /// instance from recursing — the caller converts a real int without
+    /// re-entering the protocol.
+    ///
+    /// Runs synchronously like the other dunders here, so an `__index__` that
+    /// calls an external/OS function raises rather than suspending.
+    fn py_index_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(result) = instance_call_dunder_sync(self.id(), "__index__", None, vm)? else {
+            return Ok(None);
+        };
+        if matches!(result, Value::Int(_) | Value::Bool(_) | Value::InternLongInt(_))
+            || matches!(&result, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)))
+        {
+            Ok(Some(result))
+        } else {
+            let exc = ExcType::type_error(format!("__index__ returned non-int (type {})", result.py_type_name(vm)));
+            result.drop_with(vm);
+            Err(exc)
+        }
+    }
+
     fn py_type(&self, vm: &VM<'h>) -> Type {
         Type::Instance(self.get(vm.heap).class)
     }
@@ -280,9 +304,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     /// Dispatches the class's `__next__`, turning `StopIteration` into exhaustion.
     ///
     /// Every other exception propagates, including an `UncatchableExc` from a
-    /// resource limit — see [`RunError::is_stop_iteration`]. No heap borrow is
-    /// held across the call: `__next__` runs Python, which may re-enter this
-    /// same instance through a nested `next()`.
+    /// resource limit — see [`RunError::is_stop_iteration`].
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         // The absent case doubles as the not-an-iterator check, halving the
         // lookups — this runs for every item of every user iterator.

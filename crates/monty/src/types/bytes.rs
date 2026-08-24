@@ -905,28 +905,27 @@ fn parse_bytes_sub_args(
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
 
-    let (sub, start, end) = match pos.as_slice() {
-        [sub_value] => {
-            let sub = extract_bytes_only(sub_value, vm)?;
-            (sub, 0, len)
-        }
+    // The bounds convert before `sub` is inspected, as in CPython, whose parser
+    // runs the index converters and leaves the buffer check to the function body.
+    // A raising `__index__` bound then costs no copy; `pos` keeps `sub` alive.
+    let (sub_value, start, end) = match pos.as_slice() {
+        [sub_value] => (sub_value, 0, len),
         [sub_value, start_value] => {
-            let sub = extract_bytes_only(sub_value, vm)?;
             let start = normalize_sequence_index(start_value.as_int(vm)?, len);
-            (sub, start, len)
+            (sub_value, start, len)
         }
         [sub_value, start_value, end_value] => {
-            let sub = extract_bytes_only(sub_value, vm)?;
             let start = normalize_sequence_index(start_value.as_int(vm)?, len);
             let end = normalize_sequence_index(end_value.as_int(vm)?, len);
-            (sub, start, end)
+            (sub_value, start, end)
         }
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => return Err(ExcType::type_error_at_most(method, 3, pos.len())),
     };
+    let sub = extract_bytes_only(sub_value, vm)?.to_owned();
 
     // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
-    Ok((sub.to_owned(), start, end.max(start)))
+    Ok((sub, start, end.max(start)))
 }
 
 // =============================================================================
@@ -1376,11 +1375,13 @@ fn bytes_rsplit<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>
 fn coerce_bytes_split_args(sep: Value, maxsplit: Value, vm: &mut VM<'_>) -> RunResult<(Option<Vec<u8>>, i64)> {
     defer_drop!(sep, vm);
     defer_drop!(maxsplit, vm);
+    // `maxsplit` converts first, as in CPython's clinic, which reads it while
+    // `sep` is still an unchecked object — a raising `__index__` costs no copy.
+    let maxsplit_int = maxsplit.as_int(vm)?;
     let sep = match sep {
         Value::None => None,
         _ => Some(extract_bytes_only(sep, vm)?.to_owned()),
     };
-    let maxsplit_int = maxsplit.as_int(vm)?;
     Ok((sep, maxsplit_int))
 }
 
@@ -1926,31 +1927,41 @@ fn parse_bytes_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> R
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
 
-    let extract_width = |v: &Value| -> RunResult<usize> {
-        let w = v.as_int(vm)?;
-        Ok(if w < 0 {
-            0
-        } else {
-            usize::try_from(w).unwrap_or(usize::MAX)
-        })
-    };
-
-    let extract_fill = |v: &Value| -> RunResult<u8> {
-        let fill_bytes = extract_bytes_only(v, vm)?;
-        if fill_bytes.len() != 1 {
-            return Err(ExcType::type_error(format!(
-                "{method}() argument 2 must be a byte string of length 1, not bytes of length {}",
-                fill_bytes.len()
-            )));
-        }
-        Ok(fill_bytes[0])
-    };
-
+    // Free functions rather than closures: `extract_width` needs `&mut VM` for a
+    // user `__index__`, which cannot coexist with a second closure capturing the
+    // same `vm` immutably.
     match pos.as_slice() {
-        [width_value] => Ok((extract_width(width_value)?, b' ')),
-        [width_value, fillbyte_value] => Ok((extract_width(width_value)?, extract_fill(fillbyte_value)?)),
+        [width_value] => Ok((extract_justify_width(width_value, vm)?, b' ')),
+        [width_value, fillbyte_value] => {
+            // Width first, so its error wins for `center('x', 'y')` as in CPython.
+            let width = extract_justify_width(width_value, vm)?;
+            Ok((width, extract_justify_fill(method, fillbyte_value, vm)?))
+        }
         [] => Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => Err(ExcType::type_error_at_most(method, 2, pos.len())),
+    }
+}
+
+/// Reads a justify method's `width`, clamping negatives to zero as CPython does.
+fn extract_justify_width(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+    let width = value.as_int(vm)?;
+    Ok(if width < 0 {
+        0
+    } else {
+        usize::try_from(width).unwrap_or(usize::MAX)
+    })
+}
+
+/// Reads a justify method's `fillbyte`, which must be exactly one byte.
+fn extract_justify_fill(method: &str, value: &Value, vm: &VM<'_>) -> RunResult<u8> {
+    let fill_bytes = extract_bytes_only(value, vm)?;
+    if fill_bytes.len() == 1 {
+        Ok(fill_bytes[0])
+    } else {
+        Err(ExcType::type_error(format!(
+            "{method}() argument 2 must be a byte string of length 1, not bytes of length {}",
+            fill_bytes.len()
+        )))
     }
 }
 

@@ -30,7 +30,7 @@ pub(crate) enum AsyncioFunctions {
 
 /// Creates the `asyncio` module and allocates it on the heap.
 ///
-/// The module contains only the `gather` function. Other asyncio functions
+/// The module contains only the `run` and `gather` functions. Other asyncio functions
 /// are not implemented as they would require additional VM/scheduler features.
 ///
 /// # Panics

@@ -21,6 +21,10 @@ dev = [
     "pydantic-ai-slim[anthropic,openai]>=1.63.0",
     "websockets>=14",
 ]
+docs = [
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.7",
+]
 
 # https://beta.ruff.rs/docs/configuration/
 [tool.ruff]

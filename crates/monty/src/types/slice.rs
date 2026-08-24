@@ -57,31 +57,30 @@ impl Slice {
     ///
     /// Each argument can be None to indicate "use default".
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let heap = &mut *vm.heap;
-        let pos_args = args.into_pos_only("slice", heap)?;
-        defer_drop!(pos_args, heap);
+        let pos_args = args.into_pos_only("slice", vm.heap)?;
+        defer_drop!(pos_args, vm);
 
         let slice = match pos_args.as_slice() {
             [] => return Err(ExcType::type_error_at_least("slice", 1, 0)),
             [first_arg] => {
-                let stop = value_to_option_i64(first_arg)?;
+                let stop = value_to_option_i64(first_arg, vm)?;
                 Self::new(None, stop, None)
             }
             [first_arg, second_arg] => {
-                let start = value_to_option_i64(first_arg)?;
-                let stop = value_to_option_i64(second_arg)?;
+                let start = value_to_option_i64(first_arg, vm)?;
+                let stop = value_to_option_i64(second_arg, vm)?;
                 Self::new(start, stop, None)
             }
             [first_arg, second_arg, third_arg] => {
-                let start = value_to_option_i64(first_arg)?;
-                let stop = value_to_option_i64(second_arg)?;
-                let step = value_to_option_i64(third_arg)?;
+                let start = value_to_option_i64(first_arg, vm)?;
+                let stop = value_to_option_i64(second_arg, vm)?;
+                let step = value_to_option_i64(third_arg, vm)?;
                 Self::new(start, stop, step)
             }
             _ => return Err(ExcType::type_error_at_most("slice", 3, pos_args.len())),
         };
 
-        Ok(Value::Ref(heap.allocate(HeapData::Slice(slice))))
+        Ok(Value::Ref(vm.heap.allocate(HeapData::Slice(slice))))
     }
 
     /// Computes concrete indices for a sequence of the given length.
@@ -138,14 +137,32 @@ impl Slice {
 /// Converts a Value to Option<i64>, treating None as None.
 ///
 /// Used for slice construction from both `slice()` builtin and `[start:stop:step]` syntax.
-/// Returns Ok(None) for Value::None, Ok(Some(i)) for integers/bools,
-/// or Err(TypeError) for other types.
-pub(crate) fn value_to_option_i64(value: &Value) -> RunResult<Option<i64>> {
+/// Returns Ok(None) for Value::None, Ok(Some(i)) for integers/bools, a user
+/// `__index__` result for instances, or Err(TypeError) for other types — which
+/// is what the "or have an `__index__` method" in the error message promises.
+///
+/// Ints too large for `i64` saturate to `i64::MIN`/`i64::MAX` instead of
+/// raising, matching CPython's clamping of slice bounds — unlike plain indexing,
+/// which raises `IndexError` on the same input.
+pub(crate) fn value_to_option_i64(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<i64>> {
     match value {
         Value::None => Ok(None),
         Value::Int(i) => Ok(Some(*i)),
         Value::Bool(b) => Ok(Some(i64::from(*b))),
-        _ => Err(ExcType::type_error_slice_indices()),
+        // Bounds beyond `i64` saturate rather than raise: CPython clamps slice
+        // bounds to the sequence, so `[1, 2, 3][10**30:]` is `[]`, not an error.
+        // This arm also catches an `__index__` that returns a `LongInt`, which
+        // the recursion below funnels back through here.
+        _ if let Some(index) = value.long_int_to_i64_saturating(vm) => Ok(Some(index)),
+        _ => match value.py_index_impl(vm)? {
+            // Recurses exactly once: `py_index_impl` validates an int result, so
+            // the arms above take it on the way back in.
+            Some(index) => {
+                defer_drop!(index, vm);
+                value_to_option_i64(index, vm)
+            }
+            None => Err(ExcType::type_error_slice_indices()),
+        },
     }
 }
 

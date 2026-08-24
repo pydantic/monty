@@ -39,9 +39,20 @@ buffers. That growth is **not** covered by `ResourceLimits.max_memory`
 (heap-only, and in the pool only on the worker).
 
 - Default cap: **10 MiB** (`DEFAULT_MAX_PRINT_COLLECT_BYTES`).
-- Exceeding the cap raises host-visible `MemoryError` with
-  `memory limit exceeded: {used} bytes > {limit} bytes` (same wording as
-  heap `ResourceError::Memory`).
+- Exceeding the cap fails with `memory limit exceeded: {used} bytes > {limit}
+  bytes` (same wording as heap `ResourceError::Memory`), but *what raises* and
+  *who can catch it* differ by host:
+  - **In-process Rust** (`PrintWriter::CollectString`/`CollectStreams`): the
+    error is raised inside the VM as an ordinary `MemoryError`, so sandboxed
+    code **can** catch it with `except MemoryError`. Unlike a real resource
+    limit it is a catchable `RunError::Exc`, not `UncatchableExc`.
+  - **Pool hosts** (`pydantic_monty`, `@pydantic/monty`): the cap is enforced
+    in the parent as print events arrive, so it fails the protocol *turn*
+    rather than raising into the VM. Sandboxed code cannot catch it, and the
+    host sees `MontyRuntimeError` whose inner exception is `MemoryError`
+    (`exc.exception()` in Python, `err.exception.typeName` in JS). The JS
+    check is its own TypeScript implementation
+    (`crates/monty-js/ts/print.ts`), not the Rust `PrintWriter`.
 - Pass `max_bytes=None` to disable the cap (trusted hosts only).
 - Python `CollectStreams` also charges a fixed per-entry overhead toward the
   cap, since many tiny fragments would otherwise OOM the host before payload

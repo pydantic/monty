@@ -78,7 +78,11 @@ export interface CheckoutOptions {
   assertMessageAnnotations?: AssertMessageAnnotations
 }
 
-/** Sandbox resource limits. Omitted fields mean "unlimited". */
+/**
+ * Sandbox resource limits. An omitted field means "unlimited", except
+ * `maxRecursionDepth`, which falls back to its 1000-frame default and cannot
+ * be disabled.
+ */
 export interface ResourceLimits {
   maxDurationSecs?: number
   maxMemory?: number

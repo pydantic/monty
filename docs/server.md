@@ -76,7 +76,7 @@ uv add pydantic-monty
 
 Create `client.py`:
 
-```python
+```python test="skip"
 import asyncio
 
 from pydantic_monty import AsyncMontyWebsocket
@@ -184,7 +184,7 @@ The server flags and Python client keys use different names and, for memory, dif
 For example, this asks for 30 seconds, 32 MiB and a recursion depth of 500; the server may lower any value to its own
 ceiling:
 
-```python
+```python test="skip"
 import asyncio
 
 from pydantic_monty import AsyncMontyWebsocket

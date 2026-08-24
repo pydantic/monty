@@ -1286,6 +1286,20 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::IndexError, "cannot fit 'int' into an index-sized integer").into()
     }
 
+    /// [`Self::index_error_int_too_large`] for a value that supplied the index
+    /// through `__index__`.
+    ///
+    /// CPython names the object it asked, not the `int` it got back, so an
+    /// instance reports its own class here.
+    #[must_use]
+    fn index_error_cannot_fit(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::IndexError,
+            format!("cannot fit '{type_name}' into an index-sized integer"),
+        )
+        .into()
+    }
+
     /// Creates an ImportError for when a name cannot be imported from a module.
     ///
     /// Matches CPython's format for built-in modules:

@@ -790,21 +790,21 @@ fn list_index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -
     let pos_args = args.into_pos_only("list.index", vm.heap)?;
     defer_drop!(pos_args, vm);
 
-    let len = list.get(vm.heap).items.len();
-    let (value, start, end) = match pos_args.as_slice() {
+    // Bounds are coerced before the length is read: `as_int` may dispatch a user
+    // `__index__` that mutates this list, and CPython normalizes against the
+    // length *after* argument parsing. Reading it first would resolve a negative
+    // bound against a stale length and search the wrong window.
+    let (value, start_arg, end_arg) = match pos_args.as_slice() {
         [] => return Err(ExcType::type_error_at_least("list.index", 1, 0)),
-        [value] => (value, 0, len),
-        [value, start_arg] => {
-            let start = normalize_sequence_index(start_arg.as_int(vm)?, len);
-            (value, start, len)
-        }
-        [value, start_arg, end_arg] => {
-            let start = normalize_sequence_index(start_arg.as_int(vm)?, len);
-            let end = normalize_sequence_index(end_arg.as_int(vm)?, len).max(start);
-            (value, start, end)
-        }
+        [value] => (value, None, None),
+        [value, start_arg] => (value, Some(start_arg.as_int(vm)?), None),
+        [value, start_arg, end_arg] => (value, Some(start_arg.as_int(vm)?), Some(end_arg.as_int(vm)?)),
         other => return Err(ExcType::type_error_at_most("list.index", 3, other.len())),
     };
+
+    let len = list.get(vm.heap).items.len();
+    let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
+    let end = end_arg.map_or(len, |i| normalize_sequence_index(i, len)).max(start);
 
     // Search for the value in the specified range
     let iter = list.iter(vm)?;
