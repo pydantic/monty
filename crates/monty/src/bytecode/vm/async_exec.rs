@@ -709,7 +709,7 @@ impl<'h> VM<'h> {
             return;
         }
 
-        let task_is_current = self.scheduler.current_task_id() == Some(task_id);
+        let task_is_current = self.scheduler.current_task_id() == Some(task_id) && !self.current_frame.is_parked;
         if task_is_current {
             self.stack.push(value);
         } else {

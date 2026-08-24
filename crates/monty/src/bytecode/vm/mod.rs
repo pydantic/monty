@@ -855,6 +855,10 @@ impl<'h> VM<'h> {
             recursion::MAX_RUN_REENTRY_DEPTH,
             "VM snapshotted while inside a nested evaluate_function re-entry"
         );
+        debug_assert!(
+            !self.current_frame.is_parked || self.suspended_frames.is_empty(),
+            "parked frame has suspended callers"
+        );
 
         // Drop cached JSON strings before consuming the VM — they are not
         // included in the snapshot and their refcounts must be decremented.
