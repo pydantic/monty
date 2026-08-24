@@ -740,6 +740,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
     let cases = [
         ("'x' * 10_000_000", 10_031_137),
+        // Formatting must account for the retained input and the growing output.
+        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_231_000),
         ("b'x' * 10_000_000", 10_031_269),
         ("[None] * 1_000_000", 16_031_391),
         ("2 ** 10_000_000", 10_031_230),

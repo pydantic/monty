@@ -6,6 +6,12 @@ positional and keyword fields, automatic and manual numbering, attribute and
 item access, `!s` / `!r` / `!a` conversions, nested replacement fields in
 format specs, and escaped braces.
 
+Attribute access is limited to lookups that complete inside the sandbox.
+If a replacement field needs a host operation, such as
+`'{0.environ}'.format(os)`, Monty raises
+`NotImplementedError: str.format attribute access cannot suspend` instead of
+returning the attribute as CPython does.
+
 The other CPython formatting entry points are not implemented:
 
 - The `format()` builtin raises `NameError`, and `str.format_map()` raises

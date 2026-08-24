@@ -27,10 +27,16 @@ class Record:
 
 
 assert '{0.value:04d}'.format(Record(2001)) == '2001'
+assert capture_error('{0.missing}', Record(2001)) == (
+    'AttributeError',
+    "'Record' object has no attribute 'missing'",
+)
 person = {'first': 'Jean-Luc', 'last': 'Picard'}
 assert '{p[first]} {p[last]}'.format(p=person) == 'Jean-Luc Picard'
+assert capture_error('{0[missing]}', person) == ('KeyError', "'missing'")
 plant = {'kinds': [{'name': 'oak'}]}
 assert '{p[kinds][0][name]}'.format(p=plant) == 'oak'
+assert capture_error('{0[2]}', [10, 20]) == ('IndexError', 'list index out of range')
 assert '{0[１]}'.format([10, 20]) == '20'
 assert '{0[𝟙]}'.format(['zero', 'one']) == 'one'
 unusual_item_keys = '{0[a:b]} {0[a!b]} {0[a}b]}'
