@@ -1,0 +1,115 @@
+from datetime import datetime
+
+
+def capture_error(template, *args, **kwargs):
+    try:
+        template.format(*args, **kwargs)
+    except Exception as exc:
+        return type(exc).__name__, str(exc)
+    return None
+
+
+assert '{} {}'.format('one', 'two') == 'one two'
+assert '{1} {0}'.format('one', 'two') == 'two one'
+assert '{first} {last}'.format(first='Jean-Luc', last='Picard') == 'Jean-Luc Picard'
+assert '{a-b}'.format(**{'a-b': 7}) == '7'
+unicode_index = '{٠}'
+assert unicode_index.format('zero') == 'zero'
+mathematical_index = '{𝟘}'
+assert mathematical_index.format('zero') == 'zero'
+literal_only = 'unchanged'
+assert literal_only.format(1, ignored=2) == 'unchanged'
+
+
+class Record:
+    def __init__(self, value):
+        self.value = value
+
+
+assert '{0.value:04d}'.format(Record(2001)) == '2001'
+person = {'first': 'Jean-Luc', 'last': 'Picard'}
+assert '{p[first]} {p[last]}'.format(p=person) == 'Jean-Luc Picard'
+plant = {'kinds': [{'name': 'oak'}]}
+assert '{p[kinds][0][name]}'.format(p=plant) == 'oak'
+assert '{0[１]}'.format([10, 20]) == '20'
+assert '{0[𝟙]}'.format(['zero', 'one']) == 'one'
+unusual_item_keys = '{0[a:b]} {0[a!b]} {0[a}b]}'
+assert unusual_item_keys.format({'a:b': 1, 'a!b': 2, 'a}b': 3}) == '1 2 3'
+
+assert '{0!s} {0!r} {0!a}'.format('räpr') == "räpr 'räpr' 'r\\xe4pr'"
+assert '{0:>10}'.format('test') == '      test'
+assert '{0:_<10.5}'.format('xylophone') == 'xylop_____'
+assert '{0:+06.2f}'.format(3.14159) == '+03.14'
+assert '{0:{align}{width}}'.format('test', align='^', width=10) == '   test   '
+assert '{0:{width}.{precision}f}'.format(2.7182, width=5, precision=2) == ' 2.72'
+assert '{0:{spec[align]}}'.format('x', spec={'align': '^5'}) == '  x  '
+assert '{} {:{}}'.format(1, 2, 3) == '1   2'
+dt = datetime(2001, 2, 3, 4, 5)
+assert '{0:%Y-%m-%d %H:%M}'.format(dt) == '2001-02-03 04:05'
+
+assert '{{}}'.format() == '{}'
+assert '{{{0}}}'.format('x') == '{x}'
+assert ''.format() == ''
+shared = {'x': 'value'}
+assert '{0} {0!r} {0[x]}'.format(shared) == "{'x': 'value'} {'x': 'value'} value"
+
+assert capture_error('{} {0}', 'a', 'b') == (
+    'ValueError',
+    'cannot switch from automatic field numbering to manual field specification',
+)
+assert capture_error('{0} {}', 'a', 'b') == (
+    'ValueError',
+    'cannot switch from manual field specification to automatic field numbering',
+)
+assert capture_error('{2}', 'a') == (
+    'IndexError',
+    'Replacement index 2 out of range for positional args tuple',
+)
+assert capture_error('{missing}') == ('KeyError', "'missing'")
+assert capture_error('{') == ('ValueError', "Single '{' encountered in format string")
+assert capture_error('}') == ('ValueError', "Single '}' encountered in format string")
+assert capture_error('{0!x}', 'a') == ('ValueError', 'Unknown conversion specifier x')
+assert capture_error('{0!rs}', 'a') == ('ValueError', "expected ':' after conversion specifier")
+assert capture_error('{0!', 'a') == (
+    'ValueError',
+    'end of string while looking for conversion specifier',
+)
+assert capture_error('{0!s', 'a') == ('ValueError', "unmatched '{' in format spec")
+assert capture_error('{0!}', 'a') == ('ValueError', "unmatched '{' in format spec")
+assert capture_error('{missing:') == ('ValueError', "unmatched '{' in format spec")
+assert capture_error('{missing!rs}') == (
+    'ValueError',
+    "expected ':' after conversion specifier",
+)
+assert capture_error('{missing!x}') == ('KeyError', "'missing'")
+assert capture_error('{0:.2q}', 1) == (
+    'ValueError',
+    "Unknown format code 'q' for object of type 'int'",
+)
+assert capture_error('{0:.}', 1) == ('ValueError', 'Format specifier missing precision')
+assert capture_error('{0{}}', 'a') == ('ValueError', "unexpected '{' in field name")
+assert capture_error('{0..x}', 'a') == ('ValueError', 'Empty attribute in format string')
+assert capture_error('{0[]}', {'': 1}) == ('ValueError', 'Empty attribute in format string')
+assert capture_error('{0[x]x}', {'x': 1}) == (
+    'ValueError',
+    "Only '.' or '[' may follow ']' in format field specifier",
+)
+assert capture_error('{0[x}', {'x': 1}) == ('ValueError', "expected '}' before end of string")
+assert capture_error('{0:{1}', 1, 2) == ('ValueError', "unmatched '{' in format spec")
+assert capture_error('{0:{spec[a}b]}}', 'x', spec={'a}b': '^5'}) == (
+    'ValueError',
+    "expected '}' before end of string",
+)
+assert capture_error('{0:{}}', 1, 2) == (
+    'ValueError',
+    'cannot switch from manual field specification to automatic field numbering',
+)
+assert capture_error('{:{0}}', 1, 2) == (
+    'ValueError',
+    'cannot switch from automatic field numbering to manual field specification',
+)
+assert capture_error('{0:{1:{2}}}', 1, 2, 3) == ('ValueError', 'Max string recursion exceeded')
+assert capture_error('{999999999999999999999999999999999999}', 1) == (
+    'ValueError',
+    'Too many decimal digits in format string',
+)

@@ -1,12 +1,15 @@
-# Format mini-language (f-string specs)
+# String formatting
 
 Monty implements CPython 3.14's format mini-language for f-string
-interpolations. The mini-language is only reachable through f-strings.
+interpolations and `str.format()` replacement fields. `str.format()` supports
+positional and keyword fields, automatic and manual numbering, attribute and
+item access, `!s` / `!r` / `!a` conversions, nested replacement fields in
+format specs, and escaped braces.
 
-The other CPython formatting mechanisms are not implemented:
+The other CPython formatting entry points are not implemented:
 
-- The `format()` builtin raises `NameError` and the `str.format()` method
-    raises `AttributeError` (see [builtins.md](builtins.md)).
+- The `format()` builtin raises `NameError`, and `str.format_map()` raises
+    `AttributeError` (see [builtins.md](builtins.md)).
 - Printf-style `%` formatting (`'%5.3f' % math.pi`, `'%s %s' % (a, b)`) is not
     implemented. `str` has no `__mod__`, so `str % value` raises
     `TypeError: unsupported operand type(s) for %: 'str' and '...'`. Use an
@@ -14,8 +17,9 @@ The other CPython formatting mechanisms are not implemented:
 
 ## Custom `__format__`
 
-f-strings dispatch to a type's `__format__` only for `date`, `datetime` and
-`time`, which interpret the spec as a `strftime` string (`f'{dt:%Y-%m-%d}'`); see
+f-strings and `str.format()` dispatch to a type's `__format__` only for
+`date`, `datetime` and `time`, which interpret the spec as a `strftime` string
+(`f'{dt:%Y-%m-%d}'` or `'{:%Y-%m-%d}'.format(dt)`); see
 [datetime.md](datetime.md). There is no general `__format__` protocol: user
 classes can't customise formatting (see [classes.md](classes.md)), and all
 other types use the builtin mini-language formatter. A format spec on a
@@ -46,13 +50,16 @@ CPython prints it literally, or the reverse. Common text is unaffected.
 
 ## When spec errors are raised
 
-CPython validates a *static* (literal) spec only when the f-string executes, so
-a malformed spec in dead code never raises. Monty validates literal specs at
-**compile time** for the structurally-malformed cases: two or more trailing
+CPython validates a *static* (literal) f-string spec only when the f-string
+executes, so a malformed spec in dead code never raises. Monty validates
+literal f-string specs at **compile time** for the structurally-malformed cases:
+two or more trailing
 characters after the type field (`f'{1:kk}'`, `f'{1:10xyz}'`) and `usize`
 overflow, raising `SyntaxError` instead of CPython's runtime `ValueError`. The
 message text otherwise matches, minus CPython's `for object of type '...'`
 suffix, which needs the runtime value type. Specs whose error *is*
-value-type-dependent or only resolvable at format time (`Unknown format code 'k'`, the `Cannot specify …` grouping
-conflicts, and `Format specifier missing precision`) are deferred to runtime and raise the exact CPython `ValueError`,
-as do all dynamically-built specs (`f'{1:{spec}}'`).
+value-type-dependent or only resolvable at format time (`Unknown format code
+'k'`, the `Cannot specify …` grouping conflicts, and `Format specifier missing
+precision`) are deferred to runtime and raise the exact CPython `ValueError`,
+as do all dynamically-built specs (`f'{1:{spec}}'`) and all `str.format()`
+specs.

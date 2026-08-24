@@ -80,6 +80,17 @@ impl<'t> StringBuilder<'t> {
         }
     }
 
+    /// Existing capacity is already tracker-accounted; only later growth needs preflight.
+    pub fn from_existing(inner: String, tracker: &'t ResourceTracker) -> Self {
+        let approved_capacity = inner.capacity();
+        Self {
+            inner,
+            tracker,
+            approved_capacity,
+            pending_error: None,
+        }
+    }
+
     /// Creates a builder with `capacity` bytes reserved up front.
     ///
     /// Use when the final size is known or bounded (e.g. padding to a given

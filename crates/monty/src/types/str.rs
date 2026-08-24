@@ -22,6 +22,7 @@ use crate::{
     },
     intern::{Interns, StaticStrings, StringId},
     resource_checks::{check_repeat_size, check_replace_size},
+    str_format::str_format,
     string_builder::StringBuilder,
     types::{
         LazyHeapSet, Type,
@@ -403,10 +404,7 @@ pub fn call_str_method(s: &str, method_id: StringId, args: ArgValues, vm: &mut V
 ///
 /// The following Python string methods are not yet implemented:
 ///
-/// - `format()` - Requires implementing the format spec mini-language (PEP 3101),
-///   which is complex and involves parsing format specifications like `{:>10.2f}`.
-/// - `format_map(mapping)` - Similar to `format()` but takes a mapping; depends on
-///   `format()` implementation.
+/// - `format_map(mapping)` - Mapping-only variant of `format()`.
 /// - `maketrans()` / `translate()` - Character translation tables; moderate complexity,
 ///   requires building and applying Unicode translation maps.
 /// - `expandtabs(tabsize=8)` - Tab expansion; simple but rarely used in practice.
@@ -508,6 +506,10 @@ fn call_str_method_impl<'h>(
         StaticStrings::Rjust => str_rjust(s, args, vm),
         StaticStrings::Zfill => str_zfill(s, args, vm),
         StaticStrings::Expandtabs => str_expandtabs(s, args, vm),
+        StaticStrings::Format => {
+            let template = s.get(vm.heap).to_owned();
+            str_format(&template, args, vm)
+        }
         // Additional methods
         StaticStrings::Encode => str_encode(s, args, vm),
         StaticStrings::Isidentifier => {

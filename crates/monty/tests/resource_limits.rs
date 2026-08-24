@@ -864,6 +864,26 @@ s.splitlines()
     assert_timeout_in_builtin(code, "str.splitlines()");
 }
 
+#[test]
+fn timeout_in_str_format_parser() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("template = '{' + 'x' * 20_000_000", vec![], PrintWriter::Stdout)
+        .unwrap();
+
+    repl.tracker_mut().set_max_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("template.format()", vec![], PrintWriter::Stdout)
+        .expect_err("the format-string parser must hit the time limit");
+    let elapsed = start.elapsed();
+
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "str.format() should terminate promptly, took {elapsed:?}"
+    );
+}
+
 /// Test that `bytes.splitlines()` on large bytes respects the time limit.
 ///
 /// `bytes_splitlines()` scans bytes for line endings and now checks the time limit.
