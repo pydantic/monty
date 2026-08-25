@@ -8,9 +8,9 @@ use ruff_db::{
     vendored::VendoredFileSystem,
 };
 use ruff_python_ast::PythonVersion;
-use ty_module_resolver::{Db as ModuleResolverDb, FallibleStrategy, SearchPathSettings, SearchPaths};
+use ty_module_resolver::{Db as ModuleResolverDb, FallibleStrategy, SearchPathSettings};
 use ty_python_core::{
-    Db as PythonCoreDb,
+    Db as PythonCoreDb, ProgramFile,
     platform::PythonPlatform,
     program::{Program, ProgramSettings},
 };
@@ -40,6 +40,7 @@ pub(crate) struct MemoryDb {
     vendored: VendoredFileSystem,
     rule_selection: Arc<RuleSelection>,
     analysis_settings: Arc<AnalysisSettings>,
+    program_settings: ProgramSettings,
 }
 
 impl fmt::Debug for MemoryDb {
@@ -50,6 +51,7 @@ impl fmt::Debug for MemoryDb {
             .field("vendored", &self.vendored)
             .field("rule_selection", &self.rule_selection)
             .field("analysis_settings", &self.analysis_settings)
+            .field("program_settings", &self.program_settings)
             .finish_non_exhaustive()
     }
 }
@@ -70,10 +72,12 @@ impl Default for MemoryDb {
     /// constructor is the only sanctioned way to build a `MemoryDb`.
     fn default() -> Self {
         let src_root = SystemPathBuf::from(SRC_ROOT);
-        let db = Self {
+        let vendored = monty_typeshed::file_system().clone();
+        let mut db = Self {
             storage: salsa::Storage::new(None),
             system: TestSystem::default(),
-            vendored: monty_typeshed::file_system().clone(),
+            program_settings: ProgramSettings::empty(&vendored),
+            vendored,
             files: Files::default(),
             rule_selection: Arc::new(RuleSelection::from_registry(default_lint_registry())),
             analysis_settings: AnalysisSettings::default().into(),
@@ -85,19 +89,24 @@ impl Default for MemoryDb {
             .to_search_paths(db.system(), db.vendored(), &FallibleStrategy)
             .expect("vendored typeshed search paths always resolve");
 
-        Program::from_settings(
-            &db,
-            ProgramSettings {
-                python_version: PythonVersionWithSource {
-                    version: db.python_version(),
-                    source: PythonVersionSource::default(),
-                },
-                python_platform: PythonPlatform::default(),
-                search_paths,
+        search_paths.try_register_static_roots(&db);
+        db.program_settings = ProgramSettings {
+            python_version: PythonVersionWithSource {
+                version: PythonVersion::PY314,
+                source: PythonVersionSource::default(),
             },
-        );
+            python_platform: PythonPlatform::default(),
+            search_paths,
+        };
 
         db
+    }
+}
+
+impl MemoryDb {
+    /// Return the interned program configured for this database.
+    fn program(&self) -> Program<'_> {
+        Program::from_settings(self, self.program_settings.clone())
     }
 }
 
@@ -124,10 +133,6 @@ impl SourceDb for MemoryDb {
     fn files(&self) -> &Files {
         &self.files
     }
-
-    fn python_version(&self) -> PythonVersion {
-        PythonVersion::PY314
-    }
 }
 
 #[salsa::db]
@@ -141,10 +146,18 @@ impl PythonCoreDb for MemoryDb {
 impl Db for MemoryDb {
     fn check_file(&self, file: File) -> Vec<Diagnostic> {
         if self.should_check_file(file) {
-            check_file_unwrap(self, file)
+            check_file_unwrap(self, self.program_file(file))
         } else {
             Vec::new()
         }
+    }
+
+    fn program_file(&self, file: File) -> ProgramFile<'_> {
+        self.program().program_file(self, file)
+    }
+
+    fn python_version_with_source(&self, _file: File) -> &PythonVersionWithSource {
+        &self.program_settings.python_version
     }
 
     fn rule_selection(&self, _file: File) -> &RuleSelection {
@@ -160,6 +173,10 @@ impl Db for MemoryDb {
     }
 
     fn verbose(&self) -> bool {
+        false
+    }
+
+    fn is_open_file(&self, _file: File) -> bool {
         false
     }
 
@@ -179,11 +196,7 @@ impl Db for MemoryDb {
 }
 
 #[salsa::db]
-impl ModuleResolverDb for MemoryDb {
-    fn search_paths(&self) -> &SearchPaths {
-        Program::get(self).search_paths(self)
-    }
-}
+impl ModuleResolverDb for MemoryDb {}
 
 #[salsa::db]
 impl salsa::Database for MemoryDb {}

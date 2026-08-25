@@ -61,7 +61,6 @@ result = add(1, '2')
     3 |
     4 | result = add(1, '2')
       |                 ^^^ Expected `int`, found `Literal["2"]`
-      |
     info: Function defined here
      --> main.py:1:5
       |
@@ -106,7 +105,6 @@ result = add(1, '2')";
     3 |
     4 | result = add(1, '2')
       |                 ^^^ Expected `int`, found `Literal["2"]`
-      |
     info: Function defined here
      --> main.py:1:5
       |
@@ -403,34 +401,29 @@ fn collections_unimplemented_names_are_unresolved() {
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                         ^^^^^^^^^^^
-      |
 
     error[unresolved-import]: Module `collections` has no member `ChainMap`
      --> main.py:1:38
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                                      ^^^^^^^^
-      |
 
     error[unresolved-import]: Module `collections` has no member `UserDict`
      --> main.py:1:48
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                                                ^^^^^^^^
-      |
 
     error[unresolved-import]: Module `collections` has no member `UserList`
      --> main.py:1:58
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                                                          ^^^^^^^^
-      |
 
     error[unresolved-import]: Module `collections` has no member `UserString`
      --> main.py:1:68
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                                                                    ^^^^^^^^^^
-      |
     ");
 }
