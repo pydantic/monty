@@ -86,9 +86,11 @@ fn render(
     let mut output = String::new();
     let mut literal_start = 0;
     let mut index = 0;
+    let mut steps = 0;
 
     while index < bytes.len() {
-        vm.heap.tracker.check_time_every(index)?;
+        vm.heap.tracker.check_time_every(steps)?;
+        steps += 1;
         match bytes[index] {
             b'{' => {
                 output = push_tracked(output, &template[literal_start..index], vm)?;

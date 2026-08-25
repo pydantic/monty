@@ -937,6 +937,30 @@ fn timeout_in_str_format_parser() {
     );
 }
 
+#[test]
+fn timeout_in_str_format_escaped_braces() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("template = '{{' * 5_000_000", vec![], PrintWriter::Stdout)
+        .unwrap();
+
+    let start = Instant::now();
+    repl.feed_run("template.format()", vec![], PrintWriter::Stdout).unwrap();
+    let full_scan = start.elapsed();
+
+    repl.tracker_mut().set_max_duration(full_scan / 10);
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("template.format()", vec![], PrintWriter::Stdout)
+        .expect_err("escaped braces must not bypass the time limit");
+    let elapsed = start.elapsed();
+
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < full_scan / 2,
+        "str.format() should stop during the scan; full scan {full_scan:?}, timed scan {elapsed:?}"
+    );
+}
+
 /// Test that `bytes.splitlines()` on large bytes respects the time limit.
 ///
 /// `bytes_splitlines()` scans bytes for line endings and now checks the time limit.
