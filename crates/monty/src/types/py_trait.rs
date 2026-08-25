@@ -496,6 +496,14 @@ pub(crate) trait PyTrait<'h> {
         ))
     }
 
+    /// Handles a selected one-positional-argument method call.
+    ///
+    /// Hot type implementations may consume the argument directly. The default
+    /// preserves normal method dispatch and its argument-validation behavior.
+    fn py_call_attr_one(&mut self, vm: &mut VM<'h>, attr: &EitherStr, arg: Value) -> RunResult<CallResult> {
+        self.py_call_attr(vm, attr, ArgValues::One(arg))
+    }
+
     /// Whether this type implements the context-manager protocol.
     ///
     /// The `BeforeWith` opcode calls this *before* invoking [`py_enter`] so it

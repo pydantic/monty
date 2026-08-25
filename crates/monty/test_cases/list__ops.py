@@ -101,12 +101,26 @@ assert list('a🎉b') == ['a', '🎉', 'b']
 
 # === list.append() ===
 lst = []
-lst.append(1)
+assert lst.append(1) is None
 assert lst == [1]
 lst.append(2)
 assert lst == [1, 2]
+item = []
+lst.append(item)
+assert lst[-1] is item
 lst.append(lst)  # append self creates cycle
-assert len(lst) == 3
+assert len(lst) == 4
+
+# A temporary receiver has no owner besides the value consumed by the call.
+assert [].append(1) is None
+
+
+class AppendMethod:
+    def append(self, value):
+        return value + 1
+
+
+assert AppendMethod().append(41) == 42
 
 # === list.insert() ===
 # Basic insert at various positions

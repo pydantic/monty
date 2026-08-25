@@ -198,9 +198,15 @@ impl VM<'_> {
     /// Pops the object and arguments from the stack, calls the attribute,
     /// and returns a `CallResult` which may indicate an OS or external call.
     pub(super) fn exec_call_attr(&mut self, name_id: StringId, arg_count: usize) -> Result<CallResult, RunError> {
-        let args = self.pop_n_args(arg_count);
-        let obj = self.pop();
-        self.call_attr(obj, name_id, args)
+        if name_id == StaticStrings::Append && arg_count == 1 {
+            let arg = self.pop();
+            let obj = self.pop();
+            self.call_attr_one(obj, name_id, arg)
+        } else {
+            let args = self.pop_n_args(arg_count);
+            let obj = self.pop();
+            self.call_attr(obj, name_id, args)
+        }
     }
 
     /// Executes `CallAttrKw` opcode.
@@ -363,6 +369,22 @@ impl VM<'_> {
                 args.drop_with(this);
                 Err(ExcType::attribute_error(type_name, this.interns.get_str(name_id)))
             }
+        }
+    }
+
+    /// Dispatches a selected one-argument method without building an argument bundle first.
+    ///
+    /// Heap types can override [`PyTrait::py_call_attr_one`] for hot methods;
+    /// every other receiver falls back to the regular attribute-call path.
+    fn call_attr_one(&mut self, obj: Value, name_id: StringId, arg: Value) -> Result<CallResult, RunError> {
+        if let Value::Ref(heap_id) = obj {
+            let this = self;
+            defer_drop!(obj, this);
+            this.heap
+                .read(heap_id)
+                .py_call_attr_one(this, &EitherStr::Interned(name_id), arg)
+        } else {
+            self.call_attr(obj, name_id, ArgValues::One(arg))
         }
     }
 

@@ -686,6 +686,22 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
+    fn py_call_attr_one(&mut self, vm: &mut VM<'h>, attr: &EitherStr, arg: Value) -> Result<CallResult, RunError> {
+        if let Self::Module(module) = self {
+            Ok(module.py_call_attr(vm, attr, ArgValues::One(arg))?)
+        } else {
+            heap_read_output_py_trait_forward!(
+                self,
+                |value| Ok(value.py_call_attr_one(vm, attr, arg)?),
+                else {
+                    arg.drop_with(vm);
+                    let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+                    Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
+                }
+            )
+        }
+    }
+
     fn py_is_iterator(&self, vm: &VM<'h>) -> bool {
         match self {
             // A user-defined class is an iterator only if it defines `__next__`.

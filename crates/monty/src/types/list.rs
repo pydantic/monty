@@ -580,6 +580,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         call_list_method(self, method, args, vm).map(CallResult::Value)
     }
 
+    /// Appends a single argument directly while preserving generic dispatch for other methods.
+    fn py_call_attr_one(&mut self, vm: &mut VM<'h>, attr: &EitherStr, arg: Value) -> RunResult<CallResult> {
+        if attr.static_string() == Some(StaticStrings::Append) {
+            self.append(vm, arg);
+            Ok(CallResult::Value(Value::None))
+        } else {
+            self.py_call_attr(vm, attr, ArgValues::One(arg))
+        }
+    }
+
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let list_id = self.id();
         let iterator = vm.heap.allocate(HeapData::ListIterator(ListIterator::new(list_id)));
