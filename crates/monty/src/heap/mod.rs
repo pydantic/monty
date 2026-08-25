@@ -969,7 +969,7 @@ impl<'de> serde::Deserialize<'de> for Heap {
         }
         let fields = HeapFields::deserialize(deserializer)?;
         let mut entries = fields.entries;
-        let ext_function_cache = restore_entries(&mut entries).map_err(D::Error::custom)?;
+        let ext_function_cache = restore_entries(&mut entries, fields.timezone_utc).map_err(D::Error::custom)?;
         Ok(Self {
             entries,
             tracker: fields.tracker,
@@ -989,16 +989,20 @@ impl<'de> serde::Deserialize<'de> for Heap {
 /// Deserializing installs heap data verbatim, so every invariant the interpreter
 /// treats as guaranteed by its constructors has to be re-established here or a
 /// forged dump turns into a panic later: `time` components are read back by
-/// `naive_time` as already validated, and the `tzinfo` heap references on `time`
-/// and `datetime` are dereferenced without a type check. Returns the rebuilt
-/// external-function cache, which is derived rather than serialized.
-fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<BTreeMap<Arc<str>, HeapId>, &'static str> {
+/// `naive_time` as already validated, and the `tzinfo` references on `time` and
+/// `datetime`, along with the `timezone_utc` cache, are dereferenced without a
+/// type check. Returns the rebuilt external-function cache, which is derived
+/// rather than serialized.
+fn restore_entries(
+    entries: &mut StableHeap<HeapEntry>,
+    timezone_utc: Option<HeapId>,
+) -> Result<BTreeMap<Arc<str>, HeapId>, &'static str> {
     let mut ext_function_cache = BTreeMap::new();
-    // A `tzinfo` reference is only sound if it lands on a live `timezone` entry,
-    // which is not knowable until every entry has been visited.
-    let mut timezone_entries = vec![false; entries.len()];
+    // Whether a reference is sound depends on the entry it lands on, which is not
+    // knowable until every entry has been visited.
+    let mut targets = vec![TimeZoneTarget::NotTimeZone; entries.len()];
     let mut tzinfo_refs = Vec::new();
-    for (index, is_timezone) in timezone_entries.iter_mut().enumerate() {
+    for (index, target) in targets.iter_mut().enumerate() {
         let id = HeapId::from_index(index);
         let Some(mut entry) = entries.entry(id) else {
             continue;
@@ -1007,7 +1011,16 @@ fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<BTreeMap<Arc<s
             HeapData::ExtFunction(function) => {
                 ext_function_cache.insert(function.cache_key(), id);
             }
-            HeapData::TimeZone(_) => *is_timezone = true,
+            // A zero offset with no name is what `get_timezone_utc` allocates and
+            // what `datetime` folds back onto the singleton, so that shape — not
+            // the identity of one particular entry — is what the cache may hold.
+            HeapData::TimeZone(tz) => {
+                *target = if tz.offset_seconds == 0 && tz.name.is_none() {
+                    TimeZoneTarget::Utc
+                } else {
+                    TimeZoneTarget::Fixed
+                };
+            }
             HeapData::Time(t) => {
                 if !t.components_in_range() {
                     return Err("time component out of range");
@@ -1018,14 +1031,33 @@ fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<BTreeMap<Arc<s
             _ => {}
         }
     }
+    let target_of = |id: HeapId| targets.get(id.index()).copied().unwrap_or(TimeZoneTarget::NotTimeZone);
     if tzinfo_refs
         .into_iter()
-        .all(|tzinfo_ref| timezone_entries.get(tzinfo_ref.index()).copied().unwrap_or(false))
+        .any(|tzinfo_ref| target_of(tzinfo_ref) == TimeZoneTarget::NotTimeZone)
     {
-        Ok(ext_function_cache)
-    } else {
         Err("tzinfo reference does not point to a timezone")
+    } else if timezone_utc.is_some_and(|id| target_of(id) != TimeZoneTarget::Utc) {
+        Err("timezone.utc cache does not point to the utc timezone")
+    } else {
+        Ok(ext_function_cache)
     }
+}
+
+/// What a restored heap entry is, as far as the timezone references that point at
+/// it are concerned.
+///
+/// A `tzinfo` reference may land on any live `timezone`; the `timezone_utc` cache
+/// may land only on UTC's, because `get_timezone_utc` hands its target straight
+/// back as `datetime.timezone.utc` without looking at it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TimeZoneTarget {
+    /// Not a live `timezone`: no reference may point here.
+    NotTimeZone,
+    /// A live `timezone` carrying an offset or name of its own.
+    Fixed,
+    /// A live `timezone` whose contents match [`TimeZone::utc`].
+    Utc,
 }
 
 /// Default GC interval — run cycle collection every 100 000 GC-tracked

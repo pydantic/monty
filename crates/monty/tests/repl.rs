@@ -134,6 +134,43 @@ fn dump_rejects_forged_time_entries() {
     );
 }
 
+/// The `timezone_utc` cache is a raw heap id restored verbatim, and
+/// `get_timezone_utc` hands its target back as `datetime.timezone.utc` after an
+/// `inc_ref` that panics on a freed or out-of-range id. A forged cache must be
+/// rejected at load, whether it points at nothing, at a live non-timezone, or at
+/// a timezone that is not UTC.
+#[test]
+fn dump_rejects_forged_timezone_utc_cache() {
+    let bytes = dump_repl(
+        "import datetime\nutc = datetime.timezone.utc\nplus2 = datetime.timezone(datetime.timedelta(hours=2))",
+    );
+    assert!(Dump::load(&bytes).is_ok());
+
+    // `timezone_utc` is the heap's last serialized field and `globals` is the
+    // session's, so the cached id sits a fixed distance from the end: `Some(2)`
+    // followed by the three globals, one of which is the `+02:00` timezone at 4.
+    let cached_id = bytes.len() - 8;
+    assert_eq!(
+        &bytes[cached_id - 1..=cached_id],
+        &[1, 2],
+        "timezone_utc is Some(HeapId(2))"
+    );
+
+    for (forged_id, what) in [
+        (100, "no entry at all"),
+        (0, "the empty-tuple singleton"),
+        (4, "the +02:00 timezone"),
+    ] {
+        let mut forged = bytes.clone();
+        forged[cached_id] = forged_id;
+        assert_eq!(
+            Dump::load(&forged).unwrap_err(),
+            DumpError::Payload(postcard::Error::SerdeDeCustom),
+            "a timezone.utc cache pointing at {what} must be rejected"
+        );
+    }
+}
+
 /// Dumps an idle session after running `code`.
 fn dump_repl(code: &str) -> Vec<u8> {
     let (repl, _) = init_repl(code);
