@@ -203,23 +203,6 @@ impl VM<'_> {
         self.call_attr(obj, name_id, args)
     }
 
-    /// Mutates exact lists directly, falling back to normal attribute lookup
-    /// so user-defined `append` methods retain `CallAttr` semantics.
-    pub(super) fn exec_call_list_append(&mut self) -> Result<CallResult, RunError> {
-        let item = self.pop();
-        let receiver = self.pop();
-        if let Value::Ref(list_id) = &receiver
-            && let HeapReadOutput::List(mut list) = self.heap.read(*list_id)
-        {
-            let this = self;
-            defer_drop!(receiver, this);
-            list.append(this, item);
-            Ok(CallResult::Value(Value::None))
-        } else {
-            self.call_attr(receiver, StaticStrings::Append.into(), ArgValues::One(item))
-        }
-    }
-
     /// Executes `CallAttrKw` opcode.
     ///
     /// Pops the object, positional args, and keyword args from the stack,

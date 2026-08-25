@@ -32,10 +32,6 @@ pub const FORMAT_VALUE_STATIC_SPEC: u8 = 0x08;
 /// the opcode pops two comparison operands instead of one test value.
 pub const ASSERT_CMP_FLAG: u8 = 0x10;
 
-/// `ListAppend` operand selecting method-call semantics rather than a
-/// comprehension iterator depth.
-pub(crate) const LIST_APPEND_METHOD: u8 = u8::MAX;
-
 /// Encodes an optional fused comparison into the `Assert`/`AssertFailed`
 /// flags operand: `ASSERT_CMP_FLAG | as_operand` when present, `0` when not.
 pub fn assert_flags(cmp_op: Option<CmpOperator>) -> u8 {
@@ -266,9 +262,11 @@ pub enum Opcode {
     DictMerge = 71,
 
     // === Comprehension Building ===
-    /// Append TOS to a list. Operand: iterator depth or [`LIST_APPEND_METHOD`].
-    /// Comprehension stack: [..., list, iter1, ..., iterN, value] -> [..., list, iter1, ..., iterN].
-    /// Method stack: [..., receiver, value] -> [..., None].
+    /// Append TOS to list for comprehension. Operand: u8 depth (number of iterators).
+    ///
+    /// Stack: [..., list, iter1, ..., iterN, value] -> [..., list, iter1, ..., iterN]
+    /// Pops value (TOS), appends to list at stack position (len - 2 - depth).
+    /// Depth equals the number of nested iterators (generators) in the comprehension.
     ListAppend = 72,
     /// Add TOS to set for comprehension. Operand: u8 depth (number of iterators).
     ///

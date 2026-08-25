@@ -16,7 +16,7 @@ use super::{
     RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget, Offset},
     code::{Code, HandlerKind},
-    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, LIST_APPEND_METHOD, Opcode, assert_flags},
+    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode, assert_flags},
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
@@ -28,7 +28,7 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
-    intern::{Interns, StaticStrings, StringId},
+    intern::{Interns, StringId},
     modules::StandardLib,
     name_map::NameMap,
     namespace::NamespaceId,
@@ -2300,11 +2300,7 @@ impl<'a> Compiler<'a> {
             ArgExprs::One(arg) => {
                 self.compile_expr(arg)?;
                 self.code.set_location(call_pos, None);
-                if name_id == StaticStrings::Append {
-                    self.code.emit_u8(Opcode::ListAppend, LIST_APPEND_METHOD)?;
-                } else {
-                    self.code.emit_u16_u8(Opcode::CallAttr, name_idx, 1)?;
-                }
+                self.code.emit_u16_u8(Opcode::CallAttr, name_idx, 1)?;
             }
             ArgExprs::Two(arg1, arg2) => {
                 self.compile_expr(arg1)?;
@@ -2933,14 +2929,7 @@ impl<'a> Compiler<'a> {
                 return Ok(());
             }
             let depth = compiler.compute_append_depth(depth_after_collection, 1, elt.position)?;
-            if depth == LIST_APPEND_METHOD {
-                Err(CompileError::new(
-                    "list comprehension exceeds the supported nesting depth",
-                    elt.position,
-                ))
-            } else {
-                compiler.code.emit_u8(Opcode::ListAppend, depth)
-            }
+            compiler.code.emit_u8(Opcode::ListAppend, depth)
         })?;
         self.exit_captured_comp_cells(captured_slots)?;
 

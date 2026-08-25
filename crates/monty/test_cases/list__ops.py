@@ -108,15 +108,6 @@ assert lst == [1, 2]
 lst.append(lst)  # append self creates cycle
 assert len(lst) == 3
 
-
-class AppendMethod:
-    def append(self, value):
-        return value + 1
-
-
-# Specialized append syntax retains dispatch for non-list receivers.
-assert AppendMethod().append(41) == 42
-
 # === list.insert() ===
 # Basic insert at various positions
 lst = [1, 2, 3]
