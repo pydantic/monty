@@ -97,6 +97,61 @@ fn dump_header_rejects_incompatible_data() {
     );
 }
 
+/// A dump is untrusted input, and the heap it carries is installed verbatim. A
+/// `time` entry that no constructor could have produced must be rejected at load
+/// rather than panicking later, when the ranges and the `tzinfo` reference are
+/// read back as established facts.
+#[test]
+fn dump_rejects_forged_time_entries() {
+    // Distinctive components so the encoded `time` can be found in the payload:
+    // three single-byte fields, then 444555 as a postcard varint.
+    const COMPONENTS: [u8; 6] = [11, 22, 33, 0x8B, 0x91, 0x1B];
+
+    let naive = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555)");
+    // ... followed by fold and a `None` tzinfo.
+    let hour = offset_of(&naive, &[COMPONENTS.as_slice(), &[0, 0]].concat());
+    assert!(Dump::load(&naive).is_ok());
+
+    let mut forged = naive;
+    forged[hour] = 255;
+    assert_eq!(
+        Dump::load(&forged).unwrap_err(),
+        DumpError::Payload(postcard::Error::SerdeDeCustom)
+    );
+
+    let aware = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555, tzinfo=datetime.timezone.utc)");
+    // ... followed by fold, an attached tzinfo, its offset and name, then the
+    // heap id of the timezone object the time holds a reference to.
+    let tzinfo_ref = offset_of(&aware, &[COMPONENTS.as_slice(), &[0, 1]].concat()) + 10;
+    assert!(Dump::load(&aware).is_ok());
+
+    let mut forged = aware;
+    // The empty-tuple singleton: a live entry, but not a timezone.
+    forged[tzinfo_ref] = 0;
+    assert_eq!(
+        Dump::load(&forged).unwrap_err(),
+        DumpError::Payload(postcard::Error::SerdeDeCustom)
+    );
+}
+
+/// Dumps an idle session after running `code`.
+fn dump_repl(code: &str) -> Vec<u8> {
+    let (repl, _) = init_repl(code);
+    dump("repl.py", None, SessionRef::Idle(&repl)).unwrap()
+}
+
+/// The offset of the one occurrence of `marker` in `bytes`, so a forged dump can
+/// be built by patching a known field rather than by rebuilding the payload.
+fn offset_of(bytes: &[u8], marker: &[u8]) -> usize {
+    let mut found = bytes
+        .windows(marker.len())
+        .enumerate()
+        .filter_map(|(index, window)| (window == marker).then_some(index));
+    let offset = found.next().expect("marker not found in dump");
+    assert_eq!(found.next(), None, "marker is not unique in dump");
+    offset
+}
+
 #[test]
 fn repl_persists_state_and_definitions() {
     let (mut repl, _) = init_repl("x = 10");

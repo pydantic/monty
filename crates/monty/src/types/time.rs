@@ -102,6 +102,25 @@ impl Time {
     pub(crate) fn to_components(&self) -> (u8, u8, u8, u32, u8) {
         (self.hour, self.minute, self.second, self.microsecond, self.fold)
     }
+
+    /// Whether every stored component is inside the range [`from_components`]
+    /// enforces, and the attached offset inside [`TimeZone::new`]'s.
+    ///
+    /// Deserializing writes these fields directly, so `Heap`'s restore pass
+    /// re-checks them: [`naive_time`] treats the ranges as established by
+    /// construction, and a forged dump carrying `hour = 255` would panic there
+    /// the first time the restored value reached `strftime()`.
+    pub(crate) fn components_in_range(&self) -> bool {
+        self.hour <= 23
+            && self.minute <= 59
+            && self.second <= 59
+            && self.microsecond <= 999_999
+            && self.fold <= 1
+            && self.tzinfo.as_ref().is_none_or(|tz| {
+                (timezone::MIN_TIMEZONE_OFFSET_SECONDS..=timezone::MAX_TIMEZONE_OFFSET_SECONDS)
+                    .contains(&tz.offset_seconds)
+            })
+    }
 }
 
 impl PartialEq for Time {

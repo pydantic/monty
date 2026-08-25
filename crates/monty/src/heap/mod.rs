@@ -18,7 +18,7 @@ use std::{
 };
 
 use monty_types::ResourceTracker;
-use serde::ser::SerializeStruct;
+use serde::{de::Error as _, ser::SerializeStruct};
 
 #[cfg(feature = "ref-count-return")]
 use crate::types::Type;
@@ -969,15 +969,7 @@ impl<'de> serde::Deserialize<'de> for Heap {
         }
         let fields = HeapFields::deserialize(deserializer)?;
         let mut entries = fields.entries;
-        let mut ext_function_cache = BTreeMap::new();
-        for index in 0..entries.len() {
-            let id = HeapId::from_index(index);
-            if let Some(mut entry) = entries.entry(id)
-                && let HeapData::ExtFunction(function) = entry.get_mut().data.0.get_mut()
-            {
-                ext_function_cache.insert(function.cache_key(), id);
-            }
-        }
+        let ext_function_cache = restore_entries(&mut entries).map_err(D::Error::custom)?;
         Ok(Self {
             entries,
             tracker: fields.tracker,
@@ -988,6 +980,51 @@ impl<'de> serde::Deserialize<'de> for Heap {
             timezone_utc: fields.timezone_utc,
             ext_function_cache,
         })
+    }
+}
+
+/// Rebuilds the derived state a restored heap needs, and rejects entries whose
+/// contents a dump could not have produced.
+///
+/// Deserializing installs heap data verbatim, so every invariant the interpreter
+/// treats as guaranteed by its constructors has to be re-established here or a
+/// forged dump turns into a panic later: `time` components are read back by
+/// `naive_time` as already validated, and the `tzinfo` heap references on `time`
+/// and `datetime` are dereferenced without a type check. Returns the rebuilt
+/// external-function cache, which is derived rather than serialized.
+fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<BTreeMap<Arc<str>, HeapId>, &'static str> {
+    let mut ext_function_cache = BTreeMap::new();
+    // A `tzinfo` reference is only sound if it lands on a live `timezone` entry,
+    // which is not knowable until every entry has been visited.
+    let mut timezone_entries = vec![false; entries.len()];
+    let mut tzinfo_refs = Vec::new();
+    for (index, is_timezone) in timezone_entries.iter_mut().enumerate() {
+        let id = HeapId::from_index(index);
+        let Some(mut entry) = entries.entry(id) else {
+            continue;
+        };
+        match entry.get_mut().data.0.get_mut() {
+            HeapData::ExtFunction(function) => {
+                ext_function_cache.insert(function.cache_key(), id);
+            }
+            HeapData::TimeZone(_) => *is_timezone = true,
+            HeapData::Time(t) => {
+                if !t.components_in_range() {
+                    return Err("time component out of range");
+                }
+                tzinfo_refs.extend(t.tzinfo_ref());
+            }
+            HeapData::DateTime(dt) => tzinfo_refs.extend(dt.tzinfo_ref()),
+            _ => {}
+        }
+    }
+    if tzinfo_refs
+        .into_iter()
+        .all(|tzinfo_ref| timezone_entries.get(tzinfo_ref.index()).copied().unwrap_or(false))
+    {
+        Ok(ext_function_cache)
+    } else {
+        Err("tzinfo reference does not point to a timezone")
     }
 }
 
