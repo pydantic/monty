@@ -251,8 +251,11 @@ fn resolve_field(
     let value = resolve_first(&field[..first_end], arguments, numbering, vm)?;
     let mut value = DropGuard::new(value, vm);
     let mut cursor = first_end;
+    let mut access_index = 0;
 
     while cursor < field.len() {
+        value.ctx().heap.tracker.check_time_every(access_index)?;
+        access_index += 1;
         match field.as_bytes()[cursor] {
             b'.' => {
                 let start = cursor + 1;

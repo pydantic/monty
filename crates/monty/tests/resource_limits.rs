@@ -513,6 +513,59 @@ fn timeout_in_list_constructor() {
     assert_timeout_in_builtin("list(range(10**18))", "list(range(10**18))");
 }
 
+/// Calibrate parsing separately so this measures traversal polling, not host speed.
+#[test]
+fn timeout_in_str_format_field_access_chain() {
+    let pause_at_interrupt = |code: &str| {
+        let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let progress = run
+            .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap();
+        let call = resolve_name_lookups(progress)
+            .unwrap()
+            .into_function_call()
+            .expect("interrupt call");
+        assert_eq!(call.function_name, "interrupt");
+        call
+    };
+
+    let scan_code = r"
+template = '{missing' + '.x' * 1_500_000 + '}'
+interrupt()
+template.format()
+";
+    let scan_call = pause_at_interrupt(scan_code);
+    let scan_started = Instant::now();
+    let scan_result = scan_call.resume(MontyObject::None, PrintWriter::Stdout);
+    let scan_elapsed = scan_started.elapsed();
+    assert_eq!(scan_result.unwrap_err().exc_type(), ExcType::KeyError);
+    let traversal_budget = scan_elapsed.saturating_mul(3);
+
+    let code = r"
+class Value:
+    pass
+
+value = Value()
+value.x = value
+template = '{0' + '.x' * 1_500_000 + '}'
+interrupt()
+template.format(value)
+";
+    let mut call = pause_at_interrupt(code);
+
+    call.tracker_mut().set_max_duration(traversal_budget);
+    let started = Instant::now();
+    let result = call.resume(MontyObject::None, PrintWriter::Stdout);
+    let elapsed = started.elapsed();
+
+    let exc = result.expect_err("field traversal should exceed the time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < traversal_budget.saturating_mul(4),
+        "field traversal should terminate promptly, took {elapsed:?}"
+    );
+}
+
 /// Covers all four substring scanners; `index`/`rindex` share theirs with
 /// `find`/`rfind`.
 const BYTES_SEARCH_EXPRS: &[&str] = &[
