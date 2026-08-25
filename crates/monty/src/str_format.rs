@@ -2,13 +2,12 @@
 
 use std::fmt;
 
-use unicode_general_category::{GeneralCategory, get_general_category};
-
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    fstring::decimal_digit_value,
     heap::{ContainsHeap, DropGuard, DropWithContext},
     string_builder::StringBuilder,
     types::{PyTrait, str::allocate_string},
@@ -172,7 +171,7 @@ fn render_field(
     let value = resolve_field(&template[start..field_end], arguments, numbering, vm)?;
     defer_drop!(value, vm);
     let conversion = match conversion {
-        None => None,
+        None | Some('\0') => None,
         Some('s') => Some(1),
         Some('r') => Some(2),
         Some('a') => Some(3),
@@ -383,7 +382,7 @@ fn resolve_keyword(name: &str, arguments: &FormatArguments, vm: &mut VM<'_>) -> 
 /// Resolves an attribute without allowing a suspending lookup.
 fn resolve_attribute(value: Value, name: &str, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(value, vm);
-    match value.py_getattr(&EitherStr::Heap(name.to_owned()), vm)? {
+    match value.py_getattr(&EitherStr::from(name.to_owned()), vm)? {
         CallResult::Value(value) => Ok(value),
         other => {
             other.drop_with(vm);
@@ -426,24 +425,6 @@ fn decimal_index(field: &str, vm: &VM<'_>) -> RunResult<Option<usize>> {
             .ok_or_else(|| value_error("Too many decimal digits in format string"))?;
     }
     Ok(Some(index))
-}
-
-/// Returns the numeric value of a Unicode decimal digit.
-fn decimal_digit_value(character: char) -> Option<u32> {
-    if get_general_category(character) != GeneralCategory::DecimalNumber {
-        return None;
-    }
-
-    let code_point = character as u32;
-    let mut run_start = code_point;
-    while let Some(previous) = run_start.checked_sub(1).and_then(char::from_u32) {
-        if get_general_category(previous) != GeneralCategory::DecimalNumber {
-            break;
-        }
-        run_start -= 1;
-    }
-    // Adjacent Nd runs still repeat their values every ten code points.
-    Some((code_point - run_start) % 10)
 }
 
 /// Appends a fragment while preserving `StringBuilder` resource accounting.

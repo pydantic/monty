@@ -720,6 +720,18 @@ fn impossible_format_capacity_preserves_the_worker() {
     child.shutdown();
 }
 
+#[test]
+fn numeric_formatting_peak_memory_preserves_the_worker() {
+    for code in ["'{:08000000d}'.format(1)", "'{:.8000000f}'.format(1.0)"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(10_000_000));
+        let (_, event) = child.feed(code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
+        child.shutdown();
+    }
+}
+
 /// Gathers nested as *items* of one another (`g = asyncio.gather(g)`) cost no
 /// Python frames, so nothing but `max_memory` bounds how deep a nest gets built.
 /// Building one too large for the limit must end the run with a `MemoryError`,

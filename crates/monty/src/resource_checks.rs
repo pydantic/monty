@@ -4,6 +4,7 @@ use crate::exception_private::{RunError, SimpleException};
 
 const MAX_NATIVE_ALLOCATION: usize = isize::MAX as usize;
 
+/// Rejects capacities that Rust's native string types cannot represent.
 pub(crate) fn check_native_allocation_size(size: usize) -> Result<(), ResourceError> {
     if size > MAX_NATIVE_ALLOCATION {
         Err(ResourceError::Memory {

@@ -961,6 +961,23 @@ fn timeout_in_str_format_escaped_braces() {
     );
 }
 
+#[test]
+fn timeout_in_str_format_grouped_padding() {
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_duration(Duration::from_millis(10)));
+    let mut repl = MontyRepl::new("test.py", tracker, CompileOptions::default());
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("'{:09223372036854775807,}'.format(1)", vec![], PrintWriter::Stdout)
+        .expect_err("grouped padding must hit the time limit before allocating the full width");
+    let elapsed = start.elapsed();
+
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "str.format() should terminate promptly, took {elapsed:?}"
+    );
+}
+
 /// Test that `bytes.splitlines()` on large bytes respects the time limit.
 ///
 /// `bytes_splitlines()` scans bytes for line endings and now checks the time limit.

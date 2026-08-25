@@ -1,4 +1,6 @@
-from datetime import datetime
+import re
+from collections import deque
+from datetime import datetime, timedelta
 
 
 def capture_error(template, *args, **kwargs):
@@ -42,11 +44,26 @@ assert '{0[𝟙]}'.format(['zero', 'one']) == 'one'
 unusual_item_keys = '{0[a:b]} {0[a!b]} {0[a}b]}'
 assert unusual_item_keys.format({'a:b': 1, 'a!b': 2, 'a}b': 3}) == '1 2 3'
 
+native_datetime = datetime(2001, 2, 3, 4, 5)
+assert '{0.year}-{0.hour}'.format(native_datetime) == '2001-4'
+assert '{0.days}'.format(timedelta(days=2)) == '2'
+assert '{0.maxlen}'.format(deque(maxlen=4)) == '4'
+native_match = re.match('a', 'abc')
+assert '{0.string}'.format(native_match) == 'abc'
+
+nul = chr(0)
+assert ('{0!' + nul + '}').format('a') == 'a'
+assert ('{0!' + nul + ':04d}').format(1) == '0001'
 assert '{0!s} {0!r} {0!a}'.format('räpr') == "räpr 'räpr' 'r\\xe4pr'"
 assert '{0!a}'.format('😀') == "'\\U0001f600'"
 assert '{0:>10}'.format('test') == '      test'
 assert '{0:_<10.5}'.format('xylophone') == 'xylop_____'
 assert '{0:+06.2f}'.format(3.14159) == '+03.14'
+assert '{:５}'.format(1) == '    1'
+assert '{:.２f}'.format(1.25) == '1.25'
+assert '{:._}'.format(True) == '1'
+assert '{:._}'.format('x') == 'x'
+assert capture_error('{:.6_n}', 1.234567) == ('ValueError', "Cannot specify '_' with 'n'.")
 assert '{0:.2147483647g}'.format(0.0001) == ('0.000100000000000000004792173602385929598312941379845142364501953125')
 assert '{:}'.format(True) == 'True'
 assert '{0!r:>6}'.format(123) == '   123'
