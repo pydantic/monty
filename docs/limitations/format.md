@@ -39,6 +39,12 @@ like `d` for integers and `g` for floats, with no digit grouping. CPython
 under a grouping locale would insert locale-specific separators; Monty never
 does.
 
+## Grouped zero-padding
+
+With explicit `=` alignment, zero fill, and `_` grouping, `g` formatting can
+omit separators: `'{0:0=+9_g}'.format(1)` returns `+00000001` instead of
+CPython's `+0_000_001`.
+
 ## `repr` of non-printable Unicode
 
 `repr` escapes non-printable code points via the `unicode-general-category`

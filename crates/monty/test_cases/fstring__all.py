@@ -232,6 +232,7 @@ assert f'{0.5:.{10**6}%}' == '50.' + '0' * 10**6 + '%'
 # underlying format call still uses the full precision internally.
 assert f'{1.5:.{10**6}g}' == '1.5'
 assert f'{1e-10:.{10**6}g}' == '1.0000000000000000364321973154977415791655470655996396089904010295867919921875e-10'
+assert f'{0.0001:.{2**31 - 1}g}' == ('0.000100000000000000004792173602385929598312941379845142364501953125')
 
 # === Large static width/precision ===
 # Static format specs are parsed at parse time and packed into a compact

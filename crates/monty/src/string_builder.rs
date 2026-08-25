@@ -38,7 +38,10 @@ use std::{fmt, mem};
 
 use monty_types::{ResourceError, ResourceTracker};
 
-use crate::{exception_private::RunResult, heap::Heap, types::str::allocate_string, value::Value};
+use crate::{
+    exception_private::RunResult, heap::Heap, resource_checks::check_native_allocation_size,
+    types::str::allocate_string, value::Value,
+};
 
 /// Resource-tracked builder for a `String`.
 ///
@@ -97,6 +100,7 @@ impl<'t> StringBuilder<'t> {
     /// width). One up-front check covers pushes within `capacity`.
     pub fn with_capacity(capacity: usize, tracker: &'t ResourceTracker) -> Result<Self, ResourceError> {
         tracker.check_allocation(capacity)?;
+        check_native_allocation_size(capacity)?;
         Ok(Self {
             inner: String::with_capacity(capacity),
             tracker,
@@ -150,6 +154,7 @@ impl<'t> StringBuilder<'t> {
             let new_capacity = self.approved_capacity.saturating_mul(2).max(needed);
             let additional = new_capacity - self.approved_capacity;
             self.tracker.check_allocation(additional)?;
+            check_native_allocation_size(new_capacity)?;
             self.approved_capacity = new_capacity;
         }
         Ok(())

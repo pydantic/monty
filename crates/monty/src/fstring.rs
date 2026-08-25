@@ -1520,8 +1520,7 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
             .unwrap_or(0)
     };
 
-    // precision is typically small (default 6), safe to convert to i32
-    let prec_i32 = i32::try_from(precision).unwrap_or(i32::MAX);
+    let exp_magnitude = usize::try_from(exp.unsigned_abs()).unwrap_or(usize::MAX);
     // A type-less spec that reaches here carries a precision (the no-precision
     // case goes through `format_float_default`). CPython's type-less-with-
     // precision form is `g`-like but diverges in two ways: it switches to
@@ -1530,12 +1529,16 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     // (the `Py_DTSF_ADD_DOT_0` flag) — e.g. `f"{100.0:.3}"` is `'1e+02'` (not
     // `g`'s `'100'`) and `f"{1.0:.2}"` is `'1.0'` (not `'1'`).
     let is_default = spec.type_char.is_none();
-    let sci_threshold = if is_default { prec_i32 - 1 } else { prec_i32 };
+    let sci_threshold = if is_default {
+        precision.saturating_sub(1)
+    } else {
+        precision
+    };
     // The alternate form (`#`) keeps the trailing zeros that `g` normally strips
     // and forces a decimal point. This applies whenever the `g` algorithm runs
     // — an explicit `g`/`G` *or* a type-less spec that carries a precision.
     let alternate_g = spec.alternate;
-    let abs_str = if exp < -4 || exp >= sci_threshold {
+    let abs_str = if exp < -4 || (exp >= 0 && exp_magnitude >= sci_threshold) {
         // Use exponential notation
         let exp_prec = precision.saturating_sub(1);
         if alternate_g {
@@ -1550,9 +1553,11 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
             strip_trailing_zeros_exp(&fmt_float_exp(abs_val, exp_prec.min(MAX_FMT_PRECISION_EXP), uppercase))
         }
     } else {
-        // Use fixed notation - result is non-negative due to .max(0)
-        let sig_digits_i32 = (prec_i32 - exp - 1).max(0);
-        let sig_digits = usize::try_from(sig_digits_i32).expect("sig_digits guaranteed non-negative");
+        let sig_digits = if exp < 0 {
+            precision.saturating_add(exp_magnitude).saturating_sub(1)
+        } else {
+            precision.saturating_sub(exp_magnitude.saturating_add(1))
+        };
         if alternate_g {
             // `#` keeps the trailing zeros, so the digit count scales with
             // precision; `fmt_float_fixed` synthesises any beyond the formatter

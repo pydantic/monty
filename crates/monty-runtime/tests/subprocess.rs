@@ -704,6 +704,22 @@ fn formatting_generic_value_without_padding_does_not_charge_fill() {
     child.shutdown();
 }
 
+#[test]
+fn impossible_format_capacity_preserves_the_worker() {
+    let width = isize::MAX.unsigned_abs() / 'é'.len_utf8() + 2;
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    for code in [
+        format!("'{{0:é<{width}}}'.format('x')"),
+        format!("'{{0:é<{width}}}'.format(1)"),
+    ] {
+        let (_, event) = child.feed(&code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+    }
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
 /// Gathers nested as *items* of one another (`g = asyncio.gather(g)`) cost no
 /// Python frames, so nothing but `max_memory` bounds how deep a nest gets built.
 /// Building one too large for the limit must end the run with a `MemoryError`,

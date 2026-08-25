@@ -47,6 +47,7 @@ assert '{0!a}'.format('😀') == "'\\U0001f600'"
 assert '{0:>10}'.format('test') == '      test'
 assert '{0:_<10.5}'.format('xylophone') == 'xylop_____'
 assert '{0:+06.2f}'.format(3.14159) == '+03.14'
+assert '{0:.2147483647g}'.format(0.0001) == ('0.000100000000000000004792173602385929598312941379845142364501953125')
 assert '{:}'.format(True) == 'True'
 assert '{0!r:>6}'.format(123) == '   123'
 assert '{0:{align}{width}}'.format('test', align='^', width=10) == '   test   '
