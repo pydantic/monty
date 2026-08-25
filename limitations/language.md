@@ -28,7 +28,7 @@ any code runs.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).
 - **`async for` loops** and **async comprehensions**.
-- **Wildcard imports** (`from m import *`) — raises `ImportError:
+- **Wildcard imports** (`from m import *`) — raises `NotImplementedError:
   "Wildcard imports (\`from ... import *\`) are not supported"`.
 
 ## Expressions rejected at parse time

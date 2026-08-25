@@ -4,6 +4,7 @@ use num_bigint::BigInt;
 
 use crate::{
     args::{ArgValues, FromArgs, is_long_int},
+    builtins::object_setattr::builtin_object_setattr,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -197,6 +198,18 @@ pub enum Type {
     /// private `dataclasses._DataclassParams` reports itself.
     #[strum(serialize = "_DataclassParams")]
     DataclassParams,
+    #[strum(serialize = "itertools.takewhile")]
+    ItertoolsTakeWhile,
+    #[strum(serialize = "itertools.dropwhile")]
+    ItertoolsDropWhile,
+    #[strum(serialize = "itertools.filterfalse")]
+    ItertoolsFilterFalse,
+    #[strum(serialize = "itertools.starmap")]
+    ItertoolsStarMap,
+    /// `object` — the builtin name only, not a base class: Monty has no
+    /// inheritance, so it exists to carry `object.__setattr__`, the write that
+    /// bypasses a class's attribute hooks. Constructing it is unsupported.
+    Object,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -307,6 +320,7 @@ impl Type {
             "iter" => Some(Self::Iterator),
             "type" => Some(Self::Type),
             "property" => Some(Self::Property),
+            "object" => Some(Self::Object),
             _ => None,
         }
     }
@@ -335,6 +349,10 @@ impl Type {
                 | Self::ItertoolsIslice
                 | Self::ItertoolsChain
                 | Self::ItertoolsCycle
+                | Self::ItertoolsTakeWhile
+                | Self::ItertoolsDropWhile
+                | Self::ItertoolsFilterFalse
+                | Self::ItertoolsStarMap
         )
     }
 
@@ -346,6 +364,10 @@ impl Type {
     #[must_use]
     pub fn is_instance_of(self, other: Self) -> bool {
         if self == other {
+            true
+        } else if other == Self::Object {
+            // `object` is the universal base: every value is an instance of it,
+            // even though Monty stores it in no MRO (see `types/class.rs`).
             true
         } else if self == Self::Bool && other == Self::Int {
             // bool is a subtype of int in Python
@@ -448,6 +470,12 @@ impl Type {
             }
             (Self::DateTime, m) if m == StaticStrings::Fromisoformat => {
                 datetime::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+            }
+            // `object.__setattr__(obj, name, value)` called directly, which is
+            // how it is nearly always reached; `object.__setattr__` as a value
+            // is handled by `Value::py_getattr`.
+            (Self::Object, m) if vm.interns.get_str(m) == "__setattr__" => {
+                builtin_object_setattr(vm, args).map(AttrCallResult::Value)
             }
             _ => {
                 let method_name = vm.interns.get_str(method_id);

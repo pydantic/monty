@@ -23,6 +23,7 @@ mod namespace;
 mod object_bridge;
 mod os_dispatch;
 mod parse;
+mod predicate;
 mod prepare;
 mod repl;
 mod resource_checks;

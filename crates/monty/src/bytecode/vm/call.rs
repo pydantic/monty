@@ -40,8 +40,7 @@ use crate::{
 pub(crate) enum CallResult {
     /// Call completed synchronously with a return value.
     Value(Value),
-    /// A new frame was pushed for a defined function call.
-    /// The VM should reload its cached frame state.
+    /// A defined function became the VM's current frame.
     FramePushed,
     /// External function call requested - VM should pause and return to caller.
     /// The `EitherStr` is the name of the external function (interned or heap-owned).
@@ -342,7 +341,7 @@ impl VM<'_> {
         match obj {
             Value::Ref(heap_id) => {
                 defer_drop!(obj, this);
-                this.heap.read(heap_id).py_call_attr(heap_id, this, &attr, args)
+                this.heap.read(heap_id).py_call_attr(this, &attr, args)
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
@@ -397,7 +396,7 @@ impl VM<'_> {
             CallResult::FramePushed => {
                 // A new frame was pushed for a defined function call - we need to run it
                 // to completion.
-                let stack_depth = this.frames.len();
+                let stack_depth = this.suspended_frames.len();
                 // Mark the frame as an exit point from the `run()` loop
                 this.current_frame_mut().should_return = true;
                 match this.run()? {
@@ -405,7 +404,7 @@ impl VM<'_> {
                     exit => {
                         // Pop frames off the stack from this failed evaluation
                         // (including the one just pushed)
-                        while this.frames.len() >= stack_depth {
+                        while this.suspended_frames.len() >= stack_depth {
                             this.pop_frame();
                         }
                         exit
@@ -449,7 +448,7 @@ impl VM<'_> {
 
     /// Converts a nested VM suspension into a specific synchronous-context error.
     #[cold]
-    fn unsupported_frame_exit(&mut self, ctx: &'static str, exit: FrameExit) -> RunError {
+    pub(crate) fn unsupported_frame_exit(&mut self, ctx: &'static str, exit: FrameExit) -> RunError {
         let error = match &exit {
             FrameExit::Return(_) => unreachable!("return exits are handled above"),
             FrameExit::ExternalCall { function_name, .. } => ExcType::not_implemented(format!(
@@ -1160,7 +1159,7 @@ fn dispatch_dunder(
         StaticStrings::Enter => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
             args.check_zero_args("__enter__", vm.heap)
-                .and_then(|()| vm.heap.read(heap_id).py_enter(heap_id, vm))
+                .and_then(|()| vm.heap.read(heap_id).py_enter(vm))
         }
         StaticStrings::Exit => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
@@ -1200,5 +1199,5 @@ fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<Ca
         Value::Ref(id) => Some(*id),
         _ => None,
     };
-    vm.heap.read(heap_id).py_exit(heap_id, vm, exc)
+    vm.heap.read(heap_id).py_exit(vm, exc)
 }

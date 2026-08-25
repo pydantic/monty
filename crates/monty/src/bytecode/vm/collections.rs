@@ -76,9 +76,9 @@ impl VM<'_> {
         let start_val = this.pop();
         defer_drop!(start_val, this);
 
-        let start = value_to_option_i64(start_val)?;
-        let stop = value_to_option_i64(stop_val)?;
-        let step = value_to_option_i64(step_val)?;
+        let start = value_to_option_i64(start_val, this)?;
+        let stop = value_to_option_i64(stop_val, this)?;
+        let step = value_to_option_i64(step_val, this)?;
 
         let slice = Slice::new(start, stop, step);
         let heap_id = this.heap.allocate(HeapData::Slice(slice));

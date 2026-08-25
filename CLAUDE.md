@@ -918,6 +918,76 @@ from Node with no browser (`__test__/wasm_*.spec.ts`, run by their own
 `vitest.wasm.config.ts` — `npm test` excludes them, since it does not build the
 module).
 
+## Documentation surfaces that must stay in sync
+
+Monty has four hand-maintained documentation surfaces. They serve different readers and
+none is generated from another, so a change that updates one and not the others leaves
+the project describing behaviour it no longer has.
+
+| Surface | Reader | Contains |
+| --- | --- | --- |
+| `README.md` | GitHub, PyPI, npm landing page | The pitch, the can/cannot lists, install, one quickstart per binding, the alternatives table |
+| `docs/` | the docs site (`pydantic.dev/docs/monty`), nav in `mkdocs.yml` | Conceptual and how-to: install, per-language quickstarts, security model, host functions, resource limits, filesystem, snapshots, type checking, the subset, CLI |
+| `limitations/` | users and contributors chasing a specific behaviour | The exhaustive per-feature record of CPython divergences (see the section below) |
+| `crates/*/README.md` | crates.io, and PyPI/npm for the binding crates | Per-crate API documentation; `monty-python/README.md` and `monty-js/README.md` are the binding references |
+
+**`docs/` does not duplicate `limitations/`.** `docs/` describes the *shape* of what Monty
+implements and links out; `limitations/` owns every divergence. A divergence written into
+a `docs/` page instead of `limitations/` is a defect — move it and link.
+
+### What a change obliges you to update
+
+- **A CPython divergence** — `limitations/<file>.md`, per the mandatory rule below.
+- **The subset changes shape** (a stdlib module becomes importable, a parse-time
+  rejection lands or is lifted, a language feature ships) — also `docs/python-subset.md`
+  and the `README.md` can/cannot bullets.
+- **Python binding API** (`crates/monty-python/`) — the `_monty.pyi` docstrings,
+  `crates/monty-python/README.md`, and the `docs/` page that covers the feature.
+- **JavaScript binding API** (`crates/monty-js/`) — `crates/monty-js/README.md` and
+  `docs/quickstart/javascript.md`.
+- **Rust API** — the owning crate's README and `docs/quickstart/rust.md`.
+- **Resource limits, mount options, or a sandbox invariant** — `docs/resource-limits.md`,
+  `docs/filesystem.md`, `docs/security.md` respectively, plus `limitations/`.
+- **CLI flags** (`crates/monty-runtime/src/main.rs`) — `crates/monty-runtime/README.md`
+  and `docs/cli.md`.
+
+### Named duplication points
+
+These facts are stated in more than one place on purpose, because a reader needs them
+where they are. Change one and you must change all of them:
+
+- **The importable stdlib module list** — `limitations/modules.md` (authoritative),
+  `docs/python-subset.md`, `docs/index.md`, `README.md`.
+- **Default resource limits** (1000 recursion frames, 100 MB per-mount memory, 10 MiB
+  print collectors, 1s duration grace) — `limitations/resource_limits.md`,
+  `docs/resource-limits.md`, and the binding docstrings.
+- **Mount modes and their defaults** — `limitations/filesystem.md`, `docs/filesystem.md`,
+  the `MountDir` docstrings in `_monty.pyi` and `crates/monty-js/ts/mount.ts`.
+
+### Rules for `docs/`
+
+- `make test-docs` checks every Python snippet in `docs/`, `README.md`,
+  `packages/pydantic-monty/README.md`, and `crates/monty-python/README.md`.
+  It executes each snippet unless marked ```` ```python test="skip" ````; skipped snippets are still ruff-linted.
+- Sandbox-side Python (code fed to Monty, not host code) belongs inside a host snippet as
+  a string, or in a `test="skip"` block. It must never be a runnable top-level block —
+  CPython would execute it.
+- New pages go in the `mkdocs.yml` `nav:`; the nav is what orders the docs site.
+- Prose style follows [`.agents/skills/writing-style`](.agents/skills/writing-style/SKILL.md):
+  one sentence per line, claims traceable to source, no hype.
+  Do not state a behaviour you have not read in the code, the tests or `limitations/`.
+
+### Enforcement
+
+- `make test-docs` applies the Python checks above and compiles Rust snippets in `docs/quickstart/rust.md`.
+  TypeScript snippets are not checked.
+- `make docs` builds the site with `--strict`, which fails on a broken internal link or a
+  page missing from the nav. `make docs-serve` previews it.
+- The `docs-parity-reviewer` subagent (`.agents/agents/docs-parity-reviewer.md`) is the
+  documentation gate before merge. It reports; it does not edit.
+- The `review-general` skill treats a missing `docs/` or `limitations/` update as a
+  finding.
+
 ## Limitations documentation (`./limitations/`)
 
 Every pull request that adds, changes, or removes user-visible behavior MUST

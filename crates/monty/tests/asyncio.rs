@@ -1063,3 +1063,95 @@ caught
     let result = runner.run_no_limits(vec![]).expect("should complete");
     assert_eq!(result, MontyObject::Bool(true));
 }
+
+// === Test: orphaned external whose awaiting task was already cancelled ===
+
+/// Leaves a pending external with no live awaiter: `boom()` raises
+/// synchronously, failing the gather and cancelling `slow()` while its external
+/// call is outstanding, so the host's answer has nobody to deliver to.
+fn create_orphaned_external_runner() -> MontyRun {
+    let code = r"
+import asyncio
+
+async def slow():
+    return await foo()
+
+async def boom():
+    raise ValueError('cancels slow')
+
+async def main():
+    try:
+        await asyncio.gather(slow(), boom())
+    except ValueError:
+        pass
+    return await bar()
+
+await main()
+";
+    MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap()
+}
+
+/// Drives the runner above to the suspension where both externals are pending,
+/// returning their call ids keyed by name: the order the scheduler hands them
+/// over is not part of the contract under test, so positions must not be relied on.
+fn orphan_and_live_ids(progress: RunProgress) -> (ResolveFutures, u32, u32) {
+    let (state, calls) = drive_collecting_calls(progress);
+    assert_eq!(calls.len(), 2, "orphaned foo() and live bar() should both be pending");
+
+    let id_of = |name: &str| {
+        calls
+            .iter()
+            .find_map(|(id, called)| (called == name).then_some(*id))
+            .unwrap_or_else(|| panic!("{name}() should be pending"))
+    };
+    (state, id_of("foo"), id_of("bar"))
+}
+
+#[test]
+fn orphaned_external_resolved_alongside_live_one() {
+    let runner = create_orphaned_external_runner();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    let (state, orphan, live) = orphan_and_live_ids(progress);
+
+    // Resolving `bar()` readies `main`, `foo()`'s result is discarded; the
+    // scheduler must still find `main` to run.
+    let results = vec![
+        (orphan, ExtFunctionResult::Return(MontyObject::Int(1))),
+        (live, ExtFunctionResult::Return(MontyObject::Int(7))),
+    ];
+
+    let progress = state.resume(results, PrintWriter::Stdout).unwrap();
+    let result = progress.into_complete().expect("should complete");
+    assert_eq!(result, MontyObject::Int(7));
+}
+
+#[test]
+fn orphaned_external_failed_alongside_live_one() {
+    let runner = create_orphaned_external_runner();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    let (state, orphan, live) = orphan_and_live_ids(progress);
+
+    // The orphan's awaiter chain terminates at a cancelled task, so it fails
+    // nothing; only `bar()`'s failure reaches a task.
+    let results = vec![
+        (
+            orphan,
+            ExtFunctionResult::Error(MontyException::new(ExcType::RuntimeError, Some("orphan".to_string()))),
+        ),
+        (
+            live,
+            ExtFunctionResult::Error(MontyException::new(ExcType::RuntimeError, Some("live".to_string()))),
+        ),
+    ];
+
+    let err = state
+        .resume(results, PrintWriter::Stdout)
+        .expect_err("the live failure should surface");
+    assert_eq!(err.message(), Some("live"));
+}

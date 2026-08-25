@@ -33,7 +33,7 @@ impl VM<'_> {
         };
         let mut ctx = self.heap.read(ctx_id);
         if ctx.py_is_context_manager(self) {
-            ctx.py_enter(ctx_id, self)
+            ctx.py_enter(self)
         } else {
             Err(not_a_context_manager(self))
         }
@@ -57,7 +57,7 @@ impl VM<'_> {
         // py_exit returns a value, yields, or errors. This matches the ref-count
         // balance from BeforeWith's push.
         defer_drop!(ctx, this);
-        this.heap.read(ctx_id).py_exit(ctx_id, this, None)
+        this.heap.read(ctx_id).py_exit(this, None)
     }
 
     /// `WithExceptStart`: peek at `[..., ctx, exc]`, call
@@ -80,7 +80,7 @@ impl VM<'_> {
                 "WithExceptStart: expected context-manager ref on stack",
             ));
         };
-        self.heap.read(ctx_id).py_exit(ctx_id, self, Some(exc_id))
+        self.heap.read(ctx_id).py_exit(self, Some(exc_id))
     }
 }
 

@@ -22,3 +22,14 @@ Structure each file around what a Python user would actually try:
 - Error types / messages that differ from CPython.
 
 Avoid implementation detail unless it explains a user-visible quirk.
+
+## Relationship to `docs/`
+
+`../docs/` is the docs site: conceptual and how-to material describing the *shape* of
+what Monty implements. It links here rather than restating divergences, and this
+directory never duplicates it. A divergence belongs here, not in a `docs/` page.
+
+When a change alters the shape of the subset — a stdlib module becomes importable, a
+parse-time rejection lands or is lifted — update `../docs/python-subset.md` and the
+root `README.md` bullets as well as the file here. See "Documentation surfaces that must
+stay in sync" in `../CLAUDE.md`.

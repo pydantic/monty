@@ -1,7 +1,8 @@
 """Rewrap markdown prose: one sentence per line, hard-wrapped at 120 chars.
 
 Skips fenced code blocks (``` or ~~~, closed only by a matching fence),
-tables, headings, thematic breaks / setext underlines, and frontmatter.
+tables, headings, mkdocs admonition markers (`!!!`/`???`), thematic breaks /
+setext underlines, and frontmatter.
 Paragraph and list-item lines are joined, split into sentences (one per
 line), then any line over 120 chars is wrapped at word boundaries. List
 continuation lines are indented to the content column of their marker;
@@ -120,7 +121,9 @@ def rewrap(src: str) -> str:
         # Setext underlines are indistinguishable from thematic breaks here;
         # both survive because the buffered heading text flushes unchanged
         # (short, single line) and the marker line passes through verbatim.
-        if not stripped or stripped.startswith(('#', '|', '>')) or BREAK_LINE.match(stripped):
+        # `!!!`/`???` are mkdocs admonition markers; their indented body is a
+        # separate block, so the marker line must not join it.
+        if not stripped or stripped.startswith(('#', '|', '>', '!!!', '???')) or BREAK_LINE.match(stripped):
             flush(buf, out)
             out.append(line)
             continue

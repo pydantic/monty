@@ -116,7 +116,13 @@ pub(crate) fn counter_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
     let Value::Ref(dict_id) = value else {
         unreachable!("just allocated a ref");
     };
-    if let Err(e) = counter_update(dict_id, source, kwargs, false, vm) {
+    let result = {
+        let HeapReadOutput::Dict(mut counter) = vm.heap.read(dict_id) else {
+            unreachable!("just allocated a Counter dict");
+        };
+        counter_update(&mut counter, source, kwargs, false, vm)
+    };
+    if let Err(e) = result {
         value.drop_with(vm);
         return Err(e);
     }

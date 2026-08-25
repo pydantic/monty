@@ -12,6 +12,7 @@ members = [
     "crates/monty-python",
     "crates/monty-js",
     "crates/monty-datatest",
+    "crates/monty-doctest",
     "crates/monty-bench",
     "crates/monty-type-checking",
     "crates/monty-typeshed",

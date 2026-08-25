@@ -7,7 +7,10 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
+    heap::{
+        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead,
+        heap_read_ref_as_field_mut,
+    },
     types::str::allocate_string,
     value::{EitherStr, Value},
 };
@@ -126,7 +129,7 @@ impl<'h> HeapRead<'h, Class> {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         // The type of a class object is `type` (matching `type(Foo) is type`).
         Type::Type
@@ -151,9 +154,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
         Ok(None)
     }
 
-    fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         // Class objects hash by identity (like CPython type objects).
-        Ok(Some(identity_hash(self_id)))
+        Ok(Some(identity_hash(self.id())))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -180,13 +183,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
         }
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
         // `__name__` is a synthesized string, not a namespace member (see
         // `py_getattr`), so calling it goes through the normal callable

@@ -113,8 +113,10 @@ indistinguishable from a stack overflow.
 
 ## Recursion
 
-- Python-level call depth is hardcoded at **1000 frames**. The 1001st
-  nested call raises `RecursionError`.
+- Python-level call depth defaults to **1000 frames**; the 1001st nested call
+  raises `RecursionError`. The host sets the ceiling per session via
+  `max_recursion_depth`, but cannot remove it — unlike the time and memory
+  limits, it has no "disabled" state.
 - Production sandbox code cannot change the recursion limit. Test builds may
   expose `sys.setrecursionlimit()` as a lowering-only fixture hook; it cannot
   raise the host-configured ceiling.
