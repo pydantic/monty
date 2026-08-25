@@ -682,6 +682,28 @@ fn async_accumulation_reaches_the_soft_limit() {
     child.shutdown();
 }
 
+/// A value that already meets its width emits no fill, so a multibyte fill
+/// must not be charged as though it were repeated to the full width.
+#[test]
+fn formatting_without_padding_does_not_charge_fill() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "s = 'x' * 400_000\nlen(f'{s:é<400000}')";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(400_000));
+    child.shutdown();
+}
+
+/// Generic string fallback must use the same exact output bound as direct strings.
+#[test]
+fn formatting_generic_value_without_padding_does_not_charge_fill() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "s = 'x' * 400_000\nclass Value:\n    def __str__(self):\n        return s\nvalue = Value()\nlen(f'{value:é<400000}')";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(400_000));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
 /// Gathers nested as *items* of one another (`g = asyncio.gather(g)`) cost no
 /// Python frames, so nothing but `max_memory` bounds how deep a nest gets built.
 /// Building one too large for the limit must end the run with a `MemoryError`,

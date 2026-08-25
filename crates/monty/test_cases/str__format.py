@@ -26,7 +26,7 @@ class Record:
         self.value = value
 
 
-assert '{0.value:04d}'.format(Record(2001)) == '2001'
+assert '{0.value:04d}'.format(Record(1)) == '0001'
 assert capture_error('{0.missing}', Record(2001)) == (
     'AttributeError',
     "'Record' object has no attribute 'missing'",

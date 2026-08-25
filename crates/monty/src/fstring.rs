@@ -625,7 +625,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         value
     };
 
-    // `spec.width` is the minimum field width; every formatter below pads the
+    // `spec.width` is the minimum field width; numeric formatters below pad the
     // value out to it with `spec.fill` via `pad_string`/`iter::repeat_n`, which
     // build a native `String` through the global allocator. A literal
     // width is clamped to 16 bits by the bytecode encoding, but a *dynamic*
@@ -633,8 +633,11 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
     // would materialize gigabytes of padding before the post-construction
     // check, OOM-ing or aborting the host. Reject an over-budget width here,
     // up front, using the same guard sequence repeats and `str.ljust`/`zfill`
-    // already use. The check is free below `LARGE_RESULT_THRESHOLD`.
-    check_repeat_size(spec.fill.len_utf8(), spec.width, &vm.heap.tracker)?;
+    // already use. String formatting reserves its actual post-precision output,
+    // so a width estimate there would reject no-padding cases.
+    if matches!(value_type, Type::Int | Type::Float | Type::Bool) {
+        check_repeat_size(spec.fill.len_utf8(), spec.width, &vm.heap.tracker)?;
+    }
 
     // `spec.precision` on the float formats is rendered as that many decimal
     // digits. `fmt_float_fixed` / `fmt_float_exp` synthesise the digits beyond
@@ -1239,7 +1242,6 @@ pub fn format_string(value: &str, spec: &ParsedFormatSpec, tracker: &ResourceTra
         );
     }
 
-    check_repeat_size(spec.width, spec.fill.len_utf8(), tracker)?;
     let precision = spec.precision.unwrap_or(usize::MAX);
     let mut end = value.len();
     let mut value_len = 0;

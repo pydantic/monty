@@ -17,10 +17,11 @@ const MAX_FORMAT_RECURSION: u8 = 2;
 
 pub(crate) fn str_format(template: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let FormatCallArgs { positional, keywords } = FormatCallArgs::from_args(args, vm)?;
-    let arguments = FormatArguments {
-        positional,
-        keywords: keywords.into_iter().collect(),
+    let keywords = match keywords {
+        KwargsValues::Pairs(keywords) => keywords,
+        other => other.into_iter().collect(),
     };
+    let arguments = FormatArguments { positional, keywords };
     defer_drop!(arguments, vm);
 
     let mut numbering = Numbering::default();
