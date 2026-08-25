@@ -103,11 +103,17 @@ impl Default for MemoryDb {
     }
 }
 
-impl MemoryDb {
-    /// Return the interned program configured for this database.
-    fn program(&self) -> Program<'_> {
-        Program::from_settings(self, self.program_settings.clone())
-    }
+/// Database access needed to intern the configured program once.
+#[salsa::db]
+trait ProgramDb: Db {
+    /// Return the settings shared by all files in this database.
+    fn program_settings(&self) -> &ProgramSettings;
+}
+
+/// Return the cached program configured for the database.
+#[salsa::tracked(returns(copy))]
+fn program(db: &dyn ProgramDb) -> Program<'_> {
+    Program::from_settings(db, db.program_settings().clone())
 }
 
 impl DbWithTestSystem for MemoryDb {
@@ -153,7 +159,7 @@ impl Db for MemoryDb {
     }
 
     fn program_file(&self, file: File) -> ProgramFile<'_> {
-        self.program().program_file(self, file)
+        program(self).program_file(self, file)
     }
 
     fn python_version_with_source(&self, _file: File) -> &PythonVersionWithSource {
@@ -197,6 +203,13 @@ impl Db for MemoryDb {
 
 #[salsa::db]
 impl ModuleResolverDb for MemoryDb {}
+
+#[salsa::db]
+impl ProgramDb for MemoryDb {
+    fn program_settings(&self) -> &ProgramSettings {
+        &self.program_settings
+    }
+}
 
 #[salsa::db]
 impl salsa::Database for MemoryDb {}
