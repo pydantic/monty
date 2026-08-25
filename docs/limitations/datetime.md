@@ -151,7 +151,7 @@ CPython (`strftime('%Q') == '%Q'`, `strftime('%') == '%'`). This is a choice
 of *one* CPython, not all of them: macOS CPython instead drops the `%`
 (`strftime('%Q') == 'Q'`), because unknown-directive handling is delegated to
 the platform C library and is genuinely platform-dependent. The same
-pass-through applies to f-string formatting (below).
+pass-through applies to f-string and `str.format()` formatting (below).
 
 ### Directives that need data the value lacks
 
@@ -169,11 +169,11 @@ the way CPython does. The known cases:
     yields `'+0200'` / `'CEST'`. Threading the timezone through formatting is not
     yet implemented.
 
-f-strings format `date`, `datetime` and `time` values through `strftime`, matching
-CPython's `__format__`: `f'{dt:%Y-%m-%d}'` is equivalent to
-`dt.strftime('%Y-%m-%d')`, and an empty spec (`f'{dt}'` or `f'{dt:}'`) uses
-`str(dt)`. One edge-case divergence: a spec that also happens to be a valid
-format mini-language spec (e.g. `f'{dt:>10}'` or a lone `f'{dt:%}'`) is
-applied as generic string formatting rather than handed to `strftime`, where
-CPython treats the *entire* spec as a `strftime` string. Real strftime specs
-(those containing `%` directives like `%Y`) are unaffected.
+f-strings and `str.format()` format `date`, `datetime` and `time` values through
+`strftime`, matching CPython's `__format__`: `f'{dt:%Y-%m-%d}'` and
+`'{:%Y-%m-%d}'.format(dt)` are equivalent to `dt.strftime('%Y-%m-%d')`, and
+an empty spec uses `str(dt)`. One edge-case divergence remains for a literal
+f-string spec that is also a valid format mini-language spec (e.g.
+`f'{dt:>10}'` or a lone `f'{dt:%}'`): Monty applies generic string formatting,
+where CPython treats the entire spec as a `strftime` string. Dynamically built
+f-string specs and `str.format()` specs are handed to `strftime`.

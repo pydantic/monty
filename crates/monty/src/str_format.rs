@@ -1,3 +1,5 @@
+//! Runtime replacement-field handling for `str.format()`.
+
 use std::fmt;
 
 use unicode_general_category::{GeneralCategory, get_general_category};
@@ -15,6 +17,7 @@ use crate::{
 
 const MAX_FORMAT_RECURSION: u8 = 2;
 
+/// Renders a runtime format string with positional and keyword arguments.
 pub(crate) fn str_format(template: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let FormatCallArgs { positional, keywords } = FormatCallArgs::from_args(args, vm)?;
     let keywords = match keywords {
@@ -29,6 +32,7 @@ pub(crate) fn str_format(template: &str, args: ArgValues, vm: &mut VM<'_>) -> Ru
     Ok(allocate_string(rendered, vm.heap))
 }
 
+/// Arguments accepted by `str.format()`.
 #[derive(FromArgs)]
 #[from_args(name = "format")]
 struct FormatCallArgs {
@@ -38,6 +42,7 @@ struct FormatCallArgs {
     keywords: KwargsValues,
 }
 
+/// Owns call arguments until rendering and error cleanup have finished.
 struct FormatArguments {
     positional: Vec<Value>,
     keywords: Vec<(Value, Value)>,
@@ -53,12 +58,14 @@ impl<C: ContainsHeap> DropWithContext<C> for FormatArguments {
     }
 }
 
+/// Tracks field numbering across nested format specs.
 #[derive(Default)]
 struct Numbering {
     mode: NumberingMode,
     next_auto: usize,
 }
 
+/// Enforces Python's rule against mixing automatic and manual numbering.
 #[derive(Default)]
 enum NumberingMode {
     #[default]
@@ -67,6 +74,7 @@ enum NumberingMode {
     Manual,
 }
 
+/// Renders one format-string level within the recursion and resource limits.
 fn render(
     template: &str,
     arguments: &FormatArguments,
@@ -118,6 +126,7 @@ fn render(
     push_tracked(output, &template[literal_start..], vm)
 }
 
+/// Resolves and formats one replacement field in CPython error order.
 fn render_field(
     template: &str,
     start: usize,
@@ -200,6 +209,7 @@ fn render_field(
     }
 }
 
+/// Finds the first field delimiter outside an item lookup.
 fn find_field_end(template: &str, start: usize, vm: &VM<'_>) -> RunResult<(usize, u8)> {
     let bytes = template.as_bytes();
     let mut index = start;
@@ -219,6 +229,7 @@ fn find_field_end(template: &str, start: usize, vm: &VM<'_>) -> RunResult<(usize
     Err(value_error("expected '}' before end of string"))
 }
 
+/// Finds the closing brace for a possibly nested format spec.
 fn find_spec_end(template: &str, start: usize, vm: &VM<'_>) -> RunResult<usize> {
     let bytes = template.as_bytes();
     let mut index = start;
@@ -237,6 +248,7 @@ fn find_spec_end(template: &str, start: usize, vm: &VM<'_>) -> RunResult<usize> 
     Err(value_error("unmatched '{' in format spec"))
 }
 
+/// Resolves a root argument followed by attribute or item accesses.
 fn resolve_field(
     field: &str,
     arguments: &FormatArguments,
@@ -296,6 +308,7 @@ fn resolve_field(
     Ok(value.into_inner())
 }
 
+/// Resolves the root argument and updates the field-numbering mode.
 fn resolve_first(
     field: &str,
     arguments: &FormatArguments,
@@ -320,6 +333,7 @@ fn resolve_first(
     }
 }
 
+/// Resolves the next automatic positional field.
 fn resolve_auto(arguments: &FormatArguments, numbering: &mut Numbering, vm: &VM<'_>) -> RunResult<Value> {
     if matches!(numbering.mode, NumberingMode::Manual) {
         return Err(value_error(
@@ -335,6 +349,7 @@ fn resolve_auto(arguments: &FormatArguments, numbering: &mut Numbering, vm: &VM<
     resolve_positional(index, arguments, vm)
 }
 
+/// Clones a positional argument or raises the replacement-index error.
 fn resolve_positional(index: usize, arguments: &FormatArguments, vm: &VM<'_>) -> RunResult<Value> {
     arguments
         .positional
@@ -349,6 +364,7 @@ fn resolve_positional(index: usize, arguments: &FormatArguments, vm: &VM<'_>) ->
         })
 }
 
+/// Clones a keyword argument or raises `KeyError`.
 fn resolve_keyword(name: &str, arguments: &FormatArguments, vm: &mut VM<'_>) -> RunResult<Value> {
     for (index, (key, value)) in arguments.keywords.iter().enumerate() {
         vm.heap.tracker.check_time_every(index)?;
@@ -362,6 +378,7 @@ fn resolve_keyword(name: &str, arguments: &FormatArguments, vm: &mut VM<'_>) -> 
     Err(ExcType::key_error(key, vm))
 }
 
+/// Resolves an attribute without allowing a suspending lookup.
 fn resolve_attribute(value: Value, name: &str, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(value, vm);
     match value.py_getattr(&EitherStr::Heap(name.to_owned()), vm)? {
@@ -373,6 +390,7 @@ fn resolve_attribute(value: Value, name: &str, vm: &mut VM<'_>) -> RunResult<Val
     }
 }
 
+/// Resolves an integer or string item lookup.
 fn resolve_item(value: Value, item: &str, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(value, vm);
     let key = item_key(item, vm)?;
@@ -380,6 +398,7 @@ fn resolve_item(value: Value, item: &str, vm: &mut VM<'_>) -> RunResult<Value> {
     value.py_getitem(key, vm)
 }
 
+/// Converts decimal item text to an integer key and other text to a string.
 fn item_key(item: &str, vm: &VM<'_>) -> RunResult<Value> {
     if let Some(index) = decimal_index(item, vm)? {
         Ok(Value::Int(
@@ -390,6 +409,7 @@ fn item_key(item: &str, vm: &VM<'_>) -> RunResult<Value> {
     }
 }
 
+/// Parses Unicode decimal digits using Python's field-index rules.
 fn decimal_index(field: &str, vm: &VM<'_>) -> RunResult<Option<usize>> {
     let mut index = 0usize;
     for (offset, character) in field.chars().enumerate() {
@@ -406,6 +426,7 @@ fn decimal_index(field: &str, vm: &VM<'_>) -> RunResult<Option<usize>> {
     Ok(Some(index))
 }
 
+/// Returns the numeric value of a Unicode decimal digit.
 fn decimal_digit_value(character: char) -> Option<u32> {
     if get_general_category(character) != GeneralCategory::DecimalNumber {
         return None;
@@ -423,12 +444,14 @@ fn decimal_digit_value(character: char) -> Option<u32> {
     Some((code_point - run_start) % 10)
 }
 
+/// Appends a fragment while preserving `StringBuilder` resource accounting.
 fn push_tracked(output: String, text: &str, vm: &VM<'_>) -> RunResult<String> {
     let mut builder = StringBuilder::from_existing(output, &vm.heap.tracker);
     builder.push_str(text)?;
     builder.finish_raw()
 }
 
+/// Builds a `ValueError` for a malformed format string.
 fn value_error(message: impl fmt::Display) -> RunError {
     SimpleException::new_msg(ExcType::ValueError, message).into()
 }

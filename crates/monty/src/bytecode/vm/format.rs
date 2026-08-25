@@ -74,6 +74,7 @@ impl VM<'_> {
         Ok(())
     }
 
+    /// Formats a value from a runtime format spec.
     pub(crate) fn format_runtime_value(
         &mut self,
         value: &Value,
@@ -102,11 +103,13 @@ impl VM<'_> {
         }
     }
 
+    /// Formats an already-converted string from a runtime format spec.
     pub(crate) fn format_runtime_string(&mut self, value: &str, format_spec: &str) -> Result<String, RunError> {
         let spec = Self::parse_runtime_format_spec(format_spec, "str")?;
         self.format_parsed_string(value, &spec)
     }
 
+    /// Formats a value from a parsed format spec.
     fn format_parsed_value(
         &mut self,
         value: &Value,
@@ -121,11 +124,13 @@ impl VM<'_> {
         }
     }
 
+    /// Formats a string from a parsed format spec.
     fn format_parsed_string(&self, value: &str, spec: &ParsedFormatSpec) -> Result<String, RunError> {
         validate_string_spec(spec)?;
         format_string(value, spec, &self.heap.tracker)
     }
 
+    /// Applies the f-string and `str.format()` conversion flags to a value.
     pub(crate) fn convert_value(&mut self, value: &Value, conversion: u8) -> Result<String, RunError> {
         match conversion {
             0 | 1 if value.py_type(self) == Type::Str => Ok(value.to_str(self)?.to_owned()),
