@@ -14,8 +14,8 @@ The other CPython formatting mechanisms are not implemented:
 
 ## Custom `__format__`
 
-f-strings dispatch to a type's `__format__` only for `date`/`datetime`, which
-interpret the spec as a `strftime` string (`f'{dt:%Y-%m-%d}'`); see
+f-strings dispatch to a type's `__format__` only for `date`, `datetime` and
+`time`, which interpret the spec as a `strftime` string (`f'{dt:%Y-%m-%d}'`); see
 ./datetime.md. There is no general `__format__` protocol: user
 classes can't customise formatting (see ./classes.md), and all
 other types use the builtin mini-language formatter. A format spec on a

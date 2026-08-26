@@ -66,9 +66,9 @@ impl VM<'_> {
         let formatted = if let Some(spec_value) = format_spec {
             defer_drop!(spec_value, this);
 
-            // date/datetime: with no conversion flag, CPython hands the whole
-            // spec to the value's `__format__`, which treats it as a strftime
-            // string (`f"{dt:%Y-%m-%d}"`). Only the runtime (dynamic) spec path
+            // date/datetime/time: with no conversion flag, CPython hands the
+            // whole spec to the value's `__format__`, which treats it as a
+            // strftime string (`f"{dt:%Y-%m-%d}"`). Only the runtime (dynamic) spec path
             // carries the raw string; a valid mini-language spec on a temporal
             // value (rare/nonsensical) still takes the generic route below.
             let temporal = if conversion == 0 && !static_spec {
@@ -122,8 +122,8 @@ impl VM<'_> {
         Ok(())
     }
 
-    /// Formats a `date`/`datetime` value by treating the spec as a `strftime`
-    /// string, mirroring CPython's `__format__` for temporal types
+    /// Formats a `date`, `datetime` or `time` value by treating the spec as a
+    /// `strftime` string, mirroring CPython's `__format__` for temporal types
     /// (`f"{dt:%Y-%m-%d}"`).
     ///
     /// Returns `Ok(None)` for any non-temporal value so the caller falls back

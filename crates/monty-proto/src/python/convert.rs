@@ -579,7 +579,10 @@ fn py_timezone_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyTimeZone> {
     })
 }
 
-/// Converts a Monty datetime payload to a native Python `datetime.datetime`.
+/// Converts a Monty time payload to a native Python `datetime.time`.
+///
+/// A name with no offset cannot be built: `datetime.timezone` has no such form,
+/// and the wire rejects the pair, so it can only come from a hand-built value.
 fn monty_time_to_py(py: Python<'_>, time: &MontyTime) -> PyResult<Py<PyAny>> {
     let tzinfo_obj = match (time.offset_seconds, &time.timezone_name) {
         (None, None) => None,
@@ -611,6 +614,7 @@ fn monty_time_to_py(py: Python<'_>, time: &MontyTime) -> PyResult<Py<PyAny>> {
     .map(Bound::unbind)
 }
 
+/// Converts a Monty datetime payload to a native Python `datetime.datetime`.
 fn monty_datetime_to_py(py: Python<'_>, datetime: &MontyDateTime) -> PyResult<Py<PyAny>> {
     match (datetime.offset_seconds, &datetime.timezone_name) {
         (None, None) => PyDateTime::new(
@@ -688,11 +692,6 @@ fn py_datetime_to_monty(datetime: &Bound<'_, PyDateTime>) -> PyResult<MontyObjec
     }))
 }
 
-/// Extracts timezone offset and name from a non-`datetime.timezone` tzinfo
-/// (e.g. `zoneinfo.ZoneInfo`) using the standard `utcoffset()`/`tzname()` protocol.
-///
-/// Unlike `__getinitargs__()`, this always produces a name (since IANA timezones
-/// always have one), so the name is stored as `Some(...)`.
 /// Converts a host `datetime.time`, preserving `fold` and its timezone.
 ///
 /// A naive time has no instant for `utcoffset()` to resolve against, so unlike
@@ -725,6 +724,11 @@ fn py_time_to_monty(time: &Bound<'_, PyTime>) -> PyResult<MontyObject> {
     }))
 }
 
+/// Extracts timezone offset and name from a non-`datetime.timezone` tzinfo
+/// (e.g. `zoneinfo.ZoneInfo`) using the standard `utcoffset()`/`tzname()` protocol.
+///
+/// Unlike `__getinitargs__()`, this always produces a name (since IANA timezones
+/// always have one), so the name is stored as `Some(...)`.
 fn py_tzinfo_via_utcoffset(
     datetime: &Bound<'_, PyDateTime>,
     tzinfo: &Bound<'_, PyAny>,

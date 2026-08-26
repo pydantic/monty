@@ -89,10 +89,10 @@ there.
 `tzinfo` ABC is not implemented, so custom subclasses are rejected, the
 same restriction as `datetime`.
 
-`fold` is stored and reported by `.fold` and `repr()`, but never read:
-Monty has no DST model, so it cannot use the flag to pick between the two
-readings of a repeated wall clock. As in CPython, `fold` is excluded from
-`==` and `hash()`.
+`fold` is stored and reported by `.fold` and `repr()`, and survives the host
+boundary, but is never read: Monty has no DST model, so it cannot use the flag
+to pick between the two readings of a repeated wall clock. As in CPython, `fold`
+is excluded from `==` and `hash()`, and omitted by `isoformat()`.
 
 Ordering an aware `time` against a naive one raises
 `TypeError: '<' not supported between instances of 'datetime.time' and
@@ -100,14 +100,6 @@ Ordering an aware `time` against a naive one raises
 offset-naive and offset-aware times`. `==` returns `False` without
 raising, matching CPython. The same wording divergence applies to
 `datetime`.
-
-`f'{t}'` goes through `str()`, and a non-empty spec goes through
-`strftime`, the same as `date` and `datetime`.
-
-`fold` is stored and reported by `.fold` and `repr()`, and survives the host
-boundary, but nothing reads it: Monty has no DST model, so it never selects
-between a repeated wall clock. As in CPython it takes no part in `==` or
-`hash()`, and `isoformat()` omits it.
 
 A host `datetime.time` carrying a `tzinfo` that is not a `datetime.timezone`
 (a `ZoneInfo`, say) is rejected with `cannot convert datetime.time with
