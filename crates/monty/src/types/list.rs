@@ -202,8 +202,24 @@ impl<'h> HeapRead<'h, List> {
     }
 
     /// Clones the item at the given index with proper refcount management.
+    ///
+    /// Panics if `index` is out of bounds, so only use it where the length was
+    /// read without a user callback running since — the comparison walks below
+    /// use [`Self::try_clone_item`] instead.
     pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h>) -> Value {
         self.get(vm.heap).items[index].clone_with_heap(vm.heap)
+    }
+
+    /// Clones the item at `index`, or `None` once the list has shrunk past it.
+    ///
+    /// The comparison walks index the *other* list directly while a user
+    /// `__eq__` may be shrinking it, so its length cannot be trusted between
+    /// iterations.
+    pub(crate) fn try_clone_item(&self, index: usize, vm: &mut VM<'h>) -> Option<Value> {
+        self.get(vm.heap)
+            .items
+            .get(index)
+            .map(|item| item.clone_with_heap(vm.heap))
     }
 
     /// Lexicographic comparison for lists — the ordering behind `<`/`<=`/`>`/`>=`.
@@ -225,7 +241,11 @@ impl<'h> HeapRead<'h, List> {
             if i >= min_len {
                 break;
             }
-            let bv = other.clone_item(i, vm);
+            // `other` may have been shrunk past `i` by a user comparison on a
+            // previous iteration; CPython stops at whichever list ran out.
+            let Some(bv) = other.try_clone_item(i, vm) else {
+                break;
+            };
             defer_drop!(bv, vm);
             match av.py_cmp(bv, vm)? {
                 CmpOrder::Ordered(Ordering::Equal) => {}
@@ -242,6 +262,10 @@ impl<'h> HeapRead<'h, List> {
                 }
             }
         }
+        // Re-read: a user comparison may have resized either list, and CPython
+        // settles an all-equal prefix on the lengths as they are now.
+        let a_len = self.get(vm.heap).items.len();
+        let b_len = other.get(vm.heap).items.len();
         Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
     }
 
@@ -484,13 +508,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some((i, a)) = iter.next_with_index(vm)? {
-            let b = other.clone_item(i, vm);
+            // `ListIter` re-reads `self`'s length each step, but `other` is
+            // indexed directly and a user `__eq__` may have shrunk it.
+            let Some(b) = other.try_clone_item(i, vm) else {
+                break;
+            };
             defer_drop!(b, vm);
             if !a.py_eq(b, vm)? {
                 return Ok(Some(false));
             }
         }
-        Ok(Some(true))
+        // Equal element-wise as far as both lists still reach; a mutating
+        // `__eq__` can leave them different lengths, which CPython reports as
+        // not equal.
+        Ok(Some(self.get(vm.heap).items.len() == other.get(vm.heap).items.len()))
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {

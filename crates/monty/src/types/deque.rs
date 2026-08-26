@@ -418,6 +418,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         if len != other.get(vm.heap).len() {
             return Ok(Some(false));
         }
+        let start_states = (self.get(vm.heap).state(), other.get(vm.heap).state());
         // Charge a recursion level: two distinct cyclic deques (`a.append(a);
         // b.append(b); a == b`) re-enter here per level and would otherwise
         // overflow the host stack. A deque walks by index, so it charges directly.
@@ -430,6 +431,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
             defer_drop!(b, vm);
             if !a.py_eq(b, vm)? {
                 return Ok(Some(false));
+            }
+            // A user `__eq__` mutating either deque leaves `len` and the indices
+            // above stale. CPython walks both with iterators, which notice on the
+            // step after the comparison — so check here, not before the compare.
+            if states(self, &other, vm) != start_states {
+                return Err(ExcType::runtime_error_deque_mutated());
             }
         }
         Ok(Some(true))
@@ -444,6 +451,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
         let self_len = self.get(vm.heap).len();
         let other_len = other.get(vm.heap).len();
+        let start_states = (self.get(vm.heap).state(), other.get(vm.heap).state());
         let mut guard = vm.recursion_guard()?;
         let vm = &mut *guard;
         for i in 0..self_len.min(other_len) {
@@ -465,6 +473,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
                         return Ok(CmpOrder::Incomparable);
                     }
                 }
+            }
+            // Either comparison above can run a user `__eq__`/`__lt__` that
+            // resizes a deque, invalidating the indices — see `py_eq_impl`.
+            if states(self, other, vm) != start_states {
+                return Err(ExcType::runtime_error_deque_mutated());
             }
         }
         // All shared items equal — the shorter deque sorts first.
@@ -586,6 +599,14 @@ impl HeapItem for Deque {
             }
         }
     }
+}
+
+/// Reads both deques' mutation counters, for comparing against a captured pair.
+///
+/// The deque comparisons walk `self` and `other` by index, so a user `__eq__`
+/// resizing *either* one invalidates the walk; both counters must be watched.
+fn states<'h>(a: &HeapObjectRead<'h, Deque>, b: &HeapObjectRead<'h, Deque>, vm: &VM<'h>) -> (u64, u64) {
+    (a.get(vm.heap).state(), b.get(vm.heap).state())
 }
 
 /// Iterates over a deque, raising if it is structurally mutated mid-iteration.

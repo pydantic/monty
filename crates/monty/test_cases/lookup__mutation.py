@@ -461,3 +461,142 @@ class DequeAppender4:
 dq4.append(DequeAppender4())
 assert (0 in dq4) is True
 assert dq4.index(0) == 0
+
+
+# === deque: `==` with an __eq__ that resizes either operand raises ===
+dq_eq_a = deque()
+dq_eq_b = deque()
+
+
+class DequeEqClearer:
+    def __init__(self, target):
+        self.target = target
+
+    def __eq__(self, other):
+        self.target.clear()
+        return True
+
+
+dq_eq_a.append(DequeEqClearer(dq_eq_a))
+dq_eq_a.append(1)
+dq_eq_b.append(2)
+dq_eq_b.append(3)
+
+try:
+    dq_eq_a == dq_eq_b
+    assert False, 'expected RuntimeError'
+except RuntimeError as exc:
+    assert str(exc) == 'deque mutated during iteration'
+
+# mutating the right-hand deque is caught too
+dq_eq_c = deque()
+dq_eq_d = deque()
+dq_eq_c.append(DequeEqClearer(dq_eq_d))
+dq_eq_c.append(1)
+dq_eq_d.append(2)
+dq_eq_d.append(3)
+
+try:
+    dq_eq_c == dq_eq_d
+    assert False, 'expected RuntimeError'
+except RuntimeError as exc:
+    assert str(exc) == 'deque mutated during iteration'
+
+
+# === deque: ordering comparisons check the same way ===
+dq_lt_a = deque()
+dq_lt_b = deque()
+
+
+class DequeLtClearer:
+    def __init__(self, target):
+        self.target = target
+
+    def __eq__(self, other):
+        self.target.clear()
+        return True
+
+    def __lt__(self, other):
+        return True
+
+
+dq_lt_a.append(DequeLtClearer(dq_lt_a))
+dq_lt_a.append(1)
+dq_lt_b.append(2)
+dq_lt_b.append(3)
+
+try:
+    dq_lt_a < dq_lt_b
+    assert False, 'expected RuntimeError'
+except RuntimeError as exc:
+    assert str(exc) == 'deque mutated during iteration'
+
+
+# === deque: an unequal compare returns before the mutation check ===
+dq_ne_a = deque()
+dq_ne_b = deque()
+
+
+class DequeNeClearer:
+    def __eq__(self, other):
+        dq_ne_a.clear()
+        return False
+
+
+dq_ne_a.append(DequeNeClearer())
+dq_ne_a.append(1)
+dq_ne_b.append(2)
+dq_ne_b.append(3)
+assert (dq_ne_a == dq_ne_b) is False
+
+
+# === list: `==` where __eq__ shrinks a side falls back to the live lengths ===
+class ListClearer:
+    def __init__(self, target):
+        self.target = target
+
+    def __eq__(self, other):
+        self.target.clear()
+        return True
+
+    def __lt__(self, other):
+        return True
+
+
+lst_a = [None, 1]
+lst_b = [2, 3]
+lst_a[0] = ListClearer(lst_a)
+# self is emptied mid-walk, so the lengths no longer match: not equal
+assert (lst_a == lst_b) is False
+assert lst_a == []
+
+lst_c = [None, 1]
+lst_d = [2, 3]
+lst_c[0] = ListClearer(lst_d)
+# the same holds when it is the right-hand list that shrinks
+assert (lst_c == lst_d) is False
+assert lst_d == []
+
+
+# === list: ordering settles on the lengths as they are after the mutation ===
+lst_e = [None, 1]
+lst_f = [2, 3]
+lst_e[0] = ListClearer(lst_e)
+assert (lst_e < lst_f) is True
+
+
+# === list: a partial truncation stops the walk where the shorter list ends ===
+lst_g = [0, None, 2, 3, 4]
+lst_h = [0, 1, 2, 3, 4]
+
+
+class ListTruncater:
+    def __eq__(self, other):
+        while len(lst_g) > 2:
+            lst_g.pop()
+        return True
+
+
+lst_g[1] = ListTruncater()
+assert (lst_g == lst_h) is False
+assert len(lst_g) == 2
