@@ -601,6 +601,17 @@ pub struct VMSnapshot {
     pending_os_effect: Option<PendingOsEffect>,
 }
 
+impl VMSnapshot {
+    /// Number of tasks the scheduler held when this snapshot was taken.
+    ///
+    /// Test-only bridge for [`crate::ResolveFutures::__live_task_count_for_tests`];
+    /// `scheduler` is private to this module.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn live_task_count(&self) -> usize {
+        self.scheduler.task_count()
+    }
+}
+
 // ============================================================================
 // Virtual Machine
 // ============================================================================

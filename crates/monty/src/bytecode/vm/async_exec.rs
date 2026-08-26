@@ -420,7 +420,8 @@ impl<'h> VM<'h> {
     ///
     /// A task nothing awaits has no such chain, nor has one whose chain ends
     /// at an already-settled gather. Nothing can receive the exception, so it
-    /// is reported rather than raised.
+    /// is dropped — as CPython does, whose `gather` retrieves a late child's
+    /// exception through a done-callback and prints nothing either.
     ///
     /// # Returns
     /// - `Ok(())` - Switched to next task, continue execution

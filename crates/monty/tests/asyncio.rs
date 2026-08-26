@@ -501,6 +501,77 @@ fn gather_first_external_fails_immediately() {
     assert_eq!(exc.message(), Some("foo failed"));
 }
 
+// === Test: Gather - a coroutine child whose external call fails is dropped ===
+
+/// A gather child that is a coroutine gets its own task, and its failing
+/// external call is settled against the gather rather than raised inside the
+/// child. Nothing would then deliver the failure to that child, so it must be
+/// dropped here — otherwise it stays `Blocked` on a future that has just been
+/// failed and unregistered, holding its coroutine and the gather for the rest
+/// of the session. Its siblings are unaffected and keep running.
+#[test]
+#[cfg(feature = "test-hooks")]
+fn gather_coroutine_child_dropped_when_its_external_fails() {
+    let code = r"
+import asyncio
+
+async def child():
+    return await foo()
+
+async def sibling():
+    return await bar()
+
+async def main():
+    try:
+        await asyncio.gather(child(), sibling())
+    except ValueError as exc:
+        assert str(exc) == 'foo failed'
+    return await baz()
+
+await main()
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    let (state, call_ids) = drive_to_resolve_futures(progress);
+    assert_eq!(call_ids.len(), 2, "child and sibling each yield one external call");
+    // main, child, sibling.
+    assert_eq!(state.__live_task_count_for_tests(), 3);
+
+    // Fail the child's call, leaving the sibling's outstanding.
+    let progress = state
+        .resume(
+            vec![(
+                call_ids[0],
+                ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("foo failed".to_string()))),
+            )],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    let RunProgress::FunctionCall(call) = progress else {
+        panic!("expected main to reach `baz` after catching the error");
+    };
+    let baz_id = call.call_id;
+    let RunProgress::ResolveFutures(state) = call.resume_pending(PrintWriter::Stdout).unwrap() else {
+        panic!("expected to suspend on `baz`");
+    };
+
+    // The child is gone; the sibling is still parked on `bar`, as CPython
+    // leaves it on the loop.
+    assert_eq!(state.__live_task_count_for_tests(), 2);
+
+    let progress = state
+        .resume(
+            vec![(baz_id, ExtFunctionResult::Return(MontyObject::Int(11)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(progress.into_complete().expect("should complete"), MontyObject::Int(11));
+}
+
 // === Test: Gather - second external fails ===
 
 #[test]

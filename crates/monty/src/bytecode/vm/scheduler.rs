@@ -513,8 +513,26 @@ impl Scheduler {
                             panic!("gather_id doesn't point to a GatherFuture")
                         };
                         let outer_awaiter = gather_rd.fail(heap, error);
+                        // Dropped before the cancel below: that releases the
+                        // task's `GatherSlot` inc_ref on this gather, which
+                        // must not run under a live reader on it.
                         drop(gather_rd);
-                        outer_awaiter.or(Some(Awaiter::Task(task_id)))
+                        match outer_awaiter {
+                            // The gather handed the failure outwards, so
+                            // nothing will ever deliver it to `task_id`. Its
+                            // `await` raised, so it is finished — drop it, or
+                            // it stays `Blocked` forever on a future that was
+                            // just failed and unregistered, holding its
+                            // coroutine and this gather alive for the rest of
+                            // the session. Siblings are untouched: the task is
+                            // blocked on an external future, so the cancel
+                            // walk finds no gather to cascade into.
+                            Some(outer) => {
+                                self.cancel_task(task_id, heap);
+                                Some(outer)
+                            }
+                            None => Some(Awaiter::Task(task_id)),
+                        }
                     }
                     None => Some(Awaiter::Task(task_id)),
                 }
@@ -547,6 +565,16 @@ impl Scheduler {
     #[inline]
     pub fn has_task(&self, task_id: TaskId) -> bool {
         self.tasks.contains_key(&task_id)
+    }
+
+    /// Number of tasks the scheduler still holds.
+    ///
+    /// Test-only: a task whose await has already failed must not stay parked,
+    /// and a finished run tears the scheduler down, so this count while
+    /// suspended is the only way a test can see one.
+    #[cfg(feature = "test-hooks")]
+    pub fn task_count(&self) -> usize {
+        self.tasks.len()
     }
 
     /// Cleans up all scheduler resources: the pending-future inc_refs and
