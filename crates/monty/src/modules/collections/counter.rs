@@ -200,7 +200,7 @@ pub(crate) fn counter_update<'h>(
             };
             // Snapshot (key, delta) pairs first so `c.update(c)` is well-defined.
             let pairs: Vec<(Value, Value)> = {
-                let HeapReadOutput::Dict(src) = vm.heap.read(src_id) else {
+                let Some(src) = vm.heap.read_as::<Dict>(src_id) else {
                     unreachable!("mapping is a dict");
                 };
                 let src = src.get(vm.heap);
@@ -413,7 +413,7 @@ pub(crate) fn counter_most_common<'h>(
         let pair = allocate_tuple(smallvec![key, count], vm.heap);
         items.push(pair);
     }
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))))
+    Ok(vm.heap.allocate_as(List::new(items)).into_value())
 }
 
 /// `Counter.elements()` — a list repeating each element by its count, skipping
@@ -462,7 +462,7 @@ pub(crate) fn counter_elements<'h>(
             items.push(key);
         }
     }
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))))
+    Ok(vm.heap.allocate_as(List::new(items)).into_value())
 }
 
 /// The four binary `Counter` algebra operators.
@@ -488,39 +488,36 @@ pub(crate) fn counter_binary_op<'h>(
 ) -> RunResult<Value> {
     let mut result = Dict::new();
     result.make_counter();
-    let result_id = vm.heap.allocate(HeapData::Dict(result));
+    let result = vm.heap.allocate_as(result);
     // Guard the freshly allocated result dict: a catchable error below (e.g.
     // arithmetic or comparison on non-numeric counts raising `TypeError`) must
     // free it, which the bare `?` early-returns would otherwise leak.
-    let mut result_guard = DropGuard::new(Value::Ref(result_id), vm);
-    let vm = result_guard.ctx();
-    let HeapReadOutput::Dict(mut result) = vm.heap.read(result_id) else {
-        unreachable!("just allocated a Counter dict");
-    };
+    let mut result_guard = DropGuard::new(result, vm);
+    let (result, vm) = result_guard.as_parts_mut();
+    let result = result.read(vm.heap);
 
     // Each operand is snapshotted only when it is about to be consumed: taking
     // the right snapshot up front would leak it if folding the left one raised.
     match op {
         CounterOp::Add => {
             let l_pairs = lhs.clone_all_pairs(vm)?;
-            counter_bump_all(&mut result, l_pairs, false, vm)?;
+            counter_bump_all(result, l_pairs, false, vm)?;
             let r_pairs = rhs.clone_all_pairs(vm)?;
-            counter_bump_all(&mut result, r_pairs, false, vm)?;
+            counter_bump_all(result, r_pairs, false, vm)?;
         }
         CounterOp::Sub => {
             let l_pairs = lhs.clone_all_pairs(vm)?;
-            counter_bump_all(&mut result, l_pairs, false, vm)?;
+            counter_bump_all(result, l_pairs, false, vm)?;
             let r_pairs = rhs.clone_all_pairs(vm)?;
-            counter_bump_all(&mut result, r_pairs, true, vm)?;
+            counter_bump_all(result, r_pairs, true, vm)?;
         }
         // `|` keeps the larger count over the union of keys (see `counter_binary_extreme`).
-        CounterOp::Or => counter_binary_extreme(&mut result, lhs, rhs, ExtremeOp::Max, vm)?,
+        CounterOp::Or => counter_binary_extreme(result, lhs, rhs, ExtremeOp::Max, vm)?,
         // `&` keeps the smaller count over shared keys (see `counter_binary_extreme`).
-        CounterOp::And => counter_binary_extreme(&mut result, lhs, rhs, ExtremeOp::Min, vm)?,
+        CounterOp::And => counter_binary_extreme(result, lhs, rhs, ExtremeOp::Min, vm)?,
     }
-    counter_retain_positive(&mut result, vm)?;
-    drop(result);
-    Ok(result_guard.into_inner())
+    counter_retain_positive(result, vm)?;
+    Ok(result_guard.into_inner().into_value())
 }
 
 /// The extreme kept by the binary `&`/`|` algebra.
@@ -818,15 +815,13 @@ pub(crate) fn counter_unary_op<'h>(
 ) -> RunResult<Value> {
     let mut result = Dict::new();
     result.make_counter();
-    let result_id = vm.heap.allocate(HeapData::Dict(result));
+    let result = vm.heap.allocate_as(result);
     // Guard the freshly allocated result dict: a catchable error below (e.g.
     // comparing a non-numeric count) must free it, which the bare `?`
     // early-returns would otherwise leak.
-    let mut result_guard = DropGuard::new(Value::Ref(result_id), vm);
-    let vm = result_guard.ctx();
-    let HeapReadOutput::Dict(mut result) = vm.heap.read(result_id) else {
-        unreachable!("just allocated a Counter dict");
-    };
+    let mut result_guard = DropGuard::new(result, vm);
+    let (result, vm) = result_guard.as_parts_mut();
+    let result = result.read(vm.heap);
     // Scoped so the iterator guard releases its borrow of `result_guard` before
     // the result is handed back.
     {
@@ -860,9 +855,8 @@ pub(crate) fn counter_unary_op<'h>(
             }
         }
     }
-    counter_retain_positive(&mut result, vm)?;
-    drop(result);
-    Ok(result_guard.into_inner())
+    counter_retain_positive(result, vm)?;
+    Ok(result_guard.into_inner().into_value())
 }
 
 /// Folds a batch of `(key, delta)` pairs into `counter`, releasing any pairs

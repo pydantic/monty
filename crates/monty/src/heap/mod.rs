@@ -20,26 +20,18 @@ use std::{
 use monty_types::ResourceTracker;
 use serde::ser::SerializeStruct;
 
-// Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
-// to resolve (used by the `defer_drop!` macros and throughout the codebase).
-pub(crate) use crate::heap_data::HeapData;
-pub(crate) use crate::heap_traits::{ContainsHeap, DropGuard, DropWithContext, HeapItem};
 #[cfg(feature = "ref-count-return")]
 use crate::types::Type;
 use crate::{
-    asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
-    exception_private::SimpleException,
-    heap_data::{CellValue, Closure, FunctionDefaults},
-    modules::dataclasses::{DataclassField, DataclassParams},
-    types::{
-        BoundMethod, Bytes, BytesIterator, Class, Dataclass, Deque, Dict, DictItemIterator, DictItemsView,
-        DictKeyIterator, DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance,
-        ItertoolsIter, List, LongInt, Module, NamedTuple, NamedTupleClass, OpenFile, Path, Range, RangeIterator,
-        ReMatch, RePattern, Set, SetIterator, Slice, Str, StringIterator, TimeZone, Tuple, TupleIterator,
-        callable_iterator::CallableIterator, date, datetime, deque::DequeIterator, list::ListIterator, timedelta,
-        timezone,
-    },
+    asyncio::{Awaiter, ExternalFutureState, GatherState},
+    types::{ExtFunction, TimeZone, Tuple},
     value::Value,
+};
+// Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
+// to resolve (used by the `defer_drop!` macros and throughout the codebase).
+pub(crate) use crate::{
+    heap_data::HeapData,
+    heap_traits::{ContainsHeap, DropGuard, DropWithContext, HeapItem},
 };
 
 mod free_list;
@@ -171,6 +163,30 @@ impl<'a> HeapReader<'a> {
         self.read_ptr(id).read(id, self)
     }
 
+    /// Reads `id` as the requested concrete payload type.
+    ///
+    /// Returns `None` when the live entry stores a different payload type.
+    pub fn read_as<T: HeapPayload>(&self, id: HeapId) -> Option<HeapObjectRead<'a, T>> {
+        T::try_from_read(self.read(id)).ok()
+    }
+
+    /// Allocates a concrete payload and returns an owning, typed handle to it.
+    ///
+    /// The allocation's initial reference must eventually be transferred with
+    /// `into_value`/`into_id`, or released by guarding the handle with `DropGuard`.
+    pub fn allocate_as<T: HeapPayload>(&self, value: T) -> HeapAllocation<'a, T> {
+        let entry = self.heap.new_entry(value.into_heap_data());
+        let (id, slot) = self.heap.entries.allocate_with_slot(entry);
+        HeapAllocation {
+            id,
+            ptr: HeapPtr {
+                inner: NonNull::from(slot),
+                brand: PhantomData,
+            },
+            read: None,
+        }
+    }
+
     #[expect(clippy::unused_self, reason = "'a lifetime is used to create the safety guarantees")]
     pub fn protect<'t, U: ?Sized>(&mut self, value: &'t U) -> BorrowedHeapRead<'t, 'a, U> {
         BorrowedHeapRead {
@@ -219,58 +235,110 @@ impl DerefMut for HeapReader<'_> {
     }
 }
 
-pub enum HeapReadOutput<'a> {
-    Str(HeapObjectRead<'a, Str>),
-    Bytes(HeapObjectRead<'a, Bytes>),
-    List(HeapObjectRead<'a, List>),
-    Deque(HeapObjectRead<'a, Deque>),
-    Tuple(HeapObjectRead<'a, Tuple>),
-    NamedTuple(HeapObjectRead<'a, NamedTuple>),
-    NamedTupleClass(HeapObjectRead<'a, NamedTupleClass>),
-    Dict(HeapObjectRead<'a, Dict>),
-    DictItemsView(HeapObjectRead<'a, DictItemsView>),
-    DictKeysView(HeapObjectRead<'a, DictKeysView>),
-    DictValuesView(HeapObjectRead<'a, DictValuesView>),
-    Set(HeapObjectRead<'a, Set>),
-    FrozenSet(HeapObjectRead<'a, FrozenSet>),
-    Closure(HeapObjectRead<'a, Closure>),
-    FunctionDefaults(HeapObjectRead<'a, FunctionDefaults>),
-    ExtFunction(HeapObjectRead<'a, ExtFunction>),
-    Cell(HeapObjectRead<'a, CellValue>),
-    Range(HeapObjectRead<'a, Range>),
-    Slice(HeapObjectRead<'a, Slice>),
-    Exception(HeapObjectRead<'a, SimpleException>),
-    Dataclass(HeapObjectRead<'a, Dataclass>),
-    Class(HeapObjectRead<'a, Class>),
-    Instance(HeapObjectRead<'a, Instance>),
-    BoundMethod(HeapObjectRead<'a, BoundMethod>),
-    DataclassField(HeapObjectRead<'a, DataclassField>),
-    DataclassParams(HeapObjectRead<'a, DataclassParams>),
-    ListIterator(HeapObjectRead<'a, ListIterator>),
-    DequeIterator(HeapObjectRead<'a, DequeIterator>),
-    TupleIterator(HeapObjectRead<'a, TupleIterator>),
-    StringIterator(HeapObjectRead<'a, StringIterator>),
-    BytesIterator(HeapObjectRead<'a, BytesIterator>),
-    RangeIterator(HeapObjectRead<'a, RangeIterator>),
-    DictKeyIterator(HeapObjectRead<'a, DictKeyIterator>),
-    DictItemIterator(HeapObjectRead<'a, DictItemIterator>),
-    DictValueIterator(HeapObjectRead<'a, DictValueIterator>),
-    SetIterator(HeapObjectRead<'a, SetIterator>),
-    CallableIterator(HeapObjectRead<'a, CallableIterator>),
-    Itertools(HeapObjectRead<'a, ItertoolsIter>),
-    LongInt(HeapObjectRead<'a, LongInt>),
-    Module(HeapObjectRead<'a, Module>),
-    Coroutine(HeapObjectRead<'a, Coroutine>),
-    GatherFuture(HeapObjectRead<'a, GatherFuture>),
-    ExternalFuture(HeapObjectRead<'a, ExternalFuture>),
-    Path(HeapObjectRead<'a, Path>),
-    OpenFile(HeapObjectRead<'a, OpenFile>),
-    RePattern(HeapObjectRead<'a, RePattern>),
-    ReMatch(HeapObjectRead<'a, ReMatch>),
-    Date(HeapObjectRead<'a, date::Date>),
-    DateTime(HeapObjectRead<'a, datetime::DateTime>),
-    TimeDelta(HeapObjectRead<'a, timedelta::TimeDelta>),
-    TimeZone(HeapObjectRead<'a, timezone::TimeZone>),
+macro_rules! heap_storage_value {
+    (inline $value:expr) => {
+        $value
+    };
+    (boxed $value:expr) => {
+        Box::new($value)
+    };
+}
+
+/// Maps a concrete Rust payload to its heap representation and typed read variant.
+///
+/// Implementations are generated from `heap_data::heap_payloads`, keeping each
+/// payload's storage conversion and typed read extraction in the central registry.
+pub(crate) trait HeapPayload: Sized {
+    /// Wraps this payload in its corresponding `HeapData` variant.
+    fn into_heap_data(self) -> HeapData;
+
+    /// Extracts this payload's typed handle from a dynamic heap read.
+    fn try_from_read(read: HeapReadOutput<'_>) -> Result<HeapObjectRead<'_, Self>, HeapReadOutput<'_>>;
+}
+
+macro_rules! define_heap_read_support {
+    ($(
+        $(#[$meta:meta])*
+        $variant:ident($storage:ident $payload:ty)
+    ),* $(,)?) => {
+        /// A type-safe read handle for any payload stored in the heap.
+        pub enum HeapReadOutput<'a> {
+            $(
+                $(#[$meta])*
+                $variant(HeapObjectRead<'a, $payload>),
+            )*
+        }
+
+        $(
+            impl HeapPayload for $payload {
+                #[inline]
+                fn into_heap_data(self) -> HeapData {
+                    HeapData::$variant(heap_storage_value!($storage self))
+                }
+
+                #[inline]
+                fn try_from_read(
+                    read: HeapReadOutput<'_>,
+                ) -> Result<HeapObjectRead<'_, Self>, HeapReadOutput<'_>> {
+                    if let HeapReadOutput::$variant(value) = read {
+                        Ok(value)
+                    } else {
+                        Err(read)
+                    }
+                }
+            }
+        )*
+
+    };
+}
+
+crate::heap_data::heap_payloads!(define_heap_read_support);
+
+/// A newly allocated heap object with its initial owned reference.
+///
+/// Typed access is created lazily by [`Self::read`], so transferring an allocation
+/// directly into a `Value` or raw ID does not touch the entry's reader count.
+#[must_use = "the allocation's initial reference must be transferred"]
+pub struct HeapAllocation<'a, T> {
+    id: HeapId,
+    ptr: HeapPtr<'a>,
+    read: Option<HeapObjectRead<'a, T>>,
+}
+
+impl<'a, T: HeapPayload> HeapAllocation<'a, T> {
+    /// Returns the allocated object's identity without transferring ownership.
+    pub fn id(&self) -> HeapId {
+        self.id
+    }
+
+    /// Creates the typed read handle on first access and reuses it thereafter.
+    pub fn read(&mut self, heap: &HeapReader<'a>) -> &mut HeapObjectRead<'a, T> {
+        let id = self.id;
+        let ptr = self.ptr;
+        self.read.get_or_insert_with(|| {
+            T::try_from_read(ptr.read(id, heap))
+                .unwrap_or_else(|_| unreachable!("allocated payload has its registered type"))
+        })
+    }
+
+    /// Transfers the allocation's initial reference into a `Value`.
+    pub fn into_value(self) -> Value {
+        Value::Ref(self.into_id())
+    }
+
+    /// Transfers the allocation's initial reference as an owned raw ID.
+    pub fn into_id(mut self) -> HeapId {
+        let id = self.id();
+        drop(self.read.take());
+        id
+    }
+}
+
+impl<C: ContainsHeap, T> DropWithContext<C> for HeapAllocation<'_, T> {
+    fn drop_with(mut self, ctx: &mut C) {
+        drop(self.read.take());
+        Value::Ref(self.id).drop_with(ctx);
+    }
 }
 
 /// A typed read handle for a Python object stored in a specific heap entry.
@@ -683,6 +751,15 @@ impl<'a> HeapPtr<'a> {
             }
         }
 
+        macro_rules! heap_read_value {
+            (inline $id:expr, $base:expr, $value:expr, $readers:expr) => {
+                heap_read($id, $base, $value, $readers)
+            };
+            (boxed $id:expr, $base:expr, $value:expr, $readers:expr) => {
+                heap_read_boxed($id, $base, $value, $readers)
+            };
+        }
+
         let entry = self.entry(reader);
         // Increment the reader count for this entry. The corresponding decrement
         // happens in `HeapRead::drop`.
@@ -690,80 +767,29 @@ impl<'a> HeapPtr<'a> {
         let readers = NonNull::from(&entry.readers);
         // Get the raw pointer from the UnsafeCell — this has SharedReadWrite permission.
         let base: *mut HeapData = entry.data.0.get();
+
+        macro_rules! read_heap_payload {
+            ($(
+                $(#[$meta:meta])*
+                $variant:ident($storage:ident $payload:ty)
+            ),* $(,)?) => {
+                // SAFETY: `base` points to this live entry's `UnsafeHeapData`.
+                match unsafe { &*base } {
+                    $(
+                        HeapData::$variant(value) => HeapReadOutput::$variant(
+                            heap_read_value!($storage id, base, value, readers)
+                        ),
+                    )*
+                }
+            };
+        }
+
         // SAFETY: Match on a shared reference (`&*base`) to read the discriminant without
         // creating a Unique retag. The shared retag is compatible with existing
         // SharedReadWrite permissions from prior `read()` calls into the same UnsafeCell.
         // The `heap_read` helper then derives the NonNull from `base` (not from `&T`),
         // so the returned pointer retains full SharedReadWrite permission.
-        match unsafe { &*base } {
-            HeapData::Str(s) => HeapReadOutput::Str(heap_read(id, base, s, readers)),
-            HeapData::Bytes(bytes) => HeapReadOutput::Bytes(heap_read(id, base, bytes, readers)),
-            HeapData::List(list) => HeapReadOutput::List(heap_read(id, base, list, readers)),
-            HeapData::Deque(deque) => HeapReadOutput::Deque(heap_read(id, base, deque, readers)),
-            HeapData::Tuple(tuple) => HeapReadOutput::Tuple(heap_read(id, base, tuple, readers)),
-            HeapData::NamedTuple(named_tuple) => {
-                HeapReadOutput::NamedTuple(heap_read_boxed(id, base, named_tuple, readers))
-            }
-            HeapData::NamedTupleClass(class) => {
-                HeapReadOutput::NamedTupleClass(heap_read_boxed(id, base, class, readers))
-            }
-            HeapData::Dict(dict) => HeapReadOutput::Dict(heap_read(id, base, dict, readers)),
-            HeapData::DictItemsView(v) => HeapReadOutput::DictItemsView(heap_read(id, base, v, readers)),
-            HeapData::DictKeysView(v) => HeapReadOutput::DictKeysView(heap_read(id, base, v, readers)),
-            HeapData::DictValuesView(v) => HeapReadOutput::DictValuesView(heap_read(id, base, v, readers)),
-            HeapData::Set(set) => HeapReadOutput::Set(heap_read(id, base, set, readers)),
-            HeapData::FrozenSet(frozen_set) => HeapReadOutput::FrozenSet(heap_read(id, base, frozen_set, readers)),
-            HeapData::Closure(closure) => HeapReadOutput::Closure(heap_read(id, base, closure, readers)),
-            HeapData::FunctionDefaults(function_defaults) => {
-                HeapReadOutput::FunctionDefaults(heap_read(id, base, function_defaults, readers))
-            }
-            HeapData::ExtFunction(name) => HeapReadOutput::ExtFunction(heap_read(id, base, name, readers)),
-            HeapData::Cell(cell_value) => HeapReadOutput::Cell(heap_read(id, base, cell_value, readers)),
-            HeapData::Range(range) => HeapReadOutput::Range(heap_read(id, base, range, readers)),
-            HeapData::Slice(slice) => HeapReadOutput::Slice(heap_read(id, base, slice, readers)),
-            HeapData::Exception(simple_exception) => {
-                HeapReadOutput::Exception(heap_read(id, base, simple_exception, readers))
-            }
-            HeapData::Dataclass(dataclass) => HeapReadOutput::Dataclass(heap_read_boxed(id, base, dataclass, readers)),
-            HeapData::Class(class) => HeapReadOutput::Class(heap_read_boxed(id, base, class, readers)),
-            HeapData::Instance(instance) => HeapReadOutput::Instance(heap_read_boxed(id, base, instance, readers)),
-            HeapData::BoundMethod(bound_method) => {
-                HeapReadOutput::BoundMethod(heap_read(id, base, bound_method, readers))
-            }
-            HeapData::DataclassField(field) => HeapReadOutput::DataclassField(heap_read(id, base, field, readers)),
-            HeapData::DataclassParams(params) => HeapReadOutput::DataclassParams(heap_read(id, base, params, readers)),
-            HeapData::ListIterator(iter) => HeapReadOutput::ListIterator(heap_read(id, base, iter, readers)),
-            HeapData::DequeIterator(iter) => HeapReadOutput::DequeIterator(heap_read(id, base, iter, readers)),
-            HeapData::TupleIterator(iter) => HeapReadOutput::TupleIterator(heap_read(id, base, iter, readers)),
-            HeapData::StringIterator(iter) => HeapReadOutput::StringIterator(heap_read(id, base, iter, readers)),
-            HeapData::BytesIterator(iter) => HeapReadOutput::BytesIterator(heap_read(id, base, iter, readers)),
-            HeapData::RangeIterator(iter) => HeapReadOutput::RangeIterator(heap_read(id, base, iter, readers)),
-            HeapData::DictKeyIterator(iter) => HeapReadOutput::DictKeyIterator(heap_read(id, base, iter, readers)),
-            HeapData::DictItemIterator(iter) => HeapReadOutput::DictItemIterator(heap_read(id, base, iter, readers)),
-            HeapData::DictValueIterator(iter) => HeapReadOutput::DictValueIterator(heap_read(id, base, iter, readers)),
-            HeapData::SetIterator(iter) => HeapReadOutput::SetIterator(heap_read(id, base, iter, readers)),
-            HeapData::CallableIterator(c) => HeapReadOutput::CallableIterator(heap_read(id, base, c, readers)),
-            HeapData::Itertools(i) => HeapReadOutput::Itertools(heap_read(id, base, i, readers)),
-            HeapData::LongInt(l) => HeapReadOutput::LongInt(heap_read(id, base, l, readers)),
-            HeapData::Module(module) => HeapReadOutput::Module(heap_read_boxed(id, base, module, readers)),
-            HeapData::Coroutine(coroutine) => HeapReadOutput::Coroutine(heap_read(id, base, coroutine, readers)),
-            HeapData::GatherFuture(gather_future) => {
-                HeapReadOutput::GatherFuture(heap_read_boxed(id, base, gather_future, readers))
-            }
-            HeapData::ExternalFuture(external_future) => {
-                HeapReadOutput::ExternalFuture(heap_read_boxed(id, base, external_future, readers))
-            }
-            HeapData::Path(path) => HeapReadOutput::Path(heap_read(id, base, path, readers)),
-            HeapData::OpenFile(file) => HeapReadOutput::OpenFile(heap_read_boxed(id, base, file, readers)),
-            HeapData::RePattern(re_pattern) => {
-                HeapReadOutput::RePattern(heap_read_boxed(id, base, re_pattern, readers))
-            }
-            HeapData::ReMatch(re_match) => HeapReadOutput::ReMatch(heap_read_boxed(id, base, re_match, readers)),
-            HeapData::Date(d) => HeapReadOutput::Date(heap_read(id, base, d, readers)),
-            HeapData::DateTime(d) => HeapReadOutput::DateTime(heap_read(id, base, d, readers)),
-            HeapData::TimeDelta(d) => HeapReadOutput::TimeDelta(heap_read(id, base, d, readers)),
-            HeapData::TimeZone(d) => HeapReadOutput::TimeZone(heap_read(id, base, d, readers)),
-        }
+        crate::heap_data::heap_payloads!(read_heap_payload)
     }
 }
 
@@ -1029,19 +1055,22 @@ impl Heap {
     /// (strings, bytes, …) cannot participate in cycles and don't count
     /// against the GC interval.
     pub fn allocate(&self, data: HeapData) -> HeapId {
+        self.entries.allocate(self.new_entry(data))
+    }
+
+    /// Builds the initialized entry shared by typed and untyped allocation.
+    fn new_entry(&self, data: HeapData) -> HeapEntry {
         if data.is_gc_tracked() {
             self.allocations_since_gc
                 .set(self.allocations_since_gc.get().wrapping_add(1));
         }
 
-        let new_entry = HeapEntry {
+        HeapEntry {
             refcount: Cell::new(1),
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(data)),
             color: Cell::new(CcColor::Black),
-        };
-
-        self.entries.allocate(new_entry)
+        }
     }
 
     /// Returns the singleton empty tuple.

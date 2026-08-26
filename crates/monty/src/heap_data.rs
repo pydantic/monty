@@ -17,187 +17,144 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
-    modules::{
-        collections::defaultdict::defaultdict_missing,
-        dataclasses::{DataclassField, DataclassParams},
-    },
-    types::{
-        BoundMethod, Bytes, BytesIterator, Class, Dataclass, Deque, Dict, DictItemIterator, DictItemsView,
-        DictKeyIterator, DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance,
-        ItertoolsIter, LazyHeapSet, List, LongInt, Module, NamedTuple, NamedTupleClass, OpenFile, Path, PyTrait, Range,
-        RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice, Str, StringIterator, Tuple, TupleIterator, Type,
-        callable_iterator::CallableIterator, date, datetime, deque::DequeIterator, list::ListIterator,
-        str::allocate_string, timedelta, timezone,
-    },
+    modules::collections::defaultdict::defaultdict_missing,
+    types::{LazyHeapSet, LongInt, PyTrait, Type, str::allocate_string},
     value::{EitherStr, Value},
 };
 
-/// HeapData captures every runtime value that must live in the arena.
-///
-/// The enum is moved by value on every heap allocate and free, so its inline
-/// size is a direct memcpy cost on those hot paths. Variants larger than
-/// [`Dict`] (the largest hot variant) are therefore `Box`ed — see the size
-/// assertion below the enum before adding or growing a variant.
-///
-/// Each variant wraps a type that implements `PyTrait`, providing
-/// Python-compatible operations. The trait is manually implemented to dispatch
-/// to the appropriate variant's implementation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) enum HeapData {
-    Str(Str),
-    Bytes(Bytes),
-    List(List),
-    /// `collections.deque` — a double-ended queue with an optional `maxlen`.
-    Deque(Deque),
-    Tuple(Tuple),
-    NamedTuple(Box<NamedTuple>),
-    /// A `collections.namedtuple` class object (the callable that builds instances).
-    NamedTupleClass(Box<NamedTupleClass>),
-    Dict(Dict),
-    DictKeysView(DictKeysView),
-    DictItemsView(DictItemsView),
-    DictValuesView(DictValuesView),
-    Set(Set),
-    FrozenSet(FrozenSet),
-    Closure(Closure),
-    FunctionDefaults(FunctionDefaults),
-    /// A cell wrapping a single mutable value for closure support.
-    ///
-    /// Cells enable nonlocal variable access by providing a heap-allocated
-    /// container that can be shared between a function and its nested functions.
-    /// Both the outer function and inner function hold references to the same
-    /// cell, allowing modifications to propagate across scope boundaries.
-    Cell(CellValue),
-    /// A range object (e.g., `range(10)` or `range(1, 10, 2)`).
-    ///
-    /// Stored on the heap to keep `Value` enum small (16 bytes). Range objects
-    /// are immutable and hashable.
-    Range(Range),
-    /// A slice object (e.g., `slice(1, 10, 2)` or from `x[1:10:2]`).
-    ///
-    /// Stored on the heap to keep `Value` enum small. Slice objects represent
-    /// start:stop:step indices for sequence slicing operations.
-    Slice(Slice),
-    /// An exception instance (e.g., `ValueError('message')`).
-    ///
-    /// Stored on the heap to keep `Value` enum small (16 bytes). Exceptions
-    /// are created when exception types are called or when `raise` is executed.
-    Exception(SimpleException),
-    /// A dataclass instance with fields and method references.
-    ///
-    /// Contains a class name, a Dict of field name -> value mappings, and a set
-    /// of method names that trigger external function calls when invoked.
-    Dataclass(Box<Dataclass>),
-    /// A user-defined class object created by `class Foo: ...`.
-    ///
-    /// Holds the class name and a namespace of methods + class variables. Its own
-    /// `HeapId` is the type identity used by `type()`/`isinstance`.
-    Class(Box<Class>),
-    /// An instance of a user-defined class.
-    ///
-    /// Holds a reference to its `Class` and an `attrs` dict (the instance `__dict__`).
-    Instance(Box<Instance>),
-    /// A method bound to an instance, produced by `obj.method` without calling it.
-    BoundMethod(BoundMethod),
-    /// One `dataclasses.Field` of a `@dataclass`, held by the class's
-    /// `__dataclass_fields__` dict.
-    DataclassField(DataclassField),
-    /// `list_iterator` object.
-    ListIterator(ListIterator),
-    /// `_collections._deque_iterator` object.
-    DequeIterator(DequeIterator),
-    /// `tuple_iterator` object.
-    TupleIterator(TupleIterator),
-    /// `str_ascii_iterator` or `str_iterator` object.
-    StringIterator(StringIterator),
-    /// `bytes_iterator` object.
-    BytesIterator(BytesIterator),
-    /// `range_iterator` object.
-    RangeIterator(RangeIterator),
-    /// `dict_keyiterator` object.
-    DictKeyIterator(DictKeyIterator),
-    /// `dict_itemiterator` object.
-    DictItemIterator(DictItemIterator),
-    /// `dict_valueiterator` object.
-    DictValueIterator(DictValueIterator),
-    /// `set_iterator` object.
-    SetIterator(SetIterator),
-    /// `callable_iterator` object, from `iter(callable, sentinel)`
-    CallableIterator(CallableIterator),
-    /// An arbitrary precision integer (LongInt).
-    ///
-    /// Stored on the heap to keep `Value` enum at 16 bytes. Python has one `int` type,
-    /// so LongInt is an implementation detail - we use `Value::Int(i64)` for performance
-    /// when values fit, and promote to LongInt on overflow. When LongInt results fit back
-    /// in i64, they are demoted back to `Value::Int` for performance.
-    LongInt(LongInt),
-    /// A Python module (e.g., `sys`, `typing`).
-    ///
-    /// Modules have a name and a dictionary of attributes. They are created by
-    /// import statements and can have refs to other heap values in their attributes.
-    Module(Box<Module>),
-    /// A coroutine object from an async function call.
-    ///
-    /// Contains pre-bound arguments and captured cells, ready to be awaited.
-    /// When awaited, a new frame is pushed using the stored namespace.
-    Coroutine(Coroutine),
-    /// A gather() result tracking multiple coroutines/tasks.
-    ///
-    /// Created by asyncio.gather() and spawns tasks when awaited.
-    GatherFuture(Box<GatherFuture>),
-    /// An external future driven by the host.
-    ///
-    /// Created when the host returns `ExtFunctionResult::Future(call_id)`.
-    /// Holds its own state machine (`Pending`/`Resolved`/`Failed`) so
-    /// re-await yields cached results, matching CPython's Future semantics.
-    ExternalFuture(Box<ExternalFuture>),
-    /// A filesystem path from `pathlib.Path`.
-    ///
-    /// Stored on the heap to provide Python-compatible path operations.
-    /// Pure methods (name, parent, etc.) are handled directly by the VM.
-    /// I/O methods (exists, read_text, etc.) yield external function calls.
-    Path(Path),
-    /// A path-backed file object returned by the `open()` builtin.
-    ///
-    /// The object stores only virtual path and mode state.  Reads and writes are
-    /// full-file OS calls; no native file descriptor is kept while Monty runs.
-    OpenFile(Box<OpenFile>),
-    /// A compiled regex pattern from `re.compile()`.
-    ///
-    /// Contains the original pattern string, flags, and compiled regex engine.
-    /// Leaf type: no heap references, not GC-tracked.
-    RePattern(Box<RePattern>),
-    /// A regex match result from a successful regex operation.
-    ///
-    /// Contains the matched text, capture groups, positions, and input string.
-    /// Leaf type: no heap references, not GC-tracked.
-    ReMatch(Box<ReMatch>),
-    /// Reference to an external function supplied by the host or synthesized for a call.
-    ExtFunction(ExtFunction),
-    /// A `datetime.date` value stored with `chrono::NaiveDate`.
-    Date(date::Date),
-    /// A `datetime.datetime` value stored with chrono primitives.
-    DateTime(datetime::DateTime),
-    /// A `datetime.timedelta` duration value stored with `chrono::TimeDelta`.
-    TimeDelta(timedelta::TimeDelta),
-    /// A fixed-offset `datetime.timezone` value.
-    TimeZone(timezone::TimeZone),
-    // Append-only: this enum is dumped as part of the heap, so a mid-enum
-    // insertion makes every later variant decode as its neighbour.
-    /// Any `itertools` iterator (`count`, `repeat`, ...).
-    ///
-    /// One variant for the whole family — nothing outside `types::itertools`
-    /// dispatches on which adaptor it is.
-    Itertools(ItertoolsIter),
-    /// The `@dataclass(...)` options of a `@dataclass`, held by the class's
-    /// `__dataclass_params__` entry.
-    DataclassParams(DataclassParams),
+macro_rules! heap_storage_type {
+    (inline $payload:ty) => {
+        $payload
+    };
+    (boxed $payload:ty) => {
+        Box<$payload>
+    };
 }
 
-// `HeapData` is memcpy'd on every allocate and free, so its inline size is paid on
-// the hottest heap paths. `Dict` — far too hot to box — sets the 72-byte payload
-// ceiling (currently tag-free thanks to niche packing); if this assertion fails a
-// variant has outgrown it and should be boxed (or, for `Dict` itself, slimmed down).
+/// Invokes a consumer macro with every concrete payload stored by the heap.
+///
+/// This is the single payload registry. Its order is append-only because
+/// `HeapData`'s serde discriminants are snapshot data.
+macro_rules! heap_payloads {
+    ($consumer:ident) => {
+        $consumer! {
+            Str(inline $crate::types::Str),
+            Bytes(inline $crate::types::Bytes),
+            List(inline $crate::types::List),
+            /// `collections.deque` — a double-ended queue with an optional `maxlen`.
+            Deque(inline $crate::types::Deque),
+            Tuple(inline $crate::types::Tuple),
+            NamedTuple(boxed $crate::types::NamedTuple),
+            /// A `collections.namedtuple` class object (the callable that builds instances).
+            NamedTupleClass(boxed $crate::types::NamedTupleClass),
+            Dict(inline $crate::types::Dict),
+            DictKeysView(inline $crate::types::DictKeysView),
+            DictItemsView(inline $crate::types::DictItemsView),
+            DictValuesView(inline $crate::types::DictValuesView),
+            Set(inline $crate::types::Set),
+            FrozenSet(inline $crate::types::FrozenSet),
+            Closure(inline $crate::heap_data::Closure),
+            FunctionDefaults(inline $crate::heap_data::FunctionDefaults),
+            /// A cell wrapping a single mutable value for closure support.
+            Cell(inline $crate::heap_data::CellValue),
+            /// A range object such as `range(1, 10, 2)`.
+            Range(inline $crate::types::Range),
+            /// A slice object such as `slice(1, 10, 2)`.
+            Slice(inline $crate::types::Slice),
+            /// An exception instance such as `ValueError('message')`.
+            Exception(inline $crate::exception_private::SimpleException),
+            /// A dataclass instance with fields and method references.
+            Dataclass(boxed $crate::types::Dataclass),
+            /// A user-defined class object created by a `class` statement.
+            Class(boxed $crate::types::Class),
+            /// An instance of a user-defined class.
+            Instance(boxed $crate::types::Instance),
+            /// A method bound to an instance.
+            BoundMethod(inline $crate::types::BoundMethod),
+            /// One `dataclasses.Field` held by a class's `__dataclass_fields__` dictionary.
+            DataclassField(inline $crate::modules::dataclasses::DataclassField),
+            /// A `list_iterator` object.
+            ListIterator(inline $crate::types::list::ListIterator),
+            /// A `_collections._deque_iterator` object.
+            DequeIterator(inline $crate::types::deque::DequeIterator),
+            /// A `tuple_iterator` object.
+            TupleIterator(inline $crate::types::TupleIterator),
+            /// A `str_ascii_iterator` or `str_iterator` object.
+            StringIterator(inline $crate::types::StringIterator),
+            /// A `bytes_iterator` object.
+            BytesIterator(inline $crate::types::BytesIterator),
+            /// A `range_iterator` object.
+            RangeIterator(inline $crate::types::RangeIterator),
+            /// A `dict_keyiterator` object.
+            DictKeyIterator(inline $crate::types::DictKeyIterator),
+            /// A `dict_itemiterator` object.
+            DictItemIterator(inline $crate::types::DictItemIterator),
+            /// A `dict_valueiterator` object.
+            DictValueIterator(inline $crate::types::DictValueIterator),
+            /// A `set_iterator` object.
+            SetIterator(inline $crate::types::SetIterator),
+            /// A `callable_iterator` object from `iter(callable, sentinel)`.
+            CallableIterator(inline $crate::types::callable_iterator::CallableIterator),
+            /// An arbitrary-precision integer used when a Python `int` does not fit in `i64`.
+            LongInt(inline $crate::types::LongInt),
+            /// A Python module and its attributes.
+            Module(boxed $crate::types::Module),
+            /// A coroutine object from an async function call.
+            Coroutine(inline $crate::asyncio::Coroutine),
+            /// An `asyncio.gather()` result tracking multiple coroutines or tasks.
+            GatherFuture(boxed $crate::asyncio::GatherFuture),
+            /// An external future driven by the host.
+            ExternalFuture(boxed $crate::asyncio::ExternalFuture),
+            /// A filesystem path from `pathlib.Path`.
+            Path(inline $crate::types::Path),
+            /// A path-backed file object returned by `open()`.
+            OpenFile(boxed $crate::types::OpenFile),
+            /// A compiled regular-expression pattern.
+            RePattern(boxed $crate::types::RePattern),
+            /// A regular-expression match result.
+            ReMatch(boxed $crate::types::ReMatch),
+            /// A reference to an external function supplied by the host.
+            ExtFunction(inline $crate::types::ExtFunction),
+            /// A `datetime.date` value.
+            Date(inline $crate::types::date::Date),
+            /// A `datetime.datetime` value.
+            DateTime(inline $crate::types::datetime::DateTime),
+            /// A `datetime.timedelta` value.
+            TimeDelta(inline $crate::types::timedelta::TimeDelta),
+            /// A fixed-offset `datetime.timezone` value.
+            TimeZone(inline $crate::types::timezone::TimeZone),
+            // Append-only: a mid-list insertion changes serde's discriminants for all
+            // following variants and makes snapshots decode as the wrong payload type.
+            /// Any `itertools` iterator (`count`, `repeat`, and others).
+            Itertools(inline $crate::types::ItertoolsIter),
+            /// The options of a `@dataclass`, held in `__dataclass_params__`.
+            DataclassParams(inline $crate::modules::dataclasses::DataclassParams),
+        }
+    };
+}
+
+pub(crate) use heap_payloads;
+
+macro_rules! define_heap_data {
+    ($(
+        $(#[$meta:meta])*
+        $variant:ident($storage:ident $payload:ty)
+    ),* $(,)?) => {
+        /// Every runtime value that can be stored in the heap arena.
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        pub(crate) enum HeapData {
+            $(
+                $(#[$meta])*
+                $variant(heap_storage_type!($storage $payload)),
+            )*
+        }
+    };
+}
+
+heap_payloads!(define_heap_data);
+
+// `HeapData` is copied on every allocate and free. `Dict`, the largest hot
+// variant, sets the payload ceiling; larger variants should remain boxed.
 const _: () = assert!(mem::size_of::<HeapData>() <= 80);
 
 impl HeapData {
