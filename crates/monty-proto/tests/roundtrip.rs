@@ -5,9 +5,9 @@ use monty::MontyRun;
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use monty_types::{
     CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
-    MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTimeDelta, MontyTimeZone,
-    MontyType, NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
-    ResourceLimits, StackFrame, UnicodeErrorData,
+    MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTime, MontyTimeDelta,
+    MontyTimeZone, MontyType, NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
+    RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData,
 };
 use num_bigint::BigInt;
 use prost::Message;
@@ -135,6 +135,48 @@ fn datetime_values_round_trip() {
         offset_seconds: 0,
         name: None,
     }));
+}
+
+/// The decode budget is charged `host_size`, so every owned string a decoded
+/// value carries has to be counted there — the temporal values each hold a
+/// caller-supplied timezone name, and the rest of their fields are scalars.
+#[test]
+fn timezone_names_are_charged_to_the_decode_budget() {
+    let name = "z".repeat(500);
+    let sizes = |name: Option<String>| {
+        [
+            MontyObject::DateTime(MontyDateTime {
+                year: 2026,
+                month: 1,
+                day: 1,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                microsecond: 0,
+                offset_seconds: Some(0),
+                timezone_name: name.clone(),
+            }),
+            MontyObject::Time(MontyTime {
+                hour: 0,
+                minute: 0,
+                second: 0,
+                microsecond: 0,
+                offset_seconds: Some(0),
+                timezone_name: name.clone(),
+                fold: 0,
+            }),
+            MontyObject::TimeZone(MontyTimeZone {
+                offset_seconds: 0,
+                name,
+            }),
+        ]
+        .map(|obj| obj.host_size())
+    };
+    let named = sizes(Some(name.clone()));
+    let unnamed = sizes(None);
+    for (named, unnamed) in named.into_iter().zip(unnamed) {
+        assert_eq!(named - unnamed, name.len());
+    }
 }
 
 #[test]

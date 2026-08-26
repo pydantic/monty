@@ -210,6 +210,7 @@ impl MontyObject {
         const STR_OVERHEAD: usize = size_of::<String>();
 
         let names_len = |names: &[String]| -> usize { names.iter().map(|s| STR_OVERHEAD + s.len()).sum() };
+        let name_len = |name: &Option<String>| -> usize { name.as_ref().map_or(0, String::len) };
 
         let payload = match self {
             Self::String(s) | Self::Path(s) | Self::Repr(s) => s.len(),
@@ -229,6 +230,11 @@ impl MontyObject {
             // `String` (the other `MontyType`s are payload-free), so charge it here
             // like the `String`/`Function`/... names above.
             Self::Type(MontyType::Instance(name)) => name.len(),
+            // The temporal values each carry an owned timezone name, which is
+            // caller-supplied and unbounded — the rest of their fields are scalars.
+            Self::DateTime(dt) => name_len(&dt.timezone_name),
+            Self::Time(t) => name_len(&t.timezone_name),
+            Self::TimeZone(tz) => name_len(&tz.name),
             _ => 0,
         };
         BASE + payload
@@ -951,6 +957,8 @@ pub struct MontyDateTime {
     /// Microsecond in range 0..=999_999.
     pub microsecond: u32,
     /// Fixed offset seconds for aware datetimes, or `None` for naive values.
+    ///
+    /// Within [`MIN_TIMEZONE_OFFSET_SECONDS`]..=[`MAX_TIMEZONE_OFFSET_SECONDS`] when set.
     pub offset_seconds: Option<i32>,
     /// Optional explicit timezone name for aware datetimes.
     ///
@@ -973,6 +981,8 @@ pub struct MontyTime {
     /// Microsecond in range 0..=999_999.
     pub microsecond: u32,
     /// Fixed offset seconds for aware times, or `None` for naive values.
+    ///
+    /// Within [`MIN_TIMEZONE_OFFSET_SECONDS`]..=[`MAX_TIMEZONE_OFFSET_SECONDS`] when set.
     pub offset_seconds: Option<i32>,
     /// Optional explicit timezone name for aware times.
     ///
@@ -993,10 +1003,21 @@ pub struct MontyTimeDelta {
     pub microseconds: i32,
 }
 
+/// Smallest UTC offset `datetime.timezone` accepts, -23:59:59.
+///
+/// CPython requires an offset strictly inside ±24 hours. Shared with the wire
+/// decoder so a forged offset is rejected at the boundary rather than by the
+/// sandbox-side constructor, which by then can only report a generic bad value.
+pub const MIN_TIMEZONE_OFFSET_SECONDS: i32 = -86_399;
+/// Largest UTC offset `datetime.timezone` accepts, +23:59:59.
+///
+/// See [`MIN_TIMEZONE_OFFSET_SECONDS`].
+pub const MAX_TIMEZONE_OFFSET_SECONDS: i32 = 86_399;
+
 /// A Python `datetime.timezone` fixed-offset timezone.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MontyTimeZone {
-    /// Fixed UTC offset in seconds.
+    /// Fixed UTC offset in seconds, within [`MIN_TIMEZONE_OFFSET_SECONDS`]..=[`MAX_TIMEZONE_OFFSET_SECONDS`].
     pub offset_seconds: i32,
     /// Optional display name.
     pub name: Option<String>,

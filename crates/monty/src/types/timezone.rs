@@ -8,6 +8,10 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+// The bounds live in `monty-types` so the wire decoder shares them; re-exported
+// here because this is where the sandbox-side constructor enforces them.
+pub(crate) use monty_types::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS};
+
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
@@ -24,11 +28,6 @@ use crate::{
     },
     value::Value,
 };
-
-/// Minimum allowed timezone offset in seconds: -23:59.
-pub(crate) const MIN_TIMEZONE_OFFSET_SECONDS: i32 = -86_399;
-/// Maximum allowed timezone offset in seconds: +23:59.
-pub(crate) const MAX_TIMEZONE_OFFSET_SECONDS: i32 = 86_399;
 
 /// Python `datetime.timezone` value.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

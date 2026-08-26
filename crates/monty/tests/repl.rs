@@ -99,8 +99,8 @@ fn dump_header_rejects_incompatible_data() {
 
 /// A dump is untrusted input, and the heap it carries is installed verbatim. A
 /// `time` entry that no constructor could have produced must be rejected at load
-/// rather than panicking later, when the ranges and the `tzinfo` reference are
-/// read back as established facts.
+/// rather than panicking, or contradicting itself, later — when the ranges and the
+/// `tzinfo` reference are read back as established facts.
 #[test]
 fn dump_rejects_forged_time_entries() {
     // Distinctive components so the encoded `time` can be found in the payload:
@@ -119,19 +119,33 @@ fn dump_rejects_forged_time_entries() {
         DumpError::Payload(postcard::Error::SerdeDeCustom)
     );
 
-    let aware = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555, tzinfo=datetime.timezone.utc)");
-    // ... followed by fold, an attached tzinfo, its offset and name, then the
-    // heap id of the timezone object the time holds a reference to.
-    let tzinfo_ref = offset_of(&aware, &[COMPONENTS.as_slice(), &[0, 1]].concat()) + 10;
+    // The attached copy is what answers `utcoffset()` and `tzname()`, while
+    // `.tzinfo` hands back the referenced object, so a dump making the two disagree
+    // is as invalid as one whose reference misses a timezone altogether. A *named*
+    // zero offset keeps an entry of its own instead of canonicalizing onto the
+    // `timezone.utc` singleton, which gives both a name and an offset to forge.
+    let aware = dump_repl(
+        "import datetime\ntz = datetime.timezone(datetime.timedelta(0), 'AB')\nt = datetime.time(11, 22, 33, 444555, tzinfo=tz)",
+    );
+    // ... followed by fold and an attached tzinfo: offset, name, and then the heap
+    // id of the timezone object the time holds a reference to.
+    let attached = offset_of(&aware, &[COMPONENTS.as_slice(), &[0, 1, 0, 1, 2], b"AB"].concat());
     assert!(Dump::load(&aware).is_ok());
 
-    let mut forged = aware;
-    // The empty-tuple singleton: a live entry, but not a timezone.
-    forged[tzinfo_ref] = 0;
-    assert_eq!(
-        Dump::load(&forged).unwrap_err(),
-        DumpError::Payload(postcard::Error::SerdeDeCustom)
-    );
+    for (field, byte, what) in [
+        (8, 2, "an offset its `tzinfo` object does not carry"),
+        (12, b'A', "a name its `tzinfo` object does not carry"),
+        // The empty-tuple singleton: a live entry, but not a timezone.
+        (13, 0, "a `tzinfo` reference to something that is not a timezone"),
+    ] {
+        let mut forged = aware.clone();
+        forged[attached + field] = byte;
+        assert_eq!(
+            Dump::load(&forged).unwrap_err(),
+            DumpError::Payload(postcard::Error::SerdeDeCustom),
+            "a time with {what} must be rejected"
+        );
+    }
 }
 
 /// The `timezone_utc` cache is a raw heap id restored verbatim, and

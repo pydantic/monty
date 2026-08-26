@@ -32,8 +32,8 @@
 use std::{cell::Cell, fmt::Display, ops::RangeInclusive};
 
 use monty_types::{
-    DictPairs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone,
-    MontyType,
+    DictPairs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyDate, MontyDateTime, MontyFileHandle,
+    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -709,7 +709,7 @@ fn decode_field(
         tag::TIMEZONE => {
             let tz: pb::TimeZone = merge_message(wire_type, buf, ctx)?;
             MontyObject::TimeZone(MontyTimeZone {
-                offset_seconds: tz.offset_seconds,
+                offset_seconds: timezone_offset(tz.offset_seconds, "TimeZone.offset_seconds").map_err(to_decode_err)?,
                 name: tz.name,
             })
         }
@@ -1100,7 +1100,10 @@ fn datetime_from_proto(dt: pb::DateTime) -> Result<MontyDateTime, ProtoConvertEr
         minute: ranged_u8(dt.minute, 0..=59, "DateTime.minute")?,
         second: ranged_u8(dt.second, 0..=59, "DateTime.second")?,
         microsecond: bounded(dt.microsecond, 999_999, "DateTime.microsecond")?,
-        offset_seconds: dt.offset_seconds,
+        offset_seconds: dt
+            .offset_seconds
+            .map(|offset| timezone_offset(offset, "DateTime.offset_seconds"))
+            .transpose()?,
         timezone_name: dt.timezone_name,
     })
 }
@@ -1117,7 +1120,10 @@ fn time_from_proto(t: pb::Time) -> Result<MontyTime, ProtoConvertError> {
         minute: ranged_u8(t.minute, 0..=59, "Time.minute")?,
         second: ranged_u8(t.second, 0..=59, "Time.second")?,
         microsecond: bounded(t.microsecond, 999_999, "Time.microsecond")?,
-        offset_seconds: t.offset_seconds,
+        offset_seconds: t
+            .offset_seconds
+            .map(|offset| timezone_offset(offset, "Time.offset_seconds"))
+            .transpose()?,
         timezone_name: t.timezone_name,
         fold: ranged_u8(t.fold, 0..=1, "Time.fold")?,
     })
@@ -1179,6 +1185,22 @@ fn ranged_u8(value: u32, range: RangeInclusive<u32>, field: &'static str) -> Res
         Err(ProtoConvertError::InvalidValue {
             field,
             reason: format!("{value} is outside the range {}..={}", range.start(), range.end()),
+        })
+    }
+}
+
+/// Checks a wire UTC offset against the range `datetime.timezone`
+/// accepts, so a forged offset names its own field here rather than surfacing as
+/// a generic bad value when the sandbox-side constructor rejects it.
+fn timezone_offset(offset: i32, field: &'static str) -> Result<i32, ProtoConvertError> {
+    if (MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&offset) {
+        Ok(offset)
+    } else {
+        Err(ProtoConvertError::InvalidValue {
+            field,
+            reason: format!(
+                "{offset} is outside the range {MIN_TIMEZONE_OFFSET_SECONDS}..={MAX_TIMEZONE_OFFSET_SECONDS}"
+            ),
         })
     }
 }

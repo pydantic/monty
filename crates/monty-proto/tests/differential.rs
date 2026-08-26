@@ -615,6 +615,43 @@ fn out_of_range_temporal_values_are_rejected() {
     assert!(rejected_field(timedelta(86_400, 0), "TimeDelta.seconds"));
     assert!(rejected_field(timedelta(0, -1), "TimeDelta.microseconds"));
     assert!(rejected_field(timedelta(0, 1_000_000), "TimeDelta.microseconds"));
+
+    // an offset must be strictly inside ±24 hours, as `datetime.timezone` requires
+    let aware_datetime = |offset_seconds| {
+        Kind::Datetime(oracle::DateTime {
+            year: 2026,
+            month: 1,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            microsecond: 0,
+            offset_seconds: Some(offset_seconds),
+            timezone_name: None,
+        })
+    };
+    let aware_time = |offset_seconds| {
+        Kind::Time(oracle::Time {
+            hour: 0,
+            minute: 0,
+            second: 0,
+            microsecond: 0,
+            offset_seconds: Some(offset_seconds),
+            timezone_name: None,
+            fold: 0,
+        })
+    };
+    assert!(rejected_field(aware_datetime(86_400), "DateTime.offset_seconds"));
+    assert!(rejected_field(aware_datetime(-86_400), "DateTime.offset_seconds"));
+    assert!(rejected_field(aware_time(86_400), "Time.offset_seconds"));
+    assert!(rejected_field(aware_time(-86_400), "Time.offset_seconds"));
+    assert_eq!(
+        rejected(Kind::Timezone(oracle::TimeZone {
+            offset_seconds: 86_400,
+            name: None,
+        })),
+        "failed to decode Protobuf message: invalid value for TimeZone.offset_seconds: 86400 is outside the range -86399..=86399"
+    );
 }
 
 // ============================================================================
