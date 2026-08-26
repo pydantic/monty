@@ -1755,6 +1755,12 @@ impl Value {
                         BuiltinsFunctions::ObjectSetattr,
                     ))));
                 }
+                // CPython names the class rather than the metaclass here:
+                // `type object 'list' has no attribute 'nonexistent'`.
+                return Err(ExcType::attribute_error_type(
+                    &t.name(vm.heap, vm.interns),
+                    attr.as_str(vm.interns),
+                ));
             }
             _ => {}
         }

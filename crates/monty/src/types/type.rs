@@ -480,7 +480,10 @@ impl Type {
             _ => {
                 let method_name = vm.interns.get_str(method_id);
                 args.drop_with(vm.heap);
-                Err(ExcType::attribute_error(self, method_name))
+                Err(ExcType::attribute_error_type(
+                    &self.name(vm.heap, vm.interns),
+                    method_name,
+                ))
             }
         }
     }
