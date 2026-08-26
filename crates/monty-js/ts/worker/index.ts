@@ -93,6 +93,7 @@ export {
   type MontyException,
   MontyFileHandle,
   type MontyFileHandleOptions,
+  type MontyTime,
   type MontyTimeDelta,
   type MontyTimeZone,
 } from '../types.js'

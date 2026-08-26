@@ -54,4 +54,19 @@ test('a time round-trips through the wasm transport', async (ctx) => {
   }
   t.deepEqual(await session.feedRun('x', { inputs: { x: time } }), time)
   t.is(await session.feedRun('x.isoformat()', { inputs: { x: time } }), '01:02:03.000004+02:00')
+
+  // A zero offset is what explicit presence is for: it is the only thing making
+  // this time aware, so encoding it away as a proto3 default would hand back a
+  // naive time that formats without a suffix.
+  const utc = {
+    __monty_type__: 'Time',
+    hour: 12,
+    minute: 0,
+    second: 0,
+    microsecond: 0,
+    offsetSeconds: 0,
+    fold: 0,
+  }
+  t.deepEqual(await session.feedRun('x', { inputs: { x: utc } }), utc)
+  t.is(await session.feedRun('x.isoformat()', { inputs: { x: utc } }), '12:00:00+00:00')
 })

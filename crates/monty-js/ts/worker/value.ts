@@ -193,55 +193,86 @@ function encodeDataclass(obj: Record<string, unknown>): Uint8Array {
   return w.finish()
 }
 
+// The temporal messages are where proto3's two presence rules meet: a plain
+// scalar is *implicit*-presence and its zero value is omitted from the wire,
+// while an `optional` field is *explicit* and is written whenever it is set,
+// zero included. `monty-proto` encodes on those rules, so this codec must too or
+// the same value reaches the worker as different bytes from each transport.
+
+/** Writes an implicit-presence `uint32`, which proto3 omits at its zero default. */
+function uintIfSet(w: Writer, field: number, value: number): void {
+  if (value !== 0) w.uint(field, value)
+}
+
+/** Writes an implicit-presence `int32`, which proto3 omits at its zero default. */
+function int32IfSet(w: Writer, field: number, value: number): void {
+  if (value !== 0) w.int32(field, value)
+}
+
+/**
+ * Writes an aware value's explicit-presence offset and name, at the field
+ * numbers the enclosing message gives them.
+ *
+ * A name without an offset is not a naive value with a label: the wire forbids
+ * the combination and `monty-proto` rejects it on decode, so encoding it away
+ * silently would turn an invalid input into a different value.
+ */
+function encodeTimeZoneFields(w: Writer, obj: Record<string, unknown>, offsetField: number, nameField: number): void {
+  const aware = obj.offsetSeconds !== undefined && obj.offsetSeconds !== null
+  if (!aware && obj.timezoneName !== undefined && obj.timezoneName !== null) {
+    throw new TypeError(`Monty${String(obj[TYPE_MARKER])} timezoneName requires offsetSeconds`)
+  }
+  if (aware) {
+    w.int32(offsetField, num(obj.offsetSeconds))
+    if (typeof obj.timezoneName === 'string') w.string(nameField, obj.timezoneName)
+  }
+}
+
 function encodeDate(obj: Record<string, unknown>): Uint8Array {
   const w = new Writer()
-  w.int32(1, num(obj.year))
-  w.uint(2, num(obj.month))
-  w.uint(3, num(obj.day))
+  int32IfSet(w, 1, num(obj.year))
+  uintIfSet(w, 2, num(obj.month))
+  uintIfSet(w, 3, num(obj.day))
   return w.finish()
 }
 
 function encodeTime(obj: Record<string, unknown>): Uint8Array {
   const w = new Writer()
-  w.uint(1, num(obj.hour))
-  w.uint(2, num(obj.minute))
-  w.uint(3, num(obj.second))
-  w.uint(4, num(obj.microsecond))
-  if (obj.offsetSeconds !== undefined && obj.offsetSeconds !== null) {
-    w.int32(5, num(obj.offsetSeconds))
-    if (typeof obj.timezoneName === 'string') w.string(6, obj.timezoneName)
-  }
-  w.uint(7, num(obj.fold ?? 0))
+  uintIfSet(w, 1, num(obj.hour))
+  uintIfSet(w, 2, num(obj.minute))
+  uintIfSet(w, 3, num(obj.second))
+  uintIfSet(w, 4, num(obj.microsecond))
+  encodeTimeZoneFields(w, obj, 5, 6)
+  uintIfSet(w, 7, num(obj.fold ?? 0))
   return w.finish()
 }
 
 function encodeDateTime(obj: Record<string, unknown>): Uint8Array {
   const w = new Writer()
-  w.int32(1, num(obj.year))
-  w.uint(2, num(obj.month))
-  w.uint(3, num(obj.day))
-  w.uint(4, num(obj.hour))
-  w.uint(5, num(obj.minute))
-  w.uint(6, num(obj.second))
-  w.uint(7, num(obj.microsecond))
-  if (obj.offsetSeconds !== undefined && obj.offsetSeconds !== null) {
-    w.int32(8, num(obj.offsetSeconds))
-    if (typeof obj.timezoneName === 'string') w.string(9, obj.timezoneName)
-  }
+  int32IfSet(w, 1, num(obj.year))
+  uintIfSet(w, 2, num(obj.month))
+  uintIfSet(w, 3, num(obj.day))
+  uintIfSet(w, 4, num(obj.hour))
+  uintIfSet(w, 5, num(obj.minute))
+  uintIfSet(w, 6, num(obj.second))
+  uintIfSet(w, 7, num(obj.microsecond))
+  encodeTimeZoneFields(w, obj, 8, 9)
   return w.finish()
 }
 
 function encodeTimeDelta(obj: Record<string, unknown>): Uint8Array {
   const w = new Writer()
-  w.int32(1, num(obj.days))
-  w.int32(2, num(obj.seconds))
-  w.int32(3, num(obj.microseconds))
+  int32IfSet(w, 1, num(obj.days))
+  int32IfSet(w, 2, num(obj.seconds))
+  int32IfSet(w, 3, num(obj.microseconds))
   return w.finish()
 }
 
 function encodeTimeZone(obj: Record<string, unknown>): Uint8Array {
   const w = new Writer()
-  w.int32(1, num(obj.offsetSeconds))
+  // `TimeZone.offset_seconds` is a plain `int32`, unlike the `optional` offsets
+  // on `time`/`datetime`: UTC's zero offset is carried by the field's absence.
+  int32IfSet(w, 1, num(obj.offsetSeconds))
   if (typeof obj.name === 'string') w.string(2, obj.name)
   return w.finish()
 }
