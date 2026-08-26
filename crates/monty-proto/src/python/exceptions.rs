@@ -89,6 +89,16 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
                 exceptions::PyRuntimeError::new_err(msg)
             }
         }
+        ExcType::BinasciiError => {
+            if let Ok(binascii_error) = get_binascii_error(py)
+                && let Ok(exc_instance) = binascii_error.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                // Fall back to ValueError — the parent we model in `is_subclass_of`.
+                exceptions::PyValueError::new_err(msg)
+            }
+        }
     }
 }
 
@@ -202,6 +212,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
         } else if exceptions::PyValueError::type_check(exc) {
             if is_json_decode_error(exc) {
                 ExcType::JsonDecodeError
+            } else if is_binascii_error(exc) {
+                ExcType::BinasciiError
             } else if exceptions::PyUnicodeDecodeError::type_check(exc) {
                 ExcType::UnicodeDecodeError
             } else if exceptions::PyUnicodeEncodeError::type_check(exc) {
@@ -323,6 +335,23 @@ fn is_json_decode_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
     } else {
         false
     }
+}
+
+/// Checks if an exception is a `binascii.Error` (a stdlib class, not a
+/// PyO3 built-in, so looked up lazily and cached).
+fn is_binascii_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(binascii_error_cls) = get_binascii_error(exc.py()) {
+        exc.is_instance(binascii_error_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Returns the cached `binascii.Error` class — the `ValueError` subclass the
+/// `base64` codecs raise for malformed input.
+fn get_binascii_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static BINASCII_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    BINASCII_ERROR.import(py, "binascii", "Error")
 }
 
 /// Checks if an exception is a `re.PatternError` (a stdlib class, not a

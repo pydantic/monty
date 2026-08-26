@@ -14,7 +14,7 @@ use crate::{
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem,
-        HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
+        HeapObjectRead, HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     identity::Identity,
     intern::StaticStrings,
@@ -1087,12 +1087,12 @@ impl<C: ContainsHeap> DropWithContext<C> for SetEntry {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
 
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         self.contains(item, vm).map(Some)
     }
 
@@ -1100,12 +1100,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Type::Set
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(SetIterator::from_set(
-            self_id.expect("heap values have an id"),
-            self.get(vm.heap).len(),
-            vm,
-        ))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(SetIterator::from_set(self.id(), self.get(vm.heap).len(), vm))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -1127,7 +1123,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Ok(!self.get(vm.heap).is_empty())
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.sub_value(other, vm)? else {
             return Ok(None);
         };
@@ -1135,7 +1131,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.and_value(other, vm)? else {
             return Ok(None);
         };
@@ -1143,7 +1139,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.or_value(other, vm)? else {
             return Ok(None);
         };
@@ -1163,13 +1159,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         self.storage().repr_fmt(f, vm, heap_ids, "set")
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let value = match attr.static_string() {
             Some(StaticStrings::Add) => {
                 let value = args.get_one_arg("set.add", vm.heap)?;
@@ -1406,12 +1396,12 @@ impl FrozenSet {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
 
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         self.contains(item, vm).map(Some)
     }
 
@@ -1419,12 +1409,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Type::FrozenSet
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(SetIterator::from_frozen_set(
-            self_id.expect("heap values have an id"),
-            self.get(vm.heap).len(),
-            vm,
-        ))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(SetIterator::from_frozen_set(self.id(), self.get(vm.heap).len(), vm))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -1447,7 +1433,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
     /// XOR is commutative, so the hash is independent of insertion order — two
     /// frozensets with the same members hash equally regardless of how they were built.
     /// Caches the computed hash on first call (frozensets are immutable).
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         if let Some(cached) = self.get(vm.heap).cached_hash.get() {
             return Ok(Some(cached));
         }
@@ -1467,7 +1453,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Ok(!self.get(vm.heap).is_empty())
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.sub_value(other, vm)? else {
             return Ok(None);
         };
@@ -1475,7 +1461,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.and_value(other, vm)? else {
             return Ok(None);
         };
@@ -1483,7 +1469,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.or_value(other, vm)? else {
             return Ok(None);
         };
@@ -1503,13 +1489,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         self.storage().repr_fmt(f, vm, heap_ids, "frozenset")
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let value = match attr.static_string() {
             Some(StaticStrings::Copy) => {
                 args.check_zero_args("frozenset.copy", vm.heap)?;
@@ -1698,7 +1678,7 @@ impl HeapItem for SetIterator {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, SetIterator> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
     fn py_is_iterable(&self, _: &VM<'h>) -> bool {
         true
     }
@@ -1715,13 +1695,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, SetIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        let self_id = self_id.expect("heap values have an id");
-        vm.heap.inc_ref(self_id);
-        Ok(Value::Ref(self_id))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(self.clone_value(vm.heap))
     }
 
-    fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let (source_id, index, expected_len, mutable) = {
             let iter = self.get(vm.heap);
             (

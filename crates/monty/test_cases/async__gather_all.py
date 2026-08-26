@@ -201,3 +201,27 @@ nested_1 = asyncio.gather(task1(), task1())
 nested_2 = asyncio.gather(nested_1, nested_1)
 
 assert await nested_2 == [[1, 1], [1, 1]]  # pyright: ignore
+
+
+# === Sibling failure while blocked on a gather of gathers ===
+# The failing sibling cancels the task blocked on `gather(gather(...))`, whose
+# inner gather owns a task of its own; the scheduler must keep running after.
+async def leaf():
+    return 1
+
+
+async def blocked_on_nested():
+    return await asyncio.gather(asyncio.gather(leaf()))
+
+
+async def detonate_sibling():
+    raise ValueError('boom')
+
+
+try:
+    await asyncio.gather(blocked_on_nested(), detonate_sibling())  # pyright: ignore
+    assert False, 'expected the failing sibling to propagate'
+except ValueError as e:
+    assert str(e) == 'boom'
+
+assert await asyncio.gather(leaf(), leaf()) == [1, 1]  # pyright: ignore

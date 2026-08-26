@@ -1016,11 +1016,7 @@ fn iterdir(
 
     if let Some(host_dir) = host_dir_to_merge {
         let remaining = budget.shrink(transient_usage)?;
-        let names = match host_list_visible_dir_entry_names(ctx.mount_dir, &host_dir, vpath, remaining.halved()) {
-            Ok(names) => names,
-            Err(error @ MountError::MemoryUsageLimitExceeded(_)) => return Err(error),
-            Err(_) => Vec::new(),
-        };
+        let names = host_list_visible_dir_entry_names(ctx.mount_dir, &host_dir, vpath, remaining.halved())?;
         if !names.is_empty() {
             transient_usage = names.iter().fold(transient_usage, |usage, name| {
                 usage

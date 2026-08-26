@@ -104,7 +104,8 @@ class ResourceLimits(TypedDict, total=False):
     Configuration for resource limits during code execution.
 
     All limits are optional. Omit a key — or set it to `None` explicitly —
-    to disable that limit.
+    to disable that limit, with one exception: `max_recursion_depth` cannot
+    be disabled, and omitting it leaves the 1000-frame default in place.
     """
 
     max_duration_secs: float | None
@@ -170,14 +171,15 @@ ExcType = Literal[
     'TimeoutError',
     'TypeError',
     're.PatternError',
+    'binascii.Error',
 ]
 """String names of Python exception types that Monty understands.
 
 Used by `ExternalExceptionData` to identify an exception by name rather than
 passing a concrete Python exception instance. Names match Python's built-in
-exception classes, except for `json.JSONDecodeError` and `re.PatternError`
-which are dotted to disambiguate from their `ValueError` / `Exception`
-parents.
+exception classes, except for `json.JSONDecodeError`, `re.PatternError` and
+`binascii.Error`, which are dotted to disambiguate from their `ValueError` /
+`Exception` parents.
 """
 
 

@@ -15,7 +15,7 @@ registry, so everything below applies to them too.
 Names are normalized like CPython (case-insensitive; runs of spaces/hyphens
 collapse to `_`) and each codec's CPython aliases are recognized (`utf8`,
 `u16`, `646`, `us-ascii`, ...). Any other encoding name raises
-`LookupError: unknown encoding: {name}` — including names CPython recognizes
+`LookupError: unknown encoding: {name}`, including names CPython recognizes
 (`latin-1`, `cp1252`, `iso-8859-1`, `big5`, ...).
 
 ## Byte order for bare `utf-16` / `utf-32`
@@ -25,7 +25,7 @@ order: encode writes a BOM in native order, and BOM-less input decodes as
 native order. Monty always uses **little-endian** for both, so behavior is
 identical on every little-endian host (all platforms Monty CI covers) but
 diverges on big-endian hosts. Input with a BOM decodes identically
-everywhere (the BOM's order wins).
+everywhere, since the BOM's order wins.
 
 ## Error handlers
 
@@ -43,12 +43,12 @@ everywhere (the BOM's order wins).
   raises `LookupError: unknown error handler name '{name}'`.
 - All other built-in handlers behave as in CPython, in both directions.
   `namereplace` output for recently-added code points is subject to the
-  Unicode version skew described in [unicodedata.md](unicodedata.md).
+  Unicode version skew described in ./unicodedata.md.
 
 ## `UnicodeEncodeError` / `UnicodeDecodeError`
 
 **Inside the sandbox** both are message-only, like every other Monty
-exception — see [exceptions.md](exceptions.md#constructor-signature).
+exception; see ./exceptions.md.
 CPython's `encoding`/`object`/`start`/`end`/`reason` attributes are not
 exposed to sandboxed code, and the in-sandbox constructor accepts only a
 single message argument.
@@ -59,15 +59,15 @@ single message argument.
 to a plain `ValueError` carrying the formatted message (both are caught by
 `except ValueError:`) in two cases:
 
-- the failing object is larger than 64 KiB — the payload is dropped so an
+- the failing object is larger than 64 KiB, where the payload is dropped so an
   exception cannot pin a huge input in memory outside the sandbox's
   resource limits (CPython's exception always references the full object);
 - the exception was raised manually inside the sandbox
   (`raise UnicodeDecodeError('msg')`), where no structured fields exist.
 
 The structured fields only travel with a *raised* exception that escapes the
-sandbox. A codec exception handled as a **value** — caught in the sandbox and
-then returned as the run result, or passed to an external function — crosses
+sandbox. A codec exception handled as a **value** (caught in the sandbox and
+then returned as the run result, or passed to an external function) crosses
 the boundary as a message-only exception object, so the host sees the
 `ValueError` fallback for it even though the same exception raised out of
 the sandbox would rebuild the real type.

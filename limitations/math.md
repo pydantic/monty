@@ -1,6 +1,7 @@
 # `math` module
 
-Wide coverage; behaviour matches CPython 3.14 for the implemented set.
+Behaviour matches CPython 3.14 for the implemented set, apart from the notes
+below.
 
 ## Implemented
 
@@ -26,10 +27,10 @@ payloads.
 ## Behavioural notes
 
 - `math.asin` / `math.acos` reject inputs outside `[-1, 1]` with
-  `ValueError: "expected a number in range from -1 up to 1, got <x>"`.
-  CPython uses `"math domain error"` — Monty's message is more specific.
-- Domain errors (e.g. `log(-1)`) raise `ValueError: "math domain error"`
+  `ValueError: "expected a number in range from -1 up to 1, got <x>"`, where
+  CPython says `"math domain error"`.
+- Domain errors (e.g. `log(-1)`) raise `ValueError: "math domain error"`,
   matching CPython.
-- Overflow (finite input → infinite result) raises `OverflowError: "math
-  range error"` matching CPython.
+- Overflow (finite input, infinite result) raises `OverflowError: "math
+  range error"`, matching CPython.
 - `math.gamma` rejects non-positive integers (poles) with `ValueError`.

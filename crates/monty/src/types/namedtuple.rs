@@ -34,7 +34,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     resource_checks::check_repeat_size,
     types::{
@@ -331,9 +331,9 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for NamedTupleIter<'_, 'h> {
     }
 }
 
-/// `PyTrait` implementation for `HeapRead<NamedTuple>`, providing all Python operations
-/// on heap-allocated named tuples via short-lived borrow patterns.
-impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
+/// `PyTrait` implementation for `HeapObjectRead<NamedTuple>`, providing all Python
+/// operations on heap-allocated named tuples via short-lived borrow patterns.
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
@@ -342,7 +342,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
     /// tuple subclass in CPython and inherits `tuplecontains`. Without this, `in`
     /// falls back to iteration and allocates a heap `TupleIterator`, which can
     /// trip the allocation limit on a tight heap.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(el) = iter.next(vm)? {
@@ -357,11 +357,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         Type::NamedTuple
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(TupleIterator::from_named_tuple(
-            self_id.expect("heap values have an id"),
-            vm,
-        ))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(TupleIterator::from_named_tuple(self.id(), vm))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -398,7 +395,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
     /// `namedtuple + tuple-like` — concatenation into a plain tuple, as in
     /// CPython (the field names describe one instance only, so they cannot
     /// survive concatenation). A non-tuple-like right operand returns `None`.
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(mut other_items) = cloned_tuple_like_items(other, vm)? else {
             return Ok(None);
         };
@@ -474,7 +471,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
     /// so a `NamedTuple` and a `Tuple` with equal elements share the same hash.
     /// Caches the computed hash on first call (see `Tuple::py_hash` for the
     /// caching rationale).
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         if let Some(cached) = self.get(vm.heap).cached_hash.get() {
             return Ok(Some(cached));
         }
@@ -562,13 +559,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         }
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         // The `_`-prefixed namedtuple methods. Field names cannot start with `_`,
         // so these never collide with a real field. Only instances built from a
         // `collections.namedtuple` class have them — see the note in `py_getattr`.
@@ -833,7 +824,7 @@ impl NamedTupleClass {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, NamedTupleClass> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         // The type of a class object is `type` (matching `type(Point) is type`).
         Type::Type
@@ -848,8 +839,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTupleClass> {
         Ok(None)
     }
 
-    fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        Ok(Some(identity_hash(self_id)))
+    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        Ok(Some(identity_hash(self.id())))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -884,15 +875,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTupleClass> {
         Ok(Some(CallResult::Value(value)))
     }
 
-    fn py_call_attr(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         if attr.static_string() == Some(StaticStrings::UnderMake) {
-            make_namedtuple(self_id, vm, args).map(CallResult::Value)
+            make_namedtuple(self.id(), vm, args).map(CallResult::Value)
         } else {
             args.drop_with(vm);
             Err(ExcType::attribute_error_type(

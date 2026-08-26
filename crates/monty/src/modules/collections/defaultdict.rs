@@ -8,7 +8,8 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{HeapData, HeapId, HeapReadOutput},
+    heap::HeapObjectRead,
+    types::Dict,
     value::Value,
 };
 
@@ -19,11 +20,12 @@ use crate::{
 /// Shared by the getitem miss path (`Value::py_getitem`) and the explicit
 /// `__missing__` method. The factory runs via `VM::evaluate_function`, so a
 /// factory that performs external/OS calls is unsupported (documented).
-pub(crate) fn defaultdict_missing(dict_id: HeapId, key: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let factory = match vm.heap.get(dict_id) {
-        HeapData::Dict(d) => d.default_factory().map(|f| f.clone_with_heap(vm.heap)),
-        _ => unreachable!("defaultdict_missing on a non-dict heap entry"),
-    };
+pub(crate) fn defaultdict_missing<'h>(
+    dict: &mut HeapObjectRead<'h, Dict>,
+    key: &Value,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    let factory = dict.get(vm.heap).default_factory().map(|f| f.clone_with_heap(vm.heap));
     let Some(factory) = factory else {
         return Err(ExcType::key_error(key, vm));
     };
@@ -40,9 +42,6 @@ pub(crate) fn defaultdict_missing(dict_id: HeapId, key: &Value, vm: &mut VM<'_>)
     // returns the one object the factory produced).
     let key_clone = key.clone_with_heap(vm.heap);
     let value_ret = value.clone_with_heap(vm.heap);
-    let HeapReadOutput::Dict(mut dict) = vm.heap.read(dict_id) else {
-        unreachable!("defaultdict_missing on a non-dict heap entry");
-    };
     // A `set` failure (e.g. a key `__eq__` raising during collision) must
     // release the cloned `value_ret`, which the `?` early-return would leak.
     match dict.set(key_clone, value, vm) {

@@ -20,6 +20,8 @@ use num_bigint::BigInt;
 use strum::IntoEnumIterator;
 use strum::{EnumCount, EnumIter, EnumString, FromRepr, IntoStaticStr};
 
+#[cfg(feature = "test-hooks")]
+use crate::function::FunctionMetadataFault;
 use crate::{
     function::Function,
     hash::{ASCII_HASHES, HashValue, STATIC_HASHES, WithHash, hash_python_str},
@@ -99,7 +101,8 @@ pub(crate) static ASCII_STRS: [&str; 128] = const {
 /// Static string values which are known at compile time and don't need to be interned.
 ///
 /// Discriminant starts from STATIC_STRING_ID_OFFSET to make conversion to/from stringid
-/// cheap when within bounds.
+/// cheap when within bounds. Discriminants are serialized `StringId`s, so append new
+/// variants at the end — inserting one shifts every later id.
 #[repr(u16)]
 #[derive(
     Debug,
@@ -935,6 +938,175 @@ pub enum StaticStrings {
     /// Python's `NotImplemented` singleton representation.
     #[strum(serialize = "NotImplemented")]
     NotImplementedRepr,
+    /// The `__dataclass_params__` class attribute `@dataclass` writes: the
+    /// options the class was decorated with.
+    #[strum(serialize = "__dataclass_params__")]
+    DataclassParams,
+    // `@dataclass(...)` keyword options. Recognised even where unimplemented,
+    // so an unsupported option reports itself rather than looking misspelled.
+    /// `@dataclass(init=...)`.
+    Init,
+    /// `@dataclass(eq=...)`.
+    Eq,
+    /// `@dataclass(repr=...)`.
+    Repr,
+    /// `@dataclass(order=...)`.
+    Order,
+    /// `@dataclass(unsafe_hash=...)`.
+    UnsafeHash,
+    /// `@dataclass(frozen=...)`.
+    Frozen,
+    /// `@dataclass(match_args=...)`.
+    MatchArgs,
+    /// `@dataclass(kw_only=...)`.
+    KwOnly,
+    /// `@dataclass(slots=...)`.
+    Slots,
+    /// `@dataclass(weakref_slot=...)`.
+    WeakrefSlot,
+    /// `dataclasses.FrozenInstanceError` exception.
+    #[strum(serialize = "FrozenInstanceError")]
+    FrozenInstanceError,
+    /// The class parameter of the decorator `@dataclass(...)` returns, which
+    /// CPython spells `def wrap(cls)` and so accepts by keyword.
+    Cls,
+    /// `itertools.takewhile()` function.
+    Takewhile,
+    /// `itertools.dropwhile()` function.
+    Dropwhile,
+    /// `itertools.filterfalse()` function.
+    Filterfalse,
+    /// `itertools.starmap()` function.
+    Starmap,
+
+    // ==========================
+    // functools module strings
+    // Appended, per the "new variants go at the end" rule above.
+    /// Module name for `import functools`.
+    Functools,
+    /// `functools.reduce()` function.
+    Reduce,
+    /// `initial` keyword argument of `functools.reduce()`.
+    Initial,
+
+    // ==========================
+    // base64 and binascii module strings
+    // Each spells its text out: snake_case would split the digits (`b64_encode`).
+    /// Module name for `import base64`.
+    #[strum(serialize = "base64")]
+    Base64,
+    /// `base64.b64encode()` function.
+    #[strum(serialize = "b64encode")]
+    B64Encode,
+    /// `base64.b64decode()` function.
+    #[strum(serialize = "b64decode")]
+    B64Decode,
+    /// `base64.standard_b64encode()` function.
+    #[strum(serialize = "standard_b64encode")]
+    StandardB64Encode,
+    /// `base64.standard_b64decode()` function.
+    #[strum(serialize = "standard_b64decode")]
+    StandardB64Decode,
+    /// `base64.urlsafe_b64encode()` function.
+    #[strum(serialize = "urlsafe_b64encode")]
+    UrlsafeB64Encode,
+    /// `base64.urlsafe_b64decode()` function.
+    #[strum(serialize = "urlsafe_b64decode")]
+    UrlsafeB64Decode,
+    /// `base64.b32encode()` function.
+    #[strum(serialize = "b32encode")]
+    B32Encode,
+    /// `base64.b32decode()` function.
+    #[strum(serialize = "b32decode")]
+    B32Decode,
+    /// `base64.b32hexencode()` function.
+    #[strum(serialize = "b32hexencode")]
+    B32HexEncode,
+    /// `base64.b32hexdecode()` function.
+    #[strum(serialize = "b32hexdecode")]
+    B32HexDecode,
+    /// `base64.b16encode()` function.
+    #[strum(serialize = "b16encode")]
+    B16Encode,
+    /// `base64.b16decode()` function.
+    #[strum(serialize = "b16decode")]
+    B16Decode,
+    /// `base64.encodebytes()` function.
+    #[strum(serialize = "encodebytes")]
+    Encodebytes,
+    /// `base64.decodebytes()` function.
+    #[strum(serialize = "decodebytes")]
+    Decodebytes,
+    /// `altchars` parameter of `base64.b64encode()` / `b64decode()`.
+    #[strum(serialize = "altchars")]
+    Altchars,
+    /// `validate` parameter of `base64.b64decode()`.
+    #[strum(serialize = "validate")]
+    Validate,
+    /// `map01` parameter of `base64.b32decode()`.
+    #[strum(serialize = "map01")]
+    Map01,
+    /// Module name for `import binascii`.
+    #[strum(serialize = "binascii")]
+    Binascii,
+    /// `binascii.Error` exception class — distinct from [`Self::Error`], which
+    /// is the lowercase `re.error` alias.
+    #[strum(serialize = "Error")]
+    ErrorClass,
+    /// `base64.MAXBINSIZE` module constant.
+    #[strum(serialize = "MAXBINSIZE")]
+    MaxBinSize,
+    /// `base64.MAXLINESIZE` module constant.
+    #[strum(serialize = "MAXLINESIZE")]
+    MaxLineSize,
+    /// `base64.b85encode()` function.
+    #[strum(serialize = "b85encode")]
+    B85Encode,
+    /// `base64.b85decode()` function.
+    #[strum(serialize = "b85decode")]
+    B85Decode,
+    /// `base64.z85encode()` function.
+    #[strum(serialize = "z85encode")]
+    Z85Encode,
+    /// `base64.z85decode()` function.
+    #[strum(serialize = "z85decode")]
+    Z85Decode,
+    /// `binascii.hexlify()` function.
+    #[strum(serialize = "hexlify")]
+    Hexlify,
+    /// `binascii.unhexlify()` function.
+    #[strum(serialize = "unhexlify")]
+    Unhexlify,
+    /// `binascii.b2a_hex()` function, an alias of `hexlify`.
+    #[strum(serialize = "b2a_hex")]
+    B2aHex,
+    /// `binascii.a2b_hex()` function, an alias of `unhexlify`.
+    #[strum(serialize = "a2b_hex")]
+    A2bHex,
+    /// `binascii.b2a_base64()` function.
+    #[strum(serialize = "b2a_base64")]
+    B2aBase64,
+    /// `binascii.a2b_base64()` function.
+    #[strum(serialize = "a2b_base64")]
+    A2bBase64,
+    /// `binascii.crc32()` function.
+    #[strum(serialize = "crc32")]
+    Crc32,
+    /// `pad` parameter of `base64.b85encode()`.
+    #[strum(serialize = "pad")]
+    Pad,
+    /// `bytes_per_sep` parameter of `binascii.hexlify()`.
+    #[strum(serialize = "bytes_per_sep")]
+    BytesPerSep,
+    /// `strict_mode` parameter of `binascii.a2b_base64()`.
+    #[strum(serialize = "strict_mode")]
+    StrictMode,
+    /// `crc` parameter of `binascii.crc32()`.
+    #[strum(serialize = "crc")]
+    Crc,
+    /// `hexstr` parameter of `binascii.unhexlify()`.
+    #[strum(serialize = "hexstr")]
+    Hexstr,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.
@@ -1343,6 +1515,17 @@ impl Interns {
     #[inline]
     pub fn get_function(&self, id: FunctionId) -> &Function {
         self.functions.get(id.index()).expect("Function not found")
+    }
+
+    /// Injects `fault` into the named function's metadata.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn corrupt_function_metadata_for_tests(&mut self, name: &str, fault: FunctionMetadataFault) {
+        let index = self
+            .functions
+            .iter()
+            .position(|function| self.get_str(function.name.name_id) == name)
+            .unwrap_or_else(|| panic!("test function '{name}' not found"));
+        self.functions[index].corrupt_metadata_for_tests(fault);
     }
 
     /// Returns the Python hash for an interned string.

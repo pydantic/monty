@@ -213,7 +213,7 @@ export class ProtocolError extends Error {
 /**
  * Every exception type name monty's `ExcType` can parse (the native binding
  * parses the name; unknown names fall back to `RuntimeError`). Kept in
- * lockstep with `ExcType` in crates/monty/src/exception_private.rs.
+ * lockstep with `ExcType` in crates/monty-types/src/exceptions.rs.
  */
 export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'Exception',
@@ -253,6 +253,7 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'TimeoutError',
   'TypeError',
   're.PatternError',
+  'binascii.Error',
 ])
 
 /**

@@ -101,5 +101,122 @@ drained_source = iter([1, 2])
 drained_islice = itertools.islice(drained_source, 5)
 list(drained_islice)
 
+# chain holds its arguments UNRESOLVED, so what an ended chain must release is
+# the ARGUMENT itself, not just the iterator it resolved from it. Both ways a
+# chain ends have to release: draining the last argument...
+chain_drained_source = [1, 2]
+chain_drained = itertools.chain(chain_drained_source)
+list(chain_drained)
+
+# ...and an argument that fails `iter()`, which ends the chain for good. The
+# arguments after the bad one are unreachable, so pinning them keeps objects
+# alive that nothing can ever yield.
+chain_unreached_source = [3, 4]
+chain_failed = itertools.chain([1], 5, chain_unreached_source)
+next(chain_failed)
+try:
+    next(chain_failed)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
+
+
+# The predicate-driven adaptors own a CALLABLE as well as a source, so each has
+# a second trace edge. A closure is used deliberately: a plain `def` is an
+# immediate `Value`, not a heap ref, so it would exercise no hook at all.
+def make_shorter_than(limit):
+    bound = list(range(limit))
+
+    def shorter(x):
+        return len(x) < len(bound)
+
+    return shorter
+
+
+def make_adder():
+    bound = [1]
+
+    def add(a, b=0):
+        return a + b + len(bound)
+
+    return add
+
+
+def make_boom():
+    bound = [1]
+
+    def boom(*args):
+        raise ValueError('boom' + str(len(bound)))
+
+    return boom
+
+
+# Each closure is passed inline and never named, so the adaptor's callable
+# field is its only referrer; the items are lists for the same reason.
+take_live = itertools.takewhile(make_shorter_than(3), [[1], [2]])
+next(take_live)
+drop_live = itertools.dropwhile(make_shorter_than(0), [[1], [2]])
+next(drop_live)
+filter_live = itertools.filterfalse(make_shorter_than(0), [[1], [2]])
+next(filter_live)
+star_live = itertools.starmap(make_adder(), [(1,), (2,)])
+next(star_live)
+
+# filterfalse with a None predicate leaves only the source edge, so a hook that
+# traces the callable twice still fails to reach these.
+filter_none = itertools.filterfalse(None, [[1], []])
+
+# The freeing paths: `py_dec_ref_ids` runs only on release, so each of these
+# must be dropped rather than merely held.
+gone_take = itertools.takewhile(make_shorter_than(3), [[1], [2]])
+next(gone_take)
+gone_take = None
+gone_drop = itertools.dropwhile(make_shorter_than(0), [[1], [2]])
+next(gone_drop)
+gone_drop = None
+gone_filter = itertools.filterfalse(make_shorter_than(0), [[1], [2]])
+next(gone_filter)
+gone_filter = None
+gone_star = itertools.starmap(make_adder(), [(1,)])
+next(gone_star)
+gone_star = None
+
+# A rejected item is dropped rather than yielded — the guard path inside `next`.
+rejected = itertools.takewhile(make_shorter_than(0), [[1], [2]])
+assert list(rejected) == []
+
+# A callable that raises leaves `next` through a `?` while the guard still
+# holds the item being tested, and for starmap the arguments already collected.
+pred_erroring = itertools.takewhile(make_boom(), [[1], [2]])
+try:
+    next(pred_erroring)
+except ValueError:
+    pass
+
+star_erroring = itertools.starmap(make_boom(), [(1, 2)])
+try:
+    next(star_erroring)
+except ValueError:
+    pass
+
+
+# Spending an adaptor releases what it can no longer reach, THERE AND THEN
+# rather than at destruction — as `pairwise` and `islice` do above. Each source
+# and callable is named separately, so a count of 1 means the spent adaptor let
+# go of it and 2 means it is still held. The adaptors stay bound so it is the
+# release being measured, not their destruction.
+take_pred = make_shorter_than(0)
+take_source = iter([[1], [2]])
+latched_take = itertools.takewhile(take_pred, take_source)
+assert list(latched_take) == []
+
+# `dropwhile` releases neither: the predicate goes uncalled after the first
+# rejection but stays owned to destruction, as CPython holds `lz->func`, and
+# it never latches, so every later `next` drives the source again.
+drop_pred = make_shorter_than(1)
+drop_source = iter([[], [1]])
+past_drop = itertools.dropwhile(drop_pred, drop_source)
+assert next(past_drop) == [1]
+
 len('done')
-# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1}
+# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1, 'take_live': 1, 'drop_live': 1, 'filter_live': 1, 'star_live': 1, 'filter_none': 1, 'rejected': 1, 'pred_erroring': 1, 'star_erroring': 1, 'take_pred': 1, 'take_source': 1, 'latched_take': 1, 'drop_pred': 2, 'drop_source': 2, 'past_drop': 1}

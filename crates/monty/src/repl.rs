@@ -11,11 +11,12 @@ use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWri
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
 
+#[cfg(feature = "test-hooks")]
+use crate::function::FunctionMetadataFault;
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::CallId,
-    bytecode::{VM, VMSnapshot},
-    defer_drop,
+    bytecode::{FrameExit, VM, VMSnapshot},
     exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapData, HeapReader},
     intern::{InternerBuilder, Interns},
@@ -23,6 +24,7 @@ use crate::{
     object_bridge::MontyObjectExt,
     run::{CompileOptions, Executor},
     run_progress::{ConvertedExit, ExtFunctionResult, ExtFunctionResultExt, NameLookupResult, convert_frame_exit},
+    types::tuple::allocate_tuple,
     value::Value,
 };
 
@@ -38,7 +40,7 @@ pub struct MontyRepl {
     /// Incremental `feed()` / `start()` snippets intentionally use internal script names
     /// like `<python-input-0>` to match CPython's interactive traceback style.
     script_name: String,
-    /// Counter for generated `<python-input-N>` snippet filenames.
+    /// Counter for generated `<python-input-N>` execution filenames.
     next_input_id: u64,
     /// Stable mapping of global variable names to namespace slot IDs.
     global_names: NameMap,
@@ -88,6 +90,17 @@ impl MontyRepl {
             heap,
             globals: Vec::new(),
         }
+    }
+
+    /// Injects `fault` into a compiled function's metadata.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` does not identify a function suitable for `fault`.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn __corrupt_function_metadata_for_tests(&mut self, name: &str, fault: FunctionMetadataFault) {
+        self.interns.corrupt_function_metadata_for_tests(name, fault);
     }
 
     /// Returns the resource tracker that will be used for the next snippet.
@@ -167,6 +180,7 @@ impl MontyRepl {
         match HeapReader::with(&mut this.heap, &mut (&executor, print), |reader, (executor, print)| {
             let mut vm = VM::new(
                 mem::take(&mut this.globals),
+                &executor.module_code,
                 reader,
                 &executor.interns,
                 print.reborrow(),
@@ -179,7 +193,7 @@ impl MontyRepl {
                 return Err(error);
             }
 
-            let vm_result = vm.run_module(&executor.module_code);
+            let vm_result = vm.run_module();
 
             // Convert while VM alive, then snapshot or reclaim globals
             let converted = convert_frame_exit(vm_result, &mut vm);
@@ -238,6 +252,7 @@ impl MontyRepl {
         let result = HeapReader::with(&mut self.heap, &mut (&executor, print), |reader, (executor, print)| {
             let mut vm = VM::new(
                 mem::take(&mut self.globals),
+                &executor.module_code,
                 reader,
                 &executor.interns,
                 print.reborrow(),
@@ -274,8 +289,8 @@ impl MontyRepl {
 
     /// Calls a Python function defined in the session by name.
     ///
-    /// Looks up the function in the global namespace, converts the arguments,
-    /// executes the function, and converts the result back.
+    /// Looks up the function, then executes a synthetic `<python-input-N>`
+    /// call expression so failures include a visible host call site.
     ///
     /// # Errors
     /// Returns `MontyException` if the function is not found, not callable,
@@ -286,63 +301,76 @@ impl MontyRepl {
         args: Vec<MontyObject>,
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
-        let slot_idx = self
-            .interns
-            .get_string_id_by_name(name)
-            .and_then(|name_id| self.global_names.get(name_id));
-        let Some(slot_idx) = slot_idx else {
+        let Some(name_id) = self.interns.get_string_id_by_name(name) else {
             return Err(RunError::from(ExcType::name_error(name))
                 .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
         };
+        let Some(slot_idx) = self.global_names.get(name_id) else {
+            return Err(RunError::from(ExcType::name_error(name))
+                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
+        };
+        if matches!(self.globals.get(slot_idx.index()), None | Some(Value::Undefined)) {
+            return Err(RunError::from(ExcType::name_error(name))
+                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
+        }
 
-        let assert_repr_max_bytes = self.options.assert_message_annotations.max_bytes();
-        HeapReader::with(
-            &mut self.heap,
-            &mut (&self.interns, print),
-            |reader, (interns, print)| {
-                let vm = &mut VM::new(
-                    mem::take(&mut self.globals),
-                    reader,
-                    interns,
-                    print.reborrow(),
-                    assert_repr_max_bytes,
-                );
+        let input_script_name = self.next_input_script_name();
+        let executor = Executor::new_repl_function_call(
+            name,
+            name_id,
+            slot_idx,
+            args.len(),
+            &input_script_name,
+            self.global_names.clone(),
+            &self.interns,
+            self.options,
+        )?;
+        self.sources.insert(input_script_name, executor.code.clone());
 
-                let callable = vm.globals[slot_idx.index()].clone_with_heap(vm);
-                defer_drop!(callable, vm);
+        let original_globals_len = self.globals.len();
+        self.ensure_globals_size(executor.namespace_size());
+        let result = HeapReader::with(&mut self.heap, &mut (&executor, print), |reader, (executor, print)| {
+            let vm = &mut VM::new(
+                mem::take(&mut self.globals),
+                &executor.module_code,
+                reader,
+                &executor.interns,
+                print.reborrow(),
+                executor.assert_repr_max_bytes,
+            );
 
-                let arg_values = match convert_args(args, vm) {
-                    Ok(av) => av,
-                    Err(e) => {
-                        self.globals = vm.take_globals();
-                        return Err(e);
+            let result = match convert_args(args, vm) {
+                Ok(args) => {
+                    let (args, kwargs) = args.into_parts();
+                    debug_assert!(kwargs.is_empty(), "host function calls only have positional arguments");
+                    kwargs.drop_with(vm);
+                    let args_tuple = allocate_tuple(args.collect(), vm.heap);
+                    let args_slot = executor.input_slots[0].index();
+                    let old = mem::replace(&mut vm.globals[args_slot], args_tuple);
+                    old.drop_with(vm);
+
+                    match vm.run_module() {
+                        Ok(FrameExit::Return(value)) => Ok(MontyObject::new(value, vm)),
+                        Ok(exit) => Err(vm
+                            .unsupported_frame_exit("MontyRepl::call_function", exit)
+                            .into_python_exception(&executor.interns, |fname| {
+                                self.sources.get(fname).map(String::as_str)
+                            })),
+                        Err(error) => Err(error.into_python_exception(&executor.interns, |fname| {
+                            self.sources.get(fname).map(String::as_str)
+                        })),
                     }
-                };
+                }
+                Err(error) => Err(error),
+            };
 
-                // Host boundary: open an execution window so the time budget
-                // advances (and accumulates) during the call. This cannot go
-                // through `VM::run_external` because `evaluate_function` must
-                // push and run a single function frame itself.
-                vm.heap.tracker.on_execution_start();
-                let eval_result = vm.evaluate_function("MontyRepl::call_function", callable, arg_values);
-                vm.heap.tracker.on_execution_stop();
-                // Same host-boundary epilogue as `run_external`: a limit
-                // overshoot the call swallowed must fail the call, not
-                // return a truncated value.
-                let eval_result = vm.finish_host_turn(eval_result);
-
-                let result = match eval_result {
-                    Ok(value) => Ok(MontyObject::new(value, vm)),
-                    Err(e) => {
-                        Err(e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)))
-                    }
-                };
-
-                self.globals = vm.take_globals();
-
-                result
-            },
-        )
+            let mut globals = vm.take_globals();
+            globals.split_off(original_globals_len).drop_with(vm);
+            self.globals = globals;
+            result
+        });
+        self.interns = executor.interns;
+        result
     }
 
     /// Returns a list of all callable function names defined in the session.
@@ -386,11 +414,11 @@ impl MontyRepl {
         }
     }
 
-    /// Returns the generated filename for the next interactive snippet.
+    /// Returns the generated filename for the next interactive execution.
     ///
-    /// CPython labels interactive snippets as `<python-input-N>` and increments
-    /// N for each feed attempt. Matching this improves traceback ergonomics and
-    /// makes REPL errors easier to correlate with user input history.
+    /// CPython labels interactive inputs as `<python-input-N>`. Snippets and
+    /// host function calls share this sequence so every traceback call site
+    /// can be correlated with the session's execution history.
     fn next_input_script_name(&mut self) -> String {
         let input_id = self.next_input_id;
         self.next_input_id += 1;
@@ -848,6 +876,7 @@ pub enum ReplContinuationMode {
 ///
 /// This mirrors CPython's broad interactive behavior:
 /// - Incomplete bracketed / parenthesized / triple-quoted constructs continue.
+/// - Decorators continue until their class or function definition arrives.
 /// - Clause headers (`if:`, `def:`, etc.) require an indented body and then a
 ///   terminating blank line before execution.
 /// - All other parse outcomes are treated as complete (either valid code or a
@@ -857,16 +886,28 @@ pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
     let Err(error) = parse_module(source) else {
         return ReplContinuationMode::Complete;
     };
+    let error_is_at_end = error.location.is_empty() && error.location.start().to_usize() == source.len();
+    let error_source = source
+        .get(error.location.start().to_usize()..error.location.end().to_usize())
+        .unwrap_or_default();
 
     match error.error {
         ParseErrorType::OtherError(msg) => {
             if msg.starts_with("Expected an indented block after ") {
                 ReplContinuationMode::IncompleteBlock
+            } else if msg == "Expected class, function definition or async function definition after decorator"
+                && error_is_at_end
+            {
+                ReplContinuationMode::IncompleteImplicit
             } else {
                 ReplContinuationMode::Complete
             }
         }
-        ParseErrorType::Lexical(LexicalErrorType::Eof)
+        ParseErrorType::Lexical(
+            LexicalErrorType::Eof
+            | LexicalErrorType::FStringError(InterpolatedStringErrorType::UnterminatedTripleQuotedString)
+            | LexicalErrorType::TStringError(InterpolatedStringErrorType::UnterminatedTripleQuotedString),
+        )
         | ParseErrorType::ExpectedToken {
             found: TokenKind::EndOfFile,
             ..
@@ -875,8 +916,23 @@ pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
         | ParseErrorType::TStringError(InterpolatedStringErrorType::UnterminatedTripleQuotedString) => {
             ReplContinuationMode::IncompleteImplicit
         }
+        ParseErrorType::Lexical(LexicalErrorType::UnclosedStringError) if starts_with_triple_quote(error_source) => {
+            ReplContinuationMode::IncompleteImplicit
+        }
         _ => ReplContinuationMode::Complete,
     }
+}
+
+fn starts_with_triple_quote(source: &str) -> bool {
+    // Ruff uses `UnclosedStringError` for both single- and triple-quoted plain
+    // strings. Its error range starts at the optional prefix, so the first
+    // quote distinguishes the forms without treating `"unfinished` as input
+    // that should continue.
+    let bytes = source.as_bytes();
+    bytes
+        .iter()
+        .position(|byte| matches!(byte, b'\'' | b'"'))
+        .is_some_and(|quote_start| matches!(bytes.get(quote_start..quote_start + 3), Some(b"'''" | b"\"\"\"")))
 }
 
 // ---------------------------------------------------------------------------

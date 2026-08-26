@@ -233,6 +233,11 @@ const exceptionTypes: Array<[string, string]> = [
   ['AttributeError', 'AttributeError'],
   ['NameError', 'NameError'],
   ['AssertionError', 'AssertionError'],
+  // Dotted names are the interesting case: they only survive if PYTHON_EXC_NAMES
+  // carries them, and without that they arrive as their builtin parent's type.
+  ['json.JSONDecodeError', 'json.JSONDecodeError'],
+  ['re.PatternError', 're.PatternError'],
+  ['binascii.Error', 'binascii.Error'],
   ['SomeCustomError', 'RuntimeError'],
 ]
 
@@ -284,6 +289,42 @@ caught
 
     // Child exception should be caught by parent handler (which comes first)
     t.is(await run(code, { externalLookup: { fail } }), 'parent')
+  })
+}
+
+// =============================================================================
+// Dotted exception name tests
+// =============================================================================
+
+// Dotted names identify a stdlib class that would otherwise be indistinguishable
+// from its builtin parent. They survive the crossing only while PYTHON_EXC_NAMES
+// carries them; without the entry the sandbox sees the parent (or RuntimeError)
+// and an `except <module>.<Name>:` handler silently misses.
+const dottedTypes: Array<[string, string, string]> = [
+  ['binascii.Error', 'binascii', 'ValueError'],
+  ['json.JSONDecodeError', 'json', 'ValueError'],
+  ['re.PatternError', 're', 'Exception'],
+]
+
+for (const [dottedName, module, parentType] of dottedTypes) {
+  test(`external function dotted exception caught by own name - ${dottedName}`, async () => {
+    const code = `
+import ${module}
+try:
+    fail()
+except ${dottedName} as exc:
+    caught = f'${dottedName}: {exc}'
+except ${parentType} as exc:
+    caught = f'${parentType}: {exc}'
+caught
+`
+    const fail = () => {
+      const error = new Error('test message')
+      error.name = dottedName
+      throw error
+    }
+
+    t.is(await run(code, { externalLookup: { fail } }), `${dottedName}: test message`)
   })
 }
 

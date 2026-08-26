@@ -12,11 +12,11 @@ bytecode compilation do not consume it. In workers, allocations retained by
 compiled code do count toward `max_memory`; transient compilation allocations
 are released before execution reaches its first memory checkpoint.
 Compilation has separate structural caps for parser nesting, bytecode operand
-sizes, comprehension nesting, and repeated `finally` expansion. In particular,
-a code object requiring more than 1,024 emitted copies of `finally` bodies is
-rejected with `SyntaxError`; CPython has no equivalent limit. Production hosts
-should still isolate compilation when accepting untrusted source, as the
-subprocess and WebAssembly runtimes do.
+sizes, comprehension nesting, and repeated `finally` expansion. A code object
+requiring more than 1,024 emitted copies of `finally` bodies is rejected with
+`SyntaxError`; CPython has no equivalent limit. Production hosts should still
+isolate compilation when accepting untrusted source, as the subprocess and
+WebAssembly runtimes do.
 
 ## Memory / size limits
 
@@ -32,7 +32,7 @@ subprocess and WebAssembly runtimes do.
   (`str.replace`, `bytes.replace`), padding (`str.ljust`, `str.center`,
   `str.zfill`, `bytes.ljust`, …), and f-string formatting
   (both dynamic width `f"{v:>{w}}"` and dynamic precision on float
-  formats `f"{v:.{p}f}"` / `e` / `%`). The pre-check threshold is 100 KB —
+  formats `f"{v:.{p}f}"` / `e` / `%`). The pre-check threshold is 100 KB:
   estimates above that are checked against the remaining budget and rejected
   with `MemoryError` before allocation when they would exceed it.
 - `bigint.pow(base, exp)` estimates result size as `bits(base) * exp` with
@@ -55,20 +55,20 @@ without one is unlimited.
   result operations are pre-checked to avoid this path when their size is known.
 - **Work outside Python execution is hard-limit-only.** Request framing, input
   decoding, loading snapshots, and type checking do not reach an interpreter
-  checkpoint. A sufficiently large allocation there can therefore cross the
-  hard ceiling and kill the worker.
+  checkpoint. A sufficiently large allocation there can cross the hard ceiling
+  and kill the worker.
 - **It binds the worker's allocator, not the process.** Only bytes requested
   from Rust's global allocator are counted, which is everything sandboxed code
   can cause to be allocated, but not memory obtained another way: thread stacks,
   the binary's own mapped image, or a direct `mmap`. It is not a kernel-enforced
-  bound on process memory — an inherited `ulimit -v` or cgroup limit is the tool
-  for that, and still applies independently (a worker whose allocation the
-  kernel then refuses reports the same `MemoryError`).
+  bound on process memory. An inherited `ulimit -v` or cgroup limit is the tool
+  for that, and still applies independently: a worker whose allocation the
+  kernel then refuses reports the same `MemoryError`.
 - **It counts requested bytes, not resident ones.** Per-allocation overhead and
   fragmentation sit between the count and the process's real footprint, so RSS
   runs somewhat above the limit.
 - **`max_memory` alone does not bound worker memory.** The hard ceiling includes
-  the worker's baseline plus a fixed gap above the soft limit — a few MiB, more
+  the worker's baseline plus a fixed gap above the soft limit: a few MiB, more
   with type checking. Use `max_processes` and an OS-level limit to bound a host.
 - **Per session, but against a fixed baseline.** A worker serves many checkouts
   and re-derives the cap for each session, always from the leanest the process
@@ -77,8 +77,8 @@ without one is unlimited.
   and replaced rather than allowed to grow indefinitely.
 - **Restoring a dump is bounded by the checkout it lands in.** `load_session` /
   `load_snapshot` restore the dump's own limits (see
-  `limitations/pool-architecture.md`), and the cap is re-derived from them
-  once the session exists — but the load *itself* runs under the limit the
+  ./pool-architecture.md), and the cap is re-derived from
+  them once the session exists, but the load *itself* runs under the limit the
   `checkout()` config applied. Restoring a large dump into a checkout with a
   much smaller `max_memory` can therefore exceed it while loading; pass a
   comparable limit to `checkout()`.
@@ -94,11 +94,11 @@ plain host OOM, or a request beyond the usable address space such as
 `' ' * (1 << 60)` — takes this same path: on a worker with an exit status the
 host sees that `MemoryError` with its session gone, and on wasm the same
 refusal traps, reported as `MontyCrashedError` per the bullet above. CPython
-raises a catchable `MemoryError` in-process and carries on. Monty cannot: the failure
-happens below the interpreter, where no Python-level exception can be raised, so
-the worker classifies the failure into a dedicated exit code and dies. (Without
-that, the process would abort with `SIGABRT` — indistinguishable from a stack
-overflow, which is why the sandbox exits deliberately instead.)
+raises a catchable `MemoryError` in-process and carries on. Monty cannot: the
+failure happens below the interpreter, where no Python-level exception can be
+raised, so the worker classifies the failure into a dedicated exit code and
+dies. Without that, the process would abort with `SIGABRT`, which is
+indistinguishable from a stack overflow.
 
 ## Integer-specific caps
 
@@ -113,8 +113,10 @@ overflow, which is why the sandbox exits deliberately instead.)
 
 ## Recursion
 
-- Python-level call depth is hardcoded at **1000 frames**. The 1001st
-  nested call raises `RecursionError`.
+- Python-level call depth defaults to **1000 frames**; the 1001st nested call
+  raises `RecursionError`. The host sets the ceiling per session via
+  `max_recursion_depth`, but cannot remove it — unlike the time and memory
+  limits, it has no "disabled" state.
 - Production sandbox code cannot change the recursion limit. Test builds may
   expose `sys.setrecursionlimit()` as a lowering-only fixture hook; it cannot
   raise the host-configured ceiling.
@@ -128,7 +130,7 @@ overflow, which is why the sandbox exits deliberately instead.)
   during construction. Native re-entry is capped independently at a lower
   fixed depth than the 1000-frame Python limit, so Monty raises
   `RecursionError` before a native stack overflow would abort the process. See
-  `limitations/classes.md`'s `__repr__`/`__str__` entry for the main
+  the `__repr__`/`__str__` entry in ./classes.md for the main
   user-visible divergence this causes.
 
 ## Time

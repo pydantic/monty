@@ -34,6 +34,8 @@ monty --help
   (like `python -i`)
 - `-t` / `--type-check` — type check (powered by [ty](https://docs.astral.sh/ty/))
   before executing
+- `--type-check-format` — diagnostic format: `full` (default), `concise`,
+  `json`, `github` and the other ty formats (requires `--type-check`)
 - `-m` / `--mount /host/path::/virtual/path[::mode[::write_limit_bytes]]` —
   mount a host directory into the sandbox (`ro`, `rw`, or `overlay`)
 - `--max-memory 10MB`, `--max-duration 0.5`, `--max-recursion-depth`,

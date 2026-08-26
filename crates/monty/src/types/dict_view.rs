@@ -7,7 +7,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     types::{
         Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple,
@@ -61,7 +61,7 @@ impl DictKeysView {
 }
 
 impl<'h> HeapRead<'h, DictKeysView> {
-    fn dict(&self, vm: &mut VM<'h>) -> HeapRead<'h, Dict> {
+    fn dict(&self, vm: &mut VM<'h>) -> HeapObjectRead<'h, Dict> {
         let HeapReadOutput::Dict(dict) = vm.heap.read(self.get(vm.heap).dict_id) else {
             panic!("dict_keys view must always reference a dict");
         };
@@ -155,13 +155,13 @@ impl DictView for DictKeysView {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
 
     /// Delegates to the backing dict's key lookup.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let dict_id = self.get(vm.heap).dict_id();
         let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
             panic!("dict_keys view must reference a dict");
@@ -173,7 +173,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         Type::DictKeys
     }
 
-    fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let dict_id = self.get(vm.heap).dict_id();
         Ok(DictKeyIterator::allocate(
             dict_id,
@@ -208,15 +208,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         }
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_sub)
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.intersection(other, vm)
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_or)
     }
 
@@ -246,13 +246,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         Ok(f.write_str("])")?)
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         match attr.static_string() {
             Some(StaticStrings::Isdisjoint) => {
                 let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
@@ -295,7 +289,7 @@ impl DictItemsView {
 }
 
 impl<'h> HeapRead<'h, DictItemsView> {
-    fn dict(&self, vm: &mut VM<'h>) -> HeapRead<'h, Dict> {
+    fn dict(&self, vm: &mut VM<'h>) -> HeapObjectRead<'h, Dict> {
         let HeapReadOutput::Dict(dict) = vm.heap.read(self.get(vm.heap).dict_id) else {
             panic!("dict_items view must always reference a dict");
         };
@@ -428,14 +422,14 @@ impl DictView for DictItemsView {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictItemsView> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
 
     /// Membership takes a `(key, value)` probe: look the key up, then compare
     /// the stored value. A non-pair probe can never be a member.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let dict_id = self.get(vm.heap).dict_id();
         let Some((key, value)) = cloned_items_view_candidate(item, vm) else {
             return Ok(Some(false));
@@ -461,7 +455,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         Type::DictItems
     }
 
-    fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let dict_id = self.get(vm.heap).dict_id();
         Ok(DictItemIterator::allocate(
             dict_id,
@@ -490,15 +484,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         }
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_sub)
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.intersection(other, vm)
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_or)
     }
 
@@ -528,13 +522,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         Ok(f.write_str("])")?)
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         match attr.static_string() {
             Some(StaticStrings::Isdisjoint) => {
                 let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
@@ -583,7 +571,7 @@ impl DictView for DictValuesView {
 }
 
 impl<'h> HeapRead<'h, DictValuesView> {
-    fn dict(&self, vm: &mut VM<'h>) -> HeapRead<'h, Dict> {
+    fn dict(&self, vm: &mut VM<'h>) -> HeapObjectRead<'h, Dict> {
         let HeapReadOutput::Dict(dict) = vm.heap.read(self.get(vm.heap).dict_id) else {
             panic!("dict_values view must always reference a dict");
         };
@@ -591,13 +579,13 @@ impl<'h> HeapRead<'h, DictValuesView> {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictValuesView> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
 
     /// Values are not indexed, so this is a linear scan of the backing dict.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let dict_id = self.get(vm.heap).dict_id();
         let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
             panic!("dict_values view must reference a dict");
@@ -617,7 +605,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
         Type::DictValues
     }
 
-    fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let dict_id = self.get(vm.heap).dict_id();
         Ok(DictValueIterator::allocate(
             dict_id,

@@ -10,7 +10,7 @@ Data is from <https://github.com/mafudge/datasets>.
 2. **Loop-based external calls**: Sentiment analysis for each tweet happens in a loop - with JSON tool calling this would flood the context window with 50+ results
 3. **In-sandbox computation**: Averages, correlation, and aggregation happen in Python - no need for the LLM to do mental math
 4. **Variable iteration**: Different customers have different numbers of tweets - code handles this naturally
-5. **File sandboxing**: Uses `OSAccess` to mount data files, demonstrating secure file access patterns
+5. **File sandboxing**: Uses `OSAccess` to mount the data files, so the code can read them and nothing else
 6. **Type checking**: Validates LLM-generated code against type stubs before execution
 
 ## To run

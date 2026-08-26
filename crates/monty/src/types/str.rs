@@ -6,6 +6,7 @@ use std::{cell::Cell, fmt::Write, ops};
 /// operations like length and equality comparison.
 use monty_types::ResourceError;
 pub use monty_types::{StringRepr, string_repr_fmt};
+use num_traits::ToPrimitive;
 use ruff_python_stdlib::{identifiers::is_identifier, keyword::is_keyword};
 use smallvec::smallvec;
 
@@ -17,7 +18,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
+    heap::{
+        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, heap_read_ref_as_field,
+    },
     intern::{Interns, StaticStrings, StringId},
     resource_checks::{check_repeat_size, check_replace_size},
     string_builder::StringBuilder,
@@ -261,13 +264,13 @@ impl ops::Deref for Str {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
 
     /// Substring search; `in` on a str requires a str on the left.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let container = self.get(vm.heap).as_str();
         str_contains(container, item, vm.heap, vm.interns).map(Some)
     }
@@ -276,9 +279,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Type::Str
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         Ok(StringIterator::from_heap(
-            self_id.expect("heap values have an id"),
+            self.id(),
             self.get(vm.heap).as_str().is_ascii(),
             vm,
         ))
@@ -311,7 +314,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(eq_str(self.get(vm.heap).as_str(), other, vm))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let s = self.get(vm.heap);
         if let Some(cached) = s.1.get() {
             return Ok(Some(cached));
@@ -340,7 +343,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let other = match other {
             Value::InternString(id) => vm.interns.get_str(*id),
             Value::Ref(id) if let HeapData::Str(value) = vm.heap.get(*id) => value.as_str(),
@@ -360,13 +363,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         self.py_mul_impl(other, vm)
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
@@ -400,7 +397,7 @@ pub fn call_str_method(s: &str, method_id: StringId, args: ArgValues, vm: &mut V
 /// Dispatches a method call on a string value.
 ///
 /// This is the unified implementation for string method calls, used by both:
-/// - `HeapRead<Str>::py_call_attr()` for heap-allocated strings
+/// - `HeapObjectRead<Str>::py_call_attr()` for heap-allocated strings
 /// - `call_str_method()` for interned string literals from the VM
 ///
 /// # Not Yet Implemented
@@ -1176,19 +1173,25 @@ fn extract_string_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
 }
 
 /// Extracts an integer from a Value, returning an error if not an integer.
+///
+/// Delegates rather than re-matching: [`Value::as_int`] is the one place that
+/// knows about `LongInt` and a user `__index__`, and its wording is CPython's
+/// (`'str' object cannot be interpreted as an integer`, `Python int too large
+/// to convert to C ssize_t`) where the hand-rolled version here was not.
 fn extract_int_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<i64> {
-    match value {
-        Value::Int(i) => Ok(*i),
-        Value::Ref(heap_id) => {
-            if let HeapData::LongInt(li) = vm.heap.get(*heap_id) {
-                // Try to convert to i64
-                li.to_i64().ok_or_else(|| ExcType::type_error("integer too large"))
-            } else {
-                Err(ExcType::type_error("expected int"))
-            }
-        }
-        _ => Err(ExcType::type_error("expected int")),
-    }
+    value.as_int(vm)
+}
+
+/// Extracts a C `int`-bounded integer, as CPython's clinic `int` converter does.
+///
+/// Distinct from [`extract_int_arg`], which is `ssize_t`-bounded: `str.expandtabs`
+/// declares `tabsize` as a C `int`, so `2**31` is an `OverflowError` there while
+/// an `ssize_t` argument still accepts it. Rejecting up front also keeps a large
+/// `tabsize` from reaching the space-building loop, where each tab amplifies into
+/// `tabsize` bytes.
+fn extract_c_int_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<i32> {
+    let as_i64 = value.as_int_with_overflow(vm, ExcType::overflow_c_int)?;
+    i32::try_from(as_i64).map_err(|_| ExcType::overflow_c_int())
 }
 
 /// Extracts an optional slice index from a `Value`, treating `None` as `default`.
@@ -1203,11 +1206,33 @@ fn optional_index(value: &Value, default: usize, str_len: usize, vm: &mut VM<'_>
         Value::None => Ok(default),
         Value::Int(i) => Ok(normalize_sequence_index(*i, str_len)),
         Value::Bool(b) => Ok(normalize_sequence_index(i64::from(*b), str_len)),
+        // Both `LongInt` representations answer here. As well as sharing one
+        // error, this keeps an interned one out of the `_` arm below, whose
+        // recursion would otherwise hand it straight back to itself.
+        Value::InternLongInt(id) => {
+            let i = vm
+                .interns
+                .get_long_int(*id)
+                .to_i64()
+                .ok_or_else(|| ExcType::type_error("integer too large"))?;
+            Ok(normalize_sequence_index(i, str_len))
+        }
         Value::Ref(heap_id) if let HeapData::LongInt(li) = vm.heap.get(*heap_id) => {
             let i = li.to_i64().ok_or_else(|| ExcType::type_error("integer too large"))?;
             Ok(normalize_sequence_index(i, str_len))
         }
-        _ => Err(ExcType::type_error_slice_indices()),
+        _ => match value.py_index_impl(vm)? {
+            // Recurses exactly once: `py_index_impl` validates an int result, so
+            // the arms above take it. Recursing rather than narrowing here keeps a
+            // too-large result on the same path as a directly-passed `LongInt` —
+            // which raises `TypeError: integer too large` where CPython clamps,
+            // a pre-existing divergence this arm inherits rather than widens.
+            Some(index) => {
+                defer_drop!(index, vm);
+                optional_index(index, default, str_len, vm)
+            }
+            None => Err(ExcType::type_error_slice_indices()),
+        },
     }
 }
 
@@ -1873,21 +1898,21 @@ fn str_expandtabs<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
     let tabsize = match tabsize {
         None => 8,
         Some(val) => {
-            let result_int = extract_int_arg(&val, vm)?;
-            val.drop_with(vm.heap);
-            if result_int < 0 {
-                0
-            } else {
-                usize::try_from(result_int).unwrap_or(usize::MAX)
-            }
+            // `defer_drop!` rather than a trailing `drop_with`: the conversion
+            // raises for anything outside C `int`, and that `?` would otherwise
+            // leave `val`'s reference behind.
+            defer_drop!(val, vm);
+            // A negative tabsize expands to nothing, as CPython's `<= 0` test does.
+            usize::try_from(extract_c_int_arg(val, vm)?).unwrap_or(0)
         }
     };
 
     let s = s.get(vm.heap);
-    // `tabsize` is attacker-controlled (saturates to `usize::MAX`) and we don't
-    // know the result size up front, so use the unbounded builder — its 2×
-    // growth policy rejects the build at the first push that would exceed the
-    // memory limit, capping wasted intermediate allocation to `O(limit)`.
+    // `tabsize` is bounded by C `int` above, but a tab still amplifies into
+    // `tabsize` bytes and the result size is not known up front, so use the
+    // unbounded builder — its 2× growth policy rejects the build at the first
+    // push that would exceed the memory limit, capping wasted intermediate
+    // allocation to `O(limit)`.
     let mut builder = StringBuilder::new(&vm.heap.tracker);
     let mut column = 0;
 
@@ -2106,7 +2131,7 @@ impl HeapItem for StringIterator {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, StringIterator> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIterator> {
     fn py_is_iterable(&self, _: &VM<'h>) -> bool {
         true
     }
@@ -2123,13 +2148,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, StringIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        let self_id = self_id.expect("heap values have an id");
-        vm.heap.inc_ref(self_id);
-        Ok(Value::Ref(self_id))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(self.clone_value(vm.heap))
     }
 
-    fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let next = self.get(vm.heap).as_str(vm).chars().next();
         if let Some(character) = next {
             let value = allocate_char(character, vm.heap);
@@ -2143,7 +2166,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, StringIterator> {
 
 /// Helper for substring containment check in strings.
 ///
-/// Called by `HeapRead<Str>::py_contains_impl` and, for interned strings, by
+/// Called by `HeapObjectRead<Str>::py_contains_impl` and, for interned strings, by
 /// `Value::py_contains`. A non-str probe reports its own type, as CPython does.
 pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, interns: &Interns) -> RunResult<bool> {
     match item {

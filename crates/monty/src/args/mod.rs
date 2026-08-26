@@ -6,6 +6,8 @@ use std::{mem, slice, vec::IntoIter};
 
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
+#[cfg(feature = "test-hooks")]
+pub(crate) use bind_python::SignatureMetadataFault;
 pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int};
 pub(crate) use monty_macros::FromArgs;
 use monty_types::MontyObject;
