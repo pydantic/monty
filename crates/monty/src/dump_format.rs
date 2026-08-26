@@ -205,6 +205,14 @@ mod tests {
             0x8ecc_d26b_160d_9c0b,
             "comparison operators changed for dump version {DUMP_VERSION}"
         );
+        // `VariantNames` keeps the `#[strum(disabled)]` variants that `EnumString`
+        // and `EnumIter` drop, which is what lets the two fingerprints below cover
+        // every postcard discriminant. Asserted rather than assumed, so a strum
+        // upgrade that changed it says so instead of quietly narrowing the guard.
+        assert!(Type::VARIANTS.contains(&"instance"));
+        assert!(MontyType::VARIANTS.contains(&"instance"));
+        assert!(MontyType::VARIANTS.contains(&"exception"));
+
         assert_eq!(
             variant_order_fingerprint(Type::VARIANTS),
             0x689e_d8e1_ffb2_3ba1,
@@ -223,6 +231,10 @@ mod tests {
     /// `Dump`, so inserting a variant rewrites what older dumps decode to rather
     /// than failing the version check. Appending leaves this unchanged for every
     /// existing variant; inserting or reordering does not.
+    ///
+    /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`,
+    /// `MontyType::{Instance, Exception}` — which carry discriminants like any
+    /// other despite having no name to round-trip through `EnumString`.
     fn variant_order_fingerprint(variants: &[&str]) -> u64 {
         const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
         const PRIME: u64 = 0x0100_0000_01b3;
