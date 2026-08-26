@@ -3,14 +3,18 @@
 # but its own completion path is left to release its coroutine and results.
 import asyncio
 
+completed = 0
+
 
 async def leaf():
     return [1, 2, 3]
 
 
 async def survivor():
+    global completed
     for _ in range(2):
         await asyncio.gather(leaf(), leaf())
+    completed += 1
 
 
 async def task_fail():
@@ -22,7 +26,14 @@ try:
 except ValueError:
     pass
 
-# Give the detached sibling the turns it needs to run to completion.
-for _ in range(6):
+# The detached sibling only advances while something else suspends, so drive it
+# with top-level awaits until it reports completion instead of a fixed turn count.
+for _ in range(20):
+    if completed:
+        break
     await asyncio.gather(leaf())  # pyright: ignore
+
+# The loop above is bounded, so assert the sibling really ran: a scheduler change
+# that stops driving it should fail here, not as an unexplained ref-count leak.
+assert completed == 1
 # ref-counts={'asyncio': 1}

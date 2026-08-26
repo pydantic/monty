@@ -80,12 +80,31 @@ Its result reaches the sibling; a result arriving for a `gather` that has alread
 Which task runs next also differs.
 A task resumed by a host result runs to its next suspension before any other ready task gets a turn, where CPython's
 loop takes them in the order they were woken.
-Only the interleaving differs: every task still gets its turns, and no result is lost.
+Among the tasks that do resume, only the ordering differs.
+A task parked with nothing left to wake it never resumes at all, and a result routed to an already-failed
+`gather` is discarded.
 This applies to all async code, not only to siblings of a failed `gather`.
 
-### A failed `gather` nobody awaits is never reported
+### `gather` does not start its children until it is awaited
 
+CPython's `gather` schedules each awaitable as a task straight away, so the children run whether or not the result is
+ever awaited.
+Monty holds the awaitables and spawns nothing until the `await`, so a `gather(...)` whose result is discarded runs no
+code at all:
+
+```python
+async def boom():
+    print('boom ran')
+    raise ValueError('x')
+
+asyncio.gather(boom())  # CPython prints `boom ran`, Monty runs nothing
+```
+
+Awaiting the gather later still runs the children, and a gather that has already failed re-raises its cached
+exception on every later await.
+
+Neither does Monty report the exception CPython loses track of here.
 CPython prints `_GatheringFuture exception was never retrieved`, a `future:` line and the traceback to stderr when a
-failed `gather` is garbage collected without having been awaited.
-Monty prints nothing, and has no stderr to print it to: `print()` only ever writes stdout.
-Awaiting the `gather` later still raises the cached exception.
+gather holding an unretrieved exception is collected.
+In Monty that gather never ran, and no sandboxed code can write to stderr in any case — `print()` rejects its `file`
+argument.
