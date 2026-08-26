@@ -58,7 +58,7 @@ the repository, and that directory — not this page — is the source of truth.
 
 ## Standard library
 
-Thirteen modules are importable.
+Fourteen modules are importable.
 Anything else raises `ModuleNotFoundError`.
 
 | Module | Divergences |
@@ -67,6 +67,7 @@ Anything else raises `ModuleNotFoundError`.
 | `collections` | [collections.md](https://github.com/pydantic/monty/blob/main/limitations/collections.md) |
 | `dataclasses` | [dataclasses.md](https://github.com/pydantic/monty/blob/main/limitations/dataclasses.md) |
 | `datetime` | [datetime.md](https://github.com/pydantic/monty/blob/main/limitations/datetime.md) |
+| `functools` | [functools.md](https://github.com/pydantic/monty/blob/main/limitations/functools.md) |
 | `itertools` | [itertools.md](https://github.com/pydantic/monty/blob/main/limitations/itertools.md) |
 | `json` | [json.md](https://github.com/pydantic/monty/blob/main/limitations/json.md) |
 | `math` | [math.md](https://github.com/pydantic/monty/blob/main/limitations/math.md) |
@@ -81,7 +82,7 @@ Each covers only part of its CPython surface — often a small part.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 
-Notably absent: `functools`, `enum`, `contextlib`, `random`, `time`, `io`, `copy`, `string`, `struct`, `operator`,
+Notably absent: `enum`, `contextlib`, `random`, `time`, `io`, `copy`, `string`, `struct`, `operator`,
 `inspect`, `logging`, `traceback`, `base64`, `hashlib`, `uuid`, `urllib`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.

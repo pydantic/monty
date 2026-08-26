@@ -146,6 +146,9 @@ exclude = [
     "crates/monty/test_cases/loop__continue_in_function_error.py",
     "crates/monty/test_cases/loop__break_in_if_error.py",
     "crates/monty/test_cases/loop__continue_in_if_error.py",
+    # deliberately calls `reduce` with wrong arity and types to pin its
+    # TypeError messages
+    "crates/monty/test_cases/functools__reduce.py",
     "scripts/startup_performance.py",
     "examples/web_scraper/example_code.py",
 ]

@@ -36,6 +36,9 @@ mod stringize;
 mod types;
 mod value;
 
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub use crate::function::FunctionMetadataFault;
 #[cfg(feature = "ref-count-return")]
 pub use crate::run::RefCountOutput;
 pub use crate::{

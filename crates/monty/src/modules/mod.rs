@@ -19,6 +19,7 @@ pub(crate) mod asyncio;
 pub(crate) mod collections;
 pub(crate) mod dataclasses;
 pub(crate) mod datetime;
+pub(crate) mod functools;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod gc;
 pub(crate) mod itertools;
@@ -63,6 +64,8 @@ pub(crate) enum StandardLib {
     /// The `collections` module providing container datatypes: `deque`,
     /// `namedtuple`, `defaultdict`, and `Counter`.
     Collections,
+    /// The `functools` module providing `reduce`.
+    Functools,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -91,6 +94,7 @@ impl StandardLib {
             StaticStrings::Itertools => Some(Self::Itertools),
             StaticStrings::Dataclasses => Some(Self::Dataclasses),
             StaticStrings::Collections => Some(Self::Collections),
+            StaticStrings::Functools => Some(Self::Functools),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -117,6 +121,7 @@ impl StandardLib {
             Self::Itertools => itertools::create_module(vm),
             Self::Dataclasses => dataclasses::create_module(vm),
             Self::Collections => collections::create_module(vm),
+            Self::Functools => functools::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -135,6 +140,7 @@ pub(crate) enum ModuleFunctions {
     Unicodedata(unicodedata::UnicodedataFunctions),
     Itertools(itertools::ItertoolsFunctions),
     Dataclasses(dataclasses::DataclassesFunctions),
+    Functools(functools::FunctoolsFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -160,6 +166,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Unicodedata(func) => write!(f, "{func}"),
             Self::Itertools(func) => write!(f, "{func}"),
             Self::Dataclasses(func) => write!(f, "{func}"),
+            Self::Functools(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -184,6 +191,7 @@ impl ModuleFunctions {
             Self::Unicodedata(functions) => unicodedata::call(vm, functions, args).map(CallResult::Value),
             Self::Itertools(functions) => itertools::call(vm, functions, args).map(CallResult::Value),
             Self::Dataclasses(functions) => dataclasses::call(vm, functions, args).map(CallResult::Value),
+            Self::Functools(functions) => functools::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

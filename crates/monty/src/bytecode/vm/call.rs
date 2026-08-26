@@ -16,7 +16,7 @@ use crate::{
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
-    function::Function,
+    function::{ExactPositionalCall, Function},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
@@ -40,8 +40,7 @@ use crate::{
 pub(crate) enum CallResult {
     /// Call completed synchronously with a return value.
     Value(Value),
-    /// A new frame was pushed for a defined function call.
-    /// The VM should reload its cached frame state.
+    /// A defined function became the VM's current frame.
     FramePushed,
     /// External function call requested - VM should pause and return to caller.
     /// The `EitherStr` is the name of the external function (interned or heap-owned).
@@ -108,11 +107,18 @@ impl VM<'_> {
     /// Pops the callable and arguments from the stack, calls the function,
     /// and returns the result.
     pub(super) fn exec_call_function(&mut self, arg_count: usize) -> Result<CallResult, RunError> {
-        let args = self.pop_n_args(arg_count);
-        let callable = self.pop();
-        let this = self;
-        defer_drop!(callable, this);
-        this.call_function(callable, args)
+        let callable_index = self.stack.len() - arg_count - 1;
+        if let Value::DefFunction(func_id) = self.stack[callable_index]
+            && let Some(result) = self.try_call_exact_def_function(func_id, callable_index, arg_count)
+        {
+            result
+        } else {
+            let args = self.pop_n_args(arg_count);
+            let callable = self.pop();
+            let this = self;
+            defer_drop!(callable, this);
+            this.call_function(callable, args)
+        }
     }
 
     /// Executes `CallBuiltinFunction` opcode.
@@ -390,7 +396,7 @@ impl VM<'_> {
             CallResult::FramePushed => {
                 // A new frame was pushed for a defined function call - we need to run it
                 // to completion.
-                let stack_depth = this.frames.len();
+                let stack_depth = this.suspended_frames.len();
                 // Mark the frame as an exit point from the `run()` loop
                 this.current_frame_mut().should_return = true;
                 match this.run()? {
@@ -398,7 +404,7 @@ impl VM<'_> {
                     exit => {
                         // Pop frames off the stack from this failed evaluation
                         // (including the one just pushed)
-                        while this.frames.len() >= stack_depth {
+                        while this.suspended_frames.len() >= stack_depth {
                             this.pop_frame();
                         }
                         exit
@@ -442,7 +448,7 @@ impl VM<'_> {
 
     /// Converts a nested VM suspension into a specific synchronous-context error.
     #[cold]
-    fn unsupported_frame_exit(&mut self, ctx: &'static str, exit: FrameExit) -> RunError {
+    pub(crate) fn unsupported_frame_exit(&mut self, ctx: &'static str, exit: FrameExit) -> RunError {
         let error = match &exit {
             FrameExit::Return(_) => unreachable!("return exits are handled above"),
             FrameExit::ExternalCall { function_name, .. } => ExcType::not_implemented(format!(
@@ -742,6 +748,69 @@ impl VM<'_> {
     // Frame Setup
     // ========================================================================
 
+    /// Bypasses argument binding when a direct call matches its cached call plan.
+    fn try_call_exact_def_function(
+        &mut self,
+        func_id: FunctionId,
+        callable_index: usize,
+        arg_count: usize,
+    ) -> Option<Result<CallResult, RunError>> {
+        let func = self.interns.get_function(func_id);
+        match func.exact_positional_call() {
+            Some(ExactPositionalCall::Sync(count)) if count == arg_count => {
+                Some(self.call_exact_sync_function(func_id, callable_index))
+            }
+            Some(ExactPositionalCall::Async(count)) if count == arg_count => {
+                Some(Ok(self.create_exact_coroutine(func_id, callable_index)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Pushes a simple function frame using arguments already present on the VM stack.
+    ///
+    /// Removing the immediate callable shifts its arguments into the parameter
+    /// slots, avoiding argument wrappers, binding, scratch storage, and a copy.
+    fn call_exact_sync_function(&mut self, func_id: FunctionId, callable_index: usize) -> Result<CallResult, RunError> {
+        let call_offset = self.current_offset();
+        let func = self.interns.get_function(func_id);
+        let namespace_size = func.namespace_size;
+        let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
+        let code = &func.code;
+
+        let callable = self.stack.remove(callable_index);
+        debug_assert_exact_callable(&callable, func_id);
+        self.stack
+            .resize_with(callable_index + namespace_size, || Value::Undefined);
+
+        let exc_stack_base = self.exception_stack.len();
+        self.push_frame(CallFrame::new_function(
+            code,
+            callable_index,
+            locals_count,
+            exc_stack_base,
+            func_id,
+            call_offset,
+        ))?;
+
+        Ok(CallResult::FramePushed)
+    }
+
+    /// Creates a coroutine by moving exact positional arguments into its namespace.
+    fn create_exact_coroutine(&mut self, func_id: FunctionId, callable_index: usize) -> CallResult {
+        let func = self.interns.get_function(func_id);
+        let mut namespace = self.stack.split_off(callable_index + 1);
+        namespace.reserve(func.namespace_size - namespace.len());
+        self.install_closure_cells(func, &[], &mut namespace);
+
+        let callable = self.pop();
+        debug_assert_exact_callable(&callable, func_id);
+
+        let coroutine = Coroutine::new(func_id, namespace);
+        let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine));
+        CallResult::Value(Value::Ref(coroutine_id))
+    }
+
     /// Calls a defined function by pushing a new frame or creating a coroutine.
     ///
     /// For sync functions: sets up the function's namespace with bound arguments,
@@ -812,7 +881,9 @@ impl VM<'_> {
     /// transitively captured (pass-through) variable is allocated a slot late
     /// during preparation, outside the contiguous param/cell/free region — so a
     /// positional `push` would place it wrong. Shared by sync calls and
-    /// coroutine creation.
+    /// coroutine creation, including the exact-positional-call fast path
+    /// (which always passes an empty `cells` slice, since it only applies when
+    /// `cell_var_slots`/`free_var_slots` are both empty).
     fn install_closure_cells(&mut self, func: &Function, cells: &[HeapId], namespace: &mut Vec<Value>) {
         namespace.resize_with(func.namespace_size, || Value::Undefined);
 
@@ -1038,6 +1109,16 @@ impl VM<'_> {
             _ => false,
         }
     }
+}
+
+/// Asserts a callable popped off the stack by an exact-positional-call fast
+/// path is the function that fast path was chosen for.
+///
+/// Shared by [`VM::call_exact_sync_function`] and [`VM::create_exact_coroutine`],
+/// which both remove their callable from the stack after already having
+/// dispatched on its `FunctionId` in [`VM::try_call_exact_def_function`].
+fn debug_assert_exact_callable(callable: &Value, func_id: FunctionId) {
+    debug_assert!(matches!(callable, Value::DefFunction(id) if *id == func_id));
 }
 
 /// Centralised dunder dispatch for `__enter__` / `__exit__` (and, when added,

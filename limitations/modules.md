@@ -12,6 +12,7 @@ and no way for sandboxed code to load additional modules.
 | `collections`  | ./collections.md |
 | `dataclasses`  | ./dataclasses.md |
 | `datetime`     | ./datetime.md    |
+| `functools`    | ./functools.md   |
 | `itertools`    | ./itertools.md   |
 | `json`         | ./json.md        |
 | `math`         | ./math.md        |
@@ -34,7 +35,7 @@ production sandboxes never see it.
 
 Common modules that are *not* importable in Monty (non-exhaustive):
 `abc`, `argparse`, `array`, `base64`, `bisect`, `contextlib`, `copy`, `csv`,
-`ctypes`, `decimal`, `enum`, `fractions`, `functools`,
+`ctypes`, `decimal`, `enum`, `fractions`,
 `hashlib`, `heapq`, `hmac`, `http`, `inspect`, `io`,
 `logging`, `multiprocessing`, `operator`, `pickle`, `queue`, `random`,
 `socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,
@@ -42,14 +43,15 @@ Common modules that are *not* importable in Monty (non-exhaustive):
 `zipfile`, `zlib`.
 
 `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` are
-excluded because they would breach the sandbox. Others (`functools`, `enum`)
+excluded because they would breach the sandbox. Others (`enum`, `operator`)
 are unimplemented and may appear over time.
 
 Some available modules cover only part of their CPython surface: `itertools`
-implements seven of its callables, and `collections` only the four types
-above. The absent names are missing from the module namespace rather than
-stubbed, so they fail type checking as well as raising `AttributeError` at
-runtime; see each module's page for the specifics.
+implements eleven of its callables, `functools` only `reduce`, and
+`collections` only the four types above. The absent names are missing from
+the module namespace rather than stubbed, so they fail type checking as well
+as raising `AttributeError` at runtime; see each module's page for the
+specifics.
 
 ## Modules the type checker resolves but the runtime does not
 

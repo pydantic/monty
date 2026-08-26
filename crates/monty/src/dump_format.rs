@@ -26,7 +26,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// rejected instead of decoding as their neighbour. That covers the
 /// interpreter's own types *and* everything reachable from [`Dump`] — notably
 /// `TypeCheckingConfig` in `monty-types`.
-pub const DUMP_VERSION: u16 = 5;
+pub const DUMP_VERSION: u16 = 6;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
@@ -196,7 +196,7 @@ mod tests {
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0xb1f0_7be6_ebf1_9607,
+            0xe6e1_7655_c3fa_47e3,
             "static strings changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(

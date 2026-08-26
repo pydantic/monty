@@ -58,9 +58,9 @@ Monty is that place, without a container or a sandboxing service in the loop.
 
 ## What Monty cannot do
 
-- **Most of the standard library.** Only `asyncio`, `collections`, `dataclasses`, `datetime`, `itertools`, `json`,
-  `math`, `os`, `pathlib`, `re`, `sys`, `typing` and `unicodedata` are importable, and each covers only part of its
-  CPython surface.
+- **Most of the standard library.** Only `asyncio`, `collections`, `dataclasses`, `datetime`, `functools`,
+  `itertools`, `json`, `math`, `os`, `pathlib`, `re`, `sys`, `typing` and `unicodedata` are importable, and each
+  covers only part of its CPython surface.
 - **Third-party packages.** There is no `sys.path` and no site-packages inside the sandbox; supporting PyPI packages is
   not a goal.
 - **Class inheritance.** `class Foo(Bar):` is rejected at parse time, and so are method decorators like `@classmethod`,
