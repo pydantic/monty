@@ -133,20 +133,6 @@ impl<T> StableHeap<T> {
     /// Takes `&self` instead of `&mut self`, enabling allocation while holding shared
     /// borrows to other heap entries. This is the core operation that makes
     /// `Heap::allocate(&self)` possible.
-    ///
-    /// # Safety contract (enforced by caller structure, not runtime checks)
-    ///
-    /// - No `&mut` reference to `pages` or `free_list` exists. Guaranteed because
-    ///   all `&mut self` methods on `HeapEntries` require exclusive access, and the
-    ///   borrow checker prevents calling this `&self` method while any `&mut self`
-    ///   method is active.
-    /// - **New slots** (at index `len`) have never been initialized — no existing
-    ///   reference can point to them, because `get()` requires `index < len`.
-    /// - **Reused slots** (from free list) were freed via `dec_ref` and have no
-    ///   active borrows — the slot was `.take()`n and its ID added to the free list.
-    /// - **Vec growth** (`pages.push(new_page)`) reallocates the page pointer array,
-    ///   not the page contents. Any existing `&T` reference points into a
-    ///   `Box`'s heap allocation, not into the `Vec`'s buffer.
     pub fn allocate(&self, value: T) -> HeapId {
         self.allocate_with_slot(value).0
     }
@@ -231,10 +217,6 @@ impl<T> StableHeap<T> {
 }
 
 /// Allocates a new page of uninitialized slots directly on the heap.
-#[expect(
-    clippy::unnecessary_box_returns,
-    reason = "each page must have a stable heap address independent of the page pointer vector"
-)]
 fn create_page<T>() -> Box<[Slot<T>; PAGE_SIZE]> {
     let raw = Box::into_raw(Box::<[Slot<T>]>::new_uninit_slice(PAGE_SIZE)).cast();
     // SAFETY: [DH] - allocation is known to be exactly PAGE_SIZE slots, so

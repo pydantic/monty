@@ -11,6 +11,8 @@
 use super::*;
 #[cfg(heap_reader_compile_fail_test_smuggle_vm)]
 use crate::bytecode::VM;
+#[cfg(heap_reader_compile_fail_test_smuggle_heap_read)]
+use crate::types::List;
 #[cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)]
 use crate::types::str::allocate_string;
 
