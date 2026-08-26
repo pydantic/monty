@@ -62,7 +62,6 @@ test('a repeated failing feed reports the same diagnostic every time', async (ct
         '  | |         |',
         '  | |         Has type `Literal[1]`',
         '  | Has type `Literal["hello"]`',
-        '  |',
         '',
         '',
       ].join('\n'),
