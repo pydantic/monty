@@ -142,6 +142,15 @@ def make_adder():
     return add
 
 
+def make_concat():
+    bound = []
+
+    def concat(a, b):
+        return a + b + bound
+
+    return concat
+
+
 def make_boom():
     bound = [1]
 
@@ -222,7 +231,7 @@ assert next(past_drop) == [1]
 # The batch-three adaptors. `accumulate` has THREE edges — source, callable and
 # the running total — and the total is reachable only through the adaptor once
 # the first item has been folded in.
-acc_live = itertools.accumulate([[1], [2]], lambda a, b: a + b)
+acc_live = itertools.accumulate([[1], [2]], make_concat())
 next(acc_live)
 bat_live = itertools.batched([[1], [2]], 1)
 next(bat_live)
@@ -237,7 +246,7 @@ next(fill_live)
 
 # The freeing paths: `py_dec_ref_ids` runs only on release, so each of these
 # must be dropped rather than merely held.
-gone_acc = itertools.accumulate([[1], [2]], lambda a, b: a + b)
+gone_acc = itertools.accumulate([[1], [2]], make_concat())
 next(gone_acc)
 gone_acc = None
 gone_bat = itertools.batched([[1], [2]], 1)
