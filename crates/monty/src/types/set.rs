@@ -211,13 +211,10 @@ impl<'h> HeapRead<'h, SetStorage> {
 
     /// Finds the index of the entry equal to `value`, or `None` if absent.
     ///
-    /// Snapshots candidates so each index and value can be validated around
-    /// user `__eq__` without retaining a borrow of the hash table. Only a
-    /// candidate that moved restarts the whole probe; a mutation that merely
-    /// adds colliding values continues with those. Restarts poll the limits,
-    /// since calling back into the VM restarts its dispatch countdown and this
-    /// native loop reaches no checkpoint of its own. See
-    /// [`HeapRead::<Dict>::find_index_hash`] — the two must stay in sync.
+    /// Snapshots candidates so each can be validated around user `__eq__`
+    /// without holding a borrow of the hash table; only one that moved restarts
+    /// the probe. The twin of [`HeapRead::<Dict>::find_index_hash`], which
+    /// carries the full reasoning — the two must stay in sync.
     fn find_index(&self, value: &Value, hash: u64, vm: &mut VM<'h>) -> RunResult<Option<usize>> {
         // When no comparison can dispatch to user code, nothing can mutate the
         // set mid-probe: skip revalidation and the miss continuation, as in
@@ -298,9 +295,7 @@ impl<'h> HeapRead<'h, SetStorage> {
     ///
     /// The twin of [`HeapRead::<Dict>::probe_after_compare`]: re-reads the
     /// candidates until a pass finds nothing new, never re-running user
-    /// `__eq__` on a value, and off the ordinary lookup path. As in the dict
-    /// twin, inline-compared native pairs may be re-compared — deliberate,
-    /// see there.
+    /// `__eq__` on a value. Inline-compared native pairs may repeat — see there.
     fn probe_after_compare(
         &self,
         hash: u64,

@@ -737,17 +737,13 @@ impl<'h> HeapRead<'h, Dict> {
             .ok_or_else(|| ExcType::type_error_unhashable_dict_key(&key.py_type_name(vm)))?
             .raw();
 
-        // Candidate snapshots avoid holding the index-table borrow while
-        // `py_eq` runs user code. Each is checked on both sides of that call so
-        // a mutation cannot turn a queued index into an unrelated comparison;
-        // only a candidate that moved restarts the whole probe, as in CPython's
-        // `lookdict`. Restarts poll the limits — this native loop calls back into
-        // the VM, which restarts the dispatch countdown, so it reaches no
-        // checkpoint of its own.
-        //
-        // When neither the key nor any candidate can dispatch to user code,
-        // no comparison can mutate the dict, so revalidation and the miss
-        // continuation are skipped — this is the common (str/int keys) path.
+        // Candidates are snapshotted so `py_eq` can run without the index-table
+        // borrow held, and revalidated either side of it: only one that moved
+        // restarts the probe, as in CPython's `lookdict`. Restarts poll the
+        // limits, since each callback restarts the VM's dispatch countdown.
+
+        // False for anything whose `__eq__` could mutate the dict; when true,
+        // revalidation and the miss continuation are skipped (the str/int path).
         let key_native = eq_is_native(key, vm.heap);
 
         'restart: loop {
@@ -828,16 +824,10 @@ impl<'h> HeapRead<'h, Dict> {
     /// mutated the dict and added a colliding key.
     ///
     /// Re-reads the candidates until a pass finds nothing new, skipping keys
-    /// already compared so no `__eq__` runs twice — CPython, walking the live
-    /// probe chain, never repeats one either. Only reached once user code has
-    /// run, so it is off the ordinary lookup path.
-    ///
-    /// Native pairs compared inline before the first deferral are not in the
-    /// seen set and may be re-compared here. That is deliberate: such
-    /// comparisons are side-effect-free and deterministic (the no-repeat
-    /// invariant protects user `__eq__` observability, which native pairs
-    /// lack), and recording them would put clone and identity bookkeeping on
-    /// the pure-native fast path.
+    /// already compared so no user `__eq__` runs twice, as CPython's live probe
+    /// chain does. Inline-compared native pairs are deliberately left out of
+    /// the seen set: repeating one is side-effect-free, and tracking them would
+    /// put clone and identity bookkeeping on the pure-native fast path.
     fn probe_after_compare(
         &self,
         hash: u64,
