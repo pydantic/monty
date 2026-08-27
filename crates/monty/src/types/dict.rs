@@ -782,13 +782,16 @@ impl<'h> HeapRead<'h, Dict> {
                     }
                 })
                 .copied();
+            // Guarded before the early returns below: the deferred keys are
+            // owned, and only the `candidate_indices.is_empty()` condition in
+            // the predicate above keeps them empty on the `found` path.
+            defer_drop!(candidate_keys, vm);
             if let Some(index) = found {
                 return Ok((Some(index), hash));
             }
             if candidate_indices.is_empty() {
                 return Ok((None, hash));
             }
-            defer_drop!(candidate_keys, vm);
 
             for (&candidate_index, candidate_key) in candidate_indices.iter().zip(candidate_keys.iter()) {
                 if !all_native && !self.probe_valid(candidate_index, hash, candidate_key, vm) {

@@ -253,13 +253,14 @@ impl<'h> HeapRead<'h, SetStorage> {
                     }
                 })
                 .copied();
+            // Guarded before the early returns — see the dict twin.
+            defer_drop!(candidate_values, vm);
             if let Some(index) = found {
                 return Ok(Some(index));
             }
             if candidate_indices.is_empty() {
                 return Ok(None);
             }
-            defer_drop!(candidate_values, vm);
 
             for (&candidate_index, candidate_value) in candidate_indices.iter().zip(candidate_values.iter()) {
                 if !all_native && !self.probe_valid(candidate_index, hash, candidate_value, vm) {
