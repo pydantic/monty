@@ -65,12 +65,12 @@ enum AwaitResult {
 ///
 /// A spawned task whose exception nobody could receive is discarded with no
 /// successor loaded, leaving the parked frame `cleanup_current_task` installs,
-/// which dispatch must not execute. The surviving tasks are parked on external
-/// calls, so the correct move is to hand those back to the host.
+/// which dispatch must not execute. See [`VM::yield_parked`] for what is
+/// handed back.
 macro_rules! yield_if_parked {
     ($self:expr) => {
         if $self.current_frame.is_parked {
-            return Ok(FrameExit::ResolveFutures($self.scheduler.pending_call_ids()));
+            return $self.yield_parked();
         }
     };
 }
@@ -2072,6 +2072,24 @@ impl<'h> VM<'h> {
     pub(crate) fn __finalize_tasks_for_tests(&mut self) {
         self.cleanup_current_task();
         self.scheduler.cleanup(self.heap);
+    }
+
+    /// Hands the surviving tasks' pending calls back to the host, for
+    /// [`yield_if_parked`] when dispatch has no frame left to run.
+    ///
+    /// Those tasks are parked on external calls, so there is normally
+    /// something to hand over. With nothing pending there is no way forward
+    /// either: resuming would fail the same way one round-trip later, blaming
+    /// the scheduler rather than the discarded task that emptied it.
+    fn yield_parked(&self) -> Result<FrameExit, RunError> {
+        let pending_call_ids = self.scheduler.pending_call_ids();
+        if pending_call_ids.is_empty() {
+            Err(RunError::internal(
+                "asyncio scheduler stalled: exception discarded with no task to run and no pending external calls",
+            ))
+        } else {
+            Ok(FrameExit::ResolveFutures(pending_call_ids))
+        }
     }
 
     /// Returns the source position for the instruction currently executing.

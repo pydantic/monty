@@ -81,8 +81,6 @@ Which task runs next also differs.
 A task resumed by a host result runs to its next suspension before any other ready task gets a turn, where CPython's
 loop takes them in the order they were woken.
 Among the tasks that do resume, only the ordering differs.
-A task parked with nothing left to wake it never resumes at all, and a result routed to an already-failed
-`gather` is discarded.
 This applies to all async code, not only to siblings of a failed `gather`.
 
 ### `gather` does not start its children until it is awaited
