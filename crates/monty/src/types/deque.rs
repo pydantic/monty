@@ -418,7 +418,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         if len != other.get(vm.heap).len() {
             return Ok(Some(false));
         }
-        let start_states = (self.get(vm.heap).state(), other.get(vm.heap).state());
+        let start_states = states(self, &other, vm);
         // Charge a recursion level: two distinct cyclic deques (`a.append(a);
         // b.append(b); a == b`) re-enter here per level and would otherwise
         // overflow the host stack. A deque walks by index, so it charges directly.
@@ -451,7 +451,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
         let self_len = self.get(vm.heap).len();
         let other_len = other.get(vm.heap).len();
-        let start_states = (self.get(vm.heap).state(), other.get(vm.heap).state());
+        let start_states = states(self, other, vm);
         let mut guard = vm.recursion_guard()?;
         let vm = &mut *guard;
         for i in 0..self_len.min(other_len) {
