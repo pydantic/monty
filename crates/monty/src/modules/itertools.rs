@@ -537,8 +537,9 @@ fn call_batched(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Needs `&mut VM` because `as_int` dispatches `__index__`, re-entering the
 /// interpreter; the caller's other arguments are owned, so that cannot
 /// invalidate them. `as_int` raises `OverflowError` past `i64` as the
-/// `Py_ssize_t` conversion does, leaving the saturation below to bite only on a
-/// 32-bit host.
+/// `Py_ssize_t` conversion does, and the bound below reports the same for the
+/// range between `isize` and `i64` that only a 32-bit host (`wasm32-wasip1`)
+/// has — `batched('AB', 2**40)` there.
 fn batched_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
     let n = match value {
         Value::Bool(b) => i64::from(*b),
@@ -547,7 +548,11 @@ fn batched_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
     if n < 1 {
         Err(ExcType::batched_bad_n())
     } else {
-        Ok(usize::try_from(n).unwrap_or(usize::MAX))
+        // CPython's `n` is a `Py_ssize_t`, so `isize` is the ceiling to check
+        // against; the sign is already known positive.
+        isize::try_from(n)
+            .map(isize::cast_unsigned)
+            .map_err(|_| ExcType::overflow_c_ssize_t())
     }
 }
 

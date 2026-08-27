@@ -782,6 +782,14 @@ try:
 except TypeError as exc:
     assert str(exc) == "'str' object cannot be interpreted as an integer"
 
+# `n` is a `Py_ssize_t`, so one past it overflows rather than saturating. On a
+# 64-bit host that ceiling is `i64`; a 32-bit one rejects from `2**31` up too.
+try:
+    itertools.batched([1], 2**70)
+    assert False, 'expected batched to reject an n past Py_ssize_t'
+except OverflowError as exc:
+    assert str(exc) == 'Python int too large to convert to C ssize_t'
+
 # `strict` rejects the short final batch, and latches rather than retrying.
 strict_batched = itertools.batched('ABCDE', 2, strict=True)
 assert next(strict_batched) == ('A', 'B')
