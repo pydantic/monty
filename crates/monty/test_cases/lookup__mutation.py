@@ -600,3 +600,48 @@ class ListTruncater:
 lst_g[1] = ListTruncater()
 assert (lst_g == lst_h) is False
 assert len(lst_g) == 2
+
+
+# === a user `__eq__` on the probe still runs against native keys ===
+class MatchesNative:
+    def __init__(self, target):
+        self.target = target
+
+    def __hash__(self):
+        return hash(self.target)
+
+    def __eq__(self, other):
+        return other == self.target
+
+
+assert {1: 'int'}[MatchesNative(1)] == 'int'
+assert {'abc': 'str'}[MatchesNative('abc')] == 'str'
+assert MatchesNative(1) in {1}
+assert MatchesNative('abc') in {'abc'}
+
+
+# === a native candidate ahead of a user one keeps CPython's probe order ===
+mixed_calls = []
+
+
+class Colliding:
+    def __init__(self, name):
+        self.name = name
+
+    def __hash__(self):
+        return hash(7)
+
+    def __eq__(self, other):
+        mixed_calls.append(self.name)
+        return False
+
+
+mixed = {7: 'native', Colliding('stored'): 'user'}
+mixed_calls.clear()  # the colliding insert above probes the chain
+# the native pair is compared inline, reaching no user code
+assert mixed[7] == 'native'
+assert mixed_calls == []
+# a miss compares the stored key on the left, so the native entry reflects onto
+# the probe and the user entry runs its own `__eq__`
+assert mixed.get(Colliding('probe'), 'MISS') == 'MISS'
+assert mixed_calls == ['probe', 'stored']
