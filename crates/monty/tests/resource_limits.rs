@@ -794,8 +794,9 @@ Mutator() in container
 /// but never reach the continuation, so timing misses against finds on the
 /// same container isolates exactly the continuation's cost — the ratio is
 /// independent of machine speed, coverage instrumentation, and feature
-/// flags. Healthy misses cost about the same as finds (~1.4x); the old
-/// linear seen-scan cost ~10x.
+/// flags. Measured: healthy ~1.2x, the old linear seen-scan ~4.2x. The 3x
+/// threshold therefore sits closer to the regression than to a false alarm —
+/// raise it and the test stops catching the bug.
 #[test]
 fn colliding_lookup_is_not_quadratic() {
     let build_template = r"
