@@ -686,6 +686,33 @@ spent_zip = itertools.zip_longest([1], [2, 3])
 assert list(spent_zip) == [(1, 2), (None, 3)]
 assert list(spent_zip) == []
 
+
+# A source that steps the same `zip_longest` from inside its own `__next__`
+# drains the other slots before the outer round reaches them, so the outer round
+# pads them. What the adaptor does AFTER that row diverges — see
+# `limitations/itertools.md`.
+class Reentrant:
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == 1:
+            try:
+                next(reentrant_zip)
+                assert False, 'expected the nested round to exhaust every slot'
+            except StopIteration:
+                pass
+            return 'a'
+        raise StopIteration
+
+
+reentrant_zip = itertools.zip_longest(Reentrant(), iter([]), iter([]))
+assert next(reentrant_zip) == ('a', None, None)
+
 # === the new adaptors against a stuttering source ===
 # `batched` clears its source only on an EMPTY batch, so a short batch caused
 # by a transient StopIteration is yielded and the source driven again.

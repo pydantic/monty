@@ -62,6 +62,14 @@ raise `AttributeError` at runtime.
   raises `zip_longest() got an unexpected keyword argument` with no name —
   CPython hand-rolls that check rather than going through a parser family, and
   is alone in omitting it. Every other adaptor's wording matches.
+- **A re-entrant `zip_longest` stops instead of padding forever.** A source
+  that steps the same `zip_longest` from inside its own `__next__` can exhaust
+  the remaining slots before the outer round reaches them. Both agree on the
+  row that outer round yields; from the next one on Monty raises
+  `StopIteration`, having seen every slot go spent, while CPython drives its
+  `numactive` count below zero and so yields an all-`fillvalue` tuple on every
+  later `next()`, without end. Only re-entrancy reaches this: an ordinary
+  source cannot run while the adaptor that owns it is mid-round.
 - **Crossing the host boundary loses the repr.** A `count` / `repeat` object
   returned to the host arrives as `<itertools.count object>` /
   `<itertools.repeat object>` rather than its in-sandbox `repr()`
