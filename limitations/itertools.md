@@ -109,8 +109,9 @@ over a long source is the same kind of non-yielding loop and polls
 `max_duration` the same way. It also preflights one batch against `max_memory`
 from the source's size hint, capped at `n` — an exact-hint source
 (`batched(range(10**9), 10**9)`) therefore raises `MemoryError` up front rather
-than while filling. A source with no size hint gets no preflight and falls back
-to the limit checks above.
+than while filling. A source with no size hint gets no preflight, so the fill
+loop polls `max_memory` as well as `max_duration` on the same amortized
+cadence — `batched(count(), 10**9)` raises `MemoryError` while filling.
 
 `cycle(iterable)` must buffer every item it has seen so far in order to replay
 them, and that buffer is charged against `max_memory` as it grows, so cycling

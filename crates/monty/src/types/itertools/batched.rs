@@ -76,9 +76,11 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
     let (batch, vm) = batch_guard.as_parts_mut();
     while batch.len() < n {
         // A large `n` fills for a long time without reaching the VM's dispatch
-        // checkpoint, so `max_duration` is only enforceable from in here.
-        // `batch.len()` is monotonic, so it keys the amortization.
-        vm.heap.tracker.check_time_every(batch.len())?;
+        // checkpoint, so both limits are only enforceable from in here. Memory
+        // as well as time because a hint-less source (`count()`) gets no
+        // preflight above, and a Rust-side source reaches no checkpoint of its
+        // own. `batch.len()` is monotonic, so it keys the amortization.
+        vm.heap.tracker.check_memory_time_every(batch.len())?;
         let item = {
             let mut read = source.read(vm);
             read.py_next(vm)

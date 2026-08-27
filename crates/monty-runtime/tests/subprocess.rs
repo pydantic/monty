@@ -776,6 +776,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
             16_032_590,
         ),
+        // A hint-less source gets no preflight, so only the fill loop's own
+        // poll can stop `batched` short of the hard limit.
+        (
+            "import itertools\nnext(itertools.batched(itertools.count(), 1_000_000_000))",
+            1_081_395,
+        ),
     ];
 
     for (code, expected) in cases {
