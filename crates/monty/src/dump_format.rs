@@ -215,12 +215,12 @@ mod tests {
 
         assert_eq!(
             variant_order_fingerprint(Type::VARIANTS),
-            0x1df7_cdc5_e099_9f0e,
+            0x8329_9d5d_712d_8aef,
             "Type variants changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0x3033_7e3c_d7aa_541f,
+            0x2d60_6c6b_5b58_dcf2,
             "MontyType variants changed for dump version {DUMP_VERSION}"
         );
     }

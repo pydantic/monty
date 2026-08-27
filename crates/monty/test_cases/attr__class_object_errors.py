@@ -13,8 +13,11 @@ _classes = [
     (frozenset, 'frozenset'),
     (bytes, 'bytes'),
     (range, 'range'),
+    (datetime.date, 'datetime.date'),
     (datetime.datetime, 'datetime.datetime'),
     (datetime.time, 'datetime.time'),
+    (datetime.timedelta, 'datetime.timedelta'),
+    (datetime.timezone, 'datetime.timezone'),
 ]
 
 # === attribute access ===

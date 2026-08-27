@@ -108,14 +108,6 @@ a named zone against — CPython's own `t.utcoffset()` returns `None` there —
 so there is no offset to carry. An aware `datetime` is not affected: it has a
 date, and its zone resolves through `utcoffset(dt)`.
 
-## Type names
-
-`type(t).__name__` is `'datetime.time'`, where CPython gives `'time'`. Monty
-stores one name per type and uses the qualified spelling for `time`, so it
-matches CPython in `repr(datetime.time)` and in every type-naming error
-message and pays only on `__name__`. `datetime` diverges the same way
-(`'datetime.datetime'`); `date` and `timedelta` do not.
-
 ## `timedelta`
 
 Constructor: `timedelta(days=0, seconds=0, microseconds=0, *,
@@ -148,6 +140,19 @@ Monty, but the type error in CPython (`timezone() argument 1 must be
 datetime.timedelta, not str`). CPython's parser type-checks `offset` while
 binding, whereas Monty validates the `timedelta` in the constructor body
 after binding completes.
+
+## Type names
+
+All five classes are named with their `datetime.` prefix — `datetime.date`,
+`datetime.datetime`, `datetime.time`, `datetime.timedelta`,
+`datetime.timezone` — which is the `tp_name` CPython gives these C types and so
+the spelling its `repr(T)` and every type-naming error message use
+(`unsupported operand type(s)`, `object is not callable`, `type object ... has
+no attribute`). Monty matches all of those and pays only on `__name__`, where
+CPython reports the bare `'date'`, `'datetime'`, `'time'`, `'timedelta'`,
+`'timezone'`. This is the same trade `deque` and `defaultdict` make (see
+./collections.md); code that compares `__name__` or parses a type name out of
+an error message may need to accept either spelling.
 
 ## Formatting
 

@@ -61,10 +61,17 @@ pub enum Type {
     Float,
     Range,
     Slice,
+    /// The four `datetime` classes are qualified like `collections.deque`:
+    /// this is the `tp_name` CPython gives these C types, so it is the
+    /// spelling its reprs and type-naming error messages use. Only `__name__`
+    /// diverges — see `limitations/datetime.md`.
+    #[strum(serialize = "datetime.date")]
     Date,
     #[strum(serialize = "datetime.datetime")]
     DateTime,
+    #[strum(serialize = "datetime.timedelta")]
     TimeDelta,
+    #[strum(serialize = "datetime.timezone")]
     TimeZone,
     Str,
     Bytes,

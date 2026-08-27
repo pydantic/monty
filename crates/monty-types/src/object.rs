@@ -799,10 +799,16 @@ pub enum MontyType {
     Float,
     Range,
     Slice,
+    /// The four `datetime` classes carry the qualified names the runtime
+    /// `Type` uses (`datetime.date`, ...) rather than bare `date`, so a type
+    /// object keeps one name either side of the boundary.
+    #[strum(serialize = "datetime.date")]
     Date,
     #[strum(serialize = "datetime.datetime")]
     DateTime,
+    #[strum(serialize = "datetime.timedelta")]
     TimeDelta,
+    #[strum(serialize = "datetime.timezone")]
     TimeZone,
     Str,
     Bytes,

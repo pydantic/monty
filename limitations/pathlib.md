@@ -6,6 +6,12 @@ even when the host is Windows. `PurePath`, `PurePosixPath`, `PureWindowsPath`,
 `PosixPath`, `WindowsPath` are not separately exposed; the printed `repr`
 of a `Path` is `PosixPath(...)` for compatibility.
 
+Because the class object and its instances share one type, the class object
+answers to the instance name: `pathlib.Path.__name__` and `repr(pathlib.Path)`
+give `PosixPath` / `<class 'PosixPath'>`, and `pathlib.Path.nonexistent` raises
+`type object 'PosixPath' has no attribute 'nonexistent'`, where CPython names
+`Path` (the instance-level spellings, e.g. `Path('/a') / 1`, match CPython).
+
 ## Construction
 
 `Path(*segments)` works. Each segment may be a `str` or another `Path`.

@@ -82,9 +82,9 @@ no warnings machinery.
 `list.nonexistent` raises `AttributeError: type object 'list' has no attribute
 'nonexistent'`, naming the class rather than the metaclass, and calling it
 (`list.nonexistent()`) reports the same message. Both use Monty's name for the
-class, which differs from CPython's for four of them: `date`, `timedelta`
-and `timezone` are reported without their `datetime.` prefix, and
-`pathlib.Path` reports `PosixPath` (see ./pathlib.md).
+class, which differs from CPython's for one builtin: `pathlib.Path` reports
+`PosixPath`, because Monty has a single type where CPython has the `Path`
+class and its `PosixPath` instances (see ./pathlib.md).
 
 ## Traceback behaviour
 
