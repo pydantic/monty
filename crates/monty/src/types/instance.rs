@@ -12,10 +12,8 @@ use crate::{
         BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
         HeapReadOutput, heap_read_ref_as_field_mut,
     },
-    identity::Identity,
     intern::Interns,
     modules::dataclasses::{self, DataclassHash},
-    types::allocate_string,
     value::{EitherStr, Value},
 };
 
@@ -205,9 +203,25 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     }
 
     /// Dispatches to a user or synthesized `__repr__`, falling back to the
-    /// identity-bearing default representation.
+    /// identity-bearing default representation. The dataclass form registers
+    /// the instance in `heap_ids`, so a field pointing back renders `...`.
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        instance_repr_fmt(self.id(), f, vm, heap_ids)
+        let self_id = self.id();
+        if let Some(s) = instance_call_str_dunder(self_id, "__repr__", vm)? {
+            defer_drop!(s, vm);
+            Ok(f.write_str(s.to_str(vm)?)?)
+        } else {
+            let class_id = instance_class(self_id, vm);
+            match dataclasses::dataclass_fields(class_id, vm) {
+                Some(field_names) => {
+                    heap_ids.insert(self_id);
+                    let result = dataclasses::dataclass_repr_fmt(self_id, &field_names, f, vm, heap_ids);
+                    heap_ids.remove(&self_id);
+                    result
+                }
+                None => self.py_default_repr_fmt(f, vm),
+            }
+        }
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
@@ -485,38 +499,10 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> Opt
 /// Produces `repr(instance)`, dispatching to a user `__repr__` if the class
 /// defines one, otherwise the default `<ClassName object at 0x..>`.
 pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
-    // Top of a repr, so the cycle set starts empty.
-    let mut s = String::new();
-    let mut heap_ids = LazyHeapSet::default();
-    instance_repr_fmt(self_id, &mut s, vm, &mut heap_ids)?;
-    Ok(allocate_string(s, vm.heap))
-}
-
-/// Writes an instance's `repr` into `f`: a user `__repr__` wins, then the
-/// synthesized dataclass form, then the `<Foo object at 0x..>` default.
-///
-/// The dataclass form registers the instance in the *caller's* `heap_ids` for
-/// its duration, so a field pointing back renders `...` rather than nesting.
-pub(crate) fn instance_repr_fmt(
-    self_id: HeapId,
-    f: &mut impl Write,
-    vm: &mut VM<'_>,
-    heap_ids: &mut LazyHeapSet,
-) -> RunResult<()> {
-    if let Some(s) = instance_call_str_dunder(self_id, "__repr__", vm)? {
-        defer_drop!(s, vm);
-        return Ok(f.write_str(s.to_str(vm)?)?);
-    }
-    let class_id = instance_class(self_id, vm);
-    match dataclasses::dataclass_fields(class_id, vm) {
-        Some(field_names) => {
-            heap_ids.insert(self_id);
-            let result = dataclasses::dataclass_repr_fmt(self_id, &field_names, f, vm, heap_ids);
-            heap_ids.remove(&self_id);
-            result
-        }
-        None => Ok(f.write_str(&default_repr(self_id, vm))?),
-    }
+    let HeapReadOutput::Instance(instance) = vm.heap.read(self_id) else {
+        unreachable!("instance_repr called on non-instance heap value")
+    };
+    instance.py_repr(vm)
 }
 
 /// Produces `str(instance)`, dispatching to a user `__str__` if defined, else
@@ -641,16 +627,6 @@ pub(crate) fn class_dunder<'v>(class_id: HeapId, dunder: &str, vm: &'v VM<'_>) -
         HeapData::Class(class) => class.namespace().get_by_str(dunder, vm.heap, vm.interns),
         _ => None,
     }
-}
-
-/// The default `repr` for an instance with no user `__repr__`.
-fn default_repr(self_id: HeapId, vm: &mut VM<'_>) -> String {
-    let class_id = instance_class(self_id, vm);
-    format!(
-        "<{} object at 0x{:x}>",
-        class_name(class_id, vm.heap, vm.interns),
-        Identity::from_heap_id(self_id).encoded()
-    )
 }
 
 /// Returns the `HeapId` of `self_id`'s class object.
