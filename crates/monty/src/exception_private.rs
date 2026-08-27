@@ -946,6 +946,20 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("reduce() arg 2 must support iteration")
     }
 
+    /// Creates the TypeError `functools.partial()` raises when called with no
+    /// positional argument, so there is no callable to wrap.
+    #[must_use]
+    fn partial_needs_argument() -> RunError {
+        Self::type_error("type 'partial' takes at least one argument")
+    }
+
+    /// Creates the TypeError `functools.partial()` raises for a first argument
+    /// that is not callable.
+    #[must_use]
+    fn partial_not_callable() -> RunError {
+        Self::type_error("the first argument must be callable")
+    }
+
     /// Creates a TypeError for the right operand of `in` / `not in` supporting
     /// neither `__contains__` nor iteration.
     ///

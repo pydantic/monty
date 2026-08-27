@@ -922,6 +922,9 @@ pub enum MontyType {
     Object,
     #[strum(serialize = "datetime.time")]
     Time,
+    /// `functools.partial`, qualified the way CPython's `tp_name` is.
+    #[strum(serialize = "functools.partial")]
+    Partial,
 }
 
 impl fmt::Display for MontyType {

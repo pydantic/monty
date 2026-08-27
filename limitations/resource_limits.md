@@ -133,12 +133,12 @@ indistinguishable from a stack overflow.
   native Rust call stack rather than the heap-allocated frame stack used by
   ordinary function calls. This includes `map()`, `filter()`,
   `sorted()`/`list.sort(key=...)`, `min()`/`max(key=...)`, recursive
-  `__repr__`/`__str__`, and non-plain-function `__init__` values that recurse
-  during construction. Native re-entry is capped independently at a lower
-  fixed depth than the 1000-frame Python limit, so Monty raises
-  `RecursionError` before a native stack overflow would abort the process. See
-  the `__repr__`/`__str__` entry in ./classes.md for the main
-  user-visible divergence this causes.
+  `__repr__`/`__str__`, non-plain-function `__init__` values that recurse
+  during construction, and calling a `functools.partial`. Native re-entry is
+  capped independently at a lower fixed depth than the 1000-frame Python
+  limit, so Monty raises `RecursionError` before a native stack overflow would
+  abort the process. See the `__repr__`/`__str__` entry in ./classes.md for
+  the main user-visible divergence this causes.
 
 ## Time
 

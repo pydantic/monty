@@ -750,7 +750,12 @@ fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut 
 fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
     match value {
         Value::DefFunction(_) => true,
-        Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::Closure(_) | HeapData::FunctionDefaults(_)),
+        Value::Ref(id) => matches!(
+            vm.heap.get(*id),
+            // `functools.partial` is a descriptor in CPython 3.14 too, and binds
+            // the instance the same way: after the arguments it already carries.
+            HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::Partial(_)
+        ),
         _ => false,
     }
 }

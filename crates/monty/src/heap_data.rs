@@ -134,6 +134,8 @@ macro_rules! heap_payloads {
             /// Appended here rather than beside `DateTime` because this list is
             /// append-only (see the note above).
             Time(inline $crate::types::time::Time),
+            /// A `functools.partial` object.
+            Partial(boxed $crate::types::Partial),
         }
     };
 }
@@ -207,7 +209,8 @@ impl HeapData {
             | Self::Module(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
-            | Self::ExternalFuture(_) => true,
+            | Self::ExternalFuture(_)
+            | Self::Partial(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
             // cannot close a cycle. Move one up if it gains a container-valued field.
             Self::Str(_)
@@ -241,7 +244,12 @@ impl HeapData {
     pub(crate) fn is_callable(&self) -> bool {
         matches!(
             self,
-            Self::Class(_) | Self::BoundMethod(_) | Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_)
+            Self::Class(_)
+                | Self::BoundMethod(_)
+                | Self::Closure(_)
+                | Self::FunctionDefaults(_)
+                | Self::ExtFunction(_)
+                | Self::Partial(_)
         )
     }
 
@@ -260,6 +268,7 @@ impl HeapData {
             Self::Tuple(_) | Self::NamedTuple(_) => Type::Tuple,
             Self::NamedTupleClass(_) => Type::Type,
             Self::Dict(_) => Type::Dict,
+            Self::Partial(_) => Type::Partial,
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,
             Self::DictValuesView(_) => Type::DictValues,
@@ -459,6 +468,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::SetIterator($value) => $body,
             Self::CallableIterator($value) => $body,
             Self::Itertools($value) => $body,
+            Self::Partial($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
             Self::NamedTupleClass($value) => $body,
@@ -967,6 +977,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::Closure(_)
             | Self::FunctionDefaults(_)
             | Self::ExtFunction(_)
+            | Self::Partial(_)
             | Self::Cell(_)
             | Self::Exception(_)
             | Self::LongInt(_)

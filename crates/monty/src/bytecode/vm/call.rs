@@ -24,7 +24,7 @@ use crate::{
     os_dispatch::{PendingOsEffect, release_pending_effect},
     types::{
         Dict, Instance, PyTrait, Type, bytes::call_bytes_method, construct_namedtuple, instance::class_name,
-        str::call_str_method,
+        partial::partial_call_args, str::call_str_method,
     },
     value::{EitherStr, Value},
 };
@@ -540,6 +540,30 @@ impl VM<'_> {
             HeapData::ExtFunction(function) => {
                 let name = function.clone_name();
                 return Ok(CallResult::External(name, args));
+            }
+            // The bound arguments are lifted out and the heap borrow released
+            // before dispatching, so the wrapped callable may reach this same
+            // partial again.
+            HeapData::Partial(partial) => {
+                let (func, bound_args, bound_keywords) = partial.clone_parts(self);
+                // A partial stored as a class attribute binds as a `BoundMethod`
+                // whose `__func__` is a partial, so this dispatch nests on the
+                // native stack without ever pushing a VM frame. Charge it against
+                // the native re-entry budget, which is what keeps such a chain
+                // bounded by `RecursionError` rather than a stack overflow.
+                if let Err(err) = self.enter_run_reentry() {
+                    // Bailing before `partial_call_args` takes ownership, so
+                    // reclaim what was lifted out of the partial as well as the
+                    // call's own arguments.
+                    (func, (bound_args, bound_keywords)).drop_with(self);
+                    args.drop_with(self);
+                    return Err(err.into());
+                }
+                let mut guard = RunReentryGuard::new(self);
+                let this = &mut *guard;
+                defer_drop!(func, this);
+                let args = partial_call_args(bound_args, bound_keywords, args, this);
+                return this.call_function(func, args);
             }
             _ => {
                 // Coupling check: dispatch rejected this Ref, so the heap-side

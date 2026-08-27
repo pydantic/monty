@@ -719,14 +719,16 @@ pub struct VM<'h> {
     /// `call_sync_function`, so one shared buffer is safe under recursion.
     namespace_scratch: Vec<Value>,
     /// Remaining native Rust call-stack re-entry budget, counted down from
-    /// [`recursion::MAX_RUN_REENTRY_DEPTH`] only around `evaluate_function`'s
-    /// nested call into [`Self::run`] (the one place the interpreter recurses
-    /// on its own stack instead of switching `current_frame`).
+    /// [`recursion::MAX_RUN_REENTRY_DEPTH`] around the two places the
+    /// interpreter recurses on its own stack instead of switching
+    /// `current_frame`: `evaluate_function`'s nested call into [`Self::run`],
+    /// and `call_heap_callable`'s re-dispatch through a `functools.partial`.
     ///
-    /// Not serialized: a nested `run()` never reaches a snapshot boundary (its
-    /// non-`Return` exits are converted to `NotImplementedError` in
-    /// `evaluate_function`), so the budget is always full at a snapshot;
-    /// `debug_assert!`-checked in [`Self::snapshot`].
+    /// Not serialized, because neither site is still charged at a snapshot
+    /// boundary: a nested `run()` never reaches one (its non-`Return` exits
+    /// become `NotImplementedError` in `evaluate_function`), and a partial
+    /// wrapping an external function releases its level as the suspending
+    /// `CallResult` is returned. `debug_assert!`-checked in [`Self::snapshot`].
     run_reentry_depth: u8,
 
     /// Per-run cache of compiled patterns for module-level `re.*` calls. Not
@@ -880,7 +882,7 @@ impl<'h> VM<'h> {
         debug_assert_eq!(
             self.run_reentry_depth,
             recursion::MAX_RUN_REENTRY_DEPTH,
-            "VM snapshotted while inside a nested evaluate_function re-entry"
+            "VM snapshotted while inside a nested native re-entry"
         );
         debug_assert!(
             !self.current_frame.is_parked || self.suspended_frames.is_empty(),

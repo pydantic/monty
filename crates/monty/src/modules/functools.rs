@@ -1,6 +1,6 @@
 //! Implementation of Python's `functools` module.
 //!
-//! A subset so far, currently just `reduce`. See
+//! A subset so far, currently `reduce` and `partial`. See
 //! `limitations/functools.md` for what diverges from CPython. Unimplemented
 //! names are absent from the namespace rather than stubbed, so they raise
 //! `AttributeError` up front.
@@ -9,17 +9,21 @@ use std::mem;
 
 use crate::{
     args::{ArgValues, FromArgs},
+    builtins::Builtins,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::Module,
+    types::{Module, Type},
     value::Value,
 };
 
 /// `functools` module functions, each a Python-visible callable.
+///
+/// `partial` is absent because it is exposed as a type object rather than a
+/// function, so `type(p) is functools.partial` holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FunctoolsFunctions {
@@ -36,6 +40,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     module.set_attr(
         StaticStrings::Reduce,
         Value::ModuleFunction(ModuleFunctions::Functools(FunctoolsFunctions::Reduce)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::Partial,
+        Value::Builtin(Builtins::Type(Type::Partial)),
         vm,
     );
 

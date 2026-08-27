@@ -115,6 +115,27 @@ impl ArgValues {
         }
     }
 
+    /// Builds an `ArgValues` from split parts, collapsing to the small-arity
+    /// variants the way [`VM::pop_n_args`](crate::bytecode::VM) does.
+    ///
+    /// Anything assembling arguments itself rather than popping them off the
+    /// stack must go through this. `get_one_arg` and its siblings match only
+    /// `Empty`/`One`/`Two`, so a hand-built `ArgsKargs` carrying empty kwargs
+    /// makes every builtin using them report a bogus arity error.
+    pub(crate) fn from_parts(mut args: Vec<Value>, kwargs: KwargsValues) -> Self {
+        match args.len() {
+            _ if !kwargs.is_empty() => Self::ArgsKargs { args, kwargs },
+            0 => Self::Empty,
+            1 => Self::One(args.pop().expect("length checked")),
+            2 => {
+                let b = args.pop().expect("length checked");
+                let a = args.pop().expect("length checked");
+                Self::Two(a, b)
+            }
+            _ => Self::ArgsKargs { args, kwargs },
+        }
+    }
+
     /// Prepends a value as the first positional argument.
     ///
     /// Used to insert `self` when dispatching dataclass method calls to the host.
@@ -128,13 +149,10 @@ impl ArgValues {
                 args: vec![value, a, b],
                 kwargs: KwargsValues::Empty,
             },
-            Self::Kwargs(kw) => Self::ArgsKargs {
-                args: vec![value],
-                kwargs: kw,
-            },
+            Self::Kwargs(kw) => Self::from_parts(vec![value], kw),
             Self::ArgsKargs { mut args, kwargs } => {
                 args.insert(0, value);
-                Self::ArgsKargs { args, kwargs }
+                Self::from_parts(args, kwargs)
             }
         }
     }

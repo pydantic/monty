@@ -12,8 +12,8 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     modules::collections,
     types::{
-        AttrCallResult, Bytes, Deque, Dict, FrozenSet, List, LongInt, Path, PyTrait, Range, Set, Slice, Str, TimeZone,
-        Tuple,
+        AttrCallResult, Bytes, Deque, Dict, FrozenSet, List, LongInt, Partial, Path, PyTrait, Range, Set, Slice, Str,
+        TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         date, datetime,
         dict::{DictKind, dict_fromkeys},
@@ -213,6 +213,10 @@ pub enum Type {
     Object,
     #[strum(serialize = "datetime.time")]
     Time,
+    /// `functools.partial` — qualified like `collections.deque`, so
+    /// `type(p)` reads `<class 'functools.partial'>`.
+    #[strum(serialize = "functools.partial")]
+    Partial,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -520,6 +524,7 @@ impl Type {
             Self::TimeZone => TimeZone::init(vm, args),
             Self::Iterator => super::iter::init(vm, args),
             Self::Path => Path::init(vm, args),
+            Self::Partial => Partial::init(vm, args),
 
             // Primitive types - inline implementation
             Self::Int => int_init(vm, args),

@@ -1121,6 +1121,12 @@ pub enum StaticStrings {
     Tzname,
     /// `timespec` keyword of `time.isoformat()`.
     Timespec,
+    /// `functools.partial` type.
+    Partial,
+    /// `partial.func` attribute.
+    Func,
+    /// `partial.keywords` attribute.
+    Keywords,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.
