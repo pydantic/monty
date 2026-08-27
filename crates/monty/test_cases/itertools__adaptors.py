@@ -33,9 +33,10 @@ assert list(spent) == []
 p = itertools.pairwise([1, 2])
 assert iter(p) is p
 
-# `str(type(...))` matches CPython; `__name__` is the dotted form Monty uses
-# for every dotted `tp_name` (see limitations/itertools.md).
+# The dotted `tp_name` shows in `str(type(...))`, the bare one in `__name__`,
+# as CPython does it.
 assert str(type(itertools.pairwise([]))) == "<class 'itertools.pairwise'>"
+assert type(itertools.pairwise([])).__name__ == 'pairwise'
 pairwise_repr = itertools.pairwise([])
 pairwise_repr_text = repr(pairwise_repr)
 assert pairwise_repr_text.startswith('<itertools.pairwise object at 0x')

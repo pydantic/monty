@@ -34,11 +34,6 @@ raise `AttributeError` at runtime.
   number of remaining yields through it (`repeat(9, 3).__length_hint__() == 3`).
   Monty uses the remaining count internally to size the target of `list()` /
   `tuple()`, but does not expose it as a Python-visible attribute.
-- **`type(...).__name__` is the dotted name.** `type(itertools.count()).__name__`
-  is `'itertools.count'`, where CPython reports the bare `'count'`. This is
-  Monty's general treatment of types whose CPython `tp_name` is dotted (`re.Pattern`
-  behaves the same way); `str(type(itertools.count()))` matches CPython's
-  `"<class 'itertools.count'>"`, as do error messages naming the type.
 - **`count` and `repeat` objects are unhashable.** `hash(itertools.count())`
   raises `TypeError: unhashable type: 'itertools.count'`, where CPython falls
   back to identity hashing. This applies to Monty's iterators generally, not

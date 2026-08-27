@@ -1242,13 +1242,19 @@ except TypeError as e:
     assert str(e) == "argument for function given by name ('month') and position (2)", f'dt dup month: {e}'
 
 
-# === type names carry the `datetime.` prefix, as CPython's tp_name does ===
+# === reprs and error messages carry the `datetime.` prefix, `__name__` does not ===
 
 assert repr(datetime.date) == "<class 'datetime.date'>"
 assert repr(datetime.datetime) == "<class 'datetime.datetime'>"
 assert repr(datetime.time) == "<class 'datetime.time'>"
 assert repr(datetime.timedelta) == "<class 'datetime.timedelta'>"
 assert repr(datetime.timezone) == "<class 'datetime.timezone'>"
+
+assert datetime.date.__name__ == 'date'
+assert datetime.datetime.__name__ == 'datetime'
+assert datetime.time.__name__ == 'time'
+assert datetime.timedelta.__name__ == 'timedelta'
+assert datetime.timezone.__name__ == 'timezone'
 
 _values = [
     (datetime.date(2024, 1, 1), 'datetime.date'),

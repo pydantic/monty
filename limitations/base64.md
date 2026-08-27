@@ -28,7 +28,3 @@ docs describe is always `bytes` here.
 `b2a_hex`/`a2b_hex` aliases), the base64 pair (`b2a_base64`/`a2b_base64`) and
 `crc32` are implemented. The uuencode and quoted-printable conversions
 (`a2b_uu`, `b2a_uu`, `a2b_qp`, `b2a_qp`) are absent and raise `AttributeError`.
-
-`type(exc).__name__` reports the qualified name `binascii.Error` where CPython
-reports the bare `Error` — Monty's general treatment of types whose CPython
-`tp_name` is dotted, described in [itertools.md](itertools.md).

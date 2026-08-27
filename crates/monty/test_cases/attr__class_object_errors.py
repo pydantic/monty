@@ -49,6 +49,12 @@ try:
 except AttributeError as e:
     assert str(e) == "'datetime.time' object has no attribute 'nonexistent'"
 
+# === the error names the dotted `tp_name`; `__name__` stays bare ===
+assert datetime.date.__name__ == 'date'
+assert datetime.time.__name__ == 'time'
+assert datetime.timedelta.__name__ == 'timedelta'
+assert int.__name__ == 'int'
+
 # === a known class method is unaffected ===
 assert dict.fromkeys(['a'], 1) == {'a': 1}
 assert bytes.fromhex('ff') == b'\xff'

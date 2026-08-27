@@ -172,8 +172,7 @@ protocol (`__iter__`/`__next__`, including `for line in f:`).
 - `io.UnsupportedOperation` (raised by `read()` on `'w'` files, `write()`
   on `'r'` files, etc.) inherits from both `OSError` and `ValueError` for
   catch purposes, so `except OSError:` and `except ValueError:` both work as
-  in CPython. Monty's class name is the qualified `io.UnsupportedOperation`
-  whereas CPython's `__name__` is the bare `UnsupportedOperation`.
+  in CPython.
 - No host file descriptor is held between calls (see "Design note: no
   live host file descriptors" above). The user-visible consequence is
   that external processes can observe partial state between writes, and

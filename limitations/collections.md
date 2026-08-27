@@ -82,21 +82,13 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
 
 ## Qualified vs bare type names
 
-Monty stores one name per type; CPython picks a qualified (`collections.deque`)
-or bare (`deque`) name *per surface*, depending on whether the type is written
-in C or in Python, so no single name matches everywhere. Each type takes the
-spelling CPython uses in the most places:
+`deque` and `defaultdict` are C types, so CPython qualifies them
+(`collections.deque`) in `repr(T)` and in every type-naming error message
+(`unsupported operand type(s)`, `object is not callable`, `object has no
+attribute`) while `__name__` stays bare (`'deque'`); Monty matches both
+surfaces.
 
-| type | Monty's name | what diverges |
-|---|---|---|
-| `deque` | `collections.deque` | only `__name__` (CPython: `'deque'`) |
-| `defaultdict` | `collections.defaultdict` | only `__name__` (CPython: `'defaultdict'`) |
-| `Counter` | `Counter` | only `repr(Counter)` and the `cannot use ...` clause of the unhashable message |
-
-`deque`/`defaultdict` are C types, so CPython qualifies them in `repr(T)` and in
-every type-naming error message (`unsupported operand type(s)`, `object is not
-callable`, `object has no attribute`); Monty matches all of those and pays only
-on `__name__`. `Counter` is a Python-level class, so those messages give the
-bare name, which Monty matches. Code that matches on a type name (parsing an
-error message or comparing `__name__`) may need to accept either spelling, as
-with `datetime.datetime`, `re.Pattern`, and `_io.TextIOWrapper`.
+`Counter` is a Python-level class, so CPython gives the bare name everywhere
+except `repr(Counter)`, which is `<class 'collections.Counter'>` where Monty
+writes `<class 'Counter'>`. Everywhere else — `__name__`, the `cannot use ...`
+unhashable clause, other type-naming errors — the bare name matches.

@@ -268,6 +268,19 @@ impl Type {
         }
     }
 
+    /// The name CPython's `__name__` reports: [`name`](Self::name) with any
+    /// module qualifier stripped (`datetime.date` → `date`). CPython keeps one
+    /// dotted `tp_name` per C type and derives the bare `__name__` from it, so
+    /// reprs and error messages qualify where `__name__` does not. Sandbox
+    /// class names ([`Instance`](Self::Instance)) are identifiers, so
+    /// stripping is a no-op for them.
+    pub(crate) fn dunder_name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
+        match self.name(heap, interns) {
+            Cow::Borrowed(name) => Cow::Borrowed(name.rsplit_once('.').map_or(name, |(_, bare)| bare)),
+            owned @ Cow::Owned(_) => owned,
+        }
+    }
+
     /// [`name`](Self::name) as rendered by CPython's `_PyArg_BadArgument`
     /// ("argument N must be X, not Y") error formatter: identical except that
     /// `NoneType` renders as `"None"` — CPython special-cases

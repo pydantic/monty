@@ -141,19 +141,6 @@ datetime.timedelta, not str`). CPython's parser type-checks `offset` while
 binding, whereas Monty validates the `timedelta` in the constructor body
 after binding completes.
 
-## Type names
-
-All five classes are named with their `datetime.` prefix — `datetime.date`,
-`datetime.datetime`, `datetime.time`, `datetime.timedelta`,
-`datetime.timezone` — which is the `tp_name` CPython gives these C types and so
-the spelling its `repr(T)` and every type-naming error message use
-(`unsupported operand type(s)`, `object is not callable`, `type object ... has
-no attribute`). Monty matches all of those and pays only on `__name__`, where
-CPython reports the bare `'date'`, `'datetime'`, `'time'`, `'timedelta'`,
-`'timezone'`. This is the same trade `deque` and `defaultdict` make (see
-./collections.md); code that compares `__name__` or parses a type name out of
-an error message may need to accept either spelling.
-
 ## Formatting
 
 `strftime` supports the directives that map onto Rust's `chrono`
