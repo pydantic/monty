@@ -107,3 +107,43 @@ for call in (
         assert False, 'expected TypeError'
     except TypeError as exc:
         assert str(exc) == 'slice indices must be integers or have an __index__ method'
+
+
+# === A bound whose `__index__` mutates the sequence ===
+# The length is read after every bound is coerced, so a negative bound resolves
+# against the mutated sequence and the walk never runs off the end of a
+# shortened one.
+class Clear:
+    def __init__(self, target):
+        self.target = target
+
+    def __index__(self):
+        self.target.clear()
+        return 0
+
+
+for empty in (deque([1, 2, 3]), [1, 2, 3]):
+    try:
+        empty.index(2, Clear(empty))
+        assert False, 'expected ValueError'
+    except ValueError:
+        pass
+
+cleared = deque([1, 2, 3])
+try:
+    cleared.index(2, 0, Clear(cleared))
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'deque.index(x): x not in deque'
+
+grown = deque([1, 2, 3])
+
+
+class Grow:
+    def __index__(self):
+        grown.extend([2, 2, 2])
+        return -1
+
+
+assert grown.index(2, Grow()) == 5
+assert list(grown) == [1, 2, 3, 2, 2, 2]

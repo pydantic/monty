@@ -916,23 +916,22 @@ fn index<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) 
         stop,
     } = IndexArgs::from_args(args, vm)?;
     defer_drop!(target, vm);
+    defer_drop!(start, vm);
+    defer_drop!(stop, vm);
+
+    // Both bounds are coerced before the length is read, because coercion can run a
+    // user `__index__` that mutates this deque. Reading the length first would
+    // resolve a negative bound against a stale size and let the walk below index
+    // past the end of a shortened deque, which panics.
+    let start_arg = coerce_bound(start.as_ref(), vm)?;
+    let stop_arg = coerce_bound(stop.as_ref(), vm)?;
 
     let len = deque.get(vm.heap).len();
-    // `stop` is already bound, so a failure resolving `start` has to release it
-    // before propagating — `bound_arg` only owns the value it was handed.
-    let start = match bound_arg(start, 0, len, vm) {
-        Ok(start) => start,
-        Err(e) => {
-            if let Some(stop) = stop {
-                stop.drop_with(vm);
-            }
-            return Err(e);
-        }
-    };
-    let stop = bound_arg(stop, len, len, vm)?;
+    let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
+    let stop = stop_arg.map_or(len, |i| normalize_sequence_index(i, len));
 
     let start_state = deque.get(vm.heap).state();
-    for i in start..stop.min(len) {
+    for i in start..stop {
         let item = deque.get(vm.heap).items[i].clone_with_heap(vm.heap);
         defer_drop!(item, vm);
         if item.py_eq(target, vm)? {
@@ -972,15 +971,16 @@ fn count<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) 
     Ok(Value::Int(total))
 }
 
-/// Normalizes an optional `start`/`stop` bound for `index`, clamping to `[0, len]`.
+/// Coerces an optional `index` bound to an `i64`, leaving normalization to the caller.
 ///
-/// `None` means "not supplied" and falls back to `default`; an explicit
-/// `Value::None` is a *bad argument*, matching CPython (`index()` bounds go through
-/// `_PyEval_SliceIndexNotNone`, unlike real slicing which accepts `None`).
-fn bound_arg(value: Option<Value>, default: usize, len: usize, vm: &mut VM<'_>) -> RunResult<usize> {
-    let Some(value) = value else { return Ok(default) };
-    defer_drop!(value, vm);
-    Ok(normalize_sequence_index(value_to_i64_bound(value, vm)?, len))
+/// `None` means "not supplied"; an explicit `Value::None` is a *bad argument*, matching
+/// CPython (`index()` bounds go through `_PyEval_SliceIndexNotNone`, unlike real slicing
+/// which accepts `None`). Normalization is deliberately not done here — see [`index`].
+fn coerce_bound(value: Option<&Value>, vm: &mut VM<'_>) -> RunResult<Option<i64>> {
+    match value {
+        Some(value) => Ok(Some(value_to_i64_bound(value, vm)?)),
+        None => Ok(None),
+    }
 }
 
 /// Which end [`deque_extend`] appends each item to.
