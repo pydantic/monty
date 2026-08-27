@@ -12,6 +12,7 @@ use crate::{
         BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
         HeapReadOutput, heap_read_ref_as_field_mut,
     },
+    identity::Identity,
     intern::Interns,
     modules::dataclasses::{self, DataclassHash},
     types::allocate_string,
@@ -203,15 +204,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         }
     }
 
-    /// The best-effort `<ClassName object>` default, never the real `repr`.
-    ///
-    /// Every form that distinguishes instances needs the `HeapId` to pass `self`,
-    /// so all of it lives in [`instance_repr_fmt`], which `Value::py_repr_fmt`
-    /// routes every instance through; this is only the floor under a heap-level
-    /// `repr` reached without a `Value`.
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        let class_id = self.get(vm.heap).class();
-        Ok(write!(f, "<{} object>", class_name(class_id, vm.heap, vm.interns))?)
+    /// Dispatches to a user or synthesized `__repr__`, falling back to the
+    /// identity-bearing default representation.
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        instance_repr_fmt(self.id(), f, vm, heap_ids)
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
@@ -653,7 +649,7 @@ fn default_repr(self_id: HeapId, vm: &mut VM<'_>) -> String {
     format!(
         "<{} object at 0x{:x}>",
         class_name(class_id, vm.heap, vm.interns),
-        self_id.index()
+        Identity::from_heap_id(self_id).encoded()
     )
 }
 

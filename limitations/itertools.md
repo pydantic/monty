@@ -51,10 +51,6 @@ raise `AttributeError` at runtime.
   reaches back to the `repeat` holding it, Monty prints `repeat([...])` where
   CPython prints `repeat([repeat([...])])`. This is Monty's general cycle
   detection in `repr()`, not specific to `itertools`.
-- **Adaptors without a custom `repr()` omit the address.** `repr(pairwise([]))`
-  is `<itertools.pairwise object>`, where CPython appends ` at 0x...`. This is
-  Monty's general iterator treatment (see ./iter.md), not specific
-  to `itertools`.
 - **A callable that suspends is rejected, not paused.** `takewhile`,
   `dropwhile`, `filterfalse` and `starmap` apply their callable through the
   synchronous `evaluate_function` path, which runs a frame to completion and

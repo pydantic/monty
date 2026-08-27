@@ -21,7 +21,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::CmpOperator,
     hash::HashValue,
-    heap::{DropWithContext, HeapId},
+    heap::{DropWithContext, HeapId, HeapObjectRead, HeapReadOutput},
+    identity::Identity,
     intern::StringId,
     value::{EitherStr, Value},
 };
@@ -121,22 +122,45 @@ impl CmpOrder {
     }
 }
 
+/// Supplies the Python identity shared by `PyTrait`'s dynamic and concrete receivers.
+///
+/// Complete heap reads carry their arena identity directly, while `Value` also
+/// covers immediate identities. Keeping this as a supertrait lets default Python
+/// operations use identity without adding it to each method's arguments.
+pub(crate) trait PyObjectIdentity {
+    /// Returns the structural key exposed by Python's `is` and `id()` operations.
+    fn py_identity(&self) -> Identity;
+}
+
+impl<T: ?Sized> PyObjectIdentity for HeapObjectRead<'_, T> {
+    fn py_identity(&self) -> Identity {
+        Identity::from_heap_id(self.id())
+    }
+}
+
+impl PyObjectIdentity for HeapReadOutput<'_> {
+    fn py_identity(&self) -> Identity {
+        Identity::from_heap_id(self.id())
+    }
+}
+
+impl PyObjectIdentity for Value {
+    fn py_identity(&self) -> Identity {
+        Identity::new(self)
+    }
+}
+
 /// Common operations for Python values.
 ///
 /// Implementers should provide Python-compatible semantics for all operations.
-/// Most methods take a `&VM` or `&mut VM` reference to access the heap and interned
-/// strings for nested lookups in containers holding `Value::Ref` values.
-///
-/// This trait is used with `enum_dispatch` on `HeapData` to enable efficient
-/// virtual dispatch without boxing overhead.
+/// Dynamic heap calls are forwarded exhaustively through [`HeapReadOutput`]
+/// without boxing.
 ///
 /// Methods take the concrete [`VM`]/`Heap` types, which own the resource
-/// tracker enforcing time/memory/recursion limits.
-///
-/// The lifetime `'h` connects [`crate::heap::HeapObjectRead`] implementations
-/// to the VM's heap reference; immediate [`Value`] implementations use it only
-/// through the VM argument.
-pub(crate) trait PyTrait<'h> {
+/// tracker enforcing time/memory/recursion limits. The lifetime `'h` connects
+/// [`HeapObjectRead`] implementations to the VM's heap reference; immediate
+/// [`Value`] implementations use it only through the VM argument.
+pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Returns the Python type name for this value (e.g., "list", "str").
     ///
     /// Used for error messages and the `type()` builtin.
@@ -230,6 +254,19 @@ pub(crate) trait PyTrait<'h> {
         Ok(self.py_len(vm) != Some(0))
     }
 
+    /// Writes Python's identity-bearing default object representation.
+    ///
+    /// Custom `repr` implementations that apply only to some values can call
+    /// this for their remaining variants.
+    fn py_default_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>) -> RunResult<()> {
+        let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+        Ok(write!(
+            f,
+            "<{type_name} object at 0x{:x}>",
+            self.py_identity().encoded()
+        )?)
+    }
+
     /// Writes the Python `repr()` string for this value to a formatter.
     ///
     /// This method enables cycle detection for self-referential structures by tracking
@@ -243,9 +280,7 @@ pub(crate) trait PyTrait<'h> {
     /// * `vm` - The VM for resolving value references and looking up interned strings
     /// * `heap_ids` - Set of heap IDs currently being repr'd (for cycle detection)
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        let type_name = self.py_type(vm).name(vm.heap, vm.interns);
-        write!(f, "<{type_name} object>")?;
-        Ok(())
+        self.py_default_repr_fmt(f, vm)
     }
 
     /// Returns the Python `repr()` string for this value as a heap `str` `Value`.

@@ -73,6 +73,7 @@ class Plain:
 
 pl = Plain()
 assert repr(pl).startswith('<Plain object at 0x')
+assert repr(pl).endswith(f' object at {hex(id(pl))}>')
 assert str(pl) == repr(pl)
 assert type(pl).__name__ == 'Plain'
 

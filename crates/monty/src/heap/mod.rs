@@ -269,6 +269,15 @@ macro_rules! define_heap_read_support {
             )*
         }
 
+        impl HeapReadOutput<'_> {
+            /// Returns the heap entry containing the complete dynamically read object.
+            pub fn id(&self) -> HeapId {
+                match self {
+                    $(Self::$variant(value) => value.id(),)*
+                }
+            }
+        }
+
         $(
             impl HeapPayload for $payload {
                 #[inline]
