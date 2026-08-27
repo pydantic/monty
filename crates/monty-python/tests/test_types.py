@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import collections
 import datetime
+import itertools
 import pathlib
 import re
+import sys
 import zoneinfo
 from typing import NamedTuple
 
@@ -187,7 +189,14 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         re.Pattern,
         re.Match,
         collections.deque,
+        itertools.count,
+        itertools.chain,
+        itertools.zip_longest,
     ]
+    if sys.version_info >= (3, 12):
+        # Modelled by Monty but missing from older hosts, where it is gated out
+        # of the round-trip table rather than being allowed to fail every lookup.
+        types.append(itertools.batched)
     for ty in types:
         # The pathlib family all collapses to a single Monty path type, which
         # re-emerges as PurePosixPath; everything else round-trips by identity.

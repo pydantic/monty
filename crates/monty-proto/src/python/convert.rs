@@ -229,6 +229,9 @@ pub(super) fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option
 /// [`MontyType`]. Built once and cached. Identities are taken from [`type_object_to_py`]
 /// so the two directions stay in lock-step. [`MontyType::Path`] is handled separately
 /// (by subclass check) since pathlib exposes several concrete path classes.
+///
+/// The whole table is built in one go, so an entry the host cannot resolve would
+/// fail every lookup, not just its own — [`host_has_type`] keeps those out.
 fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, MontyType)>> {
     static TABLE: PyOnceLock<Vec<(Py<PyAny>, MontyType)>> = PyOnceLock::new();
     TABLE.get_or_try_init(py, || {
@@ -281,9 +284,24 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::SpecialForm,
         ]
         .into_iter()
+        .filter(|t| host_has_type(py, t))
         .map(|t| Ok((type_object_to_py(py, t.clone())?, t)))
         .collect()
     })
+}
+
+/// Whether this host's Python is new enough to define `t`'s type object.
+///
+/// A type the host does not have can never be the class being looked up, so it
+/// is left out of [`round_trip_type_table`] rather than failing the build of it.
+/// Runtime version check (not `cfg!(Py_3_12)`): this crate has no
+/// pyo3-build-config build script, so the version cfgs don't exist.
+fn host_has_type(py: Python<'_>, t: &MontyType) -> bool {
+    match t {
+        // `itertools.batched` is 3.12+, below the packages' 3.10 floor.
+        MontyType::ItertoolsBatched => py.version_info() >= (3, 12),
+        _ => true,
+    }
 }
 
 /// Represents a host callable with no richer Monty mapping as a
