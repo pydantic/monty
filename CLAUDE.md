@@ -966,7 +966,8 @@ where they are. Change one and you must change all of them:
 
 ### Reviewer Notes
 
-Remember that Monty is a limited subset of CPython, its behavior should match Python 3.14 except where documented in `limitations`.
+Monty implements a limited subset of CPython.
+Its behaviour should match CPython 3.14 except where documented in `limitations`.
 
 The list of stdlib modules in `docs/python-subset.md` must be updated if a new standard library module is implemented.
 

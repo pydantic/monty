@@ -58,7 +58,8 @@ Monty is that place, without a container or a sandboxing service in the loop.
 
 ## What Monty cannot do
 
-- **Most of the standard library.** only a [subset of standard library modules are available](python-subset.md) and each covers only part of its CPython surface.
+- **Most of the standard library.** Only a [subset of standard library modules](python-subset.md) is available, and each
+  module covers only part of its CPython surface.
 - **Third-party packages.** There is no `sys.path` and no site-packages inside the sandbox; supporting PyPI packages is
   not a goal.
 - **Class inheritance.** `class Foo(Bar):` is rejected at parse time, and so are method decorators like `@classmethod`,
@@ -89,7 +90,8 @@ where each one wins.
 - QuickStart for [Python](quickstart/python.md), [JavaScript](quickstart/javascript.md) or [Rust](quickstart/rust.md).
 - [Security model](security.md) for what "secure" does and does not mean here.
 
-Monty will be used to implement code mode in [Pydantic AI](https://github.com/pydantic/pydantic-ai).
+Monty powers [Code Mode](https://pydantic.dev/docs/ai/harness/code-mode/) in
+[Pydantic AI](https://github.com/pydantic/pydantic-ai).
 
 ## Part of the Pydantic Stack
 
