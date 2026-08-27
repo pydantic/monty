@@ -189,14 +189,7 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         re.Pattern,
         re.Match,
         collections.deque,
-        itertools.count,
-        itertools.chain,
-        itertools.zip_longest,
     ]
-    if sys.version_info >= (3, 12):
-        # Modelled by Monty but missing from older hosts, where it is gated out
-        # of the round-trip table rather than being allowed to fail every lookup.
-        types.append(itertools.batched)
     for ty in types:
         # The pathlib family all collapses to a single Monty path type, which
         # re-emerges as PurePosixPath; everything else round-trips by identity.
@@ -212,6 +205,44 @@ def test_itertools_batched_type_on_older_host(monty_run: RunMonty):
     with pytest.raises(TypeError) as exc_info:
         monty_run('import itertools\ntype(itertools.batched([1, 2], 1))')
     assert exc_info.value.args[0] == 'Cannot convert itertools.batched to a host type: this Python does not define it'
+
+
+# Every `itertools` adaptor Monty models, paired with the expression that builds
+# one inside the sandbox. `batched` is 3.12+, so on an older host it is neither
+# importable here nor present in the round-trip table.
+ITERTOOLS_TYPES: list[tuple[type[object], str]] = [
+    (itertools.accumulate, 'itertools.accumulate([1, 2])'),
+    (itertools.chain, 'itertools.chain([1], [2])'),
+    (itertools.compress, 'itertools.compress([1, 2], [1, 0])'),
+    (itertools.count, 'itertools.count()'),
+    (itertools.cycle, 'itertools.cycle([1, 2])'),
+    (itertools.dropwhile, 'itertools.dropwhile(bool, [1, 2])'),
+    (itertools.filterfalse, 'itertools.filterfalse(bool, [1, 2])'),
+    (itertools.islice, 'itertools.islice([1, 2], 1)'),
+    (itertools.pairwise, 'itertools.pairwise([1, 2])'),
+    (itertools.repeat, 'itertools.repeat(1)'),
+    (itertools.starmap, 'itertools.starmap(max, [(1, 2)])'),
+    (itertools.takewhile, 'itertools.takewhile(bool, [1, 2])'),
+    (itertools.zip_longest, 'itertools.zip_longest([1], [2])'),
+]
+if sys.version_info >= (3, 12):
+    ITERTOOLS_TYPES.append((itertools.batched, 'itertools.batched([1, 2], 1)'))
+
+
+@pytest.mark.parametrize(('ty', 'build'), ITERTOOLS_TYPES, ids=[ty.__name__ for ty, _ in ITERTOOLS_TYPES])
+def test_itertools_type_object_roundtrip(monty_run: RunMonty, ty: type[object], build: str):
+    """Each adaptor's type object survives both directions: recognised by identity
+    on the way in, and rebuilt as the same host class on the way out."""
+    assert monty_run('x', inputs={'x': ty}) is ty
+    assert monty_run(f'import itertools\ntype({build})') is ty
+
+
+@pytest.mark.parametrize(('ty', 'build'), ITERTOOLS_TYPES, ids=[ty.__name__ for ty, _ in ITERTOOLS_TYPES])
+def test_itertools_type_object_isinstance(monty_run: RunMonty, ty: type[object], build: str):
+    """An adaptor type passed in is usable against an instance built in the sandbox,
+    which is what identity recognition is actually for."""
+    code = f'import itertools\nisinstance({build}, t)'
+    assert monty_run(code, inputs={'t': ty}) is True
 
 
 def test_type_object_input_isinstance(monty_run: RunMonty):
