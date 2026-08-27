@@ -70,7 +70,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::Builtin(Builtins::ExcType(ExcType::FrozenInstanceError)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    vm.heap.allocate_as(module).into_id()
 }
 
 /// Dispatches a `dataclasses` module function call.
@@ -279,22 +279,20 @@ fn build_dataclass_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) -> R
 /// fields. The dict owns every `Field` from its first insertion, so a failure
 /// part-way releases them with it.
 fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<DataclassField>) -> RunResult<Value> {
-    let dict_id = vm.heap.allocate(HeapData::Dict(Dict::with_capacity(fields.len())));
-    let mut guard = DropGuard::new(Value::Ref(dict_id), vm);
-    let vm = guard.ctx();
+    let dict = vm.heap.allocate_as(Dict::with_capacity(fields.len()));
+    let mut guard = DropGuard::new(dict, vm);
+    let (dict, vm) = guard.as_parts_mut();
+    let dict = dict.read(vm.heap);
     for field in fields {
         let name = field.name();
-        let field_id = vm.heap.allocate(HeapData::DataclassField(field));
-        let HeapReadOutput::Dict(mut dict) = vm.heap.read(dict_id) else {
-            unreachable!("the dict was just allocated")
-        };
+        let field = vm.heap.allocate_as(field).into_value();
         // Annotation keys are unique, so nothing is ever replaced — released
         // rather than asserted away so a future duplicate cannot leak. A dict
         // rejected by the memory limit releases the field it was handed.
-        let replaced = dict.set(Value::InternString(name), Value::Ref(field_id), vm)?;
+        let replaced = dict.set(Value::InternString(name), field, vm)?;
         replaced.drop_with(vm);
     }
-    Ok(guard.into_inner())
+    Ok(guard.into_inner().into_value())
 }
 
 /// Writes `__dataclass_fields__` into the class namespace, taking ownership of
@@ -317,10 +315,8 @@ fn store_dataclass_params<'h>(
     options: DataclassOptions,
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
-    let params = vm
-        .heap
-        .allocate(HeapData::DataclassParams(DataclassParams::new(options)));
-    let replaced = class.set_attr(StaticStrings::DataclassParams.into(), Value::Ref(params), vm)?;
+    let params = vm.heap.allocate_as(DataclassParams::new(options)).into_value();
+    let replaced = class.set_attr(StaticStrings::DataclassParams.into(), params, vm)?;
     replaced.drop_with(vm);
     Ok(())
 }

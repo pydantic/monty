@@ -96,10 +96,11 @@ order and error wording, but with these divergences:
   runs to completion synchronously, so it cannot yield to the host, and an
   external-function `__init__` raises `NotImplementedError` rather than
   suspending.
-- **`__eq__`/`__hash__` cannot suspend**: like `__repr__`/`__str__` they run to
-  completion synchronously, so one that calls an external/OS function raises
-  rather than yielding to the host. An exception raised by `__eq__` terminates
-  the run instead of being catchable by a `try` around the comparison.
+- **`__eq__`/`__hash__`/`__index__` cannot suspend**: like `__repr__`/`__str__`
+  they run to completion synchronously, so one that calls an external/OS
+  function raises rather than yielding to the host. An exception raised by
+  `__eq__` terminates the run instead of being catchable by a `try` around the
+  comparison.
 - **Ordering dunders are still not dispatched**; see the entry above.
   Instances are always truthy (no `__bool__`/`__len__` dispatch).
 - **Bound methods compare and hash by identity**: each `obj.method` access
@@ -192,10 +193,37 @@ first, e.g. return a `dict` of the fields.
   identifies which one raised.
 - Dunder protocols other than `__init__`, `__repr__`, `__str__`,
   `__enter__`, `__exit__`, `__iter__`, `__next__`, `__contains__`, `__eq__`,
-  and `__hash__`: `__new__`, `__call__`, `__getitem__`, `__setitem__`,
-  `__add__`, `__ne__`, `__bool__`, etc. are not dispatched for user-defined
-  instances. `__ne__` is always the negation of `__eq__`, as CPython derives it
-  by default, so a custom `__ne__` is ignored.
+  `__hash__`, and `__index__`: `__new__`, `__call__`, `__getitem__`,
+  `__setitem__`, `__add__`, `__ne__`, `__bool__`, etc. are not dispatched for
+  user-defined instances. `__ne__` is always the negation of `__eq__`, as
+  CPython derives it by default, so a custom `__ne__` is ignored.
+- **`__index__` is dispatched for indexing, but not for arithmetic
+  operators.** A class defining it works as a subscript *read* (`seq[obj]`), as
+  a slice bound (`seq[obj:]`, `slice(obj)`), and as an integer argument
+  (`range(obj)`, `'x'.center(obj)`, `s.find(sub, obj)`). It is **not**
+  consulted by sequence repetition, so `'ab' * obj` and `[0] * obj` raise
+  `TypeError: unsupported operand type(s) for *` where CPython repeats — each
+  numeric operator carries its own coercion, which does not route through the
+  shared index path.
+- **Subscript assignment does not dispatch `__index__`.** `lst[obj] = x` raises
+  `TypeError: list indices must be integers or slices, not Foo` where CPython
+  coerces and assigns; only the read side takes the index path.
+- **`slice()` stores coerced bounds, not the objects passed.** CPython's
+  `slice()` keeps its arguments untouched and only calls `__index__` when the
+  slice is *used*, so `slice(obj).start` is `obj`; Monty coerces during
+  construction, so it is the resulting `int`. A bound whose `__index__` raises
+  therefore raises at `slice(...)` rather than at use, and one that is neither
+  `None`, an `int`, nor `__index__`-able is rejected up front instead of on
+  first use.
+- **Slice bounds are stored saturated to `i64`.** Because bounds are coerced at
+  construction (above), one beyond `i64` is clamped to `i64::MIN`/`i64::MAX`
+  rather than kept exact: `slice(10**30).stop` is `9223372036854775807`, where
+  CPython reports `10**30`. *Slicing* with such a bound still matches CPython —
+  it clamps to the sequence either way, so `[1, 2, 3][10**30:]` is `[]` — the
+  divergence is only visible by reading the attribute back. This applies to
+  bounds written as literals and to those returned by `__index__` alike. Plain
+  indexing is unaffected: `[1, 2, 3][10**30]` raises `IndexError` as CPython
+  does.
 - `__iter__` / `__next__` / `__contains__` **are** dispatched, but like
   `__repr__`/`__str__` they run synchronously, so one that calls an external or
   OS function cannot suspend and raises `NotImplementedError`. Two related
@@ -221,7 +249,11 @@ first, e.g. return a `dict` of the fields.
   `__getattribute__`, `__setattr__`, `__delattr__`, and `__del__`. A missing
   attribute always raises the default `AttributeError` even when the class
   defines `__getattr__`, and attribute writes always go straight to the
-  instance `__dict__`.
+  instance `__dict__`. `object.__setattr__` exists (see below) and, since
+  there are no hooks to skip, differs from a plain `obj.x = v` only on a
+  `@dataclass(frozen=True)` instance, which it writes to and `obj.x = v`
+  refuses — the same escape hatch CPython's generated `__init__` uses. On a
+  class object it does not write at all, where `Foo.x = v` sets a class member.
 - Introspection attributes other than `__name__`, `__doc__`, `__annotations__`
   and `obj.__class__`: `Foo.__dict__`, `obj.__dict__`, `Foo.__bases__`,
   `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, and explicit
@@ -247,9 +279,34 @@ first, e.g. return a `dict` of the fields.
   ./typing.md).
 - `del obj.attr` (the `del` statement is unsupported generally).
 
+## `object`
+
+The name resolves, but it is a carrier for `object.__setattr__` rather than a
+type: Monty has no inheritance, so there is no base class for it to be.
+`isinstance(x, object)` is `True` for every value, as in CPython.
+
+- **`object()` cannot be constructed** — raises `TypeError: cannot create
+  'object' instances`, where CPython returns a featureless instance.
+- **`class Foo(object):` is still rejected**, like any base list (see above),
+  so the idiom carries no more weight than `class Foo:`.
+- **Only `__setattr__` and `__name__` resolve.** Every other member CPython's
+  `object` carries — `__doc__`, `__init__`, `__eq__`, `__getattribute__`,
+  `__class__`, `__mro__`, `__bases__`, `__qualname__`, `__module__`,
+  `__dict__` — raises `AttributeError`, with Monty's generic `'type' object
+  has no attribute 'x'` where CPython says `type object 'object' has no
+  attribute 'x'`.
+- **`object.__setattr__` accepts only instances of sandbox-defined classes.**
+  Anything else raises CPython's `AttributeError: '<type>' object has no
+  attribute '<name>' and no __dict__ for setting new attributes` — including
+  a class object, where CPython instead raises `TypeError: can't apply this
+  __setattr__ to type object`.
+- **It reprs as `<built-in function object.__setattr__>`**, where CPython says
+  `<slot wrapper '__setattr__' of 'object' objects>`.
+
 ## `FrozenInstanceError`
 
-Raised when assigning to a field of a frozen host-supplied dataclass.
+Raised when assigning to a field of a frozen dataclass — host-supplied, or
+declared in the sandbox with `@dataclass(frozen=True)` (see ./dataclasses.md).
 Subclass of `AttributeError`, so `except AttributeError:` catches it, as in
-CPython's `dataclasses` module. User-defined classes in the sandbox are
-never frozen.
+CPython's `dataclasses` module. A plain `class` is never frozen, and
+`object.__setattr__` writes past the check either way.

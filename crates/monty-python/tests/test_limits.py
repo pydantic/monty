@@ -80,8 +80,12 @@ def test_timeout_limit(monty_run: RunMonty):
 
 
 def test_session_exhausted_after_resource_error_but_worker_reusable(pool: Monty):
-    """A resource error leaves the session exhausted (later feeds keep failing),
-    but the worker is reusable once the session exits."""
+    """A spent `max_duration_secs` budget is cumulative, so later feeds keep failing,
+    but the worker is reusable once the session exits.
+
+    This is specific to the duration limit. A `max_memory` trip is not cumulative, so
+    later feeds on the same checkout may succeed — against a heap with no guarantees.
+    See `limitations/pool-architecture.md`."""
     with pool.checkout(limits={'max_duration_secs': 0.1}) as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run('while True:\n    pass')

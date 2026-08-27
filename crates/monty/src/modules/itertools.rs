@@ -8,7 +8,7 @@
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
@@ -173,7 +173,7 @@ fn normalize_bool(value: Value) -> Value {
 /// Negative counts clamp to zero (`repeat(x, -1)` is empty) and a `times` too
 /// large for a machine integer raises `OverflowError`, matching the conversion
 /// to `Py_ssize_t`. `bool` is accepted because it is an `int` subclass.
-fn repeat_times(value: &Value, vm: &VM<'_>) -> RunResult<usize> {
+fn repeat_times(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
     let count = match value {
         Value::Bool(b) => i64::from(*b),
         other => other.as_int(vm)?,
@@ -283,28 +283,28 @@ fn islice_bounds(
     first: &Value,
     second: Option<&Value>,
     third: Option<&Value>,
-    vm: &VM<'_>,
+    vm: &mut VM<'_>,
 ) -> RunResult<(usize, Option<usize>, usize)> {
     match second {
-        None => match islice_index(first, vm) {
+        None => match islice_index(first, vm)? {
             IsliceBound::Unbounded => Ok((0, None, 1)),
             IsliceBound::Index(stop) => Ok((0, Some(stop), 1)),
             IsliceBound::Invalid => Err(ExcType::islice_bad_stop()),
         },
         Some(second) => {
             // A `start` of `None` means "from the beginning", as in a slice.
-            let start = match islice_index(first, vm) {
+            let start = match islice_index(first, vm)? {
                 IsliceBound::Unbounded => 0,
                 IsliceBound::Index(start) => start,
                 IsliceBound::Invalid => return Err(ExcType::islice_bad_indices()),
             };
-            let stop = match islice_index(second, vm) {
+            let stop = match islice_index(second, vm)? {
                 IsliceBound::Unbounded => None,
                 IsliceBound::Index(stop) => Some(stop),
                 IsliceBound::Invalid => return Err(ExcType::islice_bad_indices()),
             };
             // A step of `None` is 1; zero and negatives are rejected outright.
-            let step = match third.map(|third| islice_index(third, vm)) {
+            let step = match third.map(|third| islice_index(third, vm)).transpose()? {
                 None | Some(IsliceBound::Unbounded) => 1,
                 Some(IsliceBound::Index(step)) if step > 0 => step,
                 Some(_) => return Err(ExcType::islice_bad_step()),
@@ -329,16 +329,19 @@ enum IsliceBound {
 
 /// Reads one `islice` bound; whether `Unbounded` is allowed is the caller's
 /// business, and differs per parameter.
-fn islice_index(value: &Value, vm: &VM<'_>) -> IsliceBound {
+fn islice_index(value: &Value, vm: &mut VM<'_>) -> RunResult<IsliceBound> {
     let index = match value {
-        Value::None => return IsliceBound::Unbounded,
+        Value::None => return Ok(IsliceBound::Unbounded),
         Value::Bool(b) => i64::from(*b),
+        // A raising `__index__` propagates; only a type mismatch is `Invalid`,
+        // which the caller words per parameter.
         other => match other.as_int(vm) {
             Ok(index) => index,
-            Err(_) => return IsliceBound::Invalid,
+            Err(RunError::Exc(_)) => return Ok(IsliceBound::Invalid),
+            Err(e) => return Err(e),
         },
     };
-    usize::try_from(index).map_or(IsliceBound::Invalid, IsliceBound::Index)
+    Ok(usize::try_from(index).map_or(IsliceBound::Invalid, IsliceBound::Index))
 }
 
 /// `itertools.chain(*iterables)` — each argument's items, back to back.

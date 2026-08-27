@@ -10,7 +10,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{HeapId, HeapItem, HeapRead},
+    heap::{HeapId, HeapItem, HeapObjectRead},
     types::{DataclassOptions, LazyHeapSet, PyTrait, Type},
     value::{EitherStr, Value},
 };
@@ -35,7 +35,7 @@ impl DataclassParams {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, DataclassParams> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassParams> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::DataclassParams
     }
@@ -50,8 +50,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DataclassParams> {
         Ok(None)
     }
 
-    fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        Ok(Some(identity_hash(self_id)))
+    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        Ok(Some(identity_hash(self.id())))
     }
 
     /// CPython's `_DataclassParams.__repr__`, flag for flag. The eight

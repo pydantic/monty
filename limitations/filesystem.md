@@ -3,7 +3,7 @@
 The sandbox has no default filesystem access. The host explicitly mounts
 real directories at virtual paths through Monty's `MountTable`; everything
 outside a mount is invisible. Without any mounts, `open()` and every
-`pathlib` I/O method raise `FileNotFoundError` for every path (see
+`pathlib` I/O method raise `PermissionError` for every path (see
 ./open.md and ./pathlib.md).
 
 ## Virtual paths are always POSIX

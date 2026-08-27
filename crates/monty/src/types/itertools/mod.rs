@@ -44,7 +44,7 @@ use crate::types::Dict;
 use crate::{
     bytecode::VM,
     exception_private::RunResult,
-    heap::{HeapId, HeapItem, HeapRead},
+    heap::{HeapId, HeapItem, HeapObjectRead},
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
 };
@@ -211,7 +211,7 @@ impl HeapItem for ItertoolsIter {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, ItertoolsIter> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
     fn py_is_iterator(&self, _: &VM<'h>) -> bool {
         true
     }
@@ -234,13 +234,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ItertoolsIter> {
         Ok(None)
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        let self_id = self_id.expect("heap values have an id");
-        vm.heap.inc_ref(self_id);
-        Ok(Value::Ref(self_id))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(self.clone_value(vm.heap))
     }
 
-    fn py_next(&mut self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let kind = self.get(vm.heap).kind();
         match kind {
             // Self-contained adaptors: neither drives a wrapped iterator.
@@ -277,8 +275,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ItertoolsIter> {
     }
 
     /// Only `count` and `repeat` carry a custom `repr`; every other adaptor
-    /// uses CPython's default `<itertools.name object>` form, which is what the
-    /// `PyTrait` default writes.
+    /// uses Python's identity-bearing default object representation.
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         match self.get(vm.heap).kind() {
             Kind::Count => count::repr_fmt(self, f, vm, heap_ids),
@@ -291,10 +288,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ItertoolsIter> {
             | Kind::TakeWhile
             | Kind::DropWhile
             | Kind::FilterFalse
-            | Kind::StarMap => {
-                let type_name = self.py_type(vm).name(vm.heap, vm.interns);
-                Ok(write!(f, "<{type_name} object>")?)
-            }
+            | Kind::StarMap => self.py_default_repr_fmt(f, vm),
         }
     }
 }

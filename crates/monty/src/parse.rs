@@ -1486,10 +1486,9 @@ impl<'a> Parser<'a> {
                 // Chain comparison: transform to nested And expressions
                 self.parse_chain_comparison(*left, ops_vec, comparators_vec, position)
             }
-            AstExpr::Call(ast::ExprCall {
-                func, arguments, range, ..
-            }) => {
-                let position = self.convert_range(range);
+            AstExpr::Call(call) => {
+                let position = self.convert_range(call.range());
+                let ast::ExprCall { func, arguments, .. } = call;
                 let ast::Arguments { args, keywords, .. } = arguments;
                 let args_vec = args.into_vec();
                 let keywords_vec: Vec<_> = keywords.into_iter().collect();

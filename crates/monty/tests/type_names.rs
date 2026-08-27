@@ -35,13 +35,14 @@ fn exception_type_names_round_trip() {
 }
 
 /// A sandbox-class type displays as its class name, but names never parse back
-/// to `Instance`: a class binding cannot be reconstructed from a name, and
-/// `"object"` (the historical generic rendering) is not a Monty type at all.
+/// to `Instance`: a class binding cannot be reconstructed from a name. `"object"`
+/// does parse, to the builtin of that name — never to an instance, which is the
+/// confusion this guards against.
 #[test]
 fn instance_type_is_not_nameable() {
     let t = MontyType::Instance("Foo".to_owned());
     assert_eq!(t.to_string(), "Foo");
     assert_eq!(t.name(), "Foo");
     assert_eq!(MontyType::from_type_name("Foo"), None);
-    assert_eq!(MontyType::from_type_name("object"), None);
+    assert_eq!(MontyType::from_type_name("object"), Some(MontyType::Object));
 }

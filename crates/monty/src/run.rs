@@ -9,10 +9,10 @@ use monty_types::{ExcType, MontyException, MontyObject, PrintWriter, ResourceTra
 use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
-    bytecode::{Code, Compiler, FrameExit, VM},
+    bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
     exception_private::{ExcTypeExt, RunResult},
     heap::{DropWithContext, Heap, HeapReader},
-    intern::{InternerBuilder, Interns},
+    intern::{InternerBuilder, Interns, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
@@ -160,6 +160,7 @@ impl MontyRun {
             HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
                 let mut vm = VM::new(
                     globals,
+                    &executor.module_code,
                     reader,
                     &executor.interns,
                     print.reborrow(),
@@ -168,7 +169,7 @@ impl MontyRun {
                 executor.populate_inputs(inputs, &mut vm)?;
 
                 // Start execution
-                let vm_result = vm.run_module(&executor.module_code);
+                let vm_result = vm.run_module();
 
                 // Three-phase conversion: convert while VM alive, then snapshot, then build progress
                 let converted = convert_frame_exit(vm_result, &mut vm);
@@ -332,6 +333,72 @@ impl Executor {
         })
     }
 
+    /// Builds a synthetic REPL input that calls one existing global with host arguments.
+    ///
+    /// The argument tuple occupies a temporary namespace slot whose name mapping
+    /// must not be committed; appended interns remain valid session metadata.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "synthetic calls combine existing REPL and call-site metadata"
+    )]
+    pub(crate) fn new_repl_function_call(
+        name: &str,
+        name_id: StringId,
+        callable_slot: NamespaceId,
+        arg_count: usize,
+        script_name: &str,
+        mut existing_globals: NameMap,
+        existing_interns: &Interns,
+        options: CompileOptions,
+    ) -> Result<Self, MontyException> {
+        const CALL_ARGS_NAME: &str = "<monty-call-args>";
+
+        let code = if arg_count == 0 {
+            format!("{name}()")
+        } else {
+            format!("{name}(...)")
+        };
+        let mut interner = InternerBuilder::from_interns(existing_interns, &code);
+        let filename = interner.intern(script_name);
+        let range = CodeRange {
+            filename,
+            start_byte: 0,
+            end_byte: u32::try_from(code.len()).unwrap_or(u32::MAX),
+        };
+        let args_name_id = interner.intern(CALL_ARGS_NAME);
+        let args_slot = existing_globals
+            .ensure_slot(args_name_id, range)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+
+        let mut builder = CodeBuilder::new();
+        builder.new_code_region(0);
+        builder.set_location(range, None);
+        builder
+            .emit_load_global_callable(callable_slot.as_u16(), name_id)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        builder
+            .emit_u16(Opcode::LoadGlobal, args_slot.as_u16())
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        builder
+            .emit_u8(Opcode::CallFunctionExtended, 0)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        builder
+            .emit(Opcode::ReturnValue)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+
+        let functions = existing_interns.functions_clone();
+        let interns = Interns::new(interner, functions);
+        Ok(Self {
+            globals: existing_globals,
+            module_code: Arc::new(builder.build(0)),
+            interns,
+            code,
+            input_slots: vec![args_slot],
+            assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            heap_capacity: AtomicUsize::new(0),
+        })
+    }
+
     /// Executes the code with a custom resource tracker.
     ///
     /// This provides full control over resource tracking and garbage collection
@@ -356,6 +423,7 @@ impl Executor {
         let result = HeapReader::with(&mut heap, &mut (self, print), |reader, (executor, print)| {
             let mut vm = VM::new(
                 globals,
+                &executor.module_code,
                 reader,
                 &executor.interns,
                 print.reborrow(),
@@ -383,7 +451,7 @@ impl Executor {
     /// This is the shared non-iterative execution core used by both the standard
     /// `run` path and the REPL's `feed_run` path.
     pub(crate) fn run_to_completion<'h>(&'h self, vm: &mut VM<'h>) -> RunResult<MontyObject> {
-        let mut frame_exit_result = vm.run_module(&self.module_code);
+        let mut frame_exit_result = vm.run_module();
 
         // Handle NameLookup and ExternalCall exits by raising NameError through the VM
         // so that traceback information is properly captured. In the non-iterative path,
@@ -449,14 +517,20 @@ impl Executor {
             // Create VM, populate inputs, and run
             let mut vm = VM::new(
                 globals,
+                &executor.module_code,
                 reader,
                 &executor.interns,
                 PrintWriter::Stdout,
                 executor.assert_repr_max_bytes,
             );
             executor.populate_inputs(inputs, &mut vm)?;
-            let frame_exit_result = vm.run_module(&executor.module_code);
+            let frame_exit_result = vm.run_module();
 
+            // Tasks the module left running (a sibling detached from a failed
+            // gather, say) hold real references, and are not reachable from
+            // any name — so tear the scheduler down first and hold the
+            // leak check to what survives that.
+            vm.__finalize_tasks_for_tests();
             vm.__force_gc_for_tests();
 
             // Take globals out of the VM so we can inspect them, but keep VM alive

@@ -7,8 +7,8 @@ use ahash::AHashSet;
 /// in the heap, providing a unified interface for operations like length,
 /// equality, reference counting support, and attribute dispatch.
 ///
-/// The lifetime `'h` ties methods to the heap lifetime so that `HeapRead<'h, T>`
-/// types can implement the trait with access to the `VM<'h, …>`.
+/// The lifetime `'h` ties methods to the heap lifetime so that
+/// `HeapObjectRead<'h, T>` types can implement the trait with access to the `VM<'h, …>`.
 ///
 /// The trait is designed to work with `enum_dispatch` for efficient virtual
 /// dispatch on `HeapData` without boxing overhead.
@@ -21,7 +21,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::CmpOperator,
     hash::HashValue,
-    heap::{DropWithContext, HeapId},
+    heap::{DropWithContext, HeapId, HeapObjectRead, HeapReadOutput},
+    identity::Identity,
     intern::StringId,
     value::{EitherStr, Value},
 };
@@ -121,22 +122,45 @@ impl CmpOrder {
     }
 }
 
-/// Common operations for heap-allocated Python values.
+/// Supplies the Python identity shared by `PyTrait`'s dynamic and concrete receivers.
+///
+/// Complete heap reads carry their arena identity directly, while `Value` also
+/// covers immediate identities. Keeping this as a supertrait lets default Python
+/// operations use identity without adding it to each method's arguments.
+pub(crate) trait PyObjectIdentity {
+    /// Returns the structural key exposed by Python's `is` and `id()` operations.
+    fn py_identity(&self) -> Identity;
+}
+
+impl<T: ?Sized> PyObjectIdentity for HeapObjectRead<'_, T> {
+    fn py_identity(&self) -> Identity {
+        Identity::from_heap_id(self.id())
+    }
+}
+
+impl PyObjectIdentity for HeapReadOutput<'_> {
+    fn py_identity(&self) -> Identity {
+        Identity::from_heap_id(self.id())
+    }
+}
+
+impl PyObjectIdentity for Value {
+    fn py_identity(&self) -> Identity {
+        Identity::new(self)
+    }
+}
+
+/// Common operations for Python values.
 ///
 /// Implementers should provide Python-compatible semantics for all operations.
-/// Most methods take a `&VM` or `&mut VM` reference to access the heap and interned
-/// strings for nested lookups in containers holding `Value::Ref` values.
-///
-/// This trait is used with `enum_dispatch` on `HeapData` to enable efficient
-/// virtual dispatch without boxing overhead.
+/// Dynamic heap calls are forwarded exhaustively through [`HeapReadOutput`]
+/// without boxing.
 ///
 /// Methods take the concrete [`VM`]/`Heap` types, which own the resource
-/// tracker enforcing time/memory/recursion limits.
-///
-/// The lifetime `'h` is the heap borrow lifetime. For concrete types (e.g. `Dict`,
-/// `List`) this is unused and should be `'_`. For `HeapRead<'h, T>` implementers
-/// the lifetime connects the read handle to the VM's heap reference.
-pub(crate) trait PyTrait<'h> {
+/// tracker enforcing time/memory/recursion limits. The lifetime `'h` connects
+/// [`HeapObjectRead`] implementations to the VM's heap reference; immediate
+/// [`Value`] implementations use it only through the VM argument.
+pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Returns the Python type name for this value (e.g., "list", "str").
     ///
     /// Used for error messages and the `type()` builtin.
@@ -159,11 +183,8 @@ pub(crate) trait PyTrait<'h> {
     /// `vm.recursion_guard()` (or `vm.incr_recursion()` when iterating) and
     /// recurse through `Value::py_hash` for nested values.
     ///
-    /// `self_id` is the heap ID of this value; it is required for types like
-    /// `Cell` that hash by identity. Most implementations ignore it.
-    ///
     /// The default implementation returns `Ok(None)` (unhashable).
-    fn py_hash(&self, _self_id: HeapId, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         Ok(None)
     }
 
@@ -171,8 +192,7 @@ pub(crate) trait PyTrait<'h> {
     ///
     /// `Ok(None)` means the type has no containment logic of its own, so
     /// [`Value::py_contains`] falls back to iteration and then `TypeError`.
-    /// `self_id` is only needed by types that re-enter the VM (`Instance`).
-    fn py_contains_impl(&self, _self_id: HeapId, _item: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, _item: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
@@ -190,8 +210,7 @@ pub(crate) trait PyTrait<'h> {
     /// heap to resolve nested references; `&mut VM` allows lazy hash computation
     /// for dict key lookups and access to interned string content.
     ///
-    /// Heap-backed implementations receive `self_id`; immediate values receive
-    /// `None`. Recursion depth is tracked via `vm.recursion_guard()`; returns
+    /// Recursion depth is tracked via `vm.recursion_guard()`; returns
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>>;
 
@@ -220,17 +239,10 @@ pub(crate) trait PyTrait<'h> {
     /// containment tests (neither need hold) and each operator names *itself* in
     /// the `TypeError` an unorderable count raises — so the answer depends on
     /// which operator was written, which a single `CmpOrder` cannot carry.
-    /// `self_id` is this value's heap id, as for [`py_add_impl`](Self::py_add_impl).
     ///
     /// Only the four ordering operators reach here. `Ok(None)` — the default —
     /// defers to `py_cmp`.
-    fn py_cmp_op(
-        &self,
-        _other: &Value,
-        _op: CmpOperator,
-        _vm: &mut VM<'h>,
-        _self_id: Option<HeapId>,
-    ) -> RunResult<Option<bool>> {
+    fn py_cmp_op(&self, _other: &Value, _op: CmpOperator, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
@@ -240,6 +252,19 @@ pub(crate) trait PyTrait<'h> {
     /// testing may raise, notably for Python 3.14's `NotImplemented` singleton.
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
         Ok(self.py_len(vm) != Some(0))
+    }
+
+    /// Writes Python's identity-bearing default object representation.
+    ///
+    /// Custom `repr` implementations that apply only to some values can call
+    /// this for their remaining variants.
+    fn py_default_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>) -> RunResult<()> {
+        let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+        Ok(write!(
+            f,
+            "<{type_name} object at 0x{:x}>",
+            self.py_identity().encoded()
+        )?)
     }
 
     /// Writes the Python `repr()` string for this value to a formatter.
@@ -255,9 +280,7 @@ pub(crate) trait PyTrait<'h> {
     /// * `vm` - The VM for resolving value references and looking up interned strings
     /// * `heap_ids` - Set of heap IDs currently being repr'd (for cycle detection)
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        let type_name = self.py_type(vm).name(vm.heap, vm.interns);
-        write!(f, "<{type_name} object>")?;
-        Ok(())
+        self.py_default_repr_fmt(f, vm)
     }
 
     /// Returns the Python `repr()` string for this value as a heap `str` `Value`.
@@ -286,12 +309,26 @@ pub(crate) trait PyTrait<'h> {
         self.py_repr(vm)
     }
 
+    /// Coerces this value to an `int` through the `__index__` protocol.
+    ///
+    /// `Ok(None)` — the default — means the type is not `__index__`-able, so
+    /// the caller raises its own `TypeError`; the wording differs per consumer
+    /// (`list indices must be integers`, `cannot be interpreted as an integer`,
+    /// `slice indices must be...`), which is why it is not raised here.
+    ///
+    /// The returned value is always a real `int` (`Int`/`Bool`/`LongInt`), so a
+    /// caller may narrow it — or recurse once through its own int arms — without
+    /// re-entering the protocol. Out-of-range policy stays with the caller,
+    /// since `as_int` and `as_index` disagree on it.
+    fn py_index_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
     /// Python unary minus (`__neg__`).
     ///
     /// `Ok(None)` — the default — means the type has no negation, so the VM
-    /// raises `TypeError`. `self_id` is this value's heap id, as for
-    /// [`py_add_impl`](Self::py_add_impl).
-    fn py_neg_impl(&self, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    /// raises `TypeError`.
+    fn py_neg_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -299,16 +336,13 @@ pub(crate) trait PyTrait<'h> {
     ///
     /// Rarely a no-op: `+True` is `1`, and `+Counter(a=-1)` strips the
     /// non-positive counts, so implementations return a value rather than `self`.
-    fn py_pos_impl(&self, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_pos_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python addition (`__add__`).
     ///
-    /// `self_id` is this value's own heap id, which types whose operator walks
-    /// their entries need (`Counter`'s algebra cannot hold a `HeapRead` across
-    /// the `&mut VM` each count comparison takes). Most implementations ignore it.
-    fn py_add_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -318,8 +352,7 @@ pub(crate) trait PyTrait<'h> {
     }
 
     /// One-sided implementation of Python subtraction (`__sub__`).
-    /// `self_id` carries this value's heap id, as for [`py_add_impl`](Self::py_add_impl).
-    fn py_sub_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -389,8 +422,7 @@ pub(crate) trait PyTrait<'h> {
     }
 
     /// One-sided implementation of Python bitwise AND (`__and__`).
-    /// `self_id` carries this value's heap id, as for [`py_add_impl`](Self::py_add_impl).
-    fn py_and_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -400,8 +432,7 @@ pub(crate) trait PyTrait<'h> {
     }
 
     /// One-sided implementation of Python bitwise OR (`__or__`).
-    /// `self_id` carries this value's heap id, as for [`py_add_impl`](Self::py_add_impl).
-    fn py_or_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -448,23 +479,23 @@ pub(crate) trait PyTrait<'h> {
     /// (the VM then falls back to `py_add`), or `Err` if the operation raised — including
     /// types whose `+=` is `extend` (e.g. `deque`), which raise `TypeError` from the
     /// iterator protocol rather than a `ResourceError`.
-    fn py_iadd_impl(&mut self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<bool> {
+    fn py_iadd_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<bool> {
         Ok(false)
     }
 
     /// Python in-place subtraction (`__isub__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s
     /// contract: `Ok(true)` mutated `self` in place, `Ok(false)` falls back to binary `-`.
-    fn py_isub_impl(&mut self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<bool> {
+    fn py_isub_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<bool> {
         Ok(false)
     }
 
     /// Python in-place bitwise AND (`__iand__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s contract.
-    fn py_iand_impl(&mut self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<bool> {
+    fn py_iand_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<bool> {
         Ok(false)
     }
 
     /// Python in-place bitwise OR (`__ior__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s contract.
-    fn py_ior_impl(&mut self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<bool> {
+    fn py_ior_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<bool> {
         Ok(false)
     }
 
@@ -480,10 +511,6 @@ pub(crate) trait PyTrait<'h> {
     /// intercept specific methods (e.g. `list.sort`), or detect method calls (e.g. dataclass
     /// methods) should return the appropriate `CallResult` variant.
     ///
-    /// # Arguments
-    /// * `self_id` - The heap ID of this value, needed by types that must reference themselves
-    ///   (e.g. dataclass method calls prepend `self` to args)
-    ///
     /// # Returns
     ///
     /// - `Ok(CallResult::Value(v))` - Method completed synchronously with value `v`
@@ -491,13 +518,7 @@ pub(crate) trait PyTrait<'h> {
     /// - `Ok(CallResult::External(name, args))` - Method needs external function call
     /// - `Ok(CallResult::MethodCall(attr, args))` - Dataclass method call; VM yields to host
     /// - `Err(e)` - Method call failed with error
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         // `py_call_attr` takes ownership of the argument bundle. Implementations that
         // do not recognize the attribute still need to release those values before
         // reporting `AttributeError`, otherwise method calls on unsupported types leak
@@ -551,7 +572,7 @@ pub(crate) trait PyTrait<'h> {
     /// because [`py_is_context_manager`] gates the invocation.
     ///
     /// [`py_is_context_manager`]: PyTrait::py_is_context_manager
-    fn py_enter(&mut self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn py_enter(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         Err(ExcType::attribute_error(
             self.py_type(vm).name(vm.heap, vm.interns),
             "__enter__",
@@ -577,7 +598,7 @@ pub(crate) trait PyTrait<'h> {
     /// is reached only by direct invocation via `obj.__exit__(...)`.
     ///
     /// [`py_is_context_manager`]: PyTrait::py_is_context_manager
-    fn py_exit(&mut self, _self_id: HeapId, vm: &mut VM<'h>, _exc: Option<HeapId>) -> RunResult<CallResult> {
+    fn py_exit(&mut self, vm: &mut VM<'h>, _exc: Option<HeapId>) -> RunResult<CallResult> {
         Err(ExcType::attribute_error(
             self.py_type(vm).name(vm.heap, vm.interns),
             "__exit__",
@@ -675,7 +696,7 @@ pub(crate) trait PyTrait<'h> {
     }
 
     /// Returns a Python iterator for this object (`__iter__`).
-    fn py_iter(&self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         Err(ExcType::type_error_not_iterable(
             &self.py_type(vm).name(vm.heap, vm.interns),
         ))
@@ -683,10 +704,7 @@ pub(crate) trait PyTrait<'h> {
 
     /// Advances this object using Python's iterator protocol (`__next__`).
     ///
-    /// `self_id` mirrors [`py_iter`](PyTrait::py_iter): a user-defined instance
-    /// needs its own id to bind `self` when calling `__next__`. Built-in
-    /// iterators hold their state inline and ignore it.
-    fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Err(ExcType::type_error_not_iterator(
             &self.py_type(vm).name(vm.heap, vm.interns),
         ))

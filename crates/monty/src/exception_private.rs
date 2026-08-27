@@ -932,6 +932,20 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::value_error("Step for islice() must be a positive integer or None.")
     }
 
+    /// Creates the TypeError `functools.reduce` raises when the iterable is
+    /// empty and no `initial` was given, so there is nothing to return.
+    #[must_use]
+    fn reduce_empty_iterable() -> RunError {
+        Self::type_error("reduce() of empty iterable with no initial value")
+    }
+
+    /// Creates the TypeError `functools.reduce` raises for a second argument
+    /// that cannot be iterated, replacing the generic not-iterable wording.
+    #[must_use]
+    fn reduce_not_iterable() -> RunError {
+        Self::type_error("reduce() arg 2 must support iteration")
+    }
+
     /// Creates a TypeError for the right operand of `in` / `not in` supporting
     /// neither `__contains__` nor iteration.
     ///
@@ -1284,6 +1298,20 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn index_error_int_too_large() -> RunError {
         SimpleException::new_msg(ExcType::IndexError, "cannot fit 'int' into an index-sized integer").into()
+    }
+
+    /// [`Self::index_error_int_too_large`] for a value that supplied the index
+    /// through `__index__`.
+    ///
+    /// CPython names the object it asked, not the `int` it got back, so an
+    /// instance reports its own class here.
+    #[must_use]
+    fn index_error_cannot_fit(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::IndexError,
+            format!("cannot fit '{type_name}' into an index-sized integer"),
+        )
+        .into()
     }
 
     /// Creates an ImportError for when a name cannot be imported from a module.
@@ -1910,6 +1938,14 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn runtime_error_deque_mutated() -> RunError {
         SimpleException::new_msg(ExcType::RuntimeError, "deque mutated during iteration").into()
+    }
+
+    /// Creates an IndexError for a user `__eq__` mutating a deque during
+    /// `deque.remove` — CPython quirkily raises IndexError there, with the
+    /// same message its RuntimeError sibling uses.
+    #[must_use]
+    fn index_error_deque_mutated() -> RunError {
+        SimpleException::new_msg(ExcType::IndexError, "deque mutated during iteration").into()
     }
 
     /// `IndexError: deque index out of range` — indexing or assigning out of bounds.

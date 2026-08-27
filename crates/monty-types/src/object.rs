@@ -842,6 +842,9 @@ pub enum MontyType {
     ItertoolsFilterFalse,
     #[strum(serialize = "itertools.starmap")]
     ItertoolsStarMap,
+    /// The builtin `object`, which the sandbox exposes as a name only — it is
+    /// not a base class and cannot be constructed.
+    Object,
 }
 
 impl fmt::Display for MontyType {
@@ -866,9 +869,9 @@ impl MontyType {
 
     /// Parses a name produced by [`Display`](fmt::Display)/[`name`](Self::name)
     /// back to the `MontyType` — the wire-protocol decode path for builtin
-    /// type names. Never yields [`Instance`](Self::Instance) (`"object"` and
-    /// class names return `None`); the wire carries instance types in a
-    /// dedicated field instead.
+    /// type names. Never yields [`Instance`](Self::Instance): class names
+    /// return `None` (the wire carries instance types in a dedicated field
+    /// instead), and `"object"` parses to the builtin [`Object`](Self::Object).
     ///
     /// `EnumString` parses via the same strum `serialize` attributes that
     /// `IntoStaticStr` renders with, so the two stay in lockstep by

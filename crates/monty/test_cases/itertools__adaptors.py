@@ -36,6 +36,10 @@ assert iter(p) is p
 # `str(type(...))` matches CPython; `__name__` is the dotted form Monty uses
 # for every dotted `tp_name` (see limitations/itertools.md).
 assert str(type(itertools.pairwise([]))) == "<class 'itertools.pairwise'>"
+pairwise_repr = itertools.pairwise([])
+pairwise_repr_text = repr(pairwise_repr)
+assert pairwise_repr_text.startswith('<itertools.pairwise object at 0x')
+assert int(pairwise_repr_text.rsplit(' at ', 1)[1][:-1], 16) == id(pairwise_repr)
 
 # === pairwise errors ===
 try:

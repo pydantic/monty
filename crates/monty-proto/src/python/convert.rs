@@ -396,7 +396,7 @@ pub(crate) fn monty_to_py_inner(
         MontyObject::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
         // Return the host Python type object the sandbox type maps to.
         MontyObject::Type(t) => type_object_to_py(py, t.clone()),
-        MontyObject::BuiltinFunction(f) => import_builtins(py)?.getattr(py, f.to_string()),
+        MontyObject::BuiltinFunction(f) => builtin_function_to_py(py, &f.to_string()),
         // Dataclass - use registry to reconstruct original type if available
         MontyObject::Dataclass {
             name,
@@ -423,6 +423,19 @@ pub(crate) fn monty_to_py_inner(
         // appear as final output values. If they do, represent as a string with the function name.
         MontyObject::Function { name, .. } => Ok(PyString::new(py, name).into_any().unbind()),
     }
+}
+
+/// Resolves a builtin function's host object from the name Monty renders it as.
+///
+/// Nearly every name is a plain `builtins` attribute, but `object.__setattr__`
+/// is dotted — it lives on `object`, not on the module — so the name is walked
+/// segment by segment rather than looked up whole.
+fn builtin_function_to_py(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
+    let mut obj: Py<PyAny> = import_builtins(py)?.clone_ref(py).into_any();
+    for segment in name.split('.') {
+        obj = obj.getattr(py, segment)?;
+    }
+    Ok(obj)
 }
 
 pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {

@@ -1,6 +1,7 @@
-# Test that a nested GatherFuture *item* is cleaned up when the task awaiting it
-# is cancelled. Unlike refcount__gather_nested_cancel, the inner gather is a direct
-# item of the gather the cancelled task is blocked on, not reached via a coroutine.
+# Test that a nested GatherFuture *item* is released by the end-of-run scheduler
+# teardown, having been detached when its parent gather failed and never run
+# again. Unlike refcount__gather_nested_cancel, the inner gather is a direct
+# item of the gather the detached task is blocked on, not reached via a coroutine.
 import asyncio
 
 

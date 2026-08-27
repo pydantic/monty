@@ -191,7 +191,7 @@ pub fn iterator_next(iter_value: &Value, default: Option<Value>, vm: &mut VM<'_>
     let Value::Ref(iter_id) = iter_value else {
         return Err(ExcType::type_error_not_iterator(&iter_value.py_type_name(vm)));
     };
-    match vm.heap.read(*iter_id).py_next(Some(*iter_id), vm)? {
+    match vm.heap.read(*iter_id).py_next(vm)? {
         Some(item) => Ok(item),
         None => match default_guard.into_inner() {
             Some(default) => Ok(default),
