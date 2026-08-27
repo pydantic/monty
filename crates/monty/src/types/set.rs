@@ -106,10 +106,12 @@ impl SetStorage {
         let (value, vm) = value_guard.as_parts_mut();
         let hash = set_element_hash(value, vm)?;
 
-        // Check if value already exists.
+        // Check if value already exists. CPython compares the stored element on
+        // the left, which an asymmetric user `__eq__` can tell apart — the
+        // mutation-safe twin ([`HeapRead::find_index`]) does the same.
         let existing = self
             .indices
-            .find(hash, |&idx| value.py_eq(&self.entries[idx].value, vm).unwrap_or(false));
+            .find(hash, |&idx| self.entries[idx].value.py_eq(value, vm).unwrap_or(false));
 
         if existing.is_some() {
             Ok(false)
@@ -561,8 +563,10 @@ impl<'h> HeapRead<'h, SetStorage> {
     fn intersection(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<SetStorage> {
         let mut result_guard = DropGuard::new(SetStorage::new(), vm);
         let (result, vm) = result_guard.as_parts_mut();
-        // Iterate over the smaller set for efficiency
-        let (smaller, larger) = if self.get(vm.heap).len() <= other.get(vm.heap).len() {
+        // Iterate over the smaller set for efficiency. CPython swaps only when
+        // `other` is strictly larger, so on a tie it walks `other` and tests
+        // membership in `self` — observable through an asymmetric `__eq__`.
+        let (smaller, larger) = if self.get(vm.heap).len() < other.get(vm.heap).len() {
             (self, other)
         } else {
             (other, self)
