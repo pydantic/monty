@@ -34,7 +34,7 @@ Monty is that place, without a container or a sandboxing service in the loop.
 ## What Monty can do
 
 - **Run a useful subset of Python** — functions, closures, decorators, classes, dataclasses, comprehensions,
-  `try`/`except`, f-strings, `async`/`await`, and 13 stdlib modules.
+  `try`/`except`, f-strings, `async`/`await`, and the most commonly-used stdlib modules.
   See [the Python subset](python-subset.md).
 - **Block host access by default** — an unmounted sandbox cannot read a file, read an environment variable, open a
   socket or spawn a process.
@@ -58,9 +58,7 @@ Monty is that place, without a container or a sandboxing service in the loop.
 
 ## What Monty cannot do
 
-- **Most of the standard library.** Only `asyncio`, `collections`, `dataclasses`, `datetime`, `functools`,
-  `itertools`, `json`, `math`, `os`, `pathlib`, `re`, `sys`, `typing` and `unicodedata` are importable, and each
-  covers only part of its CPython surface.
+- **Most of the standard library.** only a [subset of standard library modules are available](python-subset.md) and each covers only part of its CPython surface.
 - **Third-party packages.** There is no `sys.path` and no site-packages inside the sandbox; supporting PyPI packages is
   not a goal.
 - **Class inheritance.** `class Foo(Bar):` is rejected at parse time, and so are method decorators like `@classmethod`,
