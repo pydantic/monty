@@ -229,9 +229,11 @@ assert next(past_drop) == [1]
 
 
 # The batch-three adaptors. `accumulate` has THREE edges — source, callable and
-# the running total — and the total is reachable only through the adaptor once
-# the first item has been folded in.
+# the running total. Two steps are needed for the total edge: the first stores
+# the source's own item untouched, and only the second folds one in to produce a
+# list the adaptor alone names.
 acc_live = itertools.accumulate([[1], [2]], make_concat())
+next(acc_live)
 next(acc_live)
 bat_live = itertools.batched([[1], [2]], 1)
 next(bat_live)
@@ -247,6 +249,7 @@ next(fill_live)
 # The freeing paths: `py_dec_ref_ids` runs only on release, so each of these
 # must be dropped rather than merely held.
 gone_acc = itertools.accumulate([[1], [2]], make_concat())
+next(gone_acc)
 next(gone_acc)
 gone_acc = None
 gone_bat = itertools.batched([[1], [2]], 1)
