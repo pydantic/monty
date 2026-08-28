@@ -17,8 +17,11 @@
 //! **The monty runtime MUST NEVER read, write, or obtain any information about
 //! any file or directory outside the specific directory that is mounted.**
 //!
-//! Enforced by `path_security::resolve_path` via path canonicalization,
-//! boundary checks, and symlink escape detection.
+//! Enforced by the operating system, not by path arithmetic: each mount holds
+//! a `cap_std::fs::Dir` opened once at mount time, and every operation is
+//! performed relative to that descriptor, which refuses to resolve past its
+//! own root. `path_security` only normalizes the virtual path and strips the
+//! mount prefix — it is path policy, not the boundary.
 //! Each mount has an aggregate memory budget, defaulting to
 //! [`DEFAULT_MEMORY_USAGE_LIMIT`], for retained overlay data and results.
 //!
@@ -30,7 +33,7 @@
 
 pub use error::MountError;
 pub use mount_mode::MountMode;
-pub use mount_table::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountTable};
+pub use mount_table::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountRoot, MountTable};
 pub use overlay_state::OverlayState;
 
 mod common;

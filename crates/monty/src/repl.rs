@@ -10,21 +10,21 @@ use ahash::AHashMap;
 use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
-use serde::de::DeserializeOwned;
 
+#[cfg(feature = "test-hooks")]
+use crate::function::FunctionMetadataFault;
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::CallId,
-    bytecode::{VM, VMSnapshot},
-    defer_drop,
+    bytecode::{FrameExit, VM, VMSnapshot},
     exception_private::{ExcTypeExt, RunError},
-    heap::{DropWithContext, Heap, HeapReader},
-    heap_data::HeapData,
+    heap::{DropWithContext, Heap, HeapData, HeapReader},
     intern::{InternerBuilder, Interns},
     name_map::NameMap,
     object_bridge::MontyObjectExt,
     run::{CompileOptions, Executor},
     run_progress::{ConvertedExit, ExtFunctionResult, ExtFunctionResultExt, NameLookupResult, convert_frame_exit},
+    types::tuple::allocate_tuple,
     value::Value,
 };
 
@@ -34,14 +34,13 @@ use crate::{
 /// Each `feed()` compiles and executes only the new snippet against the current
 /// state, avoiding the cost and semantic risks of replaying prior code.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub struct MontyRepl<T: ResourceTracker> {
+pub struct MontyRepl {
     /// Script name used for runtime error messages and REPL identification.
     ///
     /// Incremental `feed()` / `start()` snippets intentionally use internal script names
     /// like `<python-input-0>` to match CPython's interactive traceback style.
     script_name: String,
-    /// Counter for generated `<python-input-N>` snippet filenames.
+    /// Counter for generated `<python-input-N>` execution filenames.
     next_input_id: u64,
     /// Stable mapping of global variable names to namespace slot IDs.
     global_names: NameMap,
@@ -62,7 +61,7 @@ pub struct MontyRepl<T: ResourceTracker> {
     #[serde(default)]
     options: CompileOptions,
     /// Persistent heap across snippets.
-    heap: Heap<T>,
+    heap: Heap,
     /// Persistent global variable values across snippets.
     ///
     /// Indexed by `NamespaceId` slots from `global_names`. Between snippet
@@ -71,14 +70,14 @@ pub struct MontyRepl<T: ResourceTracker> {
     globals: Vec<Value>,
 }
 
-impl<T: ResourceTracker> MontyRepl<T> {
+impl MontyRepl {
     /// Creates an empty REPL session with no code parsed or executed.
     ///
     /// All code execution is driven through `feed_run()` or `feed_start()`. This separates
     /// construction from execution, matching the pattern used by `MontyRun::new()`.
     /// The [`CompileOptions`] apply to every snippet fed to the session.
     #[must_use]
-    pub fn new(script_name: &str, resource_tracker: T, options: CompileOptions) -> Self {
+    pub fn new(script_name: &str, resource_tracker: ResourceTracker, options: CompileOptions) -> Self {
         let heap = Heap::new(0, resource_tracker);
 
         Self {
@@ -93,20 +92,39 @@ impl<T: ResourceTracker> MontyRepl<T> {
         }
     }
 
+    /// Injects `fault` into a compiled function's metadata.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` does not identify a function suitable for `fault`.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn __corrupt_function_metadata_for_tests(&mut self, name: &str, fault: FunctionMetadataFault) {
+        self.interns.corrupt_function_metadata_for_tests(name, fault);
+    }
+
     /// Returns the resource tracker that will be used for the next snippet.
     ///
     /// This is primarily intended for host integrations that need to attach
     /// per-execution state, such as cancellation markers, to an existing REPL.
-    pub fn tracker(&self) -> &T {
-        self.heap.tracker()
+    pub fn tracker(&self) -> &ResourceTracker {
+        &self.heap.tracker
     }
 
     /// Returns mutable access to the resource tracker for the next snippet.
     ///
     /// REPL hosts use this to install ephemeral execution controls, such as
     /// async cancellation flags, before calling `feed_start()`.
-    pub fn tracker_mut(&mut self) -> &mut T {
-        self.heap.tracker_mut()
+    pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
+        &mut self.heap.tracker
+    }
+
+    /// Number of live heap entries (excluding the empty-tuple singleton) —
+    /// `ref-count-return`-only introspection for GC tests.
+    #[cfg(feature = "ref-count-return")]
+    #[must_use]
+    pub fn heap_entry_count(&self) -> usize {
+        self.heap.entry_count()
     }
 
     /// Starts executing a new snippet and returns suspendable REPL progress.
@@ -131,7 +149,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         code: &str,
         inputs: Vec<(String, MontyObject)>,
         print: PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         let mut this = self;
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
@@ -162,6 +180,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         match HeapReader::with(&mut this.heap, &mut (&executor, print), |reader, (executor, print)| {
             let mut vm = VM::new(
                 mem::take(&mut this.globals),
+                &executor.module_code,
                 reader,
                 &executor.interns,
                 print.reborrow(),
@@ -174,7 +193,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
                 return Err(error);
             }
 
-            let vm_result = vm.run_module(&executor.module_code);
+            let vm_result = vm.run_module();
 
             // Convert while VM alive, then snapshot or reclaim globals
             let converted = convert_frame_exit(vm_result, &mut vm);
@@ -233,6 +252,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let result = HeapReader::with(&mut self.heap, &mut (&executor, print), |reader, (executor, print)| {
             let mut vm = VM::new(
                 mem::take(&mut self.globals),
+                &executor.module_code,
                 reader,
                 &executor.interns,
                 print.reborrow(),
@@ -269,8 +289,8 @@ impl<T: ResourceTracker> MontyRepl<T> {
 
     /// Calls a Python function defined in the session by name.
     ///
-    /// Looks up the function in the global namespace, converts the arguments,
-    /// executes the function, and converts the result back.
+    /// Looks up the function, then executes a synthetic `<python-input-N>`
+    /// call expression so failures include a visible host call site.
     ///
     /// # Errors
     /// Returns `MontyException` if the function is not found, not callable,
@@ -281,59 +301,76 @@ impl<T: ResourceTracker> MontyRepl<T> {
         args: Vec<MontyObject>,
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
-        let slot_idx = self
-            .interns
-            .get_string_id_by_name(name)
-            .and_then(|name_id| self.global_names.get(name_id));
-        let Some(slot_idx) = slot_idx else {
+        let Some(name_id) = self.interns.get_string_id_by_name(name) else {
             return Err(RunError::from(ExcType::name_error(name))
                 .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
         };
+        let Some(slot_idx) = self.global_names.get(name_id) else {
+            return Err(RunError::from(ExcType::name_error(name))
+                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
+        };
+        if matches!(self.globals.get(slot_idx.index()), None | Some(Value::Undefined)) {
+            return Err(RunError::from(ExcType::name_error(name))
+                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
+        }
 
-        let assert_repr_max_bytes = self.options.assert_message_annotations.max_bytes();
-        HeapReader::with(
-            &mut self.heap,
-            &mut (&self.interns, print),
-            |reader, (interns, print)| {
-                let vm = &mut VM::new(
-                    mem::take(&mut self.globals),
-                    reader,
-                    interns,
-                    print.reborrow(),
-                    assert_repr_max_bytes,
-                );
+        let input_script_name = self.next_input_script_name();
+        let executor = Executor::new_repl_function_call(
+            name,
+            name_id,
+            slot_idx,
+            args.len(),
+            &input_script_name,
+            self.global_names.clone(),
+            &self.interns,
+            self.options,
+        )?;
+        self.sources.insert(input_script_name, executor.code.clone());
 
-                let callable = vm.globals[slot_idx.index()].clone_with_heap(vm);
-                defer_drop!(callable, vm);
+        let original_globals_len = self.globals.len();
+        self.ensure_globals_size(executor.namespace_size());
+        let result = HeapReader::with(&mut self.heap, &mut (&executor, print), |reader, (executor, print)| {
+            let vm = &mut VM::new(
+                mem::take(&mut self.globals),
+                &executor.module_code,
+                reader,
+                &executor.interns,
+                print.reborrow(),
+                executor.assert_repr_max_bytes,
+            );
 
-                let arg_values = match convert_args(args, vm) {
-                    Ok(av) => av,
-                    Err(e) => {
-                        self.globals = vm.take_globals();
-                        return Err(e);
+            let result = match convert_args(args, vm) {
+                Ok(args) => {
+                    let (args, kwargs) = args.into_parts();
+                    debug_assert!(kwargs.is_empty(), "host function calls only have positional arguments");
+                    kwargs.drop_with(vm);
+                    let args_tuple = allocate_tuple(args.collect(), vm.heap);
+                    let args_slot = executor.input_slots[0].index();
+                    let old = mem::replace(&mut vm.globals[args_slot], args_tuple);
+                    old.drop_with(vm);
+
+                    match vm.run_module() {
+                        Ok(FrameExit::Return(value)) => Ok(MontyObject::new(value, vm)),
+                        Ok(exit) => Err(vm
+                            .unsupported_frame_exit("MontyRepl::call_function", exit)
+                            .into_python_exception(&executor.interns, |fname| {
+                                self.sources.get(fname).map(String::as_str)
+                            })),
+                        Err(error) => Err(error.into_python_exception(&executor.interns, |fname| {
+                            self.sources.get(fname).map(String::as_str)
+                        })),
                     }
-                };
+                }
+                Err(error) => Err(error),
+            };
 
-                // Host boundary: open an execution window so the time budget
-                // advances (and accumulates) during the call. This cannot go
-                // through `VM::run_external` because `evaluate_function` must
-                // push and run a single function frame itself.
-                vm.heap.tracker().on_execution_start();
-                let eval_result = vm.evaluate_function("MontyRepl::call_function", callable, arg_values);
-                vm.heap.tracker().on_execution_stop();
-
-                let result = match eval_result {
-                    Ok(value) => Ok(MontyObject::new(value, vm)),
-                    Err(e) => {
-                        Err(e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)))
-                    }
-                };
-
-                self.globals = vm.take_globals();
-
-                result
-            },
-        )
+            let mut globals = vm.take_globals();
+            globals.split_off(original_globals_len).drop_with(vm);
+            self.globals = globals;
+            result
+        });
+        self.interns = executor.interns;
+        result
     }
 
     /// Returns a list of all callable function names defined in the session.
@@ -377,11 +414,11 @@ impl<T: ResourceTracker> MontyRepl<T> {
         }
     }
 
-    /// Returns the generated filename for the next interactive snippet.
+    /// Returns the generated filename for the next interactive execution.
     ///
-    /// CPython labels interactive snippets as `<python-input-N>` and increments
-    /// N for each feed attempt. Matching this improves traceback ergonomics and
-    /// makes REPL errors easier to correlate with user input history.
+    /// CPython labels interactive inputs as `<python-input-N>`. Snippets and
+    /// host function calls share this sequence so every traceback call site
+    /// can be correlated with the session's execution history.
     fn next_input_script_name(&mut self) -> String {
         let input_id = self.next_input_id;
         self.next_input_id += 1;
@@ -389,30 +426,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     }
 }
 
-impl<T: ResourceTracker + serde::Serialize> MontyRepl<T> {
-    /// Serializes the REPL session state to bytes.
-    ///
-    /// This includes heap + globals + global slot mapping, allowing snapshot/restore
-    /// of interactive state between process runs.
-    ///
-    /// # Errors
-    /// Returns an error if serialization fails.
-    pub fn dump(&self) -> Result<Vec<u8>, postcard::Error> {
-        postcard::to_allocvec(self)
-    }
-}
-
-impl<T: ResourceTracker + DeserializeOwned> MontyRepl<T> {
-    /// Restores a REPL session from bytes produced by `MontyRepl::dump`.
-    ///
-    /// # Errors
-    /// Returns an error if deserialization fails.
-    pub fn load(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        postcard::from_bytes(bytes)
-    }
-}
-
-impl<T: ResourceTracker> Drop for MontyRepl<T> {
+impl Drop for MontyRepl {
     fn drop(&mut self) {
         self.globals.drain(..).drop_with(&mut self.heap);
     }
@@ -429,20 +443,19 @@ impl<T: ResourceTracker> Drop for MontyRepl<T> {
 /// Each variant (except `Complete`) wraps a dedicated struct with only the relevant
 /// resume methods.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub enum ReplProgress<T: ResourceTracker> {
+pub enum ReplProgress {
     /// Execution paused at an external function call or dataclass method call.
-    FunctionCall(ReplFunctionCall<T>),
+    FunctionCall(ReplFunctionCall),
     /// Execution paused for an OS-level operation.
-    OsCall(ReplOsCall<T>),
+    OsCall(ReplOsCall),
     /// All async tasks are blocked waiting for external futures to resolve.
-    ResolveFutures(ReplResolveFutures<T>),
+    ResolveFutures(ReplResolveFutures),
     /// Execution paused for an unresolved name lookup.
-    NameLookup(ReplNameLookup<T>),
+    NameLookup(ReplNameLookup),
     /// Snippet execution completed with the updated REPL and result value.
     Complete {
         /// Updated REPL session state to continue feeding snippets.
-        repl: MontyRepl<T>,
+        repl: MontyRepl,
         /// Final result produced by the snippet.
         value: MontyObject,
     },
@@ -455,17 +468,17 @@ pub enum ReplProgress<T: ResourceTracker> {
 /// subsequent snippets. Any global mutations that occurred before the exception
 /// remain visible in the returned `repl`.
 #[derive(Debug)]
-pub struct ReplStartError<T: ResourceTracker> {
+pub struct ReplStartError {
     /// REPL session state after the failed snippet — ready for further use.
-    pub repl: MontyRepl<T>,
+    pub repl: MontyRepl,
     /// The Python exception that was raised.
     pub error: MontyException,
 }
 
-impl<T: ResourceTracker> ReplProgress<T> {
+impl ReplProgress {
     /// Consumes the progress and returns the `ReplFunctionCall` struct.
     #[must_use]
-    pub fn into_function_call(self) -> Option<ReplFunctionCall<T>> {
+    pub fn into_function_call(self) -> Option<ReplFunctionCall> {
         match self {
             Self::FunctionCall(call) => Some(call),
             _ => None,
@@ -474,7 +487,7 @@ impl<T: ResourceTracker> ReplProgress<T> {
 
     /// Consumes the progress and returns the `ReplResolveFutures` struct.
     #[must_use]
-    pub fn into_resolve_futures(self) -> Option<ReplResolveFutures<T>> {
+    pub fn into_resolve_futures(self) -> Option<ReplResolveFutures> {
         match self {
             Self::ResolveFutures(state) => Some(state),
             _ => None,
@@ -483,7 +496,7 @@ impl<T: ResourceTracker> ReplProgress<T> {
 
     /// Consumes the progress and returns the `ReplNameLookup` struct.
     #[must_use]
-    pub fn into_name_lookup(self) -> Option<ReplNameLookup<T>> {
+    pub fn into_name_lookup(self) -> Option<ReplNameLookup> {
         match self {
             Self::NameLookup(lookup) => Some(lookup),
             _ => None,
@@ -492,7 +505,7 @@ impl<T: ResourceTracker> ReplProgress<T> {
 
     /// Consumes the progress and returns the completed REPL and value.
     #[must_use]
-    pub fn into_complete(self) -> Option<(MontyRepl<T>, MontyObject)> {
+    pub fn into_complete(self) -> Option<(MontyRepl, MontyObject)> {
         match self {
             Self::Complete { repl, value } => Some((repl, value)),
             _ => None,
@@ -507,7 +520,7 @@ impl<T: ResourceTracker> ReplProgress<T> {
     /// The REPL state reflects any mutations that occurred before the
     /// snapshot was taken.
     #[must_use]
-    pub fn into_repl(self) -> MontyRepl<T> {
+    pub fn into_repl(self) -> MontyRepl {
         match self {
             Self::FunctionCall(call) => call.into_repl(),
             Self::OsCall(call) => call.into_repl(),
@@ -522,7 +535,7 @@ impl<T: ResourceTracker> ReplProgress<T> {
     /// Lets hosts read resource accounting — e.g. cumulative execution time
     /// for `max_duration` budgeting — at any suspension point without
     /// consuming the progress.
-    pub fn tracker(&self) -> &T {
+    pub fn tracker(&self) -> &ResourceTracker {
         match self {
             Self::FunctionCall(call) => call.snapshot.repl.tracker(),
             Self::OsCall(call) => call.snapshot.repl.tracker(),
@@ -530,26 +543,6 @@ impl<T: ResourceTracker> ReplProgress<T> {
             Self::NameLookup(lookup) => lookup.snapshot.repl.tracker(),
             Self::Complete { repl, .. } => repl.tracker(),
         }
-    }
-}
-
-impl<T: ResourceTracker + serde::Serialize> ReplProgress<T> {
-    /// Serializes the REPL execution progress to a binary format.
-    ///
-    /// # Errors
-    /// Returns an error if serialization fails.
-    pub fn dump(&self) -> Result<Vec<u8>, postcard::Error> {
-        postcard::to_allocvec(self)
-    }
-}
-
-impl<T: ResourceTracker + DeserializeOwned> ReplProgress<T> {
-    /// Deserializes REPL execution progress from a binary format.
-    ///
-    /// # Errors
-    /// Returns an error if deserialization fails.
-    pub fn load(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        postcard::from_bytes(bytes)
     }
 }
 
@@ -562,8 +555,7 @@ impl<T: ResourceTracker + DeserializeOwned> ReplProgress<T> {
 /// Resume with `resume(result, print)` to provide the return value and continue,
 /// or `resume_pending(print)` to push an `ExternalFuture` for async resolution.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub struct ReplFunctionCall<T: ResourceTracker> {
+pub struct ReplFunctionCall {
     /// The name of the function or method being called.
     pub function_name: String,
     /// The positional arguments passed to the function.
@@ -575,15 +567,15 @@ pub struct ReplFunctionCall<T: ResourceTracker> {
     /// Whether this is a dataclass method call (first arg is `self`).
     pub method_call: bool,
     /// Internal REPL execution snapshot.
-    snapshot: ReplSnapshot<T>,
+    snapshot: ReplSnapshot,
 }
 
-impl<T: ResourceTracker> ReplFunctionCall<T> {
+impl ReplFunctionCall {
     /// Extracts the REPL session, discarding the in-flight execution state.
     ///
     /// Restores globals from the VM snapshot so the REPL remains usable.
     #[must_use]
-    pub fn into_repl(self) -> MontyRepl<T> {
+    pub fn into_repl(self) -> MontyRepl {
         self.snapshot.into_repl()
     }
 
@@ -592,14 +584,14 @@ impl<T: ResourceTracker> ReplFunctionCall<T> {
         self,
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         self.snapshot.run(result, print)
     }
 
     /// Resumes execution by pushing an `ExternalFuture` for async resolution.
     ///
     /// Uses `self.call_id` internally — no need to pass it again.
-    pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 }
@@ -612,22 +604,21 @@ impl<T: ResourceTracker> ReplFunctionCall<T> {
 ///
 /// Resume with `resume(result, print)` to provide the OS call result and continue.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub struct ReplOsCall<T: ResourceTracker> {
+pub struct ReplOsCall {
     /// Typed OS-call dispatch value (variant + args).
     pub function_call: OsFunctionCall,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
     /// Internal REPL execution snapshot.
-    snapshot: ReplSnapshot<T>,
+    snapshot: ReplSnapshot,
 }
 
-impl<T: ResourceTracker> ReplOsCall<T> {
+impl ReplOsCall {
     /// Extracts the REPL session, discarding the in-flight execution state.
     ///
     /// Restores globals from the VM snapshot so the REPL remains usable.
     #[must_use]
-    pub fn into_repl(self) -> MontyRepl<T> {
+    pub fn into_repl(self) -> MontyRepl {
         self.snapshot.into_repl()
     }
 
@@ -636,7 +627,7 @@ impl<T: ResourceTracker> ReplOsCall<T> {
         self,
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         self.snapshot.run(result.into(), print)
     }
 
@@ -647,7 +638,7 @@ impl<T: ResourceTracker> ReplOsCall<T> {
         self,
         print: PrintWriter<'_>,
         handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         let result = handler(self.function_call);
         self.snapshot.run(result, print)
     }
@@ -663,8 +654,7 @@ impl<T: ResourceTracker> ReplOsCall<T> {
 /// value. Call `resume(result, print)` with the appropriate `NameLookupResult`.
 /// The namespace slot and scope are managed internally.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub struct ReplNameLookup<T: ResourceTracker> {
+pub struct ReplNameLookup {
     /// The name being looked up.
     pub name: String,
     /// The namespace slot where the resolved value should be cached.
@@ -672,15 +662,15 @@ pub struct ReplNameLookup<T: ResourceTracker> {
     /// Whether this is a global slot or a local/function slot.
     is_global: bool,
     /// Internal REPL execution snapshot.
-    snapshot: ReplSnapshot<T>,
+    snapshot: ReplSnapshot,
 }
 
-impl<T: ResourceTracker> ReplNameLookup<T> {
+impl ReplNameLookup {
     /// Extracts the REPL session, discarding the in-flight execution state.
     ///
     /// Restores globals from the VM snapshot so the REPL remains usable.
     #[must_use]
-    pub fn into_repl(self) -> MontyRepl<T> {
+    pub fn into_repl(self) -> MontyRepl {
         self.snapshot.into_repl()
     }
 
@@ -688,11 +678,7 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
     ///
     /// Caches the resolved value in the namespace slot before restoring the VM,
     /// then either pushes the value onto the stack or raises `NameError`.
-    pub fn resume(
-        self,
-        result: NameLookupResult,
-        print: PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    pub fn resume(self, result: NameLookupResult, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
             name,
             namespace_slot,
@@ -775,10 +761,9 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
 ///
 /// This is the REPL-aware counterpart to `ResolveFutures`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub struct ReplResolveFutures<T: ResourceTracker> {
+pub struct ReplResolveFutures {
     /// Persistent REPL session state while this snippet is suspended.
-    repl: MontyRepl<T>,
+    repl: MontyRepl,
     /// Compiled snippet and intern/function tables for this execution.
     executor: Executor,
     /// VM stack/frame state at suspension.
@@ -787,7 +772,7 @@ pub struct ReplResolveFutures<T: ResourceTracker> {
     pending_call_ids: Vec<u32>,
 }
 
-impl<T: ResourceTracker> ReplResolveFutures<T> {
+impl ReplResolveFutures {
     /// Extracts the REPL session, restoring globals from the suspended VM state.
     ///
     /// As with the other REPL snapshot types, globals live inside the VM
@@ -795,7 +780,7 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
     /// cancelled or abandoned async snippet must put those globals back so
     /// previously defined REPL bindings remain available.
     #[must_use]
-    pub fn into_repl(self) -> MontyRepl<T> {
+    pub fn into_repl(self) -> MontyRepl {
         let Self { mut repl, vm_state, .. } = self;
         repl.globals = vm_state.globals;
         repl
@@ -819,7 +804,7 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
         self,
         results: Vec<(u32, ExtFunctionResult)>,
         print: PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
             mut repl,
             executor,
@@ -891,6 +876,7 @@ pub enum ReplContinuationMode {
 ///
 /// This mirrors CPython's broad interactive behavior:
 /// - Incomplete bracketed / parenthesized / triple-quoted constructs continue.
+/// - Decorators continue until their class or function definition arrives.
 /// - Clause headers (`if:`, `def:`, etc.) require an indented body and then a
 ///   terminating blank line before execution.
 /// - All other parse outcomes are treated as complete (either valid code or a
@@ -900,16 +886,28 @@ pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
     let Err(error) = parse_module(source) else {
         return ReplContinuationMode::Complete;
     };
+    let error_is_at_end = error.location.is_empty() && error.location.start().to_usize() == source.len();
+    let error_source = source
+        .get(error.location.start().to_usize()..error.location.end().to_usize())
+        .unwrap_or_default();
 
     match error.error {
         ParseErrorType::OtherError(msg) => {
             if msg.starts_with("Expected an indented block after ") {
                 ReplContinuationMode::IncompleteBlock
+            } else if msg == "Expected class, function definition or async function definition after decorator"
+                && error_is_at_end
+            {
+                ReplContinuationMode::IncompleteImplicit
             } else {
                 ReplContinuationMode::Complete
             }
         }
-        ParseErrorType::Lexical(LexicalErrorType::Eof)
+        ParseErrorType::Lexical(
+            LexicalErrorType::Eof
+            | LexicalErrorType::FStringError(InterpolatedStringErrorType::UnterminatedTripleQuotedString)
+            | LexicalErrorType::TStringError(InterpolatedStringErrorType::UnterminatedTripleQuotedString),
+        )
         | ParseErrorType::ExpectedToken {
             found: TokenKind::EndOfFile,
             ..
@@ -918,8 +916,23 @@ pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
         | ParseErrorType::TStringError(InterpolatedStringErrorType::UnterminatedTripleQuotedString) => {
             ReplContinuationMode::IncompleteImplicit
         }
+        ParseErrorType::Lexical(LexicalErrorType::UnclosedStringError) if starts_with_triple_quote(error_source) => {
+            ReplContinuationMode::IncompleteImplicit
+        }
         _ => ReplContinuationMode::Complete,
     }
+}
+
+fn starts_with_triple_quote(source: &str) -> bool {
+    // Ruff uses `UnclosedStringError` for both single- and triple-quoted plain
+    // strings. Its error range starts at the optional prefix, so the first
+    // quote distinguishes the forms without treating `"unfinished` as input
+    // that should continue.
+    let bytes = source.as_bytes();
+    bytes
+        .iter()
+        .position(|byte| matches!(byte, b'\'' | b'"'))
+        .is_some_and(|quote_start| matches!(bytes.get(quote_start..quote_start + 3), Some(b"'''" | b"\"\"\"")))
 }
 
 // ---------------------------------------------------------------------------
@@ -931,23 +944,22 @@ pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
 /// This is the REPL-aware counterpart to `Snapshot`. It is `pub(crate)` —
 /// callers interact with the per-variant structs (`ReplFunctionCall`, etc.).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub(crate) struct ReplSnapshot<T: ResourceTracker> {
+pub(crate) struct ReplSnapshot {
     /// Persistent REPL session state while this snippet is suspended.
-    repl: MontyRepl<T>,
+    repl: MontyRepl,
     /// Compiled snippet and intern/function tables for this execution.
     executor: Executor,
     /// VM stack/frame state at suspension.
     vm_state: VMSnapshot,
 }
 
-impl<T: ResourceTracker> ReplSnapshot<T> {
+impl ReplSnapshot {
     /// Extracts the REPL session, restoring globals from the VM snapshot.
     ///
     /// When a snapshot is taken, globals live inside the `VMSnapshot`.
     /// This method creates an empty snapshot from just the globals so the REPL
     /// can be used for further snippets.
-    fn into_repl(self) -> MontyRepl<T> {
+    fn into_repl(self) -> MontyRepl {
         let Self { mut repl, vm_state, .. } = self;
         repl.globals = vm_state.globals;
         repl
@@ -958,7 +970,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
         self,
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
             mut repl,
             executor,
@@ -983,10 +995,8 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
                     ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
                     ExtFunctionResult::Future(raw_call_id) => {
                         let call_id = CallId::new(raw_call_id);
-                        match vm.add_pending_call(call_id) {
-                            Ok(()) => vm.run_external(),
-                            Err(err) => vm.resume_with_exception(err),
-                        }
+                        vm.add_pending_call(call_id);
+                        vm.run_external()
                     }
                     ExtFunctionResult::NotFound(function_name) => {
                         vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
@@ -1021,7 +1031,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
 fn inject_inputs_into_vm(
     executor: &Executor,
     input_values: Vec<MontyObject>,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> Result<(), MontyException> {
     for (&slot, obj) in executor.input_slots.iter().zip(input_values) {
         let value = obj
@@ -1038,12 +1048,12 @@ fn inject_inputs_into_vm(
 /// This is the REPL equivalent of `build_run_progress`. On completion/error,
 /// compiler metadata is committed to the REPL so subsequent snippets see
 /// updated intern tables and name maps.
-fn build_repl_progress<T: ResourceTracker>(
+fn build_repl_progress(
     converted: ConvertedExit,
     vm_state: Option<VMSnapshot>,
     executor: Executor,
-    mut repl: MontyRepl<T>,
-) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    mut repl: MontyRepl,
+) -> Result<ReplProgress, Box<ReplStartError>> {
     macro_rules! new_repl_snapshot {
         () => {
             ReplSnapshot {
@@ -1124,7 +1134,7 @@ fn build_repl_progress<T: ResourceTracker>(
 }
 
 /// Converts `Vec<MontyObject>` to internal `ArgValues` for function calls.
-fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_, impl ResourceTracker>) -> Result<ArgValues, MontyException> {
+fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_>) -> Result<ArgValues, MontyException> {
     match args.len() {
         0 => Ok(ArgValues::Empty),
         1 => {
@@ -1173,11 +1183,14 @@ fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_, impl ResourceTracker>) -
 /// Whether a session global should be surfaced as a "function" by
 /// [`function_names`](MontyRepl::function_names) / [`has_function`](MontyRepl::has_function).
 ///
-/// Deliberately narrower than [`Value::is_callable`]: it omits `Class` and
-/// `BoundMethod`, which are not what a host means by "a function it can invoke".
-fn is_callable(value: &Value, heap: &Heap<impl ResourceTracker>) -> bool {
+/// Deliberately narrower than [`Value::is_callable`]: it keeps only plain
+/// function-like values and omits `Class`, `NamedTupleClass`, and `BoundMethod`,
+/// which are callable but not what a host means by "a function it can invoke".
+fn is_callable(value: &Value, heap: &Heap) -> bool {
     match value {
-        Value::DefFunction(_) | Value::Builtin(_) | Value::ExtFunction(_) | Value::ModuleFunction(_) => true,
+        Value::Builtin(_) | Value::ModuleFunction(_) | Value::DefFunction(_) => true,
+        // A `Class`, `NamedTupleClass`, or `BoundMethod` is also callable but is
+        // not a function, so keep only the function-like heap variants.
         Value::Ref(id) => matches!(
             heap.get(*id),
             HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::ExtFunction(_)

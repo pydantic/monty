@@ -8,10 +8,7 @@ use std::{
     fmt,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem,
 };
-
-use monty_types::ResourceTracker;
 
 use super::LazyHeapSet;
 use crate::{
@@ -20,7 +17,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     types::{PyTrait, Type},
     value::{EitherStr, Value},
@@ -59,32 +56,31 @@ impl Slice {
     /// - `slice(start, stop, step)` - slice with all three components
     ///
     /// Each argument can be None to indicate "use default".
-    pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let heap = &mut *vm.heap;
-        let pos_args = args.into_pos_only("slice", heap)?;
-        defer_drop!(pos_args, heap);
+    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+        let pos_args = args.into_pos_only("slice", vm.heap)?;
+        defer_drop!(pos_args, vm);
 
         let slice = match pos_args.as_slice() {
             [] => return Err(ExcType::type_error_at_least("slice", 1, 0)),
             [first_arg] => {
-                let stop = value_to_option_i64(first_arg)?;
+                let stop = value_to_option_i64(first_arg, vm)?;
                 Self::new(None, stop, None)
             }
             [first_arg, second_arg] => {
-                let start = value_to_option_i64(first_arg)?;
-                let stop = value_to_option_i64(second_arg)?;
+                let start = value_to_option_i64(first_arg, vm)?;
+                let stop = value_to_option_i64(second_arg, vm)?;
                 Self::new(start, stop, None)
             }
             [first_arg, second_arg, third_arg] => {
-                let start = value_to_option_i64(first_arg)?;
-                let stop = value_to_option_i64(second_arg)?;
-                let step = value_to_option_i64(third_arg)?;
+                let start = value_to_option_i64(first_arg, vm)?;
+                let stop = value_to_option_i64(second_arg, vm)?;
+                let step = value_to_option_i64(third_arg, vm)?;
                 Self::new(start, stop, step)
             }
             _ => return Err(ExcType::type_error_at_most("slice", 3, pos_args.len())),
         };
 
-        Ok(Value::Ref(heap.allocate(HeapData::Slice(slice))?))
+        Ok(Value::Ref(vm.heap.allocate(HeapData::Slice(slice))))
     }
 
     /// Computes concrete indices for a sequence of the given length.
@@ -138,17 +134,62 @@ impl Slice {
     }
 }
 
-/// Converts a Value to Option<i64>, treating None as None.
+/// Converts a slice bound to `Option<i64>`, treating `None` as "no bound".
 ///
-/// Used for slice construction from both `slice()` builtin and `[start:stop:step]` syntax.
-/// Returns Ok(None) for Value::None, Ok(Some(i)) for integers/bools,
-/// or Err(TypeError) for other types.
-pub(crate) fn value_to_option_i64(value: &Value) -> RunResult<Option<i64>> {
+/// Used for slice construction from both the `slice()` builtin and
+/// `[start:stop:step]` syntax, and for the `start`/`end` arguments of the
+/// sequence searches (`str.find`, `bytes.startswith`, ...) that accept `None`
+/// for the same purpose — CPython gives them all the same converter, hence the
+/// same "or None" in the `TypeError`.
+pub(crate) fn value_to_option_i64(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<i64>> {
     match value {
         Value::None => Ok(None),
+        _ => match saturating_slice_index(value, vm)? {
+            Some(index) => Ok(Some(index)),
+            None => Err(ExcType::type_error_slice_indices()),
+        },
+    }
+}
+
+/// [`value_to_option_i64`] for the `index()` searches that do **not** accept
+/// `None` (`list.index`, `tuple.index`, `deque.index`), whose `TypeError` drops
+/// the "or None" because they have no bound to leave unset.
+pub(crate) fn value_to_i64_bound(value: &Value, vm: &mut VM<'_>) -> RunResult<i64> {
+    saturating_slice_index(value, vm)?.ok_or_else(ExcType::type_error_slice_indices_no_none)
+}
+
+/// [`value_to_option_i64`] normalized against a sequence length, which is the
+/// shape the searches want: `None` selects `default`, anything else is coerced,
+/// saturated and clamped into `0..=len`.
+pub(crate) fn optional_sequence_bound(value: &Value, default: usize, len: usize, vm: &mut VM<'_>) -> RunResult<usize> {
+    let bound = value_to_option_i64(value, vm)?;
+    Ok(bound.map_or(default, |i| normalize_sequence_index(i, len)))
+}
+
+/// CPython's `_PyEval_SliceIndex`: an `int`, or the `__index__` of an object
+/// that has one, **saturated** to `i64` rather than raised on. `Ok(None)` means
+/// the value is not `__index__`-able, leaving the `TypeError` to the caller,
+/// whose wording depends on whether it also accepts `None`.
+///
+/// Saturating is what separates a bound from an index: `[1, 2, 3][10**30:]` is
+/// `[]` and `'abc'.find('a', 10**30)` is `-1`, where the same value used as a
+/// subscript raises `IndexError`.
+fn saturating_slice_index(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<i64>> {
+    match value {
         Value::Int(i) => Ok(Some(*i)),
         Value::Bool(b) => Ok(Some(i64::from(*b))),
-        _ => Err(ExcType::type_error_slice_indices()),
+        // Also catches an `__index__` that returns a `LongInt`, which the
+        // recursion below funnels back through here.
+        _ if let Some(index) = value.long_int_to_i64_saturating(vm) => Ok(Some(index)),
+        _ => match value.py_index_impl(vm)? {
+            // Recurses exactly once: `py_index_impl` validates an int result, so
+            // the arms above take it on the way back in.
+            Some(index) => {
+                defer_drop!(index, vm);
+                saturating_slice_index(index, vm)
+            }
+            None => Ok(None),
+        },
     }
 }
 
@@ -160,17 +201,17 @@ fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
     normalized.clamp(lower, upper)
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Slice
     }
 
-    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         // Slices don't have a length in Python
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Slice(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -179,23 +220,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         Ok(Some(a.start == b.start && a.stop == b.stop && a.step == b.step))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
         // Slice always truthy
-        true
+        Ok(true)
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         f.write_str("slice(")?;
         format_option_i64(f, self.get(vm.heap).start)?;
         f.write_str(", ")?;
@@ -205,7 +241,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         Ok(f.write_char(')')?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let this = self.get(vm.heap);
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
@@ -227,10 +263,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
 }
 
 impl HeapItem for Slice {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Slice doesn't contain heap references, nothing to do
     }
@@ -264,7 +296,7 @@ fn format_option_i64(f: &mut impl Write, value: Option<i64>) -> fmt::Result {
 /// (e.g. `clone_with_heap` for heap-allocated `Value`s) only runs on items
 /// that survive the slice. Use `|x| x` when no transform is needed.
 pub(crate) fn slice_collect_iterator<Iter: DoubleEndedIterator + Clone, U, T: FromIterator<U>>(
-    vm: &VM<'_, impl ResourceTracker>,
+    vm: &VM<'_>,
     slice: &Slice,
     iter: Iter,
     collect_map: impl Fn(Iter::Item) -> U,
@@ -272,8 +304,10 @@ pub(crate) fn slice_collect_iterator<Iter: DoubleEndedIterator + Clone, U, T: Fr
     let length = iter.clone().count();
     let (start, stop, step) = slice.indices(length)?;
 
+    let mut i = 0usize;
     let final_collect_op = |item| -> RunResult<U> {
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_time_every(i)?;
+        i += 1;
         Ok(collect_map(item))
     };
 

@@ -18,12 +18,14 @@ mod mount;
 mod pool;
 mod print_target;
 mod snapshot;
+mod telemetry;
 mod version;
 
 use std::sync::OnceLock;
 
 pub use exceptions::{
-    MontyConversionError, MontyCrashedError, MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame,
+    MontyConversionError, MontyCrashedError, MontyDisconnectError, MontyError, MontyRuntimeError, MontyShutdown,
+    MontySyntaxError, MontyTypingError, PyFrame,
 };
 pub use mount::PyMountDir;
 pub use pool::{PyAsyncMonty, PyAsyncMontySession, PyAsyncMontyWebsocket, PyMonty, PyMontySession};
@@ -41,7 +43,7 @@ use version::cargo_version_to_pep440;
 fn get_version() -> &'static str {
     static VERSION: OnceLock<String> = OnceLock::new();
 
-    VERSION.get_or_init(|| cargo_version_to_pep440(env!("CARGO_PKG_VERSION")))
+    VERSION.get_or_init(|| cargo_version_to_pep440(monty_types::MONTY_VERSION))
 }
 
 /// Private Python object type used for the public `NOT_HANDLED` singleton.
@@ -88,9 +90,13 @@ mod _monty {
     #[pymodule_export]
     use super::MontyCrashedError;
     #[pymodule_export]
+    use super::MontyDisconnectError;
+    #[pymodule_export]
     use super::MontyError;
     #[pymodule_export]
     use super::MontyRuntimeError;
+    #[pymodule_export]
+    use super::MontyShutdown;
     #[pymodule_export]
     use super::MontySyntaxError;
     #[pymodule_export]
@@ -125,6 +131,8 @@ mod _monty {
     use super::PyMountDir as MountDir;
     #[pymodule_export]
     use super::PyNameLookupSnapshot as NameLookupSnapshot;
+    #[pymodule_export]
+    use super::telemetry::_install_telemetry_adapter;
     use super::{get_not_handled, get_version};
 
     #[pymodule_init]

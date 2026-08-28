@@ -6,7 +6,7 @@
 
 use std::mem;
 
-use monty_types::{OsFunctionCall, ResourceTracker};
+use monty_types::OsFunctionCall;
 
 use super::{CallFrame, VM, recursion::RunReentryGuard};
 use crate::{
@@ -16,11 +16,16 @@ use crate::{
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
-    function::Function,
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
+    function::{ExactPositionalCall, Function},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
-    types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
+    modules::dataclasses,
+    os_dispatch::{PendingOsEffect, release_pending_effect},
+    types::{
+        Dict, Instance, PyTrait, Type, bytes::call_bytes_method, construct_namedtuple, instance::class_name,
+        str::call_str_method,
+    },
     value::{EitherStr, Value},
 };
 
@@ -35,8 +40,7 @@ use crate::{
 pub(crate) enum CallResult {
     /// Call completed synchronously with a return value.
     Value(Value),
-    /// A new frame was pushed for a defined function call.
-    /// The VM should reload its cached frame state.
+    /// A defined function became the VM's current frame.
     FramePushed,
     /// External function call requested - VM should pause and return to caller.
     /// The `EitherStr` is the name of the external function (interned or heap-owned).
@@ -59,23 +63,17 @@ pub(crate) enum CallResult {
     /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
     /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
     AwaitValue(Value),
-    /// OS call whose result must be stored into a heap [`OpenFile`](crate::types::OpenFile)'s
-    /// buffer rather than pushed onto the operand stack.
+    /// OS call whose result must be post-processed on resume via a
+    /// [`PendingOsEffect`] instead of being pushed onto the operand stack raw.
     ///
-    /// Used by `read(N)` / `readline()` / `readlines()` / `seek()` on the first
-    /// operation that needs the full file content. The host services the OS
-    /// call (always `ReadText` or `ReadBytes` against the file referenced by
-    /// `file_id`); on resume the VM stores the returned content into
-    /// `OpenFile::buffer` and then consumes the file's `pending_read`
-    /// [`ReadSpec`](crate::types::ReadSpec) to compute the slice that becomes
-    /// the call's return value.
-    ///
-    /// The OS-call payload is a [`OsFunctionCall::ReadText`] /
-    /// [`OsFunctionCall::ReadBytes`] (the only legal variants here) carrying
-    /// the file's virtual path; the per-call slice spec lives on the
-    /// `OpenFile` itself (in `pending_read`), so this variant only needs to
-    /// carry the typed call plus the file id used to look up the buffer slot.
-    OsCallStoreBuffer { call: OsFunctionCall, file_id: HeapId },
+    /// Used by buffered file reads (`BufferStore`), buffered writes
+    /// (`WritePosition`), and `os.listdir` (`ListdirNames`). The effect stays
+    /// *in* the value, handed on to `FrameExit::OsCall`, so a call rejected on
+    /// the way out cannot corrupt the next OS call's resume.
+    OsCallWithEffect {
+        call: OsFunctionCall,
+        effect: PendingOsEffect,
+    },
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for CallResult {
@@ -87,18 +85,16 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
             }
             Self::OsCall(call) => call.drop_with(heap),
             Self::FramePushed => {}
-            Self::OsCallStoreBuffer { call, file_id } => {
+            Self::OsCallWithEffect { call, effect } => {
                 call.drop_with(heap);
-                // Single pin (see `inc_ref_for_pending_oscall`): release one ref
-                // if the call is discarded before dispatch routes it to a
-                // `pending_file_effect`.
-                heap.heap_mut().dec_ref(file_id);
+                // Discarded before it ever became a `FrameExit`.
+                release_pending_effect(Some(effect), heap);
             }
         }
     }
 }
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     // ========================================================================
     // Call Opcode Executors
     // ========================================================================
@@ -111,11 +107,18 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// Pops the callable and arguments from the stack, calls the function,
     /// and returns the result.
     pub(super) fn exec_call_function(&mut self, arg_count: usize) -> Result<CallResult, RunError> {
-        let args = self.pop_n_args(arg_count);
-        let callable = self.pop();
-        let this = self;
-        defer_drop!(callable, this);
-        this.call_function(callable, args)
+        let callable_index = self.stack.len() - arg_count - 1;
+        if let Value::DefFunction(func_id) = self.stack[callable_index]
+            && let Some(result) = self.try_call_exact_def_function(func_id, callable_index, arg_count)
+        {
+            result
+        } else {
+            let args = self.pop_n_args(arg_count);
+            let callable = self.pop();
+            let this = self;
+            defer_drop!(callable, this);
+            this.call_function(callable, args)
+        }
     }
 
     /// Executes `CallBuiltinFunction` opcode.
@@ -338,7 +341,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         match obj {
             Value::Ref(heap_id) => {
                 defer_drop!(obj, this);
-                this.heap.read(heap_id).py_call_attr(heap_id, this, &attr, args)
+                this.heap.read(heap_id).py_call_attr(this, &attr, args)
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
@@ -393,7 +396,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             CallResult::FramePushed => {
                 // A new frame was pushed for a defined function call - we need to run it
                 // to completion.
-                let stack_depth = this.frames.len();
+                let stack_depth = this.suspended_frames.len();
                 // Mark the frame as an exit point from the `run()` loop
                 this.current_frame_mut().should_return = true;
                 match this.run()? {
@@ -401,7 +404,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                     exit => {
                         // Pop frames off the stack from this failed evaluation
                         // (including the one just pushed)
-                        while this.frames.len() >= stack_depth {
+                        while this.suspended_frames.len() >= stack_depth {
                             this.pop_frame();
                         }
                         exit
@@ -426,7 +429,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 "{ctx}: OS function '{}' is not yet supported in this context",
                 function_call.name()
             )),
-            CallResult::OsCallStoreBuffer { call, .. } => ExcType::not_implemented(format!(
+            CallResult::OsCallWithEffect { call, .. } => ExcType::not_implemented(format!(
                 "{ctx}: OS function '{}' is not yet supported in this context",
                 call.name()
             )),
@@ -445,7 +448,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
     /// Converts a nested VM suspension into a specific synchronous-context error.
     #[cold]
-    fn unsupported_frame_exit(&mut self, ctx: &'static str, exit: FrameExit) -> RunError {
+    pub(crate) fn unsupported_frame_exit(&mut self, ctx: &'static str, exit: FrameExit) -> RunError {
         let error = match &exit {
             FrameExit::Return(_) => unreachable!("return exits are handled above"),
             FrameExit::ExternalCall { function_name, .. } => ExcType::not_implemented(format!(
@@ -474,17 +477,12 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// Dispatches based on the callable type:
     /// - `Value::Builtin`: calls builtin directly, returns `Push`
     /// - `Value::ModuleFunction`: calls module function directly, returns `Push`
-    /// - `Value::ExtFunction`: returns `External` for caller to execute
     /// - `Value::DefFunction`: pushes a new frame, returns `FramePushed`
     /// - `Value::Ref`: checks for closure/function on heap
     pub(crate) fn call_function(&mut self, callable: &Value, args: ArgValues) -> Result<CallResult, RunError> {
         match callable {
             Value::Builtin(builtin) => builtin.call(self, args),
             Value::ModuleFunction(mf) => mf.call(self, args),
-            Value::ExtFunction(name_id) => {
-                // External function - return to caller to execute
-                Ok(CallResult::External(EitherStr::Interned(*name_id), args))
-            }
             Value::DefFunction(func_id) => {
                 // Defined function without defaults or captured variables
                 self.call_def_function(*func_id, &[], &[], args)
@@ -516,6 +514,10 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Class(_) => return self.instantiate_class(heap_id, args),
+            // Calling a namedtuple class constructs a `NamedTuple` instance.
+            HeapData::NamedTupleClass(_) => {
+                return construct_namedtuple(heap_id, self, args).map(CallResult::Value);
+            }
             HeapData::BoundMethod(bm) => {
                 let instance = bm.instance.clone_with_heap(self);
                 let func = bm.func.clone_with_heap(self);
@@ -532,10 +534,9 @@ impl<T: ResourceTracker> VM<'_, T> {
                 let cloned_defaults: Vec<Value> = fd.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
                 (fd.func_id, Vec::new(), cloned_defaults)
             }
-            HeapData::ExtFunction(name) => {
-                // Heap-allocated external function with a non-interned name
-                let name = name.clone();
-                return Ok(CallResult::External(EitherStr::Heap(name), args));
+            HeapData::ExtFunction(function) => {
+                let name = function.clone_name();
+                return Ok(CallResult::External(name, args));
             }
             _ => {
                 // Coupling check: dispatch rejected this Ref, so the heap-side
@@ -747,6 +748,69 @@ impl<T: ResourceTracker> VM<'_, T> {
     // Frame Setup
     // ========================================================================
 
+    /// Bypasses argument binding when a direct call matches its cached call plan.
+    fn try_call_exact_def_function(
+        &mut self,
+        func_id: FunctionId,
+        callable_index: usize,
+        arg_count: usize,
+    ) -> Option<Result<CallResult, RunError>> {
+        let func = self.interns.get_function(func_id);
+        match func.exact_positional_call() {
+            Some(ExactPositionalCall::Sync(count)) if count == arg_count => {
+                Some(self.call_exact_sync_function(func_id, callable_index))
+            }
+            Some(ExactPositionalCall::Async(count)) if count == arg_count => {
+                Some(Ok(self.create_exact_coroutine(func_id, callable_index)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Pushes a simple function frame using arguments already present on the VM stack.
+    ///
+    /// Removing the immediate callable shifts its arguments into the parameter
+    /// slots, avoiding argument wrappers, binding, scratch storage, and a copy.
+    fn call_exact_sync_function(&mut self, func_id: FunctionId, callable_index: usize) -> Result<CallResult, RunError> {
+        let call_offset = self.current_offset();
+        let func = self.interns.get_function(func_id);
+        let namespace_size = func.namespace_size;
+        let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
+        let code = &func.code;
+
+        let callable = self.stack.remove(callable_index);
+        debug_assert_exact_callable(&callable, func_id);
+        self.stack
+            .resize_with(callable_index + namespace_size, || Value::Undefined);
+
+        let exc_stack_base = self.exception_stack.len();
+        self.push_frame(CallFrame::new_function(
+            code,
+            callable_index,
+            locals_count,
+            exc_stack_base,
+            func_id,
+            call_offset,
+        ))?;
+
+        Ok(CallResult::FramePushed)
+    }
+
+    /// Creates a coroutine by moving exact positional arguments into its namespace.
+    fn create_exact_coroutine(&mut self, func_id: FunctionId, callable_index: usize) -> CallResult {
+        let func = self.interns.get_function(func_id);
+        let mut namespace = self.stack.split_off(callable_index + 1);
+        namespace.reserve(func.namespace_size - namespace.len());
+        self.install_closure_cells(func, &[], &mut namespace);
+
+        let callable = self.pop();
+        debug_assert_exact_callable(&callable, func_id);
+
+        let coroutine = Coroutine::new(func_id, namespace);
+        let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine));
+        CallResult::Value(Value::Ref(coroutine_id))
+    }
+
     /// Calls a defined function by pushing a new frame or creating a coroutine.
     ///
     /// For sync functions: sets up the function's namespace with bound arguments,
@@ -792,12 +856,12 @@ impl<T: ResourceTracker> VM<'_, T> {
         func.signature.bind(args, defaults, this, func.name, namespace)?;
 
         // 3. Install owned cells and captured free-var cells at their slots.
-        this.install_closure_cells(func, cells, namespace)?;
+        this.install_closure_cells(func, cells, namespace);
 
         // 4. Create Coroutine on heap
         let (namespace, this) = namespace_guard.into_parts();
         let coroutine = Coroutine::new(func_id, namespace);
-        let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine))?;
+        let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine));
 
         Ok(CallResult::Value(Value::Ref(coroutine_id)))
     }
@@ -817,13 +881,10 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// transitively captured (pass-through) variable is allocated a slot late
     /// during preparation, outside the contiguous param/cell/free region — so a
     /// positional `push` would place it wrong. Shared by sync calls and
-    /// coroutine creation.
-    fn install_closure_cells(
-        &mut self,
-        func: &Function,
-        cells: &[HeapId],
-        namespace: &mut Vec<Value>,
-    ) -> Result<(), RunError> {
+    /// coroutine creation, including the exact-positional-call fast path
+    /// (which always passes an empty `cells` slice, since it only applies when
+    /// `cell_var_slots`/`free_var_slots` are both empty).
+    fn install_closure_cells(&mut self, func: &Function, cells: &[HeapId], namespace: &mut Vec<Value>) {
         namespace.resize_with(func.namespace_size, || Value::Undefined);
 
         for (i, &slot) in func.cell_var_slots.iter().enumerate() {
@@ -831,7 +892,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 Some(param_idx) => namespace[param_idx].clone_with_heap(self),
                 None => Value::Undefined,
             };
-            let cell_id = self.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
+            let cell_id = self.heap.allocate(HeapData::Cell(CellValue(cell_value)));
             namespace[slot.index()] = Value::Ref(cell_id);
         }
 
@@ -839,8 +900,6 @@ impl<T: ResourceTracker> VM<'_, T> {
             self.heap.inc_ref(cell_id);
             namespace[func.free_var_slots[i].index()] = Value::Ref(cell_id);
         }
-
-        Ok(())
     }
 
     /// Calls a sync function by pushing a new frame.
@@ -865,13 +924,6 @@ impl<T: ResourceTracker> VM<'_, T> {
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
-        // Track memory for this frame's locals. Symmetric with
-        // `cleanup_frame_state`. Comprehension variables live on the operand
-        // stack (pushed per-comp), not in any frame-level region, so they
-        // don't enter this accounting.
-        let size = namespace_size * mem::size_of::<Value>();
-        self.heap.tracker_mut().on_grow(|| size)?;
-
         // 1. Build the namespace in the reusable scratch buffer to avoid a
         //    per-call allocation. On error `DropGuard` drops the buffer, so the
         //    pool just restarts empty next call.
@@ -884,14 +936,11 @@ impl<T: ResourceTracker> VM<'_, T> {
         {
             let bind_result = func.signature.bind(args, defaults, this, func.name, namespace);
 
-            if let Err(e) = bind_result {
-                this.heap.tracker_mut().on_free(|| size);
-                return Err(e);
-            }
+            bind_result?;
         }
 
         // 3. Install owned cells and captured free-var cells at their slots.
-        this.install_closure_cells(func, cells, namespace)?;
+        this.install_closure_cells(func, cells, namespace);
 
         let code = &func.code;
 
@@ -941,17 +990,9 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// on external/OS calls; the `is_initializer` flag is threaded through frame
     /// serialization so a suspended initializer resumes correctly.
     fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
-        // Allocate the instance. On allocation failure drop the args we own.
-        let instance_id = match self
+        let instance_id = self
             .heap
-            .allocate(HeapData::Instance(Instance::new(class_id, Dict::new())))
-        {
-            Ok(id) => id,
-            Err(e) => {
-                args.drop_with(self);
-                return Err(e.into());
-            }
-        };
+            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))));
         // The instance now owns a reference to its class object.
         self.heap.inc_ref(class_id);
 
@@ -965,15 +1006,22 @@ impl<T: ResourceTracker> VM<'_, T> {
         };
 
         match init {
+            // A dataclass with no user-defined `__init__` binds its fields
+            // natively off `__dataclass_fields__`, with no generated bytecode.
+            // The read hands it the class it already knows this is, and the
+            // instance's own reference keeps that class alive throughout.
+            None if dataclasses::is_dataclass_class(class_id, self) => {
+                let HeapReadOutput::Class(class) = self.heap.read(class_id) else {
+                    unreachable!("instantiate_class is only reached with a class")
+                };
+                dataclasses::dataclass_init(self, &class, Value::Ref(instance_id), args)
+            }
+            None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
             None => {
-                if matches!(args, ArgValues::Empty) {
-                    Ok(CallResult::Value(Value::Ref(instance_id)))
-                } else {
-                    args.drop_with(self);
-                    let name = class_name(class_id, self.heap, self.interns);
-                    Value::Ref(instance_id).drop_with(self);
-                    Err(ExcType::type_error(format!("{name}() takes no arguments")))
-                }
+                args.drop_with(self);
+                let name = class_name(class_id, self.heap, self.interns);
+                Value::Ref(instance_id).drop_with(self);
+                Err(ExcType::type_error(format!("{name}() takes no arguments")))
             }
             Some(init_func) => {
                 let this = self;
@@ -1063,6 +1111,16 @@ impl<T: ResourceTracker> VM<'_, T> {
     }
 }
 
+/// Asserts a callable popped off the stack by an exact-positional-call fast
+/// path is the function that fast path was chosen for.
+///
+/// Shared by [`VM::call_exact_sync_function`] and [`VM::create_exact_coroutine`],
+/// which both remove their callable from the stack after already having
+/// dispatched on its `FunctionId` in [`VM::try_call_exact_def_function`].
+fn debug_assert_exact_callable(callable: &Value, func_id: FunctionId) {
+    debug_assert!(matches!(callable, Value::DefFunction(id) if *id == func_id));
+}
+
 /// Centralised dunder dispatch for `__enter__` / `__exit__` (and, when added,
 /// any other dunder that maps to a [`PyTrait`] method).
 ///
@@ -1079,10 +1137,10 @@ impl<T: ResourceTracker> VM<'_, T> {
 /// Adding a new dunder is just a new arm in the inner `match`; type
 /// implementations only need to override the corresponding `PyTrait`
 /// method, never a `StaticStrings::Foo` arm in their `py_call_attr`.
-fn dispatch_dunder<T: ResourceTracker>(
+fn dispatch_dunder(
     name_id: StringId,
     heap_id: HeapId,
-    vm: &mut VM<'_, T>,
+    vm: &mut VM<'_>,
     args: &mut Option<ArgValues>,
 ) -> Option<Result<CallResult, RunError>> {
     let static_str = StaticStrings::from_string_id(name_id)?;
@@ -1101,7 +1159,7 @@ fn dispatch_dunder<T: ResourceTracker>(
         StaticStrings::Enter => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
             args.check_zero_args("__enter__", vm.heap)
-                .and_then(|()| vm.heap.read(heap_id).py_enter(heap_id, vm))
+                .and_then(|()| vm.heap.read(heap_id).py_enter(vm))
         }
         StaticStrings::Exit => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
@@ -1130,11 +1188,7 @@ fn dispatch_dunder<T: ResourceTracker>(
 /// `typ` and `tb` are discarded: every implementation we have re-derives the
 /// type from `val` and Monty has no traceback objects (see
 /// `limitations/with.md`).
-fn dispatch_exit<T: ResourceTracker>(
-    heap_id: HeapId,
-    vm: &mut VM<'_, T>,
-    args: ArgValues,
-) -> Result<CallResult, RunError> {
+fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<CallResult, RunError> {
     let positional = args.into_pos_only("__exit__", vm.heap)?;
     defer_drop!(positional, vm);
     let [typ, val, tb] = positional.as_slice() else {
@@ -1145,5 +1199,5 @@ fn dispatch_exit<T: ResourceTracker>(
         Value::Ref(id) => Some(*id),
         _ => None,
     };
-    vm.heap.read(heap_id).py_exit(heap_id, vm, exc)
+    vm.heap.read(heap_id).py_exit(vm, exc)
 }

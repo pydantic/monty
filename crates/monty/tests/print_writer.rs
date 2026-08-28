@@ -10,7 +10,7 @@
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, NoLimitTracker, PrintWriter};
+use monty_types::{CompileOptions, PrintWriter, ResourceTracker};
 
 /// Run `code` under Monty with a string-collecting `PrintWriter` and return
 /// whatever was printed. Panics on parse/runtime errors — callers only care
@@ -18,8 +18,12 @@ use monty_types::{CompileOptions, NoLimitTracker, PrintWriter};
 fn run_and_capture(code: &str) -> String {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let mut output = String::new();
-    ex.run(vec![], NoLimitTracker, PrintWriter::collect_string(&mut output))
-        .unwrap();
+    ex.run(
+        vec![],
+        ResourceTracker::default(),
+        PrintWriter::collect_string(&mut output),
+    )
+    .unwrap();
     output
 }
 
@@ -110,8 +114,12 @@ fn writer_reuse_accumulates() {
         CompileOptions::default(),
     )
     .unwrap();
-    ex1.run(vec![], NoLimitTracker, PrintWriter::collect_string(&mut output))
-        .unwrap();
+    ex1.run(
+        vec![],
+        ResourceTracker::default(),
+        PrintWriter::collect_string(&mut output),
+    )
+    .unwrap();
 
     let ex2 = MontyRun::new(
         "print('second')".to_owned(),
@@ -120,8 +128,12 @@ fn writer_reuse_accumulates() {
         CompileOptions::default(),
     )
     .unwrap();
-    ex2.run(vec![], NoLimitTracker, PrintWriter::collect_string(&mut output))
-        .unwrap();
+    ex2.run(
+        vec![],
+        ResourceTracker::default(),
+        PrintWriter::collect_string(&mut output),
+    )
+    .unwrap();
 
     assert_snapshot!(output, @r"
     first
@@ -137,7 +149,7 @@ for i in range(100):
 ";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     // Should complete without error, output is silently discarded
-    let result = ex.run(vec![], NoLimitTracker, PrintWriter::Disabled);
+    let result = ex.run(vec![], ResourceTracker::default(), PrintWriter::Disabled);
     assert!(result.is_ok());
 }
 

@@ -5,8 +5,8 @@
 
 use ahash::AHashSet;
 use monty_types::{
-    DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta,
-    MontyTimeZone, MontyType, ResourceTracker,
+    DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
+    MontyTimeZone, MontyType,
 };
 
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
         list::List,
         set::{FrozenSet, Set},
         str::allocate_string,
-        timedelta as timedelta_type,
+        time as time_type, timedelta as timedelta_type,
     },
     value::{EitherStr, Value},
 };
@@ -38,19 +38,20 @@ use crate::{
 pub(crate) trait MontyObjectExt: Sized {
     /// Converts a `Value` into a `MontyObject`, properly handling reference
     /// counting: takes ownership of the `Value` and drops it via `drop_with`.
-    fn new(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Self;
+    fn new(value: Value, vm: &mut VM<'_>) -> Self;
 
     /// Converts this `MontyObject` into a `Value`, allocating on the heap if
     /// needed. Fails with `InvalidInputError` on output-only variants
-    /// (`Repr`, `Cycle`, sandbox class `Type`s) or when a resource limit is hit.
-    fn to_value(self, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Value, InvalidInputError>;
+    /// (`Repr`, `Cycle`, sandbox class `Type`s) and malformed input; memory
+    /// overshoot surfaces at the next soft-limit checkpoint, not here.
+    fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError>;
 
     /// Top-level entry into [`from_value_inner`](Self::from_value_inner),
     /// allocating the visited-set used for cycle detection.
-    fn from_value(object: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> Self;
+    fn from_value(object: &Value, vm: &mut VM<'_>) -> Self;
 
     /// Converts a `Value` to a `MontyObject` with cycle detection via `visited`.
-    fn from_value_inner(object: &Value, vm: &mut VM<'_, impl ResourceTracker>, visited: &mut AHashSet<HeapId>) -> Self;
+    fn from_value_inner(object: &Value, vm: &mut VM<'_>, visited: &mut AHashSet<HeapId>) -> Self;
 }
 
 impl MontyObjectExt for MontyObject {
@@ -60,7 +61,7 @@ impl MontyObjectExt for MontyObject {
     /// then properly drops the Value via `drop_with` to maintain reference counting.
     ///
     /// The `interns` parameter is used to look up interned string/bytes content.
-    fn new(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Self {
+    fn new(value: Value, vm: &mut VM<'_>) -> Self {
         let py_obj = Self::from_value(&value, vm);
         value.drop_with(vm);
         py_obj
@@ -75,23 +76,24 @@ impl MontyObjectExt for MontyObject {
     /// # Errors
     /// Returns `InvalidInputError` if called on the `Repr` variant,
     /// as it is only valid as an output from code execution, not as an input.
-    fn to_value(self, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Value, InvalidInputError> {
+    fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError> {
         match self {
             Self::Ellipsis => Ok(Value::Ellipsis),
+            Self::NotImplemented => Ok(Value::NotImplemented),
             Self::None => Ok(Value::None),
             Self::Bool(b) => Ok(Value::Bool(b)),
             Self::Int(i) => Ok(Value::Int(i)),
-            Self::BigInt(bi) => Ok(LongInt::new(bi).into_value(vm.heap)?),
+            Self::BigInt(bi) => Ok(LongInt::new(bi).into_value(vm.heap)),
             Self::Float(f) => Ok(Value::Float(f)),
-            Self::String(s) => Ok(allocate_string(s, vm.heap)?),
-            Self::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b)))?)),
+            Self::String(s) => Ok(allocate_string(s, vm.heap)),
+            Self::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b))))),
             Self::List(items) => {
                 let values = convert_values(items, vm)?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(values)))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(values)))))
             }
             Self::Tuple(items) => {
                 let values = convert_values(items, vm)?;
-                allocate_tuple(values.into(), vm.heap).map_err(InvalidInputError::Resource)
+                Ok(allocate_tuple(values.into(), vm.heap))
             }
             Self::NamedTuple {
                 type_name,
@@ -108,27 +110,27 @@ impl MontyObjectExt for MontyObject {
                 let values = convert_values(values, vm)?;
                 let field_name_strs: Vec<EitherStr> = field_names.into_iter().map(Into::into).collect();
                 let nt = NamedTuple::new(type_name, field_name_strs, values);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(nt))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(nt)))))
             }
             Self::Dict(map) => {
                 let pairs = convert_pairs(map, vm)?;
                 let dict =
                     Dict::from_pairs(pairs, vm).map_err(|_| InvalidInputError::invalid_type("unhashable dict keys"))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
             }
             Self::Set(items) => {
                 let set = convert_set(items, vm, "unhashable set element")?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Set(set))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Set(set))))
             }
             Self::FrozenSet(items) => {
                 let set = convert_set(items, vm, "unhashable frozenset element")?;
                 let frozenset = FrozenSet::from_set(set);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::FrozenSet(frozenset))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::FrozenSet(frozenset))))
             }
             Self::Date(date) => {
                 let value = date_type::from_ymd(date.year, i32::from(date.month), i32::from(date.day))
                     .map_err(|_| InvalidInputError::invalid_type("date"))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Date(value))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Date(value))))
             }
             Self::DateTime(datetime) => {
                 let MontyDateTime {
@@ -162,27 +164,54 @@ impl MontyObjectExt for MontyObject {
                     vm.heap,
                 )
                 .map_err(|_| InvalidInputError::invalid_type("datetime"))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(value))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(value))))
+            }
+            Self::Time(time) => {
+                let MontyTime {
+                    hour,
+                    minute,
+                    second,
+                    microsecond,
+                    offset_seconds,
+                    timezone_name,
+                    fold,
+                } = time;
+                if offset_seconds.is_none() && timezone_name.is_some() {
+                    return Err(InvalidInputError::invalid_type("time"));
+                }
+                let tzinfo = offset_seconds
+                    .map(|offset| TimeZone::new(offset, timezone_name))
+                    .transpose()
+                    .map_err(|_| InvalidInputError::invalid_type("time"))?;
+                let value = time_type::from_boundary_components(
+                    i32::from(hour),
+                    i32::from(minute),
+                    i32::from(second),
+                    i32::try_from(microsecond).map_err(|_| InvalidInputError::invalid_type("time"))?,
+                    i32::from(fold),
+                    tzinfo,
+                    vm.heap,
+                )
+                .map_err(|_| InvalidInputError::invalid_type("time"))?;
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Time(value))))
             }
             Self::TimeDelta(delta) => {
                 let delta = timedelta_type::new(delta.days, delta.seconds, delta.microseconds)
                     .map_err(|_| InvalidInputError::invalid_type("timedelta"))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))))
             }
             Self::TimeZone(tz) => {
                 if tz.offset_seconds == 0 && tz.name.is_none() {
-                    vm.heap
-                        .get_timezone_utc()
-                        .map_err(|_| InvalidInputError::invalid_type("timezone"))
+                    Ok(vm.heap.get_timezone_utc())
                 } else {
                     let tz = TimeZone::new(tz.offset_seconds, tz.name)
                         .map_err(|_| InvalidInputError::invalid_type("timezone"))?;
-                    Ok(Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))?))
+                    Ok(Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))))
                 }
             }
             Self::Exception { exc_type, arg } => {
                 let exc = SimpleException::new(exc_type, arg);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(exc))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(exc))))
             }
             Self::Dataclass {
                 name,
@@ -195,12 +224,12 @@ impl MontyObjectExt for MontyObject {
                 let dict = Dict::from_pairs(pairs, vm)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable dataclass attr keys"))?;
                 let dc = Dataclass::new(name, type_id, field_names, dict, frozen);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Dataclass(dc))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Dataclass(Box::new(dc)))))
             }
-            Self::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s)))?)),
+            Self::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s))))),
             Self::FileHandle(handle) => {
                 let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(file))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(Box::new(file)))))
             }
             Self::Type(t) => match t.to_internal() {
                 Some(ty) => Ok(Value::Builtin(Builtins::Type(ty))),
@@ -212,17 +241,7 @@ impl MontyObjectExt for MontyObject {
                 )),
             },
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
-            Self::Function { name, .. } => {
-                // Try to intern the function name. If the name is already interned
-                // (common case: the function has the same name as the variable it was
-                // assigned to), use the lightweight `Value::ExtFunction(StringId)`.
-                // Otherwise, allocate a `HeapData::ExtFunction(String)` on the heap.
-                if let Some(string_id) = vm.interns.get_string_id_by_name(&name) {
-                    Ok(Value::ExtFunction(string_id))
-                } else {
-                    Ok(Value::Ref(vm.heap.allocate(HeapData::ExtFunction(name))?))
-                }
-            }
+            Self::Function { name, .. } => Ok(vm.heap.get_ext_function(&name)),
             Self::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
             Self::Cycle(_, _) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
         }
@@ -230,7 +249,7 @@ impl MontyObjectExt for MontyObject {
 
     /// Top-level entry into [`from_value_inner`], allocating the visited-set used
     /// for cycle detection.
-    fn from_value(object: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> Self {
+    fn from_value(object: &Value, vm: &mut VM<'_>) -> Self {
         let mut visited = AHashSet::new();
         Self::from_value_inner(object, vm, &mut visited)
     }
@@ -248,7 +267,7 @@ impl MontyObjectExt for MontyObject {
     /// even if that `__repr__` mutates the container. Immutable containers
     /// (tuple, namedtuple, frozenset) clone per-item: their length and slots
     /// cannot change mid-iteration.
-    fn from_value_inner(object: &Value, vm: &mut VM<'_, impl ResourceTracker>, visited: &mut AHashSet<HeapId>) -> Self {
+    fn from_value_inner(object: &Value, vm: &mut VM<'_>, visited: &mut AHashSet<HeapId>) -> Self {
         // Check depth limit before processing
         let Ok(mut guard) = vm.recursion_guard() else {
             return Self::Repr("<deeply nested>".to_owned());
@@ -259,6 +278,7 @@ impl MontyObjectExt for MontyObject {
         match object {
             Value::Undefined => panic!("Undefined found while converting to MontyObject"),
             Value::Ellipsis => Self::Ellipsis,
+            Value::NotImplemented => Self::NotImplemented,
             Value::None => Self::None,
             Value::Bool(b) => Self::Bool(*b),
             Value::Int(i) => Self::Int(*i),
@@ -271,7 +291,9 @@ impl MontyObjectExt for MontyObject {
                 if visited.contains(id) {
                     // Cycle detected - return appropriate placeholder
                     return match vm.heap.get(*id) {
-                        HeapData::List(_) => Self::Cycle(id.index(), "[...]".to_owned()),
+                        // A deque exports as a list, so it takes a list's placeholder
+                        // (as its repr does too).
+                        HeapData::List(_) | HeapData::Deque(_) => Self::Cycle(id.index(), "[...]".to_owned()),
                         HeapData::Tuple(_) | HeapData::NamedTuple(_) => Self::Cycle(id.index(), "(...)".to_owned()),
                         HeapData::Dict(_) => Self::Cycle(id.index(), "{...}".to_owned()),
                         _ => Self::Cycle(id.index(), "...".to_owned()),
@@ -289,6 +311,22 @@ impl MontyObjectExt for MontyObject {
                         let children: Vec<Value> = list
                             .get(vm.heap)
                             .as_slice()
+                            .iter()
+                            .map(|item| item.clone_with_heap(vm.heap))
+                            .collect();
+                        defer_drop!(children, vm);
+                        Self::List(values_to_objects(children, vm, visited))
+                    }
+                    // A deque exports as a host list: there is no host-side deque
+                    // *value* type, so it degrades to the nearest structural one
+                    // rather than to a repr string, matching how defaultdict and
+                    // Counter degrade to `dict`. `maxlen` does not survive, and the
+                    // host cannot round-trip it back into a deque.
+                    HeapReadOutput::Deque(deque) => {
+                        // Snapshot before recursing: a deque is mutable, so a nested
+                        // `__repr__` may shorten it and invalidate index-based access.
+                        let children: Vec<Value> = deque
+                            .get(vm.heap)
                             .iter()
                             .map(|item| item.clone_with_heap(vm.heap))
                             .collect();
@@ -398,6 +436,20 @@ impl MontyObjectExt for MontyObject {
                             repr_or_error(object, vm)
                         }
                     }
+                    HeapReadOutput::Time(t) => {
+                        let time = t.get(vm.heap);
+                        let (hour, minute, second, microsecond, fold) = time.to_components();
+                        let tz = time_type::attached_timezone(time, vm.heap);
+                        Self::Time(MontyTime {
+                            hour,
+                            minute,
+                            second,
+                            microsecond,
+                            offset_seconds: tz.as_ref().map(|tz| tz.offset_seconds),
+                            timezone_name: tz.and_then(|tz| tz.name),
+                            fold,
+                        })
+                    }
                     HeapReadOutput::TimeDelta(td) => {
                         let (days, seconds, microseconds) = timedelta_type::components(td.get(vm.heap));
                         Self::TimeDelta(MontyTimeDelta {
@@ -443,7 +495,23 @@ impl MontyObjectExt for MontyObject {
                     }
                     // Iterators are internal objects — represent as a fixed type
                     // string rather than recursing.
-                    HeapReadOutput::Iter(_) => Self::Repr("<iterator>".to_owned()),
+                    HeapReadOutput::ListIterator(_) => Self::Repr("<list_iterator object>".to_owned()),
+                    HeapReadOutput::TupleIterator(_) => Self::Repr("<tuple_iterator object>".to_owned()),
+                    HeapReadOutput::StringIterator(iter) => {
+                        Self::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
+                    }
+                    HeapReadOutput::BytesIterator(_) => Self::Repr("<bytes_iterator object>".to_owned()),
+                    HeapReadOutput::RangeIterator(_) => Self::Repr("<range_iterator object>".to_owned()),
+                    HeapReadOutput::DictKeyIterator(_) => Self::Repr("<dict_keyiterator object>".to_owned()),
+                    HeapReadOutput::DictItemIterator(_) => Self::Repr("<dict_itemiterator object>".to_owned()),
+                    HeapReadOutput::DictValueIterator(_) => Self::Repr("<dict_valueiterator object>".to_owned()),
+                    HeapReadOutput::SetIterator(_) => Self::Repr("<set_iterator object>".to_owned()),
+                    HeapReadOutput::CallableIterator(_) => Self::Repr("<callable_iterator object>".to_owned()),
+                    // A placeholder despite the real in-sandbox repr (`count(0)`),
+                    // which would recurse into `repeat`'s arbitrary object.
+                    HeapReadOutput::Itertools(iter) => {
+                        Self::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
+                    }
                     HeapReadOutput::LongInt(li) => Self::BigInt(li.get(vm.heap).inner().clone()),
                     HeapReadOutput::Module(m) => {
                         Self::Repr(format!("<module '{}'>", vm.interns.get_str(m.get(vm.heap).name())))
@@ -469,8 +537,8 @@ impl MontyObjectExt for MontyObject {
                             position: file.position(),
                         })
                     }
-                    HeapReadOutput::ExtFunction(name) => Self::Function {
-                        name: name.get(vm.heap).clone(),
+                    HeapReadOutput::ExtFunction(function) => Self::Function {
+                        name: function.get(vm.heap).as_str().to_owned(),
                         docstring: None,
                     },
                     _ => repr_or_error(object, vm),
@@ -483,14 +551,6 @@ impl MontyObjectExt for MontyObject {
             Value::Builtin(Builtins::Type(t)) => Self::Type(MontyType::from_internal(*t, vm.heap, vm.interns)),
             Value::Builtin(Builtins::ExcType(e)) => Self::Type(MontyType::Exception(*e)),
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
-            // Inline external function: export under the same shape as the heap
-            // path's `HeapReadOutput::ExtFunction` arm above, so an interned
-            // function name round-trips through Monty as `MontyObject::Function`
-            // regardless of which representation it took (issue #345).
-            Value::ExtFunction(name_id) => Self::Function {
-                name: vm.interns.get_str(*name_id).to_owned(),
-                docstring: None,
-            },
             #[cfg(feature = "memory-model-checks")]
             Value::Dereferenced => panic!("Dereferenced found while converting to MontyObject"),
             _ => repr_or_error(object, vm),
@@ -508,7 +568,7 @@ pub(crate) trait MontyTypeExt: Sized {
 
     fn from_internal_static(ty: Type) -> Self;
 
-    fn from_internal(ty: Type, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Self;
+    fn from_internal(ty: Type, heap: &Heap, interns: &Interns) -> Self;
 }
 
 impl MontyTypeExt for MontyType {
@@ -521,6 +581,7 @@ impl MontyTypeExt for MontyType {
     fn to_internal(&self) -> Option<Type> {
         match self {
             Self::Ellipsis => Some(Type::Ellipsis),
+            Self::NotImplementedType => Some(Type::NotImplementedType),
             Self::Type => Some(Type::Type),
             Self::NoneType => Some(Type::NoneType),
             Self::Bool => Some(Type::Bool),
@@ -530,13 +591,35 @@ impl MontyTypeExt for MontyType {
             Self::Slice => Some(Type::Slice),
             Self::Date => Some(Type::Date),
             Self::DateTime => Some(Type::DateTime),
+            Self::Time => Some(Type::Time),
             Self::TimeDelta => Some(Type::TimeDelta),
             Self::TimeZone => Some(Type::TimeZone),
             Self::Str => Some(Type::Str),
             Self::Bytes => Some(Type::Bytes),
             Self::List => Some(Type::List),
+            Self::Deque => Some(Type::Deque),
             Self::ListIterator => Some(Type::ListIterator),
+            Self::TupleIterator => Some(Type::TupleIterator),
+            Self::StrAsciiIterator => Some(Type::StrAsciiIterator),
+            Self::StrIterator => Some(Type::StrIterator),
+            Self::BytesIterator => Some(Type::BytesIterator),
+            Self::RangeIterator => Some(Type::RangeIterator),
+            Self::DictKeyIterator => Some(Type::DictKeyIterator),
+            Self::DictItemIterator => Some(Type::DictItemIterator),
+            Self::DictValueIterator => Some(Type::DictValueIterator),
+            Self::SetIterator => Some(Type::SetIterator),
             Self::CallableIterator => Some(Type::CallableIterator),
+            Self::ItertoolsPairwise => Some(Type::ItertoolsPairwise),
+            Self::ItertoolsCompress => Some(Type::ItertoolsCompress),
+            Self::ItertoolsIslice => Some(Type::ItertoolsIslice),
+            Self::ItertoolsChain => Some(Type::ItertoolsChain),
+            Self::ItertoolsCycle => Some(Type::ItertoolsCycle),
+            Self::ItertoolsTakeWhile => Some(Type::ItertoolsTakeWhile),
+            Self::ItertoolsDropWhile => Some(Type::ItertoolsDropWhile),
+            Self::ItertoolsFilterFalse => Some(Type::ItertoolsFilterFalse),
+            Self::ItertoolsStarMap => Some(Type::ItertoolsStarMap),
+            Self::ItertoolsCount => Some(Type::ItertoolsCount),
+            Self::ItertoolsRepeat => Some(Type::ItertoolsRepeat),
             Self::Tuple => Some(Type::Tuple),
             Self::NamedTuple => Some(Type::NamedTuple),
             Self::Dict => Some(Type::Dict),
@@ -561,8 +644,11 @@ impl MontyTypeExt for MontyType {
             Self::SpecialForm => Some(Type::SpecialForm),
             Self::Path => Some(Type::Path),
             Self::Property => Some(Type::Property),
+            Self::Object => Some(Type::Object),
             Self::RePattern => Some(Type::RePattern),
             Self::ReMatch => Some(Type::ReMatch),
+            Self::Field => Some(Type::DataclassField),
+            Self::DataclassParams => Some(Type::DataclassParams),
         }
     }
 
@@ -576,6 +662,7 @@ impl MontyTypeExt for MontyType {
     fn from_internal_static(ty: Type) -> Self {
         match ty {
             Type::Ellipsis => Self::Ellipsis,
+            Type::NotImplementedType => Self::NotImplementedType,
             Type::Type => Self::Type,
             Type::NoneType => Self::NoneType,
             Type::Bool => Self::Bool,
@@ -585,16 +672,44 @@ impl MontyTypeExt for MontyType {
             Type::Slice => Self::Slice,
             Type::Date => Self::Date,
             Type::DateTime => Self::DateTime,
+            Type::Time => Self::Time,
             Type::TimeDelta => Self::TimeDelta,
             Type::TimeZone => Self::TimeZone,
             Type::Str => Self::Str,
             Type::Bytes => Self::Bytes,
             Type::List => Self::List,
+            Type::Deque => Self::Deque,
+            // No dedicated host-side deque-iterator type; it crosses as the
+            // generic `iterator`, like any iterator without a MontyType variant.
+            Type::DequeIterator => Self::Iterator,
             Type::ListIterator => Self::ListIterator,
+            Type::TupleIterator => Self::TupleIterator,
+            Type::StrAsciiIterator => Self::StrAsciiIterator,
+            Type::StrIterator => Self::StrIterator,
+            Type::BytesIterator => Self::BytesIterator,
+            Type::RangeIterator => Self::RangeIterator,
+            Type::DictKeyIterator => Self::DictKeyIterator,
+            Type::DictItemIterator => Self::DictItemIterator,
+            Type::DictValueIterator => Self::DictValueIterator,
+            Type::SetIterator => Self::SetIterator,
             Type::CallableIterator => Self::CallableIterator,
+            Type::ItertoolsPairwise => Self::ItertoolsPairwise,
+            Type::ItertoolsCompress => Self::ItertoolsCompress,
+            Type::ItertoolsIslice => Self::ItertoolsIslice,
+            Type::ItertoolsChain => Self::ItertoolsChain,
+            Type::ItertoolsCycle => Self::ItertoolsCycle,
+            Type::ItertoolsTakeWhile => Self::ItertoolsTakeWhile,
+            Type::ItertoolsDropWhile => Self::ItertoolsDropWhile,
+            Type::ItertoolsFilterFalse => Self::ItertoolsFilterFalse,
+            Type::ItertoolsStarMap => Self::ItertoolsStarMap,
+            Type::ItertoolsCount => Self::ItertoolsCount,
+            Type::ItertoolsRepeat => Self::ItertoolsRepeat,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
             Type::Dict => Self::Dict,
+            // No host-side defaultdict/Counter type; both degrade to `dict`,
+            // consistent with their values crossing as `MontyObject::Dict`.
+            Type::DefaultDict | Type::Counter => Self::Dict,
             Type::DictKeys => Self::DictKeys,
             Type::DictItems => Self::DictItems,
             Type::DictValues => Self::DictValues,
@@ -616,14 +731,17 @@ impl MontyTypeExt for MontyType {
             Type::SpecialForm => Self::SpecialForm,
             Type::Path => Self::Path,
             Type::Property => Self::Property,
+            Type::Object => Self::Object,
             Type::RePattern => Self::RePattern,
             Type::ReMatch => Self::ReMatch,
+            Type::DataclassField => Self::Field,
+            Type::DataclassParams => Self::DataclassParams,
         }
     }
 
     /// The total mirror of a runtime [`Type`]: `Instance` resolves its class
     /// name via the heap.
-    fn from_internal(ty: Type, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Self {
+    fn from_internal(ty: Type, heap: &Heap, interns: &Interns) -> Self {
         match ty {
             Type::Instance(class_id) => Self::Instance(class_name(class_id, heap, interns).into_owned()),
             other => Self::from_internal_static(other),
@@ -634,10 +752,7 @@ impl MontyTypeExt for MontyType {
 /// Converts a sequence of `MontyObject`s into runtime `Value`s, releasing all
 /// already-converted values if a later conversion fails (invalid nested input
 /// or a resource limit) so no refcounts leak on the error path.
-fn convert_values(
-    items: Vec<MontyObject>,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> Result<Vec<Value>, InvalidInputError> {
+fn convert_values(items: Vec<MontyObject>, vm: &mut VM<'_>) -> Result<Vec<Value>, InvalidInputError> {
     let mut guard = DropGuard::new(Vec::with_capacity(items.len()), vm);
     let (values, vm) = guard.as_parts_mut();
     for item in items {
@@ -648,10 +763,7 @@ fn convert_values(
 
 /// Converts `(key, value)` `MontyObject` pairs into runtime `Value` pairs with
 /// the same all-paths cleanup guarantee as [`convert_values`].
-fn convert_pairs(
-    map: DictPairs,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> Result<Vec<(Value, Value)>, InvalidInputError> {
+fn convert_pairs(map: DictPairs, vm: &mut VM<'_>) -> Result<Vec<(Value, Value)>, InvalidInputError> {
     let mut guard = DropGuard::new(Vec::with_capacity(map.len()), vm);
     let (pairs, vm) = guard.as_parts_mut();
     for (key_obj, value_obj) in map {
@@ -669,7 +781,7 @@ fn convert_pairs(
 /// or hash.
 fn convert_set(
     items: Vec<MontyObject>,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
     unhashable_msg: &'static str,
 ) -> Result<Set, InvalidInputError> {
     let mut guard = DropGuard::new(Set::new(), vm);
@@ -687,11 +799,7 @@ fn convert_set(
 /// Taking a `&[Value]` snapshot (cloned and guarded by the caller) is what
 /// keeps [`from_value_inner`](MontyObjectExt::from_value_inner) safe against a
 /// nested `__repr__` mutating the source container mid-iteration.
-fn values_to_objects(
-    children: &[Value],
-    vm: &mut VM<'_, impl ResourceTracker>,
-    visited: &mut AHashSet<HeapId>,
-) -> Vec<MontyObject> {
+fn values_to_objects(children: &[Value], vm: &mut VM<'_>, visited: &mut AHashSet<HeapId>) -> Vec<MontyObject> {
     children
         .iter()
         .map(|child| MontyObject::from_value_inner(child, vm, visited))
@@ -702,7 +810,7 @@ fn values_to_objects(
 /// pair-wise counterpart of [`values_to_objects`].
 fn pairs_to_objects(
     children: &[(Value, Value)],
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
     visited: &mut AHashSet<HeapId>,
 ) -> Vec<(MontyObject, MontyObject)> {
     children
@@ -718,7 +826,7 @@ fn pairs_to_objects(
 
 /// Clones every `(key, value)` pair out of a dict (or dataclass attrs) so
 /// recursive conversion cannot be invalidated by user code mutating it.
-fn snapshot_dict_pairs(dict: &Dict, heap: &Heap<impl ResourceTracker>) -> Vec<(Value, Value)> {
+fn snapshot_dict_pairs(dict: &Dict, heap: &Heap) -> Vec<(Value, Value)> {
     (0..dict.len())
         .map(|i| {
             (
@@ -731,7 +839,7 @@ fn snapshot_dict_pairs(dict: &Dict, heap: &Heap<impl ResourceTracker>) -> Vec<(V
 
 /// Converts a value to its repr string for `MontyObject`, falling back to a
 /// descriptive error message if `py_repr` fails (e.g. INT_MAX_STR_DIGITS).
-fn repr_or_error(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> MontyObject {
+fn repr_or_error(value: &Value, vm: &mut VM<'_>) -> MontyObject {
     match value.py_repr(vm) {
         Ok(s) => {
             // `py_repr` yields a heap `str` `Value`; extract its text and drop it.

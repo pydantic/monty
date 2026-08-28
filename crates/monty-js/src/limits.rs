@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use monty_types::{ResourceLimits, DEFAULT_MAX_RECURSION_DEPTH};
+use monty_types::ResourceLimits;
 use napi::{Error, Result, Status};
 use napi_derive::napi;
 
@@ -36,13 +36,15 @@ pub struct JsResourceLimits {
 /// `usize` or for invalid duration values rejected by
 /// `std::time::Duration::try_from_secs_f64`.
 pub fn extract_limits(js_limits: JsResourceLimits) -> Result<ResourceLimits> {
+    let mut limits = ResourceLimits::default();
+
     let max_recursion_depth = js_limits
         .max_recursion_depth
         .map(|v| js_number_to_usize(v, "maxRecursionDepth"))
-        .transpose()?
-        .or(Some(DEFAULT_MAX_RECURSION_DEPTH));
-
-    let mut limits = ResourceLimits::new().max_recursion_depth(max_recursion_depth);
+        .transpose()?;
+    if let Some(max_recursion_depth) = max_recursion_depth {
+        limits = limits.max_recursion_depth(max_recursion_depth);
+    }
 
     if let Some(secs) = js_limits.max_duration_secs {
         limits = limits.max_duration(
@@ -69,13 +71,27 @@ impl TryFrom<JsResourceLimits> for ResourceLimits {
 
 /// Converts a JavaScript `number` used for a size/count limit into `usize`.
 ///
+/// Returns `Err` for non-finite, negative, fractional, or out-of-range inputs.
+/// This helper does not panic.
+fn js_number_to_usize(value: f64, name: &str) -> Result<usize> {
+    let value = js_number_to_u64(value, name)?;
+    usize::try_from(value).map_err(|_| {
+        Error::new(
+            Status::InvalidArg,
+            format!("{name} must fit in Rust usize on this platform"),
+        )
+    })
+}
+
+/// Converts a JavaScript `number` used for a size/count limit into `u64`.
+///
 /// JavaScript numbers are IEEE-754 doubles, so integers above `2^53 - 1`
 /// cannot be represented exactly. Rejecting values outside the safe integer
 /// range avoids silently rounding resource limits at the napi boundary.
 ///
 /// Returns `Err` for non-finite, negative, fractional, or out-of-range inputs.
 /// This helper does not panic.
-fn js_number_to_usize(value: f64, name: &str) -> Result<usize> {
+pub(crate) fn js_number_to_u64(value: f64, name: &str) -> Result<u64> {
     const JS_MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
 
     match value {
@@ -92,12 +108,7 @@ fn js_number_to_usize(value: f64, name: &str) -> Result<usize> {
         v => {
             #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let value = v as u64;
-            usize::try_from(value).map_err(|_| {
-                Error::new(
-                    Status::InvalidArg,
-                    format!("{name} must fit in Rust usize on this platform"),
-                )
-            })
+            Ok(value)
         }
     }
 }

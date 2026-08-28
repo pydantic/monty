@@ -1,7 +1,6 @@
-/// Tests for resource limits and garbage collection.
+/// Tests for execution-time limits and garbage collection.
 ///
-/// These tests verify that the `ResourceTracker` system correctly enforces
-/// memory limits, time limits, and triggers garbage collection.
+/// Allocator-backed memory limits are exercised through worker subprocesses.
 use std::{
     thread,
     time::{Duration, Instant},
@@ -9,8 +8,8 @@ use std::{
 
 use monty::{MontyRepl, MontyRun, RunProgress};
 use monty_types::{
-    CompileOptions, ExcType, LimitedTracker, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceError,
-    ResourceLimits, ResourceTracker,
+    CompileOptions, ExcType, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceLimits,
+    ResourceTracker,
 };
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
@@ -18,7 +17,7 @@ use monty_types::{
 /// External functions are no longer declared upfront. Instead, the VM yields `NameLookup`
 /// when it encounters an unresolved name. This helper resolves all such lookups until
 /// a different progress variant is reached.
-fn resolve_name_lookups<T: ResourceTracker>(mut progress: RunProgress<T>) -> Result<RunProgress<T>, MontyException> {
+fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyException> {
     while let RunProgress::NameLookup(lookup) = progress {
         let name = lookup.name.clone();
         progress = lookup.resume(
@@ -104,6 +103,182 @@ len(result)
     );
 }
 
+/// Test that GC traces sources retained by tuple and dictionary iterators.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn gc_collects_concrete_iterator_cycles() {
+    let code = r"
+for i in range(100001):
+    container = []
+    source = (container,)
+    iterator = iter(source)
+    container.append(iterator)
+
+    mapping = {}
+    iterator = iter(mapping)
+    mapping['iterator'] = iterator
+
+result = [1, 2, 3]
+len(result)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let output = ex.run_ref_counts(vec![]).expect("should succeed");
+
+    assert!(
+        output.heap_count < 40,
+        "GC should collect concrete iterator cycles: {} heap objects (expected < 40)",
+        output.heap_count
+    );
+}
+
+/// Cycles through `callable_iterator` / `list_iterator` must be collected even
+/// when the iterator is the last external reference dropped.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn gc_collects_iterator_cycles_rooted_by_the_iterator() {
+    let code = r"
+class Src:
+    def step(self):
+        return 1
+
+roots = []
+for i in range(2000):
+    o = Src()
+    it = iter(o.step, 0)
+    o.it = it
+    roots.append(it)
+
+    a = []
+    li = iter(a)
+    a.append(li)
+    roots.append(li)
+
+roots = None
+
+for i in range(2000):
+    d = {}
+    d['self'] = d
+
+result = 'done'
+result
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let tracker = ResourceTracker::new(ResourceLimits::default().gc_interval(500));
+    let output = ex.run_ref_counts_with_tracker(vec![], tracker).expect("should succeed");
+
+    assert!(
+        output.heap_count < 20,
+        "GC should collect iterator-rooted cycles: {} heap objects (expected < 20)",
+        output.heap_count
+    );
+}
+
+/// `map()` must contextually drop earlier heap results when a later callback
+/// raises instead of leaking the native output vector.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn map_callback_error_drops_prior_heap_results() {
+    let code = r"
+def build(value):
+    if value == 2:
+        raise ValueError('stop')
+    return [value]
+
+try:
+    map(build, [1, 2])
+except ValueError:
+    pass
+
+result = 'done'
+result
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
+/// The two-iterable fast path owns the first argument while advancing the
+/// second iterator. If that iterator raises, the first value must be dropped.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn map_second_iterator_error_drops_current_argument() {
+    let code = r"
+class RaisingIterator:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise ValueError('stop')
+
+def combine(a, b):
+    return (a, b)
+
+try:
+    map(combine, [[1]], RaisingIterator())
+except ValueError:
+    pass
+
+result = 'done'
+result
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
+/// The generic multi-iterable path accumulates arguments in a native vector.
+/// A later iterator error must drop every value already collected for the call.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn map_later_iterator_error_drops_current_arguments() {
+    let code = r"
+class RaisingIterator:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise ValueError('stop')
+
+def combine(a, b, c):
+    return (a, b, c)
+
+try:
+    map(combine, [[1]], [[2]], RaisingIterator())
+except ValueError:
+    pass
+
+result = 'done'
+result
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
+/// The generic multi-iterable path must also drop arguments already collected
+/// for a call when a later iterator is exhausted normally.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn map_later_iterator_exhaustion_drops_current_arguments() {
+    let code = r"
+def combine(a, b, c):
+    return a[0] + b[0] + c[0]
+
+result = map(combine, [[1], [4]], [[2], [5]], [[3]])
+result
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.py_object, MontyObject::List(vec![MontyObject::Int(6)]));
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
 /// Test that GC properly collects self-referencing list cycles.
 ///
 /// Each iteration's `a.append(a)` produces a self-referencing list; the next
@@ -167,55 +342,6 @@ len(result)
     );
 }
 
-/// Compact structural identities remain immediate Python integers.
-#[test]
-fn compact_id_does_not_allocate() {
-    let run = MontyRun::new("id(42)".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let limits = ResourceLimits::new().max_memory(0);
-    let result = run
-        .run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
-        .unwrap();
-
-    assert!(matches!(result, MontyObject::Int(_)));
-}
-
-/// Identity integers wider than `i64` allocate a tracked `LongInt`.
-#[test]
-fn wide_id_respects_memory_limit() {
-    let run = MontyRun::new("id(1.5)".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let limits = ResourceLimits::new().max_memory(0);
-    let exc = run
-        .run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
-        .unwrap_err();
-
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.starts_with("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// A serialization round-trip must preserve the tracker's enforced memory
-/// limit and usage, so restored sessions keep their budget.
-#[test]
-fn limited_tracker_roundtrip_preserves_memory_limit() {
-    let tracker = LimitedTracker::new(ResourceLimits::new().max_memory(1000));
-    tracker.on_grow(|| 600).unwrap();
-
-    let json = serde_json::to_string(&tracker).unwrap();
-    let restored: LimitedTracker = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(restored.current_memory(), 600);
-    let err = restored.on_grow(|| 500).unwrap_err();
-    assert!(matches!(
-        err,
-        ResourceError::Memory {
-            limit: 1000,
-            used: 1100
-        }
-    ));
-}
-
 #[test]
 fn time_limit_exceeded() {
     // Create a long-running loop using for + range (while isn't implemented yet)
@@ -229,8 +355,8 @@ x
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     // Set a short time limit
-    let limits = ResourceLimits::new().max_duration(Duration::from_millis(50));
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    let limits = ResourceLimits::default().max_duration(Duration::from_millis(50));
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
 
     // Should fail due to time limit
     assert!(result.is_err(), "should exceed time limit");
@@ -249,276 +375,11 @@ fn time_limit_not_exceeded() {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     // Set a generous time limit
-    let limits = ResourceLimits::new().max_duration(Duration::from_secs(5));
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    let limits = ResourceLimits::default().max_duration(Duration::from_secs(5));
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
 
     // Should succeed
     assert!(result.is_ok(), "should not exceed time limit");
-}
-
-/// Test that memory limits return an error.
-#[test]
-fn memory_limit_exceeded() {
-    // Create code that builds up memory using lists
-    // Each iteration creates a new list that gets appended
-    let code = r"
-result = []
-for i in range(100):
-    result.append([1, 2, 3, 4, 5])
-result
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    // Set a very low memory limit (100 bytes) to trigger on nested list allocation
-    let limits = ResourceLimits::new().max_memory(100);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    // Should fail due to memory limit
-    assert!(result.is_err(), "should exceed memory limit");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Regression: materializing a cheap-to-represent but enormous lazy iterable
-/// via `list()`/`tuple()`/`sorted()`/`reversed()` (and generator collection)
-/// must be rejected *during* collection, near the configured memory limit —
-/// not after the entire native buffer has been built.
-///
-/// `MontyIter::collect` builds the result in a native `Vec` that is invisible
-/// to the resource tracker until the finished object reaches the heap. Before
-/// the incremental check, `range(10**9)` would allocate ~16 GiB of native
-/// buffer before any limit check, OOM-killing or aborting the host (an
-/// uncatchable sandbox escape). The fix estimates the projected size after
-/// each element, so the limit fires while the buffer is still tiny.
-#[test]
-fn collect_constructors_bounded_during_collection() {
-    for code in [
-        "list(range(10**9))",
-        "tuple(range(10**9))",
-        "sorted(range(10**9))",
-        "reversed(range(10**9))",
-        "list(x for x in range(10**9))",
-    ] {
-        let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-        // 1 MiB memory budget; a generous time limit so a timeout cannot mask
-        // a missing memory check.
-        let limits = ResourceLimits::new()
-            .max_memory(1_048_576)
-            .max_duration(Duration::from_secs(30));
-        let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-        let exc = result
-            .err()
-            .unwrap_or_else(|| panic!("{code}: should exceed the memory limit"));
-        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{code}: wrong exc type");
-
-        // Parse "memory limit exceeded: <used> bytes > <limit> bytes". The fix
-        // must trip while the buffer is still small; before the fix `used` was
-        // the full materialized size (~16 GB for range(10**9)).
-        let msg = exc.message().expect("memory error carries a message");
-        let used: usize = msg
-            .strip_prefix("memory limit exceeded: ")
-            .and_then(|m| m.split(" bytes").next())
-            .and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| panic!("{code}: unexpected message {msg:?}"));
-        assert!(
-            used < 16 * 1_048_576,
-            "{code}: rejected at {used} bytes — collection is not bounded \
-             incrementally (expected to trip near the 1 MiB limit)"
-        );
-    }
-}
-
-/// Regression: an f-string with a large *dynamic* field width must be
-/// rejected by the memory limit before the padding string is materialized.
-///
-/// A literal width is clamped to 16 bits by the bytecode encoding, but a
-/// runtime width (`f"{v:>{w}}"`) is not. `pad_string`/`iter::repeat_n` build
-/// the padding in a native `String` invisible to the tracker until the
-/// finished string reaches the heap, so before the guard `w = 10**11` would
-/// allocate ~100 GB before any check, OOM-ing or aborting the host.
-#[test]
-fn fstring_dynamic_width_memory_bounded() {
-    for code in [
-        "w = 999_999_999\nf'{0:>{w}}'",
-        "w = 999_999_999\nf'{0:0>{w}}'",
-        "w = 999_999_999\nf'{1.5:^{w}}'",
-        "w = 999_999_999\nf'{\"x\":<{w}}'",
-    ] {
-        let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-        let limits = ResourceLimits::new()
-            .max_memory(1_048_576)
-            .max_duration(Duration::from_secs(30));
-        let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-        let exc = result
-            .err()
-            .unwrap_or_else(|| panic!("{code:?}: should exceed the memory limit"));
-        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{code:?}: wrong exc type");
-    }
-
-    // A small dynamic width is unaffected and still formats correctly.
-    let ex = MontyRun::new(
-        "w = 5\nf'{42:>{w}}'".to_owned(),
-        "test.py",
-        vec![],
-        CompileOptions::default(),
-    )
-    .unwrap();
-    let limits = ResourceLimits::new().max_memory(1_048_576);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-    assert_eq!(
-        result.expect("small dynamic width should succeed"),
-        MontyObject::String("   42".to_owned())
-    );
-}
-
-/// Regression: an f-string with a large *dynamic* precision on a float
-/// format (`f`/`e`/`%`) must be rejected by the memory limit before the
-/// digit-padding string is materialized.
-///
-/// `fmt_float_fixed` / `fmt_float_exp` cap Rust's native precision at
-/// `MAX_FMT_PRECISION` and synthesise the remaining digits by extending the
-/// result `String` with `'0'` chars. Without the precision guard alongside
-/// the width guard, `p = 10**9` would allocate ~1 GB of zeros before
-/// `allocate_string` could account for the result. Mirrors the width-bounded
-/// test above; covers both float values and int-coerced-to-float values.
-#[test]
-fn fstring_dynamic_precision_memory_bounded() {
-    for code in [
-        "p = 999_999_999\nf'{1.0:.{p}f}'",
-        "p = 999_999_999\nf'{1.0:.{p}e}'",
-        "p = 999_999_999\nf'{1.0:.{p}E}'",
-        "p = 999_999_999\nf'{1.0:.{p}F}'",
-        "p = 999_999_999\nf'{1.0:.{p}%}'",
-        // Int coerced to float via the F/E/% type chars must also be bounded.
-        "p = 999_999_999\nf'{1:.{p}f}'",
-        "p = 999_999_999\nf'{1:.{p}F}'",
-        "p = 999_999_999\nf'{1:.{p}e}'",
-        // Literal precisions above the compact bytecode encoding capacity are
-        // emitted as dynamic specs and must still be checked at runtime.
-        "f'{1.0:.999999999f}'",
-        // `#g`/`#G`/type-less-with-precision keep every trailing zero, so they
-        // scale with precision just like `f` and need the same guard (plain `g`
-        // strips zeros and is bounded, so it is intentionally not listed here).
-        "p = 999_999_999\nf'{1.0:#.{p}g}'",
-        "p = 999_999_999\nf'{1.0:#.{p}G}'",
-        "p = 999_999_999\nf'{1.0:#.{p}}'",
-        // Fractional grouping weaves separators into the digit run, so the
-        // native string exceeds `precision` bytes; the guard budgets for them.
-        "p = 999_999_999\nf'{1.0:.{p}_f}'",
-    ] {
-        let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-        let limits = ResourceLimits::new()
-            .max_memory(1_048_576)
-            .max_duration(Duration::from_secs(30));
-        let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-        let exc = result
-            .err()
-            .unwrap_or_else(|| panic!("{code:?}: should exceed the memory limit"));
-        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{code:?}: wrong exc type");
-    }
-
-    // A small dynamic precision is unaffected and still formats correctly.
-    let ex = MontyRun::new(
-        "p = 3\nf'{1.5:.{p}f}'".to_owned(),
-        "test.py",
-        vec![],
-        CompileOptions::default(),
-    )
-    .unwrap();
-    let limits = ResourceLimits::new().max_memory(1_048_576);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-    assert_eq!(
-        result.expect("small dynamic precision should succeed"),
-        MontyObject::String("1.500".to_owned())
-    );
-}
-
-/// Regression: formatting a huge big integer in a non-decimal radix
-/// (`:b`/`:o`/`:x`/`:X`) must be bounded by the memory limit before the digit
-/// string is materialized.
-///
-/// `BigInt::to_str_radix` builds the full ASCII digit string on the (untracked)
-/// Rust heap before `allocate_string` accounts for it. CPython's
-/// `int_max_str_digits` only caps *decimal* conversions, so a value created
-/// within the memory limit and then rendered as binary (`f"{1 << n:b}"` is ~`n`
-/// bytes) would allocate gigabytes outside the tracker. `format_long_int` now
-/// size-checks each radix render up front.
-#[test]
-fn fstring_bigint_radix_memory_bounded() {
-    for code in [
-        "n = 1 << 50_000_000\nf'{n:b}'",
-        "n = 1 << 50_000_000\nf'{n:o}'",
-        "n = 1 << 50_000_000\nf'{n:x}'",
-        "n = 1 << 50_000_000\nf'{n:X}'",
-        "n = 1 << 50_000_000\nf'{n:#x}'",
-    ] {
-        let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-        // 8 MiB budget: the `1 << 50_000_000` value itself is ~6.25 MB (50M bits)
-        // so it builds fine, but every radix render exceeds the limit — binary is
-        // ~50 MB, octal ~16.6 MB, and even hex (the most compact, ~12.5 MB) is
-        // over budget. A generous time limit ensures a timeout can't mask a
-        // missing memory check.
-        let limits = ResourceLimits::new()
-            .max_memory(8_388_608)
-            .max_duration(Duration::from_secs(30));
-        let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-        let exc = result
-            .err()
-            .unwrap_or_else(|| panic!("{code:?}: should exceed the memory limit"));
-        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{code:?}: wrong exc type");
-    }
-
-    // A small big integer formats correctly under the same limit (the size
-    // check is free below the large-result threshold).
-    let ex = MontyRun::new(
-        "n = 1 << 80\nf'{n:x}'".to_owned(),
-        "test.py",
-        vec![],
-        CompileOptions::default(),
-    )
-    .unwrap();
-    let limits = ResourceLimits::new().max_memory(1_048_576);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-    assert_eq!(
-        result.expect("small big-int radix should succeed"),
-        MontyObject::String("100000000000000000000".to_owned())
-    );
-}
-
-#[test]
-fn memory_limit_zero() {
-    let code = "x = 1 + 2\nx";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    // Set zero memory limit - should fail immediately
-    let limits = ResourceLimits::new().max_memory(0);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(
-        result.is_ok(),
-        "should allow zero memory for simple operations that don't allocate"
-    );
-}
-
-#[test]
-fn combined_limits() {
-    // Test multiple limits together
-    let code = "x = 1 + 2\nx";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new()
-        .max_duration(Duration::from_secs(5))
-        .max_memory(1024 * 1024);
-
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-    assert!(result.is_ok(), "should succeed with generous limits");
 }
 
 #[test]
@@ -587,9 +448,9 @@ result
 ";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
-    let limits = ResourceLimits::new().gc_interval(10);
+    let limits = ResourceLimits::default().gc_interval(10);
     let output = ex
-        .run_ref_counts_with_tracker(vec![], LimitedTracker::new(limits))
+        .run_ref_counts_with_tracker(vec![], ResourceTracker::new(limits))
         .expect("should succeed with custom GC interval");
 
     assert_eq!(output.py_object, MontyObject::String("done".to_owned()));
@@ -606,728 +467,21 @@ result
     );
 }
 
-#[test]
-fn executor_iter_resource_limit_on_resume() {
-    // Test that resource limits are enforced across function calls
-    // First function call succeeds, but resumed execution exceeds limit
-
-    // 1KB strings so the loop clearly overruns the memory budget
-    let code = "foo(1)\nx = []\nfor i in range(10):\n    x.append('x' * 1000)\nlen(x)";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    // First function call should succeed within the budget
-    let limits = ResourceLimits::new().max_memory(5000);
-    let progress = run
-        .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
-        .unwrap();
-    let call = resolve_name_lookups(progress)
-        .unwrap()
-        .into_function_call()
-        .expect("function call");
-    assert_eq!(call.function_name, "foo");
-    assert_eq!(call.args, vec![MontyObject::Int(1)]);
-
-    // Resume - should fail due to memory limit during the for loop
-    let result = call.resume(MontyObject::None, PrintWriter::Stdout);
-    assert!(result.is_err(), "should exceed memory limit on resume");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-#[test]
-fn executor_iter_resource_limit_before_function_call() {
-    // Test that resource limits are enforced before first function call
-
-    // 1KB strings so the loop clearly overruns the memory budget
-    let code = "x = []\nfor i in range(10):\n    x.append('x' * 1000)\nfoo(len(x))\n42";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    // Should fail before reaching the function call
-    let limits = ResourceLimits::new().max_memory(5000);
-    let result = run.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "should exceed memory limit before function call");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-#[test]
-fn executor_iter_resource_limit_multiple_function_calls() {
-    // Test resource limits across multiple function calls
-    let code = "foo(1)\nbar(2)\nbaz(3)\n4";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    // Tight memory budget - should still work for simple function calls
-    let limits = ResourceLimits::new().max_memory(100_000);
-
-    let progress = run
-        .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
-        .unwrap();
-    let call = resolve_name_lookups(progress)
-        .unwrap()
-        .into_function_call()
-        .expect("first call");
-    assert_eq!(call.function_name, "foo");
-    assert_eq!(call.args, vec![MontyObject::Int(1)]);
-
-    let progress = call.resume(MontyObject::None, PrintWriter::Stdout).unwrap();
-    let call = resolve_name_lookups(progress)
-        .unwrap()
-        .into_function_call()
-        .expect("second call");
-    assert_eq!(call.function_name, "bar");
-    assert_eq!(call.args, vec![MontyObject::Int(2)]);
-
-    let progress = call.resume(MontyObject::None, PrintWriter::Stdout).unwrap();
-    let call = resolve_name_lookups(progress)
-        .unwrap()
-        .into_function_call()
-        .expect("third call");
-    assert_eq!(call.function_name, "baz");
-    assert_eq!(call.args, vec![MontyObject::Int(3)]);
-
-    let result = call
-        .resume(MontyObject::None, PrintWriter::Stdout)
-        .unwrap()
-        .into_complete()
-        .expect("complete");
-    assert_eq!(result, MontyObject::Int(4));
-}
-
-/// Test that deep recursion triggers memory limit due to namespace tracking.
-///
-/// Function call namespaces (local variables) are tracked by ResourceTracker.
-/// Each recursive call creates a new namespace, which should count against
-/// the memory limit.
-#[test]
-fn recursion_respects_memory_limit() {
-    // Recursive function that creates stack frames with local variables
-    let code = r"
-def recurse(n):
-    x = 1
-    if n > 0:
-        return recurse(n - 1)
-    return 0
-recurse(1000)
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    // Very tight memory limit - should fail due to namespace memory
-    // Each frame needs at least namespace_size * size_of::<Value>() bytes
-    let limits = ResourceLimits::new().max_memory(1000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "should exceed memory limit from recursion");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-// === BigInt large result pre-check tests ===
-// These tests verify that operations that would produce very large BigInt results
-// are rejected before the computation begins, preventing DoS attacks.
-
-/// Test that large pow operations are rejected by memory limits.
-#[test]
-fn bigint_pow_memory_limit() {
-    // 2 ** 10_000_000 would produce ~1.25MB result
-    let code = "2 ** 10000000";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    // Set a 1MB memory limit - should fail before computing
-    let limits = ResourceLimits::new().max_memory(1_000_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "large pow should exceed memory limit");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that pow with huge exponents is rejected even when the size estimate overflows u64.
-///
-/// This catches a bug where `estimate_pow_bytes` returned `None` on u64 overflow,
-/// and the `if let Some(estimated)` pattern silently skipped the check.
-#[test]
-fn pow_overflowing_estimate_rejected() {
-    // base ~63 bits, exp ~62 bits: estimated result bits = 63 * 3962939411543162624 overflows u64
-    let code = "-7234189268083315611 ** 3962939411543162624";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(1_000_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "pow with overflowing estimate should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that pow with a large base and moderate exponent is rejected by memory limits.
-///
-/// `-7234408281351689115 ** 65327` has a 63-bit base, so the result is ~63*65327 ≈ 4M bits ≈ 514KB.
-/// With a 100KB memory limit the pre-check should reject this before computing.
-#[test]
-fn pow_large_base_moderate_exp_rejected() {
-    let code = "-7234408281351689115 ** 65327";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "large pow should exceed memory limit");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that the 4× safety multiplier for pow intermediate allocations catches
-/// cases where the final result fits but repeated-squaring intermediates don't.
-///
-/// `2 ** 500000`: final result = 2 * 500000 bits = 125KB. Without multiplier this
-/// passes a 200KB limit. With 4× multiplier: 500KB > 200KB → rejected.
-#[test]
-fn pow_intermediate_allocation_multiplier() {
-    let code = "2 ** 500000";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    // 200KB limit: final result (125KB) fits, but 4× estimate (500KB) exceeds it
-    let limits = ResourceLimits::new().max_memory(200_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(
-        result.is_err(),
-        "pow should be rejected due to intermediate allocation overhead"
-    );
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    // 2 bits * 500000 = 125KB final, × 4 = 500072 bytes (includes base memory offset)
-    assert_eq!(
-        exc.message(),
-        Some("memory limit exceeded: 500000 bytes > 200000 bytes")
-    );
-}
-
-/// Test that pow still succeeds when the 4× estimate is within the limit.
-///
-/// `2 ** 100000`: final result = 2 * 100000 bits ≈ 25KB. With 4× multiplier: ~100KB.
-/// A 1MB limit should comfortably allow this.
-#[test]
-fn pow_within_limit_with_multiplier() {
-    let code = "x = 2 ** 100000\nx > 0";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(1_000_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "pow with 4× estimate under limit should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Bool(true));
-}
-
-/// Test the exact fuzzer OOM pattern: right-associative chained exponentiation.
-///
-/// `3 ** 3661666` is the first sub-expression of the fuzzer input
-/// `1666**3**366**3**3661666`. Since `**` is right-associative, `3**3661666`
-/// is computed first. Base 3 has 2 bits, so: 2 * 3661666 = 7323332 bits ≈ 915KB.
-/// With 4× multiplier: 3660KB > 1MB fuzz limit → rejected.
-#[test]
-fn pow_fuzzer_oom_chained_exponentiation() {
-    // This is the subexpression that caused the fuzzer OOM
-    let code = "3 ** 3661666";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    // 1MB limit (matching the fuzzer's resource limit)
-    let limits = ResourceLimits::new().max_memory(1_024 * 1_024);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(
-        result.is_err(),
-        "fuzzer OOM pattern should be rejected by 4× multiplier"
-    );
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    // 2 bits * 3661666 = 915KB final, × 4 = 3661740 bytes
-    assert_eq!(
-        exc.message(),
-        Some("memory limit exceeded: 3661668 bytes > 1048576 bytes")
-    );
-}
-
-/// Test the full fuzzer input that originally caused OOM.
-///
-/// The input `1666**3**366**3**3661666` should be rejected before any large
-/// intermediate allocation occurs.
-#[test]
-fn pow_fuzzer_oom_full_input() {
-    let code = "1666**3**366**3**3661666";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(1_024 * 1_024);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "full fuzzer OOM input should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    // 3**3661666 is evaluated first (right-associative). Base 3 = 2 bits,
-    // so estimate = 2 * 3661666 bits = 915KB. With 4× multiplier: 3661740 bytes > 1MB.
-    assert_eq!(
-        exc.message(),
-        Some("memory limit exceeded: 3661668 bytes > 1048576 bytes")
-    );
-}
-
-/// Test that large left shift operations are rejected by memory limits.
-#[test]
-fn bigint_lshift_memory_limit() {
-    // 1 << 10_000_000 would produce ~1.25MB result
-    let code = "1 << 10000000";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    // Set a 1MB memory limit - should fail before computing
-    let limits = ResourceLimits::new().max_memory(1_000_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "large lshift should exceed memory limit");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that large multiplication operations are rejected by memory limits.
-#[test]
-fn bigint_mult_memory_limit() {
-    // (2**4_000_000) * (2**4_000_000) would produce ~1MB result
-    let code = "big = 2 ** 4000000\nbig * big";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    // Set a 1MB memory limit - should fail before computing the multiplication
-    let limits = ResourceLimits::new().max_memory(1_000_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "large mult should exceed memory limit");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that small BigInt operations succeed within memory limits.
-#[test]
-fn bigint_small_operations_within_limit() {
-    // 2 ** 1000 produces ~125 bytes - well under limit
-    let code = "x = 2 ** 1000\ny = 1 << 1000\nz = x * 2\nx > 0 and y > 0 and z > 0";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    // Set a 1MB memory limit - should succeed
-    let limits = ResourceLimits::new().max_memory(1_000_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "small BigInt operations should succeed within limit");
-    let val = result.unwrap();
-    assert_eq!(val, MontyObject::Bool(true));
-}
-
-/// Test that edge cases (0, 1, -1) with huge exponents succeed even with limits.
-/// These produce constant-size results regardless of exponent.
-#[test]
-fn bigint_edge_cases_always_succeed() {
-    // Test each edge case individually to minimize other allocations
-    // These edge cases produce constant-size results regardless of exponent:
-    // - 0 ** huge = 0
-    // - 1 ** huge = 1
-    // - (-1) ** huge = 1 or -1
-    // - 0 << huge = 0
-
-    // 1MB limit would reject 2**10000000 (~1.25MB) but allows edge cases
-    let limits = ResourceLimits::new().max_memory(1_000_000);
-
-    // 0 ** huge = 0
-    let code = "0 ** 10000000";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run(vec![], LimitedTracker::new(limits.clone()), PrintWriter::Stdout);
-    assert!(result.is_ok(), "0 ** huge should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Int(0));
-
-    // 1 ** huge = 1
-    let code = "1 ** 10000000";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run(vec![], LimitedTracker::new(limits.clone()), PrintWriter::Stdout);
-    assert!(result.is_ok(), "1 ** huge should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Int(1));
-
-    // (-1) ** huge_even = 1
-    let code = "(-1) ** 10000000";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run(vec![], LimitedTracker::new(limits.clone()), PrintWriter::Stdout);
-    assert!(result.is_ok(), "(-1) ** huge_even should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Int(1));
-
-    // (-1) ** huge_odd = -1
-    let code = "(-1) ** 10000001";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run(vec![], LimitedTracker::new(limits.clone()), PrintWriter::Stdout);
-    assert!(result.is_ok(), "(-1) ** huge_odd should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Int(-1));
-
-    // 0 << huge = 0
-    let code = "0 << 10000000";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-    assert!(result.is_ok(), "0 << huge should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Int(0));
-}
-
-/// Test that pow() builtin also respects memory limits.
-#[test]
-fn bigint_builtin_pow_memory_limit() {
-    let code = "pow(2, 10000000)";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(1_000_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "builtin pow should respect memory limit");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// Test that large BigInt operations are rejected BEFORE allocation via check_large_result.
-///
-/// The pre-allocation size check estimates result size and rejects operations that would
-/// exceed the memory limit before any memory is actually consumed.
-#[test]
-fn bigint_rejected_before_allocation() {
-    // 2**1000000: base 2 has 2 bits, so estimate = 2 * 1000000 bits = 250KB
-    // With 4× safety multiplier for intermediate allocations = 1000KB
-    // Set limit to 100KB - the pre-check should reject before allocating
-    let code = "2 ** 1000000";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "should be rejected before allocation");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert_eq!(
-        exc.message(),
-        Some("memory limit exceeded: 1000000 bytes > 100000 bytes")
-    );
-}
-
-// === String/Bytes large result pre-check tests ===
-// These tests verify that string/bytes multiplication operations that would produce
-// very large results are rejected before the computation begins.
-
-/// Test that large string multiplication is rejected before allocation.
-#[test]
-fn string_mult_memory_limit() {
-    // 'x' * 1000000 = 1MB string
-    let code = "'x' * 1000000";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "large string mult should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that large bytes multiplication is rejected before allocation.
-#[test]
-fn bytes_mult_memory_limit() {
-    // b'x' * 1000000 = 1MB bytes
-    let code = "b'x' * 1000000";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "large bytes mult should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that small string multiplication works within limits.
-#[test]
-fn string_mult_within_limit() {
-    // 'abc' * 100 = 300 bytes, well within 100KB limit
-    let code = "'abc' * 100 == 'abc' * 100";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "small string mult should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Bool(true));
-}
-
-/// Test that small bytes multiplication works within limits.
-#[test]
-fn bytes_mult_within_limit() {
-    // b'abc' * 100 = 300 bytes, well within 100KB limit
-    let code = "b'abc' * 100 == b'abc' * 100";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "small bytes mult should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Bool(true));
-}
-
-/// Test that `bytes(n)` is rejected before allocation when `n` exceeds the memory limit.
-///
-/// The integer constructor allocates a zero-filled buffer; the requested size must
-/// be validated against the resource tracker before the native allocation occurs.
-#[test]
-fn bytes_int_constructor_memory_limit() {
-    let code = "bytes(1000000)";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "large bytes(n) should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that small `bytes(n)` works within limits.
-#[test]
-fn bytes_int_constructor_within_limit() {
-    let code = "len(bytes(100))";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "small bytes(n) should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Int(100));
-}
-
-/// Test that string multiplication is rejected before allocation via check_large_result.
-#[test]
-fn string_mult_rejected_before_allocation() {
-    // 'x' * 200000 = 200KB string
-    // Set limit to 100KB - the pre-check should reject before allocating
-    let code = "'x' * 200000";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "should be rejected before allocation");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    // The exact size may include some overhead, but should be around 200KB
-    assert!(
-        exc.message()
-            .is_some_and(|m| m.contains("memory limit exceeded") && m.contains("> 100000 bytes")),
-        "expected memory limit error with ~200KB size, got: {:?}",
-        exc.message()
-    );
-}
-
-/// Test that large list multiplication is rejected before allocation.
-#[test]
-fn list_mult_memory_limit() {
-    // [1] * 10000 = 10,000 Values = ~160KB (at 16 bytes per Value)
-    let code = "[1] * 10000";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "large list mult should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that large tuple multiplication is rejected before allocation.
-#[test]
-fn tuple_mult_memory_limit() {
-    // (1,) * 10000 = 10,000 Values = ~160KB (at 16 bytes per Value)
-    let code = "(1,) * 10000";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "large tuple mult should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that small list multiplication works within limits.
-#[test]
-fn list_mult_within_limit() {
-    // [1, 2, 3] * 20 = 60 Values, well within 100KB limit
-    let code = "[1, 2, 3] * 20 == [1, 2, 3] * 20";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "small list mult should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Bool(true));
-}
-
-/// Test that `int * bytes` (int on left) is also rejected by the pre-check.
-///
-/// This catches a bug where interned bytes/strings bypassed the sequence-repetition
-/// pre-check in `py_mult` because the `InternBytes * Int` arm was handled inline
-/// without checking resource limits.
-#[test]
-fn int_times_bytes_memory_limit() {
-    // int on left side: 1000000 * b'x' = 1MB
-    let code = "1000000 * b'x'";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "int * bytes should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that `int * str` (int on left) is also rejected by the pre-check.
-#[test]
-fn int_times_string_memory_limit() {
-    // int on left side: 1000000 * 'x' = 1MB
-    let code = "1000000 * 'x'";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "int * str should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that `bigint * bytes` (LongInt on left) is rejected by the pre-check.
-#[test]
-fn longint_times_bytes_memory_limit() {
-    // i64::MAX + 1 = 9223372036854775808, which is a LongInt but fits in usize on 64-bit.
-    // Multiplied by 1-byte bytes literal, this would be ~9.2 exabytes.
-    let code = "9223372036854775808 * b'x'";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "bigint * bytes should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that `bigint * str` (LongInt on left) is rejected by the pre-check.
-#[test]
-fn longint_times_string_memory_limit() {
-    // i64::MAX + 1 = 9223372036854775808, which is a LongInt but fits in usize on 64-bit.
-    let code = "9223372036854775808 * 'x'";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "bigint * str should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that small tuple multiplication works within limits.
-#[test]
-fn tuple_mult_within_limit() {
-    // (1, 2, 3) * 20 = 60 Values, well within 100KB limit
-    let code = "(1, 2, 3) * 20 == (1, 2, 3) * 20";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "small tuple mult should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Bool(true));
-}
-
 // === Timeout enforcement in builtin iteration loops ===
 // These tests verify that `max_duration_secs` is enforced inside Rust-side loops
-// within builtin functions. Previously, builtins like sum(), sorted(), min(), max()
-// ran Rust loops entirely within a single bytecode instruction, bypassing the VM's
-// per-instruction timeout check. The fix adds `heap.check_time()` calls inside
-// `MontyIter::for_next()` and other non-iterator loops.
+// within builtin functions. Builtins like sum(), sorted(), min(), max() run Rust
+// loops entirely within a single bytecode instruction, so they would otherwise
+// bypass the VM's dispatch checkpoint entirely. Python iterator advancement and
+// the other non-iterator loops therefore poll the tracker themselves, amortized
+// via `check_time_every` / `check_memory_time_every`.
 
 /// Helper: runs code with a short time limit and asserts it produces a TimeoutError promptly.
 fn assert_timeout_in_builtin(code: &str, label: &str) {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
-    let limits = ResourceLimits::new().max_duration(Duration::from_millis(100));
+    let limits = ResourceLimits::default().max_duration(Duration::from_millis(100));
     let start = Instant::now();
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
     let elapsed = start.elapsed();
 
     assert!(result.is_err(), "{label}: should exceed time limit");
@@ -1345,7 +499,7 @@ fn assert_timeout_in_builtin(code: &str, label: &str) {
 
 /// Test that `sum(range(huge))` respects the time limit.
 ///
-/// `sum()` iterates via `for_next()` which now calls `heap.check_time()`.
+/// `sum()` iterates via `for_next()`, which polls the time limit every 64th step.
 #[test]
 fn timeout_in_sum_builtin() {
     assert_timeout_in_builtin("sum(range(10**18))", "sum(range(10**18))");
@@ -1353,10 +507,118 @@ fn timeout_in_sum_builtin() {
 
 /// Test that `list(range(huge))` respects the time limit.
 ///
-/// The `list()` constructor collects via `MontyIter::collect()` -> `for_next()`.
+/// The `list()` constructor drains its concrete Python iterator.
 #[test]
 fn timeout_in_list_constructor() {
     assert_timeout_in_builtin("list(range(10**18))", "list(range(10**18))");
+}
+
+/// Covers all four substring scanners; `index`/`rindex` share theirs with
+/// `find`/`rfind`.
+const BYTES_SEARCH_EXPRS: &[&str] = &[
+    "needle in haystack",
+    "haystack.find(needle)",
+    "haystack.rfind(needle)",
+    "haystack.count(needle)",
+    "haystack.split(needle)",
+    "haystack.rsplit(needle)",
+    "haystack.replace(needle, b'')",
+    "haystack.partition(needle)",
+    "haystack.rpartition(needle)",
+];
+
+/// Runs `expr` with `haystack`/`needle` bound, under `limits`.
+fn run_bytes_search(expr: &str, haystack: Vec<u8>, needle: Vec<u8>, limits: ResourceLimits) -> BytesSearchOutcome {
+    let run = MontyRun::new(
+        expr.to_owned(),
+        "test.py",
+        vec!["haystack".to_owned(), "needle".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+
+    let start = Instant::now();
+    let result = run.run(
+        vec![MontyObject::Bytes(haystack), MontyObject::Bytes(needle)],
+        ResourceTracker::new(limits),
+        PrintWriter::Stdout,
+    );
+    BytesSearchOutcome {
+        elapsed: start.elapsed(),
+        result,
+    }
+}
+
+/// What a `bytes` search returned, and how long it took.
+struct BytesSearchOutcome {
+    elapsed: Duration,
+    result: Result<MontyObject, MontyException>,
+}
+
+/// Worst case for a naive `windows()` scan: every offset compares the full
+/// needle before failing on its last byte.
+fn near_match_inputs(haystack_len: usize, needle_len: usize) -> (Vec<u8>, Vec<u8>) {
+    let mut needle = vec![b'a'; needle_len];
+    *needle.last_mut().unwrap() = b'b';
+    (vec![b'a'; haystack_len], needle)
+}
+
+/// Near-matching probes must not blow up quadratically.
+///
+/// A naive scan takes ~800ms on these inputs, a linear one microseconds; the
+/// generous budget keeps the timing assertion robust on loaded CI.
+#[test]
+fn bytes_search_is_not_quadratic() {
+    for expr in BYTES_SEARCH_EXPRS {
+        let (haystack, needle) = near_match_inputs(1_000_000, 50_000);
+        let outcome = run_bytes_search(expr, haystack, needle, ResourceLimits::default());
+
+        assert!(
+            outcome.result.is_ok(),
+            "{expr}: expected success, got {:?}",
+            outcome.result
+        );
+        assert!(
+            outcome.elapsed < Duration::from_millis(300),
+            "{expr}: took {:?}, expected a linear scan",
+            outcome.elapsed
+        );
+    }
+}
+
+/// Bytes searches must remain interruptible by the time limit.
+///
+/// The haystack is large enough that even a linear scan outlives the budget.
+#[test]
+fn timeout_in_bytes_search() {
+    for expr in BYTES_SEARCH_EXPRS {
+        let (haystack, needle) = near_match_inputs(64 * 1024 * 1024, 4096);
+        let limits = ResourceLimits::default().max_duration(Duration::from_millis(1));
+        let outcome = run_bytes_search(expr, haystack, needle, limits);
+
+        let exc = outcome
+            .result
+            .expect_err(&format!("{expr}: expected the time limit to fire"));
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{expr}");
+        assert!(
+            outcome.elapsed < Duration::from_secs(2),
+            "{expr}: should terminate promptly, took {:?}",
+            outcome.elapsed
+        );
+    }
+}
+
+/// Test that a bounded `deque * n` repetition respects the time limit mid-build.
+///
+/// `repeat_deque` clones into a Rust-side loop that polls `check_time()`. Beyond
+/// enforcing the limit, a timeout must release the clones built so far — the
+/// heap-ref element makes a leak observable (it panics under memory-model-checks).
+#[test]
+fn timeout_in_bounded_deque_repeat() {
+    assert_timeout_in_builtin(
+        "from collections import deque\ndeque([[1]], maxlen=10**9) * 10**9",
+        "deque(maxlen=10**9) * 10**9",
+    );
 }
 
 /// Test that `sorted(range(huge))` respects the time limit.
@@ -1408,7 +670,7 @@ fn timeout_in_any_builtin() {
 
 /// Test that `tuple(range(huge))` respects the time limit.
 ///
-/// The `tuple()` constructor collects via `MontyIter::collect()` -> `for_next()`.
+/// The `tuple()` constructor drains its concrete Python iterator.
 #[test]
 fn timeout_in_tuple_constructor() {
     assert_timeout_in_builtin("tuple(range(10**18))", "tuple(range(10**18))");
@@ -1425,7 +687,7 @@ fn timeout_in_str_join() {
 /// Test that the insertion sort inner loop in `sorted()` respects the time limit.
 ///
 /// Uses reverse-sorted data to trigger worst-case O(n^2) insertion sort behavior.
-/// The sort comparison loop has an explicit `heap.check_time()` call.
+/// The sort comparison loop polls the time limit (amortized, every 64th comparison).
 #[test]
 fn timeout_in_sorted_comparison_loop() {
     // Build a reverse-sorted list, then sort it. Insertion sort on reverse-sorted
@@ -1439,8 +701,8 @@ sorted(x)
 
 /// Test that `[1] * 10_000_000` (list repetition) respects the time limit.
 ///
-/// The sequence-repetition copy loop in `py_mult` now calls `heap.check_time()`
-/// on each repetition to prevent large sequence multiplications from bypassing timeout.
+/// The sequence-repetition copy loop in `py_mult` polls the time limit every
+/// 64th repetition, so a large multiplication cannot bypass the timeout.
 #[test]
 fn timeout_in_list_repetition() {
     assert_timeout_in_builtin("[1, 2, 3] * 10_000_000", "list repetition");
@@ -1483,10 +745,116 @@ a == b
     assert_timeout_in_builtin(code, "dict equality");
 }
 
+/// Test that a dict/set probe restarted by a mutating `__eq__` respects the
+/// time limit.
+///
+/// Every comparison adds another colliding key whose own `__eq__` does the
+/// same, so the probe never runs out of new candidates (CPython, walking the
+/// live chain, hangs on this too). Re-entering the VM for the callback restarts
+/// the dispatch countdown, so only the probe's own `check_time()` can end it.
+#[test]
+fn timeout_in_mutating_lookup_probe() {
+    let template = r"
+busy = False
+
+
+class Mutator:
+    def __hash__(self):
+        return 1
+
+    def __eq__(self, other):
+        global busy
+        if not busy:
+            busy = True
+            ADD_MUTATOR
+            busy = False
+        return False
+
+
+container = MAKE_CONTAINER
+Mutator() in container
+";
+    let dict = template
+        .replace("ADD_MUTATOR", "container[Mutator()] = 0")
+        .replace("MAKE_CONTAINER", "{Mutator(): 0}");
+    let set = template
+        .replace("ADD_MUTATOR", "container.add(Mutator())")
+        .replace("MAKE_CONTAINER", "{Mutator()}");
+    assert_timeout_in_builtin(&dict, "dict probe restarted by __eq__");
+    assert_timeout_in_builtin(&set, "set probe restarted by __eq__");
+}
+
+/// Missing lookups in a fully colliding container must not rescan their
+/// already-compared candidates quadratically.
+///
+/// `H` instances hash constant and are never `eq_is_native`, so a missing
+/// probe hands all N entries to the mutation-aware continuation, whose
+/// seen-check must be O(1) — a linear scan makes each miss Θ(N²), and that
+/// pass reaches no limit poll. Found lookups walk the same candidate chain
+/// but never reach the continuation, so timing misses against finds on the
+/// same container isolates exactly the continuation's cost — the ratio is
+/// independent of machine speed, coverage instrumentation, and feature
+/// flags. Measured: healthy ~1.2x, the old linear seen-scan ~4.2x. The 3x
+/// threshold therefore sits closer to the regression than to a false alarm —
+/// raise it and the test stops catching the bug.
+#[test]
+fn colliding_lookup_is_not_quadratic() {
+    let build_template = r"
+class H:
+    def __hash__(self):
+        return 1
+
+
+container = MAKE_CONTAINER
+for _ in range(800):
+    ADD_ENTRY
+";
+    // 800 found lookups: same per-candidate machinery as the misses below
+    // (every comparison still dispatches through the guarded snapshot loop),
+    // but the probe ends at its match, before the continuation.
+    let found_lookups = r"
+for k in list(container):
+    assert k in container
+";
+    // 400 misses, each comparing all 800 candidates and then entering the
+    // continuation — in total the same number of comparisons as the finds.
+    let missing_lookups = r"
+probe = H()
+for _ in range(400):
+    assert probe not in container
+";
+    for (label, make_container, add_entry) in [
+        ("dict", "{}", "container[H()] = 0"),
+        ("set", "set()", "container.add(H())"),
+    ] {
+        let build = build_template
+            .replace("MAKE_CONTAINER", make_container)
+            .replace("ADD_ENTRY", add_entry);
+        let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run(&build, vec![], PrintWriter::Stdout)
+            .unwrap_or_else(|e| panic!("{label}: build failed: {e}"));
+
+        let start = Instant::now();
+        repl.feed_run(found_lookups, vec![], PrintWriter::Stdout)
+            .unwrap_or_else(|e| panic!("{label}: found lookups failed: {e}"));
+        let found_elapsed = start.elapsed();
+
+        let start = Instant::now();
+        repl.feed_run(missing_lookups, vec![], PrintWriter::Stdout)
+            .unwrap_or_else(|e| panic!("{label}: missing lookups failed: {e}"));
+        let missing_elapsed = start.elapsed();
+
+        assert!(
+            missing_elapsed < found_elapsed * 3,
+            "{label}: misses took {missing_elapsed:?} vs finds {found_elapsed:?}, expected linear seen-checks"
+        );
+    }
+}
+
 /// Test that `str.splitlines()` on a large string respects the time limit.
 ///
 /// `str_splitlines()` scans the entire string for line endings in a while loop
-/// that now calls `heap.check_time()` on each iteration.
+/// that polls the limits every 64th line.
 #[test]
 fn timeout_in_str_splitlines() {
     let code = r"
@@ -1511,8 +879,8 @@ s.splitlines()
 // === Timeout truncation in repr ===
 // These tests verify that `repr()` on large containers respects the time limit
 // and terminates promptly instead of hanging indefinitely. The repr methods
-// (`repr_sequence_fmt`, `Dict::py_repr_fmt`, `SetInner::repr_fmt`) call
-// `heap.check_time()` on each iteration and write `...[timeout]` when the
+// (`repr_sequence_fmt`, `Dict::py_repr_fmt`, `SetInner::repr_fmt`) poll the
+// limits every 64th item via `repr_check_time` and write `...[timeout]` when the
 // time limit is exceeded, returning normally instead of propagating an error.
 //
 // Each test uses the external function "interrupt" pattern: the large object is
@@ -1528,9 +896,9 @@ s.splitlines()
 fn suspension_time_does_not_count_toward_max_duration() {
     let code = "interrupt()\nsum(range(100))";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let limits = ResourceLimits::new().max_duration(Duration::from_millis(100));
+    let limits = ResourceLimits::default().max_duration(Duration::from_millis(100));
     let progress = run
-        .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
+        .start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
         .unwrap();
     let call = resolve_name_lookups(progress)
         .unwrap()
@@ -1552,8 +920,8 @@ fn suspension_time_does_not_count_toward_max_duration() {
 /// infinite loop in the called function would run forever.
 #[test]
 fn call_function_enforces_max_duration() {
-    let limits = ResourceLimits::new().max_duration(Duration::from_millis(50));
-    let mut repl = MontyRepl::new("test.py", LimitedTracker::new(limits), CompileOptions::default());
+    let limits = ResourceLimits::default().max_duration(Duration::from_millis(50));
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
     repl.feed_run(
         "def spin():\n    while True:\n        pass",
         vec![],
@@ -1566,6 +934,100 @@ fn call_function_enforces_max_duration() {
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
 
+/// The key pass computes every key before the first comparison, and a key
+/// shorter than the dispatch interval reaches no checkpoint — so the key
+/// loop's own poll is all that bounds it. `sort`, not `sorted`, so no
+/// collection phase polls first.
+#[test]
+fn timeout_in_sort_key_loop() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "x = [0] * 4_000_000\ndef f(v):\n    return v",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    repl.tracker_mut().set_max_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("x.sort(key=f)", vec![], PrintWriter::Stdout)
+        .expect_err("the key loop must hit the time limit");
+    let elapsed = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    // Polled, this stops one budget in at any machine speed; unpolled it runs
+    // all 4M key calls before anything re-checks, which takes seconds.
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "should stop promptly, took {elapsed:?}"
+    );
+}
+
+/// Feeds shorter than the dispatch-checkpoint interval never probe GC inside
+/// the run loop, so only the host-boundary probe in `finish_host_turn` keeps
+/// a stream of tiny cycle-making snippets from accumulating garbage (and from
+/// tripping the boundary memory check on memory a collection would reclaim).
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn short_repl_feeds_still_collect_cycles() {
+    let limits = ResourceLimits::default().gc_interval(1);
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
+    for _ in 0..20 {
+        // Rebinding `c` orphans the previous iteration's cycle; each feed is
+        // fewer instructions than the dispatch checkpoint interval.
+        repl.feed_run("c = []", vec![], PrintWriter::Stdout).unwrap();
+        repl.feed_run("c.append(c)", vec![], PrintWriter::Stdout).unwrap();
+    }
+    assert!(
+        repl.heap_entry_count() <= 3,
+        "boundary GC probe should collect orphaned cycles: {} live heap entries",
+        repl.heap_entry_count()
+    );
+}
+
+/// `call_function` applies the same host-boundary epilogue as `feed_run`: a
+/// call whose over-budget repr truncates (swallowing the timeout) must still
+/// fail rather than return the truncated value, and the discarded result's
+/// refcounts are released (verified under `memory-model-checks`).
+#[test]
+fn call_function_rechecks_limits_at_exit() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "x = ['abcdefghij'] * 100_000\ndef f():\n    return repr(x)",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    // Arm a budget only for the call: repr of 100K strings blows it mid-format
+    // and truncates, so only the exit re-check can surface the timeout.
+    repl.tracker_mut().set_max_duration(Duration::from_millis(10));
+    let exc = repl
+        .call_function("f", vec![], PrintWriter::Stdout)
+        .expect_err("over-budget repr must fail the call even though it truncates");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+/// The boundary limit check also covers turns ending in a Python exception:
+/// session state survives exceptions, so an allocate-then-raise turn must
+/// surface the uncatchable resource error, not its own exception, or repeated
+/// short erroring feeds could evade the limits entirely.
+#[test]
+fn erroring_turns_still_hit_limits_at_exit() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "x = ['abcdefghij'] * 100_000\ndef f():\n    s = repr(x)\n    raise ValueError(s[:3])",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    // The over-budget repr truncates (swallowing the timeout), then the raise
+    // ends the turn before any dispatch checkpoint can fire.
+    repl.tracker_mut().set_max_duration(Duration::from_millis(10));
+    let exc = repl
+        .call_function("f", vec![], PrintWriter::Stdout)
+        .expect_err("the call must fail");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
 /// Helper: builds a large object without time limit, then runs `repr()` on it
 /// with a short time limit and asserts it produces a TimeoutError promptly.
 ///
@@ -1574,9 +1036,9 @@ fn assert_repr_timeout(code: &str, label: &str) {
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     // Phase 1: build the large object with no time limit
-    let limits = ResourceLimits::new();
+    let limits = ResourceLimits::default();
     let progress = run
-        .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
+        .start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
         .unwrap();
     let mut call = resolve_name_lookups(progress)
         .unwrap()
@@ -1647,376 +1109,6 @@ repr(x)
 ";
     assert_repr_timeout(code, "set repr");
 }
-
-/// Test that `str.replace` with amplification is rejected before allocation.
-///
-/// `'a' * 1000` is 1KB (within limit), but replacing each 'a' with a 1KB string
-/// produces a 1MB result. The pre-check should reject this before `String::replace()`
-/// allocates the result on the Rust heap.
-#[test]
-fn str_replace_amplification_memory_limit() {
-    let code = r"
-s = 'a' * 1000
-s.replace('a', 'b' * 1000)
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(500_000); // 500KB limit
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "str.replace amplification should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that small `str.replace` works within limits.
-#[test]
-fn str_replace_within_limit() {
-    let code = "'hello world'.replace('world', 'rust') == 'hello rust'";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "small str.replace should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Bool(true));
-}
-
-/// Test that `bytes.replace` with amplification is rejected before allocation.
-#[test]
-fn bytes_replace_amplification_memory_limit() {
-    let code = r"
-s = b'a' * 1000
-s.replace(b'a', b'b' * 1000)
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(500_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "bytes.replace amplification should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that `str.replace` with empty pattern amplification is rejected.
-///
-/// Empty pattern inserts `new` before each char and after the last, so
-/// result size = input_len * (new_len + 1).
-#[test]
-fn str_replace_empty_pattern_memory_limit() {
-    let code = r"
-s = 'a' * 500
-s.replace('', 'x' * 1000)
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(200_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(
-        result.is_err(),
-        "str.replace with empty pattern amplification should be rejected"
-    );
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// A non-matching shrinking `str.replace` is pre-checked against the full input.
-#[test]
-fn str_replace_shrinking_memory_limit() {
-    let code = r"
-s = 'ab' * 150000
-s.replace('cd', 'a')
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(500_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(
-        result.is_err(),
-        "shrinking str.replace of a large input should be pre-checked"
-    );
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert_eq!(
-        exc.message(),
-        Some("memory limit exceeded: 600024 bytes > 500000 bytes")
-    );
-}
-
-/// A non-matching shrinking `bytes.replace` is pre-checked against the full input.
-#[test]
-fn bytes_replace_shrinking_memory_limit() {
-    let code = r"
-s = b'ab' * 150000
-s.replace(b'cd', b'a')
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(500_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(
-        result.is_err(),
-        "shrinking bytes.replace of a large input should be pre-checked"
-    );
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert_eq!(
-        exc.message(),
-        Some("memory limit exceeded: 600032 bytes > 500000 bytes")
-    );
-}
-
-/// Test that `str.ljust` with huge width is rejected before allocation.
-///
-/// Without the pre-check, `String::with_capacity(width)` would allocate
-/// directly on the Rust heap, bypassing the memory tracker entirely.
-#[test]
-fn str_ljust_memory_limit() {
-    let code = "'x'.ljust(2000000)";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "str.ljust with huge width should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that `str.rjust` with huge width is rejected before allocation.
-#[test]
-fn str_rjust_memory_limit() {
-    let code = "'x'.rjust(2000000)";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "str.rjust with huge width should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// Test that `str.center` with huge width is rejected before allocation.
-#[test]
-fn str_center_memory_limit() {
-    let code = "'x'.center(2000000)";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "str.center with huge width should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// Test that `str.zfill` with huge width is rejected before allocation.
-#[test]
-fn str_zfill_memory_limit() {
-    let code = "'42'.zfill(2000000)";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "str.zfill with huge width should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// Test that small padding operations work within limits.
-#[test]
-fn str_padding_within_limit() {
-    let code = "'hi'.ljust(10) == 'hi        '";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "small padding should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Bool(true));
-}
-
-/// Test that `bytes.ljust` with huge width is rejected before allocation.
-#[test]
-fn bytes_ljust_memory_limit() {
-    let code = "b'x'.ljust(2000000)";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "bytes.ljust with huge width should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// Test that `bytes.rjust` with huge width is rejected before allocation.
-#[test]
-fn bytes_rjust_memory_limit() {
-    let code = "b'x'.rjust(2000000)";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "bytes.rjust with huge width should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// Test that `bytes.center` with huge width is rejected before allocation.
-#[test]
-fn bytes_center_memory_limit() {
-    let code = "b'x'.center(2000000)";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "bytes.center with huge width should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// Test that `bytes.zfill` with huge width is rejected before allocation.
-#[test]
-fn bytes_zfill_memory_limit() {
-    let code = "b'42'.zfill(2000000)";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "bytes.zfill with huge width should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// Test that `str.expandtabs` with a huge tabsize is rejected before expansion.
-///
-/// Regression test for an unbounded-allocation bypass: `tabsize` saturates to
-/// `usize::MAX`, and without a pre-check each tab would expand into ~`tabsize`
-/// spaces on the Rust heap before `allocate_string` consulted the tracker.
-#[test]
-fn str_expandtabs_memory_limit() {
-    let code = "'\\t'.expandtabs(10**9)";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "str.expandtabs with huge tabsize should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// Test that f-string formatting with huge width is rejected before allocation.
-#[test]
-fn fstring_dynamic_width_memory_limit() {
-    // Dynamic format spec via f-string nesting: {w} produces a runtime-parsed spec
-    let code = "w = 2000000\nf\"{'x':>{w}}\"";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "f-string with huge dynamic width should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-// === re.sub() memory tracking tests ===
-// These tests verify that the single-pass replacement loop in `re.sub()` tracks
-// the running output size and bails out when the resource limit is exceeded.
-
-/// Test that `re.sub` with every-char pattern amplification is rejected.
-///
-/// Pattern 'a' matches every character in 'aaa...'. Each replacement expands
-/// 1 byte → 1000 bytes, so the output grows to ~1MB which exceeds the 500KB limit.
-/// The inline loop catches this after a few hundred matches.
-#[test]
-fn re_sub_amplification_memory_limit() {
-    let code = r"
-import re
-s = 'a' * 1000
-re.sub('a', 'b' * 1000, s)
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(500_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "re.sub amplification should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
-    );
-}
-
-/// Test that `re.sub` with empty pattern amplification is rejected.
-///
-/// Empty pattern matches N+1 times for N-char input (between and around every
-/// character). Each match inserts 1000 bytes, so 501 matches × 1000 ≈ 500KB
-/// which exceeds the 200KB limit.
-#[test]
-fn re_sub_empty_pattern_amplification_memory_limit() {
-    let code = r"
-import re
-s = 'a' * 500
-re.sub('', 'x' * 1000, s)
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(200_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(
-        result.is_err(),
-        "re.sub with empty pattern amplification should be rejected"
-    );
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// Test that `pattern.sub` (compiled pattern method) is also rejected.
-#[test]
-fn re_pattern_sub_amplification_memory_limit() {
-    let code = r"
-import re
-p = re.compile('a')
-s = 'a' * 1000
-p.sub('b' * 1000, s)
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(500_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "pattern.sub amplification should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
 /// Test that `re.sub` raises `re.PatternError` when the regex engine hits its backtracking limit.
 ///
 /// The pattern `(a+)+\1b` forces `fancy_regex` into its backtracking VM (due to the
@@ -2030,8 +1122,7 @@ re.sub('(a+)+\\1b', 'X', 'a' * 30 + 'c')
 ";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
-    let limits = ResourceLimits::new().max_memory(500_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    let result = ex.run_no_limits(vec![]);
 
     assert!(result.is_err(), "backtracking limit should raise an error");
     let exc = result.unwrap_err();
@@ -2042,380 +1133,116 @@ re.sub('(a+)+\\1b', 'X', 'a' * 30 + 'c')
     );
 }
 
-// --- Selective patterns: few matches in large text stay within limits ---
-
-/// Test that a selective pattern on large text passes.
-///
-/// The pattern `xxx` only matches 3 times (at positions 0, 3, 6 in the 9-char prefix),
-/// so the result is ~10000 - 9 + 300 = 10291 bytes — well within the 500KB limit.
+/// Source-driving `itertools` adaptors delegate `next()` to their wrapped
+/// iterator on the native Rust stack, so attacker-controlled nesting depth
+/// must be charged against the recursion limit — without the guard in
+/// `ItertoolsIter::py_next`, deep nesting overflowed the stack and aborted
+/// the process instead of raising a recoverable `RecursionError`.
 #[test]
-fn re_sub_selective_pattern_passes() {
-    // 'xxx' repeated 3 times at the start, rest is 'a's
+fn nested_itertools_adaptors_are_bounded_by_the_recursion_limit() {
+    for wrap in [
+        "itertools.islice(source, 0, None)",
+        "itertools.chain(source)",
+        "itertools.pairwise(source)",
+        "itertools.compress(source, itertools.repeat(1))",
+        "itertools.cycle(source)",
+    ] {
+        let code = format!(
+            r"
+import itertools
+source = iter([1, 2, 3])
+for _ in range(100):
+    source = {wrap}
+next(source)
+"
+        );
+        let ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+        let limits = ResourceLimits::default().max_recursion_depth(10);
+        let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+        let exc = result.expect_err("nested adaptors should exceed the recursion limit");
+        assert_eq!(exc.exc_type(), ExcType::RecursionError, "wrapper: {wrap}");
+    }
+}
+
+/// Companion to the test above: nesting *below* the limit still works — the
+/// per-delegation recursion charge is transient (released as each `next()`
+/// returns), so a legal nest must not accumulate depth across iterations.
+#[test]
+fn nested_itertools_adaptors_below_the_recursion_limit_iterate() {
     let code = r"
-import re
-s = 'xxx' * 3 + 'a' * 9991
-result = re.sub('xxx', 'y' * 100, s)
-len(result)  == 9991 + 3 * 100
+import itertools
+source = iter([1, 2, 3])
+for _ in range(150):
+    source = itertools.islice(source, 0, None)
+list(source)
 ";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
-    let limits = ResourceLimits::new().max_memory(500_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    let limits = ResourceLimits::default().max_recursion_depth(200);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
 
-    assert!(
-        result.is_ok(),
-        "selective pattern with few matches should pass: {result:?}"
-    );
-    assert_eq!(result.unwrap(), MontyObject::Bool(true));
-}
-
-/// Test that a digit-matching pattern on mostly-text input passes.
-///
-/// Pattern `\d+` matches only the 10-digit number, so the result is
-/// 990 + 200 = 1190 bytes — well within the 150KB limit.
-#[test]
-fn re_sub_digit_pattern_passes() {
-    let code = r"
-import re
-s = 'a' * 990 + '1234567890'
-result = re.sub('\d+', 'X' * 200, s)
-len(result) == 990 + 200
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(150_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "digit pattern on mostly-text should pass: {result:?}");
-    assert_eq!(result.unwrap(), MontyObject::Bool(true));
-}
-
-/// Test that every-char amplification is still rejected even with a generic pattern.
-///
-/// Pattern `.` matches every character (10000 matches), each expanding 1 → 1000 bytes.
-/// The inline loop catches this after a few hundred matches once the running output
-/// size exceeds the 500KB limit.
-#[test]
-fn re_sub_every_char_amplification_rejected() {
-    let code = r"
-import re
-s = 'a' * 10000
-re.sub('.', 'b' * 1000, s)
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(500_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "every-char pattern amplification should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-// --- General re.sub tests ---
-
-/// Test that small `re.sub` works within limits.
-#[test]
-fn re_sub_within_limit() {
-    let code = r"
-import re
-re.sub('world', 'rust', 'hello world') == 'hello rust'
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "small re.sub should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Bool(true));
-}
-
-/// Test that `re.sub` with count parameter limits replacements correctly.
-///
-/// `count=5` caps replacements to 5, so the result is
-/// 995 unchanged bytes + 5 × 100 replacement bytes = 1495 bytes.
-#[test]
-fn re_sub_with_count_within_limit() {
-    let code = r"
-import re
-re.sub('a', 'b' * 100, 'a' * 1000, count=5) == 'b' * 500 + 'a' * 995
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(500_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "re.sub with small count should succeed");
-    assert_eq!(result.unwrap(), MontyObject::Bool(true));
-}
-
-// === Container growth memory tracking tests ===
-// These tests verify that mutable container operations (append, insert, extend, iadd,
-// dict setitem, set add) correctly track memory growth against configured limits.
-
-/// `list.append()` in a loop must respect memory limits.
-#[test]
-fn list_append_respects_memory_limit() {
-    let code = r"
-x = []
-for i in range(1000000):
-    x.append(i)
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(10_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "should exceed memory limit via list.append");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// `list.insert()` in a loop must respect memory limits.
-#[test]
-fn list_insert_respects_memory_limit() {
-    let code = r"
-x = []
-for i in range(1000000):
-    x.insert(0, i)
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(10_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "should exceed memory limit via list.insert");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// `list.extend()` must respect memory limits.
-#[test]
-fn list_extend_respects_memory_limit() {
-    let code = r"
-x = []
-x.extend(range(1000000))
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(10_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "should exceed memory limit via list.extend");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// `list += list` (iadd with self-doubling) must respect memory limits.
-#[test]
-fn list_iadd_respects_memory_limit() {
-    let code = r"
-x = list(range(100))
-for i in range(20):
-    x += x
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "should exceed memory limit via list iadd");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// `dict[k] = v` in a loop must respect memory limits.
-#[test]
-fn dict_setitem_respects_memory_limit() {
-    let code = r"
-x = {}
-for i in range(1000000):
-    x[i] = i
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(10_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "should exceed memory limit via dict setitem");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// `set.add()` in a loop must respect memory limits.
-#[test]
-fn set_add_respects_memory_limit() {
-    let code = r"
-x = set()
-for i in range(1000000):
-    x.add(i)
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(10_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "should exceed memory limit via set.add");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// List comprehension must respect memory limits.
-#[test]
-fn list_comprehension_respects_memory_limit() {
-    let code = r"
-x = [i for i in range(1000000)]
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(10_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "should exceed memory limit via list comprehension");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// Moderate container operations within generous limits should still succeed.
-#[test]
-fn moderate_container_growth_within_limits() {
-    let code = r"
-x = []
-for i in range(100):
-    x.append(i)
-
-d = {}
-for i in range(100):
-    d[i] = i
-
-s = set()
-for i in range(100):
-    s.add(i)
-
-len(x) + len(d) + len(s)
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    // 1MB limit — plenty of room for 300 total elements
-    let limits = ResourceLimits::new().max_memory(1_000_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(
-        result.is_ok(),
-        "moderate operations should succeed within generous limit"
-    );
-    assert_eq!(result.unwrap(), MontyObject::Int(300));
-}
-
-// === Iterator pre-allocation resource-limit tests ===
-
-/// Test that constructing a set from a huge `range` is bounded by the memory limit.
-///
-/// `range` reports its full remaining length as the iterator size hint. Container
-/// constructors that pre-allocate from the hint must validate it against the
-/// resource tracker before reaching for the global allocator, since an allocation
-/// failure aborts the host instead of raising MemoryError.
-#[test]
-fn set_from_huge_range_memory_limit() {
-    let code = "set(range(10 ** 9))";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "huge set pre-allocation should be rejected");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
-/// Test that `frozenset` from a huge `range` is bounded by the memory limit.
-#[test]
-fn frozenset_from_huge_range_memory_limit() {
-    let code = "frozenset(range(10 ** 9))";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "huge frozenset pre-allocation should be rejected");
-    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
-}
-
-/// Test that `map()` over a huge `range` is bounded by the memory limit.
-#[test]
-fn map_over_huge_range_memory_limit() {
-    let code = "list(map(str, range(10 ** 9)))";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "huge map pre-allocation should be rejected");
-    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
-}
-
-/// Test that dict-view set operations over a huge iterable are bounded by the
-/// memory limit.
-///
-/// `dict.keys().isdisjoint(...)` collects the right-hand iterable into a
-/// temporary set with capacity drawn from the iterator's size hint, which goes
-/// through the same pre-allocation guard as `set()`.
-#[test]
-fn dict_view_isdisjoint_huge_range_memory_limit() {
-    let code = "{1: 1}.keys().isdisjoint(range(10 ** 9))";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_err(), "huge dict-view pre-allocation should be rejected");
-    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
-}
-
-/// Test that small dict-view `isdisjoint` over an iterable still succeeds.
-#[test]
-fn dict_view_isdisjoint_within_limit() {
-    let code = "{1: 1}.keys().isdisjoint(range(2, 5))";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "small dict-view isdisjoint should succeed: {result:?}");
-    assert_eq!(result.unwrap(), MontyObject::Bool(true));
-}
-
-/// Test that small set/map construction still succeeds within limits.
-#[test]
-fn set_from_range_within_limit() {
-    let code = "len(set(range(50))) + len(list(map(str, range(20))))";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_memory(100_000);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    assert!(result.is_ok(), "small set/map construction should succeed: {result:?}");
-    assert_eq!(result.unwrap(), MontyObject::Int(70));
-}
-
-/// Regression: `re.finditer` over a large subject with many matches shares one
-/// refcounted subject copy across every `re.Match`, so its memory accounting is
-/// bounded by the subject size, not `matches × subject`. When each match kept
-/// its own subject copy, this held ~48 MB (4000 × ~12 KB) and blew a limit far
-/// larger than the data actually in use.
-#[test]
-fn finditer_shares_subject_memory() {
-    // ~12 KB subject, 4000 word matches all held live in the returned list.
-    let code = "import re\nlen(re.finditer(r'\\w+', 'aa ' * 4000))";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new()
-        .max_memory(8_388_608)
-        .max_duration(Duration::from_secs(30));
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
+    let list = result.expect("nesting below the recursion limit should succeed");
     assert_eq!(
-        result.expect("finditer over a large subject must stay within the memory limit"),
-        MontyObject::Int(4000)
+        list,
+        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)])
     );
+}
+
+/// Ordering deeply nested namedtuples must raise `RecursionError`, not overflow
+/// the native stack. Ordering compares detached item vecs via `cmp_item_seqs`
+/// rather than a token-bearing iterator, so it charges its own recursion level;
+/// without it, nested namedtuples aborted the process. Covers both the
+/// namedtuple-vs-namedtuple and mixed namedtuple-vs-tuple dispatch paths.
+#[test]
+fn nested_namedtuple_ordering_is_bounded_by_the_recursion_limit() {
+    for build in [
+        "a = NT(0)\nb = NT(0)\nfor _ in range(100):\n    a = NT(a)\n    b = NT(b)",
+        "a = NT(0)\nb = (0,)\nfor _ in range(100):\n    a = NT(a)\n    b = (b,)",
+    ] {
+        let code = format!(
+            r"
+from collections import namedtuple
+NT = namedtuple('NT', ['x'])
+{build}
+a < b
+"
+        );
+        let ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+        let limits = ResourceLimits::default().max_recursion_depth(10);
+        let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+        let exc = result.expect_err("nested namedtuple ordering should exceed the recursion limit");
+        assert_eq!(exc.exc_type(), ExcType::RecursionError, "build: {build}");
+    }
+}
+
+/// Every `itertools` adaptor whose `next` can loop natively without yielding.
+///
+/// Each pairs a discarding or draining adaptor with an infinite source, so the
+/// loop never returns to the VM. `dropwhile` appears twice because a builtin
+/// predicate and a short user-defined one fail the same way: the dispatch
+/// checkpoint is per-`run()`, so a callback under `CHECK_INTERVAL`
+/// instructions restarts the countdown instead of reaching it.
+const ITERTOOLS_INFINITE_LOOPS: &[&str] = &[
+    "next(itertools.dropwhile(bool, itertools.count(1)))",
+    "def always(x):\n    return True\nnext(itertools.dropwhile(always, itertools.count(1)))",
+    "next(itertools.filterfalse(bool, itertools.count(1)))",
+    "next(itertools.compress(itertools.count(1), itertools.repeat(0)))",
+    "next(itertools.islice(itertools.count(1), 10**18, None))",
+    "next(itertools.starmap(max, itertools.repeat(itertools.count(1))))",
+];
+
+/// Test that adaptors discarding items from an infinite source still time out.
+///
+/// These loops sit inside one bytecode instruction and drive native sources, so
+/// nothing returns to the dispatch checkpoint; each must poll the tracker
+/// itself or `max_duration` is unenforceable.
+#[test]
+fn timeout_in_itertools_adaptor_loops() {
+    for expr in ITERTOOLS_INFINITE_LOOPS {
+        assert_timeout_in_builtin(&format!("import itertools\n{expr}"), expr);
+    }
 }

@@ -8,11 +8,10 @@
 // lists and `__monty_type__` marks types with no JS equivalent.
 //
 // Scope: scalars, containers, the datetime family, named tuples (→ plain
-// tuple), dataclasses, function values (→ name), and the marker types. File
-// handles are NOT ported — convert.rs renders them as a Rust-side repr string
-// this layer cannot reproduce — and throw a clear error rather than producing a
-// wrong value. See `convert.rs` for the full mapping (plan item: TS decoder).
+// tuple), dataclasses, file handles, function values (→ name), and the marker
+// types. See `convert.rs` for the full mapping.
 
+import { MontyFileHandle, canonicalFileMode, validateFilePosition } from '../types.js'
 import { Reader, Writer, bitsToDouble, readInt32, unzigzag } from './proto.js'
 
 // MontyObject oneof field numbers (monty.v1.MontyObject).
@@ -39,10 +38,13 @@ const Tag = {
   Type: 20,
   BuiltinFunction: 21,
   Path: 22,
+  FileHandle: 23,
   Dataclass: 24,
   Function: 25,
   Repr: 26,
   Cycle: 27,
+  NotImplemented: 29,
+  Time: 30,
 } as const
 
 const I64_MIN = -(2n ** 63n)
@@ -112,11 +114,17 @@ function writeMarked(w: Writer, obj: Record<string, unknown>): void {
     case 'Ellipsis':
       w.lengthDelimited(Tag.Ellipsis, EMPTY)
       break
+    case 'NotImplemented':
+      w.lengthDelimited(Tag.NotImplemented, EMPTY)
+      break
     case 'Date':
       w.lengthDelimited(Tag.Date, encodeDate(obj))
       break
     case 'DateTime':
       w.lengthDelimited(Tag.DateTime, encodeDateTime(obj))
+      break
+    case 'Time':
+      w.lengthDelimited(Tag.Time, encodeTime(obj))
       break
     case 'TimeDelta':
       w.lengthDelimited(Tag.TimeDelta, encodeTimeDelta(obj))
@@ -130,6 +138,9 @@ function writeMarked(w: Writer, obj: Record<string, unknown>): void {
     case 'Dataclass':
       w.lengthDelimited(Tag.Dataclass, encodeDataclass(obj))
       break
+    case 'FileHandle':
+      w.lengthDelimited(Tag.FileHandle, encodeFileHandle(obj))
+      break
     case 'Type':
       w.string(Tag.Type, String(obj.value))
       break
@@ -137,8 +148,22 @@ function writeMarked(w: Writer, obj: Record<string, unknown>): void {
       w.string(Tag.BuiltinFunction, String(obj.value))
       break
     default:
-      throw unsupported(`marked value ${String(type)}`)
+      throw new TypeError(`Unknown Monty marker type: ${String(type)}`)
   }
+}
+
+function encodeFileHandle(obj: Record<string, unknown>): Uint8Array {
+  if (typeof obj.path !== 'string') throw new TypeError('MontyFileHandle path must be a string')
+  if (typeof obj.mode !== 'string') throw new TypeError('MontyFileHandle mode must be a string')
+  const mode = canonicalFileMode(obj.mode)
+  const position = obj.position === undefined ? 0 : obj.position
+  validateFilePosition(position)
+
+  const w = new Writer()
+  w.string(1, obj.path)
+  w.string(2, mode)
+  if (position !== 0) w.uint(3, position)
+  return w.finish()
 }
 
 function encodeFunction(value: { name?: string }): Uint8Array {
@@ -168,41 +193,86 @@ function encodeDataclass(obj: Record<string, unknown>): Uint8Array {
   return w.finish()
 }
 
+// The temporal messages are where proto3's two presence rules meet: a plain
+// scalar is *implicit*-presence and its zero value is omitted from the wire,
+// while an `optional` field is *explicit* and is written whenever it is set,
+// zero included. `monty-proto` encodes on those rules, so this codec must too or
+// the same value reaches the worker as different bytes from each transport.
+
+/** Writes an implicit-presence `uint32`, which proto3 omits at its zero default. */
+function uintIfSet(w: Writer, field: number, value: number): void {
+  if (value !== 0) w.uint(field, value)
+}
+
+/** Writes an implicit-presence `int32`, which proto3 omits at its zero default. */
+function int32IfSet(w: Writer, field: number, value: number): void {
+  if (value !== 0) w.int32(field, value)
+}
+
+/**
+ * Writes an aware value's explicit-presence offset and name, at the field
+ * numbers the enclosing message gives them.
+ *
+ * A name without an offset is not a naive value with a label: the wire forbids
+ * the combination and `monty-proto` rejects it on decode, so encoding it away
+ * silently would turn an invalid input into a different value.
+ */
+function encodeTimeZoneFields(w: Writer, obj: Record<string, unknown>, offsetField: number, nameField: number): void {
+  const aware = obj.offsetSeconds !== undefined && obj.offsetSeconds !== null
+  if (!aware && obj.timezoneName !== undefined && obj.timezoneName !== null) {
+    throw new TypeError(`Monty${String(obj[TYPE_MARKER])} timezoneName requires offsetSeconds`)
+  }
+  if (aware) {
+    w.int32(offsetField, num(obj.offsetSeconds))
+    if (typeof obj.timezoneName === 'string') w.string(nameField, obj.timezoneName)
+  }
+}
+
 function encodeDate(obj: Record<string, unknown>): Uint8Array {
   const w = new Writer()
-  w.int32(1, num(obj.year))
-  w.uint(2, num(obj.month))
-  w.uint(3, num(obj.day))
+  int32IfSet(w, 1, num(obj.year))
+  uintIfSet(w, 2, num(obj.month))
+  uintIfSet(w, 3, num(obj.day))
+  return w.finish()
+}
+
+function encodeTime(obj: Record<string, unknown>): Uint8Array {
+  const w = new Writer()
+  uintIfSet(w, 1, num(obj.hour))
+  uintIfSet(w, 2, num(obj.minute))
+  uintIfSet(w, 3, num(obj.second))
+  uintIfSet(w, 4, num(obj.microsecond))
+  encodeTimeZoneFields(w, obj, 5, 6)
+  uintIfSet(w, 7, num(obj.fold ?? 0))
   return w.finish()
 }
 
 function encodeDateTime(obj: Record<string, unknown>): Uint8Array {
   const w = new Writer()
-  w.int32(1, num(obj.year))
-  w.uint(2, num(obj.month))
-  w.uint(3, num(obj.day))
-  w.uint(4, num(obj.hour))
-  w.uint(5, num(obj.minute))
-  w.uint(6, num(obj.second))
-  w.uint(7, num(obj.microsecond))
-  if (obj.offsetSeconds !== undefined && obj.offsetSeconds !== null) {
-    w.int32(8, num(obj.offsetSeconds))
-    if (typeof obj.timezoneName === 'string') w.string(9, obj.timezoneName)
-  }
+  int32IfSet(w, 1, num(obj.year))
+  uintIfSet(w, 2, num(obj.month))
+  uintIfSet(w, 3, num(obj.day))
+  uintIfSet(w, 4, num(obj.hour))
+  uintIfSet(w, 5, num(obj.minute))
+  uintIfSet(w, 6, num(obj.second))
+  uintIfSet(w, 7, num(obj.microsecond))
+  encodeTimeZoneFields(w, obj, 8, 9)
   return w.finish()
 }
 
 function encodeTimeDelta(obj: Record<string, unknown>): Uint8Array {
   const w = new Writer()
-  w.int32(1, num(obj.days))
-  w.int32(2, num(obj.seconds))
-  w.int32(3, num(obj.microseconds))
+  int32IfSet(w, 1, num(obj.days))
+  int32IfSet(w, 2, num(obj.seconds))
+  int32IfSet(w, 3, num(obj.microseconds))
   return w.finish()
 }
 
 function encodeTimeZone(obj: Record<string, unknown>): Uint8Array {
   const w = new Writer()
-  w.int32(1, num(obj.offsetSeconds))
+  // `TimeZone.offset_seconds` is a plain `int32`, unlike the `optional` offsets
+  // on `time`/`datetime`: UTC's zero offset is carried by the field's absence.
+  int32IfSet(w, 1, num(obj.offsetSeconds))
   if (typeof obj.name === 'string') w.string(2, obj.name)
   return w.finish()
 }
@@ -255,6 +325,8 @@ export function decodeMontyObject(bytes: Uint8Array): unknown {
   switch (f.field) {
     case Tag.Ellipsis:
       return { [TYPE_MARKER]: 'Ellipsis' }
+    case Tag.NotImplemented:
+      return { [TYPE_MARKER]: 'NotImplemented' }
     case Tag.None:
       return null
     case Tag.Bool:
@@ -289,12 +361,16 @@ export function decodeMontyObject(bytes: Uint8Array): unknown {
       return decodeDate(f.bytes)
     case Tag.DateTime:
       return decodeDateTime(f.bytes)
+    case Tag.Time:
+      return decodeTime(f.bytes)
     case Tag.TimeDelta:
       return decodeTimeDelta(f.bytes)
     case Tag.TimeZone:
       return decodeTimeZone(f.bytes)
     case Tag.Exception:
       return decodeException(f.bytes)
+    case Tag.FileHandle:
+      return decodeFileHandle(f.bytes)
     case Tag.Dataclass:
       return decodeDataclass(f.bytes)
     case Tag.Type:
@@ -308,6 +384,23 @@ export function decodeMontyObject(bytes: Uint8Array): unknown {
     default:
       throw unsupported(`MontyObject kind field ${f.field}`)
   }
+}
+
+function decodeFileHandle(bytes: Uint8Array): MontyFileHandle {
+  let path = ''
+  let mode = ''
+  let position = 0n
+  const reader = new Reader(bytes)
+  while (!reader.done) {
+    const f = reader.next()
+    if (f.field === 1) path = decodeString(f.bytes)
+    else if (f.field === 2) mode = decodeString(f.bytes)
+    else if (f.field === 3) position = f.value
+  }
+  if (position > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new TypeError("MontyFileHandle position exceeds JavaScript's maximum safe integer")
+  }
+  return new MontyFileHandle(path, mode, { position: Number(position) })
 }
 
 function decodeNamedTupleValues(bytes: Uint8Array): unknown[] {
@@ -408,6 +501,45 @@ function decodeDate(bytes: Uint8Array): MarkedValue {
     else if (f.field === 3) date.day = Number(f.value)
   }
   return date
+}
+
+function decodeTime(bytes: Uint8Array): MarkedValue {
+  const t: MarkedValue = {
+    [TYPE_MARKER]: 'Time',
+    hour: 0,
+    minute: 0,
+    second: 0,
+    microsecond: 0,
+    fold: 0,
+  }
+  const reader = new Reader(bytes)
+  while (!reader.done) {
+    const f = reader.next()
+    switch (f.field) {
+      case 1:
+        t.hour = Number(f.value)
+        break
+      case 2:
+        t.minute = Number(f.value)
+        break
+      case 3:
+        t.second = Number(f.value)
+        break
+      case 4:
+        t.microsecond = Number(f.value)
+        break
+      case 5:
+        t.offsetSeconds = readInt32(f.value)
+        break
+      case 6:
+        t.timezoneName = decodeString(f.bytes)
+        break
+      case 7:
+        t.fold = Number(f.value)
+        break
+    }
+  }
+  return t
 }
 
 function decodeDateTime(bytes: Uint8Array): MarkedValue {
@@ -538,7 +670,7 @@ function num(value: unknown): number {
 }
 
 function unsupported(what: string): Error {
-  return new Error(`monty wasm transport does not support ${what} (file handles are not yet ported)`)
+  return new Error(`monty wasm transport does not support ${what}`)
 }
 
 function jsType(value: unknown): string {

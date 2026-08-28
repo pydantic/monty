@@ -1,7 +1,5 @@
 //! Implementation of the sorted() builtin function.
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -22,7 +20,7 @@ use crate::{
 /// to [`parse_and_sort`] — the same entry point `list.sort` uses — so
 /// unknown-kwarg errors uniformly read `sort() got an unexpected keyword
 /// argument 'X'` without any wording overrides.
-pub fn builtin_sorted(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (mut pos_iter, kwargs) = args.into_parts();
     let pos_count = pos_iter.len();
     if pos_count != 1 {
@@ -44,6 +42,6 @@ pub fn builtin_sorted(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) ->
     parse_and_sort(items, sort_args, vm)?;
 
     let (items, vm) = items_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
     Ok(Value::Ref(heap_id))
 }

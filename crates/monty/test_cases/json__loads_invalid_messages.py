@@ -107,6 +107,12 @@ invalid_cases = [
         '["日本語",\n "a", x]',
         'Expecting value: line 2 column 7 (char 14)',
     ),
+    # heap-backed object key (len >= 2) whose value fails to parse — exercises
+    # the DropWithContext path for the just-allocated key (issue #720)
+    (
+        '{"pe":',
+        'Expecting value: line 1 column 7 (char 6)',
+    ),
 ]
 
 for source, expected in invalid_cases:

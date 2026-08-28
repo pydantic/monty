@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import binascii
 import json
 
 import pytest
@@ -118,6 +119,16 @@ def test_json_decode_error_message_only_fallback(monty_run: RunMonty):
     assert isinstance(inner, ValueError)
     assert not isinstance(inner, json.JSONDecodeError)
     assert str(inner) == snapshot('nope')
+
+
+def test_binascii_error(monty_run: RunMonty):
+    # A sandbox `base64` failure surfaces as the real stdlib class, not a bare `ValueError`.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import base64\nbase64.b64decode(b'YWJ')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, binascii.Error)
+    assert isinstance(inner, ValueError)
+    assert str(inner) == snapshot('Incorrect padding')
 
 
 def test_type_error(monty_run: RunMonty):
@@ -361,6 +372,24 @@ Traceback (most recent call last):
   File "<python-input-0>", line 1, in <module>
     raise ValueError('test message')
 ValueError: test message\
+""")
+
+
+def test_multiline_span_traceback(monty_run: RunMonty):
+    # Regression test for #631: a frame spanning multiple lines can end on a
+    # lower column than it starts (hanging-indent `)`); the parent-side wire
+    # validation used to reject the whole exception payload as malformed.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('def f(a):\n    raise ValueError("boom")\n\nr = f(\n    a=1,\n)\n')
+    assert exc_info.value.display() == snapshot("""\
+Traceback (most recent call last):
+  File "<python-input-0>", line 4, in <module>
+    r = f(
+        a=1,
+    )
+  File "<python-input-0>", line 2, in f
+    raise ValueError("boom")
+ValueError: boom\
 """)
 
 

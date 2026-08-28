@@ -13,8 +13,6 @@
 //! - `gc.disable()` / `gc.enable()` — toggle automatic collection.
 //!   Explicit `gc.collect()` calls still run while disabled.
 
-use monty_types::{ResourceError, ResourceTracker};
-
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -44,7 +42,7 @@ pub(crate) enum GcFunctions {
 }
 
 /// Creates the `gc` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Gc);
     for (name, function) in [
         (StaticStrings::Collect, GcFunctions::Collect),
@@ -53,14 +51,14 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
     ] {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Gc(function)), vm);
     }
-    vm.heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 
 /// Dispatches a `gc` module function call.
 ///
 /// Returns `Value` directly because none of the exposed functions need host
 /// involvement — they all run synchronously inside the VM.
-pub(super) fn call(vm: &mut VM<'_, impl ResourceTracker>, function: GcFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call(vm: &mut VM<'_>, function: GcFunctions, args: ArgValues) -> RunResult<Value> {
     match function {
         GcFunctions::Collect => collect(vm, args),
         GcFunctions::Disable => disable(vm, args),
@@ -79,7 +77,7 @@ pub(super) fn call(vm: &mut VM<'_, impl ResourceTracker>, function: GcFunctions,
 /// Counts are clamped to `i64::MAX` if they ever exceed it; in practice a single
 /// heap can't hold that many entries, but the conversion is fallible so we
 /// saturate rather than panic.
-fn collect(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn collect(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     args.check_zero_args("gc.collect", vm.heap)?;
     let freed = vm.__force_gc_for_tests();
     Ok(Value::Int(i64::try_from(freed).unwrap_or(i64::MAX)))
@@ -90,7 +88,7 @@ fn collect(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<
 /// Returns `None` to match CPython. Explicit [`collect`] calls still run while
 /// auto-GC is disabled, so a script can build a known amount of garbage and then
 /// time exactly one collection pass.
-fn disable(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn disable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     args.check_zero_args("gc.disable", vm.heap)?;
     vm.heap.disable_gc();
     Ok(Value::None)
@@ -99,7 +97,7 @@ fn disable(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<
 /// `gc.enable()` — re-enables automatic GC after a prior [`disable`].
 ///
 /// Returns `None` to match CPython. Calling on an already-enabled heap is a no-op.
-fn enable(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn enable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     args.check_zero_args("gc.enable", vm.heap)?;
     vm.heap.enable_gc();
     Ok(Value::None)

@@ -1,30 +1,23 @@
 //! Direct host-backed filesystem behavior for read-write and read-only mounts.
 //!
-//! This backend resolves a sandbox path to a validated host path and then calls
-//! the corresponding `std::fs` operation without any overlay indirection.
+//! This backend maps a sandbox path to a mount-relative path and calls the
+//! corresponding operation on the mount's descriptor. Confinement is structural:
+//! there is no host path to validate, because nothing is ever resolved from the
+//! filesystem root.
 
-use std::{fs, path::PathBuf};
-
+use cap_std::fs::Dir;
 use monty_types::{FileMode, MontyObject};
 
 use super::{
     common::{
-        MemoryBudget, MountContext, append_bytes_fs, append_text_fs, check_write_limit, commit_write_bytes, iterdir_fs,
-        mkdir_fs, read_bytes_fs, read_text_fs, reject_non_regular, rmdir_fs, stat_fs, unlink_fs, write_bytes_fs,
-        write_text_fs,
+        MemoryBudget, MountContext, check_write_limit, commit_write_bytes, host_append_bytes, host_append_text,
+        host_is_dir, host_is_file, host_iterdir, host_mkdir, host_read_bytes, host_read_text, host_rmdir, host_stat,
+        host_unlink, host_write_bytes, host_write_text, map_io, reject_non_regular,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
-    path_security::{ResolveMode, resolve_path},
+    path_security::{MountRelativePath, normalize_virtual_path, resolve_virtual_path},
 };
-
-/// Internal result used for existence-style queries where "missing" is not an error.
-enum ResolvedPathState {
-    /// The path resolved successfully and can be queried on the host.
-    Present(PathBuf),
-    /// Resolution determined that the path should behave as nonexistent.
-    Missing,
-}
 
 /// Executes a parsed filesystem request directly against the host filesystem.
 ///
@@ -32,17 +25,29 @@ enum ResolvedPathState {
 /// request is simply borrowed from and dropped when the operation finishes.
 pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     match request {
-        FsRequest::Exists { path } => exists(&path, ctx),
-        FsRequest::IsFile { path } => is_file(&path, ctx),
-        FsRequest::IsDir { path } => is_dir(&path, ctx),
-        FsRequest::IsSymlink { path } => is_symlink(&path, ctx),
+        FsRequest::Exists { path } => bool_query(&path, ctx, |dir, rel| dir.exists(rel)),
+        FsRequest::IsFile { path } => bool_query(&path, ctx, host_is_file),
+        FsRequest::IsDir { path } => bool_query(&path, ctx, host_is_dir),
+        FsRequest::IsSymlink { path } => bool_query(&path, ctx, |dir, rel| {
+            dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_symlink())
+        }),
         FsRequest::ReadText { path } => {
-            let resolved = resolve_path(&path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            read_text_fs(&resolved.host_path, &path, MemoryBudget::full(ctx.memory_usage_limit))
+            let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
+            host_read_text(
+                ctx.mount_dir,
+                target.for_dir_op(),
+                &path,
+                MemoryBudget::full(ctx.memory_usage_limit),
+            )
         }
         FsRequest::ReadBytes { path } => {
-            let resolved = resolve_path(&path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            read_bytes_fs(&resolved.host_path, &path, MemoryBudget::full(ctx.memory_usage_limit))
+            let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
+            host_read_bytes(
+                ctx.mount_dir,
+                target.for_dir_op(),
+                &path,
+                MemoryBudget::full(ctx.memory_usage_limit),
+            )
         }
         FsRequest::WriteText { path, data } => write_text(&path, &data, ctx),
         FsRequest::WriteBytes { path, data } => write_bytes(&path, &data, ctx),
@@ -53,27 +58,31 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
             parents,
             exist_ok,
         } => mkdir(&path, parents, exist_ok, ctx),
-        FsRequest::Unlink { path } => unlink(&path, ctx),
+        FsRequest::Unlink { path } => {
+            let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
+            host_unlink(ctx.mount_dir, target.for_dir_op(), &path)
+        }
         FsRequest::Rmdir { path } => {
-            let resolved = resolve_path(&path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            rmdir_fs(&resolved.host_path, &path)
+            let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
+            reject_mount_root(&target, &path)?;
+            host_rmdir(ctx.mount_dir, target.for_dir_op(), &path)
         }
         FsRequest::Iterdir { path } => {
-            let resolved = resolve_path(&path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            iterdir_fs(
-                &resolved.host_path,
+            let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
+            host_iterdir(
+                ctx.mount_dir,
+                target.for_dir_op(),
                 &path,
-                ctx.mount_host,
                 MemoryBudget::full(ctx.memory_usage_limit),
             )
         }
         FsRequest::Stat { path } => {
-            let resolved = resolve_path(&path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            stat_fs(&resolved.host_path, &path)
+            let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
+            host_stat(ctx.mount_dir, target.for_dir_op(), &path)
         }
         FsRequest::Rename { src, dst } => rename(&src, &dst, ctx),
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
-            Ok(MontyObject::Path(super::path_security::normalize_virtual_path(&path)))
+            Ok(MontyObject::Path(normalize_virtual_path(&path)))
         }
         FsRequest::Open { path, mode } => open(&path, mode, ctx),
     }
@@ -82,136 +91,113 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
 /// Performs the open-time effect for `open()` and returns the file handle.
 ///
 /// The effect depends on the [`FileMode`]: read modes only check the file
-/// exists (the `resolve_path` failure for a missing file surfaces as
-/// `FileNotFoundError`); write modes truncate or create an empty file; append
-/// modes create the file if missing without disturbing existing content. The
-/// host keeps no handle open — this single call opens, acts, and closes.
+/// exists; write modes truncate or create an empty file; append modes create the
+/// file if missing without disturbing existing content. The host keeps no handle
+/// open — this single call opens, acts, and closes.
 fn open(path: &str, mode: FileMode, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+    let target = resolve_virtual_path(path, ctx.mount_virtual)?;
+    let rel = target.for_dir_op();
     match mode {
         FileMode::Read(_) | FileMode::ReadUpdate(_) => {
-            let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            reject_non_regular(&resolved.host_path, path)?;
+            // Surface a missing file as `FileNotFoundError` before the mode's
+            // effect applies.
+            ctx.mount_dir.metadata(rel).map_err(|err| map_io(err, path))?;
+            reject_non_regular(ctx.mount_dir, rel, path)?;
         }
         FileMode::Write(_) | FileMode::WriteUpdate(_) => {
             check_write_limit(0, ctx)?;
-            let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
-            write_text_fs(&resolved.host_path, "", path)?;
+            host_write_text(ctx.mount_dir, rel, "", path)?;
             commit_write_bytes(0, ctx);
         }
         FileMode::Append(_) | FileMode::AppendUpdate(_) => {
-            let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
-            append_bytes_fs(&resolved.host_path, &[], path)?;
+            host_append_bytes(ctx.mount_dir, rel, &[], path)?;
         }
     }
     Ok(file_handle_result(path, mode))
 }
 
-/// Implements `Path.exists()` without leaking path-resolution details.
-fn exists(path: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
-    let resolved = resolve_existence_state(path, ctx, ResolveMode::Existing)?;
-    Ok(MontyObject::Bool(matches!(resolved, ResolvedPathState::Present(_))))
+/// Answers a `pathlib` boolean query.
+///
+/// A path leaving the mount simply fails to resolve against the descriptor and
+/// answers `false`, which is what keeps out-of-mount files unobservable. A path
+/// belonging to no mount never reaches here — `MountTable` returns those as
+/// `NotHandled` before dispatch.
+fn bool_query(
+    path: &str,
+    ctx: &MountContext<'_>,
+    query: impl Fn(&Dir, &str) -> bool,
+) -> Result<MontyObject, MountError> {
+    let target = resolve_virtual_path(path, ctx.mount_virtual)?;
+    Ok(MontyObject::Bool(query(ctx.mount_dir, target.for_dir_op())))
 }
 
-/// Implements `Path.is_file()` while treating resolution misses as `false`.
-fn is_file(path: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
-    let resolved = resolve_existence_state(path, ctx, ResolveMode::Existing)?;
-    Ok(MontyObject::Bool(match resolved {
-        ResolvedPathState::Present(host_path) => host_path.is_file(),
-        ResolvedPathState::Missing => false,
-    }))
-}
-
-/// Implements `Path.is_dir()` while treating resolution misses as `false`.
-fn is_dir(path: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
-    let resolved = resolve_existence_state(path, ctx, ResolveMode::Existing)?;
-    Ok(MontyObject::Bool(match resolved {
-        ResolvedPathState::Present(host_path) => host_path.is_dir(),
-        ResolvedPathState::Missing => false,
-    }))
-}
-
-/// Implements `Path.is_symlink()` without following the final symlink component.
-fn is_symlink(path: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
-    let resolved = resolve_existence_state(path, ctx, ResolveMode::Lstat)?;
-    Ok(MontyObject::Bool(match resolved {
-        ResolvedPathState::Present(host_path) => host_path.is_symlink(),
-        ResolvedPathState::Missing => false,
-    }))
-}
-
-/// Writes text after validating quota and creation-path security.
+/// Writes text after validating quota.
 fn write_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     check_write_limit(data.len(), ctx)?;
-    let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
-    let result = write_text_fs(&resolved.host_path, data, path)?;
+    let target = resolve_virtual_path(path, ctx.mount_virtual)?;
+    let result = host_write_text(ctx.mount_dir, target.for_dir_op(), data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }
 
-/// Writes bytes after validating quota and creation-path security.
+/// Writes bytes after validating quota.
 fn write_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     check_write_limit(data.len(), ctx)?;
-    let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
-    let result = write_bytes_fs(&resolved.host_path, data, path)?;
+    let target = resolve_virtual_path(path, ctx.mount_virtual)?;
+    let result = host_write_bytes(ctx.mount_dir, target.for_dir_op(), data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }
 
-/// Appends text after validating quota and creation-path security.
+/// Appends text after validating quota.
 fn append_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     check_write_limit(data.len(), ctx)?;
-    let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
-    let result = append_text_fs(&resolved.host_path, data, path)?;
+    let target = resolve_virtual_path(path, ctx.mount_virtual)?;
+    let result = host_append_text(ctx.mount_dir, target.for_dir_op(), data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }
 
-/// Appends bytes after validating quota and creation-path security.
+/// Appends bytes after validating quota.
 fn append_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     check_write_limit(data.len(), ctx)?;
-    let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
-    let result = append_bytes_fs(&resolved.host_path, data, path)?;
+    let target = resolve_virtual_path(path, ctx.mount_virtual)?;
+    let result = host_append_bytes(ctx.mount_dir, target.for_dir_op(), data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }
 
-/// Creates a directory with the resolution mode required by `parents=...`.
+/// Creates a directory, using `create_dir_all` only when `parents` is set.
 fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
-    let mode = if parents {
-        ResolveMode::MkdirParents
-    } else {
-        ResolveMode::Creation
-    };
-    let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, mode)?;
-    mkdir_fs(&resolved.host_path, parents, exist_ok, path)
+    let target = resolve_virtual_path(path, ctx.mount_virtual)?;
+    host_mkdir(ctx.mount_dir, target.for_dir_op(), parents, exist_ok, path)
 }
 
-/// Removes a file or symlink entry itself rather than following symlink targets.
-fn unlink(path: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
-    let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Lstat)?;
-    unlink_fs(&resolved.host_path, path)
-}
-
-/// Renames a filesystem entry within the same mount.
+/// Renames an entry within the same mount.
+///
+/// Both ends resolve against the same descriptor, so neither can name anything
+/// outside it and the operation itself is a single `renameat`.
 fn rename(src: &str, dst: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
-    let src_resolved = resolve_path(src, ctx.mount_virtual, ctx.mount_host, ResolveMode::Lstat)?;
-    let dst_resolved = resolve_path(dst, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
-    fs::rename(&src_resolved.host_path, &dst_resolved.host_path).map_err(|err| MountError::Io(err, src.to_owned()))?;
+    let src_target = resolve_virtual_path(src, ctx.mount_virtual)?;
+    let dst_target = resolve_virtual_path(dst, ctx.mount_virtual)?;
+    reject_mount_root(&src_target, src)?;
+    reject_mount_root(&dst_target, dst)?;
+
+    ctx.mount_dir
+        .rename(src_target.for_dir_op(), ctx.mount_dir, dst_target.for_dir_op())
+        .map_err(|err| map_io(err, src))?;
     Ok(MontyObject::None)
 }
 
-/// Resolves a path for boolean existence-style operations.
-///
-/// These calls intentionally collapse host-side I/O misses into `Missing`
-/// because `pathlib` returns `False` instead of raising for missing paths.
-fn resolve_existence_state(
-    path: &str,
-    ctx: &MountContext<'_>,
-    mode: ResolveMode,
-) -> Result<ResolvedPathState, MountError> {
-    match resolve_path(path, ctx.mount_virtual, ctx.mount_host, mode) {
-        Ok(resolved) => Ok(ResolvedPathState::Present(resolved.host_path)),
-        Err(MountError::Io(_, _)) => Ok(ResolvedPathState::Missing),
-        Err(err) => Err(err),
+/// Refuses to rename or remove the mount root itself, which has no name inside
+/// the mount. An explicit guard gives every platform and mount mode the same
+/// `PermissionError`, instead of whatever errno the OS picks for `"."`.
+fn reject_mount_root(target: &MountRelativePath, vpath: &str) -> Result<(), MountError> {
+    if target.is_mount_root() {
+        Err(MountError::PathEscape {
+            virtual_path: vpath.to_owned(),
+        })
+    } else {
+        Ok(())
     }
 }

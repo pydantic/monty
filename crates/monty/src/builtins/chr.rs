@@ -1,7 +1,5 @@
 //! Implementation of the chr() builtin function.
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -15,7 +13,7 @@ use crate::{
 ///
 /// Returns a string representing a character whose Unicode code point is the integer.
 /// The valid range for the argument is from 0 through 1,114,111 (0x10FFFF).
-pub fn builtin_chr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_chr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("chr", vm.heap)?;
     defer_drop!(value, vm);
 
@@ -33,7 +31,7 @@ pub fn builtin_chr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
                     *n as u32
                 },
             ) {
-                Ok(allocate_char(c, vm.heap)?)
+                Ok(allocate_char(c, vm.heap))
             } else {
                 // This shouldn't happen for valid Unicode range, but handle it
                 Err(SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)").into())
@@ -42,7 +40,7 @@ pub fn builtin_chr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         Value::Bool(b) => {
             // bool is subclass of int
             let c = if *b { '\x01' } else { '\x00' };
-            Ok(allocate_char(c, vm.heap)?)
+            Ok(allocate_char(c, vm.heap))
         }
         _ => {
             let type_name = value.py_type_name(vm);

@@ -7,8 +7,6 @@
 //! Other asyncio functions (`create_task`, `sleep`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
-use monty_types::{ResourceError, ResourceTracker};
-
 use crate::{
     args::{ArgValues, FromArgs},
     asyncio::GatherFuture,
@@ -32,15 +30,12 @@ pub(crate) enum AsyncioFunctions {
 
 /// Creates the `asyncio` module and allocates it on the heap.
 ///
-/// The module contains only the `gather` function. Other asyncio functions
+/// The module contains only the `run` and `gather` functions. Other asyncio functions
 /// are not implemented as they would require additional VM/scheduler features.
-///
-/// # Returns
-/// A HeapId pointing to the newly allocated module.
 ///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Asyncio);
 
     module.set_attr(
@@ -54,13 +49,9 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
-pub(super) fn call(
-    vm: &mut VM<'_, impl ResourceTracker>,
-    functions: AsyncioFunctions,
-    args: ArgValues,
-) -> RunResult<CallResult> {
+pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues) -> RunResult<CallResult> {
     match functions {
         AsyncioFunctions::Gather => gather(vm, args).map(CallResult::Value),
         AsyncioFunctions::Run => run(vm.heap, args),
@@ -74,7 +65,7 @@ pub(super) fn call(
 ///
 /// Returns `CallResult::AwaitValue` so the VM executes `exec_get_awaitable` on
 /// the value, which handles validation that it's actually a coroutine/awaitable.
-fn run(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
     let coroutine = args.get_one_arg("asyncio.run", heap)?;
     Ok(CallResult::AwaitValue(coroutine))
 }
@@ -99,7 +90,7 @@ fn run(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Call
 ///
 /// # Errors
 /// Returns `TypeError` if any argument is not awaitable.
-pub(crate) fn gather(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // TODO: support keyword arguments (e.g. return_exceptions); for now any
     // kwarg is rejected up front by the macro's `kwargs_not_supported_yet`
     // flag with a `NotImplementedError: gather() does not yet support keyword
@@ -107,44 +98,29 @@ pub(crate) fn gather(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
     let GatherArgs { awaitables } = GatherArgs::from_args(args, vm)?;
     defer_drop_mut!(awaitables, vm);
 
-    // Validate all positional args are awaitable and collect their heap ids.
-    // Both coroutines and external futures live on the heap; transfer
-    // ownership of each arg's HeapId into `items` and forget the `Value` so
-    // its `Drop` doesn't dec_ref the entry we just handed to the gather.
-    let mut items: Vec<HeapId> = Vec::new();
-
-    #[cfg_attr(not(feature = "memory-model-checks"), expect(unused_mut))]
-    for mut arg in awaitables.drain(..) {
-        let id = match &arg {
+    // Validate every argument before transferring any references to the gather,
+    // so an invalid later argument needs no raw-HeapId rollback.
+    for arg in awaitables.iter() {
+        if !matches!(
+            arg,
             Value::Ref(id)
                 if matches!(
                     vm.heap.get(*id),
                     HeapData::Coroutine(_) | HeapData::ExternalFuture(_) | HeapData::GatherFuture(_)
-                ) =>
-            {
-                Some(*id)
-            }
-            _ => None,
-        };
-
-        if let Some(id) = id {
-            items.push(id);
-            // Transfer ownership of the heap ref to the gather.
-            #[cfg(feature = "memory-model-checks")]
-            arg.dec_ref_forget();
-        } else {
-            arg.drop_with(vm.heap);
-            for id in items {
-                vm.heap.dec_ref(id);
-            }
+                )
+        ) {
             return Err(ExcType::type_error(
                 "An asyncio.Future, a coroutine or an awaitable is required",
             ));
         }
     }
 
+    let items = awaitables
+        .drain(..)
+        .map(|arg| arg.into_ref_id().expect("validated gather awaitable is heap-backed"))
+        .collect();
     let gather_future = GatherFuture::new(items);
-    let id = vm.heap.allocate(HeapData::GatherFuture(gather_future))?;
+    let id = vm.heap.allocate(HeapData::GatherFuture(Box::new(gather_future)));
     Ok(Value::Ref(id))
 }
 

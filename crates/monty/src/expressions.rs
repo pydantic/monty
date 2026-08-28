@@ -1,3 +1,6 @@
+#[cfg(test)]
+use strum::IntoEnumIterator;
+
 use crate::{
     args::{ArgExprs, Signature},
     builtins::Builtins,
@@ -34,16 +37,20 @@ pub enum NameScope {
     /// The namespace slot contains `Value::Ref(cell_id)` pointing to a `HeapData::Cell`.
     /// Access requires dereferencing through the cell.
     Cell,
-    /// Comprehension target stored in the frame's anonymous comp-var region.
+    /// Comprehension target stored in isolated operand-stack storage.
     ///
-    /// Inlined list/set/dict comprehensions allocate their loop variables in a
-    /// fixed-size frame-local region that sits between the regular locals and
-    /// operand-stack growth. The slot index in `opt_namespace_id` is
-    /// interpreted as a comp-var slot index (separate namespace from locals
-    /// or globals). The region is initialized to `Value::Undefined` on frame
-    /// entry and drained on frame exit, so comprehension targets never leak
-    /// into the enclosing scope. See `limitations/comprehensions.md` for details.
+    /// The namespace ID is a comprehension-local slot ID. The compiler stores
+    /// uncaptured targets directly and gives captured targets a stable cell.
     CompVar,
+}
+
+/// Identifies where an enclosing scope stores a cell captured by a callable.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub enum CaptureSource {
+    /// Cell reference stored in an ordinary enclosing-frame namespace slot.
+    Namespace(NamespaceId),
+    /// Cell reference stored in an active comprehension's stable stack slot.
+    CompVar(u16),
 }
 
 /// An identifier (variable or function name) with source location and scope information.
@@ -294,6 +301,8 @@ pub enum Expr {
     ListComp {
         elt: Box<ExprLoc>,
         generators: Vec<Comprehension>,
+        /// Lexical target slots captured by callables in this comprehension.
+        captured_slots: Vec<u16>,
     },
     /// Set comprehension: `{elt for target in iter if cond...}`
     ///
@@ -302,6 +311,8 @@ pub enum Expr {
     SetComp {
         elt: Box<ExprLoc>,
         generators: Vec<Comprehension>,
+        /// Lexical target slots captured by callables in this comprehension.
+        captured_slots: Vec<u16>,
     },
     /// Dict comprehension: `{key: value for target in iter if cond...}`
     ///
@@ -312,6 +323,8 @@ pub enum Expr {
         key: Box<ExprLoc>,
         value: Box<ExprLoc>,
         generators: Vec<Comprehension>,
+        /// Lexical target slots captured by callables in this comprehension.
+        captured_slots: Vec<u16>,
     },
     /// Raw lambda expression from the parser, before preparation.
     ///
@@ -636,7 +649,20 @@ pub enum Node<F> {
         body: Vec<Self>,
         or_else: Vec<Self>,
     },
-    FunctionDef(F),
+    /// Function definition (e.g. `def foo(): ...`).
+    ///
+    /// Decorators live on the statement rather than inside `F` because `F` is
+    /// also a class body and a method, neither of which can carry them — and
+    /// because a decorator is part of the `def` statement, not of the function
+    /// object it produces. Mirrors [`Node::ClassDef`].
+    FunctionDef {
+        /// The function itself: signature and body, riding the `F` =
+        /// Raw→Prepared pipeline.
+        def: F,
+        /// In source order; evaluated in the enclosing scope and applied
+        /// bottom-up (`foo = deco(foo)`), like CPython.
+        decorators: Vec<ExprLoc>,
+    },
     /// Class definition (e.g. `class Foo: ...`).
     ///
     /// Modelled on CPython's class-body code object: the class body is a
@@ -750,12 +776,11 @@ pub struct PreparedFunctionDef {
     pub body: Vec<Node<Self>>,
     /// Number of local variable slots needed in the namespace.
     pub namespace_size: usize,
-    /// Enclosing namespace slots for variables captured from enclosing scopes.
+    /// Enclosing locations for variables captured from enclosing scopes.
     ///
-    /// At definition time the enclosing frame looks up the cell `HeapId` from
-    /// its own namespace at each slot and bundles them into the `Closure`.
-    /// Parallel (same index/order) to [`Self::free_var_slots`].
-    pub free_var_enclosing_slots: Vec<NamespaceId>,
+    /// At definition time each source supplies a cell `HeapId` to bundle into
+    /// the `Closure`. Parallel (same index/order) to [`Self::free_var_slots`].
+    pub free_var_enclosing_slots: Vec<CaptureSource>,
     /// This function's own namespace slots that receive the captured free-var
     /// cells, parallel to [`Self::free_var_enclosing_slots`]: cell `i` (gathered
     /// from `free_var_enclosing_slots[i]` in the enclosing frame) is installed
@@ -835,28 +860,40 @@ pub enum Operator {
 ///
 /// The strum `serialize` attribute on each variant is the source-level symbol,
 /// and drives both `Display` and [`as_str`](Self::as_str).
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, strum::Display, strum::IntoStaticStr)]
+#[repr(u8)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+    strum::EnumIter,
+    strum::FromRepr,
+    strum::IntoStaticStr,
+)]
 pub enum CmpOperator {
     #[strum(serialize = "==")]
-    Eq,
+    Eq = 0,
     #[strum(serialize = "!=")]
-    NotEq,
+    NotEq = 1,
     #[strum(serialize = "<")]
-    Lt,
+    Lt = 2,
     #[strum(serialize = "<=")]
-    LtE,
+    LtE = 3,
     #[strum(serialize = ">")]
-    Gt,
+    Gt = 4,
     #[strum(serialize = ">=")]
-    GtE,
+    GtE = 5,
     #[strum(serialize = "is")]
-    Is,
+    Is = 6,
     #[strum(serialize = "is not")]
-    IsNot,
+    IsNot = 7,
     #[strum(serialize = "in")]
-    In,
+    In = 8,
     #[strum(serialize = "not in")]
-    NotIn,
+    NotIn = 9,
 }
 
 impl CmpOperator {
@@ -869,40 +906,43 @@ impl CmpOperator {
     }
 
     /// Stable u8 encoding used in the low nibble of the `Assert` /
-    /// `AssertFailed` flags operand (see `bytecode::op::assert_flags`). Part
-    /// of the serialized `Code` format, so existing values must never change —
-    /// hence a hand-written encoding rather than a derived `FromRepr` that
-    /// would follow declaration order.
+    /// `AssertFailed` flags operand (see `bytecode::op::assert_flags`).
     pub const fn as_operand(self) -> u8 {
-        match self {
-            Self::Eq => 0,
-            Self::NotEq => 1,
-            Self::Lt => 2,
-            Self::LtE => 3,
-            Self::Gt => 4,
-            Self::GtE => 5,
-            Self::Is => 6,
-            Self::IsNot => 7,
-            Self::In => 8,
-            Self::NotIn => 9,
+        self as u8
+    }
+}
+
+/// Computes an FNV-1a hash over comparison-operator identities and serialization.
+#[cfg(test)]
+pub(crate) fn comparison_operators_fingerprint() -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0100_0000_01b3;
+
+    fn update(hash: &mut u64, bytes: &[u8]) {
+        for byte in u32::try_from(bytes.len())
+            .expect("fingerprint field length fits u32")
+            .to_le_bytes()
+        {
+            *hash ^= u64::from(byte);
+            *hash = hash.wrapping_mul(PRIME);
+        }
+        for byte in bytes {
+            *hash ^= u64::from(*byte);
+            *hash = hash.wrapping_mul(PRIME);
         }
     }
 
-    /// Decodes [`as_operand`](Self::as_operand)'s encoding, `None` for bytes
-    /// outside the encoded range.
-    pub const fn from_operand(byte: u8) -> Option<Self> {
-        match byte {
-            0 => Some(Self::Eq),
-            1 => Some(Self::NotEq),
-            2 => Some(Self::Lt),
-            3 => Some(Self::LtE),
-            4 => Some(Self::Gt),
-            5 => Some(Self::GtE),
-            6 => Some(Self::Is),
-            7 => Some(Self::IsNot),
-            8 => Some(Self::In),
-            9 => Some(Self::NotIn),
-            _ => None,
-        }
+    let mut operators = CmpOperator::iter().collect::<Vec<_>>();
+    operators.sort_unstable_by_key(|operator| *operator as u8);
+    let mut hash = OFFSET_BASIS;
+    for operator in operators {
+        update(&mut hash, &[operator as u8]);
+        update(&mut hash, format!("{operator:?}").as_bytes());
+        update(&mut hash, operator.as_str().as_bytes());
+        update(
+            &mut hash,
+            &postcard::to_allocvec(&operator).expect("CmpOperator serialization cannot fail"),
+        );
     }
+    hash
 }

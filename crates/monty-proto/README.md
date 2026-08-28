@@ -4,7 +4,9 @@ The wire protocol connecting [Monty](https://github.com/pydantic/monty) worker
 processes to the parents that drive them.
 
 Monty executes untrusted Python, and a Monty process can never be made fully
-crash-proof against memory errors (stack overflow aborts, allocator aborts).
+crash-proof against memory errors (stack overflow aborts, allocator aborts —
+the [`monty-alloc`](https://crates.io/crates/monty-alloc) allocator turns the
+latter into this crate's `OOM_EXIT_CODE` so a parent can classify them).
 The subprocess architecture isolates those crashes: a parent — the
 [`monty-pool`](https://crates.io/crates/monty-pool) crate, and through it the
 Python and JavaScript packages — drives `monty subprocess` children over
@@ -25,12 +27,15 @@ for the schema and the protocol rules documented alongside it.
   framing, with a hard cap on frame length.
 - Fallible conversions between `pb` types and Monty's public types
   (`MontyObject`, `MontyException`, mounts, resource limits, ...).
-- `MONTY_VERSION` — the version both sides compare in the `Configure`
-  handshake. The protocol has no in-band negotiation, so parent and child must
-  be deployed in lockstep.
+- `PROTOCOL_VERSION` / `MIN_SUPPORTED_PROTOCOL_VERSION` — the wire schema
+  version a parent declares in `Configure`, and the range a child serves.
+  Versioned independently of the monty package: peers on different releases
+  interoperate as long as their protocol versions overlap. There is no in-band
+  negotiation, so a child rejecting a version reports its range in the
+  `FatalError` for the parent to downgrade to.
 - `python` (cargo feature, off by default) — the `python` module: PyO3-based
   conversions between live Python objects and `MontyObject`/`MontyException`,
-  used by the `pydantic-monty` extension module. The feature pulls in `pyo3` (but never its
+  used by the `pydantic-monty-client` extension module. The feature pulls in `pyo3` (but never its
   `extension-module` feature — how libpython is linked stays the top crate's
   decision), so pure-Rust consumers pay nothing for it.
 
@@ -52,9 +57,10 @@ malformed wire data.
 
 ## Worker state machine
 
-This crate includes the `worker` feature and module
-
-A transport-agnostic Monty protocol-child state machine, shared by the native subprocess and the wasm worker.
+The `worker` cargo feature (off by default) adds the `worker` module: the
+transport-agnostic child state machine, shared by the native `monty subprocess`
+worker and the wasm worker. It links the `monty` interpreter, so only
+worker-side crates enable it.
 
 ## Monty crates
 

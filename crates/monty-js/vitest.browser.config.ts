@@ -24,6 +24,10 @@ export default defineConfig({
   },
   test: {
     include: ['__test__/*.spec.ts'],
+    // `node_*` specs check things about the repo itself (reading source files,
+    // shelling out) and cannot run against a filesystem-less browser, where
+    // every `node:` import resolves to the throwing stub above
+    exclude: ['__test__/node_*.spec.ts'],
     testTimeout: 60_000,
     hookTimeout: 60_000,
     browser: {

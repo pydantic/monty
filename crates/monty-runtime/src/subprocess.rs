@@ -21,35 +21,43 @@ use monty_proto::{
     write_frame,
 };
 
+/// BSD `sysexits.h` "remote error in protocol" — the frame stream desynchronized, or
+/// an event too large to frame left the response unsendable.
+const EX_PROTOCOL: u8 = 76;
+
 /// Runs the subprocess child loop until EOF, `Shutdown`, or a fatal error.
 pub(crate) fn run() -> ExitCode {
     install_panic_hook();
     let mut reader = FrameReader::new(io::stdin().lock());
-    let mut child = Child::new();
+    let mut child = Child::default();
     let mut sink = StdoutSink;
 
     loop {
         match reader.read::<pb::ParentRequest>() {
-            Ok(Some(request)) => match child.handle(request, &mut sink) {
-                Ok(HandleOutcome::Continue) => {}
-                Ok(HandleOutcome::Shutdown) => return ExitCode::SUCCESS,
-                // the child emitted a FatalError (e.g. version skew) and cannot
-                // keep serving — exit non-zero so the parent sees a clean cause
-                Ok(HandleOutcome::Fatal) => return ExitCode::from(4),
-                // an oversize event was rejected before any bytes hit the
-                // wire, so the stream is still in sync and the parent can
-                // receive a parseable last gasp
-                Err(FrameError::FrameTooLarge { len, max }) => {
-                    fatal(
-                        &child,
-                        &mut sink,
-                        &format!("response frame of {len} bytes exceeds maximum of {max} bytes"),
-                    );
-                    return ExitCode::from(2);
+            Ok(Some(request)) => {
+                let outcome = child.handle(request, &mut sink);
+                apply_memory_limit(&child);
+                match outcome {
+                    Ok(HandleOutcome::Continue) => {}
+                    Ok(HandleOutcome::Shutdown) => return ExitCode::SUCCESS,
+                    // the child emitted a FatalError (e.g. version skew) and cannot
+                    // keep serving — exit non-zero so the parent sees a clean cause
+                    Ok(HandleOutcome::Fatal) => return ExitCode::from(4),
+                    // an oversize event was rejected before any bytes hit the
+                    // wire, so the stream is still in sync and the parent can
+                    // receive a parseable last gasp
+                    Err(FrameError::FrameTooLarge { len, max }) => {
+                        fatal(
+                            &child,
+                            &mut sink,
+                            &format!("response frame of {len} bytes exceeds maximum of {max} bytes"),
+                        );
+                        return ExitCode::from(EX_PROTOCOL);
+                    }
+                    // writing to stdout failed: the parent is gone, nothing left to do
+                    Err(_) => return ExitCode::from(3),
                 }
-                // writing to stdout failed: the parent is gone, nothing left to do
-                Err(_) => return ExitCode::from(3),
-            },
+            }
             // clean EOF at a frame boundary: the parent closed stdin
             Ok(None) => return ExitCode::SUCCESS,
             // the frame arrived intact but its payload didn't decode — this
@@ -67,10 +75,24 @@ pub(crate) fn run() -> ExitCode {
             Err(err) => {
                 // the stream is desynchronized — unrecoverable by design
                 fatal(&child, &mut sink, &format!("malformed request frame: {err}"));
-                return ExitCode::from(2);
+                return ExitCode::from(EX_PROTOCOL);
             }
         }
     }
+}
+
+/// Applies the memory limit of whatever session the child now holds, after
+/// every request.
+///
+/// Reading the child's state rather than the request is what keeps the limit
+/// honest: a rejected `Configure` changes nothing, a `Load` brings the dump's
+/// own limits, and `Reset` ends the session. It lives in the shell rather than
+/// in the shared state machine because each entry point declares its own
+/// allocator: the wasm worker does the same thing in its own turn loop.
+fn apply_memory_limit(child: &Child) {
+    let budget = child.session_budget();
+    monty_alloc::set_limit(budget.max_memory, budget.type_check)
+        .expect("monty-runtime must install LimitedAllocator globally");
 }
 
 /// Writes framed child events to stdout.

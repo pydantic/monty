@@ -187,9 +187,8 @@ impl PyCollectString {
 /// # Foot-guns
 ///
 /// - The `CollectStreams` / `CollectString` variants hold an `Arc`; cloning is
-///   cheap but **shares** the buffer. Use [`PrintTarget::clone_handle`] /
-///   [`clone_handle_detached`](Self::clone_handle_detached) instead of `Clone`
-///   so the intent is explicit.
+///   cheap but **shares** the buffer. Use [`PrintTarget::clone_handle`]
+///   instead of `Clone` so the intent is explicit.
 #[derive(Debug, Default)]
 pub(crate) enum PrintTarget {
     /// Print goes to process stdout — the default when no `print_callback` is set.
@@ -230,32 +229,14 @@ impl PrintTarget {
 
     /// Returns a fresh `PrintTarget` targeting the same sink as `self`. The
     /// collector variants clone their `Arc`, so the new target **writes into the
-    /// same buffer** — exactly what threading through `start`/`resume` chains and
-    /// `spawn_blocking` workers needs.
+    /// same buffer** — exactly what threading through `start`/`resume` chains
+    /// needs.
     ///
     /// Used instead of `Clone` to make the share-vs-copy intent explicit.
-    /// Callers without a `Python` token should use
-    /// [`clone_handle_detached`](Self::clone_handle_detached) instead.
     pub fn clone_handle(&self, py: Python<'_>) -> Self {
         match self {
             Self::Stdout => Self::Stdout,
             Self::Callback(cb) => Self::Callback(cb.clone_ref(py)),
-            Self::CollectStreams(arc) => Self::CollectStreams(arc.clone()),
-            Self::CollectString(arc) => Self::CollectString(arc.clone()),
-        }
-    }
-
-    /// Detached variant of [`clone_handle`](Self::clone_handle) for callers
-    /// running without the GIL held (e.g. inside an `async move` block or a
-    /// `spawn_blocking` worker about to hand the clone to another thread).
-    ///
-    /// Acquires the GIL internally only when the `Callback` variant actually
-    /// needs it; `Stdout` and the two collect variants skip the acquisition
-    /// entirely.
-    pub fn clone_handle_detached(&self) -> Self {
-        match self {
-            Self::Stdout => Self::Stdout,
-            Self::Callback(_) => Python::attach(|py| self.clone_handle(py)),
             Self::CollectStreams(arc) => Self::CollectStreams(arc.clone()),
             Self::CollectString(arc) => Self::CollectString(arc.clone()),
         }
@@ -267,6 +248,11 @@ impl PrintTarget {
     /// worker process as pre-rendered `(stream, text)` events rather than
     /// through a `PrintWriter`. Safe to call without the GIL held — the
     /// `Callback` variant attaches internally.
+    //
+    // TODO: support `async def` print callbacks under `AsyncMonty` by having
+    // this return the callback's coroutine as the turn's `PrintFuture`
+    // (converted via `into_future_with_locals`, with the drive's `TaskLocals`
+    // threaded through `run_turn`), instead of blocking a runtime thread.
     pub fn write_event(&self, stream: PrintStream, text: &str) -> Result<(), MontyException> {
         match self {
             Self::Stdout => {

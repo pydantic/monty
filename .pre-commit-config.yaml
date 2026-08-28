@@ -45,15 +45,34 @@ repos:
         types: [rust]
         language: system
         pass_filenames: false
-      - id: format-lint-py
-        name: Format & Lint Python
-        entry: make format-lint-py
+      - id: format--py
+        name: Format Python
+        entry: make format-py
         types: [python]
         language: system
         pass_filenames: false
-      - id: format-lint-js
-        name: Format & Lint TypeScript
-        entry: make format-js lint-js
+      - id: lint-py
+        name: Lint Python
+        entry: make lint-py
+        types: [python]
+        language: system
+        pass_filenames: false
+      - id: format-js
+        name: Format TypeScript
+        entry: make format-js
         types: [ts]
+        language: system
+        pass_filenames: false
+      - id: lint-js
+        name: Lint TypeScript
+        entry: make lint-js
+        types: [ts]
+        language: system
+        pass_filenames: false
+      # `custom/*.pyi` only reaches the type checker via the vendored copy
+      - id: check-typeshed
+        name: Check vendored typeshed
+        entry: make check-typeshed
+        files: ^crates/monty-typeshed/(custom|vendor)/
         language: system
         pass_filenames: false

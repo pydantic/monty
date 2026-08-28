@@ -128,6 +128,94 @@ fn external_function_as_init_raises_not_implemented() {
     );
 }
 
+/// `functools.reduce` calls its function through `evaluate_function`, which
+/// cannot suspend, so an external one raises `NotImplementedError` (documented
+/// in `limitations/functools.md`). Rust-side for the same reason as
+/// `external_function_as_init_raises_not_implemented`: on CPython the external
+/// is a real function and the reduction would succeed.
+#[test]
+fn external_function_in_reduce_raises_not_implemented() {
+    let code = "import functools\n\nfunctools.reduce(ext_fn, [1, 2, 3])";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let err = ex
+        .run_no_limits(vec![MontyObject::Function {
+            name: "ext_fn".to_owned(),
+            docstring: None,
+        }])
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 3, in <module>\n    functools.reduce(ext_fn, [1, 2, 3])\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nNotImplementedError: reduce(): external function 'ext_fn' is not yet supported in this context"
+    );
+}
+
+/// A user `__next__` calling an external function cannot suspend: like
+/// `__repr__`/`__str__` it runs synchronously via `evaluate_function`, so the
+/// call raises `NotImplementedError` (see `limitations/classes.md`). Rust-side
+/// for the same reason as `external_function_as_init_raises_not_implemented`:
+/// on CPython the external is a real function and the loop would succeed.
+#[test]
+fn external_function_in_next_raises_not_implemented() {
+    let code = "class Foo:\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return ext_fn()\n\nfor _x in Foo():\n    pass";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let err = ex
+        .run_no_limits(vec![MontyObject::Function {
+            name: "ext_fn".to_owned(),
+            docstring: None,
+        }])
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 8, in <module>\n    for _x in Foo():\n              ~~~~~\nNotImplementedError: __next__: external function 'ext_fn' is not yet supported in this context"
+    );
+}
+
+/// The `itertools` adaptors that apply a callable drive it through
+/// `evaluate_function`, so one reaching an external function cannot suspend and
+/// raises `NotImplementedError` (see `limitations/itertools.md`). Rust-side for
+/// the same reason as the tests above: on CPython the external is an ordinary
+/// function and the call would succeed.
+///
+/// Both call sites are covered — the predicate helper shared by `takewhile`,
+/// `dropwhile` and `filterfalse`, and `starmap`, which calls its function
+/// itself and so names itself in the error separately.
+#[test]
+fn external_function_as_itertools_callable_raises_not_implemented() {
+    for (call, adaptor) in [
+        ("itertools.takewhile(ext_fn, [1])", "takewhile"),
+        ("itertools.starmap(ext_fn, [(1,)])", "starmap"),
+    ] {
+        let expr = format!("list({call})");
+        let code = format!("import itertools\n\n{expr}");
+        let ex = MontyRun::new(code, "test.py", vec!["ext_fn".to_owned()], CompileOptions::default()).unwrap();
+        let err = ex
+            .run_no_limits(vec![MontyObject::Function {
+                name: "ext_fn".to_owned(),
+                docstring: None,
+            }])
+            .unwrap_err();
+        let carets = "~".repeat(expr.len());
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Traceback (most recent call last):\n  File \"test.py\", line 3, in <module>\n    {expr}\n    {carets}\nNotImplementedError: {adaptor}(): external function 'ext_fn' is not yet supported in this context"
+            )
+        );
+    }
+}
+
 /// The 3-arg `type()` form rejects non-empty bases because Monty classes
 /// cannot inherit (documented in `limitations/classes.md`). Kept as a
 /// Rust-side test because CPython accepts bases, so the comparative
@@ -211,5 +299,29 @@ d";
             ]
             .into()
         )
+    );
+}
+
+#[test]
+fn output_deque_mutated_by_nested_repr() {
+    let code = "\
+from collections import deque
+
+class Evil:
+    def __repr__(self):
+        d.clear()
+        return 'evil'
+
+d = deque([Evil(), 1, 2])
+d";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let result = ex.run_no_limits(vec![]).unwrap();
+    assert_eq!(
+        result,
+        MontyObject::List(vec![
+            MontyObject::Repr("evil".to_owned()),
+            MontyObject::Int(1),
+            MontyObject::Int(2),
+        ])
     );
 }

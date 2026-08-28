@@ -11,41 +11,48 @@
 //! (crash, timeout, protocol desync) resolve as turn objects too, so the
 //! TypeScript layer owns the public error classes.
 //!
-//! Threading model: protocol turns block on subprocess I/O, so they run on
-//! tokio's blocking pool via [`Env::spawn_future_with_callback`] — never on
-//! the JS event loop. Sandbox `print()` output streams mid-turn through a
-//! threadsafe function; the turn thread blocks until the JS callback has run
-//! (`call_async`), preserving print ordering and backpressure exactly like
-//! the in-process bindings. The checkout mutex is therefore held for a whole
-//! turn: event-loop-thread methods must never block on it (`worker_pid` uses
-//! `try_lock`, everything else locks inside the spawned future).
+//! Threading model: `monty-pool` is async, so every protocol turn is a future
+//! spawned on napi's tokio runtime via [`Env::spawn_future_with_callback`] —
+//! never on the JS event loop thread. Sandbox `print()` output streams
+//! mid-turn through a threadsafe function; the turn awaits each JS callback
+//! (`call_async`), preserving print ordering and backpressure. The checkout
+//! mutex (a tokio mutex) is held for a whole turn: event-loop-thread methods
+//! must never block on it (`worker_pid` uses `try_lock`, everything else
+//! locks inside the spawned future).
 
 use std::{
-    fmt,
+    future::Future,
+    pin::Pin,
     result::Result as StdResult,
     str::FromStr,
-    sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
 
 use monty_pool::{
-    exceeds_max_value_depth, Checkout, MountSpec, MountSpecMode, OnPrint, Pool, PoolConfig, PoolError, ReplConfig,
-    ResumeValue, TurnEvent,
+    exceeds_max_value_depth,
+    telemetry_adapter::{TelemetryAdapterHandle, TelemetryContext},
+    Checkout, MountSpec, MountSpecMode, OnPrint, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue,
+    TurnEvent,
 };
-use monty_types::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintStream, StackFrame};
+use monty_types::{
+    AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintStream, StackFrame, TypeCheckingConfig,
+    TypeCheckingFormat,
+};
 use napi::{
     bindgen_prelude::{
-        block_on, spawn_blocking, Array, Buffer, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw,
-        Unknown,
+        Array, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw, Unknown,
     },
     threadsafe_function::UnknownReturnValue,
-    Env, Result,
+    Env, Error, Result,
 };
 use napi_derive::napi;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
     convert::{js_to_monty, monty_to_js},
     limits::{extract_limits, JsResourceLimits},
+    telemetry::configured_adapter,
 };
 
 /// Deepest *list-like* value nesting the wire protocol accepts (dicts and
@@ -55,13 +62,29 @@ use crate::{
 pub const MAX_VALUE_DEPTH: u32 = monty_pool::MAX_VALUE_DEPTH as u32;
 
 /// The live pool, shared between the pool object and its sessions. `None`
-/// until `start()` and again after `close()`.
+/// until `start()` and again after `close()`. A std mutex: only ever held to
+/// clone/take the `Arc`, never across awaits.
 type SharedPool = Arc<Mutex<Option<Arc<Pool>>>>;
 /// One session's worker handle. `None` before `enter()`, after `finish()`,
-/// and after the worker is discarded on a crash.
-type SharedCheckout = Arc<Mutex<Option<Checkout>>>;
-/// The per-turn JS print callback, callable from the blocking turn thread.
+/// and after the worker is discarded on a crash. A *tokio* mutex: it is held
+/// for a whole protocol turn, across that turn's awaits, serializing turns.
+type SharedCheckout = Arc<AsyncMutex<Option<Checkout>>>;
+/// The per-turn JS print callback, reached from the turn future through a
+/// threadsafe function.
 type PrintCallback<'env> = Function<'env, FnArgs<(String, String)>, UnknownReturnValue>;
+
+/// The boxed future a turn closure returns: one computation borrowing the
+/// locked checkout and the per-turn print callback.
+type OutcomeFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Identity helper pinning the HRTB closure shape [`NativeSession::run_outcome`]
+/// accepts — without it, closure lifetime inference fails at every callsite.
+fn outcome_fn<T, F>(f: F) -> F
+where
+    F: for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> OutcomeFuture<'a, T> + Send,
+{
+    f
+}
 
 /// Pool construction options. Timeouts are pre-normalised to milliseconds by
 /// the TypeScript layer (which also applies the `durationLimitGrace` default
@@ -96,6 +119,13 @@ pub struct NativeCheckoutOptions {
     pub type_check: bool,
     /// Stub declarations made available to type checking.
     pub type_check_stubs: Option<String>,
+    /// How typing diagnostics are rendered, e.g. `'full'` or `'concise'`.
+    /// Chosen here rather than on the thrown error because the checker's
+    /// structured diagnostics never leave the worker.
+    pub type_check_format: Option<String>,
+    /// Render typing diagnostics with ANSI colour escapes.
+    pub type_check_color: Option<bool>,
+
     /// Give failed `assert` statements pytest-style introspected messages
     /// (see limitations/assert.md), wire-encoded: absent = on with the
     /// default 120-byte operand-repr truncation, `0` = off, `n` = truncate
@@ -117,6 +147,34 @@ pub struct NativeMount {
     pub write_bytes_limit: Option<f64>,
     /// Aggregate budget for retained overlay data and transient results.
     pub memory_usage_limit: f64,
+}
+
+/// A mount whose host directory is opened here and held until this object is
+/// dropped, so every feed using it mounts that same directory. Wrapped by the
+/// TypeScript `MountDir` — not part of the public API.
+#[napi(js_name = "NativeMountDir")]
+pub struct NativeMountDir {
+    /// `None` once closed: the open directory is released and no later feed
+    /// can mount it. A feed already running holds its own reference.
+    spec: Option<MountSpec>,
+}
+
+#[napi]
+impl NativeMountDir {
+    /// Opens the host directory, throwing if it is missing, is not a directory,
+    /// or the virtual path is not absolute.
+    #[napi(constructor)]
+    pub fn new(mount: NativeMount) -> Result<Self> {
+        Ok(Self {
+            spec: Some(MountSpec::try_from(mount)?),
+        })
+    }
+
+    /// Releases the open directory. Idempotent.
+    #[napi]
+    pub fn close(&mut self) {
+        self.spec = None;
+    }
 }
 
 /// A pool of `monty` worker subprocesses. Wrapped by the TypeScript `Monty`
@@ -158,10 +216,7 @@ impl NativePool {
         let config = self.config.clone();
         let slot = Arc::clone(&self.pool);
         env.spawn_future(async move {
-            let pool = spawn_blocking(move || Pool::new(config))
-                .await
-                .map_err(task_error)?
-                .map_err(pool_error)?;
+            let pool = Pool::new(config).await.map_err(pool_error)?;
             *lock(&slot) = Some(Arc::new(pool));
             Ok(())
         })
@@ -178,12 +233,19 @@ impl NativePool {
                 limits,
                 type_check: options.type_check,
                 type_check_stubs: options.type_check_stubs,
+                type_check_config: TypeCheckingConfig {
+                    format: match options.type_check_format {
+                        Some(name) => TypeCheckingFormat::from_name(&name).map_err(Error::from_reason)?,
+                        None => TypeCheckingFormat::default(),
+                    },
+                    color: options.type_check_color.unwrap_or(false),
+                },
                 assert_message_annotations: options.assert_message_annotations.map_or_else(
                     AssertMessageAnnotations::default,
                     AssertMessageAnnotations::from_max_bytes,
                 ),
             },
-            checkout: Arc::new(Mutex::new(None)),
+            checkout: Arc::new(AsyncMutex::new(None)),
         })
     }
 
@@ -193,10 +255,45 @@ impl NativePool {
     pub fn close<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, ()>> {
         let slot = Arc::clone(&self.pool);
         env.spawn_future(async move {
-            spawn_blocking(move || drop(lock(&slot).take()))
-                .await
-                .map_err(task_error)
+            let pool = lock(&slot).take();
+            if let Some(pool) = pool {
+                pool.close().await;
+                drop(pool);
+            }
+            Ok(())
         })
+    }
+}
+
+/// Distributed context captured synchronously before native session entry.
+#[napi(object, js_name = "NativeTelemetryContext")]
+pub struct NativeTelemetryContext {
+    /// W3C trace ID of the active host span.
+    pub trace_id: Option<String>,
+    /// W3C span ID of the active host span.
+    pub span_id: Option<String>,
+    /// W3C trace flags of the active host span.
+    pub trace_flags: Option<u8>,
+    /// Vendor trace state propagated with the active host span.
+    pub trace_state: Option<String>,
+}
+
+impl NativeTelemetryContext {
+    /// Converts valid distributed context while ignoring a malformed adapter value.
+    fn parse(self, adapter: &TelemetryAdapterHandle) -> TelemetryContext {
+        self.trace_id
+            .zip(self.span_id)
+            .and_then(|(trace_id, span_id)| {
+                adapter
+                    .context(
+                        &trace_id,
+                        &span_id,
+                        self.trace_flags.unwrap_or_default(),
+                        self.trace_state.as_deref().unwrap_or_default(),
+                    )
+                    .ok()
+            })
+            .unwrap_or_else(|| adapter.unparented_context())
     }
 }
 
@@ -215,22 +312,29 @@ impl NativeSession {
     /// the REPL session in it. Rejects with the pool error message on
     /// exhaustion or spawn failure.
     #[napi]
-    pub fn enter<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, ()>> {
+    pub fn enter<'env>(
+        &self,
+        env: &'env Env,
+        telemetry_context: Option<NativeTelemetryContext>,
+    ) -> Result<PromiseRaw<'env, ()>> {
         let pool = Arc::clone(&self.pool);
         let repl_config = self.repl_config.clone();
         let slot = Arc::clone(&self.checkout);
+        let telemetry_context =
+            telemetry_context.and_then(|context| configured_adapter().map(|adapter| context.parse(adapter)));
         env.spawn_future(async move {
-            spawn_blocking(move || {
-                let pool = lock(&pool)
-                    .as_ref()
-                    .map(Arc::clone)
-                    .ok_or_else(|| invalid("the pool is not started — create it with Monty.create()"))?;
-                let checkout = pool.checkout(&repl_config).map_err(pool_error)?;
-                *lock(&slot) = Some(checkout);
-                Ok(())
-            })
-            .await
-            .map_err(task_error)?
+            let pool = lock(&pool)
+                .as_ref()
+                .map(Arc::clone)
+                .ok_or_else(|| invalid("the pool is not started — create it with Monty.create()"))?;
+            let checkout = if let Some(context) = telemetry_context {
+                pool.checkout_with_telemetry(&repl_config, context).await
+            } else {
+                pool.checkout(&repl_config).await
+            }
+            .map_err(pool_error)?;
+            *slot.lock().await = Some(checkout);
+            Ok(())
         })
     }
 
@@ -242,18 +346,19 @@ impl NativeSession {
         env: &'env Env,
         code: String,
         inputs: Option<Object<'env>>,
-        mounts: Vec<NativeMount>,
+        mounts: Vec<ClassInstance<'env, NativeMountDir>>,
         skip_type_check: bool,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let inputs = convert_inputs(env, inputs)?;
-        let mounts = mounts
-            .into_iter()
-            .map(MountSpec::try_from)
-            .collect::<Result<Vec<_>>>()?;
-        self.run_turn(env, on_print, move |checkout, on_print| {
-            checkout.feed(&code, inputs, mounts, skip_type_check, on_print)
-        })
+        let mounts = mount_specs(&mounts)?;
+        self.run_turn(
+            env,
+            on_print,
+            outcome_fn(move |checkout, on_print| {
+                Box::pin(async move { checkout.feed(&code, inputs, mounts, skip_type_check, on_print).await })
+            }),
+        )
     }
 
     /// Answers a `functionCall`/`osCall` suspension with a return value. A
@@ -268,9 +373,11 @@ impl NativeSession {
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let resume = sendable_resume(env, value);
-        self.run_turn(env, on_print, move |checkout, on_print| {
-            checkout.resume(resume, on_print)
-        })
+        self.run_turn(
+            env,
+            on_print,
+            outcome_fn(move |checkout, on_print| Box::pin(checkout.resume(resume, on_print))),
+        )
     }
 
     /// Answers a suspension with an exception (`excType` must be a Python
@@ -284,9 +391,11 @@ impl NativeSession {
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let exc = exception_from_parts(&exc_type, message);
-        self.run_turn(env, on_print, move |checkout, on_print| {
-            checkout.resume(ResumeValue::Error(exc), on_print)
-        })
+        self.run_turn(
+            env,
+            on_print,
+            outcome_fn(move |checkout, on_print| Box::pin(checkout.resume(ResumeValue::Error(exc), on_print))),
+        )
     }
 
     /// Answers an `osCall` suspension by declining it: the sandbox raises the
@@ -297,9 +406,11 @@ impl NativeSession {
         env: &'env Env,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
-        self.run_turn(env, on_print, |checkout, on_print| {
-            checkout.resume(ResumeValue::NotHandled, on_print)
-        })
+        self.run_turn(
+            env,
+            on_print,
+            outcome_fn(|checkout, on_print| Box::pin(checkout.resume(ResumeValue::NotHandled, on_print))),
+        )
     }
 
     /// Offers an `osCall` suspension to this feed's mounts. Resolves to the
@@ -311,13 +422,19 @@ impl NativeSession {
         env: &'env Env,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
-        self.run_outcome(env, on_print, |checkout, on_print| {
-            match checkout.resume_from_mounts(on_print) {
-                Ok(Some(event)) => TurnOutcome::Event(event),
-                Ok(None) => TurnOutcome::NotMounted,
-                Err(err) => TurnOutcome::from(StdResult::<TurnEvent, PoolError>::Err(err)),
-            }
-        })
+        self.run_outcome(
+            env,
+            on_print,
+            outcome_fn(|checkout, on_print| {
+                Box::pin(async move {
+                    match checkout.resume_from_mounts(on_print).await {
+                        Ok(Some(event)) => TurnOutcome::Event(event),
+                        Ok(None) => TurnOutcome::NotMounted,
+                        Err(err) => TurnOutcome::from(StdResult::<TurnEvent, PoolError>::Err(err)),
+                    }
+                })
+            }),
+        )
     }
 
     /// Answers a `functionCall` suspension whose name has no handler: the
@@ -328,9 +445,11 @@ impl NativeSession {
         env: &'env Env,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
-        self.run_turn(env, on_print, |checkout, on_print| {
-            checkout.resume(ResumeValue::NotFound, on_print)
-        })
+        self.run_turn(
+            env,
+            on_print,
+            outcome_fn(|checkout, on_print| Box::pin(checkout.resume(ResumeValue::NotFound, on_print))),
+        )
     }
 
     /// Registers the pending call as an external future (the JS promise stays
@@ -341,9 +460,11 @@ impl NativeSession {
         env: &'env Env,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
-        self.run_turn(env, on_print, |checkout, on_print| {
-            checkout.resume(ResumeValue::Future, on_print)
-        })
+        self.run_turn(
+            env,
+            on_print,
+            outcome_fn(|checkout, on_print| Box::pin(checkout.resume(ResumeValue::Future, on_print))),
+        )
     }
 
     /// Answers a `nameLookup` suspension against `externalLookup`. A callable
@@ -368,9 +489,11 @@ impl NativeSession {
             Some(wrapper) => Some(name_lookup_value(env, &wrapper)?),
             None => function_name.map(|name| MontyObject::Function { name, docstring: None }),
         };
-        self.run_turn(env, on_print, move |checkout, on_print| {
-            checkout.resume_name_lookup(resolved, on_print)
-        })
+        self.run_turn(
+            env,
+            on_print,
+            outcome_fn(move |checkout, on_print| Box::pin(checkout.resume_name_lookup(resolved, on_print))),
+        )
     }
 
     /// Answers a `resolveFutures` suspension with the settled promises'
@@ -400,9 +523,11 @@ impl NativeSession {
                 Ok((call_id, value))
             })
             .collect::<Result<Vec<_>>>()?;
-        self.run_turn(env, on_print, move |checkout, on_print| {
-            checkout.resume_futures(results, on_print)
-        })
+        self.run_turn(
+            env,
+            on_print,
+            outcome_fn(move |checkout, on_print| Box::pin(checkout.resume_futures(results, on_print))),
+        )
     }
 
     /// Restores a dump into this session's freshly configured worker. Resolves
@@ -414,22 +539,25 @@ impl NativeSession {
         &self,
         env: &'env Env,
         state: Buffer,
-        mounts: Vec<NativeMount>,
+        mounts: Vec<ClassInstance<'env, NativeMountDir>>,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
-        let mounts = mounts
-            .into_iter()
-            .map(MountSpec::try_from)
-            .collect::<Result<Vec<_>>>()?;
+        let mounts = mount_specs(&mounts)?;
         let state = state.to_vec();
-        self.run_outcome(env, on_print, move |checkout, on_print| {
-            // JS snapshots expose no script name, so the restored name is unused
-            match checkout.restore(state, mounts, on_print) {
-                Ok((Some(event), _)) => TurnOutcome::Event(event),
-                Ok((None, _)) => TurnOutcome::LoadedIdle,
-                Err(err) => TurnOutcome::from(Err(err)),
-            }
-        })
+        self.run_outcome(
+            env,
+            on_print,
+            outcome_fn(move |checkout, on_print| {
+                Box::pin(async move {
+                    // JS snapshots expose no script name, so the restored name is unused
+                    match checkout.restore(state, mounts, on_print).await {
+                        Ok((Some(event), _)) => TurnOutcome::Event(event),
+                        Ok((None, _)) => TurnOutcome::LoadedIdle,
+                        Err(err) => TurnOutcome::from(Err(err)),
+                    }
+                })
+            }),
+        )
     }
 
     /// Serializes the worker's session state (idle or suspended) into opaque
@@ -438,13 +566,9 @@ impl NativeSession {
     pub fn dump<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, Buffer>> {
         let slot = Arc::clone(&self.checkout);
         env.spawn_future(async move {
-            spawn_blocking(move || {
-                let mut guard = lock(&slot);
-                let checkout = guard.as_mut().ok_or_else(|| pool_error(PoolError::Finished))?;
-                checkout.dump().map(Buffer::from).map_err(pool_error)
-            })
-            .await
-            .map_err(task_error)?
+            let mut guard = slot.lock().await;
+            let checkout = guard.as_mut().ok_or_else(|| pool_error(PoolError::Finished))?;
+            checkout.dump().await.map(Buffer::from).map_err(pool_error)
         })
     }
 
@@ -462,12 +586,18 @@ impl NativeSession {
         requirements: Vec<String>,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
-        self.run_outcome(env, on_print, move |checkout, _on_print| {
-            match checkout.install_dependencies(requirements) {
-                Ok(()) => TurnOutcome::Ok,
-                Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
-            }
-        })
+        self.run_outcome(
+            env,
+            on_print,
+            outcome_fn(move |checkout, _on_print| {
+                Box::pin(async move {
+                    match checkout.install_dependencies(requirements).await {
+                        Ok(()) => TurnOutcome::Ok,
+                        Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
+                    }
+                })
+            }),
+        )
     }
 
     /// Ends the session and returns the worker to the pool (best effort — a
@@ -476,18 +606,15 @@ impl NativeSession {
     pub fn finish<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, ()>> {
         let slot = Arc::clone(&self.checkout);
         env.spawn_future(async move {
-            spawn_blocking(move || {
-                // take in its own statement so the lock is released before
-                // the (blocking) finish turn runs
-                let checkout = lock(&slot).take();
-                if let Some(checkout) = checkout {
-                    // best effort: a worker that cannot reset is discarded by
-                    // monty-pool itself
-                    let _ = checkout.finish();
-                }
-            })
-            .await
-            .map_err(task_error)
+            // take in its own statement so the lock is released before the
+            // finish turn runs
+            let checkout = slot.lock().await.take();
+            if let Some(checkout) = checkout {
+                // best effort: a worker that cannot reset is discarded by
+                // monty-pool itself
+                let _ = checkout.finish().await;
+            }
+            Ok(())
         })
     }
 
@@ -497,12 +624,12 @@ impl NativeSession {
     /// callback, which needs the event loop).
     #[napi(getter)]
     pub fn worker_pid(&self) -> Option<u32> {
-        try_lock(&self.checkout)?.as_ref().and_then(Checkout::pid)
+        self.checkout.try_lock().ok()?.as_ref().and_then(Checkout::pid)
     }
 }
 
 impl NativeSession {
-    /// Runs one protocol turn on the blocking pool and resolves it to a JS
+    /// Runs one protocol turn as a spawned future and resolves it to a JS
     /// turn object. Pool-level failures (runtime error, typing error, crash,
     /// timeout, protocol desync) resolve as turn objects too — the
     /// TypeScript layer raises its public error classes from them; the
@@ -511,50 +638,58 @@ impl NativeSession {
         &self,
         env: &'env Env,
         on_print: PrintCallback<'env>,
-        turn: impl FnOnce(&mut Checkout, OnPrint<'_>) -> StdResult<TurnEvent, PoolError> + Send + 'static,
+        turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> OutcomeFuture<'a, StdResult<TurnEvent, PoolError>>
+            + Send
+            + 'static,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
-        self.run_outcome(env, on_print, move |checkout, on_print| {
-            TurnOutcome::from(turn(checkout, on_print))
-        })
+        self.run_outcome(
+            env,
+            on_print,
+            outcome_fn(move |checkout, on_print| {
+                Box::pin(async move { TurnOutcome::from(turn(checkout, on_print).await) })
+            }),
+        )
     }
 
     /// The shared turn machinery behind [`run_turn`](Self::run_turn): locks the
-    /// checkout off the event loop, streams prints, and resolves the computed
-    /// [`TurnOutcome`] to a JS turn object. `compute` returns the outcome
-    /// directly so the restore turn (which yields `Option<TurnEvent>`) can map
-    /// its idle case to [`TurnOutcome::LoadedIdle`].
+    /// checkout inside the spawned future, streams prints, and resolves the
+    /// computed [`TurnOutcome`] to a JS turn object. `compute` returns the
+    /// outcome directly so the restore turn (which yields `Option<TurnEvent>`)
+    /// can map its idle case to [`TurnOutcome::LoadedIdle`].
     fn run_outcome<'env>(
         &self,
         env: &'env Env,
         on_print: PrintCallback<'env>,
-        compute: impl FnOnce(&mut Checkout, OnPrint<'_>) -> TurnOutcome + Send + 'static,
+        compute: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> OutcomeFuture<'a, TurnOutcome> + Send + 'static,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
-        let tsfn = on_print.build_threadsafe_function().build()?;
+        let tsfn = Arc::new(on_print.build_threadsafe_function().build()?);
         let slot = Arc::clone(&self.checkout);
         env.spawn_future_with_callback(
             async move {
-                spawn_blocking(move || {
-                    let mut guard = lock(&slot);
-                    let Some(checkout) = guard.as_mut() else {
-                        return TurnOutcome::Protocol("the session is closed — check out a new one".to_owned());
+                let mut guard = slot.lock().await;
+                let Some(checkout) = guard.as_mut() else {
+                    return Ok(TurnOutcome::Protocol(
+                        "the session is closed — check out a new one".to_owned(),
+                    ));
+                };
+                // Forward each print to JS and *await the callback having
+                // run* (not merely queued), preserving print ordering
+                // relative to the turn's resolution and providing
+                // backpressure against print floods. The TypeScript
+                // wrapper captures callback failures itself and never
+                // throws back across this boundary.
+                let mut on_print = move |stream: PrintStream, text: &str| -> PrintFuture {
+                    let stream = match stream {
+                        PrintStream::Stdout => "stdout",
+                        PrintStream::Stderr => "stderr",
                     };
-                    // Forward each print to JS and *wait for the callback to
-                    // run* (not merely queue), preserving print ordering
-                    // relative to the turn's resolution and providing
-                    // backpressure against print floods. The TypeScript
-                    // wrapper captures callback failures itself and never
-                    // throws back across this boundary.
-                    let mut on_print = |stream: PrintStream, text: &str| {
-                        let stream = match stream {
-                            PrintStream::Stdout => "stdout",
-                            PrintStream::Stderr => "stderr",
-                        };
-                        let _ = block_on(tsfn.call_async(FnArgs::from((stream.to_owned(), text.to_owned()))));
-                    };
-                    compute(checkout, &mut on_print)
-                })
-                .await
-                .map_err(task_error)
+                    let tsfn = Arc::clone(&tsfn);
+                    let args = FnArgs::from((stream.to_owned(), text.to_owned()));
+                    Box::pin(async move {
+                        let _ = tsfn.call_async(args).await;
+                    })
+                };
+                Ok(compute(checkout, &mut on_print).await)
             },
             turn_to_js,
         )
@@ -601,10 +736,23 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
                 timed_out: true,
                 exit_status: None,
             },
-            Err(PoolError::Crashed { status, context }) => Self::Crashed {
-                message: format!("monty worker crashed while {context}"),
-                timed_out: false,
+            // `status` is `Copy`, so it can be reported *and* handed back to
+            // the error, whose own Display picks between "while <doing X>"
+            // and the worker's stated reason — don't re-derive that here.
+            Err(PoolError::Crashed { status, cause }) => Self::Crashed {
                 exit_status: status.map(|status| status.to_string()),
+                message: PoolError::Crashed { status, cause }.to_string(),
+                timed_out: false,
+            },
+            // WebSocket-only, so both are unreachable here (the napi binding
+            // is subprocess-only). Mapped to their local analogue anyway
+            // rather than falling through to a misleading protocol error: a
+            // dropped connection and a server shutdown both mean the session
+            // is gone, which is what `Crashed` tells the caller.
+            Err(err @ (PoolError::Disconnected { .. } | PoolError::Shutdown { .. })) => Self::Crashed {
+                message: err.to_string(),
+                timed_out: false,
+                exit_status: None,
             },
             Err(other) => Self::Protocol(other.to_string()),
         }
@@ -837,13 +985,12 @@ impl TryFrom<NativeMount> for MountSpec {
             .map(|limit| bytes_limit(limit, "writeBytesLimit"))
             .transpose()?;
         let memory_usage_limit = bytes_limit(mount.memory_usage_limit, "memoryUsageLimit")?;
-        Ok(Self {
-            virtual_path: mount.virtual_path,
-            host_path: mount.host_path.into(),
-            mode,
-            write_bytes_limit,
-            memory_usage_limit,
-        })
+        // Opens the directory: the spec carries a descriptor from here on, so
+        // the host path is resolved once per mount object rather than per feed.
+        let mut spec = Self::new(&mount.virtual_path, &mount.host_path, mode).map_err(pool_error)?;
+        spec.write_bytes_limit = write_bytes_limit;
+        spec.memory_usage_limit = memory_usage_limit;
+        Ok(spec)
     }
 }
 
@@ -864,29 +1011,34 @@ fn duration_from_ms(ms: f64) -> Result<Duration> {
     Duration::try_from_secs_f64(ms / 1000.0).map_err(|err| invalid(&format!("invalid timeout: {err}")))
 }
 
-/// Locks a shared slot, ignoring poisoning (a panic elsewhere must not wedge
-/// the pool). Never call on the event-loop thread for the checkout slot — a
-/// turn holds that lock for its whole duration; use [`try_lock`] there.
+/// Locks the shared *pool* slot, ignoring poisoning (a panic elsewhere must
+/// not wedge the pool). Only ever held to clone/take the `Arc<Pool>` — the
+/// per-session checkout slot is a tokio mutex the turn future locks with
+/// `.lock().await` (or `try_lock` on the event-loop thread).
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Non-blocking [`lock`]: `None` when the lock is held (e.g. by a turn in
-/// flight). Safe to call on the event-loop thread.
-fn try_lock<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
-    match mutex.try_lock() {
-        Ok(guard) => Some(guard),
-        Err(TryLockError::Poisoned(err)) => Some(err.into_inner()),
-        Err(TryLockError::WouldBlock) => None,
-    }
+/// Clones each mount's opened configuration for one turn — the descriptor is
+/// shared, so nothing is reopened and no host path is resolved again.
+///
+/// # Errors
+///
+/// Rejects the turn if any mount has been closed.
+fn mount_specs(mounts: &[ClassInstance<'_, NativeMountDir>]) -> Result<Vec<MountSpec>> {
+    mounts
+        .iter()
+        .map(|mount| {
+            mount
+                .spec
+                .clone()
+                .ok_or_else(|| invalid("mount is closed: create a new MountDir"))
+        })
+        .collect()
 }
 
 fn pool_error(err: PoolError) -> napi::Error {
     napi::Error::from_reason(err.to_string())
-}
-
-fn task_error(err: impl fmt::Display) -> napi::Error {
-    napi::Error::from_reason(format!("worker task failed: {err}"))
 }
 
 fn invalid(message: &str) -> napi::Error {

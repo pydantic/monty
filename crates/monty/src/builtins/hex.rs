@@ -1,7 +1,5 @@
 //! Implementation of the hex() builtin function.
 
-use monty_types::ResourceTracker;
-use num_bigint::BigInt;
 use num_traits::Signed;
 
 use crate::{
@@ -18,34 +16,24 @@ use crate::{
 ///
 /// Converts an integer to a lowercase hexadecimal string prefixed with '0x'.
 /// Supports both i64 and BigInt integers.
-pub fn builtin_hex(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_hex(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("hex", vm.heap)?;
     defer_drop!(value, vm);
     let heap = &mut *vm.heap;
 
-    match value {
+    let s = match value {
         Value::Int(n) => {
-            let abs_digits = format!("{:x}", n.unsigned_abs());
-            let prefix = if *n < 0 { "-0x" } else { "0x" };
-            Ok(allocate_string_no_interning(format!("{prefix}{abs_digits}"), heap)?)
+            format!("{}0x{:x}", if *n < 0 { "-" } else { "" }, n.unsigned_abs())
         }
         Value::Bool(b) => {
             let s = if *b { "0x1" } else { "0x0" };
-            Ok(allocate_string_no_interning(s.to_string(), heap)?)
+            s.to_string()
         }
         Value::Ref(id) if let HeapData::LongInt(li) = heap.get(*id) => {
-            let hex_str = format_bigint_hex(li.inner());
-            Ok(allocate_string_no_interning(hex_str, heap)?)
+            let bi = li.inner();
+            format!("{}0x{:x}", if bi.is_negative() { "-" } else { "" }, bi.magnitude())
         }
-        _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
-    }
-}
-
-/// Formats a BigInt as a hexadecimal string with '0x' prefix.
-fn format_bigint_hex(bi: &BigInt) -> String {
-    let is_negative = bi.is_negative();
-    let abs_bi = bi.abs();
-    let hex_digits = format!("{abs_bi:x}");
-    let prefix = if is_negative { "-0x" } else { "0x" };
-    format!("{prefix}{hex_digits}")
+        _ => return Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
+    };
+    Ok(allocate_string_no_interning(s, heap))
 }

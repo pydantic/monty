@@ -312,3 +312,51 @@ test('number at the i64 boundary', async () => {
   // ints beyond ±2^53 come back as BigInt
   t.is(await run('x', { inputs: { x: -(2 ** 63) } }), -(2n ** 63n))
 })
+
+// =============================================================================
+// datetime.time tests
+// =============================================================================
+
+test('time output from sandbox', async () => {
+  t.deepEqual(await run('import datetime\ndatetime.time(1, 2, 3, 4)'), {
+    __monty_type__: 'Time',
+    hour: 1,
+    minute: 2,
+    second: 3,
+    microsecond: 4,
+    fold: 0,
+  })
+})
+
+test('aware time output from sandbox', async () => {
+  const code = 'import datetime\ndatetime.time(6, 7, tzinfo=datetime.timezone(datetime.timedelta(hours=2), "P2"))'
+  t.deepEqual(await run(code), {
+    __monty_type__: 'Time',
+    hour: 6,
+    minute: 7,
+    second: 0,
+    microsecond: 0,
+    offsetSeconds: 7200,
+    timezoneName: 'P2',
+    fold: 0,
+  })
+})
+
+test('time input round-trips', async () => {
+  const time = { __monty_type__: 'Time', hour: 10, minute: 20, second: 30, microsecond: 40, fold: 1 }
+  t.deepEqual(await run('x', { inputs: { x: time } }), time)
+})
+
+test('time input is a real sandbox time', async () => {
+  const time = { __monty_type__: 'Time', hour: 10, minute: 20, second: 0, microsecond: 0 }
+  // `__name__` is the qualified spelling, as it is for `datetime` — see
+  // limitations/datetime.md
+  t.is(await run('type(x).__name__', { inputs: { x: time } }), 'datetime.time')
+  t.is(await run('x.hour * 60 + x.minute', { inputs: { x: time } }), 620)
+  t.is(await run('x.isoformat()', { inputs: { x: time } }), '10:20:00')
+})
+
+test('omitted fold defaults to zero', async () => {
+  const time = { __monty_type__: 'Time', hour: 1, minute: 2, second: 0, microsecond: 0 }
+  t.is(await run('x.fold', { inputs: { x: time } }), 0)
+})

@@ -6,6 +6,24 @@ assert result == [1, 2, 3]
 
 assert type(iter([])).__name__ == 'list_iterator'
 
+# === Concrete iterator types ===
+assert type(iter(())).__name__ == 'tuple_iterator'
+assert type(iter('abc')).__name__ == 'str_ascii_iterator'
+assert type(iter('é')).__name__ == 'str_iterator'
+assert type(iter(b'abc')).__name__ == 'bytes_iterator'
+assert type(iter(range(3))).__name__ == 'range_iterator'
+assert type(iter({})).__name__ == 'dict_keyiterator'
+assert type(iter({}.keys())).__name__ == 'dict_keyiterator'
+assert type(iter({}.items())).__name__ == 'dict_itemiterator'
+assert type(iter({}.values())).__name__ == 'dict_valueiterator'
+assert type(iter(set())).__name__ == 'set_iterator'
+assert type(iter(frozenset())).__name__ == 'set_iterator'
+
+list_iterator = iter([])
+list_iterator_repr = repr(list_iterator)
+assert list_iterator_repr.startswith('<list_iterator object at 0x')
+assert int(list_iterator_repr.rsplit(' at ', 1)[1][:-1], 16) == id(list_iterator)
+
 # list with mixed types
 result = []
 for x in [1, 'a', True]:

@@ -4,15 +4,19 @@
 //! only the newly fed snippet each time.
 
 use insta::assert_snapshot;
-use monty::{MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, detect_repl_continuation_mode};
+#[cfg(feature = "test-hooks")]
+use monty::FunctionMetadataFault;
+use monty::{
+    DUMP_VERSION, Dump, DumpError, MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, Session, SessionRef,
+    detect_repl_continuation_mode, dump,
+};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NoLimitTracker, PrintWriter,
-    ResourceTracker,
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, PrintWriter, ResourceTracker,
 };
 
 #[test]
 fn repl_executes_only_new_code() {
-    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, CompileOptions::default());
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
     let init_output = feed_run_print(&mut repl, "counter = 0").unwrap();
     assert_eq!(init_output, MontyObject::None);
 
@@ -25,14 +29,188 @@ fn repl_executes_only_new_code() {
     assert_eq!(output, MontyObject::Int(1));
 }
 
-fn feed_run_print(repl: &mut MontyRepl<impl ResourceTracker>, code: &str) -> Result<MontyObject, MontyException> {
+fn feed_run_print(repl: &mut MontyRepl, code: &str) -> Result<MontyObject, MontyException> {
     repl.feed_run(code, vec![], PrintWriter::Stdout)
 }
 
-fn init_repl(code: &str) -> (MontyRepl<NoLimitTracker>, MontyObject) {
-    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, CompileOptions::default());
+fn init_repl(code: &str) -> (MontyRepl, MontyObject) {
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
     let output = feed_run_print(&mut repl, code).unwrap();
     (repl, output)
+}
+
+/// Round-trips an idle session through the dump format, asserting it comes back
+/// on the same [`Session`] arm it went out on.
+fn round_trip_repl(repl: &MontyRepl) -> MontyRepl {
+    let bytes = dump("repl.py", None, SessionRef::Idle(repl)).unwrap();
+    match Dump::load(&bytes).unwrap().state {
+        Session::Idle(repl) => *repl,
+        _ => panic!("dumped an idle session, loaded something else"),
+    }
+}
+
+/// Round-trips a suspended session through the dump format.
+fn round_trip_progress(progress: &ReplProgress) -> ReplProgress {
+    let bytes = dump("repl.py", None, SessionRef::Suspended(progress)).unwrap();
+    match Dump::load(&bytes).unwrap().state {
+        Session::Suspended(progress) => *progress,
+        _ => panic!("dumped a suspended session, loaded something else"),
+    }
+}
+
+/// The header must reject anything this build cannot read, and each rejection
+/// must say which of the three it was — a stale snapshot needs rebuilding, a
+/// corrupt one needs investigating.
+#[test]
+fn dump_header_rejects_incompatible_data() {
+    let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
+    // pins the header layout (magic then little-endian version), not the version itself
+    let mut expected_header = b"MONTY\0".to_vec();
+    expected_header.extend_from_slice(&DUMP_VERSION.to_le_bytes());
+    assert_eq!(&bytes[..8], expected_header.as_slice());
+
+    // too short to even hold a header
+    assert_eq!(Dump::load(&bytes[..3]).unwrap_err(), DumpError::NotADump);
+
+    let mut wrong_magic = bytes.clone();
+    wrong_magic[0] = b'X';
+    assert_eq!(Dump::load(&wrong_magic).unwrap_err(), DumpError::NotADump);
+
+    let mut wrong_version = bytes.clone();
+    wrong_version[6] = 1;
+    assert_eq!(
+        Dump::load(&wrong_version).unwrap_err(),
+        DumpError::VersionMismatch {
+            found: 1,
+            expected: DUMP_VERSION
+        }
+    );
+
+    // trailing bytes are rejected rather than ignored, so a padded dump cannot
+    // decode as the shorter valid one it starts with
+    let mut trailing_data = bytes;
+    trailing_data.push(0);
+    assert_eq!(
+        Dump::load(&trailing_data).unwrap_err(),
+        DumpError::Payload(postcard::Error::DeserializeBadEncoding)
+    );
+}
+
+/// A dump is untrusted input, and the heap it carries is installed verbatim. A
+/// `time` entry that no constructor could have produced must be rejected at load
+/// rather than panicking, or contradicting itself, later — when the ranges and the
+/// `tzinfo` reference are read back as established facts.
+///
+/// A `time` stores only a reference to its zone, so a disagreement between an
+/// attached offset and the object it points at is not representable. What is left
+/// is a component out of range, a reference that is not a timezone, and an offset
+/// out of range on the timezone itself.
+#[test]
+fn dump_rejects_forged_time_entries() {
+    // Distinctive components so the encoded `time` can be found in the payload:
+    // three single-byte fields, then 444555 as a postcard varint.
+    const COMPONENTS: [u8; 6] = [11, 22, 33, 0x8B, 0x91, 0x1B];
+
+    let naive = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555)");
+    // ... followed by fold and a `None` tzinfo.
+    let hour = offset_of(&naive, &[COMPONENTS.as_slice(), &[0, 0]].concat());
+    assert!(Dump::load(&naive).is_ok());
+
+    let mut forged = naive;
+    forged[hour] = 255;
+    assert_eq!(
+        Dump::load(&forged).unwrap_err(),
+        DumpError::Payload(postcard::Error::SerdeDeCustom)
+    );
+
+    // A *named* offset keeps a timezone entry of its own instead of canonicalizing
+    // onto the `timezone.utc` singleton, and 23 hours encodes as a three-byte
+    // varint, leaving room to forge a value outside the range `timezone()` accepts.
+    let aware = dump_repl(
+        "import datetime\ntz = datetime.timezone(datetime.timedelta(hours=23), 'AB')\nt = datetime.time(11, 22, 33, 444555, tzinfo=tz)",
+    );
+    assert!(Dump::load(&aware).is_ok());
+
+    // ... followed by fold and `Some(_)`, so the heap id ends the marker.
+    let tzinfo_ref = offset_of(&aware, &[COMPONENTS.as_slice(), &[0, 1]].concat()) + 8;
+    // The timezone entry: 82800 seconds zigzag-encoded, then `Some("AB")`.
+    let tz_offset = offset_of(&aware, &[0xE0, 0x8D, 0x0A, 1, 2, b'A', b'B']);
+
+    for (index, byte, what) in [
+        // The empty-tuple singleton: a live entry, but not a timezone.
+        (
+            tzinfo_ref,
+            0,
+            "a `tzinfo` reference to something that is not a timezone",
+        ),
+        (tzinfo_ref, 100, "a `tzinfo` reference to no entry at all"),
+        // `format_offset_hms` negates the offset, which panics on `i32::MIN`.
+        (tz_offset + 2, 0x7f, "a `tzinfo` object whose offset is out of range"),
+    ] {
+        let mut forged = aware.clone();
+        forged[index] = byte;
+        assert_eq!(
+            Dump::load(&forged).unwrap_err(),
+            DumpError::Payload(postcard::Error::SerdeDeCustom),
+            "a time with {what} must be rejected"
+        );
+    }
+}
+
+/// The `timezone_utc` cache is a raw heap id restored verbatim, and
+/// `get_timezone_utc` hands its target back as `datetime.timezone.utc` after an
+/// `inc_ref` that panics on a freed or out-of-range id. A forged cache must be
+/// rejected at load, whether it points at nothing, at a live non-timezone, or at
+/// a timezone that is not UTC.
+#[test]
+fn dump_rejects_forged_timezone_utc_cache() {
+    let bytes = dump_repl(
+        "import datetime\nutc = datetime.timezone.utc\nplus2 = datetime.timezone(datetime.timedelta(hours=2))",
+    );
+    assert!(Dump::load(&bytes).is_ok());
+
+    // `timezone_utc` is the heap's last serialized field and `globals` is the
+    // session's, so the cached id sits a fixed distance from the end: `Some(2)`
+    // followed by the three globals, one of which is the `+02:00` timezone at 4.
+    let cached_id = bytes.len() - 8;
+    assert_eq!(
+        &bytes[cached_id - 1..=cached_id],
+        &[1, 2],
+        "timezone_utc is Some(HeapId(2))"
+    );
+
+    for (forged_id, what) in [
+        (100, "no entry at all"),
+        (0, "the empty-tuple singleton"),
+        (4, "the +02:00 timezone"),
+    ] {
+        let mut forged = bytes.clone();
+        forged[cached_id] = forged_id;
+        assert_eq!(
+            Dump::load(&forged).unwrap_err(),
+            DumpError::Payload(postcard::Error::SerdeDeCustom),
+            "a timezone.utc cache pointing at {what} must be rejected"
+        );
+    }
+}
+
+/// Dumps an idle session after running `code`.
+fn dump_repl(code: &str) -> Vec<u8> {
+    let (repl, _) = init_repl(code);
+    dump("repl.py", None, SessionRef::Idle(&repl)).unwrap()
+}
+
+/// The offset of the one occurrence of `marker` in `bytes`, so a forged dump can
+/// be built by patching a known field rather than by rebuilding the payload.
+fn offset_of(bytes: &[u8], marker: &[u8]) -> usize {
+    let mut found = bytes
+        .windows(marker.len())
+        .enumerate()
+        .filter_map(|(index, window)| (window == marker).then_some(index));
+    let offset = found.next().expect("marker not found in dump");
+    assert_eq!(found.next(), None, "marker is not unique in dump");
+    offset
 }
 
 #[test]
@@ -153,6 +331,60 @@ fn repl_detects_continuation_mode_for_common_cases() {
         detect_repl_continuation_mode("[1,\n"),
         ReplContinuationMode::IncompleteImplicit
     );
+    for source in [
+        "value = '''first line\n",
+        "value = \"\"\"first line\n",
+        "value = r\"\"\"first line\n",
+        "value = b\"\"\"first line\n",
+        "value = f\"\"\"first line\n",
+        "value = t\"\"\"first line\n",
+    ] {
+        assert_eq!(
+            detect_repl_continuation_mode(source),
+            ReplContinuationMode::IncompleteImplicit,
+            "source: {source:?}",
+        );
+    }
+    for source in ["value = 'first line\n", "value = \"first line\n"] {
+        assert_eq!(
+            detect_repl_continuation_mode(source),
+            ReplContinuationMode::Complete,
+            "source: {source:?}",
+        );
+    }
+    assert_eq!(
+        detect_repl_continuation_mode("value = \"\"\"first line\nsecond line\"\"\"\n"),
+        ReplContinuationMode::Complete
+    );
+    assert_eq!(
+        detect_repl_continuation_mode("@decorator\n"),
+        ReplContinuationMode::IncompleteImplicit
+    );
+    assert_eq!(
+        detect_repl_continuation_mode("@first\n@second\n"),
+        ReplContinuationMode::IncompleteImplicit
+    );
+    assert_eq!(
+        detect_repl_continuation_mode("@decorator\nvalue = 1"),
+        ReplContinuationMode::Complete
+    );
+    assert_eq!(
+        detect_repl_continuation_mode("@decorator\nvalue = 1\n"),
+        ReplContinuationMode::Complete
+    );
+    assert_eq!(
+        detect_repl_continuation_mode("@decorator\nclass SearchResult:\n"),
+        ReplContinuationMode::IncompleteBlock
+    );
+    assert_eq!(
+        detect_repl_continuation_mode("@decorator\ndef search():\n"),
+        ReplContinuationMode::IncompleteBlock
+    );
+    assert_eq!(
+        detect_repl_continuation_mode("@decorator\nasync def search():\n"),
+        ReplContinuationMode::IncompleteBlock
+    );
+    assert_eq!(detect_repl_continuation_mode("@\n"), ReplContinuationMode::Complete);
 }
 
 #[test]
@@ -205,12 +437,83 @@ fn repl_dump_load_survives_between_snippets() {
     let (mut repl, _) = init_repl("total = 1");
     feed_run_print(&mut repl, "total = total + 1").unwrap();
 
-    let bytes = repl.dump().unwrap();
-    let mut loaded: MontyRepl<NoLimitTracker> = MontyRepl::load(&bytes).unwrap();
+    let mut loaded = round_trip_repl(&repl);
 
     feed_run_print(&mut loaded, "total = total * 21").unwrap();
     let output = feed_run_print(&mut loaded, "total").unwrap();
     assert_eq!(output, MontyObject::Int(42));
+}
+
+#[test]
+fn repl_dump_load_derives_exact_positional_call_plans() {
+    let (repl, _) = init_repl("def add(a, b):\n    return a + b\n\nasync def async_add(a, b):\n    return a + b");
+    let mut loaded = round_trip_repl(&repl);
+
+    assert_eq!(
+        feed_run_print(&mut loaded, "add(20, 22)").unwrap(),
+        MontyObject::Int(42)
+    );
+    assert_eq!(
+        feed_run_print(&mut loaded, "await async_add(20, 22)").unwrap(),
+        MontyObject::Int(42)
+    );
+
+    // The fast path's arg-count guard must also survive the round trip: a
+    // mismatched call has to fall back to the general binder (and its error),
+    // not silently misfire the cached plan.
+    let err = feed_run_print(&mut loaded, "add(1)").unwrap_err();
+    assert_eq!(err.message(), Some("add() missing 1 required positional argument: 'b'"));
+}
+
+#[cfg(feature = "test-hooks")]
+#[test]
+fn repl_dump_load_rejects_invalid_function_metadata() {
+    /// Checks forged function metadata is rejected at dump load.
+    fn assert_rejected(function: &str, fault: FunctionMetadataFault) {
+        let code = r"
+def variadic(*args, **kwargs):
+    return args, kwargs
+
+def pos_defaults(value=1, /):
+    return value
+
+def defaults(value=1):
+    return value
+
+def kw_defaults(*, first=1, second=2):
+    return first, second
+
+def outer(first, second):
+    def middle():
+        local = 1
+        def inner():
+            return first + second + local
+        return inner
+    return middle
+";
+        let (mut repl, _) = init_repl(code);
+        repl.__corrupt_function_metadata_for_tests(function, fault);
+        let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
+        assert_eq!(
+            Dump::load(&bytes).unwrap_err(),
+            DumpError::Payload(postcard::Error::SerdeDeCustom)
+        );
+    }
+
+    assert_rejected("variadic", FunctionMetadataFault::SignatureSlotsBeyondNamespace);
+    assert_rejected("variadic", FunctionMetadataFault::NamespaceTooLarge);
+    assert_rejected("inner", FunctionMetadataFault::FreeVarLengthMismatch);
+    assert_rejected("outer", FunctionMetadataFault::CellVarLengthMismatch);
+    assert_rejected("inner", FunctionMetadataFault::FreeVarSlotOutOfRange);
+    assert_rejected("outer", FunctionMetadataFault::CellVarSlotOutOfRange);
+    assert_rejected("outer", FunctionMetadataFault::CellParamIndexOutOfRange);
+    assert_rejected("pos_defaults", FunctionMetadataFault::PosDefaultsCountOutOfRange);
+    assert_rejected("defaults", FunctionMetadataFault::ArgDefaultsCountOutOfRange);
+    assert_rejected("kw_defaults", FunctionMetadataFault::KwargDefaultMapLengthMismatch);
+    assert_rejected("kw_defaults", FunctionMetadataFault::KwargDefaultIndexGap);
+    assert_rejected("defaults", FunctionMetadataFault::DefaultsCountMismatch);
+    assert_rejected("inner", FunctionMetadataFault::DuplicateFreeVarSlot);
+    assert_rejected("middle", FunctionMetadataFault::CellFreeVarSlotOverlap);
 }
 
 #[test]
@@ -219,8 +522,7 @@ fn repl_dump_load_preserves_heap_aliasing() {
 
     feed_run_print(&mut repl, "a.append(1)").unwrap();
 
-    let bytes = repl.dump().unwrap();
-    let mut loaded: MontyRepl<NoLimitTracker> = MontyRepl::load(&bytes).unwrap();
+    let mut loaded = round_trip_repl(&repl);
 
     feed_run_print(&mut loaded, "b.append(2)").unwrap();
     assert_eq!(
@@ -294,8 +596,7 @@ fn repl_progress_dump_load_roundtrip() {
     // With LoadGlobalCallable, ext_fn goes directly to FunctionCall
     let progress = repl.feed_start("ext_fn(20) + 22", vec![], PrintWriter::Stdout).unwrap();
 
-    let bytes = progress.dump().unwrap();
-    let loaded: ReplProgress<NoLimitTracker> = ReplProgress::load(&bytes).unwrap();
+    let loaded = round_trip_progress(&progress);
 
     let call = loaded.into_function_call().expect("expected function call");
     assert_eq!(call.args, vec![MontyObject::Int(20)]);
@@ -326,8 +627,7 @@ async def main():
     let call_id = call.call_id;
 
     let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
-    let bytes = progress.dump().unwrap();
-    let loaded: ReplProgress<NoLimitTracker> = ReplProgress::load(&bytes).unwrap();
+    let loaded = round_trip_progress(&progress);
     let state = loaded.into_resolve_futures().expect("expected resolve futures");
     assert_eq!(state.pending_call_ids(), &[call_id]);
 
@@ -405,7 +705,7 @@ fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
         frozen: true,
     };
 
-    let repl = MontyRepl::new("repl.py", NoLimitTracker, CompileOptions::default());
+    let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
 
     // Calling point.sum() should yield a FunctionCall with method_call=true.
     // Pass the dataclass as an input to feed_start() so it gets a namespace slot.
@@ -456,8 +756,8 @@ fn repl_start_new_external_function_in_later_block() {
 // ===========================================================================
 
 /// Helper to create a REPL session pre-seeded with code for function calling.
-fn repl_with_code(code: &str) -> MontyRepl<NoLimitTracker> {
-    let mut repl = MontyRepl::new("session_test.py", NoLimitTracker, CompileOptions::default());
+fn repl_with_code(code: &str) -> MontyRepl {
+    let mut repl = MontyRepl::new("session_test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run(code, vec![], PrintWriter::Stdout).unwrap();
     repl
 }
@@ -480,6 +780,27 @@ fn call_function_no_args() {
     let mut s = repl_with_code("def greet(): return 'hello'");
     let result = s.call_function("greet", vec![], PrintWriter::Stdout).unwrap();
     assert_eq!(result, MontyObject::String("hello".to_owned()));
+}
+
+#[test]
+fn call_function_runs_asyncio_gather() {
+    let mut repl = repl_with_code(
+        "\
+import asyncio
+async def double(value):
+    return value * 2
+async def gather_values():
+    return await asyncio.gather(double(1), double(2), double(3))
+def run():
+    return asyncio.run(gather_values())
+",
+    );
+
+    let result = repl.call_function("run", vec![], PrintWriter::Stdout).unwrap();
+    assert_eq!(
+        result,
+        MontyObject::List(vec![MontyObject::Int(2), MontyObject::Int(4), MontyObject::Int(6)])
+    );
 }
 
 #[test]
@@ -523,6 +844,23 @@ fn call_function_multiple_times() {
             .unwrap();
         assert_eq!(result, MontyObject::Int(i + 1));
     }
+}
+
+#[test]
+fn call_function_survives_repl_round_trip() {
+    let mut repl = repl_with_code("def double(value): return value * 2");
+    assert_eq!(
+        repl.call_function("double", vec![MontyObject::Int(2)], PrintWriter::Stdout)
+            .unwrap(),
+        MontyObject::Int(4)
+    );
+
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(
+        repl.call_function("double", vec![MontyObject::Int(3)], PrintWriter::Stdout)
+            .unwrap(),
+        MontyObject::Int(6)
+    );
 }
 
 #[test]
@@ -648,10 +986,27 @@ fn call_nonexistent_function() {
 }
 
 #[test]
+fn call_conditionally_undefined_functions() {
+    let mut s = repl_with_code("if False:\n    def foo(): return 1\n    def len(): return 1");
+
+    let err = s.call_function("foo", vec![], PrintWriter::Stdout).unwrap_err();
+    assert_snapshot!(err, @"NameError: name 'foo' is not defined");
+
+    let err = s.call_function("len", vec![], PrintWriter::Stdout).unwrap_err();
+    assert_snapshot!(err, @"NameError: name 'len' is not defined");
+}
+
+#[test]
 fn call_non_callable() {
     let mut s = repl_with_code("x = 42");
     let err = s.call_function("x", vec![], PrintWriter::Stdout).unwrap_err();
-    assert_snapshot!(err, @"TypeError: 'int' object is not callable");
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "<python-input-1>", line 1, in <module>
+        x()
+        ~~~
+    TypeError: 'int' object is not callable
+    "#);
 }
 
 #[test]
@@ -660,6 +1015,9 @@ fn call_function_raises_exception() {
     let err = s.call_function("boom", vec![], PrintWriter::Stdout).unwrap_err();
     assert_snapshot!(err, @r#"
     Traceback (most recent call last):
+      File "<python-input-1>", line 1, in <module>
+        boom()
+        ~~~~~~
       File "<python-input-0>", line 1, in boom
         def boom(): raise ValueError('kaboom')
     ValueError: kaboom
@@ -693,6 +1051,39 @@ def bar(): pass
     let mut names = s.function_names();
     names.sort_unstable();
     assert_eq!(names, vec!["bar", "foo"]);
+}
+
+#[test]
+fn function_names_excludes_classes_and_methods() {
+    // The helper is deliberately narrower than `is_callable`: plain functions
+    // and lambdas count, but classes, namedtuple classes, and bound methods —
+    // all callable — must not be surfaced as "functions".
+    // Import via the module so the only function-valued global is `foo`/`lam`
+    // (a bare `from collections import namedtuple` would surface `namedtuple`
+    // itself, which is correctly a function).
+    let s = repl_with_code(
+        "\
+import collections
+def foo(): pass
+lam = lambda: 1
+class Cls:
+    def method(self): pass
+Point = collections.namedtuple('Point', ['a'])
+inst = Cls()
+bound = inst.method
+x = 42
+",
+    );
+    let mut names = s.function_names();
+    names.sort_unstable();
+    assert_eq!(names, vec!["foo", "lam"]);
+    assert!(s.has_function("foo"));
+    assert!(s.has_function("lam"));
+    assert!(!s.has_function("Cls")); // a class is callable but not a function
+    assert!(!s.has_function("Point")); // a namedtuple class likewise
+    assert!(!s.has_function("bound")); // a bound method likewise
+    assert!(!s.has_function("inst"));
+    assert!(!s.has_function("x"));
 }
 
 #[test]

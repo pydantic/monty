@@ -32,7 +32,8 @@
 use std::{cell::Cell, fmt::Display, ops::RangeInclusive};
 
 use monty_types::{
-    DictPairs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone, MontyType,
+    DictPairs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyDate, MontyDateTime, MontyFileHandle,
+    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -203,6 +204,8 @@ mod tag {
     pub const REPR: u32 = 26;
     pub const CYCLE: u32 = 27;
     pub const INSTANCE_TYPE: u32 = 28;
+    pub const NOT_IMPLEMENTED: u32 = 29;
+    pub const TIME: u32 = 30;
 }
 
 // ============================================================================
@@ -218,6 +221,7 @@ mod tag {
 fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
     match obj {
         MontyObject::Ellipsis => encoding::message::encode(tag::ELLIPSIS, &pb::Unit {}, buf),
+        MontyObject::NotImplemented => encoding::message::encode(tag::NOT_IMPLEMENTED, &pb::Unit {}, buf),
         MontyObject::None => encoding::message::encode(tag::NONE, &pb::Unit {}, buf),
         MontyObject::Bool(b) => encoding::bool::encode(tag::BOOLEAN, b, buf),
         MontyObject::Int(i) => encoding::sint64::encode(tag::INT, i, buf),
@@ -259,6 +263,10 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
         MontyObject::DateTime(dt) => {
             encode_message_key(tag::DATETIME, datetime_len(dt), buf);
             encode_datetime(dt, buf);
+        }
+        MontyObject::Time(t) => {
+            encode_message_key(tag::TIME, time_len(t), buf);
+            encode_time(t, buf);
         }
         MontyObject::TimeDelta(td) => encoding::message::encode(tag::TIMEDELTA, &timedelta_to_proto(td), buf),
         MontyObject::TimeZone(tz) => {
@@ -333,6 +341,7 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
 fn object_len(obj: &MontyObject) -> usize {
     match obj {
         MontyObject::Ellipsis => encoding::message::encoded_len(tag::ELLIPSIS, &pb::Unit {}),
+        MontyObject::NotImplemented => encoding::message::encoded_len(tag::NOT_IMPLEMENTED, &pb::Unit {}),
         MontyObject::None => encoding::message::encoded_len(tag::NONE, &pb::Unit {}),
         MontyObject::Bool(b) => encoding::bool::encoded_len(tag::BOOLEAN, b),
         MontyObject::Int(i) => encoding::sint64::encoded_len(tag::INT, i),
@@ -352,6 +361,7 @@ fn object_len(obj: &MontyObject) -> usize {
         MontyObject::FrozenSet(items) => submessage_len(tag::FROZEN_SET, value_list_len(items)),
         MontyObject::Date(d) => encoding::message::encoded_len(tag::DATE, &date_to_proto(d)),
         MontyObject::DateTime(dt) => submessage_len(tag::DATETIME, datetime_len(dt)),
+        MontyObject::Time(t) => submessage_len(tag::TIME, time_len(t)),
         MontyObject::TimeDelta(td) => encoding::message::encoded_len(tag::TIMEDELTA, &timedelta_to_proto(td)),
         MontyObject::TimeZone(tz) => submessage_len(tag::TIMEZONE, timezone_len(tz)),
         MontyObject::Exception { exc_type, arg } => {
@@ -486,6 +496,30 @@ fn encode_datetime(dt: &MontyDateTime, buf: &mut impl BufMut) {
     encode_opt_str(9, dt.timezone_name.as_deref(), buf);
 }
 
+/// `Time` body: scalar fields 1–4 and `fold = 7` (implicit presence, skipped
+/// at zero) plus explicit-presence `offset_seconds = 5` / `timezone_name = 6`.
+fn time_len(t: &MontyTime) -> usize {
+    uint32_len(1, u32::from(t.hour))
+        + uint32_len(2, u32::from(t.minute))
+        + uint32_len(3, u32::from(t.second))
+        + uint32_len(4, t.microsecond)
+        + t.offset_seconds.map_or(0, |off| encoding::int32::encoded_len(5, &off))
+        + opt_str_len(6, t.timezone_name.as_deref())
+        + uint32_len(7, u32::from(t.fold))
+}
+
+fn encode_time(t: &MontyTime, buf: &mut impl BufMut) {
+    encode_uint32(1, u32::from(t.hour), buf);
+    encode_uint32(2, u32::from(t.minute), buf);
+    encode_uint32(3, u32::from(t.second), buf);
+    encode_uint32(4, t.microsecond, buf);
+    if let Some(off) = t.offset_seconds {
+        encoding::int32::encode(5, &off, buf);
+    }
+    encode_opt_str(6, t.timezone_name.as_deref(), buf);
+    encode_uint32(7, u32::from(t.fold), buf);
+}
+
 /// `TimeZone` body: `int32 offset_seconds = 1; optional string name = 2`.
 fn timezone_len(tz: &MontyTimeZone) -> usize {
     int32_len(1, tz.offset_seconds) + opt_str_len(2, tz.name.as_deref())
@@ -613,6 +647,10 @@ fn decode_field(
             merge_message::<pb::Unit>(wire_type, buf, ctx)?;
             MontyObject::Ellipsis
         }
+        tag::NOT_IMPLEMENTED => {
+            merge_message::<pb::Unit>(wire_type, buf, ctx)?;
+            MontyObject::NotImplemented
+        }
         tag::NONE => {
             merge_message::<pb::Unit>(wire_type, buf, ctx)?;
             MontyObject::None
@@ -660,6 +698,10 @@ fn decode_field(
             let dt: pb::DateTime = merge_message(wire_type, buf, ctx)?;
             MontyObject::DateTime(datetime_from_proto(dt).map_err(to_decode_err)?)
         }
+        tag::TIME => {
+            let t: pb::Time = merge_message(wire_type, buf, ctx)?;
+            MontyObject::Time(time_from_proto(t).map_err(to_decode_err)?)
+        }
         tag::TIMEDELTA => {
             let td: pb::TimeDelta = merge_message(wire_type, buf, ctx)?;
             MontyObject::TimeDelta(timedelta_from_proto(&td).map_err(to_decode_err)?)
@@ -667,7 +709,7 @@ fn decode_field(
         tag::TIMEZONE => {
             let tz: pb::TimeZone = merge_message(wire_type, buf, ctx)?;
             MontyObject::TimeZone(MontyTimeZone {
-                offset_seconds: tz.offset_seconds,
+                offset_seconds: timezone_offset(tz.offset_seconds, "TimeZone.offset_seconds").map_err(to_decode_err)?,
                 name: tz.name,
             })
         }
@@ -1058,8 +1100,32 @@ fn datetime_from_proto(dt: pb::DateTime) -> Result<MontyDateTime, ProtoConvertEr
         minute: ranged_u8(dt.minute, 0..=59, "DateTime.minute")?,
         second: ranged_u8(dt.second, 0..=59, "DateTime.second")?,
         microsecond: bounded(dt.microsecond, 999_999, "DateTime.microsecond")?,
-        offset_seconds: dt.offset_seconds,
+        offset_seconds: dt
+            .offset_seconds
+            .map(|offset| timezone_offset(offset, "DateTime.offset_seconds"))
+            .transpose()?,
         timezone_name: dt.timezone_name,
+    })
+}
+
+fn time_from_proto(t: pb::Time) -> Result<MontyTime, ProtoConvertError> {
+    if t.offset_seconds.is_none() && t.timezone_name.is_some() {
+        return Err(ProtoConvertError::InvalidValue {
+            field: "Time.timezone_name",
+            reason: "timezone_name requires offset_seconds".to_owned(),
+        });
+    }
+    Ok(MontyTime {
+        hour: ranged_u8(t.hour, 0..=23, "Time.hour")?,
+        minute: ranged_u8(t.minute, 0..=59, "Time.minute")?,
+        second: ranged_u8(t.second, 0..=59, "Time.second")?,
+        microsecond: bounded(t.microsecond, 999_999, "Time.microsecond")?,
+        offset_seconds: t
+            .offset_seconds
+            .map(|offset| timezone_offset(offset, "Time.offset_seconds"))
+            .transpose()?,
+        timezone_name: t.timezone_name,
+        fold: ranged_u8(t.fold, 0..=1, "Time.fold")?,
     })
 }
 
@@ -1119,6 +1185,22 @@ fn ranged_u8(value: u32, range: RangeInclusive<u32>, field: &'static str) -> Res
         Err(ProtoConvertError::InvalidValue {
             field,
             reason: format!("{value} is outside the range {}..={}", range.start(), range.end()),
+        })
+    }
+}
+
+/// Checks a wire UTC offset against the range `datetime.timezone`
+/// accepts, so a forged offset names its own field here rather than surfacing as
+/// a generic bad value when the sandbox-side constructor rejects it.
+fn timezone_offset(offset: i32, field: &'static str) -> Result<i32, ProtoConvertError> {
+    if (MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&offset) {
+        Ok(offset)
+    } else {
+        Err(ProtoConvertError::InvalidValue {
+            field,
+            reason: format!(
+                "{offset} is outside the range {MIN_TIMEZONE_OFFSET_SECONDS}..={MAX_TIMEZONE_OFFSET_SECONDS}"
+            ),
         })
     }
 }

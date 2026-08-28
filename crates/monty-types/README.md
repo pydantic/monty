@@ -15,9 +15,8 @@ implementation**.
 - `OsFunctionCall` — the typed OS-call payloads sandboxed code suspends with
   (file reads/writes, `open()`, `os.getenv`, ...), plus the `stat_result`
   builders hosts use to answer them.
-- `ResourceTracker` / `ResourceLimits` — the resource-limit trait the
-  interpreter is generic over, with the stock `NoLimitTracker` and
-  `LimitedTracker` implementations.
+- `ResourceTracker` / `ResourceLimits` — the resource tracker the
+  interpreter uses to enforce time/memory/recursion limits.
 - `PrintStream` / `PrintWriter` — `print()` output capture.
 - `CompileOptions`, `ExtFunctionResult`, `NameLookupResult`, `FileMode`, and
   the CPython-compatible formatting helpers behind their `repr()`s.
@@ -27,7 +26,7 @@ implementation**.
 Host-side crates that need these types without linking the interpreter —
 `monty-fs` (which services `OsFunctionCall`s locally via
 `MountTable::handle_os_call`), `monty-pool` (which talks to Monty workers
-over the wire), the `pydantic-monty` Python bindings and the
+over the wire), the `pydantic-monty-client` Python bindings and the
 `@pydantic/monty` JS bindings — depend on this crate **instead of `monty`**,
 so their binaries never link the interpreter itself. Only worker-side crates
 (`monty-runtime`, `monty-wasm-runtime`, and `monty-proto` with its `worker`

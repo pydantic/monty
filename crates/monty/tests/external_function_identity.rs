@@ -1,21 +1,15 @@
 //! Identity, equality, and export semantics for external function inputs (#347, #345).
 //!
-//! Monty represents external function inputs in two ways depending on whether the
-//! function's `__name__` was interned during parsing:
-//!
-//! - inline `Value::ExtFunction(StringId)` when the name appears in source
-//! - heap `HeapData::ExtFunction(String)` otherwise
-//!
-//! Both refer to the same logical callable: `is`/`==`/`id()`/`hash()` and export
-//! conversion must agree on a single answer based on the name string, regardless
-//! of which path the conversion took.
+//! External functions are heap values cached by lookup name. Host object identity is
+//! unavailable across the subprocess boundary, so live functions with the same name
+//! share sandbox identity regardless of which conversion path produced them.
 
-use monty::{MontyRepl, MontyRun};
-use monty_types::{CompileOptions, MontyObject, NameLookupResult, NoLimitTracker, PrintWriter};
+use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
+use monty_types::{CompileOptions, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
 
 /// Builds two `MontyObject::Function` inputs with the same `__name__` ("foo")
 /// and runs `code` against them as inputs `a` and `b`.
-fn run_with_same_callable_inputs(code: &str) -> MontyObject {
+fn run_with_same_named_callable_inputs(code: &str) -> MontyObject {
     let runner = MontyRun::new(
         code.to_owned(),
         "test.py",
@@ -37,56 +31,41 @@ fn run_with_same_callable_inputs(code: &str) -> MontyObject {
         .unwrap()
 }
 
-/// Source does not mention `foo`, so the function name is not interned and the
-/// conversion takes the heap path. Two separate `to_value` calls allocate two
-/// distinct `HeapId`s, but they refer to the same logical callable.
+/// Separate conversions of a live lookup name reuse its function object.
 #[test]
-fn same_callable_is_and_eq_via_heap_path() {
-    let result = run_with_same_callable_inputs("(a is b, a == b)");
+fn same_named_callables_share_identity() {
+    let result = run_with_same_named_callable_inputs("(a is b, a == b, id(a) == id(b))");
+    assert_eq!(
+        result,
+        MontyObject::Tuple(vec![
+            MontyObject::Bool(true),
+            MontyObject::Bool(true),
+            MontyObject::Bool(true),
+        ]),
+    );
+}
+
+/// Mentioning the host function's name in source does not change its identity.
+#[test]
+fn same_named_callables_share_identity_when_name_is_interned() {
+    let result = run_with_same_named_callable_inputs("foo = None\n(a is b, a == b)");
     assert_eq!(
         result,
         MontyObject::Tuple(vec![MontyObject::Bool(true), MontyObject::Bool(true)]),
     );
 }
 
-/// Source mentions `foo`, so the function name is interned and the conversion
-/// takes the inline `Value::ExtFunction(StringId)` path. Same logical callable,
-/// different representation — identity must agree.
+/// The same live external function occupies one dictionary key.
 #[test]
-fn same_callable_is_and_eq_via_inline_path() {
-    let result = run_with_same_callable_inputs("foo = None\n(a is b, a == b)");
+fn same_named_callables_share_dict_key() {
+    let result = run_with_same_named_callable_inputs("d = {a: 42, b: 43}\n(len(d), d[a], d[b])");
     assert_eq!(
         result,
-        MontyObject::Tuple(vec![MontyObject::Bool(true), MontyObject::Bool(true)]),
+        MontyObject::Tuple(vec![MontyObject::Int(1), MontyObject::Int(43), MontyObject::Int(43)]),
     );
 }
 
-/// `id()` must agree with `is`: equal-by-name → equal-by-id.
-#[test]
-fn same_callable_id_matches() {
-    let result = run_with_same_callable_inputs("id(a) == id(b)");
-    assert_eq!(result, MontyObject::Bool(true));
-}
-
-/// `hash()` must agree with `==`: equal callables hash equally, regardless of
-/// representation. This invariant is required for the dict-key contract.
-#[test]
-fn same_callable_hash_matches() {
-    let result = run_with_same_callable_inputs("hash(a) == hash(b)");
-    assert_eq!(result, MontyObject::Bool(true));
-}
-
-/// Using one binding as a dict key and looking up via the other exercises the
-/// full hash + eq pipeline.
-#[test]
-fn same_callable_round_trips_through_dict() {
-    let result = run_with_same_callable_inputs("d = {a: 42}\nd[b]");
-    assert_eq!(result, MontyObject::Int(42));
-}
-
-/// Two callables with different `__name__` values must remain distinct — Monty
-/// distinguishes external functions by name (the most identity it has after
-/// `MontyObject::Function` conversion has discarded host object identity).
+/// Functions with different names are also distinct objects.
 #[test]
 fn different_named_callables_remain_distinct() {
     let runner = MontyRun::new(
@@ -118,12 +97,10 @@ fn different_named_callables_remain_distinct() {
     );
 }
 
-/// Round-trip export through the inline path (the #345 bug): when the function
-/// name is interned in source, `Value::ExtFunction` previously fell through to
-/// `repr_or_error` and exported as a string rather than `MontyObject::Function`.
-/// After the fix the export representation must be the same as the heap path.
+/// An external function exports as a `MontyObject::Function` even when its name
+/// also appears in source.
 #[test]
-fn inline_callable_exports_as_function_object() {
+fn callable_exports_as_function_object() {
     let runner = MontyRun::new(
         "foo = None\nx".to_owned(),
         "test.py",
@@ -176,25 +153,12 @@ fn callable_export_stable_across_source_mention() {
     assert_eq!(r1, r2);
 }
 
-/// REPL-driven cross-representation scenario.
-///
-/// `MontyRepl` accumulates interned strings across feeds (see `repl.rs:252`
-/// where the executor's interns commit back to the session). This makes a
-/// mixed inline/heap `ExtFunction` state reachable: a host-supplied function
-/// name that the first feed didn't intern becomes interned by a later feed,
-/// so a subsequent resolution to the same callable takes the inline path
-/// while the first feed's binding is still the heap `Ref`.
-///
-/// This exercises the cross-representation arms in `Value::is`, `Value::id`,
-/// `Value::py_eq`, and the hash alignment — the production path the
-/// unit-input tests above cannot reach.
+/// A live external function retains object identity across REPL feeds.
 #[test]
-fn repl_cross_representation_extfunction_identity() {
-    let repl = MontyRepl::new("session.py", NoLimitTracker, CompileOptions::default());
+fn repl_extfunction_identity_across_feeds() {
+    let repl = MontyRepl::new("session.py", ResourceTracker::default(), CompileOptions::default());
 
-    // Feed 1: `x = foobar` triggers NameLookup for "foobar"; host returns a
-    // `Function` whose `__name__` ("ext_fn") does not appear in feed 1's
-    // source, so it is not interned and the conversion takes the heap path.
+    // Feed 1 resolves "foobar" to a host function named "ext_fn".
     let progress = repl.feed_start("x = foobar", vec![], PrintWriter::Stdout).unwrap();
     let lookup = progress.into_name_lookup().expect("expected NameLookup for 'foobar'");
     assert_eq!(lookup.name, "foobar");
@@ -209,10 +173,7 @@ fn repl_cross_representation_extfunction_identity() {
         .unwrap();
     let (repl, _) = progress.into_complete().expect("feed 1 should complete");
 
-    // Feed 2: source mentions `ext_fn` as a name (interning it), then resolves
-    // a second NameLookup ("barbaz") to the same `Function(name="ext_fn")`.
-    // That conversion now finds "ext_fn" interned and takes the inline path —
-    // creating the inline-vs-heap mix between `y` and `x`.
+    // Feed 2 resolves another name to a function with the same lookup name.
     let progress = repl
         .feed_start(
             "ext_fn = 1\ny = barbaz\n(x is y, x == y, id(x) == id(y), hash(x) == hash(y))",
@@ -233,7 +194,7 @@ fn repl_cross_representation_extfunction_identity() {
         .unwrap();
     let (_repl, result) = progress.into_complete().expect("feed 2 should complete");
 
-    // All four cross-representation checks must agree:
+    // The second conversion reuses the live function object cached by name.
     assert_eq!(
         result,
         MontyObject::Tuple(vec![
@@ -241,6 +202,159 @@ fn repl_cross_representation_extfunction_identity() {
             MontyObject::Bool(true),
             MontyObject::Bool(true),
             MontyObject::Bool(true),
+        ]),
+    );
+}
+
+/// Snapshot loading rebuilds the weak cache from live external functions.
+#[test]
+fn extfunction_cache_is_rebuilt_after_snapshot_load() {
+    let runner = MontyRun::new(
+        "gate()\ny = missing\nx is y".to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(
+            vec![MontyObject::Function {
+                name: "ext_fn".to_owned(),
+                docstring: None,
+            }],
+            ResourceTracker::default(),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let bytes = dump("test.py", None, SessionRef::Running(&progress)).unwrap();
+    assert_eq!(resume_snapshot_identity_test(progress), MontyObject::Bool(true));
+
+    let Session::Running(progress) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped a running session")
+    };
+    let progress = *progress;
+    assert_eq!(resume_snapshot_identity_test(progress), MontyObject::Bool(true));
+}
+
+/// Completes the snapshot cache test while preserving refcount cleanup.
+fn resume_snapshot_identity_test(progress: RunProgress) -> MontyObject {
+    let call = progress.into_function_call().expect("expected call to 'gate'");
+    assert_eq!(call.function_name, "gate");
+
+    let progress = call.resume(MontyObject::None, PrintWriter::Stdout).unwrap();
+    let lookup = progress.into_name_lookup().expect("expected NameLookup for 'missing'");
+    let progress = lookup
+        .resume(
+            NameLookupResult::Value(MontyObject::Function {
+                name: "ext_fn".to_owned(),
+                docstring: None,
+            }),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    progress.into_complete().unwrap()
+}
+
+/// Dropping the last reference removes the weak-cache entry before slot reuse.
+#[test]
+fn repl_extfunction_cache_does_not_retain_freed_id() {
+    let repl = MontyRepl::new("session.py", ResourceTracker::default(), CompileOptions::default());
+
+    let progress = repl.feed_start("x = foobar", vec![], PrintWriter::Stdout).unwrap();
+    let lookup = progress.into_name_lookup().expect("expected NameLookup for 'foobar'");
+    let progress = lookup
+        .resume(
+            NameLookupResult::Value(MontyObject::Function {
+                name: "ext_fn".to_owned(),
+                docstring: None,
+            }),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let (repl, _) = progress.into_complete().expect("feed 1 should complete");
+
+    let progress = repl
+        .feed_start("x = None\noccupied = []", vec![], PrintWriter::Stdout)
+        .unwrap();
+    let (repl, _) = progress.into_complete().expect("feed 2 should complete");
+
+    let progress = repl
+        .feed_start(
+            "y = barbaz\n(y is occupied, y == occupied)",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let lookup = progress.into_name_lookup().expect("expected NameLookup for 'barbaz'");
+    let progress = lookup
+        .resume(
+            NameLookupResult::Value(MontyObject::Function {
+                name: "ext_fn".to_owned(),
+                docstring: None,
+            }),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let (_repl, result) = progress.into_complete().expect("feed 3 should complete");
+
+    assert_eq!(
+        result,
+        MontyObject::Tuple(vec![MontyObject::Bool(false), MontyObject::Bool(false)]),
+    );
+}
+
+/// Cycle collection removes weak entries for external-function children.
+#[cfg(feature = "test-hooks")]
+#[test]
+fn gc_freed_ext_function_does_not_retain_freed_id() {
+    let code = "\
+import gc
+d = {}
+d['f'] = a
+d['self'] = d
+d = None
+a = None
+gc.collect()
+occupied = [1, 2, 3]
+y = missing
+(y is occupied, repr(y))
+";
+    let runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["a".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(
+            vec![MontyObject::Function {
+                name: "ext_fn".to_owned(),
+                docstring: None,
+            }],
+            ResourceTracker::default(),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    let lookup = progress.into_name_lookup().expect("expected NameLookup for 'missing'");
+    assert_eq!(lookup.name, "missing");
+    let progress = lookup
+        .resume(
+            NameLookupResult::Value(MontyObject::Function {
+                name: "ext_fn".to_owned(),
+                docstring: None,
+            }),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let result = progress.into_complete().expect("run should complete");
+
+    assert_eq!(
+        result,
+        MontyObject::Tuple(vec![
+            MontyObject::Bool(false),
+            MontyObject::String("<function 'ext_fn' external>".to_owned()),
         ]),
     );
 }

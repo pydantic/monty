@@ -24,11 +24,14 @@ use std::{
 
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
+// only the dump round-trip needs these, and it is skipped under memory-model-checks
+#[cfg(not(feature = "memory-model-checks"))]
+use monty::{Dump, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException,
-    MontyFileHandle, MontyObject, MontyTimeZone, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits,
+    CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
+    MontyObject, MontyTimeZone, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker,
     dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -65,7 +68,7 @@ const TEST_RECURSION_LIMIT: usize = 50;
 /// 100_000 otherwise — tests that need a larger value to stay within the
 /// timeout opt into it via `# gc-interval=<N>`.
 fn default_test_limits() -> ResourceLimits {
-    ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT))
+    ResourceLimits::default().max_recursion_depth(TEST_RECURSION_LIMIT)
 }
 
 /// Builds a `MontyRun` with production-default [`CompileOptions`] so fixtures
@@ -1337,18 +1340,17 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
                 let result = ex.run_ref_counts(vec![]);
                 match result {
                     Ok(monty::RefCountOutput {
-                        counts,
-                        unique_refs,
-                        heap_count,
-                        ..
+                        counts, unreachable, ..
                     }) => {
-                        // Strict matching: verify all heap objects are accounted for by variables
-                        if unique_refs != heap_count {
+                        // Strict matching: every live heap object must be reachable from a
+                        // named variable, transitively. Leftovers are leaks — a missed
+                        // `drop_with` — and are named here so the culprit is identifiable.
+                        if !unreachable.is_empty() {
                             return Err(TestFailure {
                                 test_name,
                                 kind: "Strict matching".to_string(),
-                                expected: format!("{heap_count} heap objects"),
-                                actual: format!("{unique_refs} referenced by variables, counts: {counts:?}"),
+                                expected: "no unreachable heap objects".to_string(),
+                                actual: format!("leaked {}: {}", unreachable.len(), unreachable.join(", ")),
                             });
                         }
                         if &counts != expected {
@@ -1384,7 +1386,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
 
     match new_monty_run(code, &test_name) {
         Ok(ex) => {
-            let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+            let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
             match result {
                 Ok(obj) => match expectation {
                     Expectation::ReturnStr(expected) => {
@@ -1750,7 +1752,7 @@ fn run_mount_fs_iter_loop(
     mount_table: &mut MountTable,
     limits: ResourceLimits,
 ) -> Result<MontyObject, MontyException> {
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
+    let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
 
     loop {
         match progress {
@@ -1792,7 +1794,7 @@ fn run_mount_fs_iter_loop(
 /// - Sync functions: result is passed immediately via `state.run()`
 /// - Async functions: `state.run_pending()` creates a future, resolved via `ResolveFutures`
 fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, MontyException> {
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
+    let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
 
     // Track pending async calls: (call_id, pre-built ExtFunctionResult).
     // Successful async calls produce `Return(value)`; `async_fail` produces
@@ -1801,12 +1803,13 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
     let mut pending_results: Vec<(u32, ExtFunctionResult)> = Vec::new();
 
     loop {
-        // Test serialization round-trip at each step (skip when memory-model-checks is enabled
-        // since the old RunProgress would panic on drop without proper cleanup)
+        // Dump and reload the suspended state at each step, so every test case's
+        // heap shape goes through the real dump format. (Skipped under
+        // memory-model-checks: the discarded `RunProgress` would panic on drop
+        // without proper cleanup.)
         #[cfg(not(feature = "memory-model-checks"))]
         {
-            let bytes = progress.dump().expect("failed to dump RunProgress");
-            progress = RunProgress::load(&bytes).expect("failed to load RunProgress");
+            progress = dump_load_round_trip(&progress);
         }
 
         match progress {
@@ -1891,6 +1894,17 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                 progress = call.resume(result, PrintWriter::Stdout)?;
             }
         }
+    }
+}
+
+/// Dumps a suspended run and reloads it, so every test case exercises the real
+/// dump format rather than only the underlying serde impls.
+#[cfg(not(feature = "memory-model-checks"))]
+fn dump_load_round_trip(progress: &RunProgress) -> RunProgress {
+    let bytes = dump("test.py", None, SessionRef::Running(progress)).expect("failed to dump RunProgress");
+    match Dump::load(&bytes).expect("failed to load RunProgress").state {
+        Session::Running(progress) => *progress,
+        _ => panic!("dumped a running session, loaded something else"),
     }
 }
 

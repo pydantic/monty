@@ -10,13 +10,12 @@
 
 use std::{borrow::Cow, mem};
 
-use ahash::AHashSet;
 use monty_types::{MontyException, StackFrame};
 
 use super::{
     RESERVED_MODULE_DUNDERS,
-    builder::{CodeBuilder, JumpLabel, JumpTarget},
-    code::Code,
+    builder::{CodeBuilder, JumpLabel, JumpTarget, Offset},
+    code::{Code, HandlerKind},
     op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode, assert_flags},
 };
 use crate::{
@@ -24,14 +23,15 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     exception_private::ExcType,
     expressions::{
-        AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope,
-        Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        AssignTarget, Callable, CaptureSource, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier,
+        Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
     intern::{Interns, StringId},
     modules::StandardLib,
     name_map::NameMap,
+    namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try},
     run::CompileOptions,
     source_map::{SourceMap, StackFrameExt},
@@ -73,6 +73,13 @@ const MAX_UNPACK_TARGETS: usize = 255;
 /// `u8` depth. CPython has no equivalent limit but real Python comprehension
 /// usage is far below this cap.
 const MAX_COMP_GENERATORS: usize = 255;
+
+/// Maximum number of emitted copies of `finally` bodies in one code object.
+///
+/// Non-local exits require stack-specific copies, and nested `finally` blocks
+/// can otherwise amplify a small source tree exponentially before VM resource
+/// limits exist.
+const MAX_FINALLY_COPIES: u16 = 1024;
 
 /// Converts a `usize` namespace size into the `u16` slot count expected by
 /// the bytecode, surfacing a `CompileError` if the limit is exceeded.
@@ -128,6 +135,20 @@ fn target_position(target: &UnpackTarget) -> CodeRange {
     match target {
         UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => ident.position,
         UnpackTarget::Tuple { position, .. } => *position,
+    }
+}
+
+/// Whether an expression can resume a pushed/suspended call at its end offset.
+fn return_expr_needs_padding(expr: &ExprLoc) -> bool {
+    match &expr.expr {
+        Expr::Call { .. } | Expr::AttrCall { .. } | Expr::IndirectCall { .. } | Expr::Await(_) => true,
+        Expr::IfElse { orelse, .. } => return_expr_needs_padding(orelse),
+        Expr::Op {
+            op: Operator::And | Operator::Or,
+            right,
+            ..
+        } => return_expr_needs_padding(right),
+        _ => false,
     }
 }
 
@@ -240,26 +261,13 @@ pub struct Compiler<'a> {
     /// finishes, so inner functions have lower indices.
     functions: Vec<Function>,
 
-    /// Loop stack for break/continue handling.
-    /// Each entry tracks the loop start offset and pending break jumps.
-    loop_stack: Vec<LoopInfo>,
+    /// Enclosing control blocks whose cleanup is emitted by non-local exits.
+    /// This mirrors CPython's compiler `fblockinfo` stack and keeps each
+    /// `finally` body masked while its inline copy is compiled.
+    fblocks: Vec<FBlock<'a>>,
 
-    /// Stack of finally targets for handling returns inside try-finally.
-    ///
-    /// When a return statement is compiled inside a try-finally block, instead
-    /// of immediately returning, we store the return value and jump to the
-    /// finally block. The finally block will then execute the return.
-    finally_targets: Vec<FinallyTarget>,
-
-    /// Tracks nesting depth inside exception handlers.
-    ///
-    /// When break/continue/return is inside an except handler, we need to
-    /// emit one `ClearException` per enclosing handler to drain the per-handler
-    /// `exception_stack` entries before jumping to the finally path or loop
-    /// target. The exception *value* is already off the operand stack — it's
-    /// consumed eagerly at handler entry (stored to the `as` binding or
-    /// popped) — so no operand-stack Pop is needed here.
-    except_handler_depth: u16,
+    /// Number of `finally` body copies emitted into this code object.
+    finally_copies: u16,
 
     /// Whether the compiler is currently compiling module-level code.
     ///
@@ -277,109 +285,220 @@ pub struct Compiler<'a> {
     ///   nothing is stored in the frame's locals region.
     frame_locals: u16,
 
-    /// Operand-stack offsets for comp-var slot IDs currently in scope.
+    /// Compile-time storage state for active comprehension target slots.
     ///
-    /// Indexed by the slot ID stored in the prepared `Identifier`. The value is
-    /// the absolute operand-stack offset of that comp-var (set after the
-    /// `FOR_ITER` / `UNPACK_SEQUENCE` / `LIFT_TO_TOP` chain that landed it on
-    /// the stack, by `compile_comp_target_unpack`). Used by `compile_name` for
-    /// `NameScope::CompVar` to emit `LoadLocal/W(frame_locals + offset)`.
-    ///
-    /// Pushed/truncated with each comprehension via `enter_comprehension` /
-    /// `exit_comprehension`, so sibling comps reuse slot IDs cleanly.
-    slot_offsets: Vec<u16>,
-
-    /// Slot IDs that are statically known to have been assigned at the current
-    /// emission point.
-    ///
-    /// Updated by `compile_comp_target_unpack` when it records a leaf's offset
-    /// (= the moment the comp's `for` clause has stored a value into that
-    /// slot). Read by `compile_name` for `NameScope::CompVar`: bound reads
-    /// emit `LoadLocal/W`; unbound reads (slot not yet in this set) emit
-    /// `RaiseUnboundLocal(name_id)`. The same comprehension's slots are
-    /// removed at `exit_comprehension`, so sibling comps start fresh.
-    bound_comp_slots: AHashSet<u16>,
+    /// Slot IDs are unique among nested comprehensions and reused by siblings.
+    /// Each entry records whether the target is unbound, stack-backed, or
+    /// cell-backed, together with its absolute frame-stack offset.
+    comp_slots: Vec<Option<CompSlot>>,
 
     /// Whether to compile pytest-style assert failure annotations.
     /// Propagated to nested function and class-body compilers.
     assert_message_annotations: bool,
 }
 
-/// Information about a loop for break/continue handling.
-///
-/// Tracks the bytecode locations needed for compiling break and continue statements:
-/// - `start`: where continue should jump to (the ForIter instruction for `for` loops,
-///   or condition evaluation for `while` loops)
-/// - `break_jumps`: pending jumps from break statements that need to be patched
-///   to jump past the loop's else block
-/// - `has_iterator_on_stack`: whether this loop has an iterator on the stack that
-///   needs to be popped on break (true for `for` loops, false for `while` loops)
+/// Jump targets needed to compile `break` and `continue`.
 struct LoopInfo {
-    /// Bytecode position + stack depth at loop start (for continue).
-    /// `emit_jump_to` uses the depth to enforce the backward-jump merge invariant.
+    /// Loop start and its stack depth, used by `continue`.
     start: JumpTarget,
-    /// Jump labels that need patching to loop end (for break).
-    /// Entries from breaks emitted in dead state are no-op labels — `patch_jump`
-    /// ignores them silently.
+    /// `break` jumps awaiting the loop's final target.
     break_jumps: Vec<JumpLabel>,
-    /// Whether this loop has an iterator on the stack.
-    /// True for `for` loops, false for `while` loops.
-    has_iterator_on_stack: bool,
 }
 
-/// A break or continue that needs to go through a finally block.
+/// Exception-table ranges owned by one active control block.
 ///
-/// When break/continue is inside a try-finally, we need to run the finally block
-/// before executing the break/continue. This struct tracks the jump and which
-/// loop it targets.
-struct BreakContinueThruFinally {
-    /// The jump instruction that needs to be patched. A no-op label if the
-    /// break/continue was emitted from dead state; `patch_jump` ignores it.
-    jump: JumpLabel,
-    /// The loop depth (index in loop_stack) being targeted.
-    target_loop_depth: usize,
+/// Inline cleanup interrupts only the exited region; enclosing regions remain
+/// open so they can catch failures from inner cleanup code.
+struct Region {
+    /// Completed sub-ranges, in emission order.
+    ranges: Vec<(Offset, Offset)>,
+    /// Start of the currently open sub-range; `None` while interrupted.
+    open_start: Option<Offset>,
+    /// Operand-stack depth at region entry (`ExceptionEntry::stack_depth`).
+    stack_depth: u16,
+    /// Frame-relative `exception_stack` length at region entry
+    /// (`ExceptionEntry::exception_stack_count`).
+    exc_stack_count: u16,
 }
 
-/// Tracks a finally block for handling returns/break/continue inside try-finally.
-///
-/// When compiling a try-finally, we push a `FinallyTarget` to track jumps
-/// from return/break/continue statements that need to go through the finally block.
-struct FinallyTarget {
-    /// Jump labels for returns inside the try block that need to go to finally.
-    return_jumps: Vec<JumpLabel>,
-    /// Break statements that need to go through this finally block.
-    break_jumps: Vec<BreakContinueThruFinally>,
-    /// Continue statements that need to go through this finally block.
-    continue_jumps: Vec<BreakContinueThruFinally>,
-    /// The loop depth when this finally was entered.
-    /// Used to determine if break/continue targets a loop outside this finally.
-    loop_depth_at_entry: usize,
-    /// `except_handler_depth` at the try-statement entry — i.e. the number
-    /// of enclosing `except` clauses that are still alive while control is
-    /// inside this finally's protected region. A `return` that crosses
-    /// this finally must NOT pop those handlers' exception state (the
-    /// finally body might reference them); cleanup of handlers between
-    /// here and the next-outer finally is the responsibility of this
-    /// finally's emit_return_routing trailer.
-    except_handler_depth_at_entry: u16,
+impl Region {
+    /// Opens a region starting at `start`.
+    fn open(start: Offset, stack_depth: u16, exc_stack_count: u16) -> Self {
+        Self {
+            ranges: Vec::new(),
+            open_start: Some(start),
+            stack_depth,
+            exc_stack_count,
+        }
+    }
+
+    /// Closes the current sub-range at `at`; the region stays interrupted
+    /// until [`resume`](Self::resume). No-op if already interrupted.
+    fn interrupt(&mut self, at: Offset) {
+        if let Some(start) = self.open_start.take()
+            && start != at
+        {
+            self.ranges.push((start, at));
+        }
+    }
+
+    /// Re-opens the region at `at` after an interruption.
+    fn resume(&mut self, at: Offset) {
+        assert!(
+            self.open_start.is_none(),
+            "Region::resume on a region that is already open"
+        );
+        self.open_start = Some(at);
+    }
+
+    /// Emits each non-empty sub-range, in emission order, to `handler`.
+    /// Uninterrupted regions — all but those split by a non-local exit — emit
+    /// their single range without allocating.
+    fn add_entries(
+        mut self,
+        end: Offset,
+        code: &mut CodeBuilder,
+        handler: Offset,
+        kind: HandlerKind,
+    ) -> Result<(), CompileError> {
+        if self.ranges.is_empty() {
+            match self.open_start {
+                Some(start) if start != end => {
+                    code.add_exception_entry(start, end, handler, self.stack_depth, self.exc_stack_count, kind)
+                }
+                _ => Ok(()),
+            }
+        } else {
+            self.interrupt(end);
+            for (start, end) in self.ranges {
+                code.add_exception_entry(start, end, handler, self.stack_depth, self.exc_stack_count, kind)?;
+            }
+            Ok(())
+        }
+    }
 }
 
-/// A simulated entry on the operand stack during comprehension target unpacking.
-///
-/// The compiler walks each comp target by recursively unpacking tuples,
-/// emitting `UnpackSequence`/`UnpackEx`/`LiftToTop` as needed, and tracks the
-/// per-step stack state in a `Vec<SimItem>`. Tracking is necessary because
-/// `LiftToTop` reorders items; without simulating, the compiler couldn't tell
-/// which final operand-stack offset each comp-var leaf ends up at.
+/// Enclosing construct whose cleanup runs for non-local control flow.
+/// Mirrors CPython's `fblockinfo`; combined `try` forms use an outer
+/// `FinallyTry` around their `try/except/else` body.
+enum FBlock<'a> {
+    /// A `while` loop. No stack contribution.
+    WhileLoop(LoopInfo),
+    /// A `for` loop: the iterator sits on the operand stack and is popped
+    /// when `break`/`return` exits the loop.
+    ForLoop(LoopInfo),
+    /// The protected body of a `try` with handlers; exceptions route to the
+    /// handler-dispatch code.
+    TryExcept { region: Region },
+    /// A protected `try/finally`; `finally` is emitted inline for each exit.
+    FinallyTry {
+        region: Region,
+        finally: &'a [PreparedNode],
+    },
+    /// An `except` body, including cleanup for its active exception and target.
+    ExceptHandler {
+        name: Option<&'a Identifier>,
+        region: Region,
+    },
+    /// An exception-path `finally` whose exception is swallowed on escape.
+    FinallyEnd,
+    /// A `with` body: the context manager sits on the operand stack and
+    /// `__exit__` is invoked when control exits the block.
+    With { region: Region },
+    /// A return value to discard if control escapes an inline `finally`.
+    PopValue,
+}
+
+impl<'a> FBlock<'a> {
+    /// The block's protected region, if it owns one.
+    fn region_mut(&mut self) -> Option<&mut Region> {
+        match self {
+            Self::TryExcept { region }
+            | Self::FinallyTry { region, .. }
+            | Self::ExceptHandler { region, .. }
+            | Self::With { region } => Some(region),
+            Self::WhileLoop(_) | Self::ForLoop(_) | Self::FinallyEnd | Self::PopValue => None,
+        }
+    }
+
+    /// Extracts a `ForLoop` or panics on a compiler invariant bug.
+    fn expect_for_loop(self) -> LoopInfo {
+        match self {
+            Self::ForLoop(info) => info,
+            _ => panic!("expected a for-loop frame block"),
+        }
+    }
+
+    /// Extracts a `WhileLoop` or panics on a compiler invariant bug.
+    fn expect_while_loop(self) -> LoopInfo {
+        match self {
+            Self::WhileLoop(info) => info,
+            _ => panic!("expected a while-loop frame block"),
+        }
+    }
+
+    /// Extracts a `TryExcept` region or panics on a compiler invariant bug.
+    fn expect_try_except(self) -> Region {
+        match self {
+            Self::TryExcept { region } => region,
+            _ => panic!("expected a try/except frame block"),
+        }
+    }
+
+    /// Extracts a `FinallyTry` region or panics on a compiler invariant bug.
+    fn expect_finally_try(self) -> Region {
+        match self {
+            Self::FinallyTry { region, .. } => region,
+            _ => panic!("expected a try/finally frame block"),
+        }
+    }
+
+    /// Extracts an `ExceptHandler` block or panics on an invariant bug.
+    fn expect_except_handler(self) -> (Option<&'a Identifier>, Region) {
+        match self {
+            Self::ExceptHandler { name, region } => (name, region),
+            _ => panic!("expected an except-handler frame block"),
+        }
+    }
+
+    /// Extracts a `With` region or panics on a compiler invariant bug.
+    fn expect_with(self) -> Region {
+        match self {
+            Self::With { region } => region,
+            _ => panic!("expected a with frame block"),
+        }
+    }
+
+    /// Verifies that this is an exception-path `finally` block.
+    fn expect_finally_end(self) {
+        assert!(matches!(self, Self::FinallyEnd), "expected a finally-end frame block");
+    }
+
+    /// Verifies that this is a pending-return-value block.
+    fn expect_pop_value(self) {
+        assert!(matches!(self, Self::PopValue), "expected a pending-value frame block");
+    }
+}
+
+/// Simulated operand while compiling nested comprehension targets.
+/// Tracking is required because `LiftToTop` reorders values before their final
+/// stack offsets are known.
 enum SimItem<'a> {
-    /// A finalized comp-var leaf. The slot ID gets mapped to an absolute
-    /// operand-stack offset (via its position in the sim Vec) once all
-    /// unpacking has finished.
+    /// A finalized target awaiting its absolute stack offset.
     Leaf(u16),
-    /// A value that still needs to be matched against an `UnpackTarget`
-    /// (which may be a nested `Tuple`). The borrowed target tells the
-    /// compiler how to drive the next UNPACK / Lift step.
+    /// A value awaiting its next unpack or lift operation.
     Pending(&'a UnpackTarget),
+}
+
+/// Storage selected for an active comprehension target.
+#[derive(Clone, Copy)]
+enum CompSlot {
+    /// A captured target whose stable cell has not been assigned yet.
+    UnboundCell(u16),
+    /// An uncaptured target stored directly at this frame-stack offset.
+    Value(u16),
+    /// A captured target stored in the cell at this frame-stack offset.
+    Cell(u16),
 }
 
 /// Result of module compilation: the module code and all compiled functions.
@@ -391,14 +510,9 @@ pub struct CompileResult {
 }
 
 impl<'a> Compiler<'a> {
-    /// Creates a new compiler with access to the string interner.
-    ///
-    /// `frame_locals` is the runtime `locals_count` for this code object:
-    /// 0 for module-level code (globals live in `self.globals`, not on the
-    /// stack), or the function's namespace size at function scope. Comp-var
-    /// load/store opcodes encode `frame_locals + offset` as their slot
-    /// operand so plain `LoadLocal/W` and `StoreLocal/W` reach the correct
-    /// operand-stack position at runtime.
+    /// Creates a compiler for a module or function.
+    /// `frame_locals` is zero at module scope or the function namespace size;
+    /// comprehension slots follow it on the operand stack.
     fn new(
         interns: &'a Interns,
         functions: Vec<Function>,
@@ -412,13 +526,11 @@ impl<'a> Compiler<'a> {
             code,
             interns,
             functions,
-            loop_stack: Vec::new(),
-            finally_targets: Vec::new(),
-            except_handler_depth: 0,
+            fblocks: Vec::new(),
+            finally_copies: 0,
             is_module_scope,
             frame_locals,
-            slot_offsets: Vec::new(),
-            bound_comp_slots: AHashSet::new(),
+            comp_slots: Vec::new(),
             assert_message_annotations,
         }
     }
@@ -506,8 +618,8 @@ impl<'a> Compiler<'a> {
         Ok((compiler.code.build(num_locals), compiler.functions))
     }
 
-    /// Compiles a block of statements.
-    fn compile_block(&mut self, nodes: &[PreparedNode]) -> Result<(), CompileError> {
+    /// Compiles statements, retaining `finally` bodies for inline cleanup.
+    fn compile_block(&mut self, nodes: &'a [PreparedNode]) -> Result<(), CompileError> {
         for node in nodes {
             if self.code.is_dead() {
                 // Don't bother compiling dead code
@@ -523,7 +635,7 @@ impl<'a> Compiler<'a> {
     // ========================================================================
 
     /// Compiles a single statement.
-    fn compile_stmt(&mut self, node: &PreparedNode) -> Result<(), CompileError> {
+    fn compile_stmt(&mut self, node: &'a PreparedNode) -> Result<(), CompileError> {
         // Node is an alias, use qualified path for matching
         match node {
             Node::Expr(expr) => {
@@ -666,7 +778,7 @@ impl<'a> Compiler<'a> {
                     self.code.emit(Opcode::Reraise)?;
                 }
             }
-            Node::FunctionDef(func_def) => self.compile_function_def(func_def)?,
+            Node::FunctionDef { def, decorators } => self.compile_function_def(def, decorators)?,
             Node::ClassDef {
                 name,
                 body,
@@ -703,9 +815,26 @@ impl<'a> Compiler<'a> {
     /// 2. Creating a Function struct with the compiled Code
     /// 3. Adding the Function to the compiler's functions vector
     /// 4. Emitting bytecode to evaluate defaults and create the function at runtime
-    fn compile_function_def(&mut self, func_def: &PreparedFunctionDef) -> Result<(), CompileError> {
-        // Build the function object on the stack, then bind it to its name slot.
+    fn compile_function_def(
+        &mut self,
+        func_def: &PreparedFunctionDef,
+        decorators: &[ExprLoc],
+    ) -> Result<(), CompileError> {
+        // Pushed in source order so they sit below the function value: the
+        // applying calls below then run bottom-up, like CPython's `f = deco(f)`.
+        for decorator in decorators {
+            self.compile_expr(decorator)?;
+        }
+        // Build the function object on the stack...
         self.emit_make_function(func_def, "function")?;
+        // ...then apply each decorator, reversed so the bottom-most (last pushed)
+        // applies first, each located at its own decorator so a traceback pins the
+        // one that raised.
+        for decorator in decorators.iter().rev() {
+            self.code.set_location(decorator.position, None);
+            self.code.emit_u8(Opcode::CallFunction, 1)?;
+        }
+        // ...and bind the (possibly decorated) function to its name slot.
         self.compile_store(&func_def.name)?;
         Ok(())
     }
@@ -778,11 +907,23 @@ impl<'a> Compiler<'a> {
 
         // 2. Create the compiled Function and add to the vector
         let func_id = functions.len();
+        // `Function` retains the legacy numeric source metadata for serialized-code
+        // compatibility, although closure construction is fully emitted here.
+        let enclosing_slot_metadata = func_def
+            .free_var_enclosing_slots
+            .iter()
+            .map(|source| match source {
+                CaptureSource::Namespace(slot) => *slot,
+                CaptureSource::CompVar(slot) => {
+                    NamespaceId::new(usize::from(*slot)).expect("comp-var slot fits in NamespaceId")
+                }
+            })
+            .collect();
         let function = Function::new(
             func_def.name,
             func_def.signature.clone(),
             func_def.namespace_size,
-            func_def.free_var_enclosing_slots.clone(),
+            enclosing_slot_metadata,
             func_def.free_var_slots.clone(),
             func_def.cell_var_slots.clone(),
             func_def.cell_param_indices.clone(),
@@ -808,12 +949,17 @@ impl<'a> Compiler<'a> {
                 .emit_u16_u8(Opcode::MakeFunction, func_id_u16, defaults_count)?;
         } else {
             // Push captured cells from enclosing scope.
-            for &slot in &func_def.free_var_enclosing_slots {
-                // Load the cell reference from the enclosing namespace.
-                // `slot` is a `NamespaceId` bound by `check_namespace_size_u16`
-                // on the enclosing scope, so the conversion is an invariant
-                // rather than a user-input check (panic-on-failure is fine).
-                self.code.emit_load_local(slot.as_u16())?;
+            for source in &func_def.free_var_enclosing_slots {
+                let slot = match source {
+                    CaptureSource::Namespace(slot) => slot.as_u16(),
+                    CaptureSource::CompVar(slot) => match self.comp_slots.get(usize::from(*slot)).copied().flatten() {
+                        Some(CompSlot::UnboundCell(offset) | CompSlot::Cell(offset)) => offset,
+                        Some(CompSlot::Value(_)) | None => {
+                            panic!("captured comprehension cell must be active while building closure")
+                        }
+                    },
+                };
+                self.code.emit_load_local(slot)?;
             }
             // MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
             self.code
@@ -1247,16 +1393,29 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u16(Opcode::BuildFString, part_count)?;
             }
 
-            Expr::ListComp { elt, generators } => {
-                self.compile_list_comp(elt, generators)?;
+            Expr::ListComp {
+                elt,
+                generators,
+                captured_slots,
+            } => {
+                self.compile_list_comp(elt, generators, captured_slots)?;
             }
 
-            Expr::SetComp { elt, generators } => {
-                self.compile_set_comp(elt, generators)?;
+            Expr::SetComp {
+                elt,
+                generators,
+                captured_slots,
+            } => {
+                self.compile_set_comp(elt, generators, captured_slots)?;
             }
 
-            Expr::DictComp { key, value, generators } => {
-                self.compile_dict_comp(key, value, generators)?;
+            Expr::DictComp {
+                key,
+                value,
+                generators,
+                captured_slots,
+            } => {
+                self.compile_dict_comp(key, value, generators, captured_slots)?;
             }
 
             Expr::Lambda { func_def } => {
@@ -1369,36 +1528,18 @@ impl<'a> Compiler<'a> {
                 // Emit local slot index — the VM reads the cell HeapId from the stack
                 self.code.emit_u16(Opcode::LoadCell, slot)
             }
-            NameScope::CompVar => {
-                // Comprehension target read. Static analysis tells us
-                // whether the corresponding `for` has stored to this slot
-                // yet in the linear emission order:
-                //
-                // - Bound (`slot ∈ bound_comp_slots`): emit a regular
-                //   `LoadLocal/W` — the comp var lives on the operand stack
-                //   at `frame_locals + offset` (set up by
-                //   `compile_comp_target_unpack` at the corresponding
-                //   FOR_ITER / UNPACK step).
-                // - Unbound: the corresponding `for` clause hasn't stored
-                //   to the slot at this point in the comp (e.g. an earlier
-                //   generator's iter references a later target). Emit
-                //   `RaiseUnboundLocal(name_id)`; the name lives in the
-                //   opcode so sibling comps with different unbound targets
-                //   each report the correct variable.
-                if self.bound_comp_slots.contains(&slot) {
-                    let absolute = self.slot_offsets[slot as usize];
-                    self.code.emit_load_local(absolute)
-                } else {
-                    self.code.emit_raise_unbound_local(ident.name_id)
-                }
-            }
+            NameScope::CompVar => match self.comp_slots.get(usize::from(slot)).copied().flatten() {
+                Some(CompSlot::Value(offset)) => self.code.emit_load_local(offset),
+                Some(CompSlot::Cell(offset)) => self.code.emit_u16(Opcode::LoadCell, offset),
+                Some(CompSlot::UnboundCell(_)) | None => self.code.emit_raise_unbound_local(ident.name_id),
+            },
         }
     }
 
     /// Compiles loading a variable in call context (e.g., `foo()` loads `foo`).
     ///
     /// For `Global` scope, emits a callable-aware load opcode that pushes
-    /// `ExtFunction(name_id)` for undefined names instead of yielding
+    /// an external function for undefined names instead of yielding
     /// `NameLookup`. This allows execution to reach `CallFunction`, which naturally
     /// yields `FunctionCall` — giving the host a chance to handle external function calls.
     ///
@@ -1603,8 +1744,8 @@ impl<'a> Compiler<'a> {
     fn compile_if(
         &mut self,
         test: &ExprLoc,
-        body: &[PreparedNode],
-        or_else: &[PreparedNode],
+        body: &'a [PreparedNode],
+        or_else: &'a [PreparedNode],
     ) -> Result<(), CompileError> {
         self.compile_expr(test)?;
 
@@ -2451,8 +2592,8 @@ impl<'a> Compiler<'a> {
         &mut self,
         target: &UnpackTarget,
         iter: &ExprLoc,
-        body: &[PreparedNode],
-        or_else: &[PreparedNode],
+        body: &'a [PreparedNode],
+        or_else: &'a [PreparedNode],
     ) -> Result<(), CompileError> {
         // Compile iterator expression
         self.compile_expr(iter)?;
@@ -2462,12 +2603,11 @@ impl<'a> Compiler<'a> {
         // Loop start
         let loop_start = self.code.current_jump_target();
 
-        // Push loop info for break/continue
-        self.loop_stack.push(LoopInfo {
+        // Push loop block for break/continue
+        self.fblocks.push(FBlock::ForLoop(LoopInfo {
             start: loop_start,
             break_jumps: Vec::new(),
-            has_iterator_on_stack: true,
-        });
+        }));
 
         // ForIter: advance iterator or jump to end
         let end_jump = self.code.emit_jump(Opcode::ForIter)?;
@@ -2483,8 +2623,12 @@ impl<'a> Compiler<'a> {
         // End of loop - ForIter jumps here when iterator is exhausted
         self.code.patch_jump(end_jump)?;
 
-        // Pop loop info before compiling else block
-        let loop_info = self.loop_stack.pop().expect("loop stack underflow");
+        // Pop loop block before compiling else block
+        let loop_info = self
+            .fblocks
+            .pop()
+            .expect("for-loop compilation should retain its frame block")
+            .expect_for_loop();
 
         // Compile else block (runs if loop completed without break)
         if !or_else.is_empty() {
@@ -2521,16 +2665,15 @@ impl<'a> Compiler<'a> {
     fn compile_while(
         &mut self,
         test: &ExprLoc,
-        body: &[PreparedNode],
-        or_else: &[PreparedNode],
+        body: &'a [PreparedNode],
+        or_else: &'a [PreparedNode],
     ) -> Result<(), CompileError> {
         let loop_start = self.code.current_jump_target();
 
-        self.loop_stack.push(LoopInfo {
+        self.fblocks.push(FBlock::WhileLoop(LoopInfo {
             start: loop_start,
             break_jumps: Vec::new(),
-            has_iterator_on_stack: false,
-        });
+        }));
 
         self.compile_expr(test)?;
         let end_jump = self.code.emit_jump(Opcode::JumpIfFalse)?;
@@ -2539,7 +2682,11 @@ impl<'a> Compiler<'a> {
         self.code.emit_jump_to(Opcode::Jump, loop_start)?;
 
         self.code.patch_jump(end_jump)?;
-        let loop_info = self.loop_stack.pop().expect("loop stack underflow");
+        let loop_info = self
+            .fblocks
+            .pop()
+            .expect("while-loop compilation should retain its frame block")
+            .expect_while_loop();
 
         if !or_else.is_empty() {
             self.compile_block(or_else)?;
@@ -2554,167 +2701,181 @@ impl<'a> Compiler<'a> {
 
     /// Compiles a break statement.
     ///
-    /// Break exits the innermost loop and skips its else block. If inside a
-    /// try-finally, the finally block must run first.
-    ///
-    /// The bytecode without finally:
-    /// 1. Clean up exception state if inside except handler
-    /// 2. Pop the iterator if in a `for` loop (still on stack during loop body)
-    /// 3. Jump to after the else block
-    ///
-    /// With finally:
-    /// 1. Clean up exception state if inside except handler
-    /// 2. Pop the iterator if in a `for` loop
-    /// 3. Jump to "finally with break" path (patched when try compilation completes)
-    /// 4. That path runs finally, then jumps to after the else block
+    /// Unwinds every enclosing frame block up to and including the innermost
+    /// loop — running inline `finally` bodies, calling `__exit__` for `with`
+    /// blocks, clearing exception state, and popping the for-loop iterator —
+    /// then jumps to the loop end (past its `else` block).
     fn compile_break(&mut self, position: CodeRange) -> Result<(), CompileError> {
-        if self.loop_stack.is_empty() {
+        let Some(loop_idx) = self.innermost_loop_idx() else {
             return Err(CompileError::new("'break' outside loop", position));
+        };
+        if self.code.is_dead() {
+            return Ok(());
         }
 
-        let target_loop_depth = self.loop_stack.len() - 1;
+        // Unwind through the loop itself: the ForLoop arm pops the iterator.
+        let popped = self.emit_unwind(self.fblocks.len() - loop_idx, false)?;
+        let jump = self.code.emit_jump(Opcode::Jump)?;
+        self.restore_fblocks(popped);
 
-        // If inside except handlers, clear each enclosing exception_stack
-        // entry.
-        for _ in 0..self.except_handler_depth {
-            self.code.emit(Opcode::ClearException)?;
+        match &mut self.fblocks[loop_idx] {
+            FBlock::WhileLoop(info) | FBlock::ForLoop(info) => info.break_jumps.push(jump),
+            _ => unreachable!("innermost_loop_idx returned a non-loop block"),
         }
-
-        // Check if we need to go through any finally blocks
-        // We need to run finally if break crosses the try boundary, i.e., if
-        // we're breaking from a loop that existed before the try started.
-        let routes_through_finally = self
-            .finally_targets
-            .last()
-            .is_some_and(|ft| target_loop_depth < ft.loop_depth_at_entry);
-
-        if routes_through_finally {
-            // Routed path: leave the iterator on the stack — the chain of
-            // finally trailers may have its own per-block stack contributions
-            // (e.g. a `with` block sits on top of the iterator), and popping
-            // the iterator here would pop the wrong slot. The outermost
-            // trailer (`compile_control_flow_after_finally`) pops the
-            // iterator just before jumping to the loop's break target.
-            let jump = self.code.emit_jump(Opcode::Jump)?;
-            self.finally_targets
-                .last_mut()
-                .expect("checked above")
-                .break_jumps
-                .push(BreakContinueThruFinally {
-                    jump,
-                    target_loop_depth,
-                });
-        } else {
-            // Direct path: pop the iterator (if any) and jump to loop end.
-            if self.loop_stack[target_loop_depth].has_iterator_on_stack {
-                self.code.emit(Opcode::Pop)?;
-            }
-            let jump = self.code.emit_jump(Opcode::Jump)?;
-            self.loop_stack[target_loop_depth].break_jumps.push(jump);
-        }
-
         Ok(())
     }
 
     /// Compiles a continue statement.
     ///
-    /// Continue jumps back to the loop start (the ForIter instruction) which
-    /// advances the iterator and either enters the next iteration or exits the loop.
-    /// If inside a try-finally, the finally block must run first.
+    /// Unwinds every enclosing frame block up to (but not including) the
+    /// innermost loop, then jumps to the loop start. The for-loop iterator is
+    /// left on the stack because `ForIter` expects it.
     fn compile_continue(&mut self, position: CodeRange) -> Result<(), CompileError> {
-        if self.loop_stack.is_empty() {
+        let Some(loop_idx) = self.innermost_loop_idx() else {
             return Err(CompileError::new("'continue' not properly in loop", position));
+        };
+        if self.code.is_dead() {
+            return Ok(());
         }
 
-        let target_loop_depth = self.loop_stack.len() - 1;
-
-        // If inside except handlers, clear each enclosing exception_stack
-        // entry.
-        for _ in 0..self.except_handler_depth {
-            self.code.emit(Opcode::ClearException)?;
-        }
-
-        // Check if we need to go through any finally blocks
-        // We need to run finally if continue crosses the try boundary
-        if let Some(finally_target) = self.finally_targets.last_mut()
-            && target_loop_depth < finally_target.loop_depth_at_entry
-        {
-            // Continuing a loop that's outside (or at the start of) this try-finally,
-            // so finally must run before the continue
-            let jump = self.code.emit_jump(Opcode::Jump)?;
-            finally_target.continue_jumps.push(BreakContinueThruFinally {
-                jump,
-                target_loop_depth,
-            });
-        }
-
-        // No finally to go through, jump directly to loop start
-        let loop_start = self.loop_stack[target_loop_depth].start;
+        let loop_start = match &self.fblocks[loop_idx] {
+            FBlock::WhileLoop(info) | FBlock::ForLoop(info) => info.start,
+            _ => unreachable!("innermost_loop_idx returned a non-loop block"),
+        };
+        let popped = self.emit_unwind(self.fblocks.len() - loop_idx - 1, false)?;
         self.code.emit_jump_to(Opcode::Jump, loop_start)?;
-
+        self.restore_fblocks(popped);
         Ok(())
     }
 
-    /// Compiles break or continue after a finally block has run.
-    ///
-    /// Called from `compile_try` after the finally block code. Each control flow
-    /// statement may target a different loop, so we check if there's another finally
-    /// to go through or if we can jump directly to the loop's target.
-    ///
-    /// Note: All items in the list jumped to the same finally block, so they all
-    /// have the same starting point. After finally runs, we need to route each
-    /// to its target loop, potentially through more finally blocks.
-    fn compile_control_flow_after_finally(
-        &mut self,
-        items: &[BreakContinueThruFinally],
-        is_break: bool,
-    ) -> Result<(), CompileError> {
-        // All items went through the same finally, now we need to dispatch to
-        // potentially different loops. For simplicity, we assume all items in
-        // a single finally target the same loop (the innermost one at the time).
-        // This is always true since break/continue only targets the innermost loop.
-        let Some(first) = items.first() else {
-            return Ok(());
-        };
-        let target_loop_depth = first.target_loop_depth;
+    /// Index of the innermost enclosing loop block, if any.
+    fn innermost_loop_idx(&self) -> Option<usize> {
+        self.fblocks
+            .iter()
+            .rposition(|b| matches!(b, FBlock::WhileLoop(_) | FBlock::ForLoop(_)))
+    }
 
-        // Check if there's another finally between us and the target loop
-        if let Some(finally_target) = self.finally_targets.last_mut()
-            && target_loop_depth < finally_target.loop_depth_at_entry
-        {
-            // Need to go through another finally
-            let jump = self.code.emit_jump(Opcode::Jump)?;
-            let jump_info = BreakContinueThruFinally {
-                jump,
-                target_loop_depth,
-            };
-            if is_break {
-                finally_target.break_jumps.push(jump_info);
-            } else {
-                // else continue
-                finally_target.continue_jumps.push(jump_info);
-            }
+    /// Returns this frame's active exception depth at the compile point.
+    /// Protected regions record it so propagation can discard exceptions from
+    /// bypassed handlers.
+    fn exc_stack_count(&self) -> u16 {
+        let count = self
+            .fblocks
+            .iter()
+            .filter(|b| matches!(b, FBlock::ExceptHandler { .. } | FBlock::FinallyEnd))
+            .count();
+        u16::try_from(count).expect("except/finally nesting exceeds u16")
+    }
+
+    /// Compiles one stack-specific copy of a `finally` body.
+    fn compile_finally_copy(&mut self, finally: &'a [PreparedNode]) -> Result<(), CompileError> {
+        if self.code.is_dead() {
             return Ok(());
         }
-
-        // No more finally blocks, jump directly to the loop target. For
-        // break paths we pop the for-loop iterator here (rather than at the
-        // break statement) so that intervening per-block stack contributions
-        // — e.g. a `with` block sitting on top of the iterator — get to clean
-        // themselves up in their own trailers first. Continue paths leave the
-        // iterator on top because the loop start (`ForIter`) expects it.
-        if is_break {
-            if self.loop_stack[target_loop_depth].has_iterator_on_stack {
-                self.code.emit(Opcode::Pop)?;
-            }
-            let jump = self.code.emit_jump(Opcode::Jump)?;
-            self.loop_stack[target_loop_depth].break_jumps.push(jump);
+        self.finally_copies += 1;
+        if self.finally_copies > MAX_FINALLY_COPIES {
+            Err(CompileError::new(
+                format!("too many inline finally copies; maximum is {MAX_FINALLY_COPIES}"),
+                self.code.current_position(),
+            ))
         } else {
-            // else continue
-            let loop_start = self.loop_stack[target_loop_depth].start;
-            self.code.emit_jump_to(Opcode::Jump, loop_start)?;
+            self.compile_block(finally)
+        }
+    }
+
+    /// Clears an `except ... as name` target without failing if it was deleted.
+    fn compile_clear_handler_name(&mut self, name: Option<&Identifier>) -> Result<(), CompileError> {
+        if let Some(name) = name {
+            self.code.emit(Opcode::LoadNone)?;
+            self.compile_store(name)?;
+            self.compile_delete(name)?;
         }
         Ok(())
+    }
+
+    /// Temporarily removes `count` blocks and emits their cleanup.
+    /// `preserve_tos` protects a pending return value; callers restore the
+    /// returned blocks after emitting the path's terminator.
+    fn emit_unwind(&mut self, count: usize, preserve_tos: bool) -> Result<Vec<FBlock<'a>>, CompileError> {
+        let mut popped = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut block = self.fblocks.pop().expect("emit_unwind: fblock stack underflow");
+            self.emit_block_unwind(&mut block, preserve_tos)?;
+            popped.push(block);
+        }
+        Ok(popped)
+    }
+
+    /// Emits one block's cleanup while it is absent from the block stack.
+    /// Thus control flow inside inline cleanup sees only outer blocks.
+    fn emit_block_unwind(&mut self, block: &mut FBlock<'a>, preserve_tos: bool) -> Result<(), CompileError> {
+        match block {
+            FBlock::WhileLoop(_) => Ok(()),
+            FBlock::ForLoop(_) => {
+                // Pop the iterator (below the preserved return value, if any).
+                if preserve_tos {
+                    self.code.emit(Opcode::Rot2)?;
+                }
+                self.code.emit(Opcode::Pop)
+            }
+            // Exclude cleanup for outer blocks from this exited region.
+            FBlock::TryExcept { region } => {
+                region.interrupt(self.code.current_offset());
+                Ok(())
+            }
+            FBlock::FinallyTry { region, finally } => {
+                region.interrupt(self.code.current_offset());
+                let finally = *finally;
+                // Discard a pending return if this `finally` exits early.
+                if preserve_tos {
+                    self.fblocks.push(FBlock::PopValue);
+                }
+                self.compile_finally_copy(finally)?;
+                if preserve_tos {
+                    self.fblocks
+                        .pop()
+                        .expect("return unwind should retain its pending value block")
+                        .expect_pop_value();
+                }
+                Ok(())
+            }
+            FBlock::ExceptHandler { name, region } => {
+                region.interrupt(self.code.current_offset());
+                self.code.emit(Opcode::ClearException)?;
+                self.compile_clear_handler_name(*name)
+            }
+            // Discard the in-flight exception: break/continue/return in a
+            // finally body swallows the exception that triggered it.
+            FBlock::FinallyEnd => self.code.emit(Opcode::ClearException),
+            FBlock::With { region } => {
+                // Keep `__exit__` outside its own handler region.
+                region.interrupt(self.code.current_offset());
+                if preserve_tos {
+                    self.code.emit(Opcode::Rot2)?;
+                }
+                self.code.emit(Opcode::WithExit)?;
+                self.code.emit(Opcode::Pop)
+            }
+            FBlock::PopValue => {
+                if preserve_tos {
+                    self.code.emit(Opcode::Rot2)?;
+                }
+                self.code.emit(Opcode::Pop)
+            }
+        }
+    }
+
+    /// Restores blocks popped by [`emit_unwind`](Self::emit_unwind) after the
+    /// unwind path's terminator, re-opening interrupted regions at the
+    /// current offset: subsequent code belongs to the constructs again.
+    fn restore_fblocks(&mut self, popped: Vec<FBlock<'a>>) {
+        let at = self.code.current_offset();
+        for mut block in popped.into_iter().rev() {
+            if let Some(region) = block.region_mut() {
+                region.resume(at);
+            }
+            self.fblocks.push(block);
+        }
     }
 
     // ========================================================================
@@ -2742,12 +2903,15 @@ impl<'a> Compiler<'a> {
     /// ```
     ///
     /// Comprehension targets live on the operand stack as the values pushed
-    /// by `FOR_ITER` (plus unpacked sub-values). The compiler tracks each
-    /// leaf's absolute operand-stack offset in `Compiler::slot_offsets` so
-    /// that `compile_name` for `NameScope::CompVar` can emit
-    /// `LoadLocal/W(frame_locals + offset)`. Per-iteration `POP`s clean the
-    /// comp vars before the JUMP so the loop's stack discipline is preserved.
-    fn compile_list_comp(&mut self, elt: &ExprLoc, generators: &[Comprehension]) -> Result<(), CompileError> {
+    /// by `FOR_ITER` (plus unpacked sub-values). Captured targets are copied
+    /// into stable cells allocated outside the loops. Per-iteration `POP`s
+    /// clean the raw values before jumping back to the loop head.
+    fn compile_list_comp(
+        &mut self,
+        elt: &ExprLoc,
+        generators: &[Comprehension],
+        captured_slots: &[u16],
+    ) -> Result<(), CompileError> {
         if self.code.is_dead() {
             return Ok(());
         }
@@ -2757,6 +2921,7 @@ impl<'a> Compiler<'a> {
             .code
             .stack_depth()
             .expect("list comp: BuildList kept us live, stack_depth must be Some");
+        self.enter_captured_comp_cells(captured_slots, elt.position)?;
 
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(elt)?;
@@ -2766,12 +2931,18 @@ impl<'a> Compiler<'a> {
             let depth = compiler.compute_append_depth(depth_after_collection, 1, elt.position)?;
             compiler.code.emit_u8(Opcode::ListAppend, depth)
         })?;
+        self.exit_captured_comp_cells(captured_slots)?;
 
         Ok(())
     }
 
     /// Compiles a set comprehension: `{elt for target in iter if cond...}`
-    fn compile_set_comp(&mut self, elt: &ExprLoc, generators: &[Comprehension]) -> Result<(), CompileError> {
+    fn compile_set_comp(
+        &mut self,
+        elt: &ExprLoc,
+        generators: &[Comprehension],
+        captured_slots: &[u16],
+    ) -> Result<(), CompileError> {
         if self.code.is_dead() {
             return Ok(());
         }
@@ -2781,6 +2952,7 @@ impl<'a> Compiler<'a> {
             .code
             .stack_depth()
             .expect("set comp: BuildSet kept us live, stack_depth must be Some");
+        self.enter_captured_comp_cells(captured_slots, elt.position)?;
 
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(elt)?;
@@ -2790,6 +2962,7 @@ impl<'a> Compiler<'a> {
             let depth = compiler.compute_append_depth(depth_after_collection, 1, elt.position)?;
             compiler.code.emit_u8(Opcode::SetAdd, depth)
         })?;
+        self.exit_captured_comp_cells(captured_slots)?;
 
         Ok(())
     }
@@ -2800,6 +2973,7 @@ impl<'a> Compiler<'a> {
         key: &ExprLoc,
         value: &ExprLoc,
         generators: &[Comprehension],
+        captured_slots: &[u16],
     ) -> Result<(), CompileError> {
         if self.code.is_dead() {
             return Ok(());
@@ -2810,6 +2984,7 @@ impl<'a> Compiler<'a> {
             .code
             .stack_depth()
             .expect("dict comp: BuildDict kept us live, stack_depth must be Some");
+        self.enter_captured_comp_cells(captured_slots, key.position)?;
 
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(key)?;
@@ -2822,7 +2997,37 @@ impl<'a> Compiler<'a> {
             let depth = compiler.compute_append_depth(depth_after_collection, 2, key.position)?;
             compiler.code.emit_u8(Opcode::DictSetItem, depth)
         })?;
+        self.exit_captured_comp_cells(captured_slots)?;
 
+        Ok(())
+    }
+
+    /// Allocates stable cells for comprehension targets captured by nested callables.
+    fn enter_captured_comp_cells(&mut self, captured_slots: &[u16], position: CodeRange) -> Result<(), CompileError> {
+        for &slot in captured_slots {
+            self.code.emit(Opcode::BuildCell)?;
+            let offset = self
+                .code
+                .stack_depth()
+                .expect("BuildCell keeps comprehension code live")
+                .checked_sub(1)
+                .and_then(|offset| self.frame_locals.checked_add(offset))
+                .ok_or_else(|| CompileError::new("captured comprehension cell exceeds u16 stack offset", position))?;
+            let slot_index = usize::from(slot);
+            if slot_index >= self.comp_slots.len() {
+                self.comp_slots.resize(slot_index + 1, None);
+            }
+            self.comp_slots[slot_index] = Some(CompSlot::UnboundCell(offset));
+        }
+        Ok(())
+    }
+
+    /// Removes a comprehension's stable cell references while preserving its result.
+    fn exit_captured_comp_cells(&mut self, captured_slots: &[u16]) -> Result<(), CompileError> {
+        for &slot in captured_slots.iter().rev() {
+            self.code.emit(Opcode::Pop)?;
+            self.comp_slots[usize::from(slot)] = None;
+        }
         Ok(())
     }
 
@@ -2890,8 +3095,7 @@ impl<'a> Compiler<'a> {
         // FOR_ITER: pushes value, or pops iter and jumps to end on exhaustion.
         let end_jump = self.code.emit_jump(Opcode::ForIter)?;
 
-        // Unpack target — leaves the comp vars on the operand stack at offsets
-        // recorded in `self.slot_offsets`, and marks them in `bound_comp_slots`.
+        // Unpack target and record each leaf's active storage.
         let comp_var_slots = self.compile_comp_target_unpack(&generator.target)?;
 
         // Filters: any false → forward-jump to the per-iter cleanup block
@@ -2927,13 +3131,10 @@ impl<'a> Compiler<'a> {
         self.code.emit_jump_to(Opcode::Jump, loop_start)?;
         self.code.patch_jump(end_jump)?;
 
-        // Comp vars are out of scope after the loop body; clear their
-        // bound-state so a sibling comprehension that reuses the same slot
-        // IDs sees its own targets as unbound at iter-prep time.
-        // `slot_offsets` entries are simply overwritten by whoever uses the
-        // slot next, so we leave them as-is.
+        // Comp vars are out of scope after the loop body. Sibling
+        // comprehensions may reuse these slot IDs.
         for slot in &comp_var_slots {
-            self.bound_comp_slots.remove(slot);
+            self.comp_slots[usize::from(*slot)] = None;
         }
 
         Ok(())
@@ -2944,9 +3145,7 @@ impl<'a> Compiler<'a> {
     /// At entry, `FOR_ITER` has pushed the iter's value at TOS. This emits
     /// `UNPACK_SEQUENCE` / `UNPACK_EX` / `LIFT_TO_TOP` as needed (nested
     /// tuples force `LIFT_TO_TOP` to bring sub-iterables to TOS for
-    /// further unpacking) and records each leaf's absolute operand-stack
-    /// offset in `self.slot_offsets`. Also marks each leaf's slot ID in
-    /// `self.bound_comp_slots`.
+    /// further unpacking) and records each leaf's active storage.
     ///
     /// Returns the slot IDs for this target's leaves so the caller can
     /// emit a matching `POP` per leaf for per-iteration cleanup.
@@ -2959,10 +3158,7 @@ impl<'a> Compiler<'a> {
         // iter expression contained a `RaiseUnboundLocal` that terminated the
         // current code region), no bytecode emission would have any effect.
         // Return an empty slot list — `compile_comprehension_generators` then
-        // emits its `POP`s and `JUMP` in dead state (also no-ops). The
-        // comp-var slots stay out of `bound_comp_slots`, so any subsequent
-        // `CompVar` read would dispatch to `RaiseUnboundLocal` — also a
-        // no-op in dead code.
+        // emits its `POP`s and `JUMP` in dead state, which are also no-ops.
         let Some(stack_depth) = self.code.stack_depth() else {
             return Ok(Vec::new());
         };
@@ -2984,17 +3180,24 @@ impl<'a> Compiler<'a> {
                     target_position(target),
                 )
             })?;
-            let slot_idx = slot as usize;
-            if slot_idx >= self.slot_offsets.len() {
-                self.slot_offsets.resize(slot_idx + 1, 0);
-            }
-            self.slot_offsets[slot_idx] = self.frame_locals.checked_add(offset).ok_or_else(|| {
+            let value_offset = self.frame_locals.checked_add(offset).ok_or_else(|| {
                 CompileError::new(
                     "comprehension comp-var slot exceeds u16 (frame_locals + offset)",
                     target_position(target),
                 )
             })?;
-            self.bound_comp_slots.insert(slot);
+            let slot_idx = usize::from(slot);
+            if slot_idx >= self.comp_slots.len() {
+                self.comp_slots.resize(slot_idx + 1, None);
+            }
+            self.comp_slots[slot_idx] = match self.comp_slots[slot_idx] {
+                Some(CompSlot::UnboundCell(cell_offset) | CompSlot::Cell(cell_offset)) => {
+                    self.code.emit_load_local(value_offset)?;
+                    self.code.emit_u16(Opcode::StoreCell, cell_offset)?;
+                    Some(CompSlot::Cell(cell_offset))
+                }
+                Some(CompSlot::Value(_)) | None => Some(CompSlot::Value(value_offset)),
+            };
             slot_ids.push(slot);
         }
 
@@ -3391,402 +3594,176 @@ impl<'a> Compiler<'a> {
     // Exception Handling Compilation
     // ========================================================================
 
-    /// Compiles a return statement.
-    ///
-    /// `expr` is the expression after `return` (`None` for a bare `return`).
+    /// Compiles a return and unwinds all enclosing control blocks.
+    /// Cleanup runs innermost-first with the return value and enclosing
+    /// exception state preserved as needed.
     fn compile_return(&mut self, expr: Option<&ExprLoc>) -> Result<(), CompileError> {
         if let Some(expr) = expr {
             self.compile_expr(expr)?;
         } else {
             self.code.emit(Opcode::LoadNone)?;
         }
+        if self.code.is_dead() {
+            return Ok(());
+        }
 
-        self.compile_return_routing()?;
+        // A pushed or suspended call reports an escaping exception at its
+        // resume offset. Keep that offset inside any region the return exits.
+        if expr.is_some_and(return_expr_needs_padding)
+            && self.fblocks.iter_mut().any(|block| block.region_mut().is_some())
+        {
+            self.code.emit(Opcode::Nop)?;
+        }
 
+        let popped = self.emit_unwind(self.fblocks.len(), true)?;
+        self.code.emit(Opcode::ReturnValue)?;
+        self.restore_fblocks(popped);
         Ok(())
     }
 
-    /// Used for returning from current function. The return value must already
-    /// be on the top of the stack.
-    ///
-    /// Will either emit a direct `ReturnValue`, or jump to the next enclosing
-    /// finally block (if we're inside one).
-    ///
-    /// Clears active-exception state for every `except` handler we're
-    /// exiting up to (but not past) the next enclosing finally — finally
-    /// bodies between us and the next-outer finally need to run with their
-    /// textually-enclosing exception state intact, e.g.:
-    ///
-    /// ```python
-    /// try:
-    ///     raise ValueError
-    /// except ValueError:
-    ///     try:
-    ///         return  # inner finally below must STILL see ValueError as
-    ///     finally:    # the active exception so bare `raise` re-raises it.
-    ///         ...
-    /// ```
-    ///
-    /// The remaining handlers are cleared further out by the finally
-    /// trailers in [`compile_try`] as control flows through them.
-    fn compile_return_routing(&mut self) -> Result<(), CompileError> {
-        let target_depth = self
-            .finally_targets
-            .last()
-            .map_or(0, |t| t.except_handler_depth_at_entry);
-
-        for _ in 0..(self.except_handler_depth - target_depth) {
-            self.code.emit(Opcode::ClearException)?;
-        }
-
-        if let Some(finally_target) = self.finally_targets.last_mut() {
-            let jump = self.code.emit_jump(Opcode::Jump)?;
-            finally_target.return_jumps.push(jump);
+    /// Compiles a `try` and its `except`, `else`, or `finally` clauses.
+    /// Combined forms wrap `try/except/else` in `try/finally`; cleanup copies
+    /// are emitted per exit and bounded by [`MAX_FINALLY_COPIES`].
+    fn compile_try(&mut self, try_block: &'a Try<PreparedNode>) -> Result<(), CompileError> {
+        if try_block.finally.is_empty() {
+            self.compile_try_except(try_block)
         } else {
-            self.code.emit(Opcode::ReturnValue)?;
+            self.compile_try_finally(try_block)
         }
-
-        Ok(())
     }
 
-    /// Compiles a try/except/else/finally block.
-    ///
-    /// The bytecode structure is:
-    /// ```text
-    /// <try_body>                     # protected range
-    /// JUMP to_else_or_finally        # skip handlers if no exception
-    /// handler_dispatch:              # exception pushed by VM
-    ///   # for each handler:
-    ///   <check exception type>
-    ///   <handler body>
-    ///   CLEAR_EXCEPTION
-    ///   JUMP to_finally
-    /// reraise:
-    ///   RERAISE                      # no handler matched
-    /// else_block:
-    ///   <else_body>
-    /// finally_block:
-    ///   <finally_body>
-    /// end:
-    /// ```
-    ///
-    /// For finally blocks, exceptions that propagate through the handler dispatch
-    /// (including RERAISE when no handler matches) are caught by a second exception
-    /// entry that ensures finally runs before propagation.
-    ///
-    /// Returns inside try/except/else jump to a "finally with return" path that
-    /// runs the finally code then returns the value.
-    ///
-    /// **Note:** The finally block code is emitted multiple times (once for each
-    /// control flow path: normal, exception, return, break, continue). This is the
-    /// same approach CPython uses - each path has different stack state at entry
-    /// (e.g., return has a value on stack, break has popped the iterator), so we
-    /// can't easily share a single copy. The duplication is intentional.
-    fn compile_try(&mut self, try_block: &Try<PreparedNode>) -> Result<(), CompileError> {
-        let has_finally = !try_block.finally.is_empty();
-        let has_handlers = !try_block.handlers.is_empty();
-        let has_else = !try_block.or_else.is_empty();
-
-        // Record stack depth at try entry (for unwinding on exception)
+    /// Compiles separate normal and exceptional copies of a `finally` body.
+    /// Its protected range includes the trailing jump because a terminal
+    /// pushed call reports failure at its resume offset.
+    fn compile_try_finally(&mut self, try_block: &'a Try<PreparedNode>) -> Result<(), CompileError> {
         let Some(stack_depth) = self.code.stack_depth() else {
-            // Compiling dead code, don't need to emit anything
             return Ok(());
         };
 
-        // Record `except_handler_depth` at try entry — the count of this
-        // frame's exception_stack entries that should be active inside the
-        // try body. The VM uses this on unwind to drain entries left
-        // behind by abandoned-but-trailer-skipped handlers.
-        let try_exc_stack_count = self.except_handler_depth;
+        let region = Region::open(self.code.current_offset(), stack_depth, self.exc_stack_count());
+        self.fblocks.push(FBlock::FinallyTry {
+            region,
+            finally: &try_block.finally,
+        });
 
-        // If there's a finally block, track returns/break/continue inside try/handlers/else
-        if has_finally {
-            self.finally_targets.push(FinallyTarget {
-                return_jumps: Vec::new(),
-                break_jumps: Vec::new(),
-                continue_jumps: Vec::new(),
-                loop_depth_at_entry: self.loop_stack.len(),
-                except_handler_depth_at_entry: self.except_handler_depth,
-            });
+        if try_block.handlers.is_empty() {
+            self.compile_block(&try_block.body)?;
+        } else {
+            self.compile_try_except(try_block)?;
         }
 
-        // === Compile try body ===
-        let try_start = self.code.current_offset();
+        let region = self
+            .fblocks
+            .pop()
+            .expect("try/finally compilation should retain its frame block")
+            .expect_finally_try();
+        let normal_jump = self.code.emit_jump(Opcode::Jump)?;
+        let body_end = self.code.current_offset();
+
+        // === Exception-path copy ===
+        // A `Cleanup` entry leaves the exception only on `exception_stack`,
+        // where bare `raise` and `Reraise` read it — nothing to pop here.
+        let cleanup_start = self.code.current_offset();
+        self.code.new_code_region(stack_depth);
+        self.fblocks.push(FBlock::FinallyEnd);
+        self.compile_finally_copy(&try_block.finally)?;
+        self.fblocks
+            .pop()
+            .expect("exception-path finally should retain its frame block")
+            .expect_finally_end();
+        self.code.emit(Opcode::Reraise)?;
+
+        // === Fall-through copy ===
+        self.code.patch_jump(normal_jump)?;
+        self.compile_finally_copy(&try_block.finally)?;
+
+        region.add_entries(body_end, &mut self.code, cleanup_start, HandlerKind::Cleanup)
+    }
+
+    /// Compiles a protected `try` body, handler dispatch, and unprotected `else`.
+    /// An enclosing `try/finally` also covers handlers so their failures run
+    /// its cleanup.
+    fn compile_try_except(&mut self, try_block: &'a Try<PreparedNode>) -> Result<(), CompileError> {
+        let Some(stack_depth) = self.code.stack_depth() else {
+            return Ok(());
+        };
+
+        let region = Region::open(self.code.current_offset(), stack_depth, self.exc_stack_count());
+        self.fblocks.push(FBlock::TryExcept { region });
         self.compile_block(&try_block.body)?;
+        let region = self
+            .fblocks
+            .pop()
+            .expect("try/except compilation should retain its frame block")
+            .expect_try_except();
 
-        // Jump to else/finally if no exception (skip handlers)
-        let after_try_jump = self.code.emit_jump(Opcode::Jump)?;
-        // End of the try-body region for the exception table. This is past
-        // the `after_try_jump` if it was emitted, so an exception that fires
-        // up to and including that Jump still routes to the handler.
-        let try_end = self.code.current_offset();
+        // Also keeps terminal-call resume points inside the protected range.
+        let else_jump = self.code.emit_jump(Opcode::Jump)?;
+        let body_end = self.code.current_offset();
 
-        // === Handler dispatch starts here ===
-        let handler_start = self.code.current_offset();
-
-        // Track jumps that go to finally (for patching later)
-        let mut finally_jumps: Vec<JumpLabel> = Vec::new();
-
-        self.compile_exception_handlers(stack_depth, &try_block.handlers, &mut finally_jumps)?;
-
-        // After handler dispatch, each handler path either:
-        // 1. Matched and popped the exception (via Pop), then jumped to finally
-        // 2. Didn't match and reraised (for last handler)
-        // The handlers' Pop instructions already account for the exception,
-        // so no additional stack depth adjustment is needed here.
-
-        // Mark end of handler dispatch (for finally exception entry)
-        let handler_dispatch_end = self.code.current_offset();
-
-        // === Finally cleanup handler (for exceptions during handler dispatch) ===
-        // This catches exceptions from RERAISE (and any other exceptions in handlers)
-        // and ensures finally runs before the exception propagates.
-        let finally_cleanup_start = if has_finally {
-            let cleanup_start = self.code.current_offset();
-            // Exception value is on stack (pushed by VM), so stack = stack_depth + 1
-            self.code.new_code_region(stack_depth + 1);
-            // We need to pop it, run finally, then reraise
-            // But we can't easily save the exception, so we use a different approach:
-            // The exception is already on the exception_stack from handle_exception,
-            // so we can just pop from operand stack, run finally, then reraise.
-            self.code.emit(Opcode::Pop)?; // Pop exception from operand stack
-            self.compile_block(&try_block.finally)?;
-            self.code.emit(Opcode::Reraise)?; // Re-raise from exception_stack
-            Some(cleanup_start)
-        } else {
-            None
-        };
-
-        // === Finally with return/break/continue paths ===
-        // Pop finally target and get all the jumps that need to go through finally
-        let finally_with_return_start = if has_finally {
-            let finally_target = self.finally_targets.pop().expect("finally_targets should not be empty");
-
-            // === Finally with return path ===
-            let return_start = if finally_target.return_jumps.is_empty() {
-                None
-            } else {
-                let start = self.code.current_offset();
-                for jump in finally_target.return_jumps {
-                    self.code.patch_jump(jump)?;
-                }
-                self.compile_block(&try_block.finally)?;
-                self.compile_return_routing()?;
-                Some(start)
-            };
-
-            // === Finally with break path ===
-            // For each break, run finally then either:
-            // - Jump to outer finally's break path (if there's an outer finally between us and the loop)
-            // - Jump directly to the loop's break target
-            if !finally_target.break_jumps.is_empty() {
-                for break_info in &finally_target.break_jumps {
-                    self.code.patch_jump(break_info.jump)?;
-                }
-                self.compile_block(&try_block.finally)?;
-                // After finally, compile the break again (handles nested finally or direct jump)
-                self.compile_control_flow_after_finally(&finally_target.break_jumps, true)?;
-            }
-
-            // === Finally with continue path ===
-            if !finally_target.continue_jumps.is_empty() {
-                for continue_info in &finally_target.continue_jumps {
-                    self.code.patch_jump(continue_info.jump)?;
-                }
-                self.compile_block(&try_block.finally)?;
-                // After finally, compile the continue again (handles nested finally or direct jump)
-                self.compile_control_flow_after_finally(&finally_target.continue_jumps, false)?;
-            }
-
-            return_start
-        } else {
-            None
-        };
+        let dispatch_start = self.code.current_offset();
+        let mut end_jumps: Vec<JumpLabel> = Vec::new();
+        self.compile_exception_handlers(stack_depth, &try_block.handlers, &mut end_jumps)?;
 
         // === Else block (runs if no exception) ===
-        self.code.patch_jump(after_try_jump)?;
-        let else_start = self.code.current_offset();
-        if has_else {
+        self.code.patch_jump(else_jump)?;
+        if !try_block.or_else.is_empty() {
             self.compile_block(&try_block.or_else)?;
         }
-        let else_end = self.code.current_offset();
 
-        // === Normal finally path (no exception pending, no return) ===
-        // Patch all jumps from handlers to go here
-        for jump in finally_jumps {
+        // Handler exits skip the `else` block.
+        for jump in end_jumps {
             self.code.patch_jump(jump)?;
         }
 
-        if has_finally {
-            self.compile_block(&try_block.finally)?;
-        }
-
-        // === Add exception table entries ===
-        // Order matters: entries are searched in order, so inner entries must come first.
-
-        // Entry 1: Try body -> handler dispatch.
-        // exception_stack_count = try_exc_stack_count: entering the try body
-        // adds no handler entries.
-        if has_handlers || has_finally {
-            self.code
-                .add_exception_entry(try_start, try_end, handler_start, stack_depth, try_exc_stack_count)?;
-        }
-
-        // Entry 2: Handler dispatch -> finally cleanup (only if has_finally).
-        // exception_stack_count = try_exc_stack_count + 1: the original
-        // exception was pushed onto exception_stack by entry 1's catch and
-        // is still active throughout handler dispatch.
-        if let Some(cleanup_start) = finally_cleanup_start {
-            self.code.add_exception_entry(
-                handler_start,
-                handler_dispatch_end,
-                cleanup_start,
-                stack_depth,
-                try_exc_stack_count + 1,
-            )?;
-        }
-
-        // Entry 3: Finally with return -> finally cleanup
-        // If an exception occurs while running finally (in the return path), catch it
-        if let (Some(return_start), Some(cleanup_start)) = (finally_with_return_start, finally_cleanup_start) {
-            // End at else_start (before else block).
-            self.code.add_exception_entry(
-                return_start,
-                else_start,
-                cleanup_start,
-                stack_depth,
-                try_exc_stack_count,
-            )?;
-        }
-
-        // Entry 4: Else block -> finally cleanup (only if has_finally and
-        // has_else). Else runs when no exception was raised, so no handler
-        // pushed an entry: exception_stack_count = try_exc_stack_count.
-        if has_else && let Some(cleanup_start) = finally_cleanup_start {
-            self.code
-                .add_exception_entry(else_start, else_end, cleanup_start, stack_depth, try_exc_stack_count)?;
-        }
-
-        Ok(())
+        region.add_entries(body_end, &mut self.code, dispatch_start, HandlerKind::Consuming)
     }
 
-    /// Compiles a `with` statement: `with EXPR [as TARGET]: BODY`.
-    ///
-    /// The bytecode shape is:
-    /// ```text
-    /// <compile context expr>            ; [ctx]
-    /// BEFORE_WITH                       ; [ctx, value]
-    /// try_start:
-    ///   <store target or POP>           ; [ctx]
-    ///   <compile body>                  ; [ctx]
-    ///   WITH_EXIT                       ; []
-    ///   JUMP end                        ; skip the exception handler
-    /// try_end:
-    /// handler_start:
-    ///   ; VM pushes the exception: stack is [ctx, exc]
-    ///   WITH_EXCEPT_START               ; [ctx, exc, suppress]
-    ///   JUMP_IF_TRUE swallow            ; pops suppress; falsy = continue
-    ///   POP                             ; [ctx]
-    ///   POP                             ; []
-    ///   RERAISE                         ; propagate
-    /// swallow:                          ; [ctx, exc]
-    ///   POP                             ; [ctx]
-    ///   POP                             ; []
-    ///   CLEAR_EXCEPTION
-    ///   JUMP end
-    /// <return / break / continue trailers, each running WITH_EXIT before
-    ///  routing to the outer target>
-    /// end:
-    /// ```
-    ///
-    /// The `<store target or POP>` step lives *inside* the protected region so
-    /// `with f() as (a, b):` invokes `__exit__` when the unpack fails —
-    /// matching CPython, which similarly places `UNPACK_SEQUENCE` inside the
-    /// `BEFORE_WITH` exception-table entry. If the store raises, the unwinder
-    /// drops any partial unpack state down to the handler's expected depth
-    /// (`stack_depth + 1`) before pushing `exc` and entering `handler_start`.
-    ///
-    /// A single exception-table entry covers the body, routing exceptions to
-    /// `handler_start` with stack depth `outer + 1` (the context manager). If
-    /// the cleanup itself (`__exit__` invocation) raises, the new exception
-    /// replaces the original one and propagates via the surrounding frame's
-    /// exception table — this matches CPython's behavior.
-    ///
-    /// `return`/`break`/`continue` inside the body are routed through this
-    /// method's trailers (analogous to `try`/`finally`) so `__exit__` is called
-    /// before propagating the early exit. The `return` trailer uses `Rot2` to
-    /// preserve the return value while invoking `WithExit` on the context
-    /// manager underneath.
+    /// Compiles normal and exceptional exits for a `with` statement.
+    /// Target binding is protected, while `__exit__` runs outside its own
+    /// handler region; non-local exits use [`FBlock::With`] cleanup.
     fn compile_with(
         &mut self,
         context: &ExprLoc,
         target: Option<&UnpackTarget>,
-        body: &[PreparedNode],
+        body: &'a [PreparedNode],
     ) -> Result<(), CompileError> {
-        // Record outer stack depth for the exception-table entry. If we are in
-        // dead-code state there's nothing to emit.
         let Some(stack_depth) = self.code.stack_depth() else {
             return Ok(());
         };
 
-        let try_exc_stack_count = self.except_handler_depth;
-
-        // Evaluate context expr and invoke __enter__.
         self.compile_expr(context)?;
         self.code.emit(Opcode::BeforeWith)?;
-        // Padding between `BeforeWith` and the protected region. A user-class
-        // `__enter__` runs as a *pushed frame*; an exception escaping that
-        // frame is attributed to the parent frame's resume point — the
-        // instruction after `BeforeWith` (see `pop_frame`). That offset must
-        // sit OUTSIDE the exception-table entry, or a failing `__enter__`
-        // would incorrectly invoke `__exit__` (CPython only protects the body
-        // once `__enter__` has returned). The Nop keeps the resume point
-        // outside the region while the unpack/Pop that follows stays inside,
-        // so `with cm as (a, b):` unpack failures still call `__exit__`.
+        // Keep a pushed `__enter__` call's resume offset outside the body region.
         self.code.emit(Opcode::Nop)?;
 
-        // Track early exits inside the body so we can call __exit__ before
-        // they propagate. Mirrors the FinallyTarget push in `compile_try`.
-        self.finally_targets.push(FinallyTarget {
-            return_jumps: Vec::new(),
-            break_jumps: Vec::new(),
-            continue_jumps: Vec::new(),
-            loop_depth_at_entry: self.loop_stack.len(),
-            except_handler_depth_at_entry: self.except_handler_depth,
-        });
-
         // === Body (protected region) ===
-        let try_start = self.code.current_offset();
-        // Bind the __enter__ result to the `as` target (or discard it). This
-        // lives inside the protected region so `with f() as (a, b):` calls
-        // `__exit__` when the unpack fails — matching CPython, which similarly
-        // covers UNPACK_SEQUENCE with the with-block's exception table entry.
+        // The context manager remains below the protected body's operands.
+        let region = Region::open(self.code.current_offset(), stack_depth + 1, self.exc_stack_count());
+        self.fblocks.push(FBlock::With { region });
+        // Protect target binding so unpack failures invoke `__exit__`.
         if let Some(target) = target {
             self.compile_unpack_target(target)?;
         } else {
             self.code.emit(Opcode::Pop)?;
         }
         self.compile_block(body)?;
-        // Close the protected range BEFORE `WithExit` so the normal-exit
-        // cleanup is outside the body's exception-table entry. If
-        // `__exit__` raises here, the new exception should propagate to
-        // the outer frame's exception table (matching CPython, where an
-        // `__exit__` exception replaces any prior state). Routing it
-        // back to our own handler would invoke `__exit__` a second time
-        // with the ctx already popped, blowing up the stack-depth
-        // bookkeeping in the unwinder.
-        let try_end = self.code.current_offset();
+        let region = self
+            .fblocks
+            .pop()
+            .expect("with compilation should retain its frame block")
+            .expect_with();
+        // Exclude `__exit__` so its failures cannot re-enter this handler.
+        let body_end = self.code.current_offset();
 
-        // Normal exit: __exit__(None, None, None); pop the (discarded) result;
-        // skip the handler.
+        // Normal exit skips the exception handler.
         self.code.emit(Opcode::WithExit)?;
         self.code.emit(Opcode::Pop)?;
-        let after_body_jump = self.code.emit_jump(Opcode::Jump)?;
+        let end_jump = self.code.emit_jump(Opcode::Jump)?;
 
         // === Exception handler ===
         let handler_start = self.code.current_offset();
-        // VM unwinds to `stack_depth + 1` (the ctx) and then pushes the exception
-        // value itself, so we enter at depth `stack_depth + 2` with [ctx, exc].
+        // Entry stack: [ctx, exc].
         self.code.new_code_region(stack_depth + 2);
 
         self.code.emit(Opcode::WithExceptStart)?;
@@ -3797,65 +3774,16 @@ impl<'a> Compiler<'a> {
         self.code.emit(Opcode::Pop)?;
         self.code.emit(Opcode::Reraise)?;
 
-        // Swallow path: stack = [ctx, exc]. Drop both, clear current exception,
-        // jump to end.
+        // Swallow path: drop [ctx, exc] and clear the active exception.
         self.code.patch_jump(swallow_jump)?;
         self.code.emit(Opcode::Pop)?;
         self.code.emit(Opcode::Pop)?;
         self.code.emit(Opcode::ClearException)?;
-        let after_swallow_jump = self.code.emit_jump(Opcode::Jump)?;
-
-        // === Early-exit trailers (return/break/continue inside body) ===
-        let finally_target = self.finally_targets.pop().expect("finally_targets should not be empty");
-
-        // === Return path ===
-        // Stack at patch site: [ctx, return_value]. Swap so ctx is on top for
-        // WithExit, discard its result, then route the (preserved) return value.
-        if !finally_target.return_jumps.is_empty() {
-            for jump in finally_target.return_jumps {
-                self.code.patch_jump(jump)?;
-            }
-            self.code.emit(Opcode::Rot2)?;
-            self.code.emit(Opcode::WithExit)?;
-            self.code.emit(Opcode::Pop)?;
-            self.compile_return_routing()?;
-        }
-
-        // === Break path ===
-        // Stack at patch site: [ctx] (compile_break already popped any for-loop
-        // iterator). Call __exit__, discard its result, then route to the break target.
-        if !finally_target.break_jumps.is_empty() {
-            for break_info in &finally_target.break_jumps {
-                self.code.patch_jump(break_info.jump)?;
-            }
-            self.code.emit(Opcode::WithExit)?;
-            self.code.emit(Opcode::Pop)?;
-            self.compile_control_flow_after_finally(&finally_target.break_jumps, true)?;
-        }
-
-        // === Continue path ===
-        // Stack at patch site: [ctx]. Same shape as the break path.
-        if !finally_target.continue_jumps.is_empty() {
-            for continue_info in &finally_target.continue_jumps {
-                self.code.patch_jump(continue_info.jump)?;
-            }
-            self.code.emit(Opcode::WithExit)?;
-            self.code.emit(Opcode::Pop)?;
-            self.compile_control_flow_after_finally(&finally_target.continue_jumps, false)?;
-        }
 
         // === Merge point for the normal-exit and swallowed-exception paths ===
-        self.code.patch_jump(after_body_jump)?;
-        self.code.patch_jump(after_swallow_jump)?;
+        self.code.patch_jump(end_jump)?;
 
-        // === Exception-table entry: body -> handler ===
-        // `stack_depth + 1` accounts for the ctx left on the stack; the VM
-        // pushes the exception value itself on top of that. `exception_stack_count`
-        // is unchanged because the with-block does not push to exception_stack.
-        self.code
-            .add_exception_entry(try_start, try_end, handler_start, stack_depth + 1, try_exc_stack_count)?;
-
-        Ok(())
+        region.add_entries(body_end, &mut self.code, handler_start, HandlerKind::Consuming)
     }
 
     /// Compiles the exception handlers for a try block.
@@ -3871,8 +3799,8 @@ impl<'a> Compiler<'a> {
     fn compile_exception_handlers(
         &mut self,
         stack_depth: u16,
-        handlers: &[ExceptHandler<PreparedNode>],
-        finally_jumps: &mut Vec<JumpLabel>,
+        handlers: &'a [ExceptHandler<PreparedNode>],
+        end_jumps: &mut Vec<JumpLabel>,
     ) -> Result<(), CompileError> {
         // Start a new code region for the exception handlers, +1 for
         // the exception value pushed by the VM on entry to the handler dispatch
@@ -3900,16 +3828,32 @@ impl<'a> Compiler<'a> {
                 self.code.emit(Opcode::Pop)?;
             }
 
-            self.except_handler_depth += 1;
+            // Exceptional exits need the same target cleanup as non-local
+            // control flow, so the handler body owns a cleanup region.
+            let region = Region::open(self.code.current_offset(), stack_depth, self.exc_stack_count());
+            self.fblocks.push(FBlock::ExceptHandler {
+                name: handler.name.as_ref(),
+                region,
+            });
             self.compile_block(&handler.body)?;
-            self.except_handler_depth -= 1;
+            let (name, region) = self
+                .fblocks
+                .pop()
+                .expect("except body should retain its frame block")
+                .expect_except_handler();
+            let body_end = self.code.current_offset();
 
-            if let Some(name) = &handler.name {
-                self.compile_delete(name)?;
-            }
-
+            self.compile_clear_handler_name(name)?;
             self.code.emit(Opcode::ClearException)?;
-            finally_jumps.push(self.code.emit_jump(Opcode::Jump)?);
+            end_jumps.push(self.code.emit_jump(Opcode::Jump)?);
+
+            // The runtime already discarded the abandoned handler's exception,
+            // so just clear the `as` target and propagate the replacement.
+            let cleanup_start = self.code.current_offset();
+            self.code.new_code_region(stack_depth);
+            self.compile_clear_handler_name(name)?;
+            self.code.emit(Opcode::Reraise)?;
+            region.add_entries(body_end, &mut self.code, cleanup_start, HandlerKind::Cleanup)?;
 
             if let Some(no_match_jump) = no_match_jump {
                 // No-match landing: stack is [exception]. Falls through into
@@ -3958,14 +3902,11 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u16(Opcode::DeleteGlobal, slot)?;
             }
             NameScope::Cell => {
-                // Delete cell not commonly needed
-                // For now, just store None
-                self.code.emit(Opcode::LoadNone)?;
-                self.compile_store(target)?;
+                // unbind the cell (CPython's DELETE_DEREF) so a captured
+                // `except ... as` target reads as unbound after cleanup
+                self.code.emit_u16(Opcode::DeleteCell, slot)?;
             }
-            NameScope::CompVar => {
-                unreachable!("no syntax exists to `del` a comprehension variable")
-            }
+            NameScope::CompVar => unreachable!("no syntax exists to `del` a comprehension variable"),
         }
         Ok(())
     }

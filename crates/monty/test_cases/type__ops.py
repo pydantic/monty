@@ -8,6 +8,7 @@ assert type((1, 2)) == tuple
 assert type({1: 2}) == dict
 assert type(b'hi') == bytes
 assert type(None) == type(None)
+assert type(NotImplemented) == type(NotImplemented)
 
 # === type() inequality ===
 assert type(1) != str
@@ -186,12 +187,14 @@ assert not isinstance([], (int, (str, bytes))), 'isinstance nested tuple no matc
 
 # NoneType capitalization
 assert repr(type(None)) == "<class 'NoneType'>"
+assert repr(type(NotImplemented)) == "<class 'NotImplementedType'>"
 
 # === type().__name__ ===
 assert type(42).__name__ == 'int'
 assert type('hello').__name__ == 'str'
 assert type(True).__name__ == 'bool'
 assert type(None).__name__ == 'NoneType'
+assert type(NotImplemented).__name__ == 'NotImplementedType'
 assert type([1, 2]).__name__ == 'list'
 assert type({'a': 1}).__name__ == 'dict'
 

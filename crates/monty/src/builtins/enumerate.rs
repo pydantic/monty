@@ -1,6 +1,5 @@
 //! Implementation of the enumerate() builtin function.
 
-use monty_types::ResourceTracker;
 use smallvec::smallvec;
 
 use crate::{
@@ -17,7 +16,7 @@ use crate::{
 ///
 /// Returns a list of (index, value) tuples.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_enumerate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_enumerate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (iterable, start) = extract_enumerate_args(args, vm)?;
     // Guard `start` before building the iterator: a non-iterable `iterable`
     // errors out of `py_iter`, and a heap-backed start must not leak.
@@ -47,13 +46,13 @@ pub fn builtin_enumerate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
 
     while let Some(item) = iter.py_next(vm)? {
         // Create tuple (index, item)
-        let tuple_val = allocate_tuple(smallvec![Value::Int(index), item], vm.heap)?;
+        let tuple_val = allocate_tuple(smallvec![Value::Int(index), item], vm.heap);
         result.push(tuple_val);
         index += 1;
     }
 
     let (result, vm) = result_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)))?;
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)));
     Ok(Value::Ref(heap_id))
 }
 
@@ -63,7 +62,7 @@ pub fn builtin_enumerate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
 /// keyword names are validated by *position* against the accepted shapes, and
 /// zero positionals with an unrecognised keyword shape reports the missing
 /// `iterable` even when `iterable=` was actually passed.
-fn extract_enumerate_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(Value, Option<Value>)> {
+fn extract_enumerate_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Value, Option<Value>)> {
     let (mut pos, kwargs) = args.into_parts();
     let n_pos = pos.len();
     let total = n_pos + kwargs.len();
@@ -96,7 +95,8 @@ fn extract_enumerate_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>
                 // `enumerate(start=1, x=1, iterable=[1])`.
                 Err(ExcType::type_error_missing_required_no_pos("enumerate", "iterable"))
             } else {
-                Err(ExcType::type_error_method_at_most("enumerate", 2, total))
+                // `n_pos > 0` in this arm, so never the all-keyword wording.
+                Err(ExcType::type_error_method_at_most("enumerate", 2, total, false))
             }
         }
     }
@@ -105,11 +105,7 @@ fn extract_enumerate_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>
 /// The `enumerate(iterable=..., start=...)` form: CPython accepts both
 /// keyword orders, checking `start` first and reporting the first
 /// out-of-place name.
-fn two_kwarg_form(
-    kv0: (Value, Value),
-    kv1: (Value, Value),
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<(Value, Option<Value>)> {
+fn two_kwarg_form(kv0: (Value, Value), kv1: (Value, Value), vm: &mut VM<'_>) -> RunResult<(Value, Option<Value>)> {
     // Decide the shape by reference before any ownership moves.
     let swapped = key_check(&kv0.0, "start", vm).is_ok();
     let checked = if swapped {
@@ -135,7 +131,7 @@ fn two_kwarg_form(
 }
 
 /// Consumes a kwarg pair, returning its value if the key is `expected`.
-fn take_kwarg(kv: (Value, Value), expected: &str, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+fn take_kwarg(kv: (Value, Value), expected: &str, vm: &mut VM<'_>) -> RunResult<Value> {
     match key_check(&kv.0, expected, vm) {
         Ok(()) => {
             let (key, value) = kv;
@@ -152,7 +148,7 @@ fn take_kwarg(kv: (Value, Value), expected: &str, vm: &mut VM<'_, impl ResourceT
 /// Errors unless `key` is the string `expected`, mirroring CPython's
 /// `check_keyword`: a non-string key raises `keywords must be strings`, any
 /// other name the `invalid keyword argument` wording.
-fn key_check(key: &Value, expected: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<()> {
+fn key_check(key: &Value, expected: &str, vm: &VM<'_>) -> RunResult<()> {
     let Some(key) = key.as_either_str(vm.heap) else {
         return Err(ExcType::type_error_kwargs_nonstring_key());
     };

@@ -1,23 +1,23 @@
 # Worker execution (`monty subprocess`, `monty-pool`, `Monty`/`AsyncMonty`)
 
 The monty type checker, compiler, and interpreter should run in a separate
-process, except in environments where that's not possible (like wasm), so
-that sandbox crashes that cannot be fully prevented — stack overflow aborts
-and allocator aborts — kill only the worker. The Python package
-(`pydantic_monty`) and the JS package (`@pydantic/monty`) both do this: they
-run everything in workers driven over a protobuf protocol
-(`crates/monty-proto`) and expose no in-process execution API. By default the
-worker is a local `monty subprocess` child; the Python package additionally
-offers `pydantic_monty.AsyncMontyWebsocket`, which reaches a remote child over
-a WebSocket instead (the JS package is subprocess-only). For a `monty subprocess`
-worker the language semantics are identical to embedding the interpreter directly
-(it is the same interpreter), and the notes below are about the *host API* surface.
+process, except where that's impossible (wasm), so that the sandbox crashes
+that cannot be fully prevented (stack overflow aborts, allocator aborts) kill
+only the worker. The Python package (`pydantic_monty`) and the JS package
+(`@pydantic/monty`) both do this: they run everything in workers driven over a
+protobuf protocol (`crates/monty-proto`) and expose no in-process execution
+API. By default the worker is a local `monty subprocess` child; the Python
+package additionally offers `pydantic_monty.AsyncMontyWebsocket`, which reaches
+a remote child over a WebSocket instead (the JS package is subprocess-only).
+For a `monty subprocess` worker the language semantics are identical to
+embedding the interpreter directly (it is the same interpreter), and the notes
+below are about the *host API* surface.
 
 A WebSocket worker is whatever the relay bridges to, and need not be a Monty
 sandbox at all: a remote child may run the snippet in **real CPython with no
 sandbox, no resource limits, and full host filesystem/network/subprocess
-access** (relying on the deployment — a container/VM per session — for
-isolation, not on the language). So none of Monty's in-process safety
+access**, relying on the deployment (a container/VM per session) for
+isolation rather than on the language. None of Monty's in-process safety
 guarantees hold for that transport; treat the remote as a trusted-deployment
 execution surface, not a sandbox.
 
@@ -25,7 +25,7 @@ execution surface, not a sandbox.
 
 The guarantees below describe a **Monty sandbox worker** (`monty subprocess`).
 A WebSocket remote honours the *protocol* shape (REPL turns, version-skew
-check, value encoding) but **none** of the sandbox guarantees — resource
+check, value encoding) but **none** of the sandbox guarantees: resource
 limits, the no-subprocess invariant (an embedded-CPython child shells out to
 `uv` for installs), and the empty-environment property are Monty-sandbox
 properties that real CPython does not provide, per the caveat above.
@@ -38,56 +38,113 @@ properties that real CPython does not provide, per the caveat above.
   or `MontyComplete`) for the caller to inspect, `dump()`, and `resume(...)`;
   see the snapshot divergences below.
 - A session whose worker crashed is lost: subsequent calls raise
-  `MontyCrashedError`. The pool itself recovers by replacing the worker.
-- **The session `Configure` request carries the parent's `monty_version`, and
-  the worker rejects a mismatch.** The protocol has no in-band negotiation and
-  assumes parent and child are deployed in lockstep, so a child whose version
-  differs from the `monty_version` in `Configure` replies `FatalError` (with a
-  `version skew: parent=… child=…` message) and exits non-zero rather than
-  risk a frame desync. A local subprocess child is built in lockstep with the
-  parent, so this mostly matters for the WebSocket transport, where the remote
-  child is deployed separately — a remote child on a different version replies
-  `FatalError` and the pool surfaces it cleanly.
+  `MontyCrashedError`, which also carries a worker's own account when it
+  announced a `FatalError` before exiting (e.g. an unsupported protocol
+  version), plus the exit status when the process could be reaped. The pool
+  itself recovers by replacing the worker.
+- **WebSocket sessions are lost in two additional ways.** A connection that
+  closes mid-session raises `MontyDisconnectError`: the client cannot tell a
+  dead remote sandbox from a server-side policy drop (idle/session/turn
+  timeout, over capacity), so the error claims no more than that the
+  connection went away. A server that is shutting down instead answers the
+  session's next request with `MontyShutdown`. That request did **not** run,
+  and its `dump` (when present) restores the session onto a fresh checkout
+  via `session.load_session` / `session.load_snapshot`. If the interrupted
+  request was answering a suspension (external function or `os` callback),
+  the host already ran that call and the restored session re-announces it, so
+  it runs twice unless the callback is idempotent. Neither error occurs on
+  the local subprocess transport; a local child claiming shutdown is a
+  protocol violation.
+- **The session `Configure` request carries the parent's `protocol_version`,
+  and the worker rejects one it does not serve.** The protocol has no in-band
+  negotiation, so a parent outside the child's supported range
+  (`MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION`) gets a `FatalError`
+  naming that range, enough to downgrade and retry, and the child exits
+  non-zero rather than risk a frame desync. A version of `0` means the parent
+  declared nothing and is always rejected. A local subprocess child ships with
+  its parent, so this mostly matters for the WebSocket transport, where the
+  remote child is deployed separately; the pool surfaces the rejection as a
+  `MontyCrashedError` carrying the message.
+- **The package version is not checked.** `Configure` also carries the
+  parent's `monty_version`, but only for telemetry and to make a rejection
+  legible. Parent and child may run different monty releases as long as their
+  protocol versions are compatible. This does *not* extend to dumps: the
+  dump envelope is versioned separately again, and restoring one still
+  requires a worker built from the same version (see the snapshot
+  divergences below).
 - Resource exhaustion (e.g. `max_duration_secs`) is terminal for the
   *session*: later feeds keep failing with the same resource error. The
   worker process is reused for the next checkout.
-- Ctrl-C / asyncio cancellation cannot interrupt a protocol turn already
-  blocked on the worker; use sandbox `limits` and/or the pool's
-  `request_timeout` (which kills the worker).
+- Asyncio cancellation of an in-flight call (`feed_run`, `dump`, ...)
+  **loses the session**: the protocol turn was abandoned mid-flight, so its
+  worker can no longer be trusted. It is killed immediately, or, when the
+  checkout is contended by a concurrent call, discarded by the next call,
+  which raises `RuntimeError`. A call cancelled while still queued behind
+  another call never touched the worker, so the session stays usable. The
+  pool itself stays healthy either way; Ctrl-C in sync code still cannot
+  interrupt a turn blocked on the worker.
 - **Workers never spawn subprocesses, and the pool depends on it.** The
-  interpreter exposes no `fork`/`exec`/subprocess surface. The watchdog
-  enforces `request_timeout` (and the `max_duration` backstop) by killing the
-  single worker PID, which closes the worker's stdout and unblocks the
-  parent's blocked read. A worker that forked a grandchild inheriting that
-  pipe could hold it open past the kill and hang the parent forever, so the
-  no-subprocess property is a hard sandbox invariant, not just a missing
-  feature — and the pool deliberately does **not** add process-group / Job
-  Object teardown to defend against it. A sandbox escape that bypassed the
-  invariant is out of scope here: it is already arbitrary native code running
-  in the worker.
+  interpreter exposes no `fork`/`exec`/subprocess surface. `request_timeout`
+  (and the `max_duration` backstop) is enforced by abandoning the turn at the
+  deadline and killing the single worker PID. A worker that forked a
+  grandchild would leave that grandchild running (and holding the stdout
+  pipe) after the kill, so the no-subprocess property is a hard sandbox
+  invariant, not just a missing feature, and the pool deliberately does
+  **not** add process-group / Job Object teardown to defend against it. A
+  sandbox escape that bypassed the invariant is out of scope here: it is
+  already arbitrary native code running in the worker.
+- **Synchronous Python telemetry can delay `request_timeout`.** The optional
+  Logfire adapter runs trusted Python SDK callbacks inside the protocol turn.
+  A callback that does not return prevents Tokio from polling the otherwise
+  hard parent-side deadline, just like other non-yielding host work. The Node
+  adapter uses non-blocking queued delivery and does not have this limitation.
 - **`max_duration` measures cumulative execution time, and the worker's
   clock is the single source of truth.** The in-sandbox clock runs only
-  while the interpreter executes — never while suspended waiting on the
-  host (external functions, OS callbacks) or between feeds — accumulates
+  while the interpreter executes, never while suspended waiting on the
+  host (external functions, OS callbacks) or between feeds, accumulates
   across feeds, and travels inside dumps. The worker reports its total on
   every protocol turn; the host never keeps a second clock.
 - **`max_duration` is backstopped by the host.** From the reported total the
-  host arms each execution turn's watchdog with the remaining budget plus
+  host bounds each execution turn by the remaining budget plus
   `duration_limit_grace` (default 1s) and kills the worker when it expires.
   The in-sandbox limit normally fires first with a clean `TimeoutError`; the
-  backstop covers cases where it cannot — a worker that stops answering
-  (e.g. compromised or wedged) — and surfaces as `MontyCrashedError`, losing
-  the session. Mount I/O runs on the host between protocol turns and does not
-  count against the worker's deadline. Because the budget and consumed time are also stamped onto the
-  worker's replies, sessions restored via the Rust `Pool::checkout_load`
-  regain the backstop too. A *compromised* worker could under-report its
-  total, stretching each turn to the full budget plus grace — turns stay
-  bounded, and `request_timeout` applies independently.
+  backstop covers cases where it cannot, such as a worker that stops
+  answering (compromised or wedged), and surfaces as `MontyCrashedError`,
+  losing the session. Mount I/O runs on the host between protocol turns and
+  does not count against the worker's deadline. The budget and consumed time
+  are also stamped onto the worker's replies, so sessions restored via the
+  Rust `Checkout::restore` regain the backstop too. A *compromised* worker
+  could under-report its total, stretching each turn to the full budget plus
+  grace; turns stay bounded, and `request_timeout` applies independently.
+  Both deadlines fire between the turn's polls, so decoding one maximal reply
+  frame (~1s worst case) can delay enforcement by that long.
+- **`max_memory` is also enforced in the worker's allocator.** It caps the live
+  bytes the worker's allocator will hand out, plus headroom (see
+  ./resource_limits.md, which covers how exceeding it surfaces); a
+  session without a limit is uncapped. The worker derives it from the session it
+  holds, so nothing travels outside the protocol, and the wasm worker counts the
+  same way (not the linear memory it has grown to, which never shrinks).
+  Ignored by the WebSocket transport, whose exit codes do not travel, so a
+  remote failure degrades to `Disconnected`. The exit code
+  borrows [`sysexits.h`](https://man.freebsd.org/sysexits) so a bare status is
+  legible in a log.
+- **A refused allocation is the one `MemoryError` that kills the session.** The
+  worker's allocator exits 65 (`EX_DATAERR`: the fed snippet asked for more than
+  it may have) rather than letting Rust abort (`SIGABRT`, which a stack overflow
+  also produces and which would be unclassifiable), so the host gets
+  `MontyRuntimeError`/`MemoryError` with a
+  distinct message instead of `MontyCrashedError`. The worker is already
+  dead and later calls on that checkout report `Finished`. An ordinary in-sandbox
+  exception leaves the session usable; a failed `load_session` / `load_snapshot`
+  is the other `MontyRuntimeError` that does not (see below). Applies on all
+  platforms, with or without a session budget, except in the wasm worker, which
+  has no exit status to carry the distinction and so reports `MontyCrashedError`
+  for both.
 - **Workers are spawned with an empty environment** (on Windows only
   `SystemRoot` is kept, which CRT/WinAPI lookups need): host secrets are
   never in a worker's memory, where a sandbox escape or memory disclosure
-  could reach them. This is invisible to sandbox code — `os.getenv` etc. are
-  OS calls answered by the host, never reads of the worker's own
+  could reach them. This is invisible to sandbox code, since `os.getenv` etc.
+  are OS calls answered by the host, never reads of the worker's own
   environment. The public Python and JS bindings expose no worker
   configuration channel outside the protocol.
 - **Worker binary resolution is part of the host trust boundary.** Python and
@@ -106,6 +163,13 @@ properties that real CPython does not provide, per the caveat above.
   Deeper values fail the protocol turn rather than crossing the boundary.
 - `Cycle` markers (self-referential containers) can be *received* from a
   worker but are rejected as inputs.
+- A sandbox value with no `MontyObject` equivalent — a class, a class
+  instance, a function, a compiled `re` pattern — is **silently degraded to
+  its repr string** on the way out, rather than failing. A host function
+  receiving one gets a `str`: `"<class 'C'>"`, `"<C object at 0x5>"`,
+  `"<function '<lambda>' at 0x2c>"`, `"re.compile('a')"`. This applies to
+  external-function arguments and to a snippet's final result, so a host
+  cannot distinguish such a value from a sandbox string of the same text.
 - A single value whose encoded form would exceed the wire frame limit
   (256 MiB) — a feed input, external-function argument or return value, or a
   snippet's final result — cannot cross the boundary. This is a
@@ -116,19 +180,19 @@ properties that real CPython does not provide, per the caveat above.
   Monty code cannot catch that error inside the aborted feed.
 - The same frame limit applies to `dump()`: a session whose serialized state
   (heap plus any retained suspension payload) exceeds 256 MiB cannot be
-  dumped. The call raises a `RuntimeError` and the session is unaffected — a
+  dumped. The call raises a `RuntimeError` and the session is unaffected: a
   suspended session stays suspended and resumable.
 - Independently of the wire-byte limit, a frame is rejected if the values it
-  decodes into would exceed a **per-frame host-memory budget** — a hard,
+  decodes into would exceed a **per-frame host-memory budget**, a hard,
   non-configurable limit of 1 GiB of *resident* decoded bytes. The wire cap
   bounds bytes, but the cheapest elements (e.g. `None` in a list, ~4 wire bytes)
-  materialize into 88-byte `MontyObject`s — a ~22× blow-up that a ≤256 MiB frame
+  materialize into 88-byte `MontyObject`s, a ~22× blow-up that a ≤256 MiB frame
   could turn into multiple GiB on the host. The budget is charged incrementally
   during decode and trips before the full value is built, so a parent reading
   such a frame discards the worker with a protocol error rather than risking an
   out-of-memory abort. A value large enough to hit it (tens of millions of
   elements) cannot cross the boundary even though it is under the wire-byte
-  limit. Every payload — containers and function/OS-call args & kwargs alike —
+  limit. Every payload, containers and function/OS-call args & kwargs alike,
   decodes straight into its final type with no intermediate copy, so the
   worst-case host *peak* is ~1× the budget plus the ≤256 MiB frame buffer, and
   the bound applies per concurrent worker.
@@ -142,26 +206,66 @@ properties that real CPython does not provide, per the caveat above.
 
 ## Host-API behaviour notes
 
+- **A host-function return value the wire cannot carry fails *inside* the
+  sandbox, not host-side.** An unrepresentable type becomes a catchable
+  `TypeError: Cannot convert X to Monty value`; one nested past the wire depth
+  bound becomes a catchable `RuntimeError: Max input depth exceeded`. Either
+  reaches the host as `MontyRuntimeError` only when the sandbox does not catch
+  it. The same holds for an `os=` callback's return value, and for the JS
+  client. `MontyConversionError` covers only values the host supplies up
+  front, in `inputs` or `external_lookup`.
 - **Typing errors** (`checkout(type_check=True)`) raise `MontyTypingError`
-  whose diagnostics were rendered in the worker with the default format —
-  `display()` takes no arguments.
+  whose diagnostics were rendered *in the worker*, so the format is a
+  checkout argument (`type_check_format=`, `type_check_color=`; JS
+  `typeCheckFormat` / `typeCheckColor`) and `display()` takes no arguments:
+  it cannot re-render, because ty's structured diagnostics resolve their spans
+  against the checker's database and so never cross the wire. Formats are
+  ty's: `full` (default), `concise`, `azure`, `json`, `jsonlines`, `rdjson`,
+  `pylint`, `gitlab`, `github`; only `full` and `concise` carry colour.
 - **Print callbacks** receive buffered chunks flushed at newline boundaries
-  or once ~8 KiB accumulates — not per-fragment writes. A chunk may contain
+  or once ~8 KiB accumulates, not per-fragment writes. A chunk may contain
   more than one line, and output larger than the threshold is split into
-  ~8 KiB pieces (so a chunk is bounded, but is not guaranteed to be exactly
-  one line). A callback that raises aborts the feed after the current
+  ~8 KiB pieces, so a chunk is bounded but not guaranteed to be exactly
+  one line. A callback that raises aborts the feed after the current
   protocol turn, not mid-`print`; if that turn had suspended (an external
   function, OS call, or name lookup), the binding resets/discards the
   suspension before surfacing the print error so later feeds can continue.
+- **The sync API adapts to the caller's Tokio context.** `Monty` methods block
+  the calling thread on the binding's Tokio runtime. Called from a worker
+  thread of a multi-thread runtime, e.g. a sync external function or
+  `print_callback` invoked by an `AsyncMonty` drive, the wait is wrapped in
+  `tokio::task::block_in_place`, so opening an independent nested sync
+  pool/session works (each concurrent nested call occupies an extra OS thread
+  while it waits). Called from any *current-thread* Tokio runtime context,
+  blocking would starve the tasks that drive the pool, so every sync method
+  raises `RuntimeError: the synchronous Monty API cannot run inside a
+  current-thread Tokio runtime`. Only independent nested pools/sessions are
+  supported: re-entering the *same* session from its own callback deadlocks
+  on the session's internal lock.
 - **Mounts are host-side.** `MountDir` objects contribute configuration only;
   the pool builds a fresh mount table per feed on the *host* and services the
-  worker's filesystem OS calls itself — the worker never sees host paths, so
+  worker's filesystem OS calls itself. The worker never sees host paths, so
   mounts work identically for local subprocess and remote WebSocket workers.
   `mode='overlay'` writes live in that per-feed table and are discarded when
-  the feed ends — the `MountDir` object's overlay state is never updated.
+  the feed ends; the `MountDir` object's overlay state is never updated.
   `read-write` mounts write through to the real host directory as before. An
-  invalid mount (host path missing / not a directory) raises at `feed` time,
-  before the snippet runs, as a session-preserving error.
+  invalid mount (host path missing / not a directory) raises when the mount
+  object is *created*, not at `feed` time: constructing it opens the directory.
+- **A mount object is bound to a directory, not to a path.** `MountDir` opens
+  the host directory once and every feed mounts that descriptor, so renaming or
+  replacing the directory afterwards does not change what the mount serves:
+  the mount keeps following the original directory under its new name, and a
+  new directory at the old path is not picked up. Recreate the `MountDir` to
+  follow a path instead. This is deliberate: the sandbox can rename inside a
+  `read-write` mount, so a path re-resolved each feed is a path the sandbox can
+  redirect.
+- **On Windows a mounted directory is locked for as long as the mount object
+  lives.** It holds an open descriptor, and Windows refuses to rename or delete
+  a directory while a handle to it is open, so the host gets
+  `ERROR_SHARING_VIOLATION` until the mount is closed, not just until the feed
+  ends. `MountDir.close()` releases it (also `with` in Python, `using` in
+  JavaScript); a feed already running keeps its own reference, and feeding a
+  closed mount raises. Unix is unaffected, and closing is optional there.
 - **Mounts only answer calls on the automatic path.** Every OS call the sandbox
   makes surfaces as a suspension; the pool consults the mount table only when
   the caller asks it to. `feed_run` (and the JS `feedRun`) asks on every OS
@@ -169,26 +273,33 @@ properties that real CPython does not provide, per the caveat above.
   read comes back as a `FunctionSnapshot` with `is_os_function` set, and it is
   `resume_auto()` that offers the call to the mounts and then to `os=`.
   Answering such a snapshot with an explicit `resume(...)` bypasses the mount
-  entirely — the value you supply is what the sandbox sees.
+  entirely; the value you supply is what the sandbox sees.
 - **Special files are rejected.** Reading, writing, or `open()`ing a
   non-regular file in a mounted directory (FIFO, socket, device) raises
-  `PermissionError` instead of blocking — CPython would block until a peer
-  appears, but mount I/O runs on the host thread driving the session and must
-  never block on sandbox-reachable input.
+  `PermissionError` instead of blocking. CPython would block until a peer
+  appears, but mount I/O blocks the feed (and holds a host thread) for its
+  full duration and must never wait on sandbox-reachable input.
 - **Mount I/O is not bounded by any timeout.** Covered filesystem calls run
-  synchronously on the host *between* protocol turns, with no watchdog armed —
-  and its only lever, killing the worker, could not interrupt host I/O anyway.
-  Special files are rejected (above) so sandbox code cannot hang the host, but
-  a stalled NFS/FUSE volume blocks the feed indefinitely; hang-free host I/O is
-  the embedder's responsibility, as for `print_callback` and external
-  functions. Each covered call is answered by its own turn, so a *loop* of
-  mounted reads resets `request_timeout` every iteration, exactly like a loop
-  of external calls. `max_duration` still bounds such a feed's worker
-  execution, but nothing bounds its wall clock.
+  on the host *between* protocol turns, with no turn deadline armed, and the
+  deadline's only lever, killing the worker, could not interrupt host I/O
+  anyway. Special files are rejected (above) so sandbox code cannot hang the
+  host, but a stalled NFS/FUSE volume blocks the feed indefinitely; hang-free
+  host I/O is the embedder's responsibility, as for `print_callback` and
+  external functions. The I/O runs on Tokio's blocking thread pool, so a
+  stalled mount ties up its own feed and one blocking thread, not the
+  runtime workers that drive other sessions' turns and timers. Cancelling the
+  feed does not cancel the filesystem call: the detached operation keeps its
+  blocking thread until it returns, and a `read-write` mount's write, rename,
+  or delete can complete on the host *after* cancellation was observed (and
+  the worker discarded). Each covered
+  call is answered by its own turn, so a *loop* of mounted reads resets
+  `request_timeout` every iteration, exactly like a loop of external calls.
+  `max_duration` still bounds such a feed's worker execution, but nothing
+  bounds its wall clock.
 - **`os=` fallback** receives `(function_name, args, kwargs)`. On the
   automatic path (`feed_run`, `resume_auto`) mounts get first refusal, so
   mount-covered filesystem calls never reach the callback. Under `feed_start`
-  the callback is consulted only by `resume_auto()` — it is never invoked
+  the callback is consulted only by `resume_auto()`; it is never invoked
   between snapshots.
 - **Mounts have a 100 MB memory budget by default.** Retained overlay data and
   transient filesystem results share the configurable per-mount budget.
@@ -199,12 +310,12 @@ properties that real CPython does not provide, per the caveat above.
   returning the data.
 - **`external_lookup` resolves undefined names lazily.** `feed_run` /
   `feedRun` take `external_lookup` (`externalLookup` in JS): a name the snippet
-  leaves undefined is resolved on first reference against this dict — a
+  leaves undefined is resolved on first reference against this dict. A
   *callable* entry becomes a host function proxy (invoked on the eventual call),
   any *other value* is converted and returned directly, and an absent name
   raises `NameError`. It is the lazy counterpart to the eager `inputs` (a name
   present in both is served by the `inputs` binding, so no lookup fires). A
-  non-callable value that cannot be converted rejects the turn host-side —
+  non-callable value that cannot be converted rejects the turn host-side:
   because `external_lookup` (and `inputs`) may hold untrusted values, an
   unrepresentable *type* surfaces as a dedicated `MontyError` subclass (in
   `pydantic_monty`, `MontyConversionError`; its `exception()` reconstructs a
@@ -216,14 +327,14 @@ properties that real CPython does not provide, per the caveat above.
   does not re-fire `NameLookup` (a later host mutation of the dict entry is not
   observed), whereas an embedded-CPython worker caches only function proxies and
   re-fires `NameLookup` on every value reference (re-reading live). Function
-  proxies are cached by both — but unlike a CPython function object, a proxy
+  proxies are cached by both, but unlike a CPython function object, a proxy
   dispatches by *name* against the dict passed to the current feed at call
   time: replacing an entry rebinds every reference already holding the proxy,
   and replacing it with a non-callable makes calls raise the `TypeError`
   CPython would for calling that value (`'int' object is not callable`).
   Because only *undefined* names fire lookups, an entry shadowing a builtin
   (e.g. `{'len': ...}`) is silently ignored. `feed_start` / `feedStart` take no
-  `external_lookup` — they surface name lookups as snapshots, which resolve only
+  `external_lookup`; they surface name lookups as snapshots, which resolve only
   to a function (see below).
 - **Dependency installation is only available on an embedded-CPython worker.**
   `session.install_dependencies([...])` (sync and async in `pydantic_monty`;
@@ -237,12 +348,14 @@ properties that real CPython does not provide, per the caveat above.
 - **PEP 723 inline dependencies are auto-installed by a CPython worker.**
   Before running a feed, an embedded-CPython worker scans the snippet for a
   PEP 723 `# /// script` block and installs its `dependencies` (same `uv` path
-  as above) so the imports resolve — no protocol involvement, mirroring
+  as above) so the imports resolve, with no protocol involvement, mirroring
   `uv run`. The Monty sandbox worker has no such behavior: a `# /// script`
   block is just a comment and its dependencies are never installed.
-- **`dump()`** bytes use a subprocess-specific envelope and can only be
-  restored into another subprocess worker of the same version, via
+- **`dump()`** bytes carry monty's own versioned session format and can only be
+  restored into a worker built with the same `DUMP_VERSION`, via
   `session.load_session` / `session.load_snapshot` (Rust `Checkout::restore`).
+  A version mismatch is reported as such, naming both versions, so a stale
+  snapshot is distinguishable from a corrupt one.
 - **`feed_start` snapshots are live cursors, not owned state.** The execution
   state lives in the worker, so only one suspension is live per session, each
   snapshot may be resumed at most once (a second resume raises
@@ -257,23 +370,23 @@ properties that real CPython does not provide, per the caveat above.
   dumped (`session.dump()` between feeds vs `snapshot.dump()`); using the wrong
   method raises. Both restore *into* a freshly checked-out worker, so they are
   rejected (`RuntimeError`) after any `feed_run` / `feed_start` / `load_session`
-  / `load_snapshot` — restoring would otherwise discard work. The dump restores
-  its own `script_name` / limits / type-check state (the `checkout()` config
-  for those is not applied); the dataclass registry from `checkout()` is reused.
-  A *failed* load (wrong dump kind, or a protocol desync) poisons the session
-  — its worker is discarded, so every later feed fails too; the load is not
-  retryable and the caller must check out a fresh session.
+  / `load_snapshot`, since restoring would otherwise discard work. The dump
+  restores its own `script_name` / limits / type-check state (the `checkout()`
+  config for those is not applied); the dataclass registry from `checkout()` is
+  reused. A *failed* load (wrong dump kind, or a protocol desync) poisons the
+  session: its worker is discarded, so every later feed fails too; the load is
+  not retryable and the caller must check out a fresh session.
 - **`resume` takes no `mount=` or `os=`.** Mounts and the OS fallback are
   fixed for the whole feed (passed to `feed_start` / `load_snapshot`), and a
-  plain `resume(...)` answers only the call in hand — it consults neither.
+  plain `resume(...)` answers only the call in hand, consulting neither.
   `resume_auto()` is the method that uses them.
 - **Mounts are re-supplied to `load_snapshot`, not stored in the dump.** Mounts
   are host configuration serviced by the host, not sandbox state, so nothing
   about them (host paths included) enters the (opaque, possibly-transmitted)
-  dump bytes — dump contents can never cause any directory to be mounted. To
+  dump bytes; dump contents can never cause any directory to be mounted. To
   resume a suspended feed with its mounts, pass the same `mount=` the original
   `feed_start` used to `load_snapshot`; the pool rebuilds its mount table.
-  (`load_session` takes no `mount` — an idle session has no in-flight feed; the
+  (`load_session` takes no `mount`: an idle session has no in-flight feed; the
   next feed supplies its own.)
 - **Re-supplied mounts are not validated.** The dump records nothing about the
   feed's mounts, so `load_snapshot` cannot check what you pass: a mount
@@ -294,9 +407,10 @@ properties that real CPython does not provide, per the caveat above.
 
 ## JavaScript client (`@pydantic/monty`)
 
-The npm package implements the same parent side of the protocol in pure
-TypeScript (`crates/monty-js`) — no Rust in the package; workers are `monty`
-binaries shipped in platform npm packages. Everything above applies, plus:
+The Node.js npm package implements the same parent side of the protocol through
+a napi-rs binding over `monty-pool`; platform npm packages ship both the native
+addon and the `monty` worker binary. The browser entry point implements the
+same protocol in TypeScript over a WASM worker. Everything above applies, plus:
 
 - **Dataclass method calls are unsupported.** JS has no dataclass registry,
   so a sandbox call to a method on a host dataclass (`method_call` on the
@@ -306,12 +420,6 @@ binaries shipped in platform npm packages. Everything above applies, plus:
   sandbox using `error.name` when it matches one of monty's exception types
   (`TypeError`, `ValueError`, `KeyError`, ...); anything else becomes
   `RuntimeError`. Tracebacks of host errors are not preserved.
-- **Deep external-function return values** (beyond the wire depth bound)
-  raise a *catchable* `RuntimeError: Max input depth exceeded` inside the
-  sandbox, where `pydantic_monty` raises host-side and abandons the feed.
-  Return values that cannot be converted at all (e.g. a `Symbol`, or a
-  malformed `__monty_type__` marker object) likewise raise a catchable
-  in-sandbox `TypeError` instead of failing host-side.
 - **Snapshots mirror `pydantic_monty`.** `session.feedStart(code, opts)`
   returns a `FunctionSnapshot` / `NameLookupSnapshot` / `FutureSnapshot` (or a
   `MontyComplete`); `session.dump()` / `snapshot.dump()` serialize the worker,

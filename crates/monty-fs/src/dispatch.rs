@@ -125,8 +125,8 @@ impl FsRequest {
 ///
 /// This is a trivial 1:1 mapping — every field is already typed on the
 /// caller side (no `MontyObject` introspection, no kwarg walks, no mode
-/// reparse), so the function is infallible. Non-FS variants are filtered
-/// out by [`OsFunctionCall::is_filesystem`] before reaching here and panic
+/// reparse), so the function is infallible. Non-FS variants never reach here
+/// — they have no [`OsFunctionCall::fs_primary_path`] to route on — and panic
 /// the catch-all arm if they slip through.
 pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
     match call {
@@ -194,7 +194,7 @@ pub(super) fn execute(
 /// Builds the [`MontyObject::FileHandle`] an `Open` request resolves to.
 ///
 /// The handle carries the **virtual** (sandbox) path — never a host path — so
-/// subsequent `read`/`write` calls re-resolve it through `resolve_path`.
+/// subsequent `read`/`write` calls re-resolve it against the mount descriptor.
 pub(super) fn file_handle_result(path: &str, mode: FileMode) -> MontyObject {
     MontyObject::FileHandle(MontyFileHandle {
         path: normalize_virtual_path(path),

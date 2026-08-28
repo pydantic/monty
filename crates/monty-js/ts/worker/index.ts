@@ -91,13 +91,16 @@ export {
   type MontyDate,
   type MontyDateTime,
   type MontyException,
-  type MontyFileHandle,
+  MontyFileHandle,
+  type MontyFileHandleOptions,
+  type MontyTime,
   type MontyTimeDelta,
   type MontyTimeZone,
 } from '../types.js'
 export type { PooledWorker, WorkerFactory, WorkerPoolOptions } from './pool.js'
 export { WorkerTransport } from './transport.js'
 export type { ResourceLimits, WorkerSessionConfig } from './transport.js'
+export type { AssertMessageAnnotations, TypeCheckFormat } from '../options.js'
 export { WasmHost, inProcessDispatcher } from './host.js'
 export type { Dispatcher } from './host.js'
 export { WorkerChannel } from './channel.js'

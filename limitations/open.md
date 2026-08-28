@@ -1,14 +1,13 @@
 # `open()` and file objects
 
-Monty's `open()` builtin returns a file wrapper that supports a deliberate
-subset of CPython's file API. The list below tracks every known difference
-from CPython.
+Monty's `open()` builtin returns a file wrapper supporting a subset of
+CPython's file API. The list below tracks every known difference from CPython.
 
-`pathlib.Path.open()` is wired to the same machinery — it prepends `self`
+`pathlib.Path.open()` is wired to the same machinery: it prepends `self`
 as the `file` argument and forwards to the same internal entry point, so
 every divergence listed below applies equally whether the caller uses
 `open(path, ...)` or `path.open(...)`. The only `Path.open()`-specific
-quirks are listed in [Path.open()](#pathopen) at the bottom.
+quirks are in the "Path.open()" section at the bottom.
 
 ## Design note: no live host file descriptors
 
@@ -17,16 +16,15 @@ calls. `open()` itself yields an `OsFunction::Open` round-trip whose effect
 (create / truncate / existence-check) the host performs and immediately
 closes; every subsequent `read()`/`write()`/`append()` is a separate
 one-shot OS call that the host opens, acts on, and closes again. The Monty
-heap stores only path, mode, and small Python-visible state — no OS
+heap stores only path, mode, and small Python-visible state: no OS
 handle, no buffered data, no descriptor number.
 
-This is the property that makes subprocess `dump()` / `load()` safe: a
-session can be serialized at a pause point and resumed later without
-dangling references to host resources. The wasm in-process API exposes the
-same idea as `MontySnapshot`. It also means external processes can observe
-partial state between calls, and that there is no protection against the
-underlying file being changed or removed between calls — both documented
-further down.
+This is what makes subprocess `dump()` / `load()` safe: a session can be
+serialized at a pause point and resumed later without dangling references to
+host resources. The wasm in-process API exposes the same idea as
+`MontySnapshot`. It also means external processes can observe partial state
+between calls, and that there is no protection against the underlying file
+being changed or removed between calls, both documented further down.
 
 ## Mode strings
 
@@ -60,7 +58,7 @@ Two exceptions:
   raises a typed `TypeError: open() argument '<name>' must be str or None,
   not <type>` rather than the generic "not yet supported" message.
 
-Bytes paths are accepted but decoded as **strict** UTF-8 — not via CPython's
+Bytes paths are accepted but decoded as **strict** UTF-8, not via CPython's
 `os.fsdecode` / PEP 383 `surrogateescape` behavior. A non-UTF-8 bytes path
 raises `UnicodeDecodeError: can't decode bytes path as UTF-8`.
 
@@ -68,7 +66,7 @@ This is a deliberate divergence, not a "not yet implemented" gap. PEP 383
 relies on representing invalid bytes as lone surrogates (`U+DC80`–`U+DCFF`)
 inside the resulting `str`. Rust's `String` is strictly valid UTF-8 and
 cannot hold lone surrogates without `unsafe` code or a parallel `Vec<u8>`
-path storage type — neither of which is justified given that Monty paths
+path storage type, neither of which is justified given that Monty paths
 are virtual POSIX strings, not host-OS filenames. A lossy `U+FFFD`
 replacement was also rejected because it would silently re-route an
 `open()` call to a different (wrong) file rather than failing loudly.
@@ -103,7 +101,7 @@ methods and attributes are:
 - `write(data)` — full-file or appending write.
 - `close()`, `flush()`, `readable()`, `writable()`, `seekable()`.
 - `__enter__()` / `__exit__()` — `with open(...) as f:` works; see
-  [`with.md`](with.md) for the shared protocol divergences.
+  ./with.md for the shared protocol divergences.
 - `name`, `mode`, `closed` attributes.
 - `encoding` attribute on text files (always `"utf-8"`).
 
@@ -117,15 +115,19 @@ protocol (`__iter__`/`__next__`, including `for line in f:`).
   `seek()` share a single heap-resident buffer populated on the first such
   call. The host serves only one full-file `ReadText`/`ReadBytes` per
   file; everything after is sliced in pure Monty. Memory cost: the whole
-  file lives in the heap and counts against the configured `max_memory`
-  via `heap.allocate` tracking — the same path every other heap entry
-  takes. The buffer is **never invalidated** — external modifications to
-  the underlying file after the first read are not visible to subsequent
+  file remains allocated and counts against the worker's allocator-backed
+  `max_memory`. The buffer is **never invalidated**, so external modifications
+  to the underlying file after the first read are not visible to subsequent
   reads.
-- `close()` releases the cached buffer (matching CPython), so
-  `current_memory()` drops by the buffer size as soon as `close()`
-  returns. Other holders of the buffer (e.g. a `data = f.read()`
-  reference) keep it alive via their own refcounts.
+- `close()` releases the cached buffer (matching CPython), returning its memory
+  when no other value, such as `data = f.read()`, retains it.
+- File I/O is rejected inside callbacks the interpreter evaluates in a
+  synchronous context that cannot suspend to the host — the `key` of
+  `sorted()`/`list.sort()`/`min()`/`max()`, `map()`/`filter()` functions,
+  `iter(callable, sentinel)`, `defaultdict`'s `default_factory`, and dunder
+  methods invoked implicitly. The first read that needs the host raises
+  `NotImplementedError: <context>: OS function 'Path.read_text' is not yet
+  supported in this context` where CPython would simply read.
 - A read that *fails* in the host leaves the file in a retry-safe state:
   `pending_read` is cleared, the buffer stays empty, and `eof` is not
   flipped. A user-caught exception followed by a retry will re-attempt
@@ -141,9 +143,9 @@ protocol (`__iter__`/`__next__`, including `for line in f:`).
   restricts `TextIOWrapper.seek` to `seek(0)`, `seek(0, 2)`, and cookies
   from `tell()`. Monty is more permissive here.
 - `seek(-1)` raises `OSError("[Errno 22] Invalid argument")` matching
-  CPython's `BufferedReader.seek`. Note that CPython's `TextIOWrapper`
-  raises `ValueError("negative seek position -1")` instead — Monty uses the
-  binary-mode message in both modes for consistency.
+  CPython's `BufferedReader.seek`. CPython's `TextIOWrapper` raises
+  `ValueError("negative seek position -1")` instead; Monty uses the
+  binary-mode message in both modes.
 - `seek(0, 99)` raises `ValueError("whence value 99 unsupported")`
   matching CPython's `BufferedReader`. CPython's `TextIOWrapper` uses a
   different `"invalid whence ..."` message; Monty does not.
@@ -151,15 +153,15 @@ protocol (`__iter__`/`__next__`, including `for line in f:`).
   from CPython (CPython: `"argument should be integer or None, not 'str'"`;
   Monty: `"'str' object cannot be interpreted as an integer"`).
 - Write-only `seek()`/`tell()` maintain logical position state, so common
-  `write(); tell()` and `seek(0, 2)` cases match CPython. However, writes
-  are still full-file or append one-shot host operations: seeking backwards
-  and then writing does **not** overwrite at that offset the way CPython's
-  live file descriptor would.
-- `readline(size)` and `readlines(hint)` are zero-argument only — passing
+  `write(); tell()` and `seek(0, 2)` cases match CPython. Writes are still
+  full-file or append one-shot host operations, so seeking backwards and then
+  writing does **not** overwrite at that offset the way CPython's live file
+  descriptor would.
+- `readline(size)` and `readlines(hint)` are zero-argument only; passing
   a size/hint argument raises `TypeError`. CPython accepts both and uses
   them to cap the returned bytes/chars.
 - File iteration (`for line in f`) is NOT supported: it goes through the
-  `GetIter` opcode which cannot yield to the host. Use `readlines()` and
+  `GetIter` opcode, which cannot yield to the host. Use `readlines()` and
   iterate the resulting list instead.
 - `write()` to a text file requires `str`; to a binary file requires
   `bytes`. The error messages match CPython
@@ -169,7 +171,7 @@ protocol (`__iter__`/`__next__`, including `for line in f:`).
   translation; line endings written to a `'w'` file are preserved verbatim.
 - `io.UnsupportedOperation` (raised by `read()` on `'w'` files, `write()`
   on `'r'` files, etc.) inherits from both `OSError` and `ValueError` for
-  catch purposes — `except OSError:` and `except ValueError:` both work as
+  catch purposes, so `except OSError:` and `except ValueError:` both work as
   in CPython. Monty's class name is the qualified `io.UnsupportedOperation`
   whereas CPython's `__name__` is the bare `UnsupportedOperation`.
 - No host file descriptor is held between calls (see "Design note: no
@@ -194,8 +196,7 @@ These match CPython:
 `pathlib.Path.open(mode='r', ...)` forwards to the same `OsFunction::Open`
 round-trip as `open()` with `self` prepended as the `file` argument, so
 all the rules above (mode rejection, kwarg validation, returned wrapper
-types, open-time effects) apply identically. The only differences to be
-aware of:
+types, open-time effects) apply identically. The differences:
 
 - CPython's `Path.open()` signature lists only `mode, buffering, encoding,
   errors, newline` (no `closefd` / `opener`). Monty accepts `closefd=True`

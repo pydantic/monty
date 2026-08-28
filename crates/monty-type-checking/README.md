@@ -19,10 +19,12 @@ packages.
 ## Usage
 
 ```rust
-use monty_type_checking::{SourceFile, type_check};
+use monty_type_checking::{SourceFile, TypeChecker};
+use monty_types::TypeCheckingConfig;
 
+let mut checker = TypeChecker::default();
 let source = SourceFile::new("x: int = 'not an int'", "main.py");
-let diagnostics = type_check(&source, None).unwrap();
+let diagnostics = checker.run(&source, None, TypeCheckingConfig::default()).unwrap();
 // `Some(...)` means typing errors were found; `None` means the code is clean
 assert!(diagnostics.is_some());
 ```
@@ -33,18 +35,23 @@ alongside the source and a `from <stubs> import *` line is injected, so
 checked code can reference host functions without defining them — diagnostic
 line numbers are adjusted back to the original source.
 
-`TypeCheckingDiagnostics` renders ty's full diagnostic output (source
-context, underlines, and optional ANSI color) via its `Display`
-implementation.
+`TypeCheckingConfig` picks the output format (ty's `full`, `concise`, `json`,
+`github`, ... renderings) and whether to use ANSI colour. It is passed to
+`run` rather than applied to the result because `TypeCheckingDiagnostics`
+borrows the checker — ty's diagnostics resolve their spans against the
+database that produced them, so anything that outlives the checker (notably
+anything crossing a process boundary) has to keep the rendered string.
 
-## Pooled databases
+## Reusing a checker
 
-Each check leases a pre-configured in-memory [salsa](https://github.com/salsa-rs/salsa)
-database from a small process-wide pool instead of rebuilding typeshed-derived
-semantic state per call. Leased databases are scrubbed of the checked files
-and returned to the pool when the check (or the diagnostics value it
-produced) is dropped, keeping salsa's single-writer invariant while allowing
-concurrent checks on different databases.
+A `TypeChecker` owns one in-memory [salsa](https://github.com/salsa-rs/salsa)
+database, so reusing it across checks avoids rebuilding typeshed-derived
+semantic state every time — which is what makes per-feed checking in a REPL
+session affordable. Files written by a previous `run` stay in the database
+(rewritten in place when the path repeats), so call `reset` before checking an
+unrelated session's code: it scrubs every file written so far, including the
+directories they created. `TypeChecker` is not `Sync`; concurrent checks each
+need their own.
 
 ## Monty crates
 

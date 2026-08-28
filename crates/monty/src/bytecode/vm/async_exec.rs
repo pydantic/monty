@@ -9,19 +9,19 @@
 use std::{collections::hash_map::Entry, mem, task::Poll};
 
 use ahash::AHashMap;
-use monty_types::{MontyException, ResourceTracker};
+use monty_types::MontyException;
 use smallvec::{SmallVec, smallvec};
 
 use super::{AwaitResult, CallFrame, FrameExit, VM};
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
-        GatherState, TaskId, awaited_state_size,
+        GatherState, TaskId,
     },
-    bytecode::vm::scheduler::{Scheduler, SerializedTaskFrame, TaskState},
-    defer_drop,
+    bytecode::vm::scheduler::{SerializedTaskFrame, TaskState},
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
+    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadOutput, HeapReader},
     intern::FunctionId,
     object_bridge::MontyObjectExt,
     run_progress::{ExtFunctionResult, ExtFunctionResultExt},
@@ -29,7 +29,7 @@ use crate::{
     value::Value,
 };
 
-impl<'h, T: ResourceTracker> VM<'h, T> {
+impl<'h> VM<'h> {
     /// Executes the Await opcode.
     ///
     /// Pops the awaitable from the stack and handles it based on its type:
@@ -54,7 +54,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 let heap_id = *heap_id;
                 let poll = match this.heap.read(heap_id) {
                     HeapReadOutput::Coroutine(coro) => return this.await_coroutine(coro),
-                    HeapReadOutput::GatherFuture(gather) => this.await_gather_future(heap_id, gather, awaiter)?,
+                    HeapReadOutput::GatherFuture(gather) => this.await_gather_future(gather, awaiter)?,
                     HeapReadOutput::ExternalFuture(mut fut) => this.await_external_future(&mut fut, awaiter)?,
                     _ => return Err(ExcType::object_not_awaitable(&awaitable.py_type_name(this))),
                 };
@@ -74,7 +74,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     ///
     /// Validates the coroutine is in `New` state, extracts its captured namespace
     /// and cells, marks it as `Running`, and pushes a frame to execute the coroutine body.
-    fn await_coroutine(&mut self, mut coro: HeapRead<'h, Coroutine>) -> Result<AwaitResult, RunError> {
+    fn await_coroutine(&mut self, mut coro: HeapObjectRead<'h, Coroutine>) -> Result<AwaitResult, RunError> {
         // Check if coroutine can be awaited (must be New)
         if coro.get(self.heap).state != CoroutineState::New {
             return Err(ExcType::cannot_reuse_already_awaited_coroutine());
@@ -101,8 +101,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// Awaits a gather future from the user's `await gather` site.
     fn await_gather_future(
         &mut self,
-        gather_id: HeapId,
-        mut gather: HeapRead<'h, GatherFuture>,
+        mut gather: HeapObjectRead<'h, GatherFuture>,
         awaiter: Awaiter,
     ) -> Result<Poll<Value>, RunError> {
         let mut awaiter_guard = DropGuard::new(awaiter, self);
@@ -129,7 +128,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // cached `Completed` result, and return an inc_ref'd reference.
         let item_count = gather.get(this.heap).item_count();
         if item_count == 0 {
-            let list_id = this.heap.allocate(HeapData::List(List::new(vec![])))?;
+            let list_id = this.heap.allocate(HeapData::List(List::new(vec![])));
             gather.cache_result(this.heap, list_id);
             return Ok(Poll::Ready(Value::Ref(list_id)));
         }
@@ -141,12 +140,11 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let mut results_guard = DropGuard::new(results, this);
         let (results, this) = results_guard.as_parts_mut();
 
-        // Roll back already-committed siblings if a later child fails during
-        // this commit pass; otherwise spawned tasks or awaiters can outlive a
-        // gather that never reached `Awaited`.
-        if let Err(err) = this.commit_gather_items(gather_id, &gather, &mut pending_children, results) {
+        // A later item failing during this commit pass leaves the ones already
+        // committed running, as CPython does. They keep pointing at this
+        // gather; `resolve_child` drops what they deliver to a `Failed` one.
+        if let Err(err) = this.commit_gather_items(&gather, &mut pending_children, results) {
             gather.get_mut(this.heap).state = GatherState::Failed(err.clone());
-            drop_committed_children(pending_children, &mut this.scheduler, this.heap, &err);
             return Err(err);
         }
 
@@ -157,32 +155,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 .into_iter()
                 .map(|r| r.expect("all results filled for synchronous gather completion"))
                 .collect();
-            let list_id = this.heap.allocate(HeapData::List(List::new(results)))?;
+            let list_id = this.heap.allocate(HeapData::List(List::new(results)));
             gather.cache_result(this.heap, list_id);
             return Ok(Poll::Ready(Value::Ref(list_id)));
         }
 
         let results = results_guard.into_inner();
         let (awaiter, this) = awaiter_guard.into_parts();
-        // `Pending` reports 0 state-size, so the new `Awaited` bookkeeping
-        // *is* the delta. Pre-charge from the still-owned locals before
-        // committing the state: a rejected charge that landed after the
-        // mutation would leave bytes that were never added, then `fail`
-        // would shrink them and drift the tracker counter downward.
-        // Reuse the same formula `GatherFuture::py_estimate_size` uses so
-        // the eventual shrink matches the charge exactly.
-        let delta = awaited_state_size(&pending_children, &results);
-        if let Err(err) = this.heap.track_growth(delta) {
-            let err = RunError::from(err);
-            // Roll back: gather is still `Pending`, so the locals (awaiter,
-            // results) and the committed children own resources that need
-            // releasing. Cache the failure so a re-await replays it.
-            gather.get_mut(this.heap).state = GatherState::Failed(err.clone());
-            awaiter.drop_with(this.heap);
-            results.drop_with(this.heap);
-            drop_committed_children(pending_children, &mut this.scheduler, this.heap, &err);
-            return Err(err);
-        }
         gather.get_mut(this.heap).state = GatherState::Awaited(AwaitedGather {
             awaiter,
             pending_children,
@@ -196,15 +175,15 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     ///
     /// Spawns coroutine children, installs awaiters on external futures, and
     /// recursively awaits nested gathers. Any error leaves already-committed
-    /// entries in `pending_children`; the caller must pass them to
-    /// [`drop_committed_children`] before propagating the error.
+    /// entries in `pending_children` and their awaiters pointing at `gather`;
+    /// the caller settles it so their results are dropped on arrival.
     fn commit_gather_items(
         &mut self,
-        gather_id: HeapId,
-        gather: &HeapRead<'h, GatherFuture>,
+        gather: &HeapObjectRead<'h, GatherFuture>,
         pending_children: &mut AHashMap<HeapId, SmallVec<[usize; 1]>>,
         results: &mut [Option<Value>],
     ) -> Result<(), RunError> {
+        let gather_id = gather.id();
         for (idx, result) in results.iter_mut().enumerate() {
             let item_id = gather.get(self.heap).items[idx];
             let vacant_entry = match pending_children.entry(item_id) {
@@ -224,7 +203,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     // `New`, or another gather already spawned it (`spawn`
                     // returns `Ok(None)`).
                     if coro.get(self.heap).state != CoroutineState::New
-                        || self.scheduler.spawn(self.heap, item_id, Some(gather_id))?.is_none()
+                        || self.scheduler.spawn(self.heap, item_id, Some(gather_id)).is_none()
                     {
                         return Err(ExcType::cannot_reuse_already_awaited_coroutine());
                     }
@@ -244,7 +223,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         gather: gather_id,
                         source: item_id,
                     };
-                    self.await_gather_future(item_id, child_gather, sub_awaiter)?
+                    self.await_gather_future(child_gather, sub_awaiter)?
                 }
                 _ => panic!("gather item is not a Coroutine, ExternalFuture, or GatherFuture"),
             };
@@ -303,12 +282,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let func = self.interns.get_function(func_id);
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
-        // Track memory for the locals region. Symmetric with
-        // `cleanup_frame_state`. Comprehension variables live on the operand
-        // stack (pushed per-comp).
-        let size = namespace_values.len() * mem::size_of::<Value>();
-        self.heap.tracker_mut().on_grow(|| size)?;
-
         // Extend the stack with the coroutine's pre-bound locals.
         let stack_base = self.stack.len();
         self.stack.extend(namespace_values);
@@ -342,13 +315,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             // Save current task context ONLY when switching to another task.
             // This is critical: if we're about to yield (no ready tasks), the main task's
             // frames must stay in the VM so they're included in the snapshot.
-            self.save_current_context_or_requeue(next_task_id)?;
+            self.save_current_context();
             self.scheduler.set_current_task(Some(next_task_id));
 
             // Load or initialize the next task's context
             self.load_or_init_task(next_task_id)?;
 
-            // Continue execution - return FramePushed to reload cache and continue run loop
+            // Continue execution with the newly current frame
             Ok(AwaitResult::FramePushed)
         } else {
             // No ready tasks - yield control to host.
@@ -357,41 +330,30 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         }
     }
 
-    /// Saves the current task's context before switching to `next_task_id`.
-    ///
-    /// If the save fails (typically a tracker growth rejection) the dequeued
-    /// `next_task_id` is restored to the head of the ready queue so a
-    /// recoverable error path can still schedule it later. No-op when there
-    /// is no current task to save.
-    fn save_current_context_or_requeue(&mut self, next_task_id: TaskId) -> Result<(), RunError> {
-        if let Some(current_task_id) = self.scheduler.current_task_id()
-            && let Err(err) = self.save_task_context(current_task_id)
-        {
-            self.scheduler.requeue_ready_front(next_task_id);
-            return Err(err);
+    /// Saves the current task's context before switching tasks.
+    fn save_current_context(&mut self) {
+        if let Some(current_task_id) = self.scheduler.current_task_id() {
+            self.save_task_context(current_task_id);
         }
-        Ok(())
     }
 
     /// Handles completion of a spawned task.
     ///
     /// Called when a spawned task's coroutine returns. This:
     /// 1. Marks the task as completed in the scheduler
-    /// 2. If the task belongs to a gather, stores the result and checks if gather is complete
-    /// 3. If gather is complete, unblocks the waiter and provides the collected results
+    /// 2. Hands the result to whatever awaits the task, if anything still does
+    /// 3. If that completes a gather, unblocks its waiter with the result list
     /// 4. Otherwise, switches to the next ready task
     pub(super) fn handle_task_completion(&mut self, result: Value) -> Result<AwaitResult, RunError> {
-        // Get task info. Every spawned task belongs to a gather (the only
-        // call site of `Scheduler::spawn` is `await_gather_future`), so
-        // `gather_id` is unconditionally `Some`.
         let task_id = self
             .scheduler
             .current_task_id()
             .expect("handle_task_completion called without current task");
-        let task = self.scheduler.get_task(task_id);
-        let gid = task
-            .gather_id
-            .expect("handle_task_completion: spawned task without a gather");
+        // Take the awaiter before cancelling the task: it owns the inc_ref on
+        // the gather it points at, so holding it here keeps that gather alive
+        // across the teardown below.
+        let task = self.scheduler.get_task_mut(task_id);
+        let awaiter = task.awaiter.take();
         let coroutine_id = task
             .coroutine_id
             .expect("handle_task_completion: spawned task without a coroutine");
@@ -405,28 +367,18 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         coro.get_mut(self.heap).state = CoroutineState::Completed;
         drop(coro);
 
-        // Record the result on the gather and check whether it's now complete.
-        // `resolve_child` does the fan-out for duplicate slots (`gather(c, c)`)
-        // and the final state transition; it must run BEFORE we release any
-        // inc_refs the gather is holding (cancelling children, dropping the
-        // waiter's `Blocked` ref) — otherwise the gather can be freed while
-        // we're still about to write its cached state. The gather keys by
-        // item HeapId, so we pass the coroutine's id rather than the
-        // (kind-specific) task id.
-        let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gid) else {
-            panic!("task gather_id doesn't point to a GatherFuture")
-        };
-        let resolution = gather.resolve_child(self, coroutine_id, result)?;
-        drop(gather);
-
-        // The just-completed task is no longer in the gather's
-        // `pending_tasks` map. Cancel it now to release its inc_refs on the
-        // coroutine and gather; otherwise it would linger in the scheduler.
+        // Cancel the task now to release its inc_ref on the coroutine;
+        // otherwise it would linger in the scheduler. Its awaiter is already
+        // out, so this releases nothing the delivery below needs.
         self.scheduler.cancel_task(task_id, self.heap);
 
-        let delivery = match resolution {
-            Some(success) => self.deliver_awaiter_success(success.awaiter, Value::Ref(success.list_id))?,
-            None => None,
+        // Hand the result down the chain. `None` means the gather that spawned
+        // this task settled first, so it ran on only for its side effects.
+        let delivery = if let Some(awaiter) = awaiter {
+            self.deliver_awaiter_success(awaiter, result)
+        } else {
+            result.drop_with(self);
+            None
         };
 
         let next_task_id = if let Some(waiter_id) = delivery {
@@ -462,10 +414,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
     /// Handles failure of a spawned task due to an unhandled exception.
     ///
-    /// Called when an exception escapes all frames in a spawned task. This:
-    /// 1. Marks the task as failed in the scheduler
-    /// 2. If the task belongs to a gather, cleans up and propagates to waiter
-    /// 3. Otherwise, switches to the next ready task
+    /// Called when an exception escapes all frames in a spawned task. The
+    /// task's awaiter chain is walked — settling each gather on the way — to
+    /// the task that should raise it.
+    ///
+    /// A task nothing awaits has no such chain, nor has one whose chain ends
+    /// at an already-settled gather. Nothing can receive the exception, so it
+    /// is dropped — as CPython does, whose `gather` retrieves a late child's
+    /// exception through a done-callback and prints nothing either.
     ///
     /// # Returns
     /// - `Ok(())` - Switched to next task, continue execution
@@ -481,64 +437,64 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             .expect("handle_task_failure called without current task");
         debug_assert!(!task_id.is_main(), "handle_task_failure called for main task");
 
-        // Get task's gather_id before marking failed
-        let gather_id = self.scheduler.get_task(task_id).gather_id;
+        // Take the task's awaiter — it owns the inc_ref on whatever it points
+        // at, so the chain walk below cannot free its first link underneath
+        // itself.
+        let awaiter = self.scheduler.get_task_mut(task_id).awaiter.take();
 
-        // If part of a gather, tear the gather down (caches the error,
-        // cancels siblings, clears pending external routing) and walk the
-        // awaiter chain (which may go through outer nested gathers) to reach
-        // the task that should resume with the exception.
-        if let Some(gid) = gather_id {
-            let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gid) else {
-                panic!("task gather_id doesn't point to a GatherFuture")
-            };
-            let awaiter = gather.fail(&mut self.scheduler, self.heap, &error);
-            drop(gather);
-            if let Some(waiter_id) = self.deliver_awaiter_failure(awaiter, error.clone()) {
-                // `deliver_awaiter_failure` set the waiter to `Failed`, but
-                // we propagate the exception via `Err` (the run loop's
-                // `handle_exception` raises in the waiter's frame), so the
-                // task should be running. Override to `Ready` before
-                // switching in.
-                self.scheduler.set_state(waiter_id, TaskState::Ready, self.heap);
-                self.cleanup_current_task();
-                self.scheduler.set_current_task(Some(waiter_id));
-                self.load_or_init_task(waiter_id)?;
-            }
+        // Walk the awaiter chain, settling each gather on the way, to reach
+        // the task that should resume with the exception. Delivering nothing
+        // means the chain ended nowhere: no awaiter, a gather on the way that
+        // had already settled, or a waiter that is gone.
+        if let Some(awaiter) = awaiter
+            && let Some(waiter_id) = self.deliver_awaiter_failure(awaiter, error.clone())
+        {
+            // `deliver_awaiter_failure` set the waiter to `Failed`, but we
+            // propagate the exception via `Err` (the run loop's
+            // `handle_exception` raises in the waiter's frame), so the task
+            // should be running. Override to `Ready` before switching in.
+            self.scheduler.set_state(waiter_id, TaskState::Ready, self.heap);
+            self.discard_failed_task(task_id);
+            self.scheduler.set_current_task(Some(waiter_id));
+            self.load_or_init_task(waiter_id)?;
             return Err(error);
         }
 
-        // No gather - just mark task as failed, switch to next task
-        self.scheduler.fail_task(task_id, error, self.heap);
-        self.cleanup_current_task();
+        // Nothing can receive this exception, so it is dropped: CPython's
+        // `gather` retrieves each child's exception through a done-callback
+        // even after it has settled, so it prints nothing here either. Then
+        // drop the task and switch to the next ready one; if there is none,
+        // frames are left empty and the run loop yields.
+        drop(error);
+        self.discard_failed_task(task_id);
         self.scheduler.set_current_task(None);
         if let Some(next_task_id) = self.scheduler.next_ready_task() {
             self.scheduler.set_current_task(Some(next_task_id));
             self.load_or_init_task(next_task_id)?;
         }
-        // If no ready tasks, frames will be empty and run loop will yield
 
         Ok(())
+    }
+
+    /// Drops the current task after an exception escaped its last frame,
+    /// discarding the VM context it was running in.
+    ///
+    /// The task has no way back — its root frame is gone — so it must leave
+    /// the scheduler rather than linger with a half-torn-down context. Its
+    /// awaiter has already been taken by this point, so this only releases
+    /// what the task itself owns.
+    fn discard_failed_task(&mut self, task_id: TaskId) {
+        self.cleanup_current_task();
+        self.scheduler.cancel_task(task_id, self.heap);
     }
 
     /// Saves the current VM context into the given task in the scheduler.
     ///
     /// Serializes frames, moves stack/exception_stack, stores instruction_ip,
-    /// adjusts the global recursion depth counter, and charges the saved
-    /// state's size against the tracker — released by `load_or_init_task`
-    /// when the context is moved back, or by `cancel_task` if the task
-    /// is torn down while suspended.
-    ///
-    /// Charging happens *before* draining VM state so a budget rejection
-    /// leaves `self.frames` intact for the exception unwinder to walk.
-    fn save_task_context(&mut self, task_id: TaskId) -> Result<(), RunError> {
-        let saved_size = self.frames.len() * mem::size_of::<SerializedTaskFrame>()
-            + mem::size_of_val(self.stack.as_slice())
-            + mem::size_of_val(self.exception_stack.as_slice());
-        self.heap.track_growth(saved_size)?;
-
-        let frames: Vec<SerializedTaskFrame> = self
-            .frames
+    /// and adjusts the global recursion depth counter.
+    fn save_task_context(&mut self, task_id: TaskId) {
+        let mut frames: Vec<SerializedTaskFrame> = self
+            .suspended_frames
             .drain(..)
             .map(|f| SerializedTaskFrame {
                 function_id: f.function_id,
@@ -550,6 +506,16 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 is_initializer: f.is_initializer,
             })
             .collect();
+        let current = &self.current_frame;
+        frames.push(SerializedTaskFrame {
+            function_id: current.function_id,
+            ip: current.ip,
+            stack_base: current.stack_base,
+            locals_count: current.locals_count,
+            exception_stack_base: current.exception_stack_base,
+            call_offset: current.call_offset,
+            is_initializer: current.is_initializer,
+        });
 
         // Count this task's recursion depth contribution and subtract it from
         // the global counter so the next task gets a clean budget.
@@ -562,8 +528,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         task.stack = mem::take(&mut self.stack);
         task.exception_stack = mem::take(&mut self.exception_stack);
         task.instruction_ip = self.instruction_ip;
-
-        Ok(())
     }
 
     /// Loads an existing task's context or initializes a new task from its coroutine.
@@ -577,12 +541,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// (balances the subtraction in `save_task_context`).
     fn load_or_init_task(&mut self, task_id: TaskId) -> Result<(), RunError> {
         let task = self.scheduler.get_task_mut(task_id);
-        // Snapshot the charge to release *before* draining the Vecs out of
-        // `task`; the released bytes mirror what `save_task_context`
-        // charged. VM-local Vecs are untracked (matching the rest of the
-        // stack accounting); a fresh task with no saved context makes
-        // this a no-op.
-        let saved_size = task.saved_context_size();
         let frames = mem::take(&mut task.frames);
         let stack = mem::take(&mut task.stack);
         let exception_stack = mem::take(&mut task.exception_stack);
@@ -593,16 +551,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let task_depth = frames.len().saturating_sub(1); // root frame doesn't contribute to recursion depth
         self.recursion_depth += task_depth;
 
-        self.heap.track_shrink(saved_size);
-
         if !frames.is_empty() {
             // Task has existing context - restore it
             self.stack = stack;
             self.exception_stack = exception_stack;
             self.instruction_ip = instruction_ip;
 
-            // Reconstruct CallFrames from serialized form
-            self.frames = frames
+            // Reconstruct the suspended callers and current frame.
+            let mut frames: Vec<_> = frames
                 .into_iter()
                 .map(|sf| {
                     let code = match sf.function_id {
@@ -614,6 +570,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     };
                     CallFrame {
                         code,
+                        bytecode: code.bytecode(),
                         ip: sf.ip,
                         stack_base: sf.stack_base,
                         locals_count: sf.locals_count,
@@ -621,22 +578,28 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         function_id: sf.function_id,
                         call_offset: sf.call_offset,
                         should_return: false,
+                        is_parked: false,
                         is_initializer: sf.is_initializer,
                     }
                 })
                 .collect();
+            self.current_frame = frames.pop().expect("task context contains no active frame");
+            self.suspended_frames = frames;
         } else if let Some(coro_id) = coroutine_id {
             // New task: pre-check the coroutine state here rather than letting
             // `init_task_from_coroutine` raise. By this point the calling task's
-            // frames have already been saved away, so any error raised from
-            // inside `init_task_from_coroutine` would reach `handle_exception`
-            // with no active frame and panic. Instead, route already-awaited
-            // failures through `handle_task_failure`, which restores the waiter's
-            // (or next task's) frames before the error propagates.
+            // frames have already been saved, so route already-awaited failures
+            // through `handle_task_failure`, which restores the waiter before
+            // the error propagates.
             let HeapReadOutput::Coroutine(coro) = self.heap.read(coro_id) else {
                 panic!("task coroutine_id doesn't point to a Coroutine")
             };
-            if coro.get(self.heap).state == CoroutineState::New {
+            let is_new = coro.get(self.heap).state == CoroutineState::New;
+            // Release the handle before either branch: both go on to drop
+            // references to this coroutine, and freeing it under a live
+            // reader panics.
+            drop(coro);
+            if is_new {
                 self.init_task_from_coroutine(coro_id)?;
             } else {
                 return self.handle_task_failure(ExcType::cannot_reuse_already_awaited_coroutine());
@@ -685,24 +648,19 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let func = self.interns.get_function(func_id);
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
-        // Track memory for the locals region. Symmetric with
-        // `cleanup_frame_state`. Comprehension variables live on the operand
-        // stack (pushed per-comp).
-        let size = namespace_values.len() * mem::size_of::<Value>();
-        self.heap.tracker_mut().on_grow(|| size)?;
-
         let stack_base = self.stack.len();
         self.stack.extend(namespace_values);
 
         let exc_stack_base = self.exception_stack.len();
-        self.push_frame(CallFrame::new_function(
+        self.current_frame = CallFrame::new_function(
             &func.code,
             stack_base,
             locals_count,
             exc_stack_base,
             func_id,
             None, // No call position — this is the root frame for a spawned task
-        ))?;
+        );
+        self.suspended_frames.clear();
 
         Ok(())
     }
@@ -712,12 +670,12 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// Called by the host when an async external call completes. Looks up
     /// the `ExternalFuture` heap entry for `call_id`, transitions it to
     /// `Resolved(value)`, and delivers `value` to the awaiter (if any).
-    pub fn resolve_future(&mut self, call_id: u32, value: Value) -> RunResult<()> {
+    pub fn resolve_future(&mut self, call_id: u32, value: Value) {
         let call_id = CallId::new(call_id);
 
         let Some(future_id) = self.scheduler.take_pending_external(call_id) else {
             value.drop_with(self);
-            return Ok(());
+            return;
         };
 
         // Ensure future cleaned up on all paths
@@ -743,10 +701,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         fut.get_mut(this.heap).state = ExternalFutureState::Resolved(value);
 
         if let Some((awaiter, value)) = awaiter_and_value {
-            this.deliver_awaiter_success(awaiter, value)?;
+            this.deliver_awaiter_success(awaiter, value);
         }
-
-        Ok(())
     }
 
     /// Pushes `value` onto `task_id`'s stack and marks it ready. If the task
@@ -754,29 +710,19 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// drops `value` instead — the resolution still gets cached on the future,
     /// but the (now-gone) awaiter doesn't receive it.
     ///
-    /// Pushing onto a parked task's `task.stack` grows the saved-context size
-    /// that `load_or_init_task` will later shrink by — so this path pre-charges
-    /// one `Value` slot against the tracker. The current-task branch pushes
-    /// onto the VM's untracked stack, matching the rest of the stack
-    /// accounting.
-    fn deliver_value_to_task(&mut self, task_id: TaskId, value: Value) -> RunResult<()> {
+    fn deliver_value_to_task(&mut self, task_id: TaskId, value: Value) {
         if !self.scheduler.has_task(task_id) || self.scheduler.is_task_failed(task_id) {
             value.drop_with(self);
-            return Ok(());
+            return;
         }
 
-        let task_is_current = self.scheduler.current_task_id() == Some(task_id) && !self.frames.is_empty();
+        let task_is_current = self.scheduler.current_task_id() == Some(task_id) && !self.current_frame.is_parked;
         if task_is_current {
             self.stack.push(value);
         } else {
-            if let Err(err) = self.heap.track_growth(mem::size_of::<Value>()) {
-                value.drop_with(self);
-                return Err(err.into());
-            }
             self.scheduler.get_task_mut(task_id).stack.push(value);
         }
         self.scheduler.make_ready(task_id, self.heap);
-        Ok(())
     }
 
     /// Delivers `value` along the awaiter chain starting at `awaiter`.
@@ -796,13 +742,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// - `None` if the chain was consumed by an intermediate gather that's
     ///   still in flight, or if the terminal task is gone (in which case
     ///   the value is dropped).
-    fn deliver_awaiter_success(&mut self, mut awaiter: Awaiter, mut value: Value) -> RunResult<Option<TaskId>> {
+    fn deliver_awaiter_success(&mut self, mut awaiter: Awaiter, mut value: Value) -> Option<TaskId> {
         let this = self;
         loop {
             match awaiter {
                 Awaiter::Task(t) => {
-                    this.deliver_value_to_task(t, value)?;
-                    return Ok(Some(t));
+                    this.deliver_value_to_task(t, value);
+                    return Some(t);
                 }
                 Awaiter::GatherSlot { gather, source } => {
                     let gather_val = Value::Ref(gather);
@@ -810,14 +756,9 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let HeapReadOutput::GatherFuture(mut outer) = this.heap.read(gather) else {
                         panic!("Awaiter::GatherSlot gather id is not a GatherFuture")
                     };
-                    let next = outer.resolve_child(this, source, value)?;
-                    match next {
-                        Some(success) => {
-                            awaiter = success.awaiter;
-                            value = Value::Ref(success.list_id);
-                        }
-                        None => return Ok(None),
-                    }
+                    let success = outer.resolve_child(this, source, value)?;
+                    awaiter = success.awaiter;
+                    value = Value::Ref(success.list_id);
                 }
             }
         }
@@ -834,28 +775,30 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     ///   the task in `Ready` instead — `handle_task_failure` — should
     ///   `set_state(t, Ready)` before switching, since the exception is
     ///   propagated by the `Err` return rather than the state check.)
-    /// - `None` if the terminal task is gone.
-    fn deliver_awaiter_failure(&mut self, mut awaiter: Awaiter, error: RunError) -> Option<TaskId> {
+    /// - `None` if the chain ends nowhere — the terminal task is gone, or a
+    ///   gather on the way had already settled, in which case the error has no
+    ///   reader and dies here.
+    fn deliver_awaiter_failure(&mut self, awaiter: Awaiter, error: RunError) -> Option<TaskId> {
+        let this = self;
+        defer_drop_mut!(awaiter, this);
         let target = loop {
-            match awaiter {
-                Awaiter::Task(t) => break t,
+            let next = match awaiter {
+                Awaiter::Task(t) => break *t,
                 Awaiter::GatherSlot { gather, .. } => {
-                    let HeapReadOutput::GatherFuture(mut outer) = self.heap.read(gather) else {
+                    let HeapReadOutput::GatherFuture(mut gather) = this.heap.read(*gather) else {
                         panic!("Awaiter::GatherSlot gather id is not a GatherFuture")
                     };
-                    let next = outer.fail(&mut self.scheduler, self.heap, &error);
-                    drop(outer);
-                    // Release the inc_ref the destructured awaiter owned on
-                    // `gather`; reassign to the next link in the chain.
-                    self.heap.dec_ref(gather);
-                    awaiter = next;
+                    // A gather that already settled has handed its waiter on;
+                    // this failure arrives after the fact and stops here.
+                    gather.fail(this.heap, &error)?
                 }
-            }
+            };
+            mem::replace(awaiter, next).drop_with(this);
         };
-        if !self.scheduler.has_task(target) {
+        if !this.scheduler.has_task(target) {
             return None;
         }
-        self.scheduler.fail_task(target, error, self.heap);
+        this.scheduler.fail_task(target, error, this.heap);
         Some(target)
     }
 
@@ -874,11 +817,24 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             && let Some(waiter_id) = self.deliver_awaiter_failure(awaiter, error)
             && self.scheduler.current_task_id() != Some(waiter_id)
         {
-            self.cleanup_current_task();
+            // The task being switched away from is parked on a call of its
+            // own, and a gather failing no longer cancels it, so its context
+            // has to be saved rather than dropped — it still has to resume
+            // when its own call comes back.
+            self.park_current_context();
             self.scheduler.set_current_task(Some(waiter_id));
             self.load_or_init_task(waiter_id)?;
         }
         Ok(())
+    }
+
+    /// Puts the current task's VM context away before switching to another
+    /// task: saved if the task will run again, discarded if it is gone.
+    fn park_current_context(&mut self) {
+        match self.scheduler.current_task_id() {
+            Some(task_id) if self.scheduler.has_task(task_id) => self.save_task_context(task_id),
+            _ => self.cleanup_current_task(),
+        }
     }
 
     /// Allocates an `ExternalFuture` for `call_id` and pushes a `Value::Ref`
@@ -888,13 +844,12 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// host resolutions can find the heap entry; the `Value::Ref` pushed onto
     /// the stack is the user's reference, which travels with the value until
     /// it's awaited or dropped.
-    pub fn add_pending_call(&mut self, call_id: CallId) -> RunResult<()> {
+    pub fn add_pending_call(&mut self, call_id: CallId) {
         let future_id = self
             .heap
-            .allocate(HeapData::ExternalFuture(ExternalFuture::new_pending(call_id)))?;
+            .allocate(HeapData::ExternalFuture(Box::new(ExternalFuture::new_pending(call_id))));
         self.scheduler.add_pending_external(call_id, future_id, self.heap);
         self.push(Value::Ref(future_id));
-        Ok(())
     }
 
     /// Gets the pending call IDs from the scheduler.
@@ -909,6 +864,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// 2. Attempt to resume the current task (or fail it if any future resolution caused it to fail)
     /// 3. Load a ready task if needed (current task still blocked)
     /// 4. If no task is ready, return `ResolveFutures` with remaining pending call IDs
+    ///
+    /// # Errors
+    /// Returns [`RunError::Internal`] if nothing is ready to run and nothing is
+    /// pending: unreachable by design, but ends the turn rather than the worker.
     pub fn resume_with_resolved_futures(&mut self, results: Vec<(u32, ExtFunctionResult)>) -> RunResult<FrameExit> {
         for (call_id, ext_result) in results {
             match ext_result {
@@ -918,7 +877,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                             "Invalid return value for call {call_id}: {e}"
                         )))
                     })?;
-                    self.resolve_future(call_id, value)?;
+                    self.resolve_future(call_id, value);
                 }
                 ExtFunctionResult::Error(exc) => self.fail_future(call_id, RunError::from(exc))?,
                 ExtFunctionResult::Future(_) => {}
@@ -960,7 +919,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // Current task was not able to resume, but there might be other ready tasks which can make
         // progress
         if let Some(next_task_id) = self.scheduler.next_ready_task() {
-            self.save_current_context_or_requeue(next_task_id)?;
+            self.save_current_context();
             self.scheduler.set_current_task(Some(next_task_id));
             self.load_or_init_task(next_task_id)?;
             return self.run_external();
@@ -968,12 +927,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
         let pending_call_ids = self.get_pending_call_ids();
 
-        assert!(
-            !pending_call_ids.is_empty(),
-            "resume_with_resolved_futures called but no pending calls and no ready tasks"
-        );
-
-        Ok(FrameExit::ResolveFutures(pending_call_ids))
+        if pending_call_ids.is_empty() {
+            // A stalled turn loses one `feed_run`, aborting loses the session.
+            Err(RunError::internal(
+                "asyncio scheduler stalled: no ready tasks and no pending external calls",
+            ))
+        } else {
+            Ok(FrameExit::ResolveFutures(pending_call_ids))
+        }
     }
 }
 
@@ -996,15 +957,9 @@ impl<'h> HeapRead<'h, GatherFuture> {
     /// [`VM::await_gather_future`] for the synchronous-completion paths
     /// (empty gather, all externals already resolved); on the async path the
     /// transition happens inside [`Self::resolve_child`].
-    pub(crate) fn cache_result(&mut self, heap: &mut HeapReader<'h, impl ResourceTracker>, list_id: HeapId) {
-        // Pending and Completed both report 0 state-size, so this is a
-        // no-op on the synchronous-completion path and a real shrink
-        // when transitioning out of `Awaited`.
-        let old_size = self.get(heap).py_estimate_size();
+    pub(crate) fn cache_result(&mut self, heap: &mut HeapReader<'h>, list_id: HeapId) {
         heap.inc_ref(list_id);
         self.get_mut(heap).state = GatherState::Completed(Value::Ref(list_id));
-        let new_size = self.get(heap).py_estimate_size();
-        heap.track_shrink(old_size.saturating_sub(new_size));
     }
 
     /// Records one child's resolution on this gather and, if everything has
@@ -1017,17 +972,27 @@ impl<'h> HeapRead<'h, GatherFuture> {
     /// Failure cases never reach this method — sibling failures are routed
     /// through [`HeapRead::fail`] at the failure site
     /// (`Scheduler::fail_for_call` for external rejections,
-    /// `VM::handle_task_failure` for in-frame exceptions). Both eagerly tear
-    /// the gather down before any other sibling has a chance to resolve.
+    /// `VM::handle_task_failure` for in-frame exceptions). Both settle the
+    /// gather before any other sibling has a chance to resolve, and the
+    /// siblings then keep running: their results arrive here afterwards and
+    /// are dropped.
     ///
-    /// Returns `None` while children are still in flight; otherwise
-    /// `Some(GatherResolution::Success)` with the cached result list.
-    fn resolve_child(
-        &mut self,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        child_id: HeapId,
-        value: Value,
-    ) -> RunResult<Option<GatherSuccess>> {
+    /// Returns `None` while children are still in flight, or if the gather has
+    /// already settled; otherwise `Some(GatherSuccess)` with the cached result
+    /// list.
+    fn resolve_child(&mut self, vm: &mut VM<'h>, child_id: HeapId, value: Value) -> Option<GatherSuccess> {
+        // A sibling failed (or the commit pass rolled back) while this child
+        // was still running: it has a result, and nowhere for it to go.
+        // `Pending` is not reachable — a child only exists once awaited.
+        match &self.get(vm.heap).state {
+            GatherState::Awaited(_) => {}
+            GatherState::Completed(_) | GatherState::Failed(_) => {
+                value.drop_with(vm.heap);
+                return None;
+            }
+            GatherState::Pending => panic!("resolve_child called on a gather that was never awaited"),
+        }
+
         // Remove this child's slot-index mapping.
         let indices: SmallVec<[usize; 1]> = self
             .get_mut(vm.heap)
@@ -1065,7 +1030,7 @@ impl<'h> HeapRead<'h, GatherFuture> {
         awaited.results = results;
 
         if !awaited.pending_children.is_empty() {
-            return Ok(None);
+            return None;
         }
 
         // All children resolved successfully — build the result list.
@@ -1080,97 +1045,48 @@ impl<'h> HeapRead<'h, GatherFuture> {
             .into_iter()
             .map(|r| r.expect("all results filled when gather is complete"))
             .collect();
-        let list_id = vm.heap.allocate(HeapData::List(List::new(results)))?;
+        let list_id = vm.heap.allocate(HeapData::List(List::new(results)));
         self.cache_result(vm.heap, list_id);
-        Ok(Some(GatherSuccess { list_id, awaiter }))
+        Some(GatherSuccess { list_id, awaiter })
     }
 
-    /// Tear the gather down with `error` and return its waiter.
+    /// Settles the gather on `error` and returns its waiter, or `None` if it
+    /// had already settled.
     ///
-    /// Takes `&mut Scheduler` + `&mut HeapReader` rather than `&mut VM` so
-    /// this works from both `VM::handle_task_failure` (has a VM, splits
-    /// borrows on its fields) and `Scheduler::fail_for_call` (only has a
-    /// scheduler + heap reader).
-    pub(crate) fn fail(
-        &mut self,
-        scheduler: &mut Scheduler,
-        heap: &mut HeapReader<'h, impl ResourceTracker>,
-        error: &RunError,
-    ) -> Awaiter {
-        // Captured before draining so the decrement below balances the
-        // `track_growth` from the Pending → Awaited transition.
-        let old_size = self.get(heap).py_estimate_size();
-
+    /// Touches nothing but this gather. The children still in flight keep
+    /// running and keep pointing here, as CPython leaves them on the loop;
+    /// what each produces is discarded when it arrives (see
+    /// [`Self::resolve_child`] and [`VM::deliver_awaiter_success`]). Releasing
+    /// nothing is what makes this safe to call with a live `HeapRead` on the
+    /// gather — severing the children here would run their `dec_ref`s under
+    /// that reader, and the last one can free the entry.
+    ///
+    /// Takes `&mut HeapReader` rather than `&mut VM` so this works from both
+    /// `VM::deliver_awaiter_failure` (has a VM, splits borrows on its fields)
+    /// and `Scheduler::fail_for_call` (only has a heap reader).
+    pub(crate) fn fail(&mut self, heap: &mut HeapReader<'h>, error: &RunError) -> Option<Awaiter> {
         // Take the Awaited bookkeeping. The state stays `Awaited` (with
         // placeholder fields) until the state replace below commits the
         // transition. The extracted `awaiter` is transferred to the caller
-        // — it owns any `GatherSlot` inc_ref it carried.
-        let (waiter, pending_children, results) = {
-            let awaited = self
-                .get_mut(heap)
-                .as_awaited_mut()
-                .expect("fail called on non-Awaited gather");
+        // — it owns any `GatherSlot` inc_ref it carried. Already settled means
+        // a chain that ends here: an earlier failure cached its error and
+        // handed the waiter on.
+        let (waiter, results) = {
+            let awaited = self.get_mut(heap).as_awaited_mut()?;
             (
                 mem::replace(&mut awaited.awaiter, Awaiter::Task(TaskId::default())),
-                mem::take(&mut awaited.pending_children),
                 mem::take(&mut awaited.results),
             )
         };
 
         // Cache a clone so re-awaits replay the same exception.
         self.get_mut(heap).state = GatherState::Failed(error.clone());
-        let new_size = self.get(heap).py_estimate_size();
-        heap.track_shrink(old_size.saturating_sub(new_size));
 
-        // Drop fanned-out result Values that won't reach the waiter.
+        // Drop fanned-out result Values that won't reach the waiter. The
+        // `pending_children` map goes with the `Awaited` payload; its keys are
+        // borrowed ids, owned by `items`.
         results.drop_with(heap);
 
-        // Skip nested gathers that already failed while propagating this same
-        // error up the awaiter chain.
-        drop_committed_children(pending_children, scheduler, heap, error);
-
-        waiter
-    }
-}
-
-/// Tears down children of a failed gather commit.
-///
-/// Coroutine children are cancelled through the scheduler, external futures
-/// have their gather awaiter removed, and nested gathers are failed
-/// recursively while they are still `Awaited`. Nested gathers already in a
-/// terminal state were cleaned up by the error path that reached them first.
-fn drop_committed_children(
-    pending_children: AHashMap<HeapId, SmallVec<[usize; 1]>>,
-    scheduler: &mut Scheduler,
-    heap: &mut HeapReader<'_, impl ResourceTracker>,
-    error: &RunError,
-) {
-    for child_id in pending_children.into_keys() {
-        match heap.read(child_id) {
-            HeapReadOutput::Coroutine(_) => {
-                if let Some(tid) = scheduler.task_for_coroutine(child_id) {
-                    scheduler.cancel_task(tid, heap);
-                }
-            }
-            HeapReadOutput::ExternalFuture(mut fut) => {
-                if let ExternalFutureState::Pending { awaiter } = &mut fut.get_mut(heap).state
-                    && let Some(old) = awaiter.take()
-                {
-                    old.drop_with(heap);
-                }
-            }
-            HeapReadOutput::GatherFuture(mut nested) => {
-                if matches!(nested.get(heap).state, GatherState::Awaited(_)) {
-                    let nested_awaiter = nested.fail(scheduler, heap, error);
-                    nested_awaiter.drop_with(heap);
-                }
-                // Terminal or never-committed nested gathers have no active
-                // children left for this parent to tear down.
-            }
-            // `gather()` rejects anything other than these three types at
-            // construction (see `modules/asyncio.rs`), and heap entries don't
-            // change type — so keys here are always one of the above.
-            _ => unreachable!("gather pending_children key is not a Coroutine, ExternalFuture, or GatherFuture"),
-        }
+        Some(waiter)
     }
 }

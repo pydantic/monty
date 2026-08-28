@@ -19,8 +19,7 @@ assert iter(it) is it
 assert next(it) == 10
 assert list(it) == [20, 30]
 
-# Repeated iter() returns the same object rather than nesting, so a delegation
-# chain deeper than 1 is not reachable from Python at all.
+# Repeated iter() returns the same object rather than wrapping it.
 deep = iter([1, 2, 3])
 for _ in range(200):
     deep = iter(iter(deep))

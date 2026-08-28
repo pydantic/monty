@@ -20,7 +20,8 @@ export {
   type Snapshot,
 } from './session.js'
 export { CollectString, CollectStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, type CollectedStreamEntry } from './print.js'
-export { MountDir, type MountDirMode, type MountDirOptions } from './mount.js'
+export { type MountDirMode, type MountDirOptions } from './mount.js'
+export { MountDir } from './mountDir.js'
 export {
   MontyCrashedError,
   MontyError,
@@ -35,9 +36,18 @@ export {
   type MontyDate,
   type MontyDateTime,
   type MontyException,
-  type MontyFileHandle,
+  MontyFileHandle,
+  type MontyFileHandleOptions,
+  type MontyTime,
   type MontyTimeDelta,
   type MontyTimeZone,
 } from './types.js'
 export { findMontyBinary } from './binary.js'
+export {
+  _installTelemetryAdapter,
+  type MontyTelemetryAdapter,
+  type TelemetryEvent,
+  type TelemetryParentContext,
+  type TelemetryTimestamp,
+} from './telemetry.js'
 export { MAX_VALUE_DEPTH } from '../native-addon.js'

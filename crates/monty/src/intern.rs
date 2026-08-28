@@ -16,8 +16,12 @@ use std::{slice::from_ref, str::FromStr};
 
 use ahash::AHashMap;
 use num_bigint::BigInt;
-use strum::{EnumCount, EnumString, FromRepr, IntoStaticStr};
+#[cfg(test)]
+use strum::IntoEnumIterator;
+use strum::{EnumCount, EnumIter, EnumString, FromRepr, IntoStaticStr};
 
+#[cfg(feature = "test-hooks")]
+use crate::function::FunctionMetadataFault;
 use crate::{
     function::Function,
     hash::{ASCII_HASHES, HashValue, STATIC_HASHES, WithHash, hash_python_str},
@@ -97,7 +101,8 @@ pub(crate) static ASCII_STRS: [&str; 128] = const {
 /// Static string values which are known at compile time and don't need to be interned.
 ///
 /// Discriminant starts from STATIC_STRING_ID_OFFSET to make conversion to/from stringid
-/// cheap when within bounds.
+/// cheap when within bounds. Discriminants are serialized `StringId`s, so append new
+/// variants at the end — inserting one shifts every later id.
 #[repr(u16)]
 #[derive(
     Debug,
@@ -105,6 +110,7 @@ pub(crate) static ASCII_STRS: [&str; 128] = const {
     Copy,
     FromRepr,
     EnumCount,
+    EnumIter,
     EnumString,
     IntoStaticStr,
     PartialEq,
@@ -760,6 +766,395 @@ pub enum StaticStrings {
     FalseRepr,
     #[strum(serialize = "Ellipsis")]
     EllipsisRepr,
+
+    // ==========================
+    // os module function/constant names. Appended at the enum end:
+    // discriminants are serialized `StringId`s, so mid-enum insertion would
+    // shift every later id. Constants reuse existing variants where the text
+    // already exists (`Sep` in the kwarg section, `Name`, single-char ASCII
+    // ids for `/`, `.`, `\n`).
+    /// `os.listdir()` function.
+    Listdir,
+    /// `os.makedirs()` function.
+    Makedirs,
+    /// `os.fspath()` function — distinct from `Fspath` (`__fspath__`).
+    #[strum(serialize = "fspath")]
+    OsFspath,
+    /// `os.altsep` constant name.
+    Altsep,
+    /// `os.extsep` constant name.
+    Extsep,
+    /// `os.curdir` constant name.
+    Curdir,
+    /// `os.pardir` constant name.
+    Pardir,
+    /// `os.linesep` constant name.
+    Linesep,
+    /// `os.devnull` constant name.
+    Devnull,
+    /// Value of `os.name`.
+    Posix,
+    /// Value of `os.pardir`.
+    #[strum(serialize = "..")]
+    ParentDirString,
+    /// Value of `os.devnull`.
+    #[strum(serialize = "/dev/null")]
+    DevNullString,
+    /// Kwarg name `path` — `os.listdir(path=...)`, `os.stat(path=...)`, etc.
+    Path,
+    /// Kwarg name `dir_fd` — `os.stat(dir_fd=...)`, `os.mkdir(dir_fd=...)`, etc.
+    DirFd,
+    /// Kwarg name `follow_symlinks` — `os.stat(follow_symlinks=...)`.
+    FollowSymlinks,
+    /// Kwarg name `src` — `os.rename(src=...)`, `os.replace(src=...)`.
+    Src,
+    /// Kwarg name `dst` — `os.rename(dst=...)`, `os.replace(dst=...)`.
+    Dst,
+    /// Kwarg name `src_dir_fd` — `os.rename(src_dir_fd=...)`.
+    SrcDirFd,
+    /// Kwarg name `dst_dir_fd` — `os.rename(dst_dir_fd=...)`.
+    DstDirFd,
+
+    // itertools module strings; `count`, `start`, `step` and `object` reuse the
+    // existing variants of the same name. Appended, per the rule above.
+    /// Module name for `import itertools`.
+    Itertools,
+    /// `itertools.repeat()` function.
+    Repeat,
+    /// `times` keyword argument of `itertools.repeat()`.
+    Times,
+
+    // ==========================
+    // dataclasses module strings. Appended at the enum end: discriminants are
+    // serialized `StringId`s, so mid-enum insertion would shift every later id.
+    /// Module name for `import dataclasses`.
+    Dataclasses,
+    /// `dataclasses.dataclass` decorator.
+    Dataclass,
+    /// `dataclasses.is_dataclass()` function.
+    IsDataclass,
+    /// The `__dataclass_fields__` class attribute `@dataclass` writes: the
+    /// name -> `Field` mapping that drives every synthesized dunder.
+    #[strum(serialize = "__dataclass_fields__")]
+    DataclassFields,
+
+    // ==========================
+    // collections module strings. Appended at the enum end: discriminants are
+    // serialized `StringId`s, so mid-enum insertion would shift every later id.
+    /// Module name for `import collections`.
+    Collections,
+    /// The `collections.deque` type.
+    Deque,
+    /// `deque.appendleft()` method.
+    Appendleft,
+    /// `deque.extendleft()` method.
+    Extendleft,
+    /// `deque.popleft()` method.
+    Popleft,
+    /// `deque.rotate()` method.
+    Rotate,
+    /// `deque.maxlen` attribute (also a constructor keyword argument).
+    Maxlen,
+    /// `deque(iterable=...)` — the constructor's first parameter, which CPython
+    /// also accepts by keyword. Distinct from [`Self::Iterable`], which is the
+    /// capitalized `typing.Iterable`.
+    #[strum(serialize = "iterable")]
+    IterableArg,
+    /// The `collections.namedtuple` factory function.
+    Namedtuple,
+    /// The `collections.defaultdict` factory function.
+    Defaultdict,
+    /// The `collections.Counter` type/factory.
+    #[strum(serialize = "Counter")]
+    Counter,
+    /// `Counter.most_common()` method.
+    #[strum(serialize = "most_common")]
+    MostCommon,
+    /// `Counter.elements()` method.
+    Elements,
+    /// `Counter.total()` method.
+    Total,
+    /// `Counter.subtract()` method.
+    Subtract,
+    /// `namedtuple(typename=...)` keyword argument.
+    Typename,
+    /// `namedtuple(field_names=...)` keyword argument.
+    #[strum(serialize = "field_names")]
+    FieldNames,
+    /// `NamedTuple._fields` — tuple of field names.
+    #[strum(serialize = "_fields")]
+    UnderFields,
+    /// `NamedTuple._field_defaults` — dict of defaulted field names to values.
+    #[strum(serialize = "_field_defaults")]
+    UnderFieldDefaults,
+    /// `NamedTuple._make(iterable)` classmethod.
+    #[strum(serialize = "_make")]
+    UnderMake,
+    /// `NamedTuple._replace(**kwargs)` method.
+    #[strum(serialize = "_replace")]
+    UnderReplace,
+    /// `NamedTuple._asdict()` method.
+    #[strum(serialize = "_asdict")]
+    UnderAsdict,
+    /// `namedtuple(..., defaults=...)` keyword argument.
+    Defaults,
+    /// `namedtuple(..., module=...)` keyword argument.
+    #[strum(serialize = "module")]
+    ModuleKwarg,
+    /// `defaultdict.default_factory` attribute.
+    #[strum(serialize = "default_factory")]
+    DefaultFactory,
+    /// `defaultdict.__missing__` method.
+    #[strum(serialize = "__missing__")]
+    DunderMissing,
+    /// `__module__` — the defining module name, exposed on namedtuple classes.
+    #[strum(serialize = "__module__")]
+    DunderModule,
+    /// `__getnewargs__` — the copy/pickle hook on named tuples.
+    #[strum(serialize = "__getnewargs__")]
+    DunderGetnewargs,
+    /// `__qualname__` — the qualified class name, exposed on namedtuple classes.
+    #[strum(serialize = "__qualname__")]
+    DunderQualname,
+
+    // ==========================
+    // More itertools module strings. Appended at the enum end rather than
+    // beside the earlier itertools block: discriminants are serialized
+    // `StringId`s, so inserting there would shift every later id.
+    /// `itertools.pairwise()` function.
+    Pairwise,
+    /// `itertools.compress()` function.
+    Compress,
+    /// `data` keyword argument of `itertools.compress()`.
+    Data,
+    /// `selectors` keyword argument of `itertools.compress()`.
+    Selectors,
+    /// `itertools.islice()` function.
+    Islice,
+    /// `itertools.chain()` function.
+    Chain,
+    /// `itertools.cycle()` function.
+    Cycle,
+    /// Python's `NotImplemented` singleton representation.
+    #[strum(serialize = "NotImplemented")]
+    NotImplementedRepr,
+    /// The `__dataclass_params__` class attribute `@dataclass` writes: the
+    /// options the class was decorated with.
+    #[strum(serialize = "__dataclass_params__")]
+    DataclassParams,
+    // `@dataclass(...)` keyword options. Recognised even where unimplemented,
+    // so an unsupported option reports itself rather than looking misspelled.
+    /// `@dataclass(init=...)`.
+    Init,
+    /// `@dataclass(eq=...)`.
+    Eq,
+    /// `@dataclass(repr=...)`.
+    Repr,
+    /// `@dataclass(order=...)`.
+    Order,
+    /// `@dataclass(unsafe_hash=...)`.
+    UnsafeHash,
+    /// `@dataclass(frozen=...)`.
+    Frozen,
+    /// `@dataclass(match_args=...)`.
+    MatchArgs,
+    /// `@dataclass(kw_only=...)`.
+    KwOnly,
+    /// `@dataclass(slots=...)`.
+    Slots,
+    /// `@dataclass(weakref_slot=...)`.
+    WeakrefSlot,
+    /// `dataclasses.FrozenInstanceError` exception.
+    #[strum(serialize = "FrozenInstanceError")]
+    FrozenInstanceError,
+    /// The class parameter of the decorator `@dataclass(...)` returns, which
+    /// CPython spells `def wrap(cls)` and so accepts by keyword.
+    Cls,
+    /// `itertools.takewhile()` function.
+    Takewhile,
+    /// `itertools.dropwhile()` function.
+    Dropwhile,
+    /// `itertools.filterfalse()` function.
+    Filterfalse,
+    /// `itertools.starmap()` function.
+    Starmap,
+
+    // ==========================
+    // functools module strings
+    // Appended, per the "new variants go at the end" rule above.
+    /// Module name for `import functools`.
+    Functools,
+    /// `functools.reduce()` function.
+    Reduce,
+    /// `initial` keyword argument of `functools.reduce()`.
+    Initial,
+
+    // ==========================
+    // base64 and binascii module strings
+    // Each spells its text out: snake_case would split the digits (`b64_encode`).
+    /// Module name for `import base64`.
+    #[strum(serialize = "base64")]
+    Base64,
+    /// `base64.b64encode()` function.
+    #[strum(serialize = "b64encode")]
+    B64Encode,
+    /// `base64.b64decode()` function.
+    #[strum(serialize = "b64decode")]
+    B64Decode,
+    /// `base64.standard_b64encode()` function.
+    #[strum(serialize = "standard_b64encode")]
+    StandardB64Encode,
+    /// `base64.standard_b64decode()` function.
+    #[strum(serialize = "standard_b64decode")]
+    StandardB64Decode,
+    /// `base64.urlsafe_b64encode()` function.
+    #[strum(serialize = "urlsafe_b64encode")]
+    UrlsafeB64Encode,
+    /// `base64.urlsafe_b64decode()` function.
+    #[strum(serialize = "urlsafe_b64decode")]
+    UrlsafeB64Decode,
+    /// `base64.b32encode()` function.
+    #[strum(serialize = "b32encode")]
+    B32Encode,
+    /// `base64.b32decode()` function.
+    #[strum(serialize = "b32decode")]
+    B32Decode,
+    /// `base64.b32hexencode()` function.
+    #[strum(serialize = "b32hexencode")]
+    B32HexEncode,
+    /// `base64.b32hexdecode()` function.
+    #[strum(serialize = "b32hexdecode")]
+    B32HexDecode,
+    /// `base64.b16encode()` function.
+    #[strum(serialize = "b16encode")]
+    B16Encode,
+    /// `base64.b16decode()` function.
+    #[strum(serialize = "b16decode")]
+    B16Decode,
+    /// `base64.encodebytes()` function.
+    #[strum(serialize = "encodebytes")]
+    Encodebytes,
+    /// `base64.decodebytes()` function.
+    #[strum(serialize = "decodebytes")]
+    Decodebytes,
+    /// `altchars` parameter of `base64.b64encode()` / `b64decode()`.
+    #[strum(serialize = "altchars")]
+    Altchars,
+    /// `validate` parameter of `base64.b64decode()`.
+    #[strum(serialize = "validate")]
+    Validate,
+    /// `map01` parameter of `base64.b32decode()`.
+    #[strum(serialize = "map01")]
+    Map01,
+    /// Module name for `import binascii`.
+    #[strum(serialize = "binascii")]
+    Binascii,
+    /// `binascii.Error` exception class — distinct from [`Self::Error`], which
+    /// is the lowercase `re.error` alias.
+    #[strum(serialize = "Error")]
+    ErrorClass,
+    /// `base64.MAXBINSIZE` module constant.
+    #[strum(serialize = "MAXBINSIZE")]
+    MaxBinSize,
+    /// `base64.MAXLINESIZE` module constant.
+    #[strum(serialize = "MAXLINESIZE")]
+    MaxLineSize,
+    /// `base64.b85encode()` function.
+    #[strum(serialize = "b85encode")]
+    B85Encode,
+    /// `base64.b85decode()` function.
+    #[strum(serialize = "b85decode")]
+    B85Decode,
+    /// `base64.z85encode()` function.
+    #[strum(serialize = "z85encode")]
+    Z85Encode,
+    /// `base64.z85decode()` function.
+    #[strum(serialize = "z85decode")]
+    Z85Decode,
+    /// `binascii.hexlify()` function.
+    #[strum(serialize = "hexlify")]
+    Hexlify,
+    /// `binascii.unhexlify()` function.
+    #[strum(serialize = "unhexlify")]
+    Unhexlify,
+    /// `binascii.b2a_hex()` function, an alias of `hexlify`.
+    #[strum(serialize = "b2a_hex")]
+    B2aHex,
+    /// `binascii.a2b_hex()` function, an alias of `unhexlify`.
+    #[strum(serialize = "a2b_hex")]
+    A2bHex,
+    /// `binascii.b2a_base64()` function.
+    #[strum(serialize = "b2a_base64")]
+    B2aBase64,
+    /// `binascii.a2b_base64()` function.
+    #[strum(serialize = "a2b_base64")]
+    A2bBase64,
+    /// `binascii.crc32()` function.
+    #[strum(serialize = "crc32")]
+    Crc32,
+    /// `pad` parameter of `base64.b85encode()`.
+    #[strum(serialize = "pad")]
+    Pad,
+    /// `bytes_per_sep` parameter of `binascii.hexlify()`.
+    #[strum(serialize = "bytes_per_sep")]
+    BytesPerSep,
+    /// `strict_mode` parameter of `binascii.a2b_base64()`.
+    #[strum(serialize = "strict_mode")]
+    StrictMode,
+    /// `crc` parameter of `binascii.crc32()`.
+    #[strum(serialize = "crc")]
+    Crc,
+    /// `hexstr` parameter of `binascii.unhexlify()`.
+    #[strum(serialize = "hexstr")]
+    Hexstr,
+
+    /// `datetime.time` class name. Appended rather than filed with the other
+    /// datetime strings so existing discriminants — which dumps encode by
+    /// value — keep their numbering.
+    Time,
+    /// `datetime.timetz` method name.
+    Timetz,
+    /// `utcoffset()` method of `time`, `datetime` and `timezone`.
+    Utcoffset,
+    /// `tzname()` method of `time`, `datetime` and `timezone`. (`dst()` reuses
+    /// the `Dst` variant already interned for the `os` kwarg of the same name.)
+    Tzname,
+    /// `timespec` keyword of `time.isoformat()`.
+    Timespec,
+}
+
+/// Computes an FNV-1a hash over static-string identities and serialization.
+#[cfg(test)]
+pub(crate) fn static_strings_fingerprint() -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0100_0000_01b3;
+
+    fn update(hash: &mut u64, bytes: &[u8]) {
+        for byte in u32::try_from(bytes.len())
+            .expect("fingerprint field length fits u32")
+            .to_le_bytes()
+        {
+            *hash ^= u64::from(byte);
+            *hash = hash.wrapping_mul(PRIME);
+        }
+        for byte in bytes {
+            *hash ^= u64::from(*byte);
+            *hash = hash.wrapping_mul(PRIME);
+        }
+    }
+
+    let mut hash = OFFSET_BASIS;
+    for value in StaticStrings::iter() {
+        update(&mut hash, &(value as u16).to_le_bytes());
+        update(&mut hash, format!("{value:?}").as_bytes());
+        let string: &'static str = value.into();
+        update(&mut hash, string.as_bytes());
+        update(
+            &mut hash,
+            &postcard::to_allocvec(&value).expect("StaticStrings serialization cannot fail"),
+        );
+    }
+    hash
 }
 
 impl StaticStrings {
@@ -1134,6 +1529,17 @@ impl Interns {
     #[inline]
     pub fn get_function(&self, id: FunctionId) -> &Function {
         self.functions.get(id.index()).expect("Function not found")
+    }
+
+    /// Injects `fault` into the named function's metadata.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn corrupt_function_metadata_for_tests(&mut self, name: &str, fault: FunctionMetadataFault) {
+        let index = self
+            .functions
+            .iter()
+            .position(|function| self.get_str(function.name.name_id) == name)
+            .unwrap_or_else(|| panic!("test function '{name}' not found"));
+        self.functions[index].corrupt_metadata_for_tests(fault);
     }
 
     /// Returns the Python hash for an interned string.

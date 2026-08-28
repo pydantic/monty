@@ -2,8 +2,6 @@
 
 use std::mem;
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
@@ -32,7 +30,7 @@ struct SumArgs {
 /// Sums the items of an iterable from left to right with an optional start value.
 /// The default start value is 0. Str and bytes start values are explicitly
 /// rejected, pointing at `''.join(seq)` / `b''.join(seq)` instead.
-pub fn builtin_sum(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let SumArgs { iterable, start } = SumArgs::from_args(args, vm)?;
     defer_drop_mut!(start, vm);
 
@@ -58,22 +56,9 @@ pub fn builtin_sum(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
     while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
 
-        // Try to add the item to accumulator
-        if let Some(new_value) = accumulator.py_add(item, vm)? {
-            // Replace the old accumulator with the new value, dropping the old one
-            let old = mem::replace(accumulator, new_value);
-            old.drop_with(vm);
-        } else {
-            // Types don't support addition
-            let acc_type = accumulator.py_type(vm);
-            let acc_name = acc_type.name(vm.heap, vm.interns);
-            return Err(ExcType::binary_type_error(
-                "+",
-                acc_type,
-                acc_name,
-                item.py_type_name(vm),
-            ));
-        }
+        let new_value = accumulator.py_add(item, vm)?;
+        let old = mem::replace(accumulator, new_value);
+        old.drop_with(vm);
     }
 
     Ok(acc_guard.into_inner())

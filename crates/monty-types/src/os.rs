@@ -154,39 +154,6 @@ impl OsFunctionCall {
         }
     }
 
-    /// Whether this call can be handled by a `MountTable` (in the `monty-fs` crate).
-    /// Non-FS variants (`Getenv`, `GetEnviron`, `DateToday`, `DateTimeNow`)
-    /// must fall through to the host callback.
-    ///
-    /// Deliberately an allowlist: any future non-FS variant must return
-    /// `false`, because `monty-fs` panics if a call without a
-    /// [`Self::primary_path`] reaches its filesystem dispatch.
-    #[must_use]
-    pub fn is_filesystem(&self) -> bool {
-        matches!(
-            self,
-            Self::Exists(_)
-                | Self::IsFile(_)
-                | Self::IsDir(_)
-                | Self::IsSymlink(_)
-                | Self::ReadText(_)
-                | Self::ReadBytes(_)
-                | Self::WriteText(_)
-                | Self::WriteBytes(_)
-                | Self::AppendText(_)
-                | Self::AppendBytes(_)
-                | Self::Stat(_)
-                | Self::Iterdir(_)
-                | Self::Resolve(_)
-                | Self::Absolute(_)
-                | Self::Open(_)
-                | Self::Mkdir(_)
-                | Self::Unlink(_)
-                | Self::Rmdir(_)
-                | Self::Rename(_)
-        )
-    }
-
     /// Whether this call mutates filesystem state — the read-only-mount gate.
     /// `Open`'s write-ness is mode-dependent (`w`/`w+`/`a`/`a+` write; `r`/`r+`
     /// don't).
@@ -217,10 +184,40 @@ impl OsFunctionCall {
         )
     }
 
-    /// The call's primary path (for routing and error reporting), or `None`
-    /// for non-FS variants.
+    /// CPython's `ValueError` message for a path containing a null byte.
+    ///
+    /// The wording is not uniform in CPython: it comes from whichever layer
+    /// first inspects the path, so the content operations go through `open()`
+    /// and say `embedded null byte`, while the metadata ones are named by the
+    /// syscall their `os` wrapper was about to make. `for_destination` picks
+    /// the rename argument that carried the byte.
     #[must_use]
-    pub fn primary_path(&self) -> Option<&str> {
+    pub fn embedded_null_message(&self, for_destination: bool) -> &'static str {
+        match self {
+            Self::Mkdir(_) => "mkdir: embedded null character in path",
+            Self::Unlink(_) => "unlink: embedded null character in path",
+            Self::Rmdir(_) => "rmdir: embedded null character in path",
+            Self::Stat(_) => "stat: embedded null character in path",
+            // `pathlib.Path.iterdir` reaches `os.scandir`, not `os.listdir`.
+            Self::Iterdir(_) => "scandir: embedded null character in path",
+            Self::Rename(_) if for_destination => "rename: embedded null character in dst",
+            Self::Rename(_) => "rename: embedded null character in src",
+            // `resolve()` lstats each component before returning.
+            Self::Resolve(_) => "lstat: embedded null character in path",
+            // Reads, writes, appends and `open` all land in `io.open`.
+            // `absolute()` shares that generic wording: it is pure string work
+            // that CPython never raises from, so naming a syscall would be a
+            // fiction (see `limitations/filesystem.md`). The predicates never
+            // reach here — they answer `False`.
+            _ => "embedded null byte",
+        }
+    }
+
+    /// The call's primary path if it's a FS operation, `None` otherwise.
+    ///
+    /// Used for routing and error reporting.
+    #[must_use]
+    pub fn fs_primary_path(&self) -> Option<&str> {
         match self {
             Self::Exists(p)
             | Self::IsFile(p)
@@ -258,8 +255,7 @@ impl OsFunctionCall {
     /// for FS ops (with the path), `RuntimeError` for non-FS ops.
     #[must_use]
     pub fn on_no_handler(&self) -> MontyException {
-        if self.is_filesystem() {
-            let path = self.primary_path().unwrap_or("<unknown>");
+        if let Some(path) = self.fs_primary_path() {
             MontyException::new(
                 ExcType::PermissionError,
                 Some(format!("Permission denied: {}", StringRepr(path))),

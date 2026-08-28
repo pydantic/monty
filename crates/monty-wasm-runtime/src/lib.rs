@@ -27,6 +27,7 @@
 //! Exactly as in the subprocess model, a turn that ends *without* a turn-ending
 //! event means the instance trapped (stack overflow, allocator abort) and the
 //! host must discard it. A graceful turn always emits one terminating event.
+#![expect(unsafe_code, reason = "Host entry points must be exported with unsafe nomangle/name")]
 
 use std::{
     cell::RefCell,
@@ -45,8 +46,16 @@ thread_local! {
     /// The session worker, created on first use and reused across turns. wasip1
     /// is single-threaded, so a thread-local `RefCell` is the whole story — no
     /// locking, no `static mut`.
-    static CHILD: RefCell<Child> = RefCell::new(Child::new());
+    static CHILD: RefCell<Child> = RefCell::new(Child::default());
 }
+
+/// Counts the bytes the module asks for against the session's `max_memory`
+/// (see the `monty-alloc` crate) — not the linear memory it has grown to, which
+/// never shrinks. A wasm module may declare an allocator because its own is
+/// shared with nothing; exceeding the limit traps, which is already how the
+/// host learns an instance died — it has no exit status to read.
+#[global_allocator]
+static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 
 /// Return code of [`monty_dispatch_turn`], read by the host drive loop.
 mod turn_status {
@@ -73,10 +82,18 @@ pub extern "C" fn monty_dispatch_turn() -> i32 {
         return turn_status::IO_ERROR;
     }
 
-    let (reply, outcome) = CHILD.with_borrow_mut(|child| dispatch_frame(child, &request));
+    let (reply, outcome, allocator_ready) = CHILD.with_borrow_mut(|child| {
+        let (reply, outcome) = dispatch_frame(child, &request);
+        // Re-read from the session the child now holds, exactly as the
+        // subprocess shell does: a dump restored by `Load` brings its own
+        // limits, and a rejected request must not disturb the limit.
+        let budget = child.session_budget();
+        let allocator_ready = monty_alloc::set_limit(budget.max_memory, budget.type_check).is_ok();
+        (reply, outcome, allocator_ready)
+    });
 
     let mut stdout = io::stdout();
-    if stdout.write_all(&reply).and_then(|()| stdout.flush()).is_err() {
+    if stdout.write_all(&reply).and_then(|()| stdout.flush()).is_err() || !allocator_ready {
         return turn_status::IO_ERROR;
     }
 
@@ -152,6 +169,9 @@ impl DecodedChildEvent {
             Kind::DumpResult(value) => (9, value.encode_to_vec()),
             Kind::Ok(value) => (10, value.encode_to_vec()),
             Kind::FatalError(value) => (11, value.encode_to_vec()),
+            // only fabricated by serving relays (monty-server), never by a
+            // child — mapped anyway so this stays total; tag mirrors the oneof
+            Kind::Shutdown(value) => (12, value.encode_to_vec()),
         };
         Some(Self { kind, bytes })
     }

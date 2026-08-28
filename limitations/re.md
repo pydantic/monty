@@ -1,8 +1,8 @@
 # `re` module
 
 Monty's `re` module is backed by the Rust `fancy-regex` crate, not
-CPython's regex engine. Most patterns behave identically, but the
-underlying engine differs in syntax extensions and error reporting.
+CPython's regex engine. Most patterns behave identically; the engines differ
+in syntax extensions and error reporting.
 
 ## Module functions
 
@@ -64,7 +64,7 @@ mapping), `scanner`. The `pos` / `endpos` arguments accepted by
 
 A non-str subject passed to a Pattern *method* raises `expected string, not
 {type}` rather than CPython's `expected string or bytes-like object, got
-'{type}'` (the module-level functions match CPython's wording).
+'{type}'`. The module-level functions match CPython's wording.
 
 ## `re.Match` objects
 
@@ -72,12 +72,12 @@ Attributes: `re`, `string`.
 Methods: `group`, `groups`, `groupdict`, `start`, `end`, `span`.
 
 Not implemented: `lastindex`, `lastgroup`, `expand`, `pos`, `endpos`,
-`regs`. Indexing (`m[0]`, `m["name"]`) is not supported — use `.group()`.
+`regs`. Indexing (`m[0]`, `m["name"]`) is not supported; use `.group()`.
 
 ## `re.PatternError` / `re.error`
 
 Raised for invalid regex patterns. Unlike CPython, `pattern`, `pos`,
-`lineno`, and `colno` attributes are not populated — `fancy-regex`'s error
+`lineno`, and `colno` attributes are not populated: `fancy-regex`'s error
 representation does not carry them.
 
 ## Engine-level differences
@@ -87,6 +87,6 @@ representation does not carry them.
 - Backreference syntax `\10` and higher is not recognized; only `\1`–`\9`.
 - Error messages for invalid patterns come from `fancy-regex` and do not
   match CPython's wording.
-- Patterns whose *compiled* form is very large — e.g. huge counted repeats
-  like `a{5000000}` — raise `re.PatternError` (`fancy-regex`/`regex` enforce a
+- Patterns whose *compiled* form is very large, e.g. huge counted repeats
+  like `a{5000000}`, raise `re.PatternError` (`fancy-regex`/`regex` enforce a
   compiled-size limit), whereas CPython compiles them.

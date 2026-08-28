@@ -277,3 +277,34 @@ for _ in range(3):
 assert errors == ['cached failure', 'cached failure', 'cached failure'], (
     f'each re-await of a failed future replays the cached error: {errors}'
 )
+
+
+# === awaited external call in return position: handlers still catch ===
+# Regression: `try: return await async_fail(...)` used to leave the resume
+# point outside the protected region, bypassing except/finally.
+
+
+async def return_await_except():
+    try:
+        return await async_fail('ValueError', 'return boom')
+    except ValueError as e:
+        return f'caught {e}'
+
+
+assert await return_await_except() == 'caught return boom'  # pyright: ignore
+
+return_finally_events = []
+
+
+async def return_await_finally():
+    try:
+        return await async_fail('ValueError', 'through finally')
+    finally:
+        return_finally_events.append('finally')
+
+
+try:
+    await return_await_finally()  # pyright: ignore
+except ValueError as e:
+    return_finally_events.append(str(e))
+assert return_finally_events == ['finally', 'through finally']

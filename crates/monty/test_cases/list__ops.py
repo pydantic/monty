@@ -590,3 +590,18 @@ def _tracking_index2():
 _tracking_obj2()[_tracking_index2()] += 7
 assert _eval_log == ['obj', 'idx'], f'eval-once order with persistent list: {_eval_log}'
 assert _result_list == [10, 20, 37], f'augmented assign via function: {_result_list}'
+
+
+# === `in` / `not in` ===
+lst_in = [1, 'two', 3]
+assert 1 in lst_in
+assert 'two' in lst_in
+assert 9 not in lst_in
+# Nested containers compare by value, exercising the recursive `py_eq` path.
+assert [2, 3] in [1, [2, 3]]
+assert [2, 4] not in [1, [2, 3]]
+assert True in [1, 2]
+assert 1.0 in [1, 2]
+assert (2, 3) in [1, (2, 3)]
+assert None in [None]
+assert 1 not in []

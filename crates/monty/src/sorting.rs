@@ -10,8 +10,6 @@
 
 use std::cmp::Ordering;
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     bytecode::VM,
@@ -41,7 +39,7 @@ struct ListSortArgs {
 /// builtin — sharing here is what makes unknown-kwarg errors uniformly
 /// read `sort() got an unexpected keyword argument 'X'` (matching
 /// CPython, whose `sorted` delegates to `list.sort` internally).
-pub fn parse_and_sort(items: &mut [Value], args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<()> {
+pub fn parse_and_sort(items: &mut [Value], args: ArgValues, vm: &mut VM<'_>) -> RunResult<()> {
     let ListSortArgs { key, reverse } = ListSortArgs::from_args(args, vm)?;
     let key_fn = match key {
         Some(v) if matches!(v, Value::None) => {
@@ -55,12 +53,7 @@ pub fn parse_and_sort(items: &mut [Value], args: ArgValues, vm: &mut VM<'_, impl
 }
 
 /// Sorts a vector of values, with optional key function.
-pub fn sort_values(
-    values: &mut [Value],
-    key_fn: Option<&Value>,
-    reverse: bool,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<()> {
+pub fn sort_values(values: &mut [Value], key_fn: Option<&Value>, reverse: bool, vm: &mut VM<'_>) -> RunResult<()> {
     if let Some(f) = key_fn {
         // Sort by key function: compute all the keys, sort an index buffer, then
         // rearrange the original values in-place according to the sorted indices.
@@ -68,7 +61,10 @@ pub fn sort_values(
         let keys: Vec<Value> = Vec::with_capacity(values.len());
         defer_drop_mut!(keys, vm);
 
-        for item in values.iter() {
+        // Each key call re-enters `run()` with a fresh dispatch countdown, so a
+        // short key reaches no checkpoint: this is the pass's only clock poll.
+        for (i, item) in values.iter().enumerate() {
+            vm.heap.tracker.check_time_every(i)?;
             let item = item.clone_with_heap(vm);
             keys.push(vm.evaluate_function("sorted() key argument", f, ArgValues::One(item))?);
         }
@@ -83,7 +79,11 @@ pub fn sort_values(
     } else {
         // With no key function can sort directly on the original array
         let mut sort_result: RunResult<()> = Ok(());
-        values.sort_by(|a, b| compare_values(a, b, reverse, &mut sort_result, vm));
+        let mut n = 0usize;
+        values.sort_by(|a, b| {
+            n += 1;
+            compare_values(n, a, b, reverse, &mut sort_result, vm)
+        });
         sort_result
     }
 }
@@ -96,14 +96,13 @@ pub fn sort_values(
 ///
 /// The `values` slice is typically either the items themselves (no key function)
 /// or the pre-computed key values.
-pub fn sort_indices(
-    indices: &mut [usize],
-    values: &[Value],
-    reverse: bool,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> Result<(), RunError> {
+pub fn sort_indices(indices: &mut [usize], values: &[Value], reverse: bool, vm: &mut VM<'_>) -> Result<(), RunError> {
     let mut sort_result: RunResult<()> = Ok(());
-    indices.sort_by(|&a, &b| compare_values(&values[a], &values[b], reverse, &mut sort_result, vm));
+    let mut n = 0usize;
+    indices.sort_by(|&a, &b| {
+        n += 1;
+        compare_values(n, &values[a], &values[b], reverse, &mut sort_result, vm)
+    });
     sort_result
 }
 
@@ -137,18 +136,20 @@ pub fn apply_permutation<T>(items: &mut [T], indices: &mut [usize]) {
 }
 
 /// Helper for the sort functions which compares two values, handling any exceptions and timeouts.
+/// `n` is the caller's running comparison count, keying the amortized time check.
 fn compare_values(
+    n: usize,
     a: &Value,
     b: &Value,
     reverse: bool,
     sort_result: &mut RunResult<()>,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> Ordering {
     if sort_result.is_err() {
         // short-circuit if we've already encountered an error in a previous comparison
         return Ordering::Equal;
     }
-    if let Err(e) = vm.heap.check_time() {
+    if let Err(e) = vm.heap.tracker.check_time_every(n) {
         *sort_result = Err(e.into());
         return Ordering::Equal;
     }

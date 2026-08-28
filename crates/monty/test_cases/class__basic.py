@@ -81,6 +81,108 @@ assert p == p
 assert p != q
 assert (p == q) is False
 
+# === Custom equality ===
+
+
+class EqPoint:
+    def __init__(self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+
+    def __eq__(self, other):
+        if not isinstance(other, EqPoint):
+            return NotImplemented
+        return self.x == other.x and self.y == other.y
+
+
+ep1 = EqPoint(1, 2)
+ep2 = EqPoint(1, 2)
+ep3 = EqPoint(2, 1)
+assert ep1 == ep2, 'custom __eq__ compares instance attributes'
+assert ep1 != ep3, 'custom __eq__ false result is respected'
+assert (ep1 == 1) is False, 'NotImplemented from instance equality falls back to unequal'
+assert (1 == ep1) is False, 'NotImplemented works when reflected equality reaches the instance'
+
+try:
+    {ep1: 'value'}
+    assert False, 'an instance with custom equality should be rejected as a dict key'
+except TypeError as exc:
+    assert str(exc) == "cannot use 'EqPoint' as a dict key (unhashable type: 'EqPoint')", 'dict key error'
+
+try:
+    {ep1}
+    assert False, 'an instance with custom equality should be rejected as a set element'
+except TypeError as exc:
+    assert str(exc) == "cannot use 'EqPoint' as a set element (unhashable type: 'EqPoint')", 'set element error'
+
+try:
+    hash(ep1)
+    assert False, 'an instance with custom equality should be unhashable'
+except TypeError as exc:
+    assert str(exc) == "unhashable type: 'EqPoint'", 'custom equality disables identity hashing'
+
+
+class NeverEqual:
+    def __init__(self):
+        self.calls = 0
+
+    def __eq__(self, other):
+        self.calls += 1
+        return False
+
+
+never_equal = NeverEqual()
+assert (never_equal == never_equal) is False, 'custom equality runs before the identity fallback'
+assert never_equal.calls == 1
+assert (never_equal != never_equal) is True, 'inequality negates custom equality for the same object'
+assert never_equal.calls == 2
+assert never_equal in [never_equal], 'list membership accepts an identical object before equality'
+assert [never_equal].count(never_equal) == 1, 'list.count accepts an identical object before equality'
+assert [never_equal].index(never_equal) == 0, 'list.index accepts an identical object before equality'
+assert never_equal in (never_equal,), 'tuple membership accepts an identical object before equality'
+assert [never_equal] == [never_equal], 'list equality accepts identical elements before equality'
+assert (never_equal,) == (never_equal,), 'tuple equality accepts identical elements before equality'
+assert never_equal.calls == 2
+
+
+class LeftEq:
+    def __eq__(self, other):
+        return NotImplemented
+
+
+class RightEq:
+    def __eq__(self, other):
+        return 'right handled'
+
+
+left_eq = LeftEq()
+assert left_eq == left_eq, 'NotImplemented falls back to identity for self-comparison'
+assert (left_eq == LeftEq()) is False, 'NotImplemented falls back to unequal for distinct objects'
+assert (left_eq == RightEq()) == 'right handled', 'reflected __eq__ preserves its arbitrary result'
+assert (RightEq() == left_eq) == 'right handled', 'custom __eq__ preserves its arbitrary result'
+assert left_eq in [RightEq()], 'container equality truth-tests a reflected arbitrary result'
+
+
+class HeapResultEq:
+    def __eq__(self, other):
+        return []
+
+
+heap_result_eq = HeapResultEq()
+heap_eq_result = heap_result_eq == 1
+assert heap_eq_result == []
+assert heap_result_eq not in [1], 'container membership truth-tests a heap-valued equality result'
+
+
+class SelfResultEq:
+    def __eq__(self, other):
+        return self
+
+
+self_result_eq = SelfResultEq()
+assert (self_result_eq == 1) is self_result_eq, 'direct equality preserves a self result'
+assert self_result_eq in [1], 'container membership truth-tests a self result'
+
 # === Instances are always truthy ===
 assert bool(p) is True
 if q:

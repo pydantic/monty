@@ -96,9 +96,15 @@ assert d == {'b': 2}
 d = {'a': 1}
 assert d.pop('missing', 'default') == 'default'
 
-# === Dict with tuple key ===
-d = {(1, 2): 'value'}
-assert d[(1, 2)] == 'value'
+# === Dict with native immutable keys ===
+d = {(1, 2): 'tuple', b'key': 'bytes'}
+assert d[(1, 2)] == 'tuple'
+assert d[b'key'] == 'bytes'
+
+# Equal numeric types share hashes and address the same key.
+d = {1: 'number'}
+assert d[True] == 'number'
+assert d[1.0] == 'number'
 
 # === Dict repr ===
 assert repr({}) == '{}'
@@ -136,3 +142,10 @@ except TypeError as e:
 dup = {'k': [1], 'k': [2]}
 assert dup == {'k': [2]}
 assert len(dup) == 1
+
+# === `in` / `not in` ===
+# `in` on a dict tests its keys, never its values.
+membership = {'a': 1, 'b': 2}
+assert 'a' in membership
+assert 'z' not in membership
+assert 1 not in membership

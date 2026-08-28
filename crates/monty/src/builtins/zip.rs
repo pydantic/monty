@@ -1,7 +1,5 @@
 //! Implementation of the zip() builtin function.
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
@@ -18,17 +16,17 @@ use crate::{
 /// from each of the argument iterables. Stops when the shortest iterable is exhausted.
 /// When `strict=True`, raises `ValueError` if any iterable has a different length.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ZipArgs { iterables, strict } = ZipArgs::from_args(args, vm)?;
     defer_drop_mut!(iterables, vm);
-    // CPython's `strict` is truthy-checked (not strict typed), so use `py_bool`
-    // on the raw value rather than asking the macro to coerce to `bool`.
+    // CPython's `strict` is truthy-checked (not strict typed), so test the raw
+    // value rather than asking the macro to coerce to a strict `bool`.
     defer_drop!(strict, vm);
-    let strict = strict.py_bool(vm);
+    let strict = strict.py_bool(vm)?;
 
     if iterables.is_empty() {
         // zip() with no arguments returns empty list
-        let heap_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())))?;
+        let heap_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
         return Ok(Value::Ref(heap_id));
     }
 
@@ -79,12 +77,12 @@ pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
 
         // Create tuple from collected items
         let (tuple_items, vm) = items_guard.into_parts();
-        let tuple_val = allocate_tuple(tuple_items, vm.heap)?;
+        let tuple_val = allocate_tuple(tuple_items, vm.heap);
         result.push(tuple_val);
     }
 
     let (result, vm) = result_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)))?;
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)));
     Ok(Value::Ref(heap_id))
 }
 

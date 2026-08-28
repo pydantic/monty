@@ -4,14 +4,21 @@
 //! for the parent.
 
 use std::{
-    io::Write,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    io::{Read, Write},
+    process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use monty_proto::{FrameError, FrameReader, WireObject, pb, write_frame};
+use monty_proto::{
+    FrameError, FrameReader, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireObject, pb, write_frame,
+};
 use monty_types::MontyObject;
+
+/// How long a death-expecting helper waits for the child to exit. Generous:
+/// the regression it guards is "the child never dies", so the only cost of a
+/// long wait is how late that failure is reported on a slow CI machine.
+const DEATH_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// A spawned `monty subprocess` child with framed pipes.
 struct ChildProc {
@@ -21,11 +28,24 @@ struct ChildProc {
 }
 
 impl ChildProc {
+    /// Spawns the child with its stderr inherited, so diagnostics show up in
+    /// the test output.
     fn spawn() -> Self {
+        Self::spawn_with(Stdio::inherit())
+    }
+
+    /// Spawns the child with its stderr captured, for tests asserting on the
+    /// diagnostics it prints before dying (see [`Self::reap_with_stderr`]).
+    fn spawn_stderr_piped() -> Self {
+        Self::spawn_with(Stdio::piped())
+    }
+
+    fn spawn_with(stderr: Stdio) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_monty"))
             .arg("subprocess")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            .stderr(stderr)
             .spawn()
             .expect("failed to spawn monty subprocess");
         let writer = child.stdin.take().expect("child stdin");
@@ -34,7 +54,14 @@ impl ChildProc {
     }
 
     fn send(&mut self, kind: pb::parent_request::Kind) {
-        write_frame(&mut self.writer, &pb::ParentRequest { kind: Some(kind) }).expect("failed to write request");
+        write_frame(
+            &mut self.writer,
+            &pb::ParentRequest {
+                kind: Some(kind),
+                trace_parent: None,
+            },
+        )
+        .expect("failed to write request");
     }
 
     /// Reads a single event.
@@ -65,7 +92,9 @@ impl ChildProc {
             type_check: false,
             type_check_stubs: None,
             monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+            protocol_version: PROTOCOL_VERSION,
             assert_message_annotations: None,
+            ..Default::default()
         });
     }
 
@@ -108,6 +137,64 @@ impl ChildProc {
             result: Some(pb::ExtFunctionResult { kind: Some(result) }),
         }));
         self.recv_turn()
+    }
+
+    /// Feeds a snippet expected to kill the child, asserting no turn-ending
+    /// event arrives — EOF (the usual case) or a truncated frame instead.
+    #[track_caller]
+    fn feed_expecting_death(&mut self, code: &str) {
+        self.send(pb::parent_request::Kind::Feed(pb::Feed {
+            code: code.to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        }));
+        self.expect_death();
+    }
+
+    /// Writes a bare 200 MiB frame-length prefix — no body — and expects the
+    /// child to die buying the buffer: under the wire cap, over any limit a
+    /// test applies, and four bytes of writing, so the parent cannot block on a
+    /// pipe whose reader has already gone.
+    #[track_caller]
+    fn oversized_prefix_expecting_death(&mut self) {
+        self.writer
+            .write_all(&(200u32 * 1024 * 1024).to_le_bytes())
+            .expect("failed to write length prefix");
+        self.expect_death();
+    }
+
+    /// Asserts the child dies without a turn-ending event: EOF (the usual
+    /// case) or a truncated frame. Waits for the exit *first* — a surviving
+    /// child writes nothing, so reading it would block forever and hang the
+    /// suite instead of failing it; once it is dead the read cannot block.
+    #[track_caller]
+    fn expect_death(&mut self) {
+        let deadline = Instant::now() + DEATH_TIMEOUT;
+        while self.child.try_wait().expect("failed to poll child").is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "expected the child to die, still alive after {DEATH_TIMEOUT:?}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        match self.reader.read::<pb::ChildEvent>() {
+            Ok(None) | Err(_) => {}
+            Ok(Some(event)) => panic!("expected the child to die, got {:?}", event.kind),
+        }
+    }
+
+    /// Waits for the child and returns its status with everything it wrote to
+    /// stderr. Only valid for a child spawned by [`Self::spawn_stderr_piped`].
+    fn reap_with_stderr(&mut self) -> (ExitStatus, String) {
+        let mut stderr = String::new();
+        self.child
+            .stderr
+            .take()
+            .expect("child stderr must be piped")
+            .read_to_string(&mut stderr)
+            .expect("failed to read child stderr");
+        let status = self.child.wait().expect("failed to wait for child");
+        (status, stderr)
     }
 
     /// Tells the child to shut down and asserts a clean exit.
@@ -331,7 +418,9 @@ fn child_enforces_time_limit() {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         assert_message_annotations: None,
+        ..Default::default()
     });
     let (_, event) = child.feed("while True:\n    pass");
     let error = expect_error(event);
@@ -347,6 +436,198 @@ fn child_enforces_time_limit() {
     child.create_repl();
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
     child.shutdown();
+}
+
+/// A session's `max_memory` must not disturb work that stays inside it. This
+/// small budget includes the real allocations needed to compile and run a feed.
+#[test]
+fn small_memory_limit_leaves_normal_work_alone() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(64 * 1024));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// Crossing the allocator's soft limit raises an ordinary session error rather
+/// than killing the worker, and unwinding releases the incomplete result.
+#[test]
+fn exceeding_the_soft_memory_limit_preserves_the_worker() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    let (_, event) = child.feed("[str(i) for i in range(131_072)]");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// Async scheduler state is allocator-accounted even though it lives outside
+/// Monty's object heap, so recursive gathers reach the soft limit safely.
+#[test]
+fn async_accumulation_reaches_the_soft_limit() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "import asyncio\nasync def f():\n    return await asyncio.gather(f())\nasyncio.run(f())";
+    let (_, event) = child.feed(code);
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// Known large results are rejected against allocator usage before they can
+/// jump from below the soft limit past the hard ceiling. The reported figure is
+/// what each result really costs, so it pins down that the refusal accounted for
+/// the whole allocation rather than tripping on some smaller intermediate.
+#[test]
+fn large_allocations_are_rejected_before_the_hard_limit() {
+    // each case with the allocator usage it should be refused at
+    let cases = [
+        ("'x' * 10_000_000", 10_030_889),
+        ("b'x' * 10_000_000", 10_031_021),
+        ("[None] * 1_000_000", 16_031_143),
+        ("2 ** 10_000_000", 10_030_982),
+        ("1 << 10_000_000", 1_280_983),
+        ("('a' * 1000).replace('a', 'b' * 2000)", 2_034_521),
+        // Bulk container clones: `+=` preflights the temp clone plus the target
+        // growth, `+` preflights each side's clone.
+        ("x = [None] * 40_000\nx += x", 1_951_587),
+        ("t = (None,) * 40_000\nt + t", 1_311_587),
+        ("x = [None] * 40_000\nx.copy()", 1_311_337),
+        // `deque.extend` preflights exact-hint iterators up front.
+        (
+            "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
+            16_031_723,
+        ),
+    ];
+
+    for (code, expected) in cases {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(1024 * 1024));
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{code}");
+        let message = error.message.expect("MemoryError should have a message");
+        assert_reported_usage(&message, expected, code);
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
+        child.shutdown();
+    }
+}
+
+/// A bounded deque retains at most `maxlen` items, so extending it from a huge
+/// exact-hint iterator (the sliding-window pattern) must not trip the
+/// `deque.extend` preflight — the memory really is capped at `maxlen`.
+#[test]
+fn bounded_deque_extend_is_not_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "from collections import deque\nd = deque(maxlen=8)\nd.extend(range(500_000))\nlen(d)";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(8));
+    child.shutdown();
+}
+
+/// Assert a `memory limit exceeded` message reports roughly `expected` bytes
+/// used against a 1 MiB limit.
+///
+/// Exact equality is not usable: the figure is real allocator bytes, so the
+/// baseline the session starts from varies by a few dozen bytes between
+/// platforms (macOS runs consistently below Linux and Windows). The tolerance is
+/// far below what a mis-accounted allocation would move the number by.
+fn assert_reported_usage(message: &str, expected: u64, code: &str) {
+    const TOLERANCE: u64 = 1024;
+
+    let used: u64 = message
+        .strip_prefix("memory limit exceeded: ")
+        .and_then(|rest| rest.strip_suffix(" bytes > 1048576 bytes"))
+        .unwrap_or_else(|| panic!("{code}: unexpected message {message:?}"))
+        .parse()
+        .unwrap_or_else(|_| panic!("{code}: unexpected message {message:?}"));
+    assert!(
+        used.abs_diff(expected) <= TOLERANCE,
+        "{code}: reported {used} bytes, expected within {TOLERANCE} of {expected}"
+    );
+}
+
+/// A refused allocation must leave the parent something it can classify: the
+/// dedicated exit code, not the `SIGABRT` Rust's allocation-error handler would
+/// raise (which a stack overflow also produces). Needs no limit: 1 EiB is
+/// thousands of times the usable address space on any 64-bit host, so `mmap`
+/// fails on the address-space check before overcommit policy is consulted —
+/// deterministic, and no page is ever touched.
+#[test]
+fn refused_allocation_exits_with_the_oom_code() {
+    let mut child = ChildProc::spawn_stderr_piped();
+    child.create_repl();
+    // no `max_memory`, so the sandbox tracker permits this outright
+    child.feed_expecting_death("x = ' ' * (1 << 60)");
+    let (status, stderr) = child.reap_with_stderr();
+    assert_eq!(status.code(), Some(monty_types::OOM_EXIT_CODE), "got {status:?}");
+    assert!(
+        stderr.contains("allocation of 1152921504606846976 bytes failed"),
+        "{stderr}"
+    );
+}
+
+/// Memory allocated outside interpreter checkpoints must still hit the hard
+/// ceiling rather than grow the host without bound. The allocation here comes
+/// from the frame reader — a bare length
+/// prefix, under the wire cap and over the limit, buys a 200 MiB buffer with
+/// four bytes. Same exit code as a refused allocation; the limit only changes
+/// *where* refusal starts.
+#[test]
+fn exceeding_the_memory_limit_exits_with_the_oom_code() {
+    let mut child = ChildProc::spawn_stderr_piped();
+    child.create_repl_with(configure_with_max_memory(1024));
+    child.oversized_prefix_expecting_death();
+    let (status, stderr) = child.reap_with_stderr();
+    assert_eq!(status.code(), Some(monty_types::OOM_EXIT_CODE), "got {status:?}");
+    assert!(
+        stderr.contains("allocation of 209715200 bytes exceeds the memory limit"),
+        "{stderr}"
+    );
+}
+
+/// A dump carries its own limits, so restoring one must re-apply them: this
+/// `Load` lands on a child that was never configured with a limit, and the
+/// restored session's `max_memory` is all there is to bound it.
+#[test]
+fn loading_a_dump_applies_its_own_memory_limit() {
+    let mut source = ChildProc::spawn();
+    source.create_repl_with(configure_with_max_memory(64 * 1024));
+    assert_eq!(source.feed_complete("x = 1"), MontyObject::None);
+    source.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = source.recv() else {
+        panic!("expected DumpResult");
+    };
+    source.shutdown();
+
+    let mut restored = ChildProc::spawn_stderr_piped();
+    restored.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    let pb::child_event::Kind::Ok(_) = restored.recv() else {
+        panic!("expected Ok for Load");
+    };
+    restored.oversized_prefix_expecting_death();
+    let (status, stderr) = restored.reap_with_stderr();
+    assert_eq!(status.code(), Some(monty_types::OOM_EXIT_CODE), "got {status:?}");
+    assert!(
+        stderr.contains("allocation of 209715200 bytes exceeds the memory limit"),
+        "{stderr}"
+    );
+}
+
+/// A `Configure` carrying `max_memory`, which is what limits the worker.
+fn configure_with_max_memory(bytes: u64) -> pb::Configure {
+    pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: Some(pb::ResourceLimits {
+            max_memory_bytes: Some(bytes),
+            ..Default::default()
+        }),
+        type_check: false,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        assert_message_annotations: None,
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -382,7 +663,9 @@ fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
         type_check: true,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         assert_message_annotations: None,
+        ..Default::default()
     });
 
     let (_, event) = child.feed("x: int = 'not an int'");
@@ -405,6 +688,139 @@ fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
         panic!("expected TypingError for undefined x, got {event:?}");
     };
     child.shutdown();
+}
+
+/// The format is chosen on `Configure` because rendering happens in the child
+/// — only the rendered text crosses the wire, so a parent that wants anything
+/// other than `full` has to ask before the check runs.
+#[test]
+fn type_check_format_selects_the_rendering() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        type_check: true,
+        type_check_format: pb::TypeCheckFormat::Concise.into(),
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        ..Default::default()
+    });
+
+    let (_, event) = child.feed("x: int = 'not an int'");
+    let pb::child_event::Kind::TypingError(typing) = event else {
+        panic!("expected TypingError, got {event:?}");
+    };
+    // one line per diagnostic, with no `-->` source snippet as `full` has
+    assert_eq!(
+        typing.diagnostics,
+        "main.py:1:10: error[invalid-assignment] Object of type `Literal[\"not an int\"]` is not assignable to `int`\n"
+    );
+    child.shutdown();
+}
+
+/// Security-critical: `Reset` must scrub every file a session wrote into the
+/// type checker — its script (wherever `script_name` placed it, including
+/// nested directories and `..`/absolute forms) and its stubs — so the next
+/// session served by the SAME process cannot resolve any of them. This runs
+/// against one child by construction, so unlike a pool test it cannot pass
+/// vacuously on a fresh worker.
+#[test]
+fn reset_scrubs_type_check_state_from_the_next_session() {
+    // (script_name of session A, module path session B tries to import)
+    let cases = [
+        ("a.py", "a"),
+        ("sub/nested.py", "sub.nested"),
+        ("../escape.py", "escape"),
+        ("/abs.py", "abs"),
+    ];
+    let mut child = ChildProc::spawn();
+    for (script_name, module) in cases {
+        // Session A: commits one snippet and carries stubs.
+        child.create_repl_with(pb::Configure {
+            script_name: script_name.to_owned(),
+            type_check: true,
+            type_check_stubs: Some("STUB_SECRET: int = 0".to_owned()),
+            type_check_format: pb::TypeCheckFormat::Concise.into(),
+            monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            ..Default::default()
+        });
+        assert_eq!(child.feed_complete("LEAKY = 'hunter2'"), MontyObject::None);
+
+        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+        let pb::child_event::Kind::Ok(_) = child.recv() else {
+            panic!("expected Ok for Reset");
+        };
+
+        // Session B, same process: everything session A wrote must be gone.
+        child.create_repl_with(pb::Configure {
+            script_name: "b.py".to_owned(),
+            type_check: true,
+            type_check_format: pb::TypeCheckFormat::Concise.into(),
+            monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            ..Default::default()
+        });
+        let mut probe = |code: String| {
+            let (_, event) = child.feed(&code);
+            let pb::child_event::Kind::TypingError(typing) = event else {
+                panic!("expected TypingError for {code:?} after {script_name:?}, got {event:?}");
+            };
+            typing.diagnostics
+        };
+        assert_eq!(
+            probe(format!("from {module} import LEAKY")),
+            format!("b.py:1:6: error[unresolved-import] Cannot resolve imported module `{module}`\n"),
+        );
+        assert_eq!(
+            probe("from repl_type_stubs import STUB_SECRET".to_owned()),
+            "b.py:1:6: error[unresolved-import] Cannot resolve imported module `repl_type_stubs`\n",
+        );
+        // the scrub keeps SRC_ROOT itself intact — fresh checks still work
+        assert_eq!(child.feed_complete("x: int = 1\nx"), MontyObject::Int(1));
+
+        // back to unconfigured for the next case
+        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+        let pb::child_event::Kind::Ok(_) = child.recv() else {
+            panic!("expected Ok for the trailing Reset");
+        };
+    }
+    child.shutdown();
+}
+
+/// The rendering choice lives in the dump envelope, so a session restored into
+/// a fresh worker keeps reporting diagnostics the way its parent asked for.
+#[test]
+fn type_check_format_survives_dump_and_load() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        type_check: true,
+        type_check_format: pb::TypeCheckFormat::Concise.into(),
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        ..Default::default()
+    });
+    assert_eq!(child.feed_complete("y = 1"), MontyObject::None);
+    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+        panic!("expected DumpResult");
+    };
+    drop(child);
+
+    let mut fresh = ChildProc::spawn();
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    let pb::child_event::Kind::Ok(_) = fresh.recv() else {
+        panic!("expected Ok for Load");
+    };
+    let (_, event) = fresh.feed("x: int = 'not an int'");
+    let pb::child_event::Kind::TypingError(typing) = event else {
+        panic!("expected TypingError after Load, got {event:?}");
+    };
+    assert_eq!(
+        typing.diagnostics,
+        "main.py:1:10: error[invalid-assignment] Object of type `Literal[\"not an int\"]` is not assignable to `int`\n"
+    );
+    fresh.shutdown();
 }
 
 // =============================================================================
@@ -461,7 +877,9 @@ fn type_check_state_survives_dump_and_load() {
         type_check: true,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         assert_message_annotations: None,
+        ..Default::default()
     });
     // a committed snippet that later feeds must see through the dump
     assert_eq!(child.feed_complete("y = 1"), MontyObject::None);
@@ -495,8 +913,10 @@ fn assert_annotation_option_survives_dump_and_load() {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         // 0 = annotations off on the wire.
         assert_message_annotations: Some(0),
+        ..Default::default()
     });
     child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
     let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
@@ -526,8 +946,10 @@ fn assert_annotation_custom_limit_survives_dump_and_load() {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         // Non-zero = annotations on, truncating operand reprs to N chars.
         assert_message_annotations: Some(6),
+        ..Default::default()
     });
     child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
     let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
@@ -572,7 +994,9 @@ fn protocol_violations_keep_the_child_alive() {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
         assert_message_annotations: None,
+        ..Default::default()
     }));
     let error = expect_error(child.recv());
     assert!(error.message.unwrap().contains("already exists"));
@@ -598,35 +1022,100 @@ fn protocol_violations_keep_the_child_alive() {
     child.shutdown();
 }
 
-#[test]
-fn version_skew_on_create_is_a_fatal_error() {
-    let mut child = ChildProc::spawn();
-    // A parent built against a different monty version: the child must reject
-    // the session with a FatalError and exit non-zero rather than risk a wire
-    // desync from a mismatched frame layout.
-    child.send(pb::parent_request::Kind::Configure(pb::Configure {
+/// Builds a `Configure` with an explicit protocol version, for the version
+/// checks below.
+fn configure_with_protocol_version(protocol_version: u32, monty_version: &str) -> pb::Configure {
+    pb::Configure {
         script_name: "main.py".to_owned(),
         limits: None,
         type_check: false,
         type_check_stubs: None,
-        monty_version: "0.0.0-not-a-real-version".to_owned(),
+        monty_version: monty_version.to_owned(),
+        protocol_version,
         assert_message_annotations: None,
-    }));
-    match child.recv() {
-        pb::child_event::Kind::FatalError(fatal) => assert!(fatal.message.contains("version skew")),
-        other => panic!("expected FatalError, got {other:?}"),
+        ..Default::default()
     }
+}
+
+/// Asserts the child rejected the session and exited non-zero, returning the
+/// fatal message.
+fn expect_fatal_exit(mut child: ChildProc) -> String {
+    let message = match child.recv() {
+        pb::child_event::Kind::FatalError(fatal) => fatal.message,
+        other => panic!("expected FatalError, got {other:?}"),
+    };
     let status = child.child.wait().expect("wait");
     assert_eq!(status.code(), Some(4));
     // disarm Drop's kill — already exited
     let _ = child.child.kill();
+    message
+}
+
+/// A parent speaking a protocol this build does not serve must be rejected
+/// before any session exists, and told the range so it can downgrade — there
+/// is no handshake to discover it from.
+#[test]
+fn unsupported_protocol_version_on_create_is_a_fatal_error() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+        PROTOCOL_VERSION + 1,
+        env!("CARGO_PKG_VERSION"),
+    )));
+    let message = expect_fatal_exit(child);
+    assert!(
+        message.contains(&format!("unsupported protocol version {}", PROTOCOL_VERSION + 1)),
+        "message should name the rejected version: {message}"
+    );
+    // Spelled out rather than taken from `check_protocol_version`, so rewording
+    // the refusal a parent actually reads fails here.
+    let supported = if MIN_SUPPORTED_PROTOCOL_VERSION == PROTOCOL_VERSION {
+        format!("this build supports protocol version {PROTOCOL_VERSION}")
+    } else {
+        format!("this build supports protocol versions {MIN_SUPPORTED_PROTOCOL_VERSION} to {PROTOCOL_VERSION}")
+    };
+    assert!(
+        message.contains(&supported),
+        "message should name the supported range: {message}"
+    );
+}
+
+/// Zero means the parent declared nothing — it predates the field, or is not a
+/// monty parent. Without in-band negotiation it cannot be assumed compatible.
+#[test]
+fn undeclared_protocol_version_is_a_fatal_error() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+        0,
+        env!("CARGO_PKG_VERSION"),
+    )));
+    let message = expect_fatal_exit(child);
+    assert!(
+        message.contains("unsupported protocol version 0"),
+        "message should name the rejected version: {message}"
+    );
+}
+
+/// The package version is informational: a parent from a different build is
+/// served as long as its protocol version is one this build speaks.
+#[test]
+fn differing_package_version_is_accepted() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+        PROTOCOL_VERSION,
+        "0.0.0-not-a-real-version",
+    )));
+    assert!(
+        matches!(child.recv(), pb::child_event::Kind::Ok(_)),
+        "a mismatched package version must not end the session"
+    );
+    child.shutdown();
 }
 
 #[test]
 fn garbage_stdin_is_a_fatal_error() {
     let mut child = ChildProc::spawn();
     // valid length prefix followed by a truncated stream: the child reads a
-    // mangled frame and must bail out with FatalError + exit code 2
+    // mangled frame and must bail out with FatalError + EX_PROTOCOL
     let raw = &mut child.writer;
     raw.write_all(&[0xFF, 0xFF, 0xFF, 0x7F]).unwrap();
     raw.flush().unwrap();
@@ -637,7 +1126,7 @@ fn garbage_stdin_is_a_fatal_error() {
         other => panic!("expected FatalError, got {other:?}"),
     }
     let status = child.child.wait().expect("wait");
-    assert_eq!(status.code(), Some(2));
+    assert_eq!(status.code(), Some(76)); // EX_PROTOCOL
     // disarm Drop's kill — already exited
     let _ = child.child.kill();
 }

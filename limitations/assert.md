@@ -1,9 +1,10 @@
 # `assert`
 
-Monty deliberately diverges from CPython on `assert` failure messages: failed
-asserts raise an `AssertionError` carrying a pytest-style introspected message,
-so sandboxed code (and hosts feeding errors back to users/LLMs) can see the
-values involved instead of a blank `AssertionError`.
+Monty deliberately diverges from CPython on `assert` failure messages: a
+failed `assert` raises an `AssertionError` carrying a pytest-style
+introspected message, so sandboxed code (and hosts feeding errors back to
+users or LLMs) can see the values involved instead of a blank
+`AssertionError`.
 
 ## Bare `assert` carries a message (CPython raises an empty `AssertionError`)
 
@@ -14,10 +15,10 @@ values involved instead of a blank `AssertionError`.
 - Applies when the test is a single binary comparison with one of
   `==`, `!=`, `<`, `<=`, `>`, `>=`, `is`, `is not`, `in`, `not in`:
   both operands' `repr()`s are substituted. Operands are evaluated exactly
-  once — side effects are not duplicated.
+  once, so side effects are not duplicated.
 - Any other failing test shows the falsy value's repr instead:
   `assert []` → `assert []`, `assert None` → `assert None`,
-  `assert 0` → `assert 0` — except `False` itself, which adds no information:
+  `assert 0` → `assert 0`. `False` itself adds no information, so
   `assert False` raises a plain message-less `AssertionError`, exactly like
   CPython.
 - Chained comparisons (`assert 1 < 2 > 3`) and `not` expressions produce
@@ -31,12 +32,12 @@ values involved instead of a blank `AssertionError`.
 - `assert 1 == 2, 'my message'` raises
   `AssertionError('my message\nassert 1 == 2')`; CPython raises
   `AssertionError('my message')`.
-- Consequently `e.args[0]` contains the combined string, not the original
+- `e.args[0]` therefore contains the combined string, not the original
   message object. Non-`str` messages are rendered with `str()`
   (`assert [], 123` → `123\nassert []`); CPython stores the object
   itself in `e.args`.
 - When the test value is literally `False` no detail is appended, so
-  `assert False, 'msg'` raises `AssertionError('msg')` — the same as CPython
+  `assert False, 'msg'` raises `AssertionError('msg')`, the same as CPython
   apart from the `str()` rendering of non-`str` messages.
 - A message that stringifies to the empty string is treated as absent, so only
   the detail is shown: `assert 1 == 2, ''` raises `AssertionError('assert 1 == 2')`
@@ -49,9 +50,9 @@ values involved instead of a blank `AssertionError`.
   boundary. A truncated repr gets a three-byte `…` suffix in addition to that
   limit. The retained-byte limit is configurable per session; see "Opt-out for
   embedders" below.
-- A failing assert calls `repr()` on its operands, which CPython never does:
+- A failing assert calls `repr()` on its operands, which CPython never does, so
   user `__repr__` side effects run. Rendering is streamed and stops at the
-  truncation cap, so parts of a container beyond the cap are never repr'd —
+  truncation cap, so parts of a container beyond the cap are never repr'd and
   their `__repr__`s (and any side effects) don't run at all. The temporary repr
   buffer and its formatting loop are not charged to the `ResourceTracker`.
 - If an operand's `__repr__` (or an explicit message's `__str__`) raises a
@@ -65,7 +66,7 @@ values involved instead of a blank `AssertionError`.
 Introspected annotations can be disabled per session, restoring CPython's empty
 message for bare asserts. This does not remove Monty's other exception
 constructor differences: with annotations disabled, an explicit assert message
-must still be a string; see [exceptions](exceptions.md). The retained repr
+must still be a string; see ./exceptions.md. The retained repr
 length can also be customized (an int >= 1, in bytes; 0 means "off", not
 "retain no bytes"):
 

@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use monty_types::DEFAULT_MAX_RECURSION_DEPTH;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 
 /// Extracts resource limits from a Python dict.
@@ -17,44 +16,65 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 /// (except `max_recursion_depth` which defaults to 1000).
 ///
 /// Raises `TypeError` if a value is present but has the wrong type.
-/// Raises `ValueError` if `max_duration_secs` is not a valid duration value.
+/// Raises `ValueError` if the dict contains an unknown key — limits are a
+/// security surface, so a misspelled key (e.g. `max_memroy`) must not silently
+/// run without the intended cap — or if `max_duration_secs` is not a valid
+/// duration value.
 pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::ResourceLimits> {
-    let max_duration_secs = extract_optional_f64(dict, "max_duration_secs")?;
-    let max_memory = extract_optional_usize(dict, "max_memory")?;
-    let gc_interval = extract_optional_usize(dict, "gc_interval")?;
-    let max_recursion_depth =
-        extract_optional_usize(dict, "max_recursion_depth")?.or(Some(DEFAULT_MAX_RECURSION_DEPTH));
-
-    let mut limits = monty_types::ResourceLimits::new().max_recursion_depth(max_recursion_depth);
-
-    if let Some(secs) = max_duration_secs {
-        limits = limits
-            .max_duration(Duration::try_from_secs_f64(secs).map_err(|err| PyValueError::new_err(err.to_string()))?);
+    let mut limits = monty_types::ResourceLimits::default();
+    // Keys parse into `LimitKey` and values are read from the same entry, so
+    // validation and extraction share one path — no re-lookup that a `str`
+    // subclass with a custom `__hash__` could dodge.
+    for (key, value) in dict.iter() {
+        let key: LimitKey = key.extract()?;
+        if value.is_none() {
+            // An explicit `None` disables the limit, like an absent key.
+            continue;
+        }
+        limits = match key {
+            LimitKey::MaxDurationSecs => {
+                let d = Duration::try_from_secs_f64(value.extract()?)
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                limits.max_duration(d)
+            }
+            LimitKey::MaxMemory => limits.max_memory(value.extract()?),
+            LimitKey::GcInterval => limits.gc_interval(value.extract()?),
+            LimitKey::MaxRecursionDepth => limits.max_recursion_depth(value.extract()?),
+        };
     }
-    if let Some(max) = max_memory {
-        limits = limits.max_memory(max);
-    }
-    if let Some(interval) = gc_interval {
-        limits = limits.gc_interval(interval);
-    }
-
     Ok(limits)
 }
 
-/// Extracts an optional usize from a dict, raising `TypeError` if the value has the wrong type.
-fn extract_optional_usize(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<usize>> {
-    match dict.get_item(key)? {
-        None => Ok(None),
-        Some(value) if value.is_none() => Ok(None),
-        Some(value) => Ok(Some(value.extract()?)),
-    }
+/// One recognized `limits` key. Anything else fails extraction with a
+/// `ValueError`, so a typo can't silently run without the intended cap.
+#[derive(Clone, Copy)]
+enum LimitKey {
+    MaxDurationSecs,
+    MaxMemory,
+    GcInterval,
+    MaxRecursionDepth,
 }
 
-/// Extracts an optional f64 from a dict, raising `TypeError` if the value has the wrong type.
-fn extract_optional_f64(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<f64>> {
-    match dict.get_item(key)? {
-        None => Ok(None),
-        Some(value) if value.is_none() => Ok(None),
-        Some(value) => Ok(Some(value.extract()?)),
+impl<'a, 'py> FromPyObject<'a, 'py> for LimitKey {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        match ob.extract::<&str>().unwrap_or_default() {
+            "max_duration_secs" => Ok(Self::MaxDurationSecs),
+            "max_memory" => Ok(Self::MaxMemory),
+            "gc_interval" => Ok(Self::GcInterval),
+            "max_recursion_depth" => Ok(Self::MaxRecursionDepth),
+            _ => {
+                // `repr()` runs user `__repr__`, which may itself raise — fall
+                // back so the promised `ValueError` is raised for every unknown key.
+                let key_repr = ob
+                    .repr()
+                    .map_or_else(|_| "<unprintable key>".to_owned(), |r| r.to_string());
+                Err(PyValueError::new_err(format!(
+                    "unknown limits key {key_repr}; accepted keys are 'max_duration_secs', \
+                     'max_memory', 'gc_interval', 'max_recursion_depth'"
+                )))
+            }
+        }
     }
 }

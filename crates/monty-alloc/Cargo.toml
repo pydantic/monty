@@ -1,0 +1,29 @@
+[package]
+name = "monty-alloc"
+readme = "README.md"
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = "Global allocator enforcing a Monty worker's hard memory ceiling."
+keywords = { workspace = true }
+categories = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[lib]
+name = "monty_alloc"
+
+[dependencies]
+monty-types = { workspace = true }
+
+[features]
+# Report a breach by exiting with `monty_types::OOM_EXIT_CODE` rather than
+# aborting. For a worker whose host reads a process exit status and classifies
+# it (the subprocess pool); without it a breach aborts, which is all a wasm
+# module can do — see the crate docs.
+exit-code = []
+
+[lints]
+workspace = true

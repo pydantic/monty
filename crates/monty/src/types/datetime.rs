@@ -7,13 +7,12 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem,
 };
 
 use chrono::{
     Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
 };
-use monty_types::{MontyTimeZone, OsFunctionCall, ResourceError, ResourceTracker};
+use monty_types::{MontyTimeZone, OsFunctionCall};
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -21,13 +20,13 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     types::{
         AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
         date::{self, StrftimeArgs},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
-        timedelta, timezone,
+        time, timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -89,7 +88,7 @@ pub(crate) fn from_components(
     microsecond: i32,
     tzinfo: Option<TimeZone>,
     tzinfo_ref: Option<HeapId>,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &mut Heap,
 ) -> RunResult<DateTime> {
     if !(0..=23).contains(&hour) {
         return Err(SimpleException::new_msg(ExcType::ValueError, format!("hour must be in 0..23, not {hour}")).into());
@@ -149,7 +148,7 @@ pub(crate) fn from_components(
         }
     }
 
-    attach_or_allocate_tzinfo_ref(&mut datetime, tzinfo_ref, heap)?;
+    attach_or_allocate_tzinfo_ref(&mut datetime, tzinfo_ref, heap);
     Ok(datetime)
 }
 
@@ -194,7 +193,7 @@ pub(crate) fn to_components(datetime: &DateTime) -> Option<(i32, u8, u8, u8, u8,
 }
 
 /// Constructor for `datetime(...)`.
-pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let DatetimeInitArgs {
         year,
         month,
@@ -219,7 +218,7 @@ pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
 
     let (tz, tz_ref) = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
     let dt = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, vm.heap)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
 }
 
 /// Argument shape for `datetime(year, month, day, hour=0, minute=0, second=0,
@@ -259,7 +258,7 @@ struct DatetimeInitArgs {
 /// `DateTimeNow` OS call carrying the tz argument as a typed
 /// [`Option<MontyTimeZone>`] — validated here, so the call can never carry an
 /// arbitrary object.
-pub(crate) fn class_now(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
+pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<AttrCallResult> {
     let NowArgs { tz } = NowArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
     let tz = tzinfo_from_value(tz, vm.heap, vm.interns)?.0.map(|tz| MontyTimeZone {
@@ -287,11 +286,7 @@ struct NowArgs {
 /// Parses a date/time string using the given format. Delegates to chrono's
 /// `NaiveDateTime::parse_from_str`, expanding Python `%f` directives into the
 /// chrono widths needed to accept 1 through 6 fractional digits.
-pub(crate) fn class_strptime(
-    heap: &mut Heap<impl ResourceTracker>,
-    args: ArgValues,
-    interns: &Interns,
-) -> RunResult<Value> {
+pub(crate) fn class_strptime(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let (date_string_val, format_val) = args.get_two_args("datetime.strptime", heap)?;
 
     let date_string = date::extract_str_arg(&date_string_val, "strptime", heap, interns);
@@ -322,7 +317,7 @@ pub(crate) fn class_strptime(
         timezone_name: None,
         tzinfo_ref: None,
     };
-    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))?))
+    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
 }
 
 /// Classmethod `datetime.fromisoformat(date_string)`.
@@ -333,11 +328,7 @@ pub(crate) fn class_strptime(
 /// - `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD HH:MM:SS`
 /// - `YYYY-MM-DDTHH:MM:SS.ffffff`
 /// - Any of the above with `+HH:MM` or `+HH:MM:SS` timezone suffix
-pub(crate) fn class_fromisoformat(
-    heap: &mut Heap<impl ResourceTracker>,
-    args: ArgValues,
-    interns: &Interns,
-) -> RunResult<Value> {
+pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let value = args.get_one_arg("datetime.fromisoformat", heap)?;
     let s = date::extract_str_arg(&value, "fromisoformat", heap, interns);
     value.drop_with(heap);
@@ -346,7 +337,7 @@ pub(crate) fn class_fromisoformat(
     let dt = parse_iso_datetime(&s, heap)
         .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;
 
-    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))?))
+    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
 }
 
 /// Parses an ISO 8601 datetime string into a `DateTime`.
@@ -354,7 +345,7 @@ pub(crate) fn class_fromisoformat(
 /// Uses speedate's RFC 3339 parser for Python-compatible ISO 8601 parsing (the
 /// same parser used by pydantic). Falls back to date-only parsing for bare
 /// `YYYY-MM-DD` inputs.
-fn parse_iso_datetime(s: &str, heap: &mut Heap<impl ResourceTracker>) -> Option<DateTime> {
+fn parse_iso_datetime(s: &str, heap: &mut Heap) -> Option<DateTime> {
     let bytes = s.as_bytes();
 
     // Try full datetime first, then fall back to date-only (defaults to midnight)
@@ -460,98 +451,73 @@ fn chrono_strptime_formats(fmt: &str) -> Vec<String> {
 }
 
 /// `datetime + timedelta`
-pub(crate) fn py_add(
-    datetime: &DateTime,
-    delta: &TimeDelta,
-    heap: &mut Heap<impl ResourceTracker>,
-) -> Result<Option<Value>, ResourceError> {
+pub(crate) fn py_add(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> Option<Value> {
     let chrono_delta = timedelta::chrono_delta(delta);
 
     let next = if let Some(offset) = datetime.offset_seconds {
-        let Some(utc) = to_utc_naive(datetime) else {
-            return Ok(None);
-        };
-        let Some(next_utc) = utc.checked_add_signed(chrono_delta) else {
-            return Ok(None);
-        };
+        let utc = to_utc_naive(datetime)?;
+        let next_utc = utc.checked_add_signed(chrono_delta)?;
         from_utc_naive_with_timezone_parts(next_utc, offset, datetime.timezone_name.clone())
     } else {
-        let Some(next_local) = datetime.naive.checked_add_signed(chrono_delta) else {
-            return Ok(None);
-        };
+        let next_local = datetime.naive.checked_add_signed(chrono_delta)?;
         from_local_naive(next_local)
     };
 
-    let Some(mut next) = next else {
-        return Ok(None);
-    };
-    attach_or_allocate_tzinfo_ref(&mut next, datetime.tzinfo_ref, heap)?;
-    Ok(Some(Value::Ref(heap.allocate(HeapData::DateTime(next))?)))
+    let mut next = next?;
+    attach_or_allocate_tzinfo_ref(&mut next, datetime.tzinfo_ref, heap);
+    Some(Value::Ref(heap.allocate(HeapData::DateTime(next))))
 }
 
 /// `datetime - timedelta`
-pub(crate) fn py_sub_timedelta(
-    datetime: &DateTime,
-    delta: &TimeDelta,
-    heap: &mut Heap<impl ResourceTracker>,
-) -> Result<Option<Value>, ResourceError> {
+pub(crate) fn py_sub_timedelta(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> Option<Value> {
     let chrono_delta = timedelta::chrono_delta(delta);
 
     let next = if let Some(offset) = datetime.offset_seconds {
-        let Some(utc) = to_utc_naive(datetime) else {
-            return Ok(None);
-        };
-        let Some(next_utc) = utc.checked_sub_signed(chrono_delta) else {
-            return Ok(None);
-        };
+        let utc = to_utc_naive(datetime)?;
+        let next_utc = utc.checked_sub_signed(chrono_delta)?;
         from_utc_naive_with_timezone_parts(next_utc, offset, datetime.timezone_name.clone())
     } else {
-        let Some(next_local) = datetime.naive.checked_sub_signed(chrono_delta) else {
-            return Ok(None);
-        };
+        let next_local = datetime.naive.checked_sub_signed(chrono_delta)?;
         from_local_naive(next_local)
     };
 
-    let Some(mut next) = next else {
-        return Ok(None);
-    };
-    attach_or_allocate_tzinfo_ref(&mut next, datetime.tzinfo_ref, heap)?;
-    Ok(Some(Value::Ref(heap.allocate(HeapData::DateTime(next))?)))
+    let mut next = next?;
+    attach_or_allocate_tzinfo_ref(&mut next, datetime.tzinfo_ref, heap);
+    Some(Value::Ref(heap.allocate(HeapData::DateTime(next))))
 }
 
 /// `datetime - datetime` returns a timedelta with the difference.
 ///
-/// Both datetimes must be either aware or naive; mixing returns `Ok(None)`.
-pub(crate) fn py_sub_datetime(
-    a: &DateTime,
-    b: &DateTime,
-    heap: &mut Heap<impl ResourceTracker>,
-) -> Result<Option<Value>, ResourceError> {
+/// Both datetimes must be either aware or naive; mixing returns `None`.
+pub(crate) fn py_sub_datetime(a: &DateTime, b: &DateTime, heap: &mut Heap) -> Option<Value> {
     if is_aware(a) != is_aware(b) {
-        return Ok(None);
+        return None;
     }
 
     let diff = if is_aware(a) {
-        let Some(lhs_utc) = to_utc_naive(a) else {
-            return Ok(None);
-        };
-        let Some(rhs_utc) = to_utc_naive(b) else {
-            return Ok(None);
-        };
+        let lhs_utc = to_utc_naive(a)?;
+        let rhs_utc = to_utc_naive(b)?;
         lhs_utc.signed_duration_since(rhs_utc)
     } else {
         a.naive.signed_duration_since(b.naive)
     };
 
-    let Ok(delta) = timedelta::from_chrono(diff) else {
-        return Ok(None);
-    };
-    Ok(Some(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))?)))
+    let delta = timedelta::from_chrono(diff).ok()?;
+    Some(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))))
 }
 
-fn tzinfo_from_value(
+/// Validates a `tzinfo` argument and extracts its timezone data plus heap identity.
+///
+/// Returns `(None, None)` for `None` and `(Some(tz), Some(id))` for a `timezone`
+/// instance — the two are always both present or both absent, which is what lets
+/// callers keep "aware implies an attached tzinfo object" as an invariant. Any
+/// other type is rejected with CPython's wording. Shared with [`time`] so both
+/// constructors accept exactly the same tzinfo surface.
+///
+/// [`time`]: crate::types::time
+pub(crate) fn tzinfo_from_value(
     value: &Value,
-    heap: &Heap<impl ResourceTracker>,
+    heap: &Heap,
     interns: &Interns,
 ) -> RunResult<(Option<TimeZone>, Option<HeapId>)> {
     match value {
@@ -569,41 +535,35 @@ fn tzinfo_from_value(
 /// If `preferred_tzinfo_ref` is provided, it is retained and reused so identity
 /// semantics (`is`) match the input timezone object. Otherwise we allocate (or
 /// canonicalize to the UTC singleton) a timezone object once and reuse it.
-fn attach_or_allocate_tzinfo_ref(
-    datetime: &mut DateTime,
-    preferred_tzinfo_ref: Option<HeapId>,
-    heap: &mut Heap<impl ResourceTracker>,
-) -> Result<(), ResourceError> {
+fn attach_or_allocate_tzinfo_ref(datetime: &mut DateTime, preferred_tzinfo_ref: Option<HeapId>, heap: &mut Heap) {
     let Some(offset_seconds) = datetime.offset_seconds else {
         datetime.tzinfo_ref = None;
-        return Ok(());
+        return;
     };
 
     let tzinfo_ref = if let Some(tzinfo_ref) = preferred_tzinfo_ref {
         heap.inc_ref(tzinfo_ref);
         tzinfo_ref
     } else {
-        allocate_tzinfo_ref(offset_seconds, datetime.timezone_name.clone(), heap)?
+        allocate_tzinfo_ref(offset_seconds, datetime.timezone_name.clone(), heap)
     };
     datetime.tzinfo_ref = Some(tzinfo_ref);
-    Ok(())
 }
 
 /// Allocates a timezone object for datetime storage, canonicalizing UTC to the
 /// shared singleton object.
-fn allocate_tzinfo_ref(
-    offset_seconds: i32,
-    timezone_name: Option<String>,
-    heap: &mut Heap<impl ResourceTracker>,
-) -> Result<HeapId, ResourceError> {
+///
+/// Returns an *owned* reference, so the caller must hand it to a field that
+/// releases it (`DateTime::tzinfo_ref`, `Time::tzinfo_ref`).
+pub(crate) fn allocate_tzinfo_ref(offset_seconds: i32, timezone_name: Option<String>, heap: &mut Heap) -> HeapId {
     if offset_seconds == 0 && timezone_name.is_none() {
-        let utc = heap.get_timezone_utc()?;
+        let utc = heap.get_timezone_utc();
         defer_drop!(utc, heap);
         let Value::Ref(id) = utc else {
             unreachable!("timezone.utc must be heap-allocated");
         };
         heap.inc_ref(*id);
-        return Ok(*id);
+        return *id;
     }
     let tz = TimeZone {
         offset_seconds,
@@ -728,85 +688,7 @@ fn compute_timestamp(dt: &DateTime) -> f64 {
     secs as f64 + f64::from(micros) / 1_000_000.0
 }
 
-/// Parses keyword arguments for `datetime.replace()`.
-///
-/// Returns a new datetime value with replaced components.
-fn extract_datetime_replace_kwargs(
-    args: ArgValues,
-    dt: &DateTime,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<Value> {
-    let DatetimeReplaceArgs {
-        year,
-        month,
-        day,
-        hour,
-        minute,
-        second,
-        microsecond,
-        tzinfo,
-    } = DatetimeReplaceArgs::from_args(args, vm)?;
-
-    // `tzinfo` is `Some(v)` only when the caller actually passed the kwarg;
-    // absent → preserve existing tzinfo. When present, the inner `Value` owns
-    // the input ref and must be kept alive across `tzinfo_from_value` and
-    // `from_components` so the heap-allocated TimeZone isn't freed before
-    // `from_components` takes its own reference.
-    let (new_tz, new_tz_ref) = match tzinfo {
-        None => (timezone_info(dt), dt.tzinfo_ref),
-        Some(tzinfo_value) => {
-            defer_drop_mut!(tzinfo_value, vm);
-            tzinfo_from_value(tzinfo_value, vm.heap, vm.interns)?
-        }
-    };
-
-    let new_dt = from_components(
-        year.unwrap_or_else(|| dt.naive.date().year()),
-        month.unwrap_or_else(|| i32::try_from(dt.naive.date().month()).expect("month in 1..12")),
-        day.unwrap_or_else(|| i32::try_from(dt.naive.date().day()).expect("day in 1..31")),
-        hour.unwrap_or_else(|| i32::try_from(dt.naive.time().hour()).expect("hour in 0..23")),
-        minute.unwrap_or_else(|| i32::try_from(dt.naive.time().minute()).expect("minute in 0..59")),
-        second.unwrap_or_else(|| i32::try_from(dt.naive.time().second()).expect("second in 0..59")),
-        microsecond.unwrap_or_else(|| {
-            i32::try_from(dt.naive.and_utc().timestamp_subsec_micros()).expect("micros in 0..999999")
-        }),
-        new_tz,
-        new_tz_ref,
-        vm.heap,
-    )?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(new_dt))?))
-}
-
-/// Keyword arguments for `datetime.replace()`. All keyword-only; absent fields
-/// inherit the existing datetime component via `unwrap_or_else` at the call
-/// site. `tzinfo` uses `Option<Value>` to distinguish "kwarg absent" (preserve
-/// existing) from "tzinfo=None" (clear).
-#[derive(FromArgs)]
-#[from_args(name = "replace")]
-struct DatetimeReplaceArgs {
-    #[from_args(kw_only, default)]
-    year: Option<i32>,
-    #[from_args(kw_only, default)]
-    month: Option<i32>,
-    #[from_args(kw_only, default)]
-    day: Option<i32>,
-    #[from_args(kw_only, default)]
-    hour: Option<i32>,
-    #[from_args(kw_only, default)]
-    minute: Option<i32>,
-    #[from_args(kw_only, default)]
-    second: Option<i32>,
-    #[from_args(kw_only, default)]
-    microsecond: Option<i32>,
-    #[from_args(kw_only, default)]
-    tzinfo: Option<Value>,
-}
-
 impl HeapItem for DateTime {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.timezone_name.as_ref().map_or(0, String::len)
-    }
-
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         if let Some(tzinfo_ref) = self.tzinfo_ref {
             stack.push(tzinfo_ref);
@@ -816,16 +698,16 @@ impl HeapItem for DateTime {
 
 /// `HeapRead`-based dispatch for `DateTime`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident datetimes.
-impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::DateTime
     }
 
-    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::DateTime(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -840,13 +722,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         }))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
         if is_aware(a) != is_aware(b) {
@@ -861,16 +743,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(CmpOrder::Ordered(local_micros(a).cmp(&local_micros(b))))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        true
+    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(true)
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let dt = self.get(vm.heap);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
             f.write_str("datetime.datetime(<out of range>)")?;
@@ -900,10 +777,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let dt = self.get(vm.heap);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
-            return Ok(allocate_string("<out of range>", vm.heap)?);
+            return Ok(allocate_string("<out of range>", vm.heap));
         };
         let mut s = format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}");
         if microsecond != 0 {
@@ -912,33 +789,49 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         if let Some(offset) = offset_seconds(dt) {
             s.push_str(&timezone::format_offset_hms(offset));
         }
-        Ok(allocate_string(s, vm.heap)?)
+        Ok(allocate_string(s, vm.heap))
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        let value = self.get(vm.heap).clone();
+        let other = *other.get(vm.heap);
+        Ok(py_add(&value, &other, vm.heap))
+    }
+
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::DateTime(other)) => {
+                let value = self.get(vm.heap).clone();
+                let other = other.get(vm.heap).clone();
+                Ok(py_sub_datetime(&value, &other, vm.heap))
+            }
+            Some(HeapReadOutput::TimeDelta(other)) => {
+                let value = self.get(vm.heap).clone();
+                let other = *other.get(vm.heap);
+                Ok(py_sub_timedelta(&value, &other, vm.heap))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let dt = self.get(vm.heap).clone();
         match attr.string_id() {
             Some(id) if id == StaticStrings::Isoformat => {
                 args.check_zero_args("datetime.isoformat", vm.heap)?;
                 let s = format_isoformat(&dt, 'T');
-                Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)?))
+                Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)))
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 defer_drop!(format, vm);
                 let formatted = format_datetime_strftime(&dt, format.as_str(vm))?;
-                Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
+                Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
             }
-            Some(id) if id == StaticStrings::Replace => {
-                let result = extract_datetime_replace_kwargs(args, &dt, vm)?;
-                Ok(CallResult::Value(result))
-            }
+            Some(id) if id == StaticStrings::Replace => Ok(CallResult::Value(self.replace(vm, args)?)),
             Some(id) if id == StaticStrings::Weekday => {
                 args.check_zero_args("datetime.weekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
@@ -958,7 +851,29 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
                     i32::try_from(dt.naive.date().month()).expect("month in 1..12"),
                     i32::try_from(dt.naive.date().day()).expect("day in 1..31"),
                 )?;
-                Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(d))?)))
+                Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(d)))))
+            }
+            Some(id) if id == StaticStrings::Time || id == StaticStrings::Timetz => {
+                // `time()` drops the timezone, `timetz()` keeps it — the only
+                // difference between the two in CPython.
+                let keep_tz = id == StaticStrings::Timetz;
+                args.check_zero_args(if keep_tz { "datetime.timetz" } else { "datetime.time" }, vm.heap)?;
+                // Owned, so it must be released whether or not the time attaches it.
+                let tzinfo = if keep_tz { self.tzinfo_value(vm) } else { Value::None };
+                defer_drop!(tzinfo, vm);
+                let naive = dt.naive.time();
+                let micros = i32::try_from(dt.naive.and_utc().timestamp_subsec_micros())
+                    .expect("microsecond is always in 0..=999_999");
+                Ok(CallResult::Value(time::allocate(
+                    vm,
+                    i32::try_from(naive.hour()).expect("hour is always in 0..=23"),
+                    i32::try_from(naive.minute()).expect("minute is always in 0..=59"),
+                    i32::try_from(naive.second()).expect("second is always in 0..=59"),
+                    micros,
+                    // `DateTime` does not store `fold`, so the time is always unfolded.
+                    0,
+                    tzinfo,
+                )?))
             }
             Some(id) if id == StaticStrings::Timestamp => {
                 args.check_zero_args("datetime.timestamp", vm.heap)?;
@@ -969,48 +884,133 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
-        // Clone to release the HeapRead borrow before accessing attributes
-        // that may need to allocate (e.g. tzinfo).
-        let dt = self.get(vm.heap).clone();
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        // Read only the field being asked for: cloning the whole `DateTime` would
+        // copy the timezone name's `String` on every `dt.year`.
+        let int_attr = |value: u32| Ok(Some(CallResult::Value(Value::Int(i64::from(value)))));
         match attr.string_id() {
-            Some(id) if id == StaticStrings::Year => {
-                Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().year())))))
-            }
-            Some(id) if id == StaticStrings::Month => {
-                Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().month())))))
-            }
-            Some(id) if id == StaticStrings::Day => {
-                Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().day())))))
-            }
-            Some(id) if id == StaticStrings::Hour => {
-                Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().hour())))))
-            }
-            Some(id) if id == StaticStrings::Minute => {
-                Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().minute())))))
-            }
-            Some(id) if id == StaticStrings::Second => {
-                Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.time().second())))))
-            }
-            Some(id) if id == StaticStrings::Microsecond => Ok(Some(CallResult::Value(Value::Int(i64::from(
-                dt.naive.and_utc().timestamp_subsec_micros(),
+            Some(id) if id == StaticStrings::Year => Ok(Some(CallResult::Value(Value::Int(i64::from(
+                self.get(vm.heap).naive.date().year(),
             ))))),
-            Some(id) if id == StaticStrings::Tzinfo => {
-                if let Some(tzinfo_ref) = dt.tzinfo_ref {
-                    vm.heap.inc_ref(tzinfo_ref);
-                    return Ok(Some(CallResult::Value(Value::Ref(tzinfo_ref))));
-                }
-                if let Some(tz) = timezone_info(&dt) {
-                    if tz.offset_seconds == 0 && tz.name.is_none() {
-                        return Ok(Some(CallResult::Value(vm.heap.get_timezone_utc()?)));
-                    }
-                    return Ok(Some(CallResult::Value(Value::Ref(
-                        vm.heap.allocate(HeapData::TimeZone(tz))?,
-                    ))));
-                }
-                Ok(Some(CallResult::Value(Value::None)))
+            Some(id) if id == StaticStrings::Month => int_attr(self.get(vm.heap).naive.date().month()),
+            Some(id) if id == StaticStrings::Day => int_attr(self.get(vm.heap).naive.date().day()),
+            Some(id) if id == StaticStrings::Hour => int_attr(self.get(vm.heap).naive.time().hour()),
+            Some(id) if id == StaticStrings::Minute => int_attr(self.get(vm.heap).naive.time().minute()),
+            Some(id) if id == StaticStrings::Second => int_attr(self.get(vm.heap).naive.time().second()),
+            Some(id) if id == StaticStrings::Microsecond => {
+                int_attr(self.get(vm.heap).naive.and_utc().timestamp_subsec_micros())
             }
+            Some(id) if id == StaticStrings::Tzinfo => Ok(Some(CallResult::Value(self.tzinfo_value(vm)))),
             _ => Ok(None),
         }
     }
+}
+
+/// Datetime behaviour that needs both the object and the VM, so it cannot be
+/// expressed as a plain function over [`DateTime`].
+impl<'h> HeapObjectRead<'h, DateTime> {
+    /// The `tzinfo` of a datetime as an owned value, or `Value::None` if it is naive.
+    ///
+    /// Prefers the retained object so `dt.tzinfo is tz` holds and repeated access
+    /// returns one object. A datetime that has an offset but no retained reference —
+    /// `tzinfo_ref` is absent from dumps written before it existed — rebuilds an equal
+    /// `timezone` instead of reporting itself naive.
+    fn tzinfo_value(&self, vm: &mut VM<'h>) -> Value {
+        // Read both branches' inputs before the borrow ends: the rebuild path
+        // needs `&mut Heap` for `get_timezone_utc` and `allocate`.
+        let dt = self.get(vm.heap);
+        let retained = dt.tzinfo_ref;
+        let rebuilt = retained.is_none().then(|| timezone_info(dt)).flatten();
+
+        if let Some(tzinfo_ref) = retained {
+            vm.heap.inc_ref(tzinfo_ref);
+            Value::Ref(tzinfo_ref)
+        } else {
+            match rebuilt {
+                Some(tz) if tz.offset_seconds == 0 && tz.name.is_none() => vm.heap.get_timezone_utc(),
+                Some(tz) => Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))),
+                None => Value::None,
+            }
+        }
+    }
+
+    /// `datetime.replace(...)` — a copy with the named components substituted.
+    ///
+    /// Every field the caller omits is carried over, the `tzinfo` object identity
+    /// included. Components are validated by [`from_components`], exactly as the
+    /// constructor validates them.
+    fn replace(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
+        // `NaiveDateTime` is `Copy` and the zone is taken by value, so the heap
+        // borrow ends before `from_args` needs `&mut VM`. The carried-over
+        // `tzinfo_ref` is borrowed, kept valid by this read handle until
+        // `from_components` takes its own reference.
+        let dt = self.get(vm.heap);
+        let naive = dt.naive;
+        let (current_tz, current_tz_ref) = (timezone_info(dt), dt.tzinfo_ref);
+
+        let DatetimeReplaceArgs {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            microsecond,
+            tzinfo,
+        } = DatetimeReplaceArgs::from_args(args, vm)?;
+
+        // `tzinfo` is `Some(v)` only when the caller actually passed the kwarg;
+        // absent → preserve existing tzinfo. When present, the inner `Value` owns
+        // the input ref and must be kept alive across `tzinfo_from_value` and
+        // `from_components` so the heap-allocated TimeZone isn't freed before
+        // `from_components` takes its own reference.
+        let (new_tz, new_tz_ref) = match tzinfo {
+            None => (current_tz, current_tz_ref),
+            Some(tzinfo_value) => {
+                defer_drop_mut!(tzinfo_value, vm);
+                tzinfo_from_value(tzinfo_value, vm.heap, vm.interns)?
+            }
+        };
+
+        let new_dt = from_components(
+            year.unwrap_or_else(|| naive.date().year()),
+            month.unwrap_or_else(|| i32::try_from(naive.date().month()).expect("month in 1..12")),
+            day.unwrap_or_else(|| i32::try_from(naive.date().day()).expect("day in 1..31")),
+            hour.unwrap_or_else(|| i32::try_from(naive.time().hour()).expect("hour in 0..23")),
+            minute.unwrap_or_else(|| i32::try_from(naive.time().minute()).expect("minute in 0..59")),
+            second.unwrap_or_else(|| i32::try_from(naive.time().second()).expect("second in 0..59")),
+            microsecond.unwrap_or_else(|| {
+                i32::try_from(naive.and_utc().timestamp_subsec_micros()).expect("micros in 0..999999")
+            }),
+            new_tz,
+            new_tz_ref,
+            vm.heap,
+        )?;
+        Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(new_dt))))
+    }
+}
+
+/// Keyword arguments for `datetime.replace()`. All keyword-only; absent fields
+/// inherit the existing datetime component via `unwrap_or_else` at the call
+/// site. `tzinfo` uses `Option<Value>` to distinguish "kwarg absent" (preserve
+/// existing) from "tzinfo=None" (clear).
+#[derive(FromArgs)]
+#[from_args(name = "replace")]
+struct DatetimeReplaceArgs {
+    #[from_args(kw_only, default)]
+    year: Option<i32>,
+    #[from_args(kw_only, default)]
+    month: Option<i32>,
+    #[from_args(kw_only, default)]
+    day: Option<i32>,
+    #[from_args(kw_only, default)]
+    hour: Option<i32>,
+    #[from_args(kw_only, default)]
+    minute: Option<i32>,
+    #[from_args(kw_only, default)]
+    second: Option<i32>,
+    #[from_args(kw_only, default)]
+    microsecond: Option<i32>,
+    #[from_args(kw_only, default)]
+    tzinfo: Option<Value>,
 }

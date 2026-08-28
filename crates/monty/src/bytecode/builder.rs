@@ -4,7 +4,7 @@
 //! forward jumps with patching, and tracking source locations for tracebacks.
 
 use super::{
-    code::{Code, ConstPool, ExceptionEntry, LocationEntry},
+    code::{Code, ConstPool, ExceptionEntry, HandlerKind, LocationEntry},
     compiler::CompileError,
     op::{Opcode, Operand},
 };
@@ -306,6 +306,12 @@ impl CodeBuilder {
         Offset(self.bytecode.len())
     }
 
+    /// Returns the current source position for compile-time diagnostics.
+    #[must_use]
+    pub fn current_position(&self) -> CodeRange {
+        self.current_location.unwrap_or_default()
+    }
+
     /// Returns a `JumpTarget` capturing both the current bytecode position and
     /// the stack depth at that position.
     #[must_use]
@@ -408,11 +414,12 @@ impl CodeBuilder {
         handler: Offset,
         stack_depth: u16,
         exception_stack_count: u16,
+        kind: HandlerKind,
     ) -> Result<(), CompileError> {
         let start = start.as_u32().ok_or_else(|| self.bytecode_too_large())?;
         let end = end.as_u32().ok_or_else(|| self.bytecode_too_large())?;
         let handler = handler.as_u32().ok_or_else(|| self.bytecode_too_large())?;
-        let entry = ExceptionEntry::new(start, end, handler, stack_depth, exception_stack_count);
+        let entry = ExceptionEntry::new(start, end, handler, stack_depth, exception_stack_count, kind);
         self.exception_table.push(entry);
         Ok(())
     }

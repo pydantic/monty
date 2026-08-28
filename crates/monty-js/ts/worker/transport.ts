@@ -14,9 +14,14 @@
 // string is a follow-up); mounts are rejected (no host filesystem in a worker).
 
 import type { NativeException, NativeFrame, NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
-import { type AssertMessageAnnotations, encodeAssertMessageAnnotations } from '../options.js'
+import {
+  type AssertMessageAnnotations,
+  type TypeCheckFormat,
+  encodeAssertMessageAnnotations,
+  encodeTypeCheckFormat,
+} from '../options.js'
 import type { Dispatcher } from './host.js'
-import { Reader, Wire, Writer, deframe, frame } from './proto.js'
+import { PROTOCOL_VERSION, Reader, Wire, Writer, deframe, frame } from './proto.js'
 import { decodeMontyObject, decodeTimeZone, encodeMontyObject } from './value.js'
 
 type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
@@ -35,6 +40,10 @@ export interface WorkerSessionConfig {
   limits?: ResourceLimits
   typeCheck?: boolean
   typeCheckStubs?: string
+  /** How typing diagnostics are rendered by the worker (default `'full'`). */
+  typeCheckFormat?: TypeCheckFormat
+  /** Render typing diagnostics with ANSI colour escapes (default false). */
+  typeCheckColor?: boolean
   /**
    * Give failed `assert`s introspected messages. Absent/true means the
    * child's default (a 120-byte operand-repr truncation), false turns them
@@ -69,6 +78,8 @@ const Ev = {
   DumpResult: 9,
   Ok: 10,
   FatalError: 11,
+  // 12 (ShutdownDump) is only ever fabricated by a serving relay, never by a
+  // worker, so this transport has no arm for it.
 }
 
 export class WorkerTransport {
@@ -94,19 +105,25 @@ export class WorkerTransport {
 
   private constructor(private readonly dispatcher: Dispatcher) {}
 
-  /** Creates the REPL session (`ReplCreate`) and returns the ready transport. */
+  /** Creates the REPL session (`Configure`) and returns the ready transport. */
   static async create(dispatcher: Dispatcher, config: WorkerSessionConfig = {}): Promise<WorkerTransport> {
     const transport = new WorkerTransport(dispatcher)
     const create = new Writer()
-    create.string(1, config.scriptName ?? 'main.py') // ReplCreate.script_name
-    if (config.limits) create.lengthDelimited(2, encodeLimits(config.limits)) // ReplCreate.limits
-    if (config.typeCheck) create.bool(3, true) // ReplCreate.type_check
-    if (config.typeCheckStubs !== undefined) create.string(4, config.typeCheckStubs) // ReplCreate.type_check_stubs
+    create.string(1, config.scriptName ?? 'main.py') // Configure.script_name
+    if (config.limits) create.lengthDelimited(2, encodeLimits(config.limits)) // Configure.limits
+    if (config.typeCheck) create.bool(3, true) // Configure.type_check
+    if (config.typeCheckStubs !== undefined) create.string(4, config.typeCheckStubs) // Configure.type_check_stubs
     // Configure.assert_message_annotations (field 6, optional uint32):
     // absent = child default (on, 120-byte truncation), 0 = off, n = custom.
     const assertAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
     if (assertAnnotations !== undefined) create.uint(6, assertAnnotations)
-    await transport.control(Req.ReplCreate, create.finish(), Ev.Ok, 'ReplCreate')
+    // Configure.type_check_format (field 7, enum) and .type_check_color (8).
+    if (config.typeCheckFormat !== undefined) create.uint(7, encodeTypeCheckFormat(config.typeCheckFormat))
+    if (config.typeCheckColor) create.bool(8, true)
+    // Configure.protocol_version (field 9): this codec is versioned with the
+    // schema, so the constant is compiled in rather than read from a build.
+    create.uint(9, PROTOCOL_VERSION)
+    await transport.control(Req.ReplCreate, create.finish(), Ev.Ok, 'Configure')
     return transport
   }
 
@@ -366,13 +383,23 @@ function decodeChildEvents(reply: Uint8Array): ChildEventFrame[] {
   return [...deframe(reply)].map(readChildEvent)
 }
 
-/** Extracts the single oneof kind (1..=11) from a `ChildEvent`, ignoring timing. */
+/**
+ * Extracts the oneof kind from a `ChildEvent`, ignoring the message-level
+ * timing/name fields. Tags 1-19 are reserved for oneof arms and the message's
+ * own fields start at 20 (see `monty.proto`), so this range needs no change
+ * when an arm is added. Mirrors prost's decode: the last arm wins, and an arm
+ * that is not a length-delimited message is rejected rather than surfaced
+ * with an empty payload.
+ */
 function readChildEvent(frameBytes: Uint8Array): ChildEventFrame {
   const reader = new Reader(frameBytes)
   let event: ChildEventFrame | null = null
   while (!reader.done) {
     const f = reader.next()
-    if (f.field >= 1 && f.field <= 11) event = { kind: f.field, bytes: f.bytes }
+    if (f.field >= 1 && f.field <= 19) {
+      if (f.wire !== Wire.LengthDelimited) throw new Error(`ChildEvent kind ${f.field} is not a message`)
+      event = { kind: f.field, bytes: f.bytes }
+    }
   }
   if (!event) throw new Error('ChildEvent carried no kind')
   return event

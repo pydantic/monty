@@ -468,6 +468,11 @@ assert '123hello'.isidentifier() == False
 assert 'hello world'.isidentifier() == False
 assert 'hello-world'.isidentifier() == False
 assert 'class'.isidentifier() == True  # isidentifier doesn't check keywords
+# Full Unicode XID: accented letters and combining marks count, not just ASCII.
+assert 'café'.isidentifier() == True
+assert 'á'.isidentifier() == True  # base letter + combining acute accent
+assert 'Ω'.isidentifier() == True
+assert '3'.isidentifier() == False
 
 # istitle()
 assert 'Hello World'.istitle() == True
@@ -527,6 +532,28 @@ assert 'a\tb\tc'.expandtabs(0) == 'abc'
 
 # expandtabs() with negative tabsize (treated as 0)
 assert '\thello'.expandtabs(-1) == 'hello'
+assert '\thello'.expandtabs(-(2**31)) == 'hello'
+
+# expandtabs() takes a C int, so a tabsize outside i32 overflows rather than
+# being accepted -- at every magnitude, and through __index__ too.
+for bad_tabsize in (2**31, 2**63, 10**30, -(2**31) - 1):
+    try:
+        '\thello'.expandtabs(bad_tabsize)
+        assert False, 'expected an out-of-range tabsize to overflow'
+    except OverflowError as e:
+        assert str(e) == 'Python int too large to convert to C int'
+
+
+class BigTabsize:
+    def __index__(self):
+        return 2**31
+
+
+try:
+    '\thello'.expandtabs(BigTabsize())
+    assert False, 'expected an out-of-range __index__ tabsize to overflow'
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C int'
 
 # expandtabs() with newlines resetting column
 assert 'a\tb\nc\td'.expandtabs(4) == 'a   b\nc   d'

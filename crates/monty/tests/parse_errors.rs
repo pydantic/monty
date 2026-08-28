@@ -47,15 +47,6 @@ fn class_inheritance_returns_not_implemented_error() {
 }
 
 #[test]
-fn function_decorators_return_not_implemented_error() {
-    // A top-level `def` decorator is rejected rather than silently ignored:
-    // silently dropping a decorator would change behaviour without warning.
-    let err = get_parse_err("@deco\ndef foo(): pass");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support function decorators");
-}
-
-#[test]
 fn class_var_walrus_returns_not_implemented_error() {
     // A walrus target in a class-variable value binds in the class body, so
     // CPython makes it a class member; Monty's namespace assembly would
@@ -425,6 +416,22 @@ fn deeply_nested_while_loops_exceed_limit() {
     let err = get_parse_err(code);
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
+}
+
+/// A loop's `else` suite is outside that loop for `break` and `continue`.
+#[test]
+fn control_flow_in_loop_else_requires_an_enclosing_loop() {
+    for (code, expected) in [
+        ("for x in []:\n    pass\nelse:\n    break", "'break' outside loop"),
+        (
+            "while False:\n    pass\nelse:\n    continue",
+            "'continue' not properly in loop",
+        ),
+    ] {
+        let err = get_parse_err(code);
+        assert_eq!(err.exc_type(), ExcType::SyntaxError);
+        assert_eq!(err.message().unwrap(), expected);
+    }
 }
 
 #[test]
@@ -813,6 +820,52 @@ fn moderate_bool_op_chain_within_limit() {
     }
     let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
     assert!(result.is_ok(), "moderate bool-op chain should succeed: {result:?}");
+}
+
+/// A flat-looking expression ruff parses without recursing, so only an explicit
+/// depth check stops a later recursive walk overflowing the host stack.
+fn deep_attribute_chain() -> String {
+    let mut chain = "a".to_owned();
+    for _ in 0..2_000 {
+        chain.push_str(".x");
+    }
+    chain
+}
+
+#[test]
+fn deeply_nested_class_annotation_exceeds_limit() {
+    // Stringized, never parsed, so `parse_expression`'s budget never sees it.
+    let code = format!("class C:\n    y: {}\n", deep_attribute_chain());
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
+}
+
+#[test]
+fn deeply_nested_class_var_value_exceeds_limit() {
+    // The class-scope walrus search walks the value before it is parsed.
+    let code = format!("class C:\n    y = {}\n", deep_attribute_chain());
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
+}
+
+#[test]
+fn deeply_nested_method_default_exceeds_limit() {
+    // Parameter defaults go through the same pre-parse walrus search.
+    let code = format!("class C:\n    def m(self, x={}): pass\n", deep_attribute_chain());
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
+}
+
+#[test]
+fn moderate_class_annotation_within_limit() {
+    // The new checks must not reject annotations of ordinary depth.
+    let code = "class C:\n    y: dict[str, list[int]]\n    z: a.b.c = 1\n\
+                assert C.__annotations__ == {'y': 'dict[str, list[int]]', 'z': 'a.b.c'}\n";
+    let result = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default());
+    assert!(result.is_ok(), "ordinary class annotations should compile: {result:?}");
 }
 
 #[test]

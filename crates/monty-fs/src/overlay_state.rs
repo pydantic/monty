@@ -4,15 +4,14 @@
 //! [`MountMode`](super::MountMode) definition so the public API stays easy to
 //! scan while the storage internals can evolve independently.
 
-use std::{
-    collections::BTreeMap,
-    fs, mem,
-    ops::Bound,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::{collections::BTreeMap, mem, ops::Bound};
 
-use super::{MountError, common::as_u64};
+use cap_std::fs::Dir;
+
+use super::{
+    MountError,
+    common::{as_u64, mtime_secs},
+};
 
 /// Conservative bookkeeping charge for each overlay map entry.
 ///
@@ -189,7 +188,7 @@ impl OverlayState {
 fn entry_memory_usage(relative_path: &str, entry: &OverlayEntry) -> u64 {
     let variable = match entry {
         OverlayEntry::File(file) => file.content.len(),
-        OverlayEntry::RealFileRef(file_ref) => file_ref.host_path.as_os_str().len(),
+        OverlayEntry::RealFileRef(file_ref) => file_ref.relative.len(),
         OverlayEntry::Directory { .. } | OverlayEntry::Deleted => 0,
     };
     base_entry_memory_usage(relative_path).saturating_add(as_u64(variable))
@@ -231,11 +230,15 @@ pub(super) struct OverlayFile {
     pub mtime: f64,
 }
 
-/// A lazy reference to a real host file preserved during overlay rename.
+/// A lazy reference to a real file preserved during overlay rename.
+///
+/// The path is *mount-relative*, so reads go back through the mount descriptor
+/// and cannot name anything outside the mount. Dereferences revalidate the path
+/// because a host actor can replace any component after capture.
 #[derive(Debug)]
 pub(super) struct OverlayFileRef {
-    /// Canonical host path for the original file contents.
-    pub host_path: PathBuf,
+    /// Path relative to the mount root.
+    pub relative: String,
     /// Modification time copied from the original file.
     pub mtime: f64,
     /// File size in bytes.
@@ -243,45 +246,17 @@ pub(super) struct OverlayFileRef {
 }
 
 impl OverlayFileRef {
-    /// Builds a lazy file reference from a host path if metadata can be read.
+    /// Builds a lazy reference only when the final component is a real file.
     ///
-    /// Uses `fs::metadata` which follows symlinks, so the size and mtime
-    /// reflect the target file. Use [`from_lstat`](Self::from_lstat) when
-    /// the path itself is a symlink that should be preserved as-is.
+    /// The no-follow lookup closes the caller's final-component race without
+    /// resolving a link whose target identity the overlay cannot preserve.
     #[must_use]
-    pub fn from_host_path(path: &Path) -> Option<Self> {
-        let metadata = fs::metadata(path).ok()?;
-        let mtime = metadata
-            .modified()
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0.0, |duration| duration.as_secs_f64());
-        let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
-        Some(Self {
-            host_path: path.to_path_buf(),
-            mtime,
-            size,
-        })
-    }
-
-    /// Builds a lazy file reference using `symlink_metadata` (lstat).
-    ///
-    /// Unlike [`from_host_path`](Self::from_host_path), this does not follow
-    /// symlinks. The stored `host_path` is the symlink itself, preserving
-    /// symlink identity across overlay renames.
-    #[must_use]
-    pub fn from_lstat(path: &Path) -> Option<Self> {
-        let metadata = fs::symlink_metadata(path).ok()?;
-        let mtime = metadata
-            .modified()
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0.0, |duration| duration.as_secs_f64());
-        let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
-        Some(Self {
-            host_path: path.to_path_buf(),
-            mtime,
-            size,
+    pub fn from_relative(dir: &Dir, relative: &str) -> Option<Self> {
+        let metadata = dir.symlink_metadata(relative).ok()?;
+        metadata.is_file().then(|| Self {
+            relative: relative.to_owned(),
+            mtime: mtime_secs(&metadata),
+            size: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
         })
     }
 }

@@ -17,8 +17,6 @@
 
 use std::borrow::Cow;
 
-use monty_types::ResourceTracker;
-
 use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -98,7 +96,7 @@ pub(crate) trait FromValue: Sized {
     /// Takes `&mut VM` so impls can both inspect the heap (for type coercion)
     /// and call `drop_with` on the input; this also lets `LaxBool` route
     /// through `PyTrait::py_bool`.
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail>;
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail>;
 
     /// The error for a [`FromValueFail::WrongType`] failure at a site with no
     /// `_PyArg_BadArgument` wording ([`ArgErrCtx::Plain`], `*args` elements).
@@ -144,12 +142,7 @@ pub(crate) trait FromValue: Sized {
     /// checks CPython performs *during* argument conversion; validation
     /// CPython does in the function body belongs in the body (see
     /// `NormForm::parse` in `unicodedata.rs`).
-    fn extract_into(
-        value: Value,
-        slot: &mut Option<Self>,
-        vm: &mut VM<'_, impl ResourceTracker>,
-        ctx: ArgErrCtx,
-    ) -> RunResult<()> {
+    fn extract_into(value: Value, slot: &mut Option<Self>, vm: &mut VM<'_>, ctx: ArgErrCtx) -> RunResult<()> {
         // Snapshot the incoming type's arg-error name before `from_value`
         // consumes the value — a `Type::Instance` cannot be named once the
         // value is dropped. Only impls that constrain their input (an
@@ -184,7 +177,7 @@ pub(crate) trait FromValue: Sized {
 }
 
 impl FromValue for Value {
-    fn from_value(value: Self, _vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail> {
+    fn from_value(value: Self, _vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
         Ok(value)
     }
 
@@ -196,7 +189,8 @@ impl FromValue for Value {
 impl FromValue for i32 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail> {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let value = resolve_index_dunder(value, vm)?;
         let result = match value {
             Value::Bool(b) => Ok(Self::from(b)),
             // Overflow is a *value* failure: the argument is a genuine int,
@@ -225,7 +219,8 @@ impl FromValue for i32 {
 impl FromValue for i64 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail> {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let value = resolve_index_dunder(value, vm)?;
         let result = match value {
             Value::Bool(b) => Ok(Self::from(b)),
             Value::Int(i) => Ok(i),
@@ -241,12 +236,33 @@ impl FromValue for i64 {
     }
 }
 
+/// Replaces a value with the `int` the `__index__` protocol produces, leaving
+/// anything not `__index__`-able untouched.
+///
+/// Runs before the fixed-width int impls match, so they only ever see real ints
+/// — the `PyNumber_Index` step CPython's `i`/`n` argument converters perform. An
+/// int answers with an equal int, and a class without `__index__` is returned
+/// unchanged, so the caller still reports its own `WrongType`.
+fn resolve_index_dunder(value: Value, vm: &mut VM<'_>) -> Result<Value, FromValueFail> {
+    match value.py_index_impl(vm) {
+        Ok(Some(index)) => {
+            value.drop_with(vm);
+            Ok(index)
+        }
+        Ok(None) => Ok(value),
+        Err(err) => {
+            value.drop_with(vm);
+            Err(FromValueFail::Raise(err))
+        }
+    }
+}
+
 /// True when `value` is a Python int wider than i64 (heap or interned
 /// `LongInt`). Such values are genuine ints, so fixed-width int impls
 /// must raise `OverflowError` rather than report `WrongType` — a bad-arg
 /// rewrite would produce the absurd "must be int, not int". Also used by
 /// consumer-specific int impls (e.g. `timedelta`'s component extraction).
-pub(crate) fn is_long_int(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+pub(crate) fn is_long_int(value: &Value, vm: &VM<'_>) -> bool {
     match value {
         Value::InternLongInt(_) => true,
         Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(_)),
@@ -257,7 +273,7 @@ pub(crate) fn is_long_int(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> b
 impl FromValue for bool {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("bool");
 
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail> {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
         let result = match value {
             Value::Bool(b) => Ok(b),
             _ => Err(FromValueFail::WrongType),
@@ -288,7 +304,7 @@ pub(crate) struct StrArg(Value);
 impl FromValue for StrArg {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("str");
 
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail> {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
         if value.is_str(vm.heap) {
             Ok(Self(value))
         } else {
@@ -305,7 +321,7 @@ impl FromValue for StrArg {
 impl StrArg {
     /// Borrows the text. Infallible: the constructor validated str-ness and a
     /// live value's type cannot change.
-    pub fn as_str<'a>(&'a self, vm: &'a VM<'_, impl ResourceTracker>) -> &'a str {
+    pub fn as_str<'a>(&'a self, vm: &'a VM<'_>) -> &'a str {
         match self.0.to_str(vm) {
             Ok(s) => s,
             Err(_) => unreachable!("StrArg always holds a str"),
@@ -337,7 +353,7 @@ impl<T: FromValue> FromValue for Option<T> {
     // `"str or None"` wording and should override at the field level.
     const EXPECTED_TYPE_NAME: Option<&'static str> = T::EXPECTED_TYPE_NAME;
 
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail> {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
         T::from_value(value, vm).map(Some)
     }
 
@@ -366,10 +382,10 @@ impl<T: FromValue> FromValue for Option<T> {
 pub(crate) struct LaxBool(bool);
 
 impl FromValue for LaxBool {
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail> {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
         let result = value.py_bool(vm);
         value.drop_with(vm);
-        Ok(Self(result))
+        result.map(Self).map_err(FromValueFail::Raise)
     }
 }
 

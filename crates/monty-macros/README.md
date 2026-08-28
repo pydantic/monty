@@ -64,9 +64,12 @@ looking at how the function is implemented in CPython:
 
 Style-derived behaviour that used to be separate flags: the C
 "… positional arguments …" overflow pivot turns on automatically for
-`style = c` structs with `kw_only` fields (CPython's `vgetargskeywords`
-behaves the same way), and `unpack` collapses to the exact-arity
-`expected N argument(s)` wording when no positional field has a default.
+`style = c` and `style = c_named` structs with `kw_only` fields (CPython's
+`vgetargskeywords` / `_PyArg_UnpackKeywords` behave the same way; the named
+variant additionally says `takes exactly N positional argument(s)` when every
+positional param is required, e.g. `os.stat`), and `unpack` collapses to the
+exact-arity `expected N argument(s)` wording when no positional field has a
+default.
 
 Since CPython's `def` binding never type-checks, `style = def` structs
 should declare fields as raw `Value` (or `StrArg`-in-body) and coerce in the

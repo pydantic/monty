@@ -1,13 +1,11 @@
 use std::{
     fmt::Write,
     hash::{DefaultHasher, Hash, Hasher},
-    mem,
 };
 
-use monty_types::ResourceTracker;
 use serde::ser::SerializeStruct;
 
-use super::{Dict, LazyHeapSet, PyTrait};
+use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -15,8 +13,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{
-        BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, HeapReadOutput, heap_read_ref_as_field,
-        heap_read_ref_as_field_mut,
+        BorrowedHeapRead, BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead,
+        HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::Interns,
     types::Type,
@@ -125,24 +123,16 @@ impl<'h> HeapRead<'h, Dataclass> {
     /// is a new attribute.
     ///
     /// Returns `FrozenInstanceError` if the dataclass is frozen.
-    pub fn set_attr(
-        &mut self,
-        name: Value,
-        value: Value,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
+    pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         if self.get(vm.heap).frozen {
-            // Build the error message from the field name's repr (a heap `str`
-            // `Value`), dropping that temporary before dropping our own args.
+            defer_drop!(name, vm);
+            value.drop_with(vm);
             let name_repr = name.py_repr(vm)?;
             defer_drop!(name_repr, vm);
             let exc = SimpleException::new_msg(
                 ExcType::FrozenInstanceError,
                 format!("cannot assign to field {}", name_repr.to_str(vm)?),
             );
-            // Drop the values we were given ownership of
-            name.drop_with(vm);
-            value.drop_with(vm);
             return Err(exc.into());
         }
         self.attrs_mut().set(name, value, vm)
@@ -157,17 +147,26 @@ impl<'h> HeapRead<'h, Dataclass> {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dataclass> {
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Dataclass
     }
 
-    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         // Dataclasses don't have a length
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let mut value_guard = DropGuard::new(value, vm);
+        let name = attribute_name_value(name, value_guard.ctx());
+        let (value, vm) = value_guard.into_parts();
+        let old_value = self.set_attr(name, value, vm)?;
+        old_value.drop_with(vm);
+        Ok(())
+    }
+
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Dataclass(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -181,7 +180,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
     /// Hashes a frozen dataclass by its class name and the values of declared fields.
     ///
     /// Mutable (non-frozen) dataclasses return `None` (unhashable).
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         // Only frozen (immutable) dataclasses are hashable
         if !self.get(vm.heap).frozen {
             return Ok(None);
@@ -190,7 +189,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         let vm = &mut *guard;
         let mut hasher = DefaultHasher::new();
         // Hash the class name
-        self.get(vm.heap).name.hash(&mut hasher);
+        self.get(vm.heap).name.as_str(vm.interns).hash(&mut hasher);
         // Hash each declared field (name, value) pair in order
         let field_count = self.get(vm.heap).field_names.len();
         for i in 0..field_count {
@@ -208,53 +207,24 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
         // Dataclass instances are always truthy (like Python objects)
-        true
+        Ok(true)
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
-        // Check depth limit before recursing
-        let Ok(mut guard) = vm.recursion_guard() else {
-            return Ok(f.write_str("...")?);
-        };
-        let vm = &mut *guard;
-
-        // Format: ClassName(field1=value1, field2=value2, ...)
-        // Only declared fields are shown, not dynamically added attributes
-        let dc = self.get(vm.heap);
-        f.write_str(dc.name(vm.interns))?;
-        f.write_char('(')?;
-
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        // Only declared fields are shown, not dynamically added attributes.
+        let name = self.get(vm.heap).name(vm.interns).to_owned();
         let field_count = self.get(vm.heap).field_names.len();
-        let interns = vm.interns;
-        for i in 0..field_count {
-            if i > 0 {
-                f.write_str(", ")?;
-            }
-            // Write field name
-            let field_name = &self.get(vm.heap).field_names[i];
-            f.write_str(field_name)?;
-            f.write_char('=')?;
-
-            // Look up value in attrs
-            if let Some(value) = self.get(vm.heap).attrs.get_by_str(field_name, vm.heap, interns) {
-                let value = value.clone_with_heap(vm.heap);
-                defer_drop!(value, vm);
-                value.py_repr_fmt(f, vm, heap_ids)?;
-            } else {
-                // Field not found - shouldn't happen for well-formed dataclasses
-                f.write_str("<?>")?;
-            }
-        }
-
-        f.write_char(')')?;
-        Ok(())
+        write_dataclass_repr(f, &name, field_count, vm, heap_ids, |i, vm| {
+            let dc = self.get(vm.heap);
+            let field_name = dc.field_names[i].clone();
+            let value = dc
+                .attrs
+                .get_by_str(&field_name, vm.heap, vm.interns)
+                .map(|v| v.clone_with_heap(vm.heap));
+            Ok((field_name, value))
+        })
     }
 
     /// Performs lazy method detection for dataclass instances.
@@ -264,13 +234,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
     /// Otherwise handles the call directly:
     /// - Attributes that exist in attrs but aren't callable produce `TypeError`
     /// - Private/dunder attributes that aren't in attrs produce `AttributeError`
-    fn py_call_attr(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
         // Only public methods (no underscore prefix = no dunders, no private)
         if !attr_str.starts_with('_')
@@ -282,8 +246,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         {
             // Clone self and prepend to args for the method call
             // inc_ref works even when data is taken out (refcount metadata is separate)
-            vm.heap.inc_ref(self_id);
-            let self_arg = Value::Ref(self_id);
+            let self_arg = self.clone_value(vm.heap);
             let args_with_self = args.prepend(self_arg);
             Ok(CallResult::MethodCall(attr.clone(), args_with_self))
         } else {
@@ -305,7 +268,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let attr_name = attr.as_str(vm.interns);
         match self.get(vm.heap).attrs.get_by_str(attr_name, vm.heap, vm.interns) {
             Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
@@ -315,14 +278,55 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
     }
 }
 
-impl HeapItem for Dataclass {
-    fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
-            + self.name.py_estimate_size()
-            + self.field_names.iter().map(String::len).sum::<usize>()
-            + self.attrs.py_estimate_size()
+/// Writes `ClassName(f1=v1, ...)`, shared by the host-supplied [`Dataclass`] and
+/// native `@dataclass` instances so the two renderings cannot drift.
+///
+/// Each caller supplies its own field list via `field`, mapping an index to that
+/// field's name and a cloned value (dropped here). A cycle renders `...`, a
+/// `None` value `<?>`, and exhausting `max_duration` truncates `...[timeout]`.
+///
+/// `field` is resolved immediately before that field is written, never all up
+/// front, so a `__repr__` that mutates a later field is observed — matching the
+/// left-to-right evaluation of CPython's generated f-string.
+pub(crate) fn write_dataclass_repr<'h>(
+    f: &mut impl Write,
+    name: &str,
+    field_count: usize,
+    vm: &mut VM<'h>,
+    heap_ids: &mut LazyHeapSet,
+    field: impl Fn(usize, &mut VM<'h>) -> RunResult<(String, Option<Value>)>,
+) -> RunResult<()> {
+    let Ok(mut guard) = vm.recursion_guard() else {
+        return Ok(f.write_str("...")?);
+    };
+    let vm = &mut *guard;
+    f.write_str(name)?;
+    f.write_char('(')?;
+    for i in 0..field_count {
+        if i > 0 {
+            // Same between-item checkpoint as sequence repr, so a wide dataclass
+            // cannot outrun `max_duration`.
+            if vm.heap.tracker.check_memory_time_every(i).is_err() {
+                f.write_str(", ...[timeout]")?;
+                break;
+            }
+            f.write_str(", ")?;
+        }
+        // Guarded before anything is written, so a formatter error on the name
+        // cannot strand the value the callback just cloned.
+        let (field_name, value) = field(i, &mut *vm)?;
+        defer_drop!(value, vm);
+        f.write_str(&field_name)?;
+        f.write_char('=')?;
+        match value {
+            Some(value) => value.py_repr_fmt(f, vm, heap_ids)?,
+            None => f.write_str("<?>")?,
+        }
     }
+    Ok(f.write_char(')')?)
+}
 
+impl HeapItem for Dataclass {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Delegate to the attrs Dict which handles all nested heap references
         self.attrs.py_dec_ref_ids(stack);

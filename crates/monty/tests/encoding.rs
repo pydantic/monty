@@ -146,8 +146,8 @@ fn unicode_error_data_survives_reraise() {
 }
 
 /// Objects larger than `UnicodeErrorData::MAX_OBJECT_LEN` produce no payload
-/// (hosts fall back to the message-only form) so a huge input can't be pinned
-/// in memory, outside the sandbox's resource tracker, by its exception.
+/// (hosts fall back to the message-only form) so a huge input can't be copied
+/// into and pinned by the host exception.
 #[test]
 fn unicode_error_data_omitted_for_huge_objects() {
     let exc = run_exc("(b'a' * 100_000 + b'\\xff').decode()");

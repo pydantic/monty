@@ -3,13 +3,12 @@
 //! This module exposes a minimal phase-1 surface:
 //! - `date`
 //! - `datetime`
+//! - `time`
 //! - `timedelta`
 //! - `timezone`
 //!
 //! Behavior for constructors, arithmetic, and classmethods is implemented by the
 //! corresponding runtime types.
-
-use monty_types::{ResourceError, ResourceTracker};
 
 use crate::{
     builtins::Builtins,
@@ -22,12 +21,10 @@ use crate::{
 
 /// Creates the `datetime` module and allocates it on the heap.
 ///
-/// Returns a `HeapId` pointing to the newly allocated module.
-///
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Datetime);
 
     module.set_attr(StaticStrings::Date, Value::Builtin(Builtins::Type(Type::Date)), vm);
@@ -36,6 +33,7 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
         Value::Builtin(Builtins::Type(Type::DateTime)),
         vm,
     );
+    module.set_attr(StaticStrings::Time, Value::Builtin(Builtins::Type(Type::Time)), vm);
     module.set_attr(
         StaticStrings::Timedelta,
         Value::Builtin(Builtins::Type(Type::TimeDelta)),
@@ -47,5 +45,5 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(Box::new(module)))
 }

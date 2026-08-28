@@ -1,6 +1,10 @@
 use std::io::{self, Read};
 
-use monty_proto::{FrameError, FrameReader, pb, write_frame};
+use monty_proto::{
+    FrameError, FrameReader, pb,
+    pb::{child_event::Kind as EventKind, parent_request::Kind as RequestKind},
+    write_frame,
+};
 
 /// A reader that returns at most one byte per `read` call, exercising the
 /// partial-read loop in the frame reader.
@@ -15,11 +19,12 @@ impl<R: Read> Read for OneByteReader<R> {
 
 fn feed() -> pb::ParentRequest {
     pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(RequestKind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
         })),
+        trace_parent: None,
     }
 }
 
@@ -30,7 +35,7 @@ fn frames_round_trip() {
     write_frame(
         &mut buf,
         &pb::ChildEvent {
-            kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+            kind: Some(EventKind::Ok(pb::Ok {})),
             ..Default::default()
         },
     )
@@ -40,7 +45,7 @@ fn frames_round_trip() {
     let req: pb::ParentRequest = reader.read().unwrap().expect("first frame");
     assert_eq!(req, feed());
     let event: pb::ChildEvent = reader.read().unwrap().expect("second frame");
-    assert!(matches!(event.kind, Some(pb::child_event::Kind::Ok(_))));
+    assert!(matches!(event.kind, Some(EventKind::Ok(_))));
     // clean EOF at the frame boundary
     assert!(reader.read::<pb::ChildEvent>().unwrap().is_none());
 }

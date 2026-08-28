@@ -7,8 +7,6 @@
 //! These markers exist so code that imports typing constructs works correctly,
 //! though Monty doesn't perform static type checking.
 
-use monty_types::{ResourceError, ResourceTracker};
-
 use crate::{
     bytecode::VM,
     heap::{HeapData, HeapId},
@@ -19,12 +17,10 @@ use crate::{
 
 /// Creates the `typing` module and allocates it on the heap.
 ///
-/// Returns a HeapId pointing to the newly allocated module.
-///
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Typing);
 
     // typing.TYPE_CHECKING - always False
@@ -35,7 +31,7 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
         module.set_attr(*ss, Value::Marker(Marker(*ss)), vm);
     }
 
-    vm.heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 
 /// Typing marker attributes exported by this module.

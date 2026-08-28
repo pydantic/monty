@@ -1,6 +1,6 @@
 {
   "name": "@pydantic/monty",
-  "version": "0.0.19",
+  "version": "0.0.21",
   "type": "module",
   "description": "Sandboxed Python interpreter running in crash-isolated subprocess workers",
   "main": "dist/index.js",
@@ -62,6 +62,7 @@
     "format": "prettier . -w",
     "lint": "oxlint .",
     "test": "vitest run",
+    "test:wasm": "vitest --config vitest.wasm.config.ts run",
     "test:browser": "vitest --config vitest.browser.config.ts run",
     "assemble-packages": "node scripts/assemble-packages.mjs",
     "create-platform-packages": "node scripts/create-platform-packages.mjs"
@@ -91,10 +92,10 @@
     "arrowParens": "always"
   },
   "optionalDependencies": {
-    "@pydantic/monty-darwin-x64": "0.0.19",
-    "@pydantic/monty-darwin-arm64": "0.0.19",
-    "@pydantic/monty-linux-x64-gnu": "0.0.19",
-    "@pydantic/monty-linux-arm64-gnu": "0.0.19",
-    "@pydantic/monty-win32-x64-msvc": "0.0.19"
+    "@pydantic/monty-darwin-x64": "0.0.21",
+    "@pydantic/monty-darwin-arm64": "0.0.21",
+    "@pydantic/monty-linux-x64-gnu": "0.0.21",
+    "@pydantic/monty-linux-arm64-gnu": "0.0.21",
+    "@pydantic/monty-win32-x64-msvc": "0.0.21"
   }
 }

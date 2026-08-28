@@ -103,7 +103,7 @@ _PositiveInteger: TypeAlias = Literal[
 _NegativeInteger: TypeAlias = Literal[
     -1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -11, -12, -13, -14, -15, -16, -17, -18, -19, -20
 ]
-_LiteralInteger = _PositiveInteger | _NegativeInteger | Literal[0]  # TODO: Use TypeAlias once mypy bugs are fixed
+_LiteralInteger = _PositiveInteger | _NegativeInteger | Literal[0]  # noqa: Y026  # TODO: Use TypeAlias once mypy bugs are fixed
 
 _MultiplicableT1 = TypeVar('_MultiplicableT1', bound=SupportsMul[Any, Any])
 _MultiplicableT2 = TypeVar('_MultiplicableT2', bound=SupportsMul[Any, Any])

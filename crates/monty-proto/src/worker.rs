@@ -18,39 +18,17 @@
 
 use std::{borrow::Cow, mem};
 
-use monty::{MontyRepl, ReplProgress, ReplStartError};
-use monty_type_checking::{SourceFile, type_check};
+use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump};
+use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject,
-    OsFunctionCall, PrintWriter, PrintWriterCallback,
+    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
+    PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
-    FrameError, FrameReader, MAX_FRAME_LEN, MONTY_VERSION, WireFunctionCall, exceeds_max_frame_len,
+    FrameError, FrameReader, MAX_FRAME_LEN, WireFunctionCall, check_protocol_version, exceeds_max_frame_len,
     exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
 };
-
-/// The child always runs with `LimitedTracker`: an absent/empty limits message
-/// behaves like `ResourceLimits::new()`, and a single tracker type keeps the
-/// session state enum free of generics.
-type Tracker = LimitedTracker;
-
-/// Version tag of the opaque dump envelope produced by `Dump`.
-///
-/// Wire layout: `[DUMP_VERSION u16 LE][tag u8][session meta][postcard
-/// payload]` where tag 0 is a `MontyRepl` (idle session) and tag 1 a
-/// `ReplProgress` (suspended). The session meta carries the child-side state
-/// that lives *outside* the repl — script name and accumulated type-check
-/// stubs — so a `Load`ed session keeps type-check enforcement:
-///
-/// - `[script_name str][type_check u8]` and, when `type_check` is 1,
-///   `[committed_stubs str][has_pending u8][pending_snippet str?]`, where each
-///   `str` is a `u32 LE` byte length followed by UTF-8 bytes.
-///
-/// The payload is monty's postcard format — only a monty child of the same
-/// version can restore it. Bumped to 5 because adding argument-name variants
-/// changed the serialized `StaticStrings` discriminants.
-const DUMP_VERSION: u16 = 5;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -172,6 +150,17 @@ fn dispatch_into(child: &mut Child, request_frame: &[u8], sink: &mut VecEventSin
     }
 }
 
+/// The sandbox budget of the child's current session, as a host outside the
+/// interpreter sees it. Both fields describe how much memory the session may
+/// need: the tracked budget, and whether type checking's untracked caches load.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SessionBudget {
+    /// `max_memory` in bytes; `None` when unlimited, or when no session exists.
+    pub max_memory: Option<usize>,
+    /// Whether the session type checks each fed snippet.
+    pub type_check: bool,
+}
+
 /// REPL session state of the child.
 enum SessionState {
     /// No repl materialized yet. `Some` once `Configure` has stored the config
@@ -180,29 +169,10 @@ enum SessionState {
     /// valid only from here — it cannot clobber a started session.
     Configured(Option<Box<pb::Configure>>),
     /// Session ready for the next `Feed`.
-    Ready(Box<MontyRepl<Tracker>>),
+    Ready(Box<MontyRepl>),
     /// Mid-feed, waiting for a resume request. Never holds
     /// `ReplProgress::Complete` — completion ends the turn immediately.
-    Suspended(Box<ReplProgress<Tracker>>),
-}
-
-/// Per-session type-check state, mirroring `pydantic_monty.MontyRepl`:
-/// successfully committed snippets accumulate as stubs so later snippets can
-/// reference names defined by earlier ones.
-struct TypeCheckState {
-    /// User-provided stubs plus every snippet that has completed successfully.
-    committed_stubs: String,
-    /// The in-flight snippet; committed on `Complete`, discarded on error.
-    pending_snippet: Option<String>,
-}
-
-/// The child-side session state that lives *outside* the repl/progress payload
-/// and so must travel in the dump envelope explicitly: the script name and the
-/// type-check state. Serialized by [`push_session_meta`] and parsed by
-/// [`take_session_meta`].
-struct SessionMeta {
-    script_name: String,
-    type_check: Option<TypeCheckState>,
+    Suspended(Box<ReplProgress>),
 }
 
 /// All state of one protocol child: the current REPL session plus the
@@ -221,26 +191,23 @@ pub struct Child {
     /// Script name of the current session (used for error and type-check
     /// diagnostics).
     script_name: String,
+    type_checker: TypeChecker,
     /// `Some` when the session was created with `type_check: true`.
     type_check: Option<TypeCheckState>,
 }
 
 impl Default for Child {
     fn default() -> Self {
-        Self::new()
+        Self {
+            state: SessionState::Configured(None),
+            script_name: String::new(),
+            type_checker: TypeChecker::default(),
+            type_check: None,
+        }
     }
 }
 
 impl Child {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            state: SessionState::Configured(None),
-            script_name: String::new(),
-            type_check: None,
-        }
-    }
-
     /// Handles one request: streams any `Print` events and emits exactly one
     /// turn-ending event through `sink`, then reports what the host loop should
     /// do next. `Err` means the sink is broken (for stdout, the parent is
@@ -257,24 +224,11 @@ impl Child {
 
         let mut event = match kind {
             pb::parent_request::Kind::Configure(configure) => {
-                // Version skew is fatal. The protocol has no in-band
-                // negotiation and assumes parent and child are deployed in
-                // lockstep; a mismatched build can have a different frame
-                // layout, so we fail fast with a `FatalError` rather than risk
-                // a silent desync. Emit the fatal last gasp and stop the child.
-                //
-                // An *empty* version opts out of skew detection: it marks a
-                // parent that ships in lockstep with the worker and so has no
-                // independent build version to compare — the bundled wasm
-                // worker, whose TypeScript driver is published together with the
-                // `.wasm` in one package. A separately-deployed parent (the
-                // subprocess pool) always sends its real version, so its skew
-                // check is unaffected.
-                if !configure.monty_version.is_empty() && configure.monty_version != MONTY_VERSION {
-                    sink.send(&self.fatal_event(&format!(
-                        "version skew: parent={:?} child={MONTY_VERSION:?}",
-                        configure.monty_version
-                    )))?;
+                // An unsupported protocol version is fatal: the parent may frame
+                // or interpret later messages differently, so serving it risks a
+                // silent desync. Emit the fatal last gasp and stop the child.
+                if let Err(refusal) = check_protocol_version(configure.protocol_version) {
+                    sink.send(&self.fatal_event(&refusal))?;
                     return Ok(HandleOutcome::Fatal);
                 }
                 self.handle_configure(configure)
@@ -291,11 +245,19 @@ impl Child {
             pb::parent_request::Kind::ResumeNameLookup(resume) => self.handle_resume_name_lookup(resume, sink),
             pb::parent_request::Kind::ResumeFutures(resume) => self.handle_resume_futures(resume, sink),
             pb::parent_request::Kind::Dump(_) => self.handle_dump(),
-            pb::parent_request::Kind::Load(load) => self.handle_load(load),
-            pb::parent_request::Kind::Reset(_) => {
-                self.reset();
-                ok_event()
-            }
+            pb::parent_request::Kind::Load(load) => self.handle_load(&load),
+            pb::parent_request::Kind::Reset(_) => match self.reset() {
+                Ok(()) => ok_event(),
+                // A failed scrub leaves the finished session's files in the
+                // type checker, so this worker must never serve another one:
+                // the next session could resolve the previous session's
+                // modules. Die with an explanation the parent can log rather
+                // than carry on — or panic, which it would only see as a crash.
+                Err(err) => {
+                    sink.send(&self.fatal_event(&format!("type-check cleanup failed: {err}")))?;
+                    return Ok(HandleOutcome::Fatal);
+                }
+            },
             pb::parent_request::Kind::Shutdown(_) => {
                 sink.send(&ok_event())?;
                 return Ok(HandleOutcome::Shutdown);
@@ -306,6 +268,38 @@ impl Child {
             self.recover_send_error(&event, err, sink)?;
         }
         Ok(HandleOutcome::Continue)
+    }
+
+    /// What the session the child is *currently* holding would run under.
+    ///
+    /// A host that bounds the worker process from outside the interpreter (the
+    /// subprocess shell caps its own allocator) sizes that bound from this,
+    /// after every request: the budget changes when a session is configured,
+    /// restored from a dump — which brings its own limits, not the
+    /// `Configure`'s — or ended by `Reset`.
+    #[must_use]
+    pub fn session_budget(&self) -> SessionBudget {
+        match &self.state {
+            SessionState::Configured(Some(config)) => SessionBudget {
+                max_memory: config
+                    .limits
+                    .as_ref()
+                    .and_then(|limits| limits.max_memory_bytes)
+                    .map(|v| usize::try_from(v).unwrap_or(usize::MAX)),
+                type_check: config.type_check,
+            },
+            SessionState::Configured(None) => SessionBudget::default(),
+            SessionState::Ready(repl) => self.tracker_budget(repl.tracker()),
+            SessionState::Suspended(progress) => self.tracker_budget(progress.tracker()),
+        }
+    }
+
+    /// The budget of a materialized session, whose limits live in its tracker.
+    fn tracker_budget(&self, tracker: &ResourceTracker) -> SessionBudget {
+        SessionBudget {
+            max_memory: tracker.max_memory(),
+            type_check: self.type_check.is_some(),
+        }
     }
 
     /// Builds a timing-stamped `FatalError` event for an unrecoverable
@@ -378,11 +372,12 @@ impl Child {
     /// on the first feed/dump (or restored by `Load` instead). Valid only on a
     /// not-yet-configured worker.
     fn handle_configure(&mut self, configure: pb::Configure) -> pb::ChildEvent {
-        if !matches!(self.state, SessionState::Configured(None)) {
-            return protocol_violation("Configure while a session already exists");
+        if matches!(self.state, SessionState::Configured(None)) {
+            self.state = SessionState::Configured(Some(Box::new(configure)));
+            ok_event()
+        } else {
+            protocol_violation("Configure while a session already exists")
         }
-        self.state = SessionState::Configured(Some(Box::new(configure)));
-        ok_event()
     }
 
     /// Materializes the repl from the stored config the first time the session
@@ -399,13 +394,21 @@ impl Child {
         let Some(config) = config else {
             return Err(Box::new(protocol_violation("session has not been configured")));
         };
+        let type_check_config = TypeCheckingConfig::from(config.as_ref());
+        // Destructured exhaustively on purpose: a new `Configure` field must
+        // fail to compile here until the child decides what to do with it.
         let pb::Configure {
             script_name,
             limits,
             type_check,
             type_check_stubs,
             assert_message_annotations,
-            // already validated against our own version when `Configure` arrived
+            // read above, through the accessor that validates the enum number
+            type_check_format: _,
+            type_check_color: _,
+            // range-checked when `Configure` arrived
+            protocol_version: _,
+            // informational only — never checked
             monty_version: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
@@ -413,6 +416,7 @@ impl Child {
         self.type_check = type_check.then(|| TypeCheckState {
             committed_stubs: type_check_stubs.unwrap_or_default(),
             pending_snippet: None,
+            config: type_check_config,
         });
         // Missing field means an older parent; the feature defaults to on.
         let options = CompileOptions {
@@ -423,7 +427,7 @@ impl Child {
         };
         self.state = SessionState::Ready(Box::new(MontyRepl::new(
             &self.script_name,
-            LimitedTracker::new(limits),
+            ResourceTracker::new(limits),
             options,
         )));
         Ok(())
@@ -573,28 +577,21 @@ impl Child {
         event
     }
 
-    /// Serializes the current session into the opaque dump envelope. The
-    /// session stays live — dumping is read-only.
+    /// Serializes the current session, and the metadata that lives outside it,
+    /// into monty's dump format. The session stays live — dumping is read-only.
     fn handle_dump(&mut self) -> pb::ChildEvent {
         // a never-fed session is materialized into an empty repl so it can be
         // dumped; a never-configured worker has nothing to dump
         if let Err(event) = self.ensure_repl() {
             return *event;
         }
-        let dumped = match &self.state {
-            SessionState::Ready(repl) => repl.dump().map(|bytes| (0u8, bytes)),
-            SessionState::Suspended(progress) => progress.dump().map(|bytes| (1u8, bytes)),
+        let session = match &self.state {
+            SessionState::Ready(repl) => SessionRef::Idle(repl),
+            SessionState::Suspended(progress) => SessionRef::Suspended(progress),
             SessionState::Configured(_) => unreachable!("ensure_repl materialized the repl or errored"),
         };
-        match dumped {
-            Ok((tag, payload)) => {
-                let mut state = Vec::with_capacity(payload.len() + 64);
-                state.extend_from_slice(&DUMP_VERSION.to_le_bytes());
-                state.push(tag);
-                push_session_meta(&mut state, &self.script_name, self.type_check.as_ref());
-                state.extend_from_slice(&payload);
-                event(pb::child_event::Kind::DumpResult(pb::DumpResult { state }))
-            }
+        match dump(&self.script_name, self.type_check.as_ref(), session) {
+            Ok(state) => event(pb::child_event::Kind::DumpResult(pb::DumpResult { state })),
             Err(err) => protocol_violation(&format!("dump failed: {err}")),
         }
     }
@@ -608,51 +605,42 @@ impl Child {
     /// instead of feeding. Once a feed has run (or a prior `Load` restored a
     /// session), the repl exists and `Load` is rejected rather than silently
     /// discarding it.
-    fn handle_load(&mut self, load: pb::Load) -> pb::ChildEvent {
+    fn handle_load(&mut self, load: &pb::Load) -> pb::ChildEvent {
         if !matches!(self.state, SessionState::Configured(_)) {
             return protocol_violation("Load requires a session that has not started (a feed has already run)");
         }
-        let pb::Load { state } = load;
-        let Some((version_bytes, rest)) = state.split_at_checked(2) else {
-            return protocol_violation("dump state too short");
+        let restored = match Dump::load(&load.state) {
+            Ok(restored) => restored,
+            Err(err) => return protocol_violation(&format!("failed to load session: {err}")),
         };
-        let version = u16::from_le_bytes([version_bytes[0], version_bytes[1]]);
-        if version != DUMP_VERSION {
-            return protocol_violation(&format!("unsupported dump version {version} (expected {DUMP_VERSION})"));
-        }
-        let Some((&tag, rest)) = rest.split_first() else {
-            return protocol_violation("dump state too short");
-        };
-        let Some((meta, payload)) = take_session_meta(rest) else {
-            return protocol_violation("malformed dump session metadata");
-        };
-        let SessionMeta {
+        let Dump {
             script_name,
             type_check,
-        } = meta;
-        let mut event = match tag {
-            0 => match MontyRepl::load(payload) {
-                Ok(repl) => {
-                    self.state = SessionState::Ready(Box::new(repl));
-                    ok_event()
-                }
-                Err(err) => protocol_violation(&format!("failed to load session: {err}")),
-            },
-            1 => match ReplProgress::load(payload) {
-                // the depth/oversize checks below can only fail on a forged or
-                // corrupted dump — `drive` enforces them on every fresh
-                // suspension before it is stored
-                Ok(ReplProgress::Complete { repl, value }) => {
+            state,
+        } = restored;
+        // the depth/oversize checks below can only fail on a forged or corrupted
+        // dump — `drive` enforces them on every fresh suspension before it is
+        // stored
+        let mut event = match state {
+            Session::Idle(repl) => {
+                self.state = SessionState::Ready(repl);
+                ok_event()
+            }
+            // the protocol only ever serves repl sessions; a `MontyRun`
+            // execution has no way to accept further feeds
+            Session::Running(_) => protocol_violation("dump holds a one-shot run, not a repl session"),
+            Session::Suspended(progress) => match *progress {
+                // a dump is never taken at Complete, but a forged one could
+                // contain it; surface the value rather than fail
+                ReplProgress::Complete { repl, value } => {
                     if exceeds_max_value_depth(&value) {
                         protocol_violation("dump value exceeds the maximum wire depth")
                     } else {
-                        // a dump is never taken at Complete, but a forged one
-                        // could contain it; surface the value rather than fail
                         self.state = SessionState::Ready(Box::new(repl));
                         complete_event(value)
                     }
                 }
-                Ok(progress) => {
+                progress => {
                     if suspension_args_too_deep(&progress) {
                         protocol_violation("dump suspension arguments exceed the maximum wire depth")
                     } else {
@@ -665,9 +653,7 @@ impl Child {
                         }
                     }
                 }
-                Err(err) => protocol_violation(&format!("failed to load suspended session: {err}")),
             },
-            other => protocol_violation(&format!("unknown dump tag {other}")),
         };
         // adopt the restored metadata only once the payload actually loaded
         // (state is now Ready/Suspended) — a failed load leaves the child in
@@ -686,7 +672,7 @@ impl Child {
     /// filesystem I/O (mounts are serviced parent-side).
     fn drive(
         &mut self,
-        mut result: Result<ReplProgress<Tracker>, Box<ReplStartError<Tracker>>>,
+        mut result: Result<ReplProgress, Box<ReplStartError>>,
         print: &mut ProtoPrint,
     ) -> pb::ChildEvent {
         loop {
@@ -757,7 +743,7 @@ impl Child {
     }
 
     /// Ends the current feed with a runtime error while keeping the REPL usable.
-    fn abort_feed_with_runtime_error(&mut self, repl: MontyRepl<Tracker>, message: &str) -> pb::ChildEvent {
+    fn abort_feed_with_runtime_error(&mut self, repl: MontyRepl, message: &str) -> pb::ChildEvent {
         self.state = SessionState::Ready(Box::new(repl));
         if let Some(state) = &mut self.type_check {
             state.pending_snippet = None;
@@ -772,7 +758,10 @@ impl Child {
         let state = self.type_check.as_ref()?;
         let stubs =
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
-        match type_check(&SourceFile::new(code, &self.script_name), stubs.as_ref()) {
+        match self
+            .type_checker
+            .run(&SourceFile::new(code, &self.script_name), stubs.as_ref(), state.config)
+        {
             Ok(None) => None,
             Ok(Some(diagnostics)) => Some(event(pb::child_event::Kind::TypingError(pb::TypingError {
                 diagnostics: diagnostics.to_string(),
@@ -783,10 +772,14 @@ impl Child {
 
     /// Drops all session state, returning to the unconfigured state ready for
     /// the next `Configure` (or `Load`).
-    fn reset(&mut self) {
+    ///
+    /// `Err` means the type checker still holds this session's files, which is
+    /// terminal for the worker — see the `Reset` arm in [`Self::handle`].
+    fn reset(&mut self) -> Result<(), String> {
         self.state = SessionState::Configured(None);
         self.type_check = None;
         self.script_name = String::new();
+        self.type_checker.reset()
     }
 }
 
@@ -860,7 +853,7 @@ fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
 ///
 /// Clones the argument payload: the suspension keeps its args so a `Dump` of
 /// the suspended state (and its replay on `Load`) stays complete.
-fn suspension_event_function_call(call: &monty::ReplFunctionCall<Tracker>) -> pb::ChildEvent {
+fn suspension_event_function_call(call: &monty::ReplFunctionCall) -> pb::ChildEvent {
     event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
         function_name: call.function_name.clone(),
         args: call.args.clone(),
@@ -876,7 +869,7 @@ fn suspension_event_function_call(call: &monty::ReplFunctionCall<Tracker>) -> pb
 /// suspended state (and its re-announcement on `Load`) stays complete — a
 /// restored session's parent can service the call from mounts or its `os`
 /// callback exactly like a fresh one.
-fn suspension_event_os_call(call: &monty::ReplOsCall<Tracker>) -> pb::ChildEvent {
+fn suspension_event_os_call(call: &monty::ReplOsCall) -> pb::ChildEvent {
     event(pb::child_event::Kind::OsCall(pb::OsCall {
         call_id: call.call_id,
         call: Some(call.function_call.clone().into()),
@@ -891,7 +884,7 @@ fn complete_event(value: MontyObject) -> pb::ChildEvent {
 
 /// Whether a suspension's argument payload nests too deeply for the wire —
 /// used by `drive` (fresh) and `handle_load` (restored, i.e. forged dumps).
-fn suspension_args_too_deep(progress: &ReplProgress<Tracker>) -> bool {
+fn suspension_args_too_deep(progress: &ReplProgress) -> bool {
     match progress {
         ReplProgress::FunctionCall(call) => function_call_args_too_deep(call),
         ReplProgress::OsCall(call) => os_call_args_too_deep(call),
@@ -901,7 +894,7 @@ fn suspension_args_too_deep(progress: &ReplProgress<Tracker>) -> bool {
 }
 
 /// Whether an external call's args/kwargs nest too deeply for the wire.
-fn function_call_args_too_deep(call: &monty::ReplFunctionCall<Tracker>) -> bool {
+fn function_call_args_too_deep(call: &monty::ReplFunctionCall) -> bool {
     call.args.iter().any(exceeds_max_value_depth)
         || call
             .kwargs
@@ -911,7 +904,7 @@ fn function_call_args_too_deep(call: &monty::ReplFunctionCall<Tracker>) -> bool 
 
 /// Whether an OS call's payload nests too deeply for the wire — only
 /// `os.getenv`'s default carries an arbitrary (nestable) sandbox value.
-fn os_call_args_too_deep(call: &monty::ReplOsCall<Tracker>) -> bool {
+fn os_call_args_too_deep(call: &monty::ReplOsCall) -> bool {
     match &call.function_call {
         OsFunctionCall::Getenv(args) => exceeds_max_value_depth(&args.default),
         _ => false,
@@ -922,7 +915,7 @@ fn os_call_args_too_deep(call: &monty::ReplOsCall<Tracker>) -> bool {
 /// `Load` to re-announce a restored suspension; fresh suspensions go through
 /// `drive`, which adds depth/oversize checks before delegating to the same
 /// per-variant builders.
-fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::ChildEvent {
+fn suspension_event(progress: &ReplProgress) -> pb::ChildEvent {
     match progress {
         ReplProgress::FunctionCall(call) => suspension_event_function_call(call),
         ReplProgress::OsCall(call) => suspension_event_os_call(call),
@@ -934,79 +927,6 @@ fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::ChildEvent {
         })),
         ReplProgress::Complete { .. } => unreachable!("Complete is handled before suspension_event"),
     }
-}
-
-/// Appends a `u32 LE`-length-prefixed string field to a dump envelope.
-fn push_str_field(buf: &mut Vec<u8>, s: &str) {
-    // dump fields originate from ≤256 MiB protocol frames, so the length
-    // always fits in u32
-    let len = u32::try_from(s.len()).expect("dump field exceeds u32::MAX bytes");
-    buf.extend_from_slice(&len.to_le_bytes());
-    buf.extend_from_slice(s.as_bytes());
-}
-
-/// Appends the session metadata (script name + type-check state, see
-/// [`DUMP_VERSION`]) to a dump envelope.
-fn push_session_meta(buf: &mut Vec<u8>, script_name: &str, type_check: Option<&TypeCheckState>) {
-    push_str_field(buf, script_name);
-    match type_check {
-        Some(tc) => {
-            buf.push(1);
-            push_str_field(buf, &tc.committed_stubs);
-            match &tc.pending_snippet {
-                Some(snippet) => {
-                    buf.push(1);
-                    push_str_field(buf, snippet);
-                }
-                None => buf.push(0),
-            }
-        }
-        None => buf.push(0),
-    }
-}
-
-/// Splits the [`SessionMeta`] off the front of a dump envelope, returning it
-/// together with the remaining postcard payload. `None` means the envelope is
-/// malformed.
-fn take_session_meta(bytes: &[u8]) -> Option<(SessionMeta, &[u8])> {
-    let (script_name, rest) = take_str_field(bytes)?;
-    let (&type_check_flag, rest) = rest.split_first()?;
-    let (type_check, rest) = match type_check_flag {
-        0 => (None, rest),
-        1 => {
-            let (committed_stubs, rest) = take_str_field(rest)?;
-            let (&pending_flag, rest) = rest.split_first()?;
-            let (pending_snippet, rest) = match pending_flag {
-                0 => (None, rest),
-                1 => take_str_field(rest).map(|(snippet, rest)| (Some(snippet), rest))?,
-                _ => return None,
-            };
-            (
-                Some(TypeCheckState {
-                    committed_stubs,
-                    pending_snippet,
-                }),
-                rest,
-            )
-        }
-        _ => return None,
-    };
-    Some((
-        SessionMeta {
-            script_name,
-            type_check,
-        },
-        rest,
-    ))
-}
-
-/// Splits a `u32 LE`-length-prefixed string field off the front of a dump
-/// envelope.
-fn take_str_field(bytes: &[u8]) -> Option<(String, &[u8])> {
-    let (len_bytes, rest) = bytes.split_at_checked(4)?;
-    let len = u32::from_le_bytes(len_bytes.try_into().ok()?) as usize;
-    let (field, rest) = rest.split_at_checked(len)?;
-    Some((String::from_utf8(field.to_vec()).ok()?, rest))
 }
 
 /// Converts wire named inputs into `(name, value)` pairs for `feed_start`.

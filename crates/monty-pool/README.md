@@ -22,6 +22,11 @@ async futures) until the snippet completes, then `Checkout::finish` returns the 
 pool for reuse. A `Checkout` dropped without `finish` kills its worker instead — mid-execution
 state cannot be trusted back into the pool.
 
+The pool is async end-to-end and runs on [tokio](https://tokio.rs): frame reads are
+cancel-safe (partial-frame state lives in the worker), and turn deadlines are ordinary timers
+rather than a watchdog thread. Turn futures are not resumable after being dropped mid-flight —
+the checkout notices, discards the worker, and fails the next call cleanly.
+
 ## Usage
 
 Workers are `monty` CLI binaries spawned as subprocesses — build one with
@@ -29,17 +34,23 @@ Workers are `monty` CLI binaries spawned as subprocesses — build one with
 install it from PyPI as [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/).
 
 ```rust,no_run
-use monty_pool::{Pool, PoolConfig, PoolError, ReplConfig, TurnEvent};
+use std::time::Duration;
 
-fn main() -> Result<(), PoolError> {
-    let pool = Pool::new(PoolConfig::subprocess("path/to/monty"))?;
+use monty_pool::{Pool, PoolConfig, PoolError, ReplConfig, TurnEvent, on_print_sync};
 
-    let mut session = pool.checkout(&ReplConfig::default())?;
-    let mut on_print = |_stream, text: &str| print!("{text}");
+#[tokio::main]
+async fn main() -> Result<(), PoolError> {
+    let mut config = PoolConfig::subprocess("path/to/monty");
+    // no timeouts by default; set one before running untrusted code
+    config.request_timeout = Some(Duration::from_secs(30));
+    let pool = Pool::new(config).await?;
+
+    let mut session = pool.checkout(&ReplConfig::default()).await?;
+    let mut on_print = on_print_sync(|_stream, text| print!("{text}"));
 
     // session state persists between feeds on the same checkout
-    session.feed("x = 21", vec![], vec![], false, &mut on_print)?;
-    let event = session.feed("x * 2", vec![], vec![], false, &mut on_print)?;
+    session.feed("x = 21", vec![], vec![], false, &mut on_print).await?;
+    let event = session.feed("x * 2", vec![], vec![], false, &mut on_print).await?;
     match event {
         TurnEvent::Complete(value) => println!("result: {value:?}"), // Int(42)
         // other events are suspensions (external function calls, OS calls,
@@ -49,7 +60,7 @@ fn main() -> Result<(), PoolError> {
     }
 
     // return the worker to the pool for reuse by the next checkout
-    session.finish()?;
+    session.finish().await?;
     Ok(())
 }
 ```
@@ -64,18 +75,51 @@ and restored later — including on a different worker or machine — with `Chec
 - **Crash isolation** — a segfault, stack-overflow abort, or allocator abort in the sandbox
   kills only the worker. The pool observes the death as `PoolError::Crashed`, discards the
   worker, and spawns a replacement; the parent process and every other session stay healthy.
-- **Hard timeouts** — a parent-side watchdog kills any worker whose turn exceeds
+- **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds
   `request_timeout` (`PoolError::Timeout`), backstopping the sandbox's own resource limits
-  and catching hangs those limits cannot see. When a session has a `max_duration` budget,
-  the watchdog also enforces it (plus `duration_limit_grace`) from outside the child.
+  and catching hangs those limits cannot see. Synchronous host telemetry processors delay
+  enforcement while they run because the timer cannot be polled. When a session has a `max_duration` budget,
+  the deadline also enforces it (plus `duration_limit_grace`) from outside the child.
+  `PoolConfig::subprocess` sets neither `request_timeout` nor `checkout_timeout` by
+  default; set `request_timeout` yourself for untrusted code.
 - **Untrusted children** — the parent treats every frame from a (possibly compromised)
   worker as untrusted: wire decoding validates everything and never panics, and a worker
   that violates the protocol is discarded.
 - **Worker recycling** — `max_checkouts_per_worker` recycles long-lived children to bound
   the impact of any slow leak.
+- **Memory limits** — a session's `max_memory` also caps the worker's live allocations,
+  enforced in the worker's own global allocator
+  ([`monty-alloc`](https://crates.io/crates/monty-alloc)) plus 4 MB of headroom (32 MB with
+  type checking), rather than letting a worker grow the host until the OOM killer
+  intervenes. Exceeding it, or a refused allocation, exits the worker with a dedicated code
+  so it is reported as `PoolError::Runtime`/`MemoryError` instead of an unclassifiable
+  abort — the one `Runtime` error whose worker does not survive.
 
 Runtime errors inside the sandbox (`PoolError::Runtime`) are not crashes: the worker and its
-session remain alive and usable.
+session remain alive and usable — the one exception being the `MemoryError` above, raised for
+a worker that has already exited.
+
+## Observability
+
+The optional `telemetry-adapter` feature records semantic execution for language bindings
+and other hosts. `monty-pool` never selects an exporter, reads credentials or environment
+variables, or shuts an exporter down; the host SDK owns those choices and its final
+flush/shutdown.
+
+Recording happens in the host process, which builds every request and decodes every event
+anyway, so both transports are covered and the workers stay uninstrumented. Each instrumented checkout
+becomes one session span; each feed is a nested span held across suspension round-trips, with
+a child span per suspension whose duration is the host round-trip. Fed code, inputs, call
+arguments and results, exceptions and `print` output are recorded in full — values encoded
+the way the Python logfire SDK encodes attributes, capped at 64KB per value — while
+`Load`/`Dump` snapshot blobs are recorded by size only. Supplying an SDK is therefore an
+explicit opt-in to recording potentially sensitive values.
+
+The adapter configures an exporter-free process-global Rust pipeline and returns a handle
+that creates each checkout's serialized parent context. Records are emitted through
+`TelemetryAdapter`; Python, Node, and third-party bindings retain ownership of their native
+SDK and exporter. Without the feature, workers contain no telemetry recorder or telemetry
+hot path.
 
 ## Transports
 

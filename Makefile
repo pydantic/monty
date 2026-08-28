@@ -29,9 +29,14 @@ install: .cargo install-py install-js ## Install the package, dependencies, and 
 	uvx prek install --install-hooks
 
 .PHONY: dev-py
-dev-py: install-py ## Install the python package for development
+dev-py: install-py ## Install python packages for development
 	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
+
+.PHONY: dev-py-release
+dev-py-release: install-py ## Install python packages for development with a release build
+	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml --release
+	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
 .PHONY: build-js
 build-js: install-js ## Build the JS package (napi debug build + TypeScript)
@@ -46,24 +51,26 @@ test-js: build-js ## Test the JS package (builds the monty binary the workers ru
 	cargo build -p monty-runtime
 	cd crates/monty-js && MONTY_BIN="$${CARGO_TARGET_DIR:-../../target}/debug/monty$(EXE_EXT)" npm test
 
-.PHONY: dev-py-release
-dev-py-release: ## Install the python package for development with a release build
-	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml --release
-	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
-
 .PHONY: build-wasm
 build-wasm: install-js ## Build the lean wasm worker module (requires the wasm32-wasip1 target)
 	cd crates/monty-js && npm run build:wasm && npm run build:ts
+
+.PHONY: test-wasm
+test-wasm: install-js ## Test the wasm worker module from node, with no browser
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && npm run test:wasm
 
 .PHONY: test-browser
 test-browser: install-js ## Browser (Vitest) test of the wasm path in a real headless browser
 	cd crates/monty-js && npm run build:wasm && npm run build:ts && npx playwright install chromium && npm run test:browser
 
 .PHONY: dev-py-pgo
-dev-py-pgo: ## Install the python package for development with profile-guided optimization
+dev-py-pgo: install-py ## Install the python package for development with profile-guided optimization
 	$(eval PROFDATA := $(shell mktemp -d))
+	# the profiling run below spawns `monty` workers; build the runtime outside
+	# the instrumented build so only the client extension is profiled
+	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml --release
 	RUSTFLAGS='-Cprofile-generate=$(PROFDATA)' uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
-	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
+	uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
 	$(eval LLVM_PROFDATA := $(shell rustup run stable bash -c 'echo $$RUSTUP_HOME/toolchains/$$RUSTUP_TOOLCHAIN/lib/rustlib/$$(rustc -Vv | grep host | cut -d " " -f 2)/bin/llvm-profdata'))
 	$(LLVM_PROFDATA) merge -o $(PROFDATA)/merged.profdata $(PROFDATA)
 	RUSTFLAGS='-Cprofile-use=$(PROFDATA)/merged.profdata' $(uv-run-no-sync) maturin develop --uv -m crates/monty-python/Cargo.toml --release
@@ -117,12 +124,6 @@ lint-py: dev-py ## Lint Python code with ruff
 .PHONY: lint
 lint: lint-rs lint-py ## Lint the code with ruff and clippy
 
-.PHONY: format-lint-rs
-format-lint-rs: format-rs lint-rs ## Format and lint Rust code with fmt and clippy
-
-.PHONY: format-lint-py
-format-lint-py: format-py lint-py ## Format and lint Python code with ruff
-
 .PHONY: test-no-features
 test-no-features: ## Run rust tests without any features enabled
 	cargo test -p monty -p monty-fs
@@ -161,15 +162,23 @@ test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
 
 .PHONY: pytest
 pytest: ## Run Python tests with pytest
-	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests
+	uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests
 
 .PHONY: test-py
 test-py: dev-py pytest ## Build the python package (debug profile) and run tests
 
 .PHONY: test-docs
-test-docs: dev-py ## Test docs examples only
-	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests/test_readme_examples.py
-	cargo test --doc -p monty
+test-docs: dev-py ## Test docs examples only (docs/, README.md, crates/monty-python/README.md)
+	uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests/test_readme_examples.py
+	cargo test --doc --workspace
+
+.PHONY: docs
+docs: ## Build the docs site from docs/ and mkdocs.yml
+	uv run --group docs mkdocs build --strict
+
+.PHONY: docs-serve
+docs-serve: ## Serve the docs site locally with live reload
+	uv run --group docs mkdocs serve
 
 .PHONY: test
 test: test-memory-model-checks test-ref-count-return test-no-features test-type-checking test-subprocess test-py miri ## Run rust tests
@@ -205,6 +214,10 @@ update-typeshed: ## Update vendored typeshed from upstream
 	uv run ruff format
 	uv run ruff check --fix --fix-only --silent
 
+.PHONY: check-typeshed
+check-typeshed: ## Check vendored typeshed stubs are in sync with upstream
+	uv run crates/monty-typeshed/check.py
+
 .PHONY: bench
 bench: ## Run benchmarks
 	cargo bench -p monty-bench --bench main
@@ -213,6 +226,10 @@ bench: ## Run benchmarks
 bench-pool: ## Run subprocess pool benchmarks (spawn, checkout, wire round-trips)
 	cargo build -p monty-runtime --release
 	MONTY_TEST_BIN=$(CURDIR)/target/release/monty cargo bench -p monty-bench --bench pool
+
+.PHONY: bench-decode
+bench-decode: ## Run child-frame protobuf decode benchmarks
+	cargo bench -p monty-bench --bench decode
 
 .PHONY: dev-bench
 dev-bench: ## Run benchmarks to test with dev profile

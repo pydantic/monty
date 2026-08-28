@@ -18,8 +18,8 @@
 use monty::MontyRun;
 use monty_proto::{WireFunctionCall, WireObject, pb};
 use monty_types::{
-    CompileOptions, DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta,
-    MontyTimeZone, MontyType,
+    CompileOptions, DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
+    MontyTimeDelta, MontyTimeZone, MontyType,
 };
 use num_bigint::{BigInt, Sign};
 use prost::Message;
@@ -36,6 +36,7 @@ fn corpus() -> Vec<MontyObject> {
     let bigint: BigInt = "123456789012345678901234567890123456789".parse().unwrap();
     vec![
         MontyObject::Ellipsis,
+        MontyObject::NotImplemented,
         MontyObject::None,
         MontyObject::Bool(false), // oneof arms encode even at default payloads
         MontyObject::Bool(true),
@@ -97,6 +98,35 @@ fn corpus() -> Vec<MontyObject> {
             microsecond: 0,
             offset_seconds: None,
             timezone_name: None,
+        }),
+        // every field at its implicit-presence default: nothing but the
+        // submessage key should reach the wire
+        MontyObject::Time(MontyTime {
+            hour: 0,
+            minute: 0,
+            second: 0,
+            microsecond: 0,
+            offset_seconds: None,
+            timezone_name: None,
+            fold: 0,
+        }),
+        MontyObject::Time(MontyTime {
+            hour: 23,
+            minute: 59,
+            second: 59,
+            microsecond: 999_999,
+            offset_seconds: Some(0),
+            timezone_name: Some(String::new()),
+            fold: 1,
+        }),
+        MontyObject::Time(MontyTime {
+            hour: 1,
+            minute: 2,
+            second: 3,
+            microsecond: 4,
+            offset_seconds: Some(-3600),
+            timezone_name: Some("MINUS1".to_owned()),
+            fold: 0,
         }),
         // explicit-presence edge: offset of exactly 0 and an empty name must
         // still encode (proto3 `optional`), unlike implicit-presence fields
@@ -186,6 +216,7 @@ fn corpus() -> Vec<MontyObject> {
 fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
     let kind = match obj {
         MontyObject::Ellipsis => Kind::Ellipsis(oracle::Unit {}),
+        MontyObject::NotImplemented => Kind::NotImplemented(oracle::Unit {}),
         MontyObject::None => Kind::None(oracle::Unit {}),
         MontyObject::Bool(b) => Kind::Boolean(*b),
         MontyObject::Int(i) => Kind::Int(*i),
@@ -228,6 +259,15 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             microsecond: dt.microsecond,
             offset_seconds: dt.offset_seconds,
             timezone_name: dt.timezone_name.clone(),
+        }),
+        MontyObject::Time(t) => Kind::Time(oracle::Time {
+            hour: u32::from(t.hour),
+            minute: u32::from(t.minute),
+            second: u32::from(t.second),
+            microsecond: t.microsecond,
+            offset_seconds: t.offset_seconds,
+            timezone_name: t.timezone_name.clone(),
+            fold: u32::from(t.fold),
         }),
         MontyObject::TimeDelta(td) => Kind::Timedelta(oracle::TimeDelta {
             days: td.days,
@@ -547,6 +587,23 @@ fn out_of_range_temporal_values_are_rejected() {
     assert!(rejected_field(datetime(0, 0, 60, 0), "DateTime.second"));
     assert!(rejected_field(datetime(0, 0, 0, 1_000_000), "DateTime.microsecond"));
 
+    let time = |hour, minute, second, microsecond, fold| {
+        Kind::Time(oracle::Time {
+            hour,
+            minute,
+            second,
+            microsecond,
+            offset_seconds: None,
+            timezone_name: None,
+            fold,
+        })
+    };
+    assert!(rejected_field(time(24, 0, 0, 0, 0), "Time.hour"));
+    assert!(rejected_field(time(0, 60, 0, 0, 0), "Time.minute"));
+    assert!(rejected_field(time(0, 0, 60, 0, 0), "Time.second"));
+    assert!(rejected_field(time(0, 0, 0, 1_000_000, 0), "Time.microsecond"));
+    assert!(rejected_field(time(0, 0, 0, 0, 2), "Time.fold"));
+
     let timedelta = |seconds, microseconds| {
         Kind::Timedelta(oracle::TimeDelta {
             days: 1,
@@ -558,6 +615,43 @@ fn out_of_range_temporal_values_are_rejected() {
     assert!(rejected_field(timedelta(86_400, 0), "TimeDelta.seconds"));
     assert!(rejected_field(timedelta(0, -1), "TimeDelta.microseconds"));
     assert!(rejected_field(timedelta(0, 1_000_000), "TimeDelta.microseconds"));
+
+    // an offset must be strictly inside ±24 hours, as `datetime.timezone` requires
+    let aware_datetime = |offset_seconds| {
+        Kind::Datetime(oracle::DateTime {
+            year: 2026,
+            month: 1,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            microsecond: 0,
+            offset_seconds: Some(offset_seconds),
+            timezone_name: None,
+        })
+    };
+    let aware_time = |offset_seconds| {
+        Kind::Time(oracle::Time {
+            hour: 0,
+            minute: 0,
+            second: 0,
+            microsecond: 0,
+            offset_seconds: Some(offset_seconds),
+            timezone_name: None,
+            fold: 0,
+        })
+    };
+    assert!(rejected_field(aware_datetime(86_400), "DateTime.offset_seconds"));
+    assert!(rejected_field(aware_datetime(-86_400), "DateTime.offset_seconds"));
+    assert!(rejected_field(aware_time(86_400), "Time.offset_seconds"));
+    assert!(rejected_field(aware_time(-86_400), "Time.offset_seconds"));
+    assert_eq!(
+        rejected(Kind::Timezone(oracle::TimeZone {
+            offset_seconds: 86_400,
+            name: None,
+        })),
+        "failed to decode Protobuf message: invalid value for TimeZone.offset_seconds: 86400 is outside the range -86399..=86399"
+    );
 }
 
 // ============================================================================

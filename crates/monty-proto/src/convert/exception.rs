@@ -197,12 +197,16 @@ impl TryFrom<pb::StackFrame> for StackFrame {
         let start = CodeLoc::from(frame.start.ok_or(ProtoConvertError::MissingField("StackFrame.start"))?);
         let end = CodeLoc::from(frame.end.ok_or(ProtoConvertError::MissingField("StackFrame.end"))?);
         // Frames are untrusted wire data, and `StackFrame`'s `Display` derives
-        // caret padding/width from the columns when a preview is present.
-        // Unvalidated coordinates would let a compromised peer trigger an
-        // integer-underflow panic or a huge allocation when the traceback is
-        // rendered. Monty only attaches a preview for same-line spans with
-        // in-bounds columns, so rejecting anything else loses no real frames.
-        if let Some(preview) = &frame.preview_line {
+        // caret padding/width from the columns when a preview is present *and*
+        // the span is single-line. Unvalidated coordinates would let a
+        // compromised peer trigger an integer-underflow panic or a huge
+        // allocation when the traceback is rendered. Multi-line spans carry a
+        // pre-rendered preview block and are printed without any caret math
+        // (their end column is routinely below the start column, e.g. a call
+        // closed by a hanging `)`), so the column checks must not apply there.
+        if let Some(preview) = &frame.preview_line
+            && start.line == end.line
+        {
             if end.column < start.column {
                 return Err(ProtoConvertError::InvalidValue {
                     field: "StackFrame.end.column",

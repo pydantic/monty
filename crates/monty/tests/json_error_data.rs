@@ -52,8 +52,8 @@ fn json_error_data_survives_reraise() {
 }
 
 /// Documents larger than `JsonErrorData::MAX_DOC_LEN` are dropped from the
-/// payload (the location fields are kept) so a huge input can't be pinned in
-/// memory, outside the sandbox's resource tracker, by its exception.
+/// payload (the location fields are kept) so a huge input can't be copied into
+/// and pinned by the host exception.
 #[test]
 fn json_error_doc_omitted_for_huge_documents() {
     let exc = run_exc(&format!(

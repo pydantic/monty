@@ -19,6 +19,7 @@ mod exception;
 mod limits;
 mod os_call;
 mod resume;
+mod type_checking;
 
 use std::{error, fmt};
 

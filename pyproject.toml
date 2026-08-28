@@ -4,7 +4,7 @@ version = "0"
 requires-python = ">=3.10"
 
 [tool.uv.workspace]
-members = ["crates/monty-python", "crates/monty-runtime"]
+members = ["crates/monty-python", "crates/monty-runtime", "packages/pydantic-monty"]
 
 [dependency-groups]
 dev = [
@@ -20,6 +20,10 @@ dev = [
     "devtools>=0.12.2",
     "pydantic-ai-slim[anthropic,openai]>=1.63.0",
     "websockets>=14",
+]
+docs = [
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.7",
 ]
 
 # https://beta.ruff.rs/docs/configuration/
@@ -102,6 +106,13 @@ known-first-party = ["pydantic_monty"]
     "F403", # unable to detect undefined names
     "F821", # Undefined name
 ]
+# Monty's narrowed replacement stubs keep upstream typeshed's structure verbatim
+# (e.g. the `from _collections_abc import *` fallback branch), so mirror the
+# vendored exemptions rather than diverging from upstream.
+"crates/monty-typeshed/custom/**/*.pyi" = [
+    "F403", # unable to detect undefined names
+    "F821", # Undefined name
+]
 "crates/monty-type-checking/tests/good_types.py" = [
     "F704", # await outside function - needed for testing top-level async/await
 ]
@@ -123,6 +134,11 @@ exclude = [
     # annotation quote-normalization test: `e: "it's"` is a string literal under
     # test, which pyright reads as a malformed forward reference
     "crates/monty/test_cases/class__annotations.py",
+    # `break`/`return`/`continue` exiting a `finally` block (PEP 765) is the
+    # behavior under test; basedpyright rejects it unconditionally
+    "crates/monty/test_cases/async__control_flow.py",
+    "crates/monty/test_cases/refcount__finally_swallow.py",
+    "crates/monty/test_cases/try_finally__control_flow.py",
     # break/continue outside loop tests intentionally test error handling
     "crates/monty/test_cases/loop__break_outside_error.py",
     "crates/monty/test_cases/loop__continue_outside_error.py",
@@ -130,6 +146,9 @@ exclude = [
     "crates/monty/test_cases/loop__continue_in_function_error.py",
     "crates/monty/test_cases/loop__break_in_if_error.py",
     "crates/monty/test_cases/loop__continue_in_if_error.py",
+    # deliberately calls `reduce` with wrong arity and types to pin its
+    # TypeError messages
+    "crates/monty/test_cases/functools__reduce.py",
     "scripts/startup_performance.py",
     "examples/web_scraper/example_code.py",
 ]
@@ -162,11 +181,15 @@ reportPossiblyUnboundVariable = false
 reportUnboundVariable = false
 # attribute error tests intentionally access/assign non-existent attributes
 reportAttributeAccessIssue = false
-# class decorator tests deliberately use untyped decorators (incl. bare lambdas)
+# decorator tests deliberately use untyped decorators (incl. bare lambdas)
 reportUntypedClassDecorator = false
-# unused variables, classes and imports are fine in test cases
+reportUntypedFunctionDecorator = false
+# unused variables, classes, functions and imports are fine in test cases —
+# e.g. the walrus-in-decorator tests decorate a throwaway `def f(): pass`, the
+# same way the class-side ones decorate a throwaway `class C: pass`
 reportUnusedVariable = false
 reportUnusedClass = false
+reportUnusedFunction = false
 reportUnusedImport = false
 reportDuplicateImport = false
 reportAssignmentType = false
@@ -179,6 +202,8 @@ reportWildcardImportFromLibrary = false
 reportIndexIssue = false
 # dunder tests intentionally return the wrong type (e.g. `__repr__` returning int)
 reportIncompatibleMethodOverride = false
+# collections.namedtuple factory tests use the functional form, not class-based NamedTuple
+reportUntypedNamedTuple = false
 # `break`/`return`/`continue` inside `with` tests bind through Optional outer
 # variables that pyright can't narrow.
 reportOptionalMemberAccess = false
@@ -202,7 +227,7 @@ exclude = [
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
-ignore-words-list = 'crate,NotIn,ser,IST,Nd,afterAll,beforeAll'
+ignore-words-list = 'crate,NotIn,ser,IST,Nd,afterAll,beforeAll,deques'
 skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",

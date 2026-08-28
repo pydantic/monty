@@ -1,7 +1,5 @@
 //! Comparison operation helpers for the VM.
 
-use monty_types::ResourceTracker;
-
 use super::VM;
 use crate::{
     defer_drop,
@@ -11,16 +9,23 @@ use crate::{
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
-    /// Evaluates a comparison without consuming its operands.
-    /// Shared by `Compare*` opcodes and fused asserts to keep their semantics aligned.
+impl VM<'_> {
+    /// Evaluates a comparison as a boolean without consuming its operands.
+    ///
+    /// Shared by fused asserts and comparison helpers that need truth rather
+    /// than the arbitrary value a direct `==` expression may produce.
     #[inline]
     pub(super) fn cmp_values(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
         match op {
-            CmpOperator::Eq => lhs.py_eq(rhs, self),
-            CmpOperator::NotEq => Ok(!lhs.py_eq(rhs, self)?),
-            CmpOperator::Is => Ok(lhs.is(rhs, self)),
-            CmpOperator::IsNot => Ok(!lhs.is(rhs, self)),
+            CmpOperator::Eq | CmpOperator::NotEq => {
+                let result = lhs.py_rich_eq(rhs, self)?;
+                let is_equal = result.py_bool(self);
+                result.drop_with(self);
+                let is_equal = is_equal?;
+                Ok(if op == CmpOperator::NotEq { !is_equal } else { is_equal })
+            }
+            CmpOperator::Is => Ok(lhs.is(rhs)),
+            CmpOperator::IsNot => Ok(!lhs.is(rhs)),
             // `in` tests membership of the *left* operand in the right one.
             CmpOperator::In => rhs.py_contains(lhs, self),
             CmpOperator::NotIn => Ok(!rhs.py_contains(lhs, self)?),
@@ -28,10 +33,45 @@ impl<T: ResourceTracker> VM<'_, T> {
         }
     }
 
+    /// Executes direct `==`, preserving an arbitrary value returned by `__eq__`.
+    pub(super) fn compare_eq(&mut self) -> Result<(), RunError> {
+        let this = self;
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        let result = lhs.py_rich_eq(rhs, this)?;
+        this.push(result);
+        Ok(())
+    }
+
+    /// Executes direct `!=`; user `__ne__` dispatch is not yet supported.
+    pub(super) fn compare_ne(&mut self) -> Result<(), RunError> {
+        let this = self;
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        let result = lhs.py_rich_eq(rhs, this)?;
+        defer_drop!(result, this);
+        let is_not_equal = !result.py_bool(this)?;
+        this.push(Value::Bool(is_not_equal));
+        Ok(())
+    }
+
     /// Evaluates an ordering comparison, preserving CPython's behavior for
     /// unordered values such as `NaN` and incomparable operand types.
     #[inline]
     fn cmp_ordering(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
+        // A type whose ordering no `CmpOrder` describes (a `Counter` compares as
+        // a multiset) answers the operator itself. Hooked in here rather than at
+        // the opcode so the fused-assert path, which calls `cmp_values` directly,
+        // gets the same semantics.
+        if let Some(result) = lhs.py_cmp_op(rhs, op, self)? {
+            return Ok(result);
+        }
         match lhs.py_cmp(rhs, self)? {
             CmpOrder::Ordered(ordering) => Ok(match op {
                 CmpOperator::Lt => ordering.is_lt(),
@@ -50,12 +90,12 @@ impl<T: ResourceTracker> VM<'_, T> {
         }
     }
 
-    /// Pops both operands and pushes the comparison result.
+    /// Pops both operands and pushes a boolean comparison result.
     /// The const operator lets dispatch specialize the implementation per opcode.
     fn compare_op<const OP: u8>(&mut self) -> Result<(), RunError> {
         // Rejects a bad `OP` at compile time, which makes the `else` dead.
-        const { assert!(CmpOperator::from_operand(OP).is_some(), "invalid CmpOperator operand") };
-        let op = CmpOperator::from_operand(OP).expect("invalid CmpOperator operand");
+        const { assert!(CmpOperator::from_repr(OP).is_some(), "invalid CmpOperator operand") };
+        let op = CmpOperator::from_repr(OP).expect("invalid CmpOperator operand");
         let this = self;
 
         let rhs = this.pop();
@@ -67,24 +107,12 @@ impl<T: ResourceTracker> VM<'_, T> {
         this.push(Value::Bool(result));
         Ok(())
     }
-
-    /// Executes the legacy modulo-equality opcode as its component operations.
-    ///
-    /// TODO: remove this opcode once serialized bytecode compatibility no longer
-    /// requires it; new compilation should emit the three ordinary operations.
-    pub(super) fn compare_mod_eq(&mut self, k: &Value) -> Result<(), RunError> {
-        let this = self;
-
-        this.binary_mod()?;
-        this.push(k.clone_with_heap(this.heap));
-        this.compare_eq()
-    }
 }
 
-/// Defines a specialized entry point for each comparison opcode.
+/// Defines a specialized entry point for each boolean comparison opcode.
 macro_rules! compare_opcodes {
     ($($name:ident => $op:ident,)*) => {
-        impl<T: ResourceTracker> VM<'_, T> {
+        impl VM<'_> {
             $(
                 pub(super) fn $name(&mut self) -> Result<(), RunError> {
                     self.compare_op::<{ CmpOperator::$op.as_operand() }>()
@@ -95,8 +123,6 @@ macro_rules! compare_opcodes {
 }
 
 compare_opcodes! {
-    compare_eq => Eq,
-    compare_ne => NotEq,
     compare_lt => Lt,
     compare_le => LtE,
     compare_gt => Gt,

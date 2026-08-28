@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/monty",
     "crates/monty-types",
+    "crates/monty-alloc",
     "crates/monty-fs",
     "crates/monty-runtime",
     "crates/monty-proto",
@@ -11,6 +12,7 @@ members = [
     "crates/monty-python",
     "crates/monty-js",
     "crates/monty-datatest",
+    "crates/monty-doctest",
     "crates/monty-bench",
     "crates/monty-type-checking",
     "crates/monty-typeshed",
@@ -21,7 +23,7 @@ default-members = ["crates/monty-runtime"]
 
 [workspace.package]
 edition = "2024"
-version = "0.0.19"
+version = "0.0.21"
 rust-version = "1.95"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
@@ -57,32 +59,29 @@ strip = false
 # rejects path-only dependencies). These versions MUST be kept in lockstep with
 # `workspace.package.version` above and bumped together on each release — see
 # RELEASING.md.
-monty = { path = "crates/monty", version = "0.0.19" }
-monty-types = { path = "crates/monty-types", version = "0.0.19" }
-monty-fs = { path = "crates/monty-fs", version = "0.0.19" }
-monty-macros = { path = "crates/monty-macros", version = "0.0.19" }
-monty-proto = { path = "crates/monty-proto", version = "0.0.19" }
-monty-pool = { path = "crates/monty-pool", version = "0.0.19" }
-monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.19" }
-monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.19" }
+monty = { path = "crates/monty", version = "0.0.21" }
+monty-types = { path = "crates/monty-types", version = "0.0.21" }
+monty-alloc = { path = "crates/monty-alloc", version = "0.0.21" }
+monty-fs = { path = "crates/monty-fs", version = "0.0.21" }
+monty-macros = { path = "crates/monty-macros", version = "0.0.21" }
+monty-proto = { path = "crates/monty-proto", version = "0.0.21" }
+monty-pool = { path = "crates/monty-pool", version = "0.0.21" }
+monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.21" }
+monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.21" }
 # ruff, ty and related crates
-ruff_python_parser = "0.0.3"
-ruff_python_stdlib = "0.0.3"
-ruff_python_ast = "0.0.3"
-ruff_python_codegen = "0.0.3"
-ruff_source_file = "0.0.3"
-ruff_text_size = "0.0.3"
-ruff_db = { version="0.0.3" ,features = ["serde"] }
-# ty_python_semantic, ty_python_core and ty_vendored are only published at 0.0.2,
-# but those 0.0.2 crates depend on the 0.0.3 line of the ruff crates and on
-# ty_module_resolver 0.0.3, so the lower-level pins must be 0.0.3 to avoid two
-# incompatible copies of each crate ending up in the dependency tree.
-ty_python_semantic = "0.0.2"
-ty_python_core = "0.0.2"
-ty_module_resolver = "0.0.3"
-ty_vendored = "0.0.2"
+ruff_python_parser = "0.0.9"
+ruff_python_stdlib = "0.0.9"
+ruff_python_ast = "0.0.9"
+ruff_python_codegen = "0.0.9"
+ruff_source_file = "0.0.9"
+ruff_text_size = "0.0.9"
+ruff_db = { version = "0.0.9", features = ["serde"] }
+ty_python_semantic = "0.0.9"
+ty_python_core = "0.0.9"
+ty_module_resolver = "0.0.9"
+ty_vendored = "0.0.9"
 # salsa version matches the version ruff uses
-salsa = { version="0.27.0", default-features = false, features = [
+salsa = { version = "0.28.2", default-features = false, features = [
     "compact_str",
     "macros",
     "salsa_unstable",
@@ -99,6 +98,9 @@ unicode-general-category = "1"
 # or lead CPython's, affecting only recently (re)assigned code points.
 unicode_names2 = "1"
 unicode-normalization = "0.1"
+# Linear-time substring search over `[u8]`, which std only provides for `str`.
+# Already linked transitively via ruff/fancy-regex; this just names it directly.
+memchr = "2.7"
 # bigint and related crates
 num-bigint = { version = "0.4", features = ["serde"] }
 num-traits = "0.2"
@@ -108,13 +110,15 @@ num-integer = "0.1"
 # workspace-dep features are additive, and each crate needs a different set
 # (`auto-initialize` embeds CPython, `generate-import-lib`/`num-bigint`/... for
 # the extension module and conversion layers).
-pyo3 = "0.28"
-pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
+pyo3 = "0.29.2"
+pyo3-async-runtimes = "0.29.0"
+pyo3-build-config = { version = "0.29.2", features = ["resolve-config"] }
 # others
 chrono = { version = "0.4", features = ["serde"] }
 strum = { version = "0.27", features = ["derive"] }
 itoa = "1"
 ahash = { version = "0.8.0", features = ["serde"] }
+indexmap = "2"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 postcard = { version = "1.1", features = ["alloc"] }
@@ -125,18 +129,38 @@ sha2 = "0.10"
 pretty_assertions = "1.4"
 insta = "1.47"
 clap = { version = "4", features = ["derive"] }
-# Blocking WebSocket client with rustls for `wss://`, used by the pool's
-# remote transport (monty-pool).
+# WebSocket client with rustls for `wss://`, used by the pool's remote
+# transport (monty-pool). The sync `tungstenite` is dev-only (mock servers in
+# monty-pool's tests); the pool itself dials with `tokio-tungstenite`. Both
+# pins must track the same underlying tungstenite version.
 tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+# Stream/sink combinators (splitting the WebSocket into read/write halves).
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 # Unique, exclusively-created temp dirs (pool tests).
 tempfile = "3"
+# Capability-based filesystem access for monty-fs: every mount operation runs
+# relative to a directory descriptor opened at mount time, so path resolution
+# cannot escape the mount and there is no check-to-use window to race.
+cap-std = "4.0"
+# Unix `O_NONBLOCK` for monty-fs's special-file guard; already in the tree as
+# cap-std's own backend, so this adds no new crate.
+rustix = { version = "1.1", features = ["fs"] }
+# `mkfifo` for the tests behind that guard — rustix gates its own out on Apple.
+nix = { version = "0.31", features = ["fs"] }
 # Pulled in only to install a process-level rustls `CryptoProvider` before the
 # first `wss://` dial: rustls 0.23 panics on first TLS use when it can't pick a
 # provider automatically (both `aws-lc-rs` and `ring`, or neither, in the dep
 # tree), so naming `aws_lc_rs` explicitly removes the ambiguity.
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
+# Async runtime. Only the version is pinned here — tokio has no default
+# features and each consumer needs a very different slice of it.
+tokio = { version = "1" }
+# Feature-free: monty-pool builds spans only, while monty-runtime adds its exporter.
+logfire = { version = "0.12", default-features = false }
 
 [workspace.lints.rust]
+unsafe_code = "deny"
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)', 'cfg(heap_reader_compile_fail_tests)', 'cfg(heap_reader_compile_fail_test_read_while_ref_alive)', 'cfg(heap_reader_compile_fail_test_dec_ref_while_reading)', 'cfg(heap_reader_compile_fail_test_smuggle_heap_read)', 'cfg(heap_reader_compile_fail_test_double_get_mut)', 'cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)', 'cfg(heap_reader_compile_fail_test_mutation_in_map_closure)', 'cfg(heap_reader_compile_fail_test_smuggle_vm)', 'cfg(heap_reader_compile_fail_test_smuggle_and_swap_reader)'] }
 

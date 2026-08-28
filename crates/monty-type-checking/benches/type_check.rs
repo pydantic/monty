@@ -3,26 +3,37 @@
 use codspeed_criterion_compat::{Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use monty_type_checking::{SourceFile, type_check};
+use monty_type_checking::{SourceFile, TypeChecker};
+use monty_types::{TypeCheckingConfig, TypeCheckingFormat};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 
-/// Force one reusable pooled database to exist before the measurement loop.
+/// Builds a checker with its typeshed-derived state already warm.
 ///
-/// Every benchmark except `type_check__first_call` calls this at setup so the reported
-/// numbers reflect steady-state reuse cost, not the first cold call.
-fn prewarm() {
-    let _ = type_check(&SourceFile::new("pass", "warmup.py"), None);
+/// Every benchmark starts from one of these so the reported numbers reflect
+/// steady-state reuse cost — what a session pays per feed — rather than the
+/// one-time cost of building the database.
+fn prewarmed() -> TypeChecker {
+    let mut checker = TypeChecker::default();
+    let _ = checker.run(&SourceFile::new("pass", "warmup.py"), None, CONFIG);
+    checker
 }
 
+/// Diagnostics are rendered by the checker, so the format is part of what the
+/// benchmarks measure; `Full` is the default a session gets.
+const CONFIG: TypeCheckingConfig = TypeCheckingConfig {
+    format: TypeCheckingFormat::Full,
+    color: false,
+};
+
 /// Steady-state cost of type-checking a trivial snippet. This is the headline metric —
-/// it isolates per-call overhead (check out a pooled db, write one file, run
-/// `check_types`, scrub the file, return the db) from the one-time cold start.
+/// it isolates per-call overhead (write one file, run `check_types`) from the
+/// one-time cost of building the database.
 fn bench_warm_trivial(c: &mut Criterion) {
-    prewarm();
+    let mut checker = prewarmed();
     c.bench_function("type_check__warm_trivial", |b| {
         b.iter(|| {
-            let out = type_check(&SourceFile::new("x = 1", "main.py"), None).unwrap();
+            let out = checker.run(&SourceFile::new("x = 1", "main.py"), None, CONFIG).unwrap();
             black_box(out);
         });
     });
@@ -31,10 +42,12 @@ fn bench_warm_trivial(c: &mut Criterion) {
 /// Steady-state cost of type-checking a snippet that exercises a builtin (`int.__add__`).
 /// Slightly heavier than `warm_trivial` because it actually resolves a type.
 fn bench_warm_builtin(c: &mut Criterion) {
-    prewarm();
+    let mut checker = prewarmed();
     c.bench_function("type_check__warm_builtin", |b| {
         b.iter(|| {
-            let out = type_check(&SourceFile::new("x = 1 + 2", "main.py"), None).unwrap();
+            let out = checker
+                .run(&SourceFile::new("x = 1 + 2", "main.py"), None, CONFIG)
+                .unwrap();
             black_box(out);
         });
     });
@@ -44,7 +57,7 @@ fn bench_warm_builtin(c: &mut Criterion) {
 /// context plus a new "current" snippet. Mirrors how the REPL would call `type_check`
 /// per feed_run.
 fn bench_repl_sequence(c: &mut Criterion) {
-    prewarm();
+    let mut checker = prewarmed();
     c.bench_function("type_check__repl_sequence", |b| {
         b.iter(|| {
             let mut stubs = String::new();
@@ -60,7 +73,8 @@ fn bench_repl_sequence(c: &mut Criterion) {
                 let path = format!("step_{i}.py");
                 let stubs_src = SourceFile::new(&stubs, "type_stubs.pyi");
                 let main_src = SourceFile::new(snippet, &path);
-                let out = type_check(&main_src, Some(&stubs_src))
+                let out = checker
+                    .run(&main_src, Some(&stubs_src), CONFIG)
                     .expect("repl-sequence benchmark should not hit internal type-check failures");
                 assert!(
                     out.is_none(),

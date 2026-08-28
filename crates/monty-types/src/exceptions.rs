@@ -9,7 +9,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use strum::{Display, EnumString, IntoStaticStr};
+use strum::{Display, EnumString, IntoStaticStr, VariantNames};
 
 use crate::format::StringRepr;
 
@@ -239,9 +239,28 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
 /// Python exception types supported by the interpreter.
 ///
 /// Uses strum derives for automatic `Display`, `FromStr`, and `Into<&'static str>` implementations.
-/// The string representation matches the variant name exactly (e.g., `ValueError` -> "ValueError").
+/// The string representation matches the variant name exactly (e.g., `ValueError` -> "ValueError"),
+/// except where a `serialize` attribute gives a dotted name to disambiguate a stdlib subclass from
+/// its builtin parent (`binascii.Error` from `ValueError`, say).
+///
+/// `ExcType::VARIANTS` is the canonical list of those names, and the host bridges mirror it:
+/// `PYTHON_EXC_NAMES` in `crates/monty-js/ts/errors.ts` and the `ExcType` literal in
+/// `pydantic_monty/__init__.py`. Both are hand-written, so `monty-proto`'s `exc_type_bridges` test
+/// reads them and pins them here — adding a variant without wiring the bridges fails that test.
 #[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Display, EnumString, IntoStaticStr, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Display,
+    EnumString,
+    IntoStaticStr,
+    VariantNames,
+    Serialize,
+    Deserialize,
 )]
 pub enum ExcType {
     /// primary exception class - matches any exception in isinstance checks.
@@ -355,6 +374,14 @@ pub enum ExcType {
     /// representations into the required attributes.
     #[strum(serialize = "re.PatternError")]
     RePatternError,
+
+    // --- binascii module ---
+    /// `binascii.Error` - raised by the `base64` codecs for malformed input.
+    ///
+    /// A `ValueError` subclass in CPython, so `except ValueError:` catches it.
+    /// Monty's `binascii` module exposes this class and nothing else.
+    #[strum(serialize = "binascii.Error")]
+    BinasciiError,
 }
 impl ExcType {
     /// Checks if this exception type is a subclass of another exception type.
@@ -386,13 +413,14 @@ impl ExcType {
             Self::AttributeError => matches!(self, Self::FrozenInstanceError),
             // NameError catches UnboundLocalError
             Self::NameError => matches!(self, Self::UnboundLocalError),
-            // ValueError catches UnicodeDecodeError, UnicodeEncodeError, json.JSONDecodeError,
-            // and io.UnsupportedOperation (which in CPython has dual OSError + ValueError parentage)
+            // io.UnsupportedOperation is here because CPython gives it dual
+            // OSError + ValueError parentage
             Self::ValueError => matches!(
                 self,
                 Self::UnicodeDecodeError
                     | Self::UnicodeEncodeError
                     | Self::JsonDecodeError
+                    | Self::BinasciiError
                     | Self::UnsupportedOperation
             ),
             // ImportError catches ModuleNotFoundError
@@ -452,17 +480,6 @@ impl ExcData {
             _ => None,
         }
     }
-
-    /// Approximate byte footprint, used by the heap's memory accounting when
-    /// an exception carrying this payload is stored on the sandbox heap.
-    #[must_use]
-    pub fn estimate_size(&self) -> usize {
-        match self {
-            Self::None => 0,
-            Self::Unicode(data) => data.estimate_size(),
-            Self::Json(data) => data.estimate_size(),
-        }
-    }
 }
 
 /// Structured fields of a `UnicodeDecodeError` / `UnicodeEncodeError`,
@@ -506,9 +523,8 @@ pub enum UnicodeErrorObject {
 impl UnicodeErrorData {
     /// Payload size cap: unicode errors on objects larger than this carry no
     /// structured data (hosts fall back to the message-only `ValueError`).
-    /// Exception payloads live outside the sandbox's resource tracker once
-    /// the exception escapes, so the cap bounds how much untracked memory a
-    /// single raise can pin.
+    /// Exception payloads are copied into the host once they escape the worker,
+    /// so the cap bounds how much host memory a single raise can pin.
     pub const MAX_OBJECT_LEN: usize = 64 * 1024;
 
     /// Builds the payload for an encode error on `object`, or
@@ -545,17 +561,6 @@ impl UnicodeErrorData {
             ExcData::None
         }
     }
-
-    /// Approximate byte footprint, used by the heap's memory accounting when
-    /// an exception carrying this payload is stored on the sandbox heap.
-    #[must_use]
-    pub fn estimate_size(&self) -> usize {
-        let object_len = match &self.object {
-            UnicodeErrorObject::Bytes(b) => b.len(),
-            UnicodeErrorObject::Str(s) => s.len(),
-        };
-        mem::size_of::<Self>() + self.encoding.len() + object_len + self.reason.len()
-    }
 }
 
 /// Structured fields of a `json.JSONDecodeError`, mirroring CPython's `msg` /
@@ -585,8 +590,8 @@ pub struct JsonErrorData {
 
 impl JsonErrorData {
     /// Document size cap, mirroring [`UnicodeErrorData::MAX_OBJECT_LEN`]:
-    /// exception payloads live outside the sandbox's resource tracker once
-    /// the exception escapes, so `doc` is dropped (not truncated — a partial
+    /// exception payloads are copied into the host once they escape the worker,
+    /// so `doc` is dropped (not truncated — a partial
     /// document would misplace `pos`) for larger inputs.
     pub const MAX_DOC_LEN: usize = 64 * 1024;
 
@@ -606,13 +611,6 @@ impl JsonErrorData {
             lineno,
             colno,
         }))
-    }
-
-    /// Approximate byte footprint, used by the heap's memory accounting when
-    /// an exception carrying this payload is stored on the sandbox heap.
-    #[must_use]
-    pub fn estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.msg.len() + self.doc.as_ref().map_or(0, String::len)
     }
 }
 

@@ -1,6 +1,8 @@
 [package]
 name = "monty-runtime"
-readme = "README.md"
+# `README.md` is the PyPI readme for the `pydantic-monty-runtime` wheels built
+# from this crate; crates.io gets the one about cargo features and siblings
+readme = "README-crate.md"
 version = { workspace = true }
 license = { workspace = true }
 rust-version = { workspace = true }
@@ -16,14 +18,33 @@ repository = { workspace = true }
 name = "monty"
 path = "src/main.rs"
 
+[features]
+default = ["standalone"]
+# The standalone CLI (`run.rs`) and its terminal stack. Drop it to build the
+# worker `monty subprocess` alone, which is all a pool ever spawns.
+standalone = ["dep:anstream", "dep:anstyle", "dep:rustyline"]
+# CLI spans to Logfire. Off by default: its exporter links MBs of TLS that
+# `monty subprocess` — which never exports — would otherwise carry.
+telemetry = ["standalone", "dep:logfire", "dep:tracing"]
+
 [dependencies]
+# Terminal styling for the CLI: `anstream` resolves NO_COLOR/CLICOLOR/tty and
+# enables virtual-terminal mode on Windows, `anstyle` builds the styles. Both
+# already ship inside clap's dependency tree.
+anstream = { version = "0.6", optional = true }
+anstyle = { version = "1", optional = true }
 clap = { workspace = true }
+# The standalone CLI owns process-level telemetry configuration.
+logfire = { workspace = true, features = ["export-http-protobuf"], optional = true }
 monty = { workspace = true }
 monty-fs = { workspace = true }
+monty-alloc = { workspace = true, features = ["exit-code"] }
 monty-proto = { workspace = true, features = ["worker"] }
 monty-type-checking = { workspace = true }
 monty-types = { workspace = true }
-rustyline = "15"
+rustyline = { version = "15", optional = true }
+# Only the `run monty` span's deferred field; goes with `logfire`.
+tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -416,13 +416,12 @@ test('MontyTypingError is thrown on type check failure', async () => {
   t.is(
     error.display(),
     'error[invalid-assignment]: Object of type `Literal["not an int"]` is not assignable to `int`\n' +
-      ' --> main.py:1:4\n' +
+      ' --> main.py:1:10\n' +
       '  |\n' +
       '1 | x: int = "not an int"\n' +
       '  |    ---   ^^^^^^^^^^^^ Incompatible value of type `Literal["not an int"]`\n' +
       '  |    |\n' +
-      '  |    Declared type\n' +
-      '  |\n\n',
+      '  |    Declared type\n\n',
   )
 })
 

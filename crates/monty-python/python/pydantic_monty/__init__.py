@@ -22,10 +22,12 @@ from ._monty import (
     MontyComplete,
     MontyConversionError,
     MontyCrashedError,
+    MontyDisconnectError,
     MontyError,
     MontyFileHandle,
     MontyRuntimeError,
     MontySession,
+    MontyShutdown,
     MontySyntaxError,
     MontyTypingError,
     MountDir,
@@ -53,6 +55,7 @@ __all__ = (
     'ExternalFuture',
     'ExcType',
     'PrintCallback',
+    'TypeCheckFormat',
     'OsHandler',
     'SyncSnapshot',
     'AsyncSnapshot',
@@ -67,9 +70,11 @@ __all__ = (
     'Monty',
     'MontyConversionError',
     'MontyCrashedError',
+    'MontyDisconnectError',
     'MontyError',
     'MontyFileHandle',
     'MontySession',
+    'MontyShutdown',
     'MontySyntaxError',
     'MontyRuntimeError',
     'MontyTypingError',
@@ -99,7 +104,8 @@ class ResourceLimits(TypedDict, total=False):
     Configuration for resource limits during code execution.
 
     All limits are optional. Omit a key — or set it to `None` explicitly —
-    to disable that limit.
+    to disable that limit, with one exception: `max_recursion_depth` cannot
+    be disabled, and omitting it leaves the 1000-frame default in place.
     """
 
     max_duration_secs: float | None
@@ -165,14 +171,15 @@ ExcType = Literal[
     'TimeoutError',
     'TypeError',
     're.PatternError',
+    'binascii.Error',
 ]
 """String names of Python exception types that Monty understands.
 
 Used by `ExternalExceptionData` to identify an exception by name rather than
 passing a concrete Python exception instance. Names match Python's built-in
-exception classes, except for `json.JSONDecodeError` and `re.PatternError`
-which are dotted to disambiguate from their `ValueError` / `Exception`
-parents.
+exception classes, except for `json.JSONDecodeError`, `re.PatternError` and
+`binascii.Error`, which are dotted to disambiguate from their `ValueError` /
+`Exception` parents.
 """
 
 
@@ -206,6 +213,15 @@ instance or by type name), or a pending `future`."""
 
 PrintCallback: TypeAlias = Callable[[Literal['stdout', 'stderr'], str], None] | CollectStreams | CollectString
 """Print sink accepted by `feed_run` / `feed_start` / `load_snapshot`."""
+
+TypeCheckFormat: TypeAlias = Literal[
+    'full', 'concise', 'azure', 'json', 'jsonlines', 'rdjson', 'pylint', 'gitlab', 'github'
+]
+"""How `MontyTypingError` diagnostics are rendered — ty's diagnostic formats.
+
+Picked by `checkout(type_check_format=...)`, not on the raised error: the type
+checker runs inside the worker and its structured diagnostics never leave it,
+so only the already-rendered text crosses the wire."""
 
 OsHandler: TypeAlias = Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS
 """OS-call handler shared by `feed_run` / `feed_start`."""

@@ -92,7 +92,7 @@ impl Codec {
     /// UTF-32, plus a BOM — so those paths need no tracked builder; only the
     /// ASCII error handlers can amplify further, and they build through the
     /// tracker.
-    pub(crate) fn encode(self, s: &str, errors: &str, tracker: &impl ResourceTracker) -> RunResult<Vec<u8>> {
+    pub(crate) fn encode(self, s: &str, errors: &str, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
         match self {
             Self::Utf8 => Ok(s.as_bytes().to_vec()),
             Self::Ascii => encode_ascii(s, errors, tracker),
@@ -284,7 +284,7 @@ fn handle_decode_error(
 /// `namereplace` amplifies a single character into up to ~90 bytes
 /// (`\N{LONGEST UNICODE NAME...}`), so an untracked accumulator could grow
 /// far past the memory limit before the final allocation was checked.
-fn encode_ascii(s: &str, errors: &str, tracker: &impl ResourceTracker) -> RunResult<Vec<u8>> {
+fn encode_ascii(s: &str, errors: &str, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
     // Fast path for the overwhelmingly common all-ASCII case: `is_ascii` is
     // SIMD-vectorized in std, and the output is byte-for-byte the (already
     // tracked) input, so a bulk copy needs no StringBuilder.

@@ -1,7 +1,5 @@
 //! Implementation of the print() builtin function.
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
@@ -23,7 +21,7 @@ use crate::{
 /// The `file` keyword is recognised so it can produce a *specific* error
 /// (`"print() 'file' argument is not supported"`) rather than the generic
 /// "unexpected keyword" produced by leaving it off the struct.
-pub fn builtin_print(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let PrintArgs {
         objects,
         sep,
@@ -97,7 +95,7 @@ struct PrintArgs {
 ///
 /// The kwarg can be None (returns None) or a string (returns Some).
 /// Raises TypeError for other types.
-fn extract_string_kwarg(value: &Value, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Option<String>> {
+fn extract_string_kwarg(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<Option<String>> {
     match value {
         Value::None => Ok(None),
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),

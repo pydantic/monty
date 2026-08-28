@@ -11,12 +11,12 @@ use std::time::Duration;
 
 use libfuzzer_sys::fuzz_target;
 use monty::MontyRun;
-use monty_types::{CompileOptions, LimitedTracker, PrintWriter, ResourceLimits};
+use monty_types::{CompileOptions, PrintWriter, ResourceLimits, ResourceTracker};
 
 /// Resource limits for fuzzing - restrictive to prevent hangs and memory issues.
-fn fuzz_limits() -> LimitedTracker {
-    LimitedTracker::new(
-        ResourceLimits::new()
+fn fuzz_limits() -> ResourceTracker {
+    ResourceTracker::new(
+        ResourceLimits::default()
             .max_memory(1024 * 1024) // 1 MB
             .max_duration(Duration::from_millis(100)),
     )

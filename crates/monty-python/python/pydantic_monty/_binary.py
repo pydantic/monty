@@ -2,7 +2,9 @@
 
 The binary ships in the `pydantic-monty-runtime` wheel (a maturin `bin`-bindings
 package, the same pattern `uv` and `ruff` use), which installs it into the
-environment's scripts directory.
+environment's scripts directory. Installing `pydantic-monty` pulls that in; the
+`pydantic-monty-client` distribution alone does not, so the other resolution
+steps below matter when only the bindings are installed.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ def find_monty_binary(explicit: str | Path | None = None) -> str:
         return str(dev)
     raise FileNotFoundError(
         'could not locate the `monty` binary required to run sandboxed code; '
-        'install it with `pip install pydantic-monty-runtime` (or `make dev-py` in the monty repo), '
+        'install it with `pip install pydantic-monty` (or `make dev-py` in the monty repo), '
         'pass binary_path=..., or set the MONTY_BIN environment variable'
     )
 

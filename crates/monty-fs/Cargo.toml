@@ -18,6 +18,15 @@ name = "monty_fs"
 [dependencies]
 monty-types = { workspace = true }
 ahash = { workspace = true }
+cap-std = { workspace = true }
+
+# `O_NONBLOCK` for the special-file guard; Windows needs no equivalent.
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
+# `mkfifo`, to build the special file the guard is tested against.
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

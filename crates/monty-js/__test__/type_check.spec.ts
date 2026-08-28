@@ -2,6 +2,7 @@ import { test } from 'vitest'
 import { t } from './assertions.js'
 
 import { MontyError, MontyRuntimeError, MontyTypingError } from '@pydantic/monty'
+import { encodeTypeCheckFormat } from '../ts/options.js'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -17,7 +18,6 @@ const unsupportedOperatorDiagnostics = (scriptName: string) =>
     '  | |         |',
     '  | |         Has type `Literal[1]`',
     '  | Has type `Literal["hello"]`',
-    '  |',
     '',
     '',
   ].join('\n')
@@ -34,6 +34,47 @@ test('type check with errors', async () => {
   const error = await t.throwsAsync(() => run('"hello" + 1', { typeCheck: true }), { instanceOf: MontyTypingError })
   t.is(error.message, 'TypeError: error[unsupported-operator]: Unsupported `+` operation')
   t.is(error.display(), unsupportedOperatorDiagnostics('main.py'))
+})
+
+test('type check format', async () => {
+  // the format is chosen at checkout: the worker renders the diagnostics
+  // before they cross the wire, so the error cannot re-render them
+  const error = await t.throwsAsync(() => run('"hello" + 1', { typeCheck: true, typeCheckFormat: 'concise' }), {
+    instanceOf: MontyTypingError,
+  })
+  t.is(
+    error.display(),
+    'main.py:1:1: error[unsupported-operator] Operator `+` is not supported between objects of type `Literal["hello"]` and `Literal[1]`\n',
+  )
+})
+
+test('type check format json', async () => {
+  const error = await t.throwsAsync(() => run('"hello" + 1', { typeCheck: true, typeCheckFormat: 'json' }), {
+    instanceOf: MontyTypingError,
+  })
+  const [diagnostic] = JSON.parse(error.display()) as { name: string; location: { row: number; column: number } }[]
+  t.is(diagnostic.name, 'unsupported-operator')
+  t.deepEqual(diagnostic.location, { row: 1, column: 1 })
+})
+
+test('type check color', async () => {
+  const error = await t.throwsAsync(
+    () => run('"hello" + 1', { typeCheck: true, typeCheckFormat: 'concise', typeCheckColor: true }),
+    { instanceOf: MontyTypingError },
+  )
+  t.true(error.display().startsWith('\u001b['))
+})
+
+test('type check format rejects inherited property names', () => {
+  // A plain lookup would find `Object.prototype.toString` and hand a function
+  // to the wire encoder; JS callers are not bound by the TypeScript type.
+  for (const bogus of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'nonsense']) {
+    t.throws(() => encodeTypeCheckFormat(bogus as never), {
+      instanceOf: RangeError,
+      message: `unknown typeCheckFormat '${bogus}', expected one of: full, concise, azure, json, jsonlines, rdjson, pylint, gitlab, github`,
+    })
+  }
+  t.is(encodeTypeCheckFormat('jsonlines'), 5)
 })
 
 test('type check function return type', async () => {

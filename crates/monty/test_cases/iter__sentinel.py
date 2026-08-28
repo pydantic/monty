@@ -1,5 +1,5 @@
-# The two-argument iter(callable, sentinel) form. Tests behaviour, not the
-# iterator's type name (Monty reports `iterator`, a documented divergence).
+# The two-argument iter(callable, sentinel) form.
+assert type(iter(lambda: 1, 1)).__name__ == 'callable_iterator'
 
 # === drive until sentinel ===
 # Calls the callable repeatedly until its result == sentinel; the sentinel
@@ -19,6 +19,18 @@ assert list(iter(lambda: next(src), [1, 2])) == [[9]]
 
 # === immediate sentinel -> empty ===
 assert list(iter(lambda: 7, 7)) == []
+
+# === `in` consumes it, like any other iterator ===
+# It has no __contains__, so membership falls back to iteration and stops at the
+# match, leaving the rest of the iterator available.
+src3 = iter([1, 2, 3, 0])
+partial = iter(lambda: next(src3), 0)
+assert 2 in partial
+assert list(partial) == [3]
+src4 = iter([1, 2, 0])
+assert 99 not in iter(lambda: next(src4), 0)
+exhausted = iter(lambda: 7, 7)
+assert 7 not in exhausted
 
 
 # === callable exception propagates unchanged ===
@@ -85,3 +97,20 @@ for x in ci2:
     collected.append(x)
 assert collected == [5, 6]
 assert next(ci2, 'STOPPED') == 'STOPPED'
+
+# === StopIteration from the callable ends iteration, as in CPython ===
+stop_calls = [0]
+
+
+def stops():
+    stop_calls[0] += 1
+    if stop_calls[0] >= 3:
+        raise StopIteration
+    return stop_calls[0]
+
+
+assert list(iter(stops, 99)) == [1, 2]
+stop_calls[0] = 0
+stop_it = iter(stops, 99)
+assert (next(stop_it), next(stop_it)) == (1, 2)
+assert next(stop_it, 'done') == 'done'

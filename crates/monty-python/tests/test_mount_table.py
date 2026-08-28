@@ -12,6 +12,8 @@ the feed ends; `'read-write'` mounts write through to the real host
 directory.
 """
 
+import os
+import sys
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
@@ -50,6 +52,30 @@ def test_mount_directory_repr(test_dir: Path):
     md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
     assert 'MountDir' in repr(md)
     assert '/data' in repr(md)
+
+
+def test_mount_close_releases_the_directory(monty_run: RunMonty, test_dir: Path):
+    md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
+    assert monty_run("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md) == snapshot(
+        'hello world'
+    )
+
+    md.close()
+    md.close()  # idempotent
+    with pytest.raises(ValueError) as exc_info:
+        monty_run("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md)
+    assert str(exc_info.value) == snapshot("mount '/data' is closed")
+    # The configuration it reports outlives the descriptor.
+    assert md.virtual_path == snapshot('/data')
+
+
+def test_mount_context_manager_closes(monty_run: RunMonty, test_dir: Path):
+    with MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only') as md:
+        assert monty_run("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md) == snapshot(
+            'hello world'
+        )
+    with pytest.raises(ValueError):
+        monty_run("from pathlib import Path; Path('/data/hello.txt').read_text()", mount=md)
 
 
 def test_mount_directory_invalid_mode():
@@ -93,7 +119,7 @@ def test_nonexistent_host_path():
     with pytest.raises(TypeError) as exc_info:
         MountDir(host_path='/nonexistent/path/that/does/not/exist', virtual_path='/data')
     assert str(exc_info.value) == snapshot(
-        "cannot canonicalize host path '/nonexistent/path/that/does/not/exist': No such file or directory (os error 2)"
+        "cannot open host path '/nonexistent/path/that/does/not/exist': No such file or directory (os error 2)"
     )
 
 
@@ -548,3 +574,68 @@ def test_open_binary_write_handle_attrs(monty_run: RunMonty, test_dir: Path):
     assert isinstance(f, MontyFileHandle)
     assert f.mode == snapshot('wb')
     assert (f.binary, f.readable, f.writable) == snapshot((True, False, True))
+
+
+# =============================================================================
+# Symlinks and host-directory requirements
+# =============================================================================
+
+
+def make_symlink(target: Path, link: Path) -> bool:
+    """Create a symlink, returning False where the host forbids it.
+
+    Windows needs Developer Mode or elevation, so the symlink tests skip
+    rather than fail there.
+    """
+    try:
+        link.symlink_to(target)
+    except OSError:
+        return False
+    return True
+
+
+def test_relative_symlink_is_followed(monty_run: RunMonty, test_dir: Path):
+    """A relative in-mount symlink resolves normally, as in CPython."""
+    if not make_symlink(Path('hello.txt'), test_dir / 'rel_link.txt'):
+        pytest.skip('host does not permit creating symlinks')
+    md = MountDir(host_path=test_dir, virtual_path='/data', mode='read-only')
+    code = "from pathlib import Path; Path('/data/rel_link.txt').read_text()"
+    assert monty_run(code, mount=md) == snapshot('hello world')
+
+
+def test_absolute_symlink_target_is_refused(monty_run: RunMonty, test_dir: Path):
+    """An absolute symlink target is never followed, even pointing back inside
+    the mount: the descriptor has no path of its own, so a leading `/` cannot
+    be interpreted. Predicates answer False instead of raising."""
+    if not make_symlink(test_dir / 'hello.txt', test_dir / 'abs_link.txt'):
+        pytest.skip('host does not permit creating symlinks')
+    md = MountDir(host_path=test_dir, virtual_path='/data', mode='read-only')
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("from pathlib import Path; Path('/data/abs_link.txt').read_text()", mount=md)
+    assert str(exc_info.value) == snapshot("PermissionError: [Errno 13] Permission denied: '/data/abs_link.txt'")
+
+    predicates = "from pathlib import Path; p = Path('/data/abs_link.txt'); (p.exists(), p.is_file())"
+    assert monty_run(predicates, mount=md) == snapshot((False, False))
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX mode bits')
+def test_search_only_directory_mountability(test_dir: Path):
+    """Mounting opens a descriptor on the host directory, and whether that
+    needs read permission is platform-specific: Linux opens directories with
+    `O_PATH` and accepts a search-only one, macOS and the BSDs reject it at
+    construction. Root ignores mode bits everywhere."""
+    target = test_dir / 'searchonly'
+    target.mkdir()
+    target.chmod(0o111)
+    try:
+        if sys.platform.startswith('linux') or os.access(target, os.R_OK):
+            assert MountDir(host_path=target, virtual_path='/data').virtual_path == '/data'
+            return
+        with pytest.raises(TypeError) as exc_info:
+            MountDir(host_path=target, virtual_path='/data')
+        # The temp path varies per run; everything around it must not.
+        message = str(exc_info.value).replace(str(target), '<dir>')
+        assert message == snapshot("cannot open host path '<dir>': Permission denied (os error 13)")
+    finally:
+        target.chmod(0o755)

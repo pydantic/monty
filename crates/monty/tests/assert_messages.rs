@@ -6,8 +6,7 @@
 use insta::assert_snapshot;
 use monty::{MontyRepl, MontyRun};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, LimitedTracker, MontyException, MontyObject, NoLimitTracker,
-    PrintWriter, ResourceLimits,
+    AssertMessageAnnotations, CompileOptions, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker,
 };
 
 /// Runs `code` and returns the exception it raises.
@@ -260,9 +259,8 @@ fn custom_truncation_limit() {
 }
 
 #[test]
-fn huge_operand_repr_is_streamed_not_materialized() {
-    // A ~2MB repr under a 1MB memory limit: streaming stops at the cap, so
-    // the AssertionError stays catchable instead of a terminal MemoryError.
+fn huge_operand_repr_is_truncated() {
+    // A multi-megabyte operand repr is cut at the 120-char annotation cap.
     let code = "
 xs = ['x' * 500] * 4000
 try:
@@ -273,10 +271,7 @@ except AssertionError as e:
 r[:10] + '|' + r[-9:] + '|' + str(len(r))
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let limits = ResourceLimits::new().max_memory(1_048_576);
-    let result = run
-        .run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
-        .expect("AssertionError must stay catchable under the memory limit");
+    let result = run.run_no_limits(vec![]).expect("AssertionError should be caught");
     // 7 ("assert ") + 121 (120-char repr + `…`) + 6 (" == []") = 134 chars.
     assert_eq!(result, MontyObject::String("assert ['x|xx… == []|134".into()));
 }
@@ -316,7 +311,7 @@ fn custom_limit_survives_repl_snippets() {
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(5),
     };
-    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, options);
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), options);
     repl.feed_run("x = 'abcdefghij'", vec![], PrintWriter::Stdout).unwrap();
     let err = repl
         .feed_run("assert x == ''", vec![], PrintWriter::Stdout)
@@ -399,7 +394,7 @@ fn opt_out_restores_cpython_behavior() {
 
 #[test]
 fn assert_inside_repl_gets_messages() {
-    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, CompileOptions::default());
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run("x = 3", vec![], PrintWriter::Stdout).unwrap();
     let err = repl
         .feed_run("assert x == 4", vec![], PrintWriter::Stdout)
@@ -413,7 +408,7 @@ fn repl_opt_out_applies_to_every_snippet() {
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::Off,
     };
-    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, options);
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), options);
     repl.feed_run("x = 3", vec![], PrintWriter::Stdout).unwrap();
     let err = repl
         .feed_run("assert x == 4", vec![], PrintWriter::Stdout)

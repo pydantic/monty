@@ -4,11 +4,7 @@
 //! ReadOnly, OverlayMemory) and all supported filesystem
 //! operations. Uses real temporary directories to verify correct behavior.
 
-#[cfg(unix)]
-use std::os::unix::fs::symlink as unix_symlink;
-#[cfg(windows)]
-use std::os::windows::fs::symlink_file as win_symlink_file;
-use std::{fs, path::Path};
+use std::fs;
 
 use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{
@@ -16,6 +12,11 @@ use monty_types::{
     RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
 };
 use tempfile::TempDir;
+
+// Only `symlink_file` is needed here; `symlink_dir` is dead in this crate.
+#[expect(dead_code, reason = "shared helper module; not every test crate uses all of it")]
+mod common;
+use common::{symlink_file, symlinks_supported};
 
 // =============================================================================
 // Helpers
@@ -68,7 +69,7 @@ fn call(mt: &mut MountTable, c: &OsFunctionCall) -> Option<Result<MontyObject, M
 
 /// Shorthand: call and unwrap both the Option and Result.
 fn call_ok(mt: &mut MountTable, c: &OsFunctionCall) -> MontyObject {
-    call(mt, c).expect("expected Some").expect("expected Ok")
+    call(mt, c).expect("expected Some").unwrap()
 }
 
 /// Shorthand: call and unwrap Option, expect Err, convert to exception.
@@ -118,18 +119,6 @@ fn rename(src: &str, dst: &str) -> OsFunctionCall {
         src: src.into(),
         dst: dst.into(),
     })
-}
-
-/// Creates a file symlink, handling platform differences.
-///
-/// On Unix, uses `std::os::unix::fs::symlink`. On Windows, uses
-/// `std::os::windows::fs::symlink_file`.
-fn symlink_file(original: impl AsRef<Path>, link: impl AsRef<Path>) {
-    #[cfg(unix)]
-    unix_symlink(original.as_ref(), link.as_ref()).unwrap();
-
-    #[cfg(windows)]
-    win_symlink_file(original.as_ref(), link.as_ref()).unwrap();
 }
 
 /// Asserts an exception has the expected type and message.
@@ -231,6 +220,9 @@ fn rw_is_symlink() {
 
 #[test]
 fn rw_is_symlink_true_for_symlink() {
+    if !symlinks_supported() {
+        return;
+    }
     let dir = create_test_dir();
     symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
@@ -254,6 +246,9 @@ fn rw_is_symlink_true_for_symlink() {
 
 #[test]
 fn overlay_is_symlink_true_for_symlink() {
+    if !symlinks_supported() {
+        return;
+    }
     let dir = create_test_dir();
     symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
     let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
@@ -883,11 +878,17 @@ fn ovl_mem_path_component_too_long() {
     let long_name = "a".repeat(256);
     let path = format!("/mnt/{long_name}");
 
-    let err = call_err(&mut mt, &OsFunctionCall::Exists(path.as_str().into()));
+    // `exists()` answers False rather than raising, as CPython's does.
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists(path.as_str().into())),
+        MontyObject::Bool(false)
+    );
+    // An operation that does raise quotes the path with its middle elided.
+    let err = call_err(&mut mt, &OsFunctionCall::Stat(path.as_str().into()));
     assert_exc(
         &err,
         ExcType::OSError,
-        &format!("[Errno 36] File name too long: '{path}'"),
+        "[Errno 36] File name too long: '/mnt/aaaaaaaaaaaaaaa…aaaaaaaaaaaaaaaaaaaa'",
     );
 
     // 255-byte component is fine
@@ -909,11 +910,15 @@ fn ovl_mem_path_total_too_long() {
     let path = format!("/mnt/{}", segments.join("/"));
     assert!(path.len() > 4096);
 
-    let err = call_err(&mut mt, &OsFunctionCall::Exists(path.as_str().into()));
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists(path.as_str().into())),
+        MontyObject::Bool(false)
+    );
+    let err = call_err(&mut mt, &OsFunctionCall::Stat(path.as_str().into()));
     assert_exc(
         &err,
         ExcType::OSError,
-        &format!("[Errno 36] File name too long: '{path}'"),
+        "[Errno 36] File name too long: '/mnt/xxxxxxxxxxxxxxx…xxxxxxxxxxxxxxxxxxxx'",
     );
 }
 
@@ -929,7 +934,7 @@ fn rw_path_component_too_long() {
     assert_exc(
         &err,
         ExcType::OSError,
-        &format!("[Errno 36] File name too long: '{path}'"),
+        "[Errno 36] File name too long: '/mnt/aaaaaaaaaaaaaaa…aaaaaaaaaaaaaaaaaaaa'",
     );
 }
 
@@ -1010,6 +1015,96 @@ fn ovl_mem_rmdir_overlay() {
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/temp_dir".into())),
         MontyObject::Bool(false)
     );
+}
+
+/// The mount root has no name inside the mount, so renaming it must be refused
+/// in every mode.
+///
+/// Overlay mode plans its move in memory before the descriptor is consulted, so
+/// without this check it silently "succeeds" at an operation the descriptor
+/// would refuse, leaving overlay state disagreeing with the real backend.
+#[test]
+fn rename_of_mount_root_is_refused_in_both_modes() {
+    for mode in [MountMode::ReadWrite, MountMode::OverlayMemory(OverlayState::new())] {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt(&dir, mode);
+
+        // Whichever end names the root is the one reported.
+        for (src, dst) in [("/mnt", "/mnt/moved"), ("/mnt/moved", "/mnt")] {
+            let err = call(&mut mt, &rename(src, dst)).unwrap().unwrap_err().into_exception();
+            assert_exc(&err, ExcType::PermissionError, "[Errno 13] Permission denied: '/mnt'");
+        }
+
+        // The mount must be untouched by the refusal.
+        assert_eq!(
+            call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
+            MontyObject::Bool(true)
+        );
+    }
+}
+
+/// `rmdir` of the mount root must be refused in every mode, like rename.
+///
+/// Without the guard, overlay mode tombstoned the root in memory while writes
+/// to its children kept succeeding, and direct mode surfaced whatever errno the
+/// OS picks for `rmdir(".")`. The explicit guard gives both modes the same
+/// `PermissionError` on every platform.
+#[test]
+fn rmdir_of_mount_root_is_refused_in_both_modes() {
+    for mode in [MountMode::ReadWrite, MountMode::OverlayMemory(OverlayState::new())] {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt(&dir, mode);
+
+        let err = call(&mut mt, &OsFunctionCall::Rmdir("/mnt".into()))
+            .unwrap()
+            .unwrap_err()
+            .into_exception();
+        assert_exc(&err, ExcType::PermissionError, "[Errno 13] Permission denied: '/mnt'");
+
+        // The refusal must leave the mount fully live, root included.
+        assert_eq!(
+            call_ok(&mut mt, &OsFunctionCall::Exists("/mnt".into())),
+            MontyObject::Bool(true)
+        );
+        assert_eq!(
+            call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
+            MontyObject::Bool(true)
+        );
+    }
+}
+
+/// A missing path must be `FileNotFoundError`, not `NotADirectoryError`.
+///
+/// `resolve_virtual_path` never touches the filesystem, so "does not exist" and
+/// "exists but is not a directory" both arrive as `Ok` and must be separated
+/// here; both modes must agree.
+#[test]
+fn rmdir_nonexistent_is_not_found_in_both_modes() {
+    for mode in [MountMode::ReadWrite, MountMode::OverlayMemory(OverlayState::new())] {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt(&dir, mode);
+
+        let err = call(&mut mt, &OsFunctionCall::Rmdir("/mnt/nonexistent_dir".into()))
+            .unwrap()
+            .unwrap_err()
+            .into_exception();
+        assert_exc(
+            &err,
+            ExcType::FileNotFoundError,
+            "[Errno 2] No such file or directory: '/mnt/nonexistent_dir'",
+        );
+
+        // The neighbouring case must keep its own error.
+        let err = call(&mut mt, &OsFunctionCall::Rmdir("/mnt/hello.txt".into()))
+            .unwrap()
+            .unwrap_err()
+            .into_exception();
+        assert_exc(
+            &err,
+            ExcType::NotADirectoryError,
+            "[Errno 20] Not a directory: '/mnt/hello.txt'",
+        );
+    }
 }
 
 #[test]
@@ -2127,6 +2222,9 @@ fn no_limit_allows_large_writes() {
 #[test]
 #[cfg(unix)]
 fn rw_unlink_symlink_removes_link_not_target() {
+    if !symlinks_supported() {
+        return;
+    }
     let dir = create_test_dir();
     symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
 
@@ -2148,6 +2246,9 @@ fn rw_unlink_symlink_removes_link_not_target() {
 #[test]
 #[cfg(unix)]
 fn rw_rename_symlink_renames_link_not_target() {
+    if !symlinks_supported() {
+        return;
+    }
     let dir = create_test_dir();
     symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
 
@@ -2303,38 +2404,171 @@ fn ovl_mem_rename_overlay_file_onto_overlay_dir() {
 }
 
 // =============================================================================
-// Overlay rename: symlink preservation
+// Overlay refuses symlinks
 // =============================================================================
 
-/// Renaming a real symlink in overlay mode should preserve its symlink identity.
+/// Renaming a symlink is refused like every other overlay operation on one.
+///
+/// Moving it would have to record the link as a reference to itself, leaving a
+/// name that is not a symlink, reports the link's own `stat`, and — for a link
+/// to a directory — has lost its children. Refusing keeps one rule.
 #[test]
 #[cfg(unix)]
-fn ovl_mem_rename_symlink_preserves_symlink() {
+fn ovl_mem_rename_of_a_symlink_is_refused() {
+    if !symlinks_supported() {
+        return;
+    }
     let dir = create_test_dir();
-    symlink_file(dir.path().join("hello.txt"), dir.path().join("link.txt"));
+    symlink_file("hello.txt", dir.path().join("link.txt"));
 
     let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
 
-    // Before rename: link should be a symlink
-    let result = call_ok(&mut mt, &OsFunctionCall::IsSymlink("/mnt/link.txt".into()));
-    assert_eq!(result, MontyObject::Bool(true));
+    // `is_symlink` is the one question a link still answers: it reports only
+    // that the name is a link, which is what CPython reports too.
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::IsSymlink("/mnt/link.txt".into())),
+        MontyObject::Bool(true)
+    );
 
-    // Rename the symlink
-    call(&mut mt, &rename("/mnt/link.txt", "/mnt/moved_link.txt"))
-        .unwrap()
-        .unwrap();
+    let exc = call_err(&mut mt, &rename("/mnt/link.txt", "/mnt/moved_link.txt"));
+    assert_exc(
+        &exc,
+        ExcType::PermissionError,
+        "[Errno 13] Permission denied: '/mnt/link.txt'",
+    );
 
-    // After rename: the moved path should still be readable (via the stored host ref)
-    let result = call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/moved_link.txt".into()));
-    assert_eq!(result, MontyObject::String("hello world\n".to_owned()));
+    // Nothing moved, and the link's target is untouched.
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/moved_link.txt".into())),
+        MontyObject::Bool(false)
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt".into())),
+        MontyObject::String("hello world\n".to_owned())
+    );
+}
 
-    // Original symlink path should be gone
-    let result = call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/link.txt".into()));
-    assert_eq!(result, MontyObject::Bool(false));
+/// Reading through a symlink is refused too, which is what makes the rule
+/// coherent: a link resolves on the host, so it would otherwise serve content
+/// the overlay has already replaced or deleted.
+#[test]
+#[cfg(unix)]
+fn ovl_mem_read_through_a_symlink_cannot_go_stale() {
+    if !symlinks_supported() {
+        return;
+    }
+    let dir = create_test_dir();
+    symlink_file("hello.txt", dir.path().join("link.txt"));
 
-    // Original target should still exist
-    let result = call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into()));
-    assert_eq!(result, MontyObject::Bool(true));
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+    call_ok(&mut mt, &write_text("/mnt/hello.txt", "OVERWRITTEN"));
+
+    // Before the block, this returned the pre-overwrite host content.
+    let exc = call_err(&mut mt, &OsFunctionCall::ReadText("/mnt/link.txt".into()));
+    assert_exc(
+        &exc,
+        ExcType::PermissionError,
+        "[Errno 13] Permission denied: '/mnt/link.txt'",
+    );
+
+    // The same for a path that merely traverses a link, and for `stat`.
+    let exc = call_err(&mut mt, &OsFunctionCall::Stat("/mnt/link.txt".into()));
+    assert_exc(
+        &exc,
+        ExcType::PermissionError,
+        "[Errno 13] Permission denied: '/mnt/link.txt'",
+    );
+
+    // Predicates stay silent, as they do for any path leaving the mount.
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/link.txt".into())),
+        MontyObject::Bool(false)
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt".into())),
+        MontyObject::String("OVERWRITTEN".to_owned())
+    );
+}
+
+/// Every operation on a symlink is refused — the sweep that catches a single
+/// path slipping the rule.
+///
+/// `mkdir` did exactly that: it swallowed the refusal and created an overlay
+/// directory shadowing the link, which then made `iterdir` list it as empty.
+#[test]
+#[cfg(unix)]
+fn ovl_mem_every_operation_on_a_symlink_is_refused() {
+    if !symlinks_supported() {
+        return;
+    }
+    let dir = create_test_dir();
+    symlink_file("hello.txt", dir.path().join("link.txt"));
+    symlink_file("subdir", dir.path().join("link_dir"));
+
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+    for call in [
+        OsFunctionCall::ReadText("/mnt/link.txt".into()),
+        OsFunctionCall::ReadBytes("/mnt/link.txt".into()),
+        write_text("/mnt/link.txt", "x"),
+        write_bytes("/mnt/link.txt", b"x".to_vec()),
+        append_bytes("/mnt/link.txt", b"x".to_vec()),
+        OsFunctionCall::Stat("/mnt/link.txt".into()),
+        OsFunctionCall::Unlink("/mnt/link.txt".into()),
+        OsFunctionCall::Rmdir("/mnt/link_dir".into()),
+        mkdir("/mnt/link_dir", false, false),
+        mkdir("/mnt/link_dir", false, true),
+        mkdir("/mnt/link_dir", true, true),
+        OsFunctionCall::Iterdir("/mnt/link_dir".into()),
+        rename("/mnt/link.txt", "/mnt/moved.txt"),
+        rename("/mnt/hello.txt", "/mnt/link.txt"),
+        OsFunctionCall::ReadText("/mnt/link_dir/nested.txt".into()),
+    ] {
+        let label = format!("{call:?}");
+        let exc = call_err(&mut mt, &call);
+        assert_eq!(exc.exc_type(), ExcType::PermissionError, "{label} must be refused");
+    }
+
+    // Nothing was shadowed by a refused call: the real names still work.
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt".into())),
+        MontyObject::String("hello world\n".to_owned())
+    );
+    assert_eq!(
+        sorted_names(&call_ok(&mut mt, &OsFunctionCall::Iterdir("/mnt/subdir".into()))),
+        vec!["deep", "nested.txt"]
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::IsSymlink("/mnt/link_dir".into())),
+        MontyObject::Bool(true)
+    );
+}
+
+/// A directory symlink blocks everything under it, not just its own name — a
+/// single lookup of the final component would resolve through it unseen.
+#[test]
+#[cfg(unix)]
+fn ovl_mem_read_below_a_symlinked_directory_is_refused() {
+    if !symlinks_supported() {
+        return;
+    }
+    let dir = create_test_dir();
+    symlink_file("subdir", dir.path().join("link_dir"));
+
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+    for op in [
+        OsFunctionCall::ReadText("/mnt/link_dir/nested.txt".into()),
+        OsFunctionCall::Stat("/mnt/link_dir/nested.txt".into()),
+        OsFunctionCall::Iterdir("/mnt/link_dir".into()),
+    ] {
+        let exc = call_err(&mut mt, &op);
+        assert_eq!(exc.exc_type(), ExcType::PermissionError);
+    }
+
+    // Reached by its real name, the same file reads normally.
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/subdir/nested.txt".into())),
+        MontyObject::String("nested content".to_owned())
+    );
 }
 
 // =============================================================================
@@ -2381,6 +2615,121 @@ fn ovl_mem_rmdir_real_dir_with_overlay_children() {
         &OsFunctionCall::ReadText("/mnt/subdir/overlay_only.txt".into()),
     );
     assert_eq!(result, MontyObject::String("overlay".to_owned()));
+}
+
+// =============================================================================
+// mkdir on a symlink to a directory
+// =============================================================================
+
+/// `exist_ok=True` must succeed on a symlink to a directory whether or not
+/// `parents` is set — CPython succeeds for both, and the two arms used to
+/// disagree because only the `parents=True` pre-check refused to follow.
+#[test]
+#[cfg(unix)]
+fn mkdir_on_symlink_to_dir_follows_for_exist_ok() {
+    if !symlinks_supported() {
+        return;
+    }
+    for parents in [false, true] {
+        let dir = create_test_dir();
+        symlink_file("subdir", dir.path().join("link_dir"));
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+        assert_eq!(
+            call_ok(&mut mt, &mkdir("/mnt/link_dir", parents, true)),
+            MontyObject::None,
+            "exist_ok on a symlink to a directory must succeed (parents={parents})"
+        );
+        // Without `exist_ok` it is still `FileExistsError`, as in CPython.
+        let exc = call_err(&mut mt, &mkdir("/mnt/link_dir", parents, false));
+        assert_exc(
+            &exc,
+            ExcType::FileExistsError,
+            "[Errno 17] File exists: '/mnt/link_dir'",
+        );
+    }
+}
+
+/// A dangling symlink and a symlink to a *file* both stay `FileExistsError`
+/// even with `exist_ok=True`: following finds no directory. CPython agrees.
+#[test]
+#[cfg(unix)]
+fn mkdir_exist_ok_still_refuses_non_directory_symlinks() {
+    if !symlinks_supported() {
+        return;
+    }
+    for parents in [false, true] {
+        let dir = create_test_dir();
+        symlink_file("nowhere", dir.path().join("dangling"));
+        symlink_file("hello.txt", dir.path().join("link.txt"));
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+        for name in ["dangling", "link.txt"] {
+            let exc = call_err(&mut mt, &mkdir(&format!("/mnt/{name}"), parents, true));
+            assert_exc(
+                &exc,
+                ExcType::FileExistsError,
+                &format!("[Errno 17] File exists: '/mnt/{name}'"),
+            );
+        }
+    }
+}
+
+// =============================================================================
+// Overlay rename onto a tombstoned destination
+// =============================================================================
+
+/// After `rmdir`, the destination is gone as far as the sandbox is concerned,
+/// so a rename onto it must not be refused for what the host still has there.
+///
+/// The tombstone used to be read through to the real directory underneath,
+/// giving `IsADirectoryError` for a path `exists()` already reported as
+/// `False` — and disagreeing with the non-empty-directory check next to it.
+#[test]
+fn ovl_mem_rename_onto_tombstoned_dir_succeeds() {
+    let dir = create_test_dir();
+    fs::create_dir(dir.path().join("target")).unwrap();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_ok(&mut mt, &OsFunctionCall::Rmdir("/mnt/target".into()));
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/target".into())),
+        MontyObject::Bool(false)
+    );
+
+    call_ok(&mut mt, &rename("/mnt/hello.txt", "/mnt/target"));
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/target".into())),
+        MontyObject::String("hello world\n".to_owned())
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::IsFile("/mnt/target".into())),
+        MontyObject::Bool(true)
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
+        MontyObject::Bool(false)
+    );
+}
+
+/// The mirror case: a directory renamed onto a tombstoned *file* must not be
+/// refused with `NotADirectoryError` either.
+#[test]
+fn ovl_mem_rename_dir_onto_tombstoned_file_succeeds() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_ok(&mut mt, &OsFunctionCall::Unlink("/mnt/hello.txt".into()));
+    call_ok(&mut mt, &rename("/mnt/subdir", "/mnt/hello.txt"));
+
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::IsDir("/mnt/hello.txt".into())),
+        MontyObject::Bool(true)
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt/nested.txt".into())),
+        MontyObject::String("nested content".to_owned())
+    );
 }
 
 // =============================================================================

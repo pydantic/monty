@@ -44,6 +44,8 @@ assert 3 * (1, 2) == (1, 2, 1, 2, 1, 2)
 assert (1,) * 0 == ()
 assert (1,) * -1 == ()
 assert () * 5 == ()
+assert () * (2**30) == ()
+assert (2**30) * () == ()
 assert (1, 2) * 1 == (1, 2)
 
 # === Tuple augmented assignment edge cases ===
@@ -137,3 +139,18 @@ assert repr(()) == '()'
 assert repr((1,)) == '(1,)'
 assert repr((1, 2)) == '(1, 2)'
 assert repr((1, (2, 3))) == '(1, (2, 3))'
+
+# === `in` / `not in` ===
+tu = (1, 'two', 3)
+assert 1 in tu
+assert 'two' in tu
+assert 9 not in tu
+assert () == ()
+assert 2 in (1, (2, 3))[1]
+# Members compare by value, across types where Python considers them equal.
+assert True in (1, 2)
+assert 1.0 in (1, 2)
+assert (2, 3) in (1, (2, 3))
+assert [2, 3] in (1, [2, 3])
+assert None in (None,)
+assert 1 not in ()

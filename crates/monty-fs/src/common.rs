@@ -5,13 +5,21 @@
 //! byte decoding, stat conversion, and quota bookkeeping logic.
 
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{ErrorKind, Read, Write},
-    path::Path,
+    ffi::OsStr,
+    io::{Error as IoError, ErrorKind, Read, Write},
+    path::{Path, PathBuf},
     time::SystemTime,
 };
 
+#[cfg(unix)]
+use cap_std::fs::OpenOptionsExt;
+use cap_std::{
+    fs::{Dir, File, Metadata, OpenOptions},
+    time::SystemTime as CapSystemTime,
+};
 use monty_types::{MontyObject, UnicodeErrorData, dir_stat, file_stat, utf8_error_reason};
+#[cfg(unix)]
+use rustix::fs::OFlags;
 
 use super::error::MountError;
 
@@ -83,8 +91,10 @@ impl MemoryBudget {
 pub(super) struct MountContext<'a> {
     /// Virtual mount prefix such as `"/mnt/data"`.
     pub mount_virtual: &'a str,
-    /// Canonical host directory that backs the mount.
-    pub mount_host: &'a Path,
+    /// Descriptor for the mounted directory — the sandbox boundary. Every
+    /// operation resolves relative to this, so no path can leave the mount and
+    /// no concurrent rename can redirect one.
+    pub mount_dir: &'a Dir,
     /// Cumulative bytes written through this mount.
     pub write_bytes_used: &'a mut u64,
     /// Optional cumulative write cap for the mount.
@@ -97,8 +107,13 @@ pub(super) struct MountContext<'a> {
 ///
 /// Directory-read errors differ across platforms, so the target is checked
 /// explicitly before reading.
-pub(super) fn read_text_fs(path: &Path, vpath: &str, budget: MemoryBudget) -> Result<MontyObject, MountError> {
-    let bytes = read_file_limited(path, vpath, budget)?;
+pub(super) fn host_read_text(
+    dir: &Dir,
+    rel: &str,
+    vpath: &str,
+    budget: MemoryBudget,
+) -> Result<MontyObject, MountError> {
+    let bytes = read_file_limited(dir, rel, vpath, budget)?;
     let content = bytes_to_utf8(bytes)?;
     Ok(MontyObject::String(content))
 }
@@ -107,8 +122,13 @@ pub(super) fn read_text_fs(path: &Path, vpath: &str, budget: MemoryBudget) -> Re
 ///
 /// Directory-read errors differ across platforms, so the target is checked
 /// explicitly before reading.
-pub(super) fn read_bytes_fs(path: &Path, vpath: &str, budget: MemoryBudget) -> Result<MontyObject, MountError> {
-    Ok(MontyObject::Bytes(read_file_limited(path, vpath, budget)?))
+pub(super) fn host_read_bytes(
+    dir: &Dir,
+    rel: &str,
+    vpath: &str,
+    budget: MemoryBudget,
+) -> Result<MontyObject, MountError> {
+    Ok(MontyObject::Bytes(read_file_limited(dir, rel, vpath, budget)?))
 }
 
 /// Reads at most `budget + 1` bytes so an oversized file is rejected before it
@@ -119,20 +139,17 @@ pub(super) fn read_bytes_fs(path: &Path, vpath: &str, budget: MemoryBudget) -> R
 /// with one `stat`, and pre-sizing the buffer (capped by the budget) to avoid
 /// `read_to_end`'s doubling reallocations. Enforcement is always the byte
 /// count actually read, so lying or racing metadata cannot evade the limit.
-fn read_file_limited(path: &Path, vpath: &str, budget: MemoryBudget) -> Result<Vec<u8>, MountError> {
-    reject_non_regular(path, vpath)?;
-    let file = File::open(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
-    let meta_len = file
-        .metadata()
-        .map_err(|err| MountError::Io(err, vpath.to_owned()))?
-        .len();
+fn read_file_limited(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudget) -> Result<Vec<u8>, MountError> {
+    reject_non_regular(dir, rel, vpath)?;
+    let file = open_regular(dir, rel, vpath, OpenOptions::new().read(true))?;
+    let meta_len = file.metadata().map_err(|err| map_io(err, vpath))?.len();
     budget.check(meta_len)?;
     // The check above bounds `meta_len` by the budget, so this pre-allocation
     // can never exceed the limit being enforced.
     let mut content = Vec::with_capacity(usize::try_from(meta_len).unwrap_or(0));
     file.take(budget.available.saturating_add(1))
         .read_to_end(&mut content)
-        .map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+        .map_err(|err| map_io(err, vpath))?;
     budget.check(as_u64(content.len()))?;
     Ok(content)
 }
@@ -141,9 +158,8 @@ fn read_file_limited(path: &Path, vpath: &str, budget: MemoryBudget) -> Result<V
 ///
 /// On Windows, `fs::write()` on a directory returns `PermissionDenied` instead of
 /// `IsADirectory`, so we check explicitly before writing.
-pub(super) fn write_text_fs(path: &Path, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
-    reject_non_regular(path, vpath)?;
-    fs::write(path, content).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+pub(super) fn host_write_text(dir: &Dir, rel: &str, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
+    write_bytes_to_file(dir, rel, content.as_bytes(), vpath)?;
     Ok(MontyObject::Int(
         i64::try_from(content.chars().count()).unwrap_or(i64::MAX),
     ))
@@ -153,18 +169,29 @@ pub(super) fn write_text_fs(path: &Path, content: &str, vpath: &str) -> Result<M
 ///
 /// On Windows, `fs::write()` on a directory returns `PermissionDenied` instead of
 /// `IsADirectory`, so we check explicitly before writing.
-pub(super) fn write_bytes_fs(path: &Path, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
-    reject_non_regular(path, vpath)?;
-    fs::write(path, content).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+pub(super) fn host_write_bytes(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
+    write_bytes_to_file(dir, rel, content, vpath)?;
     Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
+}
+
+/// Truncates `rel` and writes `content` through the mount descriptor.
+fn write_bytes_to_file(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<(), MountError> {
+    reject_non_regular(dir, rel, vpath)?;
+    let mut file = open_regular(
+        dir,
+        rel,
+        vpath,
+        OpenOptions::new().write(true).create(true).truncate(true),
+    )?;
+    file.write_all(content).map_err(|err| map_io(err, vpath))
 }
 
 /// Appends text to a file and returns the number of characters written.
 ///
 /// The host file is opened only for the duration of this call, preserving the
 /// sandbox invariant that Monty never keeps native file handles alive.
-pub(super) fn append_text_fs(path: &Path, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
-    append_bytes_to_file(path, content.as_bytes(), vpath)?;
+pub(super) fn host_append_text(dir: &Dir, rel: &str, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
+    append_bytes_to_file(dir, rel, content.as_bytes(), vpath)?;
     Ok(MontyObject::Int(
         i64::try_from(content.chars().count()).unwrap_or(i64::MAX),
     ))
@@ -172,22 +199,52 @@ pub(super) fn append_text_fs(path: &Path, content: &str, vpath: &str) -> Result<
 
 /// Appends bytes to a file and returns the number of bytes written.
 ///
-/// This is the binary counterpart of [`append_text_fs`].
-pub(super) fn append_bytes_fs(path: &Path, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
-    append_bytes_to_file(path, content, vpath)?;
+/// This is the binary counterpart of [`host_append_text`].
+pub(super) fn host_append_bytes(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
+    append_bytes_to_file(dir, rel, content, vpath)?;
     Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
 }
 
-/// Opens `path` in append mode, writes all bytes, and closes it before returning.
-fn append_bytes_to_file(path: &Path, content: &[u8], vpath: &str) -> Result<(), MountError> {
-    reject_non_regular(path, vpath)?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|err| MountError::Io(err, vpath.to_owned()))?;
-    file.write_all(content)
-        .map_err(|err| MountError::Io(err, vpath.to_owned()))
+/// Opens `rel` in append mode, writes all bytes, and closes it before returning.
+fn append_bytes_to_file(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<(), MountError> {
+    reject_non_regular(dir, rel, vpath)?;
+    let mut file = open_regular(dir, rel, vpath, OpenOptions::new().create(true).append(true))?;
+    file.write_all(content).map_err(|err| map_io(err, vpath))
+}
+
+/// Opens `rel` and rejects it unless the *handle* is a regular file — the
+/// authoritative special-file guard, since a handle is bound to one inode and
+/// cannot be raced the way [`reject_non_regular`]'s path check can.
+fn open_regular(dir: &Dir, rel: &str, vpath: &str, options: &mut OpenOptions) -> Result<File, MountError> {
+    let file = dir
+        .open_with(rel, non_blocking(options))
+        .map_err(|err| map_io(err, vpath))?;
+    let metadata = file.metadata().map_err(|err| map_io(err, vpath))?;
+    if metadata.is_file() {
+        Ok(file)
+    } else if metadata.is_dir() {
+        Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
+    } else {
+        Err(MountError::io_err(
+            ErrorKind::PermissionDenied,
+            "Permission denied",
+            vpath,
+        ))
+    }
+}
+
+/// Adds `O_NONBLOCK` so opening a FIFO returns instead of waiting for a peer,
+/// which is what lets the guard above run after the open. No-op on regular files.
+#[cfg(unix)]
+fn non_blocking(options: &mut OpenOptions) -> &mut OpenOptions {
+    options.custom_flags(OFlags::NONBLOCK.bits().cast_signed())
+}
+
+/// No-op: Windows named pipes aren't reachable through a `Dir`, so no open here
+/// can block on a peer.
+#[cfg(not(unix))]
+fn non_blocking(options: &mut OpenOptions) -> &mut OpenOptions {
+    options
 }
 
 /// Creates a directory, matching CPython `pathlib.Path.mkdir()` semantics:
@@ -196,11 +253,19 @@ fn append_bytes_to_file(path: &Path, content: &[u8], vpath: &str) -> Result<(), 
 ///   (whether file or directory), even with `parents=True`.
 /// - `exist_ok=True`: silently succeeds only if the path is an existing **directory**.
 ///   If the path is an existing **file**, raises `FileExistsError` regardless.
-pub(super) fn mkdir_fs(path: &Path, parents: bool, exist_ok: bool, vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_mkdir(
+    dir: &Dir,
+    rel: &str,
+    parents: bool,
+    exist_ok: bool,
+    vpath: &str,
+) -> Result<MontyObject, MountError> {
     let result = if parents {
         // `create_dir_all` silently returns `Ok(())` when the directory already exists,
-        // so we must check for pre-existing paths ourselves.
-        match path.symlink_metadata() {
+        // so we must check for pre-existing paths ourselves. The lookup follows,
+        // matching both CPython and the `parents=false` recovery arm below: a
+        // symlink to a directory satisfies `exist_ok` either way.
+        match dir.metadata(rel) {
             Ok(meta) if meta.is_dir() => {
                 return if exist_ok {
                     Ok(MontyObject::None)
@@ -214,38 +279,36 @@ pub(super) fn mkdir_fs(path: &Path, parents: bool, exist_ok: bool, vpath: &str) 
             }
             Err(_) => {} // Path doesn't exist, proceed with creation.
         }
-        fs::create_dir_all(path)
+        dir.create_dir_all(rel)
     } else {
-        fs::create_dir(path)
+        dir.create_dir(rel)
     };
 
     match result {
         Ok(()) => Ok(MontyObject::None),
-        Err(err) if err.kind() == ErrorKind::AlreadyExists && exist_ok && path.is_dir() => Ok(MontyObject::None),
-        Err(err) => Err(MountError::Io(err, vpath.to_owned())),
+        Err(err) if err.kind() == ErrorKind::AlreadyExists && exist_ok && host_is_dir(dir, rel) => {
+            Ok(MontyObject::None)
+        }
+        Err(err) => Err(map_io(err, vpath)),
     }
 }
 
-/// Removes a file.
-pub(super) fn unlink_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
-    fs::remove_file(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+/// Removes a file, or the symlink itself when `rel` names one.
+pub(super) fn host_unlink(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject, MountError> {
+    dir.remove_file(rel).map_err(|err| map_io(err, vpath))?;
     Ok(MontyObject::None)
 }
 
 /// Removes an empty directory.
-pub(super) fn rmdir_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
-    fs::remove_dir(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+pub(super) fn host_rmdir(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject, MountError> {
+    dir.remove_dir(rel).map_err(|err| map_io(err, vpath))?;
     Ok(MontyObject::None)
 }
 
 /// Returns a `stat_result`-shaped object for a file or directory.
-pub(super) fn stat_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
-    let metadata = fs::metadata(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
-    let mtime = metadata
-        .modified()
-        .unwrap_or(SystemTime::UNIX_EPOCH)
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0.0, |duration| duration.as_secs_f64());
+pub(super) fn host_stat(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject, MountError> {
+    let metadata = dir.metadata(rel).map_err(|err| map_io(err, vpath))?;
+    let mtime = mtime_secs(&metadata);
     let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
 
     if metadata.is_dir() {
@@ -256,13 +319,8 @@ pub(super) fn stat_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountErro
 }
 
 /// Lists visible directory entries within the mount memory budget.
-pub(super) fn iterdir_fs(
-    host_path: &Path,
-    vpath: &str,
-    mount_host_path: &Path,
-    budget: MemoryBudget,
-) -> Result<MontyObject, MountError> {
-    let names = list_visible_real_dir_entry_names(host_path, mount_host_path, vpath, budget.halved())?;
+pub(super) fn host_iterdir(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudget) -> Result<MontyObject, MountError> {
+    let names = host_list_visible_dir_entry_names(dir, rel, vpath, budget.halved())?;
     let mut memory_usage = names.iter().fold(0_u64, |usage, name| {
         usage
             .saturating_add(as_u64(name.len()))
@@ -300,28 +358,33 @@ pub(super) fn commit_write_bytes(bytes: usize, ctx: &mut MountContext<'_>) {
 
 /// Returns visible real directory entry names for `iterdir()`.
 ///
-/// Symlinks are only exposed when their canonical target remains within the
-/// mount boundary so directory iteration does not leak the existence of
-/// outbound or broken links.
-pub(super) fn list_visible_real_dir_entry_names(
-    host_path: &Path,
-    mount_host_path: &Path,
+/// Symlinks are only exposed when they still resolve inside the mount, so
+/// iteration does not leak the existence of outbound or broken links.
+pub(super) fn host_list_visible_dir_entry_names(
+    dir: &Dir,
+    rel: &str,
     vpath: &str,
     budget: MemoryBudget,
 ) -> Result<Vec<String>, MountError> {
-    let read_dir = fs::read_dir(host_path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+    // `read_dir` on a missing path reports ENOTDIR, but CPython raises
+    // `FileNotFoundError`, so surface the lookup failure first.
+    dir.metadata(rel).map_err(|err| map_io(err, vpath))?;
+    let read_dir = dir.read_dir(rel).map_err(|err| map_io(err, vpath))?;
     let mut names = Vec::new();
     let mut memory_usage = 0_u64;
 
     for entry in read_dir {
-        let entry = entry.map_err(|err| MountError::Io(err, vpath.to_owned()))?;
-        let file_type = entry.file_type().map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+        let entry = entry.map_err(|err| map_io(err, vpath))?;
+        let file_type = entry.file_type().map_err(|err| map_io(err, vpath))?;
 
         if file_type.is_symlink() {
-            match fs::canonicalize(entry.path()) {
-                Ok(canonical) if !canonical.starts_with(mount_host_path) => continue,
-                Err(_) => continue,
-                _ => {}
+            // Join the raw name: a lossy `String` round-trip would look up a
+            // different entry and silently drop this one. The lookup must stay
+            // path-based so it runs through the descriptor's confinement check —
+            // `entry.metadata()` resolves the link without one.
+            let child = join_mount_relative_os(rel, &entry.file_name());
+            if dir.metadata(&child).is_err() {
+                continue;
             }
         }
 
@@ -362,32 +425,82 @@ pub(super) fn current_timestamp() -> f64 {
         .map_or(0.0, |duration| duration.as_secs_f64())
 }
 
-/// Reads a directory modification time, falling back to `now` if needed.
-pub(super) fn dir_mtime(path: &Path) -> f64 {
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .unwrap_or_else(|_| SystemTime::now())
+/// Seconds since the Unix epoch for a file's mtime, or `0.0` if unavailable.
+pub(super) fn mtime_secs(metadata: &Metadata) -> f64 {
+    metadata
+        .modified()
+        .map_or(SystemTime::UNIX_EPOCH, CapSystemTime::into_std)
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
+}
+
+/// Reads a directory modification time, falling back to `now` if needed.
+pub(super) fn host_dir_mtime(dir: &Dir, rel: &str) -> f64 {
+    dir.metadata(rel)
+        .and_then(|metadata| metadata.modified())
+        .map_or_else(|_| SystemTime::now(), CapSystemTime::into_std)
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0.0, |duration| duration.as_secs_f64())
+}
+
+/// [`join_mount_relative`] for a raw directory-entry name: the child stays an
+/// `OsStr` so a non-UTF-8 name survives the join and the resulting lookup
+/// names the entry itself — a lossy `String` round-trip would name a
+/// different path.
+pub(super) fn join_mount_relative_os(rel: &str, child: &OsStr) -> PathBuf {
+    if rel.is_empty() || rel == "." {
+        PathBuf::from(child)
+    } else {
+        Path::new(rel).join(child)
+    }
+}
+
+/// Joins a mount-relative directory path with a child name, yielding the
+/// child's own mount-relative path — the coordinate system `Dir` operations
+/// and overlay keys share. `""` and `"."` both mean the mount root.
+pub(super) fn join_mount_relative(rel: &str, child: &str) -> String {
+    if rel.is_empty() || rel == "." {
+        child.to_owned()
+    } else {
+        format!("{rel}/{child}")
+    }
+}
+
+/// Whether `rel` resolves to a directory inside the mount.
+pub(super) fn host_is_dir(dir: &Dir, rel: &str) -> bool {
+    dir.metadata(rel).is_ok_and(|meta| meta.is_dir())
+}
+
+/// Whether `rel` resolves to a regular file inside the mount.
+pub(super) fn host_is_file(dir: &Dir, rel: &str) -> bool {
+    dir.metadata(rel).is_ok_and(|meta| meta.is_file())
+}
+
+/// Converts a `cap-std` error into a [`MountError`].
+///
+/// `cap-std` reports both an escape attempt and a genuine in-mount `EACCES` as
+/// `PermissionDenied`; the errno tells them apart, since its escape error is
+/// synthetic on every platform (Linux maps `EXDEV` through the same
+/// constructor). Keeps [`MountError::PathEscape`] meaningful for diagnostics.
+pub(super) fn map_io(err: IoError, vpath: &str) -> MountError {
+    if err.kind() == ErrorKind::PermissionDenied && err.raw_os_error().is_none() {
+        MountError::PathEscape {
+            virtual_path: vpath.to_owned(),
+        }
+    } else {
+        MountError::Io(err, vpath.to_owned())
+    }
 }
 
 /// Rejects an existing `path` that is not a regular file: directories get an
 /// `IsADirectory` error, and special files (FIFOs, sockets, devices) get
 /// `PermissionDenied`. A missing path passes — write/append create it.
 ///
-/// The directory check normalises Windows (where many `std::fs` operations on
-/// directories return `PermissionDenied` instead of `IsADirectory`). The
-/// special-file check is a hang guard: reading or writing a FIFO blocks until
-/// a peer appears, and mount I/O runs on the *host* thread servicing the
-/// sandbox, so it must never block on sandbox-reachable input.
-///
-/// TOCTOU caveat: this is a check-then-open, so another *host* process with
-/// write access to the mounted directory can swap a regular file for a FIFO
-/// between check and open and block the servicing thread. Sandbox code alone
-/// cannot exploit this — no mount mode can create special files or symlinks —
-/// so do not mount directories writable by untrusted local processes.
-pub(super) fn reject_non_regular(path: &Path, vpath: &str) -> Result<(), MountError> {
-    match fs::metadata(path) {
+/// A path check, so raceable — [`open_regular`] is the guard that decides. This
+/// only buys error quality: `IsADirectory` on every platform, where the
+/// post-open error depends on what the host's `open` made of the directory.
+pub(super) fn reject_non_regular(dir: &Dir, rel: &str, vpath: &str) -> Result<(), MountError> {
+    match dir.metadata(rel) {
         Ok(meta) if meta.is_dir() => Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath)),
         Ok(meta) if !meta.is_file() => Err(MountError::io_err(
             ErrorKind::PermissionDenied,
