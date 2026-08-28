@@ -572,10 +572,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
                 let formatted = format_time_strftime(&time, format.as_str(vm))?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
             }
-            Some(id) if id == StaticStrings::Replace => {
-                let time = self.get(vm.heap).clone();
-                replace(vm, &time, args).map(CallResult::Value)
-            }
+            Some(id) if id == StaticStrings::Replace => self.replace(vm, args).map(CallResult::Value),
             Some(id) if id == StaticStrings::Utcoffset => {
                 args.check_zero_args("time.utcoffset", vm.heap)?;
                 let offset_seconds = self.get(vm.heap).tzinfo.as_ref().map(|tz| tz.offset_seconds);
@@ -626,39 +623,50 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
     }
 }
 
-/// `time.replace(...)` — a copy of `time` with the named components substituted.
-///
-/// Every field the caller omits is carried over, `fold` and the `tzinfo` object
-/// identity included. Components are validated by [`from_components`], exactly
-/// as the constructor validates them.
-fn replace(vm: &mut VM<'_>, time: &Time, args: ArgValues) -> RunResult<Value> {
-    let TimeReplaceArgs {
-        hour,
-        minute,
-        second,
-        microsecond,
-        tzinfo,
-        fold,
-    } = TimeReplaceArgs::from_args(args, vm)?;
+/// Time behaviour that needs both the object and the VM, so it cannot be
+/// expressed as a plain function over [`Time`].
+impl<'h> HeapObjectRead<'h, Time> {
+    /// `time.replace(...)` — a copy of `time` with the named components substituted.
+    ///
+    /// Every field the caller omits is carried over, `fold` and the `tzinfo` object
+    /// identity included. Components are validated by [`from_components`], exactly
+    /// as the constructor validates them.
+    fn replace(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
+        // Components are `Copy` and the zone is taken by value, so the heap borrow
+        // ends before `from_args` needs `&mut VM`. The carried-over `tzinfo_ref` is
+        // borrowed, kept valid by this read handle until `allocate_with_tz` has
+        // taken its own reference.
+        let time = self.get(vm.heap);
+        let (current_hour, current_minute, current_second) = (time.hour, time.minute, time.second);
+        let (current_microsecond, current_fold) = (time.microsecond, time.fold);
+        let (current_tz, current_tz_ref) = (time.timezone_info(), time.tzinfo_ref());
 
-    let hour = hour.unwrap_or_else(|| i32::from(time.hour));
-    let minute = minute.unwrap_or_else(|| i32::from(time.minute));
-    let second = second.unwrap_or_else(|| i32::from(time.second));
-    let microsecond =
-        microsecond.unwrap_or_else(|| i32::try_from(time.microsecond).expect("microsecond is always in 0..=999_999"));
-    let fold = fold.unwrap_or_else(|| i32::from(time.fold));
+        let TimeReplaceArgs {
+            hour,
+            minute,
+            second,
+            microsecond,
+            tzinfo,
+            fold,
+        } = TimeReplaceArgs::from_args(args, vm)?;
 
-    match tzinfo {
-        // Absent kwarg: carry the current zone over. `time` is a clone of a live
-        // heap entry, so the borrowed id stays valid until `allocate_with_tz`
-        // has taken its own reference.
-        None => {
-            let replaced = from_components(hour, minute, second, microsecond, fold)?;
-            Ok(allocate_with_tz(vm, replaced, time.timezone_info(), time.tzinfo_ref()))
-        }
-        Some(tzinfo) => {
-            defer_drop!(tzinfo, vm);
-            allocate(vm, hour, minute, second, microsecond, fold, tzinfo)
+        let hour = hour.unwrap_or_else(|| i32::from(current_hour));
+        let minute = minute.unwrap_or_else(|| i32::from(current_minute));
+        let second = second.unwrap_or_else(|| i32::from(current_second));
+        let microsecond = microsecond
+            .unwrap_or_else(|| i32::try_from(current_microsecond).expect("microsecond is always in 0..=999_999"));
+        let fold = fold.unwrap_or_else(|| i32::from(current_fold));
+
+        match tzinfo {
+            // Absent kwarg: carry the current zone over.
+            None => {
+                let replaced = from_components(hour, minute, second, microsecond, fold)?;
+                Ok(allocate_with_tz(vm, replaced, current_tz, current_tz_ref))
+            }
+            Some(tzinfo) => {
+                defer_drop!(tzinfo, vm);
+                allocate(vm, hour, minute, second, microsecond, fold, tzinfo)
+            }
         }
     }
 }
