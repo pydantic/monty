@@ -204,6 +204,16 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         assert monty_run('x', inputs={'x': ty}) is expected
 
 
+@pytest.mark.skipif(sys.version_info >= (3, 12), reason='batched round-trips like the rest from 3.12')
+def test_itertools_batched_type_on_older_host(monty_run: RunMonty):
+    """The sandbox can still build a `batched` on a host too old to have one, so its
+    type object crossing out names the type it cannot supply rather than raising a bare
+    `AttributeError` from the import behind it."""
+    with pytest.raises(TypeError) as exc_info:
+        monty_run('import itertools\ntype(itertools.batched([1, 2], 1))')
+    assert exc_info.value.args[0] == 'Cannot convert itertools.batched to a host type: this Python does not define it'
+
+
 def test_type_object_input_isinstance(monty_run: RunMonty):
     """A type object passed in is usable as the second argument to `isinstance`
     inside the sandbox."""

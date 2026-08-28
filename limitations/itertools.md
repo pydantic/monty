@@ -75,6 +75,11 @@ raise `AttributeError` at runtime.
   `<itertools.repeat object>` rather than its in-sandbox `repr()`
   (`count(0)`, `repeat(7, 3)`). Monty represents all iterators this way rather
   than recursing into what they hold.
+- **`batched`'s type cannot cross to a host below Python 3.12**, which is where
+  `itertools.batched` was added. Returning `type(itertools.batched(...))` to
+  such a host raises `TypeError: Cannot convert itertools.batched to a host
+  type: this Python does not define it`; every other adaptor's type resolves on
+  all supported hosts.
 
 ## Infinite iterators and the eager builtins
 
