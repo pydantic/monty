@@ -16,7 +16,10 @@ use crate::{
         HeapReadOutput, heap_read_ref_as_field_mut,
     },
     intern::Interns,
-    modules::dataclasses::{self, DataclassHash},
+    modules::{
+        copy::{Memo, PyDeepCopy, deep_copy, deep_copy_attrs},
+        dataclasses::{self, DataclassHash},
+    },
     value::{EitherStr, Value},
 };
 
@@ -88,7 +91,19 @@ pub(crate) struct BoundMethod {
 }
 
 impl<'h> HeapRead<'h, Instance> {
-    fn attrs_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
+    /// Allocates an instance of the same class as this one, with no attributes
+    /// and without calling `__init__` — taking a counted reference to the class.
+    ///
+    /// What `copy` builds before filling a copy's `__dict__`; CPython's reducer
+    /// path skips `__init__` the same way.
+    pub(crate) fn allocate_empty_like(&self, vm: &mut VM<'h>) -> HeapId {
+        let class_id = self.get(vm.heap).class();
+        vm.heap.inc_ref(class_id);
+        vm.heap
+            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))))
+    }
+
+    pub(crate) fn attrs_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
         heap_read_ref_as_field_mut!(self, Instance, attrs)
     }
 
@@ -426,6 +441,18 @@ impl HeapItem for Instance {
     }
 }
 
+impl<'h> HeapRead<'h, BoundMethod> {
+    /// Allocates a method binding this one's function to `instance`, whose
+    /// reference it takes ownership of.
+    ///
+    /// How `copy` rebuilds a method: a fresh binding over the same `__func__`,
+    /// never a copy of the function, which is shared as all functions are.
+    pub(crate) fn allocate_like(&self, instance: Value, vm: &mut VM<'h>) -> Value {
+        let func = self.get(vm.heap).func.clone_with_heap(vm.heap);
+        Value::Ref(vm.heap.allocate(HeapData::BoundMethod(BoundMethod { instance, func })))
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         // Monty has no dedicated `method` type; bound methods report `function`.
@@ -574,7 +601,7 @@ fn instance_call_str_dunder(self_id: HeapId, dunder: &'static str, vm: &mut VM<'
 /// pushed frame, so — unlike `__enter__` via [`call_member_bound`] — it cannot
 /// suspend on an external/OS call. That is forced by the callers' signatures,
 /// which must hand a `Value` straight back; see `limitations/classes.md`.
-fn instance_call_dunder_sync(
+pub(crate) fn instance_call_dunder_sync(
     self_id: HeapId,
     dunder: &'static str,
     arg: Option<Value>,
@@ -780,5 +807,37 @@ fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
             HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::Partial(_)
         ),
         _ => false,
+    }
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, Instance> {
+    /// Copies a class instance: `__deepcopy__` when the class defines one, else
+    /// a new instance with a deep-copied `__dict__` and no `__init__` call —
+    /// which is what CPython's reducer path does too.
+    #[inline(never)]
+    fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let id = source.ref_id().expect("a deep copy starts from a heap value");
+        if let Some(copy) = instance_call_dunder_sync(id, "__deepcopy__", Some(memo.dict_value(vm)), vm)? {
+            Ok(copy)
+        } else {
+            let copy_id = self.allocate_empty_like(vm);
+            deep_copy_attrs(id, copy_id, source, memo, vm)
+        }
+    }
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, BoundMethod> {
+    /// Copies a bound method by rebinding its function to a deep copy of its
+    /// receiver — CPython's `_deepcopy_method`.
+    ///
+    /// The receiver goes through the memo, so copying an object and one of its
+    /// methods together binds the copy to the copied object, and an instance
+    /// holding its own method terminates on the shell.
+    #[inline(never)]
+    fn py_deep_copy(&self, _source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let instance = self.get(vm.heap).instance.clone_with_heap(vm.heap);
+        let copied = deep_copy(&instance, memo, vm);
+        instance.drop_with(vm);
+        Ok(self.allocate_like(copied?, vm))
     }
 }

@@ -139,6 +139,17 @@ indistinguishable from a stack overflow.
   limit, so Monty raises `RecursionError` before a native stack overflow would
   abort the process. See the `__repr__`/`__str__` entry in ./classes.md for
   the main user-visible divergence this causes.
+- Operations that walk a nested container in Rust — `==`, `<`, `repr()`,
+  `hash()`, `isinstance()`, `json.dumps()`, `copy.deepcopy()` — charge one
+  recursion level per level of nesting, but each level costs real native stack
+  (roughly 0.5-1.1 KiB, depending on the operation and the container). They are
+  not capped separately the way native re-entry above is, so on a worker with a
+  small stack a structure nested close to the 1000-frame limit can exhaust it
+  before `RecursionError` is raised. A wasm worker (1 MiB) reaches that point at
+  roughly 950 levels of nesting for the most expensive operations; the sandbox
+  is not breached, but the worker dies and the pool replaces it rather than the
+  session raising. Lowering `max_recursion_depth` moves the point at which the
+  limit fires ahead of the stack.
 
 ## Suspensions
 

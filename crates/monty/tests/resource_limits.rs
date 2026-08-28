@@ -962,6 +962,29 @@ fn timeout_in_sort_key_loop() {
     );
 }
 
+/// `deepcopy` walks the whole graph inside a single call, reaching no dispatch
+/// checkpoint, so its fill loops are all that bound it. The source is built in
+/// an earlier feed, leaving only the copy to run against the limit.
+#[test]
+fn timeout_in_deepcopy_fill_loop() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("import copy\nx = [[0]] * 4_000_000", vec![], PrintWriter::Stdout)
+        .unwrap();
+    repl.tracker_mut().set_max_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("copy.deepcopy(x)", vec![], PrintWriter::Stdout)
+        .expect_err("the copy must hit the time limit");
+    let elapsed = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    // Polled, this stops one budget in at any machine speed; unpolled it walks
+    // all 4M items before anything re-checks, which takes seconds.
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "should stop promptly, took {elapsed:?}"
+    );
+}
+
 /// Feeds shorter than the dispatch-checkpoint interval never probe GC inside
 /// the run loop, so only the host-boundary probe in `finish_host_turn` keeps
 /// a stream of tiny cycle-making snippets from accumulating garbage (and from

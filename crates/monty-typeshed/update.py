@@ -152,6 +152,7 @@ base64: 3.0-
 binascii: 3.0-
 builtins: 3.0-
 collections: 3.0-
+copy: 3.0-
 dataclasses: 3.7-
 datetime: 3.0-
 functools: 3.0-

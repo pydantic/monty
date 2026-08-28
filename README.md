@@ -39,7 +39,7 @@ What Monty **can** do:
 - Control resource usage - Monty can track memory usage, stack depth, and execution time and cancel execution if it exceeds preset limits
 - Collect stdout and stderr and return it to the caller
 - Run async or sync sandboxed code, calling async or sync functions on the host
-- Use a small subset of the standard library including `asyncio`, `base64`, `binascii`, `collections`, `dataclasses`, `datetime`, `functools`, `itertools`, `json`, `math`, `os`, `pathlib`, `re`, `sys`, `typing`, `unicodedata`
+- Use a small subset of the standard library including `asyncio`, `base64`, `binascii`, `collections`, `copy`, `dataclasses`, `datetime`, `functools`, `itertools`, `json`, `math`, `os`, `pathlib`, `re`, `sys`, `typing`, `unicodedata`
 
 What Monty **cannot** do:
 
