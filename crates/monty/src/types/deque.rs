@@ -8,6 +8,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
+    modules::copy::{Memo, PyDeepCopy, deep_copy},
     resource_checks::{check_estimated_size, check_repeat_size},
     types::{
         LazyHeapSet, Type,
@@ -249,6 +250,16 @@ fn read_ssize(value: &Value, vm: &VM<'_>, overflow: fn() -> RunError) -> Option<
 }
 
 impl<'h> HeapRead<'h, Deque> {
+    /// Allocates a deque holding `items` with this one's `maxlen`, releasing
+    /// anything `maxlen` evicts. Ownership of `items` transfers to it.
+    ///
+    /// `items` may be empty, for a shell to be appended to later.
+    pub(crate) fn allocate_like(&self, items: Vec<Value>, vm: &mut VM<'h>) -> Value {
+        let (deque, evicted) = Deque::new(items, self.get(vm.heap).maxlen());
+        evicted.drop_with(vm);
+        Value::Ref(vm.heap.allocate(HeapData::Deque(deque)))
+    }
+
     /// Appends to the right, evicting from the left if `maxlen` is reached.
     ///
     /// Ownership of `item` transfers to the deque (refcount already handled by
@@ -1096,4 +1107,41 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
     let (new_deque, evicted) = Deque::new(result, maxlen);
     debug_assert!(evicted.is_empty(), "repeat_deque built more than maxlen items");
     Ok(Value::Ref(vm.heap.allocate(HeapData::Deque(new_deque))))
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, Deque> {
+    /// Copies a deque, keeping its `maxlen`.
+    #[inline(never)]
+    fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let copy = self.allocate_like(Vec::new(), vm);
+        let copy_id = copy.ref_id().expect("deque is heap allocated");
+        let mut guard = DropGuard::new(copy, vm);
+        let (copy, vm) = guard.as_parts_mut();
+        memo.insert(source, copy, vm)?;
+        let len = self.get(vm.heap).len();
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        let state = self.get(vm.heap).state();
+        for index in 0.. {
+            let (_, vm) = guard.as_parts_mut();
+            vm.heap.tracker.check_time_every(index)?;
+            // As `DequeIterator` does, and for the reason the list loop re-reads
+            // its length: a structural mutation mid-walk invalidates the walk.
+            if self.get(vm.heap).state() != state {
+                return Err(ExcType::runtime_error_deque_mutated());
+            }
+            let Some(item) = self.get(vm.heap).get(index) else {
+                break;
+            };
+            let item = item.clone_with_heap(vm.heap);
+            let copied = deep_copy(&item, memo, vm);
+            item.drop_with(vm);
+            let copied = copied?;
+            let HeapReadOutput::Deque(mut dest) = vm.heap.read(copy_id) else {
+                unreachable!("copy was allocated as a deque")
+            };
+            dest.append(vm, copied);
+        }
+        let (copy, _) = guard.into_parts();
+        Ok(copy)
+    }
 }

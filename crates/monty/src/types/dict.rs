@@ -23,12 +23,15 @@ use crate::{
     },
     identity::Identity,
     intern::{Interns, StaticStrings},
-    modules::collections::{
-        counter::{
-            CounterCmp, CounterOp, counter_binary_op, counter_compare, counter_elements, counter_inplace_op,
-            counter_most_common, counter_order, counter_total, counter_unary_op, counter_update_method,
+    modules::{
+        collections::{
+            counter::{
+                CounterCmp, CounterOp, counter_binary_op, counter_compare, counter_elements, counter_inplace_op,
+                counter_most_common, counter_order, counter_total, counter_unary_op, counter_update_method,
+            },
+            defaultdict::defaultdict_missing,
         },
-        defaultdict::defaultdict_missing,
+        copy::{Memo, PyDeepCopy, clone_pair, deep_copy_pair},
     },
     types::Type,
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
@@ -377,6 +380,20 @@ fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap, interns: &Inter
 }
 
 impl<'h> HeapRead<'h, Dict> {
+    /// Allocates an empty dict carrying this one's flavour — plain,
+    /// `defaultdict` (with a counted reference to the same factory) or
+    /// `Counter`.
+    ///
+    /// For rebuilding a dict whose entries are produced one at a time, where
+    /// the copy must exist before it can be filled; `copy` memoizes the empty
+    /// shell so a dict holding itself terminates.
+    pub(crate) fn allocate_empty_like(&self, vm: &mut VM<'h>) -> HeapId {
+        let kind = self.get(vm.heap).cloned_kind(vm.heap);
+        let mut dict = Dict::new();
+        dict.set_kind(kind);
+        vm.heap.allocate(HeapData::Dict(dict))
+    }
+
     /// Element-wise equality against another dict (matching keys and values).
     ///
     /// Shared by `Dict::py_eq_impl` and `HostClass::py_eq_impl` (which compares
@@ -2224,3 +2241,37 @@ impl_dict_iterator!(
         ))
     }
 );
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, Dict> {
+    /// Copies a dict, keys included, keeping its `defaultdict` / `Counter` flavour.
+    #[inline(never)]
+    fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let copy_id = self.allocate_empty_like(vm);
+        let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
+        let (copy, vm) = guard.as_parts_mut();
+        memo.insert(source, copy, vm)?;
+        let expected_len = self.get(vm.heap).len();
+        for index in 0.. {
+            let (_, vm) = guard.as_parts_mut();
+            vm.heap.tracker.check_time_every(index)?;
+            // Copying a pair runs Python, which can resize the source; CPython's
+            // `for key, value in x.items()` raises this same error.
+            if self.get(vm.heap).len() != expected_len {
+                return Err(ExcType::runtime_error_dict_changed_size());
+            }
+            let Some((key, value)) = clone_pair(self.get(vm.heap), index, vm) else {
+                break;
+            };
+            let (key_copy, value_copy) = deep_copy_pair(key, value, memo, vm)?;
+            let HeapReadOutput::Dict(mut dest) = vm.heap.read(copy_id) else {
+                unreachable!("copy was allocated as a dict")
+            };
+            // `set` takes ownership of the pair and releases it on failure.
+            if let Some(replaced) = dest.set(key_copy, value_copy, vm)? {
+                replaced.drop_with(vm);
+            }
+        }
+        let (copy, _) = guard.into_parts();
+        Ok(copy)
+    }
+}
