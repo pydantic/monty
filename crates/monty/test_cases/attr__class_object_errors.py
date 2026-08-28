@@ -14,6 +14,7 @@ _classes = [
     (bytes, 'bytes'),
     (range, 'range'),
     (datetime.datetime, 'datetime.datetime'),
+    (datetime.time, 'datetime.time'),
 ]
 
 # === attribute access ===
@@ -38,6 +39,12 @@ try:
     assert False, 'expected AttributeError'
 except AttributeError as e:
     assert str(e) == "'list' object has no attribute 'nonexistent'"
+
+try:
+    datetime.time(1, 2).nonexistent
+    assert False, 'expected AttributeError'
+except AttributeError as e:
+    assert str(e) == "'datetime.time' object has no attribute 'nonexistent'"
 
 # === a known class method is unaffected ===
 assert dict.fromkeys(['a'], 1) == {'a': 1}

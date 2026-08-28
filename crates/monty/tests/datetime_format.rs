@@ -81,7 +81,7 @@ fn time_strptime_is_not_implemented() {
     Traceback (most recent call last):
       File "test.py", line 2, in <module>
         time.strptime('12:30', '%H:%M')
-    AttributeError: 'datetime.time' object has no attribute 'strptime'
+    AttributeError: type object 'datetime.time' has no attribute 'strptime'
     "#
     );
 }
