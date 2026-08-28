@@ -545,7 +545,17 @@ impl VM<'_> {
             // before dispatching, so the wrapped callable may reach this same
             // partial again.
             HeapData::Partial(partial) => {
-                let (func, bound_args, bound_keywords) = partial.clone_parts(self);
+                let parts = partial.clone_parts(self);
+                let (func, bound_args, bound_keywords) = match parts {
+                    Ok(parts) => parts,
+                    Err(err) => {
+                        // The preflight rejected the per-call clone before
+                        // anything was lifted out, so only the call's own
+                        // arguments still need releasing.
+                        args.drop_with(self);
+                        return Err(err);
+                    }
+                };
                 // A partial stored as a class attribute binds as a `BoundMethod`
                 // whose `__func__` is a partial, so this dispatch nests on the
                 // native stack without ever pushing a VM frame. Charge it against

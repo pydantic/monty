@@ -1096,6 +1096,26 @@ repr(x)
     assert_repr_timeout(code, "dict repr");
 }
 
+/// Test that `repr()` of a widely bound `functools.partial` respects the time
+/// limit.
+///
+/// The bound arguments and keywords are formatted in one native loop, so
+/// without the shared `repr_check_time` counter the repr runs to completion
+/// before any checkpoint — 2M arguments overshoot the deadline by far more
+/// than the bound asserted here.
+#[test]
+fn timeout_truncation_in_partial_repr() {
+    let code = r"
+import functools
+def target(*args, **kwargs):
+    return 0
+p = functools.partial(target, *(['abcdefghij'] * 2_000_000))
+interrupt()
+repr(p)
+";
+    assert_repr_timeout(code, "partial repr");
+}
+
 /// Test that `repr(large_set)` respects the time limit.
 ///
 /// Uses a set of 100K unique strings so that repr formatting is slow enough

@@ -564,6 +564,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("x = [None] * 40_000\nx += x", 1_951_587),
         ("t = (None,) * 40_000\nt + t", 1_311_587),
         ("x = [None] * 40_000\nx.copy()", 1_311_337),
+        // A partial re-clones its bound arguments on every call, so that clone
+        // is preflighted like any other bulk container copy.
+        (
+            "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [None] * 40_000\np()",
+            1_314_563,
+        ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",

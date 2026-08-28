@@ -21,10 +21,10 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
-    types::{Dict, LazyHeapSet, PyTrait, Type, tuple::allocate_tuple},
-    value::{EitherStr, Value},
+    types::{Dict, LazyHeapSet, PyTrait, Type, list::repr_check_time, tuple::allocate_tuple},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// A callable that prepends bound arguments to `func` on every call.
@@ -47,6 +47,10 @@ pub(crate) struct Partial {
     /// there are rarely more than a couple of names to scan.
     keywords: Vec<(Value, Value)>,
 }
+
+/// The callable, bound positionals and bound keywords lifted out of a partial,
+/// as owned clones (see [`Partial::clone_parts`]).
+type PartialParts = (Value, Vec<Value>, Vec<(Value, Value)>);
 
 impl Partial {
     /// `functools.partial(func, /, *args, **keywords)`.
@@ -75,16 +79,23 @@ impl Partial {
             return Err(ExcType::partial_not_callable());
         }
 
-        let mut partial = Self {
-            func,
-            args: take(positional),
-            keywords: Vec::new(),
-        };
-        partial.flatten(vm);
+        let mut guard = DropGuard::new(
+            Self {
+                func,
+                args: take(positional),
+                keywords: Vec::new(),
+            },
+            vm,
+        );
+        let (partial, vm) = guard.as_parts_mut();
+        // Flattening clones the inner partial's contents, so it can fail on the
+        // allocation preflight; the guard then releases the half-built partial.
+        partial.flatten(vm)?;
         // Bound keywords are merged the same way a call's are, so a flattened
         // inner keyword is replaced rather than duplicated.
         merge_keywords(&mut partial.keywords, keywords.drain(..), vm);
 
+        let (partial, vm) = guard.into_parts();
         Ok(Value::Ref(vm.heap.allocate(HeapData::Partial(Box::new(partial)))))
     }
 
@@ -111,22 +122,23 @@ impl Partial {
     /// replace `self.keywords` wholesale, so anything already there would leak.
     /// CPython only unwraps an exact `partial`, so a subclass instance (which
     /// Monty cannot create anyway) would stay nested.
-    fn flatten(&mut self, vm: &mut VM<'_>) {
+    fn flatten(&mut self, vm: &mut VM<'_>) -> RunResult<()> {
         debug_assert!(
             self.keywords.is_empty(),
             "flatten() overwrites keywords rather than merging"
         );
-        let Value::Ref(inner_id) = self.func else { return };
+        let Value::Ref(inner_id) = self.func else { return Ok(()) };
         let HeapData::Partial(inner) = vm.heap.get(inner_id) else {
-            return;
+            return Ok(());
         };
-        let (func, mut args, keywords) = inner.clone_parts(vm);
+        let (func, mut args, keywords) = inner.clone_parts(vm)?;
 
         args.append(&mut self.args);
         let outer_func = replace(&mut self.func, func);
         outer_func.drop_with(vm);
         self.args = args;
         self.keywords = keywords;
+        Ok(())
     }
 
     /// Owned clones of the callable, bound positionals and bound keywords.
@@ -134,15 +146,26 @@ impl Partial {
     /// Takes the heap by shared reference (`clone_with_heap` only needs
     /// `inc_ref`), so a caller holding this partial through a `&HeapData` can
     /// lift its contents out and then release the borrow.
-    pub(crate) fn clone_parts(&self, heap: &impl ContainsHeap) -> (Value, Vec<Value>, Vec<(Value, Value)>) {
-        (
+    ///
+    /// Preflights the slot bytes both vectors need, as the container clones do
+    /// (`List::clone_all_items`, `Dict::clone_all_pairs`): every call of a
+    /// partial rebuilds them, so a widely bound one would otherwise burst past
+    /// the allocator's hard limit instead of raising `MemoryError`.
+    pub(crate) fn clone_parts(&self, heap: &impl ContainsHeap) -> RunResult<PartialParts> {
+        let slots = self
+            .args
+            .len()
+            .saturating_add(self.keywords.len().saturating_mul(2))
+            .saturating_mul(VALUE_SIZE);
+        heap.heap().tracker.check_allocation(slots)?;
+        Ok((
             self.func.clone_with_heap(heap),
             self.args.iter().map(|arg| arg.clone_with_heap(heap)).collect(),
             self.keywords
                 .iter()
                 .map(|(name, value)| (name.clone_with_heap(heap), value.clone_with_heap(heap)))
                 .collect(),
-        )
+        ))
     }
 }
 
@@ -240,6 +263,16 @@ fn keyword_index_map(bound: &[(Value, Value)], vm: &VM<'_>) -> AHashMap<String, 
         .collect()
 }
 
+/// Releases the refs a partial owns, for one abandoned before it reaches the
+/// heap; a heap-stored partial is freed through [`HeapItem::py_dec_ref_ids`].
+impl<C: ContainsHeap> DropWithContext<C> for Partial {
+    fn drop_with(self, ctx: &mut C) {
+        self.func.drop_with(ctx);
+        self.args.drop_with(ctx);
+        self.keywords.drop_with(ctx);
+    }
+}
+
 impl HeapItem for Partial {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.func.py_dec_ref_ids(stack);
@@ -287,29 +320,45 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
         defer_drop!(func, vm);
         func.py_repr_fmt(f, vm, heap_ids)?;
 
-        for index in 0..self.get(vm.heap).args.len() {
-            let arg = self.get(vm.heap).args[index].clone_with_heap(vm);
-            defer_drop!(arg, vm);
-            f.write_str(", ")?;
-            arg.py_repr_fmt(f, vm, heap_ids)?;
-        }
-
-        for index in 0..self.get(vm.heap).keywords.len() {
-            let (name, value) = &self.get(vm.heap).keywords[index];
-            let (name, value) = (name.clone_with_heap(vm), value.clone_with_heap(vm));
-            defer_drop!(name, vm);
-            defer_drop!(value, vm);
-            // CPython writes the name unquoted, as keyword syntax rather than
-            // as a dict key. The `repr` fallback is for a non-`str` name, which
-            // Monty rejects at the `**` unpack before it can reach a partial.
-            if let Ok(name) = name.to_str_heap(vm.heap, vm.interns) {
-                write!(f, ", {name}=")?;
-            } else {
+        // Both loops share one counter so the 64-item poll cadence spans the
+        // whole partial, as `repr_items_fmt` does for a sequence: a widely
+        // bound partial must not outrun `max_duration` between checkpoints.
+        let mut item = 0;
+        'items: {
+            for index in 0..self.get(vm.heap).args.len() {
+                if repr_check_time(item, vm) {
+                    f.write_str(", ...[timeout]")?;
+                    break 'items;
+                }
+                item += 1;
+                let arg = self.get(vm.heap).args[index].clone_with_heap(vm);
+                defer_drop!(arg, vm);
                 f.write_str(", ")?;
-                name.py_repr_fmt(f, vm, heap_ids)?;
-                f.write_str("=")?;
+                arg.py_repr_fmt(f, vm, heap_ids)?;
             }
-            value.py_repr_fmt(f, vm, heap_ids)?;
+
+            for index in 0..self.get(vm.heap).keywords.len() {
+                if repr_check_time(item, vm) {
+                    f.write_str(", ...[timeout]")?;
+                    break 'items;
+                }
+                item += 1;
+                let (name, value) = &self.get(vm.heap).keywords[index];
+                let (name, value) = (name.clone_with_heap(vm), value.clone_with_heap(vm));
+                defer_drop!(name, vm);
+                defer_drop!(value, vm);
+                // CPython writes the name unquoted, as keyword syntax rather than
+                // as a dict key. The `repr` fallback is for a non-`str` name, which
+                // Monty rejects at the `**` unpack before it can reach a partial.
+                if let Ok(name) = name.to_str_heap(vm.heap, vm.interns) {
+                    write!(f, ", {name}=")?;
+                } else {
+                    f.write_str(", ")?;
+                    name.py_repr_fmt(f, vm, heap_ids)?;
+                    f.write_str("=")?;
+                }
+                value.py_repr_fmt(f, vm, heap_ids)?;
+            }
         }
 
         Ok(f.write_char(')')?)
