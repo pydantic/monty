@@ -129,6 +129,11 @@ macro_rules! heap_payloads {
             Itertools(inline $crate::types::ItertoolsIter),
             /// The options of a `@dataclass`, held in `__dataclass_params__`.
             DataclassParams(inline $crate::modules::dataclasses::DataclassParams),
+            /// A `datetime.time` value stored with narrow integer fields.
+            ///
+            /// Appended here rather than beside `DateTime` because this list is
+            /// append-only (see the note above).
+            Time(inline $crate::types::time::Time),
             /// A lazy generator-expression iterator with a saved synthetic frame.
             Generator(inline $crate::types::Generator),
         }
@@ -225,6 +230,7 @@ impl HeapData {
             | Self::ExtFunction(_)
             | Self::Date(_)
             | Self::DateTime(_)
+            | Self::Time(_)
             | Self::TimeDelta(_)
             | Self::TimeZone(_) => false,
         }
@@ -284,6 +290,7 @@ impl HeapData {
             Self::ReMatch(_) => Type::ReMatch,
             Self::Date(_) => Type::Date,
             Self::DateTime(_) => Type::DateTime,
+            Self::Time(_) => Type::Time,
             Self::TimeDelta(_) => Type::TimeDelta,
             Self::TimeZone(_) => Type::TimeZone,
             Self::ListIterator(_) => Type::ListIterator,
@@ -481,6 +488,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::ReMatch($value) => $body,
             Self::Date($value) => $body,
             Self::DateTime($value) => $body,
+            Self::Time($value) => $body,
             Self::TimeDelta($value) => $body,
             Self::TimeZone($value) => $body,
             Self::Closure(_)
@@ -958,6 +966,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::RePattern(value) => value.py_iter(vm),
             Self::Date(value) => value.py_iter(vm),
             Self::DateTime(value) => value.py_iter(vm),
+            Self::Time(value) => value.py_iter(vm),
             Self::TimeDelta(value) => value.py_iter(vm),
             Self::TimeZone(value) => value.py_iter(vm),
             Self::NamedTupleClass(_)
@@ -1016,6 +1025,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::RePattern(value) => value.py_next(vm),
             Self::Date(value) => value.py_next(vm),
             Self::DateTime(value) => value.py_next(vm),
+            Self::Time(value) => value.py_next(vm),
             Self::TimeDelta(value) => value.py_next(vm),
             Self::TimeZone(value) => value.py_next(vm),
             other => Err(ExcType::type_error_not_iterator(

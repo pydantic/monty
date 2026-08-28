@@ -21,7 +21,7 @@
 
 **Experimental** - This project is still in development, and not ready for prime time.
 
-A minimal, secure Python interpreter written in Rust for use by AI.
+A minimal, secure Python 3.14 interpreter written in Rust for use by AI.
 
 Monty avoids the cost, latency, complexity and general faff of using a full container based sandbox for running LLM generated code.
 
@@ -39,7 +39,7 @@ What Monty **can** do:
 - Control resource usage - Monty can track memory usage, stack depth, and execution time and cancel execution if it exceeds preset limits
 - Collect stdout and stderr and return it to the caller
 - Run async or sync sandboxed code, calling async or sync functions on the host
-- Use a small subset of the standard library: `asyncio`, `collections`, `dataclasses`, `datetime`, `functools`, `itertools`, `json`, `math`, `os`, `pathlib`, `re`, `sys`, `typing`, `unicodedata`
+- Use a small subset of the standard library including `asyncio`, `base64`, `binascii`, `collections`, `dataclasses`, `datetime`, `functools`, `itertools`, `json`, `math`, `os`, `pathlib`, `re`, `sys`, `typing`, `unicodedata`
 
 What Monty **cannot** do:
 
@@ -63,7 +63,7 @@ For motivation on why you might want to do this, see:
 
 In very simple terms, the idea of all the above is that LLMs can work faster, cheaper and more reliably if they're asked to write Python (or Javascript) code, instead of relying on traditional tool calling. Monty makes that possible without the complexity of a sandbox or risk of running code directly on the host.
 
-**Note:** Monty will (soon) be used to implement `codemode` in [Pydantic AI](https://github.com/pydantic/pydantic-ai)
+**Note:** Monty powers [`Code Mode`](https://pydantic.dev/docs/ai/harness/code-mode/) in [Pydantic AI](https://github.com/pydantic/pydantic-ai)
 
 **Documentation:** [`docs/`](./docs) covers installation, quickstarts for each language binding, the security model, host functions, resource limits, snapshotting, type checking and the supported Python subset. [`limitations/`](./limitations) is the reference for how Monty diverges from CPython.
 

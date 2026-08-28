@@ -31,7 +31,8 @@
 use std::{borrow::Cow, collections::HashMap, ptr};
 
 use monty_types::{
-    DictPairs, ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone,
+    DictPairs, ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
+    MontyTimeZone,
 };
 use napi::{bindgen_prelude::*, sys::Status};
 use num_bigint::BigInt as NumBigInt;
@@ -76,6 +77,7 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
         MontyObject::Exception { exc_type, arg } => create_js_exception(*exc_type, arg.as_deref(), env)?,
         MontyObject::Date(date) => create_js_date(date, env)?,
         MontyObject::DateTime(datetime) => create_js_datetime(datetime, env)?,
+        MontyObject::Time(time) => create_js_time(time, env)?,
         MontyObject::TimeDelta(delta) => create_js_timedelta(delta, env)?,
         MontyObject::TimeZone(timezone) => create_js_timezone(timezone, env)?,
         MontyObject::Type(t) => create_js_type_marker(&t.to_string(), env)?,
@@ -306,6 +308,24 @@ fn create_js_datetime<'e>(datetime: &MontyDateTime, env: &'e Env) -> Result<Unkn
     if let Some(timezone_name) = &datetime.timezone_name {
         obj.set_named_property("timezoneName", timezone_name.clone())?;
     }
+    obj.into_unknown(env)
+}
+
+/// Creates a JS object representing a Python `datetime.time`.
+fn create_js_time<'e>(time: &MontyTime, env: &'e Env) -> Result<Unknown<'e>> {
+    let mut obj = Object::new(env)?;
+    obj.set_named_property("__monty_type__", "Time")?;
+    obj.set_named_property("hour", time.hour)?;
+    obj.set_named_property("minute", time.minute)?;
+    obj.set_named_property("second", time.second)?;
+    obj.set_named_property("microsecond", time.microsecond)?;
+    if let Some(offset_seconds) = time.offset_seconds {
+        obj.set_named_property("offsetSeconds", offset_seconds)?;
+    }
+    if let Some(timezone_name) = &time.timezone_name {
+        obj.set_named_property("timezoneName", timezone_name.clone())?;
+    }
+    obj.set_named_property("fold", time.fold)?;
     obj.into_unknown(env)
 }
 
@@ -664,6 +684,15 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
             microsecond: obj.get_named_property::<u32>("microsecond")?,
             offset_seconds: obj.get_named_property::<Option<i32>>("offsetSeconds")?,
             timezone_name: obj.get_named_property::<Option<String>>("timezoneName")?,
+        })),
+        "Time" => Ok(MontyObject::Time(MontyTime {
+            hour: obj.get_named_property::<u8>("hour")?,
+            minute: obj.get_named_property::<u8>("minute")?,
+            second: obj.get_named_property::<u8>("second")?,
+            microsecond: obj.get_named_property::<u32>("microsecond")?,
+            offset_seconds: obj.get_named_property::<Option<i32>>("offsetSeconds")?,
+            timezone_name: obj.get_named_property::<Option<String>>("timezoneName")?,
+            fold: obj.get_named_property::<Option<u8>>("fold")?.unwrap_or(0),
         })),
         "TimeDelta" => Ok(MontyObject::TimeDelta(MontyTimeDelta {
             days: obj.get_named_property::<i32>("days")?,

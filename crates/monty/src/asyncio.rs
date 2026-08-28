@@ -180,6 +180,10 @@ impl ExternalFuture {
 ///   [`DropWithContext`] (and clone via [`Self::clone_with_heap`]) so the
 ///   `gather` ref count stays balanced.
 ///
+/// An awaitable whose downstream has already settled keeps its `Awaiter`
+/// pointing at it; the value is discarded where it is delivered rather than
+/// the link being severed here. See [`GatherState`].
+///
 /// Not `Copy` / `Clone` on purpose — the inc_ref discipline requires every
 /// duplication to go through `clone_with_heap` and every discard to go
 /// through `drop_with`.

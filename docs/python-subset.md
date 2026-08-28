@@ -58,12 +58,13 @@ the repository, and that directory — not this page — is the source of truth.
 
 ## Standard library
 
-Fourteen modules are importable.
-Anything else raises `ModuleNotFoundError`.
+The following modules are present:
 
 | Module | Divergences |
 | --- | --- |
 | `asyncio` | [asyncio.md](https://github.com/pydantic/monty/blob/main/limitations/asyncio.md) |
+| `base64` | [base64.md](https://github.com/pydantic/monty/blob/main/limitations/base64.md) |
+| `binascii` | [base64.md](https://github.com/pydantic/monty/blob/main/limitations/base64.md) |
 | `collections` | [collections.md](https://github.com/pydantic/monty/blob/main/limitations/collections.md) |
 | `dataclasses` | [dataclasses.md](https://github.com/pydantic/monty/blob/main/limitations/dataclasses.md) |
 | `datetime` | [datetime.md](https://github.com/pydantic/monty/blob/main/limitations/datetime.md) |
@@ -83,7 +84,7 @@ The absent names are missing from the module namespace rather than stubbed, so t
 raising `AttributeError` at runtime.
 
 Notably absent: `enum`, `contextlib`, `random`, `time`, `io`, `copy`, `string`, `struct`, `operator`,
-`inspect`, `logging`, `traceback`, `base64`, `hashlib`, `uuid`, `urllib`.
+`inspect`, `logging`, `traceback`, `hashlib`, `uuid`, `urllib`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.
 

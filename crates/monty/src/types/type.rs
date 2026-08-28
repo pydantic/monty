@@ -20,7 +20,7 @@ use crate::{
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
         str::StringRepr,
-        timedelta,
+        time, timedelta,
     },
     value::Value,
 };
@@ -42,6 +42,7 @@ use crate::{
     serde::Deserialize,
     strum::EnumString,
     strum::IntoStaticStr,
+    strum::VariantNames,
 )]
 #[strum(serialize_all = "lowercase")]
 #[expect(
@@ -210,6 +211,8 @@ pub enum Type {
     /// inheritance, so it exists to carry `object.__setattr__`, the write that
     /// bypasses a class's attribute hooks. Constructing it is unsupported.
     Object,
+    #[strum(serialize = "datetime.time")]
+    Time,
     /// Iterator produced by a generator expression.
     Generator,
 }
@@ -480,10 +483,16 @@ impl Type {
             (Self::Object, m) if vm.interns.get_str(m) == "__setattr__" => {
                 builtin_object_setattr(vm, args).map(AttrCallResult::Value)
             }
+            (Self::Time, m) if m == StaticStrings::Fromisoformat => {
+                time::class_fromisoformat(vm, args).map(AttrCallResult::Value)
+            }
             _ => {
                 let method_name = vm.interns.get_str(method_id);
                 args.drop_with(vm.heap);
-                Err(ExcType::attribute_error(self, method_name))
+                Err(ExcType::attribute_error_type(
+                    &self.name(vm.heap, vm.interns),
+                    method_name,
+                ))
             }
         }
     }
@@ -509,6 +518,7 @@ impl Type {
             Self::Slice => Slice::init(vm, args),
             Self::Date => date::init(vm, args),
             Self::DateTime => datetime::init(vm, args),
+            Self::Time => time::init(vm, args),
             Self::TimeDelta => timedelta::init(vm, args),
             Self::TimeZone => TimeZone::init(vm, args),
             Self::Iterator => super::iter::init(vm, args),

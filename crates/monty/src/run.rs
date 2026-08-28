@@ -526,6 +526,11 @@ impl Executor {
             executor.populate_inputs(inputs, &mut vm)?;
             let frame_exit_result = vm.run_module();
 
+            // Tasks the module left running (a sibling detached from a failed
+            // gather, say) hold real references, and are not reachable from
+            // any name — so tear the scheduler down first and hold the
+            // leak check to what survives that.
+            vm.__finalize_tasks_for_tests();
             vm.__force_gc_for_tests();
 
             // Take globals out of the VM so we can inspect them, but keep VM alive

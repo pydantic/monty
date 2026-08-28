@@ -450,6 +450,18 @@ impl ResolveFutures {
         Self::new(executor, vm_state, heap, pending_call_ids)
     }
 
+    /// Number of tasks still live while this snapshot is suspended.
+    ///
+    /// Test-only: lets a test assert that a gather child whose external call
+    /// failed was dropped rather than left parked forever on a future that
+    /// can no longer be resolved.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __live_task_count_for_tests(&self) -> usize {
+        self.vm_state.live_task_count()
+    }
+
     /// Resumes execution with results for some or all pending futures.
     ///
     /// **Incremental resolution**: You don't need to provide all results at once.

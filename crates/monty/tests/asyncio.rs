@@ -501,6 +501,77 @@ fn gather_first_external_fails_immediately() {
     assert_eq!(exc.message(), Some("foo failed"));
 }
 
+// === Test: Gather - a coroutine child whose external call fails is dropped ===
+
+/// A gather child that is a coroutine gets its own task, and its failing
+/// external call is settled against the gather rather than raised inside the
+/// child. Nothing would then deliver the failure to that child, so it must be
+/// dropped here — otherwise it stays `Blocked` on a future that has just been
+/// failed and unregistered, holding its coroutine and the gather for the rest
+/// of the session. Its siblings are unaffected and keep running.
+#[test]
+#[cfg(feature = "test-hooks")]
+fn gather_coroutine_child_dropped_when_its_external_fails() {
+    let code = r"
+import asyncio
+
+async def child():
+    return await foo()
+
+async def sibling():
+    return await bar()
+
+async def main():
+    try:
+        await asyncio.gather(child(), sibling())
+    except ValueError as exc:
+        assert str(exc) == 'foo failed'
+    return await baz()
+
+await main()
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    let (state, call_ids) = drive_to_resolve_futures(progress);
+    assert_eq!(call_ids.len(), 2, "child and sibling each yield one external call");
+    // main, child, sibling.
+    assert_eq!(state.__live_task_count_for_tests(), 3);
+
+    // Fail the child's call, leaving the sibling's outstanding.
+    let progress = state
+        .resume(
+            vec![(
+                call_ids[0],
+                ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("foo failed".to_string()))),
+            )],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    let RunProgress::FunctionCall(call) = progress else {
+        panic!("expected main to reach `baz` after catching the error");
+    };
+    let baz_id = call.call_id;
+    let RunProgress::ResolveFutures(state) = call.resume_pending(PrintWriter::Stdout).unwrap() else {
+        panic!("expected to suspend on `baz`");
+    };
+
+    // The child is gone; the sibling is still parked on `bar`, as CPython
+    // leaves it on the loop.
+    assert_eq!(state.__live_task_count_for_tests(), 2);
+
+    let progress = state
+        .resume(
+            vec![(baz_id, ExtFunctionResult::Return(MontyObject::Int(11)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(progress.into_complete().expect("should complete"), MontyObject::Int(11));
+}
+
 // === Test: Gather - second external fails ===
 
 #[test]
@@ -1064,11 +1135,11 @@ caught
     assert_eq!(result, MontyObject::Bool(true));
 }
 
-// === Test: orphaned external whose awaiting task was already cancelled ===
+// === Test: external call whose result nothing is waiting for ===
 
-/// Leaves a pending external with no live awaiter: `boom()` raises
-/// synchronously, failing the gather and cancelling `slow()` while its external
-/// call is outstanding, so the host's answer has nobody to deliver to.
+/// Leaves a pending external whose result nobody wants: `boom()` raises
+/// synchronously, failing the gather while `slow()`'s call is outstanding.
+/// `slow()` keeps running, but the gather it would return to has settled.
 fn create_orphaned_external_runner() -> MontyRun {
     let code = r"
 import asyncio
@@ -1116,8 +1187,9 @@ fn orphaned_external_resolved_alongside_live_one() {
 
     let (state, orphan, live) = orphan_and_live_ids(progress);
 
-    // Resolving `bar()` readies `main`, `foo()`'s result is discarded; the
-    // scheduler must still find `main` to run.
+    // Resolving `bar()` readies `main`. `foo()`'s result reaches `slow()`,
+    // whose own result the failed gather discards; the scheduler must still
+    // find `main` to run.
     let results = vec![
         (orphan, ExtFunctionResult::Return(MontyObject::Int(1))),
         (live, ExtFunctionResult::Return(MontyObject::Int(7))),
@@ -1137,8 +1209,8 @@ fn orphaned_external_failed_alongside_live_one() {
 
     let (state, orphan, live) = orphan_and_live_ids(progress);
 
-    // The orphan's awaiter chain terminates at a cancelled task, so it fails
-    // nothing; only `bar()`'s failure reaches a task.
+    // The orphan's failure raises inside `slow()`, where nothing awaits it,
+    // and dies there; only `bar()`'s failure reaches a task.
     let results = vec![
         (
             orphan,
@@ -1154,4 +1226,257 @@ fn orphaned_external_failed_alongside_live_one() {
         .resume(results, PrintWriter::Stdout)
         .expect_err("the live failure should surface");
     assert_eq!(err.message(), Some("live"));
+}
+
+// === Test: a gather failure leaves siblings running, externals and all ===
+
+/// The sibling of a failed gather child is parked on an external call of its
+/// own. That call must still be served, and the sibling must still be holding
+/// the frames to resume into — it is no longer torn down with the gather, so
+/// switching away from it has to save its context rather than drop it.
+#[test]
+fn detached_sibling_still_receives_its_external_result() {
+    let code = r"
+import asyncio
+
+log = []
+
+async def parked():
+    log.append(await parked_call(1))
+
+async def doomed():
+    return await doomed_call(2)
+
+async def main():
+    try:
+        await asyncio.gather(parked(), doomed())
+    except ValueError as e:
+        log.append(str(e))
+    # Suspending again is what gives the detached sibling a turn; a run whose
+    # main task never waits again ends with it still parked.
+    log.append(await tail_call(3))
+    return log
+
+await main()
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    let (state, calls) = drive_collecting_calls(progress);
+    let call_id = |name: &str| {
+        calls
+            .iter()
+            .find_map(|(id, call_name)| (call_name == name).then_some(*id))
+            .unwrap_or_else(|| panic!("{name} should have parked"))
+    };
+
+    // Fail the gather through one child while the other is still parked.
+    let error = MontyException::new(ExcType::ValueError, Some("doomed failed".to_string()));
+    let progress = state
+        .resume(
+            vec![(call_id("doomed_call"), ExtFunctionResult::Error(error))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    // The main task carries on to its own call, and the sibling's is still
+    // outstanding alongside it.
+    let (state, tail_calls) = drive_collecting_calls(progress);
+    let tail_id = tail_calls
+        .iter()
+        .find_map(|(id, name)| (name == "tail_call").then_some(*id))
+        .expect("the main task should have parked on its own call");
+
+    // Answer the sibling's call alone: with the main task still parked, the
+    // sibling is the one ready task, so it resumes and finishes its work.
+    let progress = state
+        .resume(
+            vec![(call_id("parked_call"), ExtFunctionResult::Return(MontyObject::Int(7)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let state = progress
+        .into_resolve_futures()
+        .expect("the main task's own call should still be pending");
+    let progress = state
+        .resume(
+            vec![(tail_id, ExtFunctionResult::Return(MontyObject::Int(3)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    let result = progress.into_complete().expect("should complete");
+    assert_eq!(
+        result,
+        MontyObject::List(vec![
+            MontyObject::String("doomed failed".to_string()),
+            MontyObject::Int(7),
+            MontyObject::Int(3)
+        ]),
+        "the main task caught the failure and the sibling still logged its result"
+    );
+}
+
+/// A task raising with nothing left awaiting it is discarded silently.
+///
+/// The exception has nowhere to go: the gather that was waiting on the task
+/// settled on its sibling's error. CPython's `gather` retrieves each child's
+/// exception through a done-callback even after settling, so it prints nothing
+/// either. The run must carry on, and its output must stay clean.
+#[test]
+fn discarded_task_exception_is_silent() {
+    let code = r"
+import asyncio
+
+async def parked():
+    await parked_call(1)
+    raise ValueError('nobody is waiting')
+
+async def doomed():
+    return await doomed_call(2)
+
+async def main():
+    try:
+        await asyncio.gather(parked(), doomed())
+    except ValueError:
+        pass
+    return await tail_call(3)
+
+await main()
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    let (state, calls) = drive_collecting_calls(progress);
+    let call_id = |name: &str| {
+        calls
+            .iter()
+            .find_map(|(id, call_name)| (call_name == name).then_some(*id))
+            .unwrap_or_else(|| panic!("{name} should have parked"))
+    };
+
+    // Fail the gather, detaching `parked()`.
+    let error = MontyException::new(ExcType::ValueError, Some("doomed failed".to_string()));
+    let progress = state
+        .resume(
+            vec![(call_id("doomed_call"), ExtFunctionResult::Error(error))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let (state, tail_calls) = drive_collecting_calls(progress);
+    let tail_id = tail_calls
+        .iter()
+        .find_map(|(id, name)| (name == "tail_call").then_some(*id))
+        .expect("the main task should have parked on its own call");
+
+    // Resume only the sibling's call, so it runs into its `raise` while the
+    // main task is still parked — the run would otherwise finish first and
+    // never give the detached task a turn.
+    let mut output = String::new();
+    let progress = state
+        .resume(
+            vec![(call_id("parked_call"), ExtFunctionResult::Return(MontyObject::Int(1)))],
+            PrintWriter::collect_string(&mut output),
+        )
+        .unwrap();
+    assert_eq!(output, "");
+
+    let RunProgress::ResolveFutures(state) = progress else {
+        panic!("the main task should still be parked on its own call")
+    };
+    let result = state
+        .resume(
+            vec![(tail_id, ExtFunctionResult::Return(MontyObject::Int(3)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let RunProgress::Complete(complete) = result else {
+        panic!("the discarded exception must not fail the run")
+    };
+    assert_eq!(complete, MontyObject::Int(3));
+}
+
+/// A detached sibling's own call failing raises inside that sibling, where it
+/// can be caught. Uncaught, it has nowhere left to go — the gather that was
+/// waiting on the sibling has already settled — so it must not surface as the
+/// run's error.
+#[test]
+fn detached_sibling_failure_does_not_surface() {
+    let code = r"
+import asyncio
+
+log = []
+
+async def parked():
+    await parked_call(1)
+    log.append('not reached')
+
+async def doomed():
+    return await doomed_call(2)
+
+async def main():
+    try:
+        await asyncio.gather(parked(), doomed())
+    except ValueError as e:
+        log.append(str(e))
+    log.append(await tail_call(3))
+    return log
+
+await main()
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    let (state, calls) = drive_collecting_calls(progress);
+    let call_id = |name: &str| {
+        calls
+            .iter()
+            .find_map(|(id, call_name)| (call_name == name).then_some(*id))
+            .unwrap_or_else(|| panic!("{name} should have parked"))
+    };
+
+    let error = MontyException::new(ExcType::ValueError, Some("doomed failed".to_string()));
+    let progress = state
+        .resume(
+            vec![(call_id("doomed_call"), ExtFunctionResult::Error(error))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    let (state, tail_calls) = drive_collecting_calls(progress);
+    let tail_id = tail_calls
+        .iter()
+        .find_map(|(id, name)| (name == "tail_call").then_some(*id))
+        .expect("the main task should have parked on its own call");
+
+    // Reject the detached sibling's call: it raises in a task nobody is
+    // waiting on, and dies there.
+    let error = MontyException::new(ExcType::KeyError, Some("nobody is listening".to_string()));
+    let progress = state
+        .resume(
+            vec![
+                (call_id("parked_call"), ExtFunctionResult::Error(error)),
+                (tail_id, ExtFunctionResult::Return(MontyObject::Int(3))),
+            ],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    let result = progress
+        .into_complete()
+        .expect("the detached failure must not end the run");
+    assert_eq!(
+        result,
+        MontyObject::List(vec![
+            MontyObject::String("doomed failed".to_string()),
+            MontyObject::Int(3)
+        ]),
+        "only the awaited failure reached the main task"
+    );
 }

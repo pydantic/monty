@@ -8,6 +8,10 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+// The bounds live in `monty-types` so the wire decoder shares them; re-exported
+// here because this is where the sandbox-side constructor enforces them.
+pub(crate) use monty_types::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS};
+
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
@@ -24,11 +28,6 @@ use crate::{
     },
     value::Value,
 };
-
-/// Minimum allowed timezone offset in seconds: -23:59.
-pub(crate) const MIN_TIMEZONE_OFFSET_SECONDS: i32 = -86_399;
-/// Maximum allowed timezone offset in seconds: +23:59.
-pub(crate) const MAX_TIMEZONE_OFFSET_SECONDS: i32 = 86_399;
 
 /// Python `datetime.timezone` value.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -87,12 +86,6 @@ impl TimeZone {
 
         let tz = Self::new(offset_seconds, name_str)?;
         Ok(Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))))
-    }
-
-    /// Formats offset as `+HH:MM` / `-HH:MM` with optional `:SS`.
-    #[must_use]
-    pub fn format_utc_offset(&self) -> String {
-        format_offset_hms(self.offset_seconds)
     }
 }
 
@@ -182,6 +175,28 @@ pub(crate) fn format_offset_hms(offset_seconds: i32) -> String {
     format!("{sign}{hours:02}:{minutes:02}:{seconds:02}")
 }
 
+/// The name a fixed-offset zone reports from `tzname()` and `str()`.
+///
+/// An explicit constructor name wins; otherwise CPython renders the zero offset
+/// as the bare `UTC` and every other offset as `UTC±HH:MM[:SS]`.
+#[must_use]
+pub(crate) fn tzname_string(offset_seconds: i32, name: Option<&str>) -> String {
+    match name {
+        Some(name) => name.to_owned(),
+        None if offset_seconds == 0 => "UTC".to_owned(),
+        None => format!("UTC{}", format_offset_hms(offset_seconds)),
+    }
+}
+
+/// Builds the value `utcoffset()` returns: a `timedelta` for a fixed offset,
+/// `None` for a naive one.
+pub(crate) fn utcoffset_value(offset_seconds: Option<i32>, heap: &Heap) -> Value {
+    match offset_seconds {
+        None => Value::None,
+        Some(offset_seconds) => timedelta::allocate_micros(i128::from(offset_seconds) * MICROSECONDS_PER_SECOND, heap),
+    }
+}
+
 /// Formats a canonical `datetime.timedelta(...)` repr for a fixed offset in seconds.
 #[must_use]
 pub(crate) fn format_offset_timedelta_repr(offset_seconds: i32) -> String {
@@ -262,13 +277,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let tz = self.get(vm.heap);
-        let s = if let Some(name) = &tz.name {
-            name.clone()
-        } else if tz.offset_seconds == 0 {
-            "UTC".to_owned()
-        } else {
-            format!("UTC{}", tz.format_utc_offset())
-        };
+        let s = tzname_string(tz.offset_seconds, tz.name.as_deref());
         Ok(allocate_string(s, vm.heap))
     }
 }

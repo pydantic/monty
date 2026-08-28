@@ -77,6 +77,15 @@ semantics (the finally body runs exactly once and a `return`/`break`/
 not emit CPython 3.14's PEP 765 `SyntaxWarning` for such statements, having
 no warnings machinery.
 
+## Attribute errors on type objects
+
+`list.nonexistent` raises `AttributeError: type object 'list' has no attribute
+'nonexistent'`, naming the class rather than the metaclass, and calling it
+(`list.nonexistent()`) reports the same message. Both use Monty's name for the
+class, which differs from CPython's for four of them: `date`, `timedelta`
+and `timezone` are reported without their `datetime.` prefix, and
+`pathlib.Path` reports `PosixPath` (see ./pathlib.md).
+
 ## Traceback behaviour
 
 Tracebacks are formatted to match CPython, including the

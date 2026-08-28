@@ -81,6 +81,31 @@ pub struct DateTime {
     #[prost(string, optional, tag = "9")]
     pub timezone_name: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Time {
+    /// 0..=23.
+    #[prost(uint32, tag = "1")]
+    pub hour: u32,
+    /// 0..=59.
+    #[prost(uint32, tag = "2")]
+    pub minute: u32,
+    /// 0..=59.
+    #[prost(uint32, tag = "3")]
+    pub second: u32,
+    /// 0..=999999.
+    #[prost(uint32, tag = "4")]
+    pub microsecond: u32,
+    /// Fixed UTC offset for aware times; absent for naive values.
+    #[prost(int32, optional, tag = "5")]
+    pub offset_seconds: ::core::option::Option<i32>,
+    /// Optional timezone name; only valid when offset_seconds is set.
+    #[prost(string, optional, tag = "6")]
+    pub timezone_name: ::core::option::Option<::prost::alloc::string::String>,
+    /// Disambiguates a repeated wall clock, 0 or 1. Carried so a time does not
+    /// silently lose the flag crossing the boundary; monty never interprets it.
+    #[prost(uint32, tag = "7")]
+    pub fold: u32,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TimeDelta {
     #[prost(int32, tag = "1")]

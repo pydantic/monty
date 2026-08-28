@@ -134,34 +134,61 @@ impl Slice {
     }
 }
 
-/// Converts a Value to Option<i64>, treating None as None.
+/// Converts a slice bound to `Option<i64>`, treating `None` as "no bound".
 ///
-/// Used for slice construction from both `slice()` builtin and `[start:stop:step]` syntax.
-/// Returns Ok(None) for Value::None, Ok(Some(i)) for integers/bools, a user
-/// `__index__` result for instances, or Err(TypeError) for other types — which
-/// is what the "or have an `__index__` method" in the error message promises.
-///
-/// Ints too large for `i64` saturate to `i64::MIN`/`i64::MAX` instead of
-/// raising, matching CPython's clamping of slice bounds — unlike plain indexing,
-/// which raises `IndexError` on the same input.
+/// Used for slice construction from both the `slice()` builtin and
+/// `[start:stop:step]` syntax, and for the `start`/`end` arguments of the
+/// sequence searches (`str.find`, `bytes.startswith`, ...) that accept `None`
+/// for the same purpose — CPython gives them all the same converter, hence the
+/// same "or None" in the `TypeError`.
 pub(crate) fn value_to_option_i64(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<i64>> {
     match value {
         Value::None => Ok(None),
+        _ => match saturating_slice_index(value, vm)? {
+            Some(index) => Ok(Some(index)),
+            None => Err(ExcType::type_error_slice_indices()),
+        },
+    }
+}
+
+/// [`value_to_option_i64`] for the `index()` searches that do **not** accept
+/// `None` (`list.index`, `tuple.index`, `deque.index`), whose `TypeError` drops
+/// the "or None" because they have no bound to leave unset.
+pub(crate) fn value_to_i64_bound(value: &Value, vm: &mut VM<'_>) -> RunResult<i64> {
+    saturating_slice_index(value, vm)?.ok_or_else(ExcType::type_error_slice_indices_no_none)
+}
+
+/// [`value_to_option_i64`] normalized against a sequence length, which is the
+/// shape the searches want: `None` selects `default`, anything else is coerced,
+/// saturated and clamped into `0..=len`.
+pub(crate) fn optional_sequence_bound(value: &Value, default: usize, len: usize, vm: &mut VM<'_>) -> RunResult<usize> {
+    let bound = value_to_option_i64(value, vm)?;
+    Ok(bound.map_or(default, |i| normalize_sequence_index(i, len)))
+}
+
+/// CPython's `_PyEval_SliceIndex`: an `int`, or the `__index__` of an object
+/// that has one, **saturated** to `i64` rather than raised on. `Ok(None)` means
+/// the value is not `__index__`-able, leaving the `TypeError` to the caller,
+/// whose wording depends on whether it also accepts `None`.
+///
+/// Saturating is what separates a bound from an index: `[1, 2, 3][10**30:]` is
+/// `[]` and `'abc'.find('a', 10**30)` is `-1`, where the same value used as a
+/// subscript raises `IndexError`.
+fn saturating_slice_index(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<i64>> {
+    match value {
         Value::Int(i) => Ok(Some(*i)),
         Value::Bool(b) => Ok(Some(i64::from(*b))),
-        // Bounds beyond `i64` saturate rather than raise: CPython clamps slice
-        // bounds to the sequence, so `[1, 2, 3][10**30:]` is `[]`, not an error.
-        // This arm also catches an `__index__` that returns a `LongInt`, which
-        // the recursion below funnels back through here.
+        // Also catches an `__index__` that returns a `LongInt`, which the
+        // recursion below funnels back through here.
         _ if let Some(index) = value.long_int_to_i64_saturating(vm) => Ok(Some(index)),
         _ => match value.py_index_impl(vm)? {
             // Recurses exactly once: `py_index_impl` validates an int result, so
             // the arms above take it on the way back in.
             Some(index) => {
                 defer_drop!(index, vm);
-                value_to_option_i64(index, vm)
+                saturating_slice_index(index, vm)
             }
-            None => Err(ExcType::type_error_slice_indices()),
+            None => Ok(None),
         },
     }
 }

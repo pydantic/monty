@@ -1950,6 +1950,14 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::RuntimeError, "deque mutated during iteration").into()
     }
 
+    /// Creates an IndexError for a user `__eq__` mutating a deque during
+    /// `deque.remove` — CPython quirkily raises IndexError there, with the
+    /// same message its RuntimeError sibling uses.
+    #[must_use]
+    fn index_error_deque_mutated() -> RunError {
+        SimpleException::new_msg(ExcType::IndexError, "deque mutated during iteration").into()
+    }
+
     /// `IndexError: deque index out of range` — indexing or assigning out of bounds.
     #[must_use]
     fn index_error_deque_out_of_range() -> RunError {

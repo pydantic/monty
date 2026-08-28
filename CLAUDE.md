@@ -964,6 +964,13 @@ where they are. Change one and you must change all of them:
 - **Mount modes and their defaults** — `limitations/filesystem.md`, `docs/filesystem.md`,
   the `MountDir` docstrings in `_monty.pyi` and `crates/monty-js/ts/mount.ts`.
 
+### Reviewer Notes
+
+Monty implements a limited subset of CPython.
+Its behaviour should match CPython 3.14 except where documented in `limitations`.
+
+The list of stdlib modules in `docs/python-subset.md` must be updated if a new standard library module is implemented.
+
 ### Rules for `docs/`
 
 - `make test-docs` checks every Python snippet in `docs/`, `README.md`,

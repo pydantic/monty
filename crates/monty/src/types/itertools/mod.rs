@@ -275,8 +275,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
     }
 
     /// Only `count` and `repeat` carry a custom `repr`; every other adaptor
-    /// uses CPython's default `<itertools.name object>` form, which is what the
-    /// `PyTrait` default writes.
+    /// uses Python's identity-bearing default object representation.
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         match self.get(vm.heap).kind() {
             Kind::Count => count::repr_fmt(self, f, vm, heap_ids),
@@ -289,10 +288,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
             | Kind::TakeWhile
             | Kind::DropWhile
             | Kind::FilterFalse
-            | Kind::StarMap => {
-                let type_name = self.py_type(vm).name(vm.heap, vm.interns);
-                Ok(write!(f, "<{type_name} object>")?)
-            }
+            | Kind::StarMap => self.py_default_repr_fmt(f, vm),
         }
     }
 }

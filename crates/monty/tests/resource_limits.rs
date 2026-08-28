@@ -745,6 +745,112 @@ a == b
     assert_timeout_in_builtin(code, "dict equality");
 }
 
+/// Test that a dict/set probe restarted by a mutating `__eq__` respects the
+/// time limit.
+///
+/// Every comparison adds another colliding key whose own `__eq__` does the
+/// same, so the probe never runs out of new candidates (CPython, walking the
+/// live chain, hangs on this too). Re-entering the VM for the callback restarts
+/// the dispatch countdown, so only the probe's own `check_time()` can end it.
+#[test]
+fn timeout_in_mutating_lookup_probe() {
+    let template = r"
+busy = False
+
+
+class Mutator:
+    def __hash__(self):
+        return 1
+
+    def __eq__(self, other):
+        global busy
+        if not busy:
+            busy = True
+            ADD_MUTATOR
+            busy = False
+        return False
+
+
+container = MAKE_CONTAINER
+Mutator() in container
+";
+    let dict = template
+        .replace("ADD_MUTATOR", "container[Mutator()] = 0")
+        .replace("MAKE_CONTAINER", "{Mutator(): 0}");
+    let set = template
+        .replace("ADD_MUTATOR", "container.add(Mutator())")
+        .replace("MAKE_CONTAINER", "{Mutator()}");
+    assert_timeout_in_builtin(&dict, "dict probe restarted by __eq__");
+    assert_timeout_in_builtin(&set, "set probe restarted by __eq__");
+}
+
+/// Missing lookups in a fully colliding container must not rescan their
+/// already-compared candidates quadratically.
+///
+/// `H` instances hash constant and are never `eq_is_native`, so a missing
+/// probe hands all N entries to the mutation-aware continuation, whose
+/// seen-check must be O(1) — a linear scan makes each miss Θ(N²), and that
+/// pass reaches no limit poll. Found lookups walk the same candidate chain
+/// but never reach the continuation, so timing misses against finds on the
+/// same container isolates exactly the continuation's cost — the ratio is
+/// independent of machine speed, coverage instrumentation, and feature
+/// flags. Measured: healthy ~1.2x, the old linear seen-scan ~4.2x. The 3x
+/// threshold therefore sits closer to the regression than to a false alarm —
+/// raise it and the test stops catching the bug.
+#[test]
+fn colliding_lookup_is_not_quadratic() {
+    let build_template = r"
+class H:
+    def __hash__(self):
+        return 1
+
+
+container = MAKE_CONTAINER
+for _ in range(800):
+    ADD_ENTRY
+";
+    // 800 found lookups: same per-candidate machinery as the misses below
+    // (every comparison still dispatches through the guarded snapshot loop),
+    // but the probe ends at its match, before the continuation.
+    let found_lookups = r"
+for k in list(container):
+    assert k in container
+";
+    // 400 misses, each comparing all 800 candidates and then entering the
+    // continuation — in total the same number of comparisons as the finds.
+    let missing_lookups = r"
+probe = H()
+for _ in range(400):
+    assert probe not in container
+";
+    for (label, make_container, add_entry) in [
+        ("dict", "{}", "container[H()] = 0"),
+        ("set", "set()", "container.add(H())"),
+    ] {
+        let build = build_template
+            .replace("MAKE_CONTAINER", make_container)
+            .replace("ADD_ENTRY", add_entry);
+        let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run(&build, vec![], PrintWriter::Stdout)
+            .unwrap_or_else(|e| panic!("{label}: build failed: {e}"));
+
+        let start = Instant::now();
+        repl.feed_run(found_lookups, vec![], PrintWriter::Stdout)
+            .unwrap_or_else(|e| panic!("{label}: found lookups failed: {e}"));
+        let found_elapsed = start.elapsed();
+
+        let start = Instant::now();
+        repl.feed_run(missing_lookups, vec![], PrintWriter::Stdout)
+            .unwrap_or_else(|e| panic!("{label}: missing lookups failed: {e}"));
+        let missing_elapsed = start.elapsed();
+
+        assert!(
+            missing_elapsed < found_elapsed * 3,
+            "{label}: misses took {missing_elapsed:?} vs finds {found_elapsed:?}, expected linear seen-checks"
+        );
+    }
+}
+
 /// Test that `str.splitlines()` on a large string respects the time limit.
 ///
 /// `str_splitlines()` scans the entire string for line endings in a while loop

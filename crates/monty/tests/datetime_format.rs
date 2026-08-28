@@ -8,6 +8,7 @@
 //! test_case would fail on a macOS CI runner. They live here instead. See
 //! limitations/datetime.md.
 
+use insta::assert_snapshot;
 use monty::MontyRun;
 use monty_types::{CompileOptions, MontyObject};
 
@@ -66,5 +67,21 @@ fn unrenderable_directive_raises_not_panics() {
     assert!(
         msg.contains("ValueError") && msg.contains("Invalid format string"),
         "expected ValueError: Invalid format string, got: {msg}"
+    );
+}
+
+/// CPython 3.14 added `time.strptime`; Monty does not implement it, so this
+/// cannot live in `test_cases/` — the harness's reference CPython succeeds.
+/// See limitations/datetime.md.
+#[test]
+fn time_strptime_is_not_implemented() {
+    assert_snapshot!(
+        run_err("from datetime import time\ntime.strptime('12:30', '%H:%M')"),
+        @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        time.strptime('12:30', '%H:%M')
+    AttributeError: type object 'datetime.time' has no attribute 'strptime'
+    "#
     );
 }

@@ -70,8 +70,8 @@ pub(crate) enum StandardLib {
     Functools,
     /// The `base64` module providing the base64/base32/base16 codecs.
     Base64,
-    /// The `binascii` module, exposing only the `Error` class that `base64`
-    /// raises.
+    /// The `binascii` module providing binary-to-ASCII conversions, CRC32,
+    /// and the `Error` class used by `base64`.
     Binascii,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.

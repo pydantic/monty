@@ -62,13 +62,28 @@ enum AwaitResult {
     Yield(Vec<CallId>),
 }
 
+/// Yields to the host when an exception left no task to run.
+///
+/// A spawned task whose exception nobody could receive is discarded with no
+/// successor loaded, leaving the parked frame `cleanup_current_task` installs,
+/// which dispatch must not execute. See [`VM::yield_parked`] for what is
+/// handed back.
+macro_rules! yield_if_parked {
+    ($self:expr) => {
+        if $self.current_frame.is_parked {
+            return $self.yield_parked();
+        }
+    };
+}
+
 /// Tries an operation and routes a Python exception through the active frames.
 macro_rules! try_catch {
     ($self:expr, $expr:expr) => {
-        if let Err(e) = $expr
-            && let Some(result) = $self.handle_exception(e)
-        {
-            return Err(result);
+        if let Err(e) = $expr {
+            if let Some(result) = $self.handle_exception(e) {
+                return Err(result);
+            }
+            yield_if_parked!($self);
         }
     };
 }
@@ -81,6 +96,7 @@ macro_rules! catch {
         if let Some(result) = $self.handle_exception($err) {
             return Err(result);
         }
+        yield_if_parked!($self);
     }};
 }
 
@@ -593,6 +609,17 @@ pub struct VMSnapshot {
     /// [`VM::pending_os_effect`].
     #[serde(default)]
     pending_os_effect: Option<PendingOsEffect>,
+}
+
+impl VMSnapshot {
+    /// Number of tasks the scheduler held when this snapshot was taken.
+    ///
+    /// Test-only bridge for [`crate::ResolveFutures::__live_task_count_for_tests`];
+    /// `scheduler` is private to this module.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn live_task_count(&self) -> usize {
+        self.scheduler.task_count()
+    }
 }
 
 // ============================================================================
@@ -1630,6 +1657,7 @@ impl<'h> VM<'h> {
                     if let Some(result) = self.handle_exception_with_value(error, raised) {
                         return Err(result);
                     }
+                    yield_if_parked!(self);
                 }
                 Opcode::Assert => {
                     match decode_assert_flags(self.current_frame.fetch_u8()).expect("invalid assert flags in bytecode")
@@ -1658,6 +1686,7 @@ impl<'h> VM<'h> {
                     if let Some(result) = self.handle_exception_with_value(error, raised) {
                         return Err(result);
                     }
+                    yield_if_parked!(self);
                 }
                 Opcode::ClearException => {
                     // Pop the current exception from the stack
@@ -1929,6 +1958,7 @@ impl<'h> VM<'h> {
         if let Some(uncaught_error) = self.handle_exception(error) {
             return Err(uncaught_error);
         }
+        yield_if_parked!(self);
         // Exception was caught, continue execution
         self.run_external()
     }
@@ -2053,6 +2083,38 @@ impl<'h> VM<'h> {
     #[cfg(feature = "test-hooks")]
     pub(crate) fn __force_gc_for_tests(&mut self) -> usize {
         self.run_gc()
+    }
+
+    /// Releases everything the scheduler still holds, as dropping the VM
+    /// would.
+    ///
+    /// A run can end with tasks still live — a task detached from a failed
+    /// gather outlives it, and the module can return before that task next
+    /// gets a turn. Their references are real, so the leak check in
+    /// `run_ref_counts_with_tracker` has to run *after* this rather than
+    /// count them as unreachable.
+    #[cfg(feature = "ref-count-return")]
+    pub(crate) fn __finalize_tasks_for_tests(&mut self) {
+        self.cleanup_current_task();
+        self.scheduler.cleanup(self.heap);
+    }
+
+    /// Hands the surviving tasks' pending calls back to the host, for
+    /// [`yield_if_parked`] when dispatch has no frame left to run.
+    ///
+    /// Those tasks are parked on external calls, so there is normally
+    /// something to hand over. With nothing pending there is no way forward
+    /// either: resuming would fail the same way one round-trip later, blaming
+    /// the scheduler rather than the discarded task that emptied it.
+    fn yield_parked(&self) -> Result<FrameExit, RunError> {
+        let pending_call_ids = self.scheduler.pending_call_ids();
+        if pending_call_ids.is_empty() {
+            Err(RunError::internal(
+                "asyncio scheduler stalled: exception discarded with no task to run and no pending external calls",
+            ))
+        } else {
+            Ok(FrameExit::ResolveFutures(pending_call_ids))
+        }
     }
 
     /// Returns the source position for the instruction currently executing.

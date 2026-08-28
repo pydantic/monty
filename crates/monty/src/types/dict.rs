@@ -5,6 +5,7 @@ use std::{
     mem, slice, vec,
 };
 
+use ahash::AHashSet;
 use hashbrown::HashTable;
 use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
@@ -20,6 +21,7 @@ use crate::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
         HeapReadOutput,
     },
+    identity::Identity,
     intern::{Interns, StaticStrings},
     modules::collections::{
         counter::{
@@ -29,7 +31,7 @@ use crate::{
         defaultdict::defaultdict_missing,
     },
     types::Type,
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
 
 /// Python dict type preserving insertion order.
@@ -669,6 +671,65 @@ struct DictInitArgs {
     extras: KwargsValues,
 }
 
+/// Heap-only equality for probe candidates, mirroring `py_eq` for pairs whose
+/// comparison can never re-enter the VM.
+///
+/// Returns `None` when the pair may need the VM (user `__eq__`, container
+/// recursion, or a cross-type pair the native helpers do not decide); the
+/// caller then falls back to the guarded snapshot path. Runs no user code, so
+/// it is safe to call while the index-table borrow is held.
+pub(crate) fn probe_native_eq(candidate: &Value, key: &Value, vm: &VM<'_>) -> Option<bool> {
+    // `py_eq` starts with identity, so this must too (it is what makes a NaN
+    // key findable).
+    if candidate.is(key) {
+        Some(true)
+    } else {
+        match candidate {
+            Value::Bool(b) => eq_i64(i64::from(*b), key, vm),
+            Value::Int(i) => eq_i64(*i, key, vm),
+            Value::Float(f) => eq_f64(*f, key, vm),
+            Value::InternLongInt(id) => eq_bigint(vm.interns.get_long_int(*id), key, vm),
+            Value::InternString(id) => eq_str(vm.interns.get_str(*id), key, vm),
+            Value::InternBytes(id) => eq_bytes(vm.interns.get_bytes(*id), key, vm),
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Str(s) => eq_str(s.as_str(), key, vm),
+                HeapData::Bytes(b) => eq_bytes(b.as_slice(), key, vm),
+                HeapData::LongInt(li) => eq_bigint(li.inner(), key, vm),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+/// Whether an equality comparison involving `value` can never re-enter the VM.
+///
+/// True for immediates and for heap types whose `py_eq` is fully native.
+/// Instances and dataclasses dispatch to user `__eq__`, and containers
+/// (tuples, frozensets) recurse into element comparisons that might; those and
+/// any unlisted heap type return false. A conservative fast-path filter for
+/// the dict/set probes, not a complete classification.
+pub(crate) fn eq_is_native(value: &Value, heap: &Heap) -> bool {
+    match value {
+        Value::Ref(id) => matches!(
+            heap.get(*id),
+            HeapData::Str(_) | HeapData::Bytes(_) | HeapData::LongInt(_) | HeapData::Range(_)
+        ),
+        _ => true,
+    }
+}
+
+/// How a probe continued after user `__eq__` code may have mutated the
+/// container; shared by the dict and set lookups, which mirror each other.
+pub(crate) enum ProbeOutcome {
+    /// The key was found in this entry.
+    Found(usize),
+    /// Every live candidate has been compared, none matched.
+    Missing,
+    /// A candidate moved mid-probe, so the whole probe must start over.
+    Restart,
+}
+
 impl<'h> HeapRead<'h, Dict> {
     fn find_index_hash(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<(Option<usize>, u64)> {
         let hash = key
@@ -676,29 +737,179 @@ impl<'h> HeapRead<'h, Dict> {
             .ok_or_else(|| ExcType::type_error_unhashable_dict_key(&key.py_type_name(vm)))?
             .raw();
 
-        // Dict keys are typically shallow (strings, ints, tuples of primitives),
-        // so recursion errors are unlikely. If one occurs, treat it as "not equal" -
-        // the key lookup fails but doesn't crash.
-        //
-        // Collect candidate indices during the lookup to avoid borrow tracker issues
-        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
+        // Candidates are snapshotted so `py_eq` can run without the index-table
+        // borrow held, and revalidated either side of it: only one that moved
+        // restarts the probe, as in CPython's `lookdict`. Restarts poll the
+        // limits, since each callback restarts the VM's dispatch countdown.
+
+        // False for anything whose `__eq__` could mutate the dict; when true,
+        // revalidation and the miss continuation are skipped (the str/int path).
+        let key_native = eq_is_native(key, vm.heap);
+
+        'restart: loop {
+            // Collected inline rather than through `probe_candidates`: every
+            // lookup runs this, and moving the buffers out of a call shows up
+            // in the dict benchmarks.
+            let mut candidate_indices: SmallVec<[usize; 2]> = SmallVec::new();
+            let mut candidate_keys: SmallVec<[Value; 2]> = SmallVec::new();
+            let mut all_native = key_native;
+            let this = self.get(vm.heap);
+            // The `find` predicate doubles as the probe walk: native pairs are
+            // compared inline (a `true` stops at the match), and only pairs
+            // that may need user code are cloned for the guarded loop below.
+            // Once one is deferred, later candidates queue behind it so
+            // comparisons keep CPython's probe order.
+            let found = this
+                .indices
+                .find(hash, |v| {
+                    let entry = &this.entries[*v];
+                    if entry.hash != hash {
+                        return false;
+                    }
+                    if candidate_indices.is_empty()
+                        && let Some(eq) = probe_native_eq(&entry.key, key, vm)
+                    {
+                        eq
+                    } else {
+                        candidate_indices.push(*v);
+                        candidate_keys.push(entry.key.clone_with_heap(vm.heap));
+                        all_native = all_native && eq_is_native(&entry.key, vm.heap);
+                        false
+                    }
+                })
+                .copied();
+            // Guarded before the early returns below: the deferred keys are
+            // owned, and only the `candidate_indices.is_empty()` condition in
+            // the predicate above keeps them empty on the `found` path.
+            defer_drop!(candidate_keys, vm);
+            if let Some(index) = found {
+                return Ok((Some(index), hash));
+            }
+            if candidate_indices.is_empty() {
+                return Ok((None, hash));
+            }
+
+            for (&candidate_index, candidate_key) in candidate_indices.iter().zip(candidate_keys.iter()) {
+                if !all_native && !self.probe_valid(candidate_index, hash, candidate_key, vm) {
+                    vm.heap.tracker.check_memory_time()?;
+                    continue 'restart;
+                }
+                // CPython compares the stored key on the left.
+                let eq = candidate_key.py_eq(key, vm)?;
+                if !all_native && !self.probe_valid(candidate_index, hash, candidate_key, vm) {
+                    vm.heap.tracker.check_memory_time()?;
+                    continue 'restart;
+                }
+                if eq {
+                    return Ok((Some(candidate_index), hash));
+                }
+            }
+
+            // Nothing matched. Comparisons can themselves add colliding keys the
+            // snapshot never saw, so a pass that ran any hands over to the
+            // mutation-aware continuation — unless none could run user code.
+            if all_native {
+                return Ok((None, hash));
+            }
+            match self.probe_after_compare(hash, key, candidate_keys, vm)? {
+                ProbeOutcome::Found(index) => return Ok((Some(index), hash)),
+                ProbeOutcome::Missing => return Ok((None, hash)),
+                // a candidate moved: fall through to the next probe from scratch
+                ProbeOutcome::Restart => (),
+            }
+        }
+    }
+
+    /// Continues a probe whose comparisons all missed, in case one of them
+    /// mutated the dict and added a colliding key.
+    ///
+    /// Re-reads the candidates until a pass finds nothing new, skipping keys
+    /// already compared so no user `__eq__` runs twice, as CPython's live probe
+    /// chain does. Inline-compared native pairs are deliberately left out of
+    /// the seen set: repeating one is side-effect-free, and tracking them would
+    /// put clone and identity bookkeeping on the pure-native fast path.
+    fn probe_after_compare(
+        &self,
+        hash: u64,
+        key: &Value,
+        already_compared: &[Value],
+        vm: &mut VM<'h>,
+    ) -> RunResult<ProbeOutcome> {
+        // The clones keep every compared key alive so its heap slot cannot be
+        // recycled into a new key that would then be skipped by identity.
+        let compared: SmallVec<[Value; 2]> = already_compared.iter().map(|k| k.clone_with_heap(vm.heap)).collect();
+        defer_drop_mut!(compared, vm);
+        // Identity set for O(1) seen-checks — a linear scan is quadratic over
+        // a fully colliding dict, all skips, before the poll below is reached.
+        let mut compared_ids: AHashSet<Identity> = compared.iter().map(Value::id).collect();
+
+        loop {
+            // Polled up front so every entry checks the limits at least once:
+            // the comparisons that brought us here ran user code, restarting
+            // the VM dispatch countdown, so no checkpoint fires otherwise —
+            // including on the no-mutation pass that returns `Missing`.
+            vm.heap.tracker.check_memory_time()?;
+            let (candidate_indices, candidate_keys) = self.probe_candidates(hash, vm);
+            defer_drop!(candidate_keys, vm);
+            let mut compared_any = false;
+
+            for (&candidate_index, candidate_key) in candidate_indices.iter().zip(candidate_keys.iter()) {
+                if !compared_ids.insert(candidate_key.id()) {
+                    continue;
+                }
+                if !self.probe_valid(candidate_index, hash, candidate_key, vm) {
+                    vm.heap.tracker.check_memory_time()?;
+                    return Ok(ProbeOutcome::Restart);
+                }
+                compared.push(candidate_key.clone_with_heap(vm.heap));
+                compared_any = true;
+                // CPython compares the stored key on the left.
+                let eq = candidate_key.py_eq(key, vm)?;
+                if !self.probe_valid(candidate_index, hash, candidate_key, vm) {
+                    vm.heap.tracker.check_memory_time()?;
+                    return Ok(ProbeOutcome::Restart);
+                }
+                if eq {
+                    return Ok(ProbeOutcome::Found(candidate_index));
+                }
+            }
+
+            if !compared_any {
+                return Ok(ProbeOutcome::Missing);
+            }
+        }
+    }
+
+    /// Snapshots the live entries colliding on `hash`: their indices, plus an
+    /// owned reference to each of their keys.
+    ///
+    /// Cloning the keys lets `py_eq` run without the index-table borrow held;
+    /// the caller owns the returned keys and must drop them. Only the
+    /// mutation-aware continuation calls this — the fast path above inlines the
+    /// same collection.
+    fn probe_candidates(&self, hash: u64, vm: &VM<'h>) -> (SmallVec<[usize; 2]>, SmallVec<[Value; 2]>) {
+        let mut indices: SmallVec<[usize; 2]> = SmallVec::new();
+        let mut keys: SmallVec<[Value; 2]> = SmallVec::new();
         let this = self.get(vm.heap);
         this.indices.find(hash, |v| {
             if this.entries[*v].hash == hash {
-                candidates.push(*v);
+                indices.push(*v);
+                keys.push(this.entries[*v].key.clone_with_heap(vm.heap));
             }
             false
         });
+        (indices, keys)
+    }
 
-        for candidate_index in candidates {
-            let candidate_key = self.get(vm.heap).entries[candidate_index].key.clone_with_heap(vm);
-            defer_drop!(candidate_key, vm);
-            if key.py_eq(candidate_key, vm)? {
-                return Ok((Some(candidate_index), hash));
-            }
-        }
-
-        Ok((None, hash))
+    /// Checks that a snapshotted candidate still names the same live entry.
+    ///
+    /// The caller checks before and after `py_eq`; a mismatch restarts the probe.
+    #[inline]
+    fn probe_valid(&self, index: usize, hash: u64, key: &Value, vm: &VM<'h>) -> bool {
+        let this = self.get(vm.heap);
+        this.entries
+            .get(index)
+            .is_some_and(|entry| entry.hash == hash && entry.key.is(key))
     }
 
     /// Checks whether the dict contains a given key.

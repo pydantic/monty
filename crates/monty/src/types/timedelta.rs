@@ -18,7 +18,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     types::{CmpOrder, LazyHeapSet, PyTrait, Type, date, datetime, str::allocate_string},
     value::{EitherStr, Value},
@@ -169,6 +169,16 @@ pub(crate) fn from_total_microseconds(total_microseconds: i128) -> RunResult<Tim
     let delta = ChronoTimeDelta::new(seconds, nanos)
         .ok_or_else(|| SimpleException::new_msg(ExcType::OverflowError, "timedelta value out of range"))?;
     Ok(TimeDelta(delta))
+}
+
+/// Allocates a `timedelta` from a microsecond count known to be in range.
+///
+/// Used for the class constants (`resolution`, `min`, `max`) and by
+/// `utcoffset()`; anything derived from user input must go through [`new`] or
+/// [`from_total_microseconds`] so the overflow is reported rather than panicked.
+pub(crate) fn allocate_micros(total_microseconds: i128, heap: &Heap) -> Value {
+    let delta = from_total_microseconds(total_microseconds).expect("caller guarantees an in-range timedelta");
+    Value::Ref(heap.allocate(HeapData::TimeDelta(delta)))
 }
 
 /// Creates a `timedelta` from constructor arguments.

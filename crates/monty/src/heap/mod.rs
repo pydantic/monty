@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::{
     cell::{Cell, UnsafeCell},
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fmt,
     iter::once,
     marker::PhantomData,
@@ -18,13 +18,16 @@ use std::{
 };
 
 use monty_types::ResourceTracker;
-use serde::ser::SerializeStruct;
+use serde::{de::Error as _, ser::SerializeStruct};
 
 #[cfg(feature = "ref-count-return")]
 use crate::types::Type;
 use crate::{
     asyncio::{Awaiter, ExternalFutureState, GatherState},
-    types::{ExtFunction, TimeZone, Tuple},
+    types::{
+        ExtFunction, TimeZone, Tuple, datetime,
+        timezone::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS},
+    },
     value::Value,
 };
 // Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
@@ -267,6 +270,15 @@ macro_rules! define_heap_read_support {
                 $(#[$meta])*
                 $variant(HeapObjectRead<'a, $payload>),
             )*
+        }
+
+        impl HeapReadOutput<'_> {
+            /// Returns the heap entry containing the complete dynamically read object.
+            pub fn id(&self) -> HeapId {
+                match self {
+                    $(Self::$variant(value) => value.id(),)*
+                }
+            }
         }
 
         $(
@@ -960,15 +972,7 @@ impl<'de> serde::Deserialize<'de> for Heap {
         }
         let fields = HeapFields::deserialize(deserializer)?;
         let mut entries = fields.entries;
-        let mut ext_function_cache = BTreeMap::new();
-        for index in 0..entries.len() {
-            let id = HeapId::from_index(index);
-            if let Some(mut entry) = entries.entry(id)
-                && let HeapData::ExtFunction(function) = entry.get_mut().data.0.get_mut()
-            {
-                ext_function_cache.insert(function.cache_key(), id);
-            }
-        }
+        let ext_function_cache = restore_entries(&mut entries, fields.timezone_utc).map_err(D::Error::custom)?;
         Ok(Self {
             entries,
             tracker: fields.tracker,
@@ -980,6 +984,92 @@ impl<'de> serde::Deserialize<'de> for Heap {
             ext_function_cache,
         })
     }
+}
+
+/// Rebuilds the derived state a restored heap needs, and rejects entries whose
+/// contents a dump could not have produced.
+///
+/// Deserializing installs heap data verbatim, so every invariant the interpreter
+/// treats as guaranteed by its constructors has to be re-established here, or a
+/// forged dump becomes a panic or a self-contradictory value later: `time`
+/// components are read back by `naive_time` as already validated, and the `tzinfo`
+/// references on `time` and `datetime`, along with the `timezone_utc` cache, are
+/// dereferenced without checking what they land on. Returns the rebuilt
+/// external-function cache, which is derived rather than serialized.
+///
+/// A `time` needs no agreement check: it stores only the reference, so there is
+/// no second copy to contradict. A `datetime` keeps an inline offset and name —
+/// dumps predating `tzinfo_ref` have no reference to read instead — so its two
+/// copies are still checked against each other.
+fn restore_entries(
+    entries: &mut StableHeap<HeapEntry>,
+    timezone_utc: Option<HeapId>,
+) -> Result<BTreeMap<Arc<str>, HeapId>, &'static str> {
+    let mut ext_function_cache = BTreeMap::new();
+    // Both sides of every timezone check, as owned copies: only one entry can be
+    // borrowed at a time, and whether a reference is sound is not knowable until
+    // every entry has been visited. Each copy mirrors one already in the heap.
+    let mut timezones: HashMap<HeapId, TimeZone> = HashMap::new();
+    let mut datetime_tzinfo_refs: Vec<(HeapId, Option<TimeZone>)> = Vec::new();
+    let mut time_tzinfo_refs: Vec<HeapId> = Vec::new();
+    for index in 0..entries.len() {
+        let id = HeapId::from_index(index);
+        let Some(mut entry) = entries.entry(id) else {
+            continue;
+        };
+        match entry.get_mut().data.0.get_mut() {
+            HeapData::ExtFunction(function) => {
+                ext_function_cache.insert(function.cache_key(), id);
+            }
+            HeapData::TimeZone(tz) => {
+                // Checked here rather than at each referrer: this is the only copy
+                // of the offset a `time` has, and `format_offset_hms` negates it.
+                if !(MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&tz.offset_seconds) {
+                    return Err("timezone offset out of range");
+                }
+                timezones.insert(id, tz.clone());
+            }
+            HeapData::Time(t) => {
+                if !t.components_in_range() {
+                    return Err("time component out of range");
+                }
+                time_tzinfo_refs.extend(t.tzinfo_ref());
+            }
+            HeapData::DateTime(dt) => {
+                datetime_tzinfo_refs.extend(dt.tzinfo_ref().map(|tz_id| (tz_id, datetime::timezone_info(dt))));
+            }
+            _ => {}
+        }
+    }
+    // A `datetime`'s `tzinfo` reference must land on a live `timezone` holding
+    // exactly what the datetime answers `utcoffset()` and `tzname()` from, or the
+    // two disagree; the `timezone_utc` cache must land on UTC's, since
+    // `get_timezone_utc` hands its target straight back as `datetime.timezone.utc`
+    // without looking at it.
+    let holds = |id: HeapId, expected: &TimeZone| timezones.get(&id).is_some_and(|tz| timezone_matches(tz, expected));
+    // The attached copy is absent only for a naive `datetime` that kept a
+    // reference anyway, leaving the referenced timezone nothing to agree with.
+    let agrees = |(id, attached): &(HeapId, Option<TimeZone>)| attached.as_ref().is_some_and(|tz| holds(*id, tz));
+    // A `time` reads its offset and name straight off the target, so the target
+    // only has to *be* a timezone; `attached_timezone` treats that as established.
+    if !time_tzinfo_refs.iter().all(|id| timezones.contains_key(id)) {
+        Err("time tzinfo reference does not point at a timezone")
+    } else if !datetime_tzinfo_refs.iter().all(agrees) {
+        Err("tzinfo reference does not match the attached timezone")
+    } else if timezone_utc.is_some_and(|id| !holds(id, &TimeZone::utc())) {
+        Err("timezone.utc cache does not point to the utc timezone")
+    } else {
+        Ok(ext_function_cache)
+    }
+}
+
+/// Whether two timezones agree on everything a Python program can observe.
+///
+/// Not `==`, which is CPython's offset-only equality: a restored `time` whose
+/// `tzinfo` object carries a different *name* than its own copy would report one
+/// from `tzname()` and the other from `tzinfo.tzname()`.
+fn timezone_matches(a: &TimeZone, b: &TimeZone) -> bool {
+    a.offset_seconds == b.offset_seconds && a.name == b.name
 }
 
 /// Default GC interval — run cycle collection every 100 000 GC-tracked
@@ -1907,6 +1997,12 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(tz_id);
             }
         }
+        HeapData::Time(t) => {
+            // Same retained-tzinfo contract as `DateTime` above.
+            if let Some(tz_id) = t.tzinfo_ref() {
+                on_child(tz_id);
+            }
+        }
         HeapData::OpenFile(file) => {
             // Kept in sync with `py_dec_ref_ids_for_data`: the file owns one
             // ref on its loaded buffer. (`OpenFile` is not GC-tracked today, so
@@ -2020,6 +2116,12 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             // Mirror `for_each_child_id`: when an aware datetime is freed we must
             // also drop the retained tzinfo reference so its refcount is balanced.
             if let Some(tz_id) = dt.tzinfo_ref() {
+                stack.push(tz_id);
+            }
+        }
+        HeapData::Time(t) => {
+            // Mirror `for_each_child_id`: an aware time owns its tzinfo reference.
+            if let Some(tz_id) = t.tzinfo_ref() {
                 stack.push(tz_id);
             }
         }

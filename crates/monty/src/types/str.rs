@@ -6,7 +6,6 @@ use std::{cell::Cell, fmt::Write, ops};
 /// operations like length and equality comparison.
 use monty_types::ResourceError;
 pub use monty_types::{StringRepr, string_repr_fmt};
-use num_traits::ToPrimitive;
 use ruff_python_stdlib::{identifiers::is_identifier, keyword::is_keyword};
 use smallvec::smallvec;
 
@@ -27,7 +26,7 @@ use crate::{
     types::{
         LazyHeapSet, Type,
         long_int::repeat_count,
-        slice::{normalize_sequence_index, slice_collect_iterator},
+        slice::{optional_sequence_bound, slice_collect_iterator},
     },
     value::{EitherStr, Value, eq_str},
 };
@@ -1061,11 +1060,11 @@ fn str_starts_ends_with<'h>(
         return Err(ExcType::type_error_at_most(method, 3, pos.len()));
     }
     let start = match rest.first() {
-        Some(value) => optional_index(value, 0, str_len, vm)?,
+        Some(value) => optional_sequence_bound(value, 0, str_len, vm)?,
         None => 0,
     };
     let end = match rest.get(1) {
-        Some(value) => optional_index(value, str_len, str_len, vm)?,
+        Some(value) => optional_sequence_bound(value, str_len, str_len, vm)?,
         None => str_len,
     };
     let slice = slice_string(s.get(vm.heap), start, end);
@@ -1143,13 +1142,13 @@ fn parse_search_args(
         }
         [sub_value, start_value] => {
             let sub = extract_string_arg(sub_value, vm)?;
-            let start = optional_index(start_value, 0, str_len, vm)?;
+            let start = optional_sequence_bound(start_value, 0, str_len, vm)?;
             Ok((sub, start, str_len))
         }
         [sub_value, start_value, end_value] => {
             let sub = extract_string_arg(sub_value, vm)?;
-            let start = optional_index(start_value, 0, str_len, vm)?;
-            let end = optional_index(end_value, str_len, str_len, vm)?;
+            let start = optional_sequence_bound(start_value, 0, str_len, vm)?;
+            let end = optional_sequence_bound(end_value, str_len, str_len, vm)?;
             Ok((sub, start, end))
         }
         [] => Err(ExcType::type_error_at_least(method, 1, 0)),
@@ -1192,48 +1191,6 @@ fn extract_int_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<i64> {
 fn extract_c_int_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<i32> {
     let as_i64 = value.as_int_with_overflow(vm, ExcType::overflow_c_int)?;
     i32::try_from(as_i64).map_err(|_| ExcType::overflow_c_int())
-}
-
-/// Extracts an optional slice index from a `Value`, treating `None` as `default`.
-///
-/// Used by argument parsers where `None` means "use the default index" and
-/// any other value is interpreted as an integer and normalized against `str_len`.
-/// Accepts `bool` like CPython (an `int` subtype); non-integers raise CPython's
-/// `slice indices must be integers or None ...` rather than the generic
-/// `expected int` used for non-slice integer args.
-fn optional_index(value: &Value, default: usize, str_len: usize, vm: &mut VM<'_>) -> RunResult<usize> {
-    match value {
-        Value::None => Ok(default),
-        Value::Int(i) => Ok(normalize_sequence_index(*i, str_len)),
-        Value::Bool(b) => Ok(normalize_sequence_index(i64::from(*b), str_len)),
-        // Both `LongInt` representations answer here. As well as sharing one
-        // error, this keeps an interned one out of the `_` arm below, whose
-        // recursion would otherwise hand it straight back to itself.
-        Value::InternLongInt(id) => {
-            let i = vm
-                .interns
-                .get_long_int(*id)
-                .to_i64()
-                .ok_or_else(|| ExcType::type_error("integer too large"))?;
-            Ok(normalize_sequence_index(i, str_len))
-        }
-        Value::Ref(heap_id) if let HeapData::LongInt(li) = vm.heap.get(*heap_id) => {
-            let i = li.to_i64().ok_or_else(|| ExcType::type_error("integer too large"))?;
-            Ok(normalize_sequence_index(i, str_len))
-        }
-        _ => match value.py_index_impl(vm)? {
-            // Recurses exactly once: `py_index_impl` validates an int result, so
-            // the arms above take it. Recursing rather than narrowing here keeps a
-            // too-large result on the same path as a directly-passed `LongInt` —
-            // which raises `TypeError: integer too large` where CPython clamps,
-            // a pre-existing divergence this arm inherits rather than widens.
-            Some(index) => {
-                defer_drop!(index, vm);
-                optional_index(index, default, str_len, vm)
-            }
-            None => Err(ExcType::type_error_slice_indices()),
-        },
-    }
 }
 
 /// Returns a substring of s from character index start to end.
