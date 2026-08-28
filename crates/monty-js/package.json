@@ -67,8 +67,10 @@
     "assemble-packages": "node scripts/assemble-packages.mjs",
     "create-platform-packages": "node scripts/create-platform-packages.mjs"
   },
+  "dependencies": {
+    "@bjorn3/browser_wasi_shim": "^0.4.1"
+  },
   "devDependencies": {
-    "@bjorn3/browser_wasi_shim": "^0.4.1",
     "@emnapi/core": "^1.5.0",
     "@emnapi/runtime": "^1.5.0",
     "@napi-rs/cli": "^3.2.0",
