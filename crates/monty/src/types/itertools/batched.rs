@@ -8,7 +8,10 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapId, HeapRead},
     resource_checks::check_estimated_size,
-    types::{TupleVec, allocate_tuple, itertools::ItertoolsIter},
+    types::{
+        TupleVec, allocate_tuple,
+        itertools::{ItertoolsIter, step::next_source},
+    },
     value::{VALUE_SIZE, Value},
 };
 
@@ -81,11 +84,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
         // preflight above, and a Rust-side source reaches no checkpoint of its
         // own. `batch.len()` is monotonic, so it keys the amortization.
         vm.heap.tracker.check_memory_time_every(batch.len())?;
-        let item = {
-            let mut read = source.read(vm);
-            read.py_next(vm)
-        };
-        let Some(item) = item? else {
+        let Some(item) = next_source(source, vm)? else {
             break;
         };
         batch.push(item);

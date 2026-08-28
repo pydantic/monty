@@ -7,7 +7,10 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, DropWithContext, HeapId, HeapRead},
-    types::{TupleVec, allocate_tuple, itertools::ItertoolsIter},
+    types::{
+        TupleVec, allocate_tuple,
+        itertools::{ItertoolsIter, step::next_source},
+    },
     value::Value,
 };
 
@@ -84,8 +87,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
             None => None,
             Some(source) => {
                 defer_drop!(source, vm);
-                let mut read = source.read(vm);
-                read.py_next(vm)?
+                next_source(source, vm)?
             }
         };
         if let Some(item) = item {

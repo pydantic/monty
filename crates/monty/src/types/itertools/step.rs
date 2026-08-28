@@ -1,11 +1,26 @@
-//! The per-item step the predicate-driven adaptors share.
+//! The per-item step the adaptors share.
 //!
-//! `takewhile`, `dropwhile` and `filterfalse` each pull one item and decide
-//! what to do with it. Only the decision differs, so the fetch — and the guards
-//! that keep a raising test from leaking the item — live here rather than in
-//! three copies.
+//! Every source-driving adaptor pulls from its wrapped iterator through
+//! [`next_source`], the one place an adaptor re-enters the VM. `takewhile`,
+//! `dropwhile` and `filterfalse` share the decision around it too: only what
+//! they do with the item differs, so the guards that keep a raising test from
+//! leaking it live here rather than in three copies.
 
 use crate::{bytecode::VM, defer_drop, exception_private::RunResult, heap::DropGuard, value::Value};
+
+/// Pulls one item from a wrapped `source`, charging one recursion level.
+///
+/// This is the only place an adaptor re-enters `py_next` on the native Rust
+/// stack, so it is the only place the depth belongs: nesting stays bounded and
+/// raises `RecursionError` instead of overflowing, while an adaptor answering
+/// from its own state — a spent source, a latched predicate, an `accumulate`
+/// still holding its `initial` — pays nothing and so cannot fail a level early.
+pub(super) fn next_source(source: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+    let mut guard = vm.recursion_guard()?;
+    let vm = &mut *guard;
+    let mut read = source.read(vm);
+    read.py_next(vm)
+}
 
 /// Pulls one item from `source`, releasing the caller's clone before returning.
 ///
@@ -13,8 +28,7 @@ use crate::{bytecode::VM, defer_drop, exception_private::RunResult, heap::DropGu
 /// the VM, and the adaptor's own reference is unreachable behind that borrow.
 pub(super) fn next_item(source: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
     defer_drop!(source, vm);
-    let mut read = source.read(vm);
-    read.py_next(vm)
+    next_source(source, vm)
 }
 
 /// Pulls one item and applies `test` to it, returning both the item and the

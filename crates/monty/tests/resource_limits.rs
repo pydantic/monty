@@ -1212,6 +1212,49 @@ list(source)
     );
 }
 
+/// Third companion: the level is owed by the delegation, so an adaptor that
+/// answers from its own state must not cost one. `accumulate` yields its
+/// `initial` without touching its source, so the same nest over it has to fit
+/// in the same depth as one over a plain iterator — it needed one more while
+/// `ItertoolsIter::py_next` charged before dispatching, and a spent `batched`
+/// or a latched `takewhile` in that position was charged the same way.
+#[test]
+fn itertools_adaptors_charge_recursion_only_when_they_delegate() {
+    // The shallowest limit that runs a fixed nest, found rather than pinned:
+    // what matters is the difference between the two innermost iterators, not
+    // the absolute depth the surrounding frames happen to use.
+    let min_depth = |inner: &str| {
+        let code = format!(
+            r"
+import itertools
+source = {inner}
+for _ in range(20):
+    source = itertools.islice(source, 0, None)
+next(source)
+"
+        );
+        let ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        (1..=64)
+            .find(|&depth| {
+                let limits = ResourceLimits::default().max_recursion_depth(depth);
+                match ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout) {
+                    Ok(value) => {
+                        assert_eq!(value, MontyObject::Int(1), "inner: {inner}");
+                        true
+                    }
+                    Err(_) => false,
+                }
+            })
+            .unwrap_or_else(|| panic!("no depth up to 64 ran the nest over {inner}"))
+    };
+
+    assert_eq!(
+        min_depth("itertools.accumulate([], initial=1)"),
+        min_depth("iter([1])"),
+        "answering from adaptor state should cost no recursion level"
+    );
+}
+
 /// Ordering deeply nested namedtuples must raise `RecursionError`, not overflow
 /// the native stack. Ordering compares detached item vecs via `cmp_item_seqs`
 /// rather than a token-bearing iterator, so it charges its own recursion level;

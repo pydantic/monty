@@ -268,45 +268,27 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
         Ok(self.clone_value(vm.heap))
     }
 
+    /// Recursion is charged by [`step::next_source`], not here: the level is
+    /// owed by re-entering a wrapped iterator on the native Rust stack, and an
+    /// adaptor that answers from its own state never does. Charging it up front
+    /// made a spent `batched`, a latched `takewhile` or an `accumulate` yielding
+    /// its `initial` cost a level it never spent.
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let kind = self.get(vm.heap).kind();
-        match kind {
-            // Self-contained adaptors: neither drives a wrapped iterator.
+        match self.get(vm.heap).kind() {
             Kind::Count => count::next(self, vm),
             Kind::Repeat => repeat::next(self, vm),
-            // Source-driving adaptors re-enter `py_next` on their wrapped
-            // iterator, recursing on the native Rust stack; charge a recursion
-            // level so deep nesting raises `RecursionError`, not a stack overflow.
-            Kind::Pairwise
-            | Kind::Compress
-            | Kind::Islice
-            | Kind::Chain
-            | Kind::Cycle
-            | Kind::TakeWhile
-            | Kind::DropWhile
-            | Kind::FilterFalse
-            | Kind::StarMap
-            | Kind::Accumulate
-            | Kind::Batched
-            | Kind::ZipLongest => {
-                let mut guard = vm.recursion_guard()?;
-                let vm = &mut *guard;
-                match kind {
-                    Kind::Pairwise => pairwise::next(self, vm),
-                    Kind::Compress => compress::next(self, vm),
-                    Kind::Islice => islice::next(self, vm),
-                    Kind::Chain => chain::next(self, vm),
-                    Kind::Cycle => cycle::next(self, vm),
-                    Kind::TakeWhile => takewhile::next(self, vm),
-                    Kind::DropWhile => dropwhile::next(self, vm),
-                    Kind::FilterFalse => filterfalse::next(self, vm),
-                    Kind::StarMap => starmap::next(self, vm),
-                    Kind::Accumulate => accumulate::next(self, vm),
-                    Kind::Batched => batched::next(self, vm),
-                    Kind::ZipLongest => zip_longest::next(self, vm),
-                    Kind::Count | Kind::Repeat => unreachable!("handled above"),
-                }
-            }
+            Kind::Pairwise => pairwise::next(self, vm),
+            Kind::Compress => compress::next(self, vm),
+            Kind::Islice => islice::next(self, vm),
+            Kind::Chain => chain::next(self, vm),
+            Kind::Cycle => cycle::next(self, vm),
+            Kind::TakeWhile => takewhile::next(self, vm),
+            Kind::DropWhile => dropwhile::next(self, vm),
+            Kind::FilterFalse => filterfalse::next(self, vm),
+            Kind::StarMap => starmap::next(self, vm),
+            Kind::Accumulate => accumulate::next(self, vm),
+            Kind::Batched => batched::next(self, vm),
+            Kind::ZipLongest => zip_longest::next(self, vm),
         }
     }
 
