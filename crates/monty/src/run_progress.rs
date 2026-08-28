@@ -16,6 +16,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{Heap, HeapReader},
     object_bridge::MontyObjectExt,
+    os_dispatch::release_pending_effect,
     run::Executor,
 };
 
@@ -145,13 +146,13 @@ impl FunctionCall {
     /// This allows modifying resource limits between execution phases,
     /// e.g. setting a time limit before resuming after an external function call.
     pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
-        self.snapshot.heap.tracker_mut()
+        &mut self.snapshot.heap.tracker
     }
 
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        self.snapshot.heap.tracker()
+        &self.snapshot.heap.tracker
     }
 
     /// Resumes execution with the return value or exception from the external function.
@@ -251,7 +252,7 @@ impl OsCall {
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        self.snapshot.heap.tracker()
+        &self.snapshot.heap.tracker
     }
 }
 
@@ -294,7 +295,7 @@ impl NameLookup {
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        self.snapshot.heap.tracker()
+        &self.snapshot.heap.tracker
     }
 
     /// Resumes execution after name resolution.
@@ -413,7 +414,7 @@ impl ResolveFutures {
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        self.heap.tracker()
+        &self.heap.tracker
     }
 
     /// Forces a GC cycle against the exact root walk used by the live VM.
@@ -447,6 +448,18 @@ impl ResolveFutures {
         });
 
         Self::new(executor, vm_state, heap, pending_call_ids)
+    }
+
+    /// Number of tasks still live while this snapshot is suspended.
+    ///
+    /// Test-only: lets a test assert that a gather child whose external call
+    /// failed was dropped rather than left parked forever on a future that
+    /// can no longer be resolved.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __live_task_count_for_tests(&self) -> usize {
+        self.vm_state.live_task_count()
     }
 
     /// Resumes execution with results for some or all pending futures.
@@ -643,6 +656,13 @@ impl ConvertedExit {
 /// All `Value` → `MontyObject` and `StringId` → `String` conversions happen here,
 /// while the VM (and its heap/interns) are still accessible.
 pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) -> ConvertedExit {
+    // An effect still armed on arrival belongs to an OS call that was answered
+    // without consuming it — a host may reply `ExtFunctionResult::Future`,
+    // whose resume never takes it. It can never apply to whatever suspends
+    // next, so release it here rather than let it reshape an unrelated result
+    // (or leak its file pin when the next OS call overwrites the slot).
+    // Arming for *this* exit happens below, after the slot is clear.
+    release_pending_effect(vm.pending_os_effect.take(), vm.heap);
     match result {
         Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::new(value, vm)),
         Ok(FrameExit::ExternalCall {
@@ -661,10 +681,19 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 method_call: false,
             }
         }
-        Ok(FrameExit::OsCall { function_call, call_id }) => ConvertedExit::OsCall {
+        Ok(FrameExit::OsCall {
             function_call,
-            call_id: call_id.raw(),
-        },
+            call_id,
+            effect,
+        }) => {
+            // The point of no return: the call is the host's, so a matching
+            // `resume` is guaranteed. Every other destination drops it.
+            vm.pending_os_effect = effect;
+            ConvertedExit::OsCall {
+                function_call,
+                call_id: call_id.raw(),
+            }
+        }
         Ok(FrameExit::MethodCall {
             method_name,
             args,

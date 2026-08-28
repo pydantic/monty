@@ -124,12 +124,6 @@ lint-py: dev-py ## Lint Python code with ruff
 .PHONY: lint
 lint: lint-rs lint-py ## Lint the code with ruff and clippy
 
-.PHONY: format-lint-rs
-format-lint-rs: format-rs lint-rs ## Format and lint Rust code with fmt and clippy
-
-.PHONY: format-lint-py
-format-lint-py: format-py lint-py ## Format and lint Python code with ruff
-
 .PHONY: test-no-features
 test-no-features: ## Run rust tests without any features enabled
 	cargo test -p monty -p monty-fs
@@ -174,9 +168,17 @@ pytest: ## Run Python tests with pytest
 test-py: dev-py pytest ## Build the python package (debug profile) and run tests
 
 .PHONY: test-docs
-test-docs: dev-py ## Test docs examples only
+test-docs: dev-py ## Test docs examples only (docs/, README.md, crates/monty-python/README.md)
 	uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests/test_readme_examples.py
-	cargo test --doc -p monty
+	cargo test --doc --workspace
+
+.PHONY: docs
+docs: ## Build the docs site from docs/ and mkdocs.yml
+	uv run --group docs mkdocs build --strict
+
+.PHONY: docs-serve
+docs-serve: ## Serve the docs site locally with live reload
+	uv run --group docs mkdocs serve
 
 .PHONY: test
 test: test-memory-model-checks test-ref-count-return test-no-features test-type-checking test-subprocess test-py miri ## Run rust tests

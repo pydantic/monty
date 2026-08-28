@@ -11,6 +11,8 @@ replaced transparently — your process is never at risk.
 ## Installation
 
 ```bash
+uv add pydantic-monty
+# or
 pip install pydantic-monty
 ```
 
@@ -26,6 +28,31 @@ distributions that make up a working sandbox:
 Install `pydantic-monty-client` on its own when the worker binary comes from
 somewhere else — a base image, a system package, a build of this repo — and
 point `pydantic_monty` at it via `MONTY_BIN`, `binary_path=`, or `PATH`.
+
+## CLI
+
+Usage without installing via [uvx](https://docs.astral.sh/uv/guides/tools/):
+
+```bash
+uvx pydantic-monty --help
+```
+
+`uvx pydantic-monty` runs a REPL, or `uvx pydantic-monty <file>` runs a file.
+
+Or to install `monty` locally, run
+
+```bash
+uv tool install pydantic-monty-runtime
+# then to run the repl:
+monty
+# or run a file:
+monty <file>
+# or for help:
+monty --help
+```
+
+Within an environment that already has `pydantic-monty` installed,
+`python -m pydantic_monty` runs the same binary.
 
 ## Usage
 
@@ -248,10 +275,12 @@ with Monty() as pool:
             """
 ```
 
-### Crash isolation
+### Crash/failure isolation
+
+Every failure in monty code execution raises a subclass of `MontyError`.
 
 ```python test="skip"
-from pydantic_monty import Monty, MontyCrashedError
+from pydantic_monty import Monty, MontyError
 
 hostile_code = '...'
 
@@ -259,24 +288,6 @@ with Monty() as pool:
     with pool.checkout() as session:
         try:
             session.feed_run(hostile_code)  # even a segfault is contained
-        except MontyCrashedError:
+        except MontyError:
             ...  # the worker died; the pool already replaced it
 ```
-
-### Observability
-
-The Python Logfire integration instruments the pool through a private adapter
-hook. It propagates the active Python OTel context into each checkout, which
-becomes one session span with nested feed and suspension
-spans recording code, inputs, external calls, exceptions, and `print` output.
-Session dumps and restores are recorded by size only.
-
-Logfire's Python SDK owns sampling, export credentials, resources, flushing,
-and shutdown. The Rust binding runs only an exporter-free processor pipeline;
-workers receive no credentials. Instrumentation is disabled unless an adapter
-is explicitly installed. Enabled instrumentation captures content, truncating
-large values at the telemetry attribute size limit.
-
-See `limitations/pool-architecture.md` in the repository for the behavioural
-details of subprocess execution (host-side mounts, buffered print
-callbacks, session dumps).

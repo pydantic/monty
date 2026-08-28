@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData},
+    heap::{DropGuard, DropWithContext, HeapData},
     types::{List, iter::checked_preallocation_hint},
     value::Value,
 };
@@ -67,8 +67,9 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     // Validate and clamp the iterator's hint before reserving native memory.
     let hint = first_iter.iter_size_hint(vm);
-    let capacity = checked_preallocation_hint(hint, mem::size_of::<Value>(), vm.heap.tracker())?;
-    let mut out = Vec::with_capacity(capacity);
+    let capacity = checked_preallocation_hint(hint, mem::size_of::<Value>(), &vm.heap.tracker)?;
+    let out = Vec::with_capacity(capacity);
+    defer_drop_mut!(out, vm);
 
     // map function over iterables until the shortest iter is exhausted
     match extra_iterators.as_mut_slice() {
@@ -82,29 +83,30 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         // map(f, iter1, iter2)
         [single] => {
             while let Some(arg1) = first_iter.py_next(vm)? {
-                let Some(arg2) = single.py_next(vm)? else {
-                    arg1.drop_with(vm);
+                let mut arg1_guard = DropGuard::new(arg1, vm);
+                let Some(arg2) = single.py_next(arg1_guard.ctx())? else {
                     break;
                 };
+                let (arg1, vm) = arg1_guard.into_parts();
                 let args = ArgValues::Two(arg1, arg2);
                 out.push(vm.evaluate_function("map()", function, args)?);
             }
         }
         // map(f, iter1, iter2, *iterables)
         multiple => 'outer: loop {
-            let mut items = Vec::with_capacity(1 + multiple.len());
+            let items = Vec::with_capacity(1 + multiple.len());
+            defer_drop_mut!(items, vm);
 
             for result in iter::once(first_iter.py_next(vm)).chain(multiple.iter_mut().map(|iter| iter.py_next(vm))) {
                 if let Some(item) = result? {
                     items.push(item);
                 } else {
-                    items.drop_with(vm);
                     break 'outer;
                 }
             }
 
             let args = ArgValues::ArgsKargs {
-                args: items,
+                args: mem::take(items),
                 kwargs: KwargsValues::Empty,
             };
 
@@ -112,7 +114,7 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         },
     }
 
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(out)));
+    let heap_id = vm.heap.allocate(HeapData::List(List::new(mem::take(out))));
     Ok(Value::Ref(heap_id))
 }
 

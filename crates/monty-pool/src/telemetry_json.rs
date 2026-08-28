@@ -16,7 +16,7 @@ use std::{
     mem::size_of,
 };
 
-use monty_types::{MontyDateTime, MontyObject, bytes_repr};
+use monty_types::{MontyDateTime, MontyObject, MontyTime, bytes_repr};
 use num_traits::ToPrimitive;
 use serde::ser::{Error as _, Serialize, SerializeMap, Serializer};
 
@@ -198,6 +198,7 @@ impl Serialize for JsonEncoded<'_> {
             }
             MontyObject::Date(d) => s.collect_str(&format_args!("{:04}-{:02}-{:02}", d.year, d.month, d.day)),
             MontyObject::DateTime(dt) => s.serialize_str(&datetime_isoformat(dt)),
+            MontyObject::Time(t) => s.serialize_str(&time_isoformat(t)),
             // total seconds, accumulated in f64 throughout: an extreme `days`
             // overflows the microseconds of the same sum in i64
             MontyObject::TimeDelta(td) => s.serialize_f64(
@@ -319,14 +320,34 @@ fn datetime_isoformat(dt: &MontyDateTime) -> String {
         let _ = write!(iso, ".{:06}", dt.microsecond);
     }
     if let Some(offset) = dt.offset_seconds {
-        let sign = if offset < 0 { '-' } else { '+' };
-        let abs = offset.unsigned_abs();
-        let _ = write!(iso, "{sign}{:02}:{:02}", abs / 3600, (abs % 3600) / 60);
-        if abs % 60 != 0 {
-            let _ = write!(iso, ":{:02}", abs % 60);
-        }
+        write_utc_offset(&mut iso, offset);
     }
     iso
+}
+
+/// A `time` as its `isoformat()`, so it lands in telemetry as a string like
+/// `date`/`datetime` rather than falling through to `repr()`. `fold` is not
+/// representable in ISO 8601 and is dropped, as CPython's `isoformat()` does.
+fn time_isoformat(t: &MontyTime) -> String {
+    let mut iso = format!("{:02}:{:02}:{:02}", t.hour, t.minute, t.second);
+    if t.microsecond != 0 {
+        let _ = write!(iso, ".{:06}", t.microsecond);
+    }
+    if let Some(offset) = t.offset_seconds {
+        write_utc_offset(&mut iso, offset);
+    }
+    iso
+}
+
+/// Appends a `±HH:MM[:SS]` UTC offset, the suffix shared by the aware `date`,
+/// `datetime` and `time` renderings.
+fn write_utc_offset(iso: &mut String, offset: i32) {
+    let sign = if offset < 0 { '-' } else { '+' };
+    let abs = offset.unsigned_abs();
+    let _ = write!(iso, "{sign}{:02}:{:02}", abs / 3600, (abs % 3600) / 60);
+    if !abs.is_multiple_of(60) {
+        let _ = write!(iso, ":{:02}", abs % 60);
+    }
 }
 
 // tests live here because the encoders are crate-private: telemetry encoding

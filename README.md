@@ -16,9 +16,12 @@
 
 ---
 
+> [!NOTE]
+> **Hack Monty Round 3 is live** - the last round before Monty V1. See [pydantic.dev/monty](https://pydantic.dev/monty) for details.
+
 **Experimental** - This project is still in development, and not ready for prime time.
 
-A minimal, secure Python interpreter written in Rust for use by AI.
+A minimal, secure Python 3.14 interpreter written in Rust for use by AI.
 
 Monty avoids the cost, latency, complexity and general faff of using a full container based sandbox for running LLM generated code.
 
@@ -35,15 +38,15 @@ What Monty **can** do:
 - Be called from Rust, Python, or Javascript - because Monty has no dependencies on cpython, you can use it anywhere you can run Rust
 - Control resource usage - Monty can track memory usage, stack depth, and execution time and cancel execution if it exceeds preset limits
 - Collect stdout and stderr and return it to the caller
-- Run async or sync code on the host via async or sync code on the host
-- Use a small subset of the standard library: `sys`, `os`, `typing`, `asyncio`, `re`, `datetime`, `json`, `dataclasses` (soon)
+- Run async or sync sandboxed code, calling async or sync functions on the host
+- Use a small subset of the standard library including `asyncio`, `base64`, `binascii`, `collections`, `dataclasses`, `datetime`, `functools`, `itertools`, `json`, `math`, `os`, `pathlib`, `re`, `sys`, `typing`, `unicodedata`
 
 What Monty **cannot** do:
 
 - Use the rest of the standard library
 - Use third party libraries (like Pydantic), support for external python library is not a goal
-- define classes (support should come soon)
-- use match statements (again, support should come soon)
+- use class inheritance, metaclasses or `super()` - simple classes without a base class do work
+- use match statements (support should come soon)
 
 ---
 
@@ -60,7 +63,9 @@ For motivation on why you might want to do this, see:
 
 In very simple terms, the idea of all the above is that LLMs can work faster, cheaper and more reliably if they're asked to write Python (or Javascript) code, instead of relying on traditional tool calling. Monty makes that possible without the complexity of a sandbox or risk of running code directly on the host.
 
-**Note:** Monty will (soon) be used to implement `codemode` in [Pydantic AI](https://github.com/pydantic/pydantic-ai)
+**Note:** Monty powers [`Code Mode`](https://pydantic.dev/docs/ai/harness/code-mode/) in [Pydantic AI](https://github.com/pydantic/pydantic-ai)
+
+**Documentation:** [`docs/`](./docs) covers installation, quickstarts for each language binding, the security model, host functions, resource limits, snapshotting, type checking and the supported Python subset. [`limitations/`](./limitations) is the reference for how Monty diverges from CPython.
 
 ## Usage
 
@@ -252,8 +257,8 @@ A session's `max_memory` is measured by the worker's allocator. The interpreter
 reports a graceful `MemoryError` after crossing the soft limit; a higher hard
 limit kills and replaces the worker if one allocation jumps too far between checkpoints.
 
-See [`limitations/resource_limits.md`](limitations/resource_limits.md) for how
-exceeding a limit surfaces to a host, and `monty-alloc` for the allocator both
+See [`limitations/resource_limits.md`](limitations/resource_limits.md) for what
+a host sees when a limit is exceeded, and `monty-alloc` for the allocator both
 the subprocess and WebAssembly workers run under.
 
 ## PydanticAI Integration
@@ -357,9 +362,9 @@ There are generally two responses when you show people Monty:
 
 Where X is some alternative technology. Oddly often these responses are combined, suggesting people have not yet found an alternative that works for them, but are incredulous that there's really no good alternative to creating an entire Python implementation from scratch.
 
-I'll try to run through the most obvious alternatives, and why there aren't right for what we wanted.
+I'll try to run through the most obvious alternatives, and why they aren't right for what we wanted.
 
-NOTE: all these technologies are impressive and have widespread uses, this commentary on their limitations for our use case should not be seen as a criticism. Most of these solutions were not conceived with the goal of providing an LLM sandbox, which is why they're not necessary great at it.
+NOTE: all these technologies are impressive and have widespread uses, this commentary on their limitations for our use case should not be seen as a criticism. Most of these solutions were not conceived with the goal of providing an LLM sandbox, which is why they're not necessarily great at it.
 
 | Tech               | Language completeness | Security     | Start latency | FOSS       | Setup complexity | File mounting  | Snapshotting |
 | ------------------ | --------------------- | ------------ | ------------- | ---------- | ---------------- | -------------- | ------------ |
@@ -377,7 +382,7 @@ Details on each row below:
 
 ### Monty
 
-- **Language completeness**: No classes (yet), limited stdlib, no third-party libraries
+- **Language completeness**: No class inheritance, limited stdlib, no third-party libraries
 - **Security**: Explicitly controlled filesystem, network, and env access, strict limits on execution time and memory usage
 - **Start latency**: Starts in microseconds
 - **Setup complexity**: just `pip install pydantic-monty` or `npm install @pydantic/monty`, ~4.5MB download
@@ -421,7 +426,7 @@ Running Python in WebAssembly via [Wasmer](https://wasmer.io/).
 - **Security**: In principle WebAssembly should provide strong sandboxing guarantees.
 - **Start latency**: The [wasmer](https://pypi.org/project/wasmer/) python package hasn't been updated for 3 years and I couldn't find docs on calling Python in wasmer from Python, so I called it via subprocess. Start latency was 66ms.
 - **Setup complexity**: wasmer download is 100mb, the "python/python" package is 50mb.
-- **FOSS**: I marked this as "free \*" since the cost is zero but not everything seems to be open source. As of 2026-02-10 the [`python/python` wasmer package](https://wasmer.io/python/python) package has no readme, no license, no source link and no indication of how it's built, the recently uploaded versions show size as "0B" although the download is ~50MB - the build process for the Python binary is not clear and transparent. _(If I'm wrong here, please create an issue to correct correct me)_
+- **FOSS**: I marked this as "free \*" since the cost is zero but not everything seems to be open source. As of 2026-02-10 the [`python/python` wasmer package](https://wasmer.io/python/python) package has no readme, no license, no source link and no indication of how it's built, the recently uploaded versions show size as "0B" although the download is ~50MB - the build process for the Python binary is not clear and transparent. _(If I'm wrong here, please create an issue to correct me)_
 - **File mounting**: Supported
 - **Snapshotting**: Supported via journaling
 
@@ -437,7 +442,7 @@ There are similar challenges, more setup complexity but lower network latency fo
 - **FOSS**: Pay per execution or compute time, some implementations are open source
 - **Setup complexity**: API integration, auth tokens - fine for startups but generally a non-start for enterprises
 - **File mounting**: Upload/download via API calls
-- **Snapshotting**: Possible with durable execution solutions like Temporal, also the services offer some solutions for this, I think based con docker containers
+- **Snapshotting**: Possible with durable execution solutions like Temporal, also the services offer some solutions for this, I think based on docker containers
 
 ### YOLO Python
 

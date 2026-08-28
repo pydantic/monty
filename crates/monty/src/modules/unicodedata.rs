@@ -258,7 +258,7 @@ impl NormForm {
 /// single code point into several), so the result is built through
 /// [`StringBuilder`] which preflights allocator-backed usage as it grows.
 fn normalize_with(form: NormForm, text: &str, heap: &Heap) -> RunResult<Value> {
-    let mut builder = StringBuilder::new(heap.tracker());
+    let mut builder = StringBuilder::new(&heap.tracker);
     match form {
         NormForm::Nfc => {
             for c in text.nfc() {

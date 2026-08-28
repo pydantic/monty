@@ -26,7 +26,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// rejected instead of decoding as their neighbour. That covers the
 /// interpreter's own types *and* everything reachable from [`Dump`] — notably
 /// `TypeCheckingConfig` in `monty-types`.
-pub const DUMP_VERSION: u16 = 5;
+pub const DUMP_VERSION: u16 = 6;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
@@ -174,12 +174,13 @@ impl Error for DumpError {}
 
 #[cfg(test)]
 mod tests {
-    use monty_types::TypeCheckingFormat;
+    use monty_types::{MontyType, TypeCheckingFormat};
     use strum::VariantNames;
 
     use super::DUMP_VERSION;
     use crate::{
-        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, intern::static_strings_fingerprint,
+        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint,
+        intern::static_strings_fingerprint, types::Type,
     };
 
     /// If a component changes incompatibly, bump `DUMP_VERSION` before updating its
@@ -196,7 +197,7 @@ mod tests {
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0x239c_c721_30be_eba3,
+            0xf603_c310_ebed_dcc0,
             "static strings changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
@@ -204,6 +205,50 @@ mod tests {
             0x8ecc_d26b_160d_9c0b,
             "comparison operators changed for dump version {DUMP_VERSION}"
         );
+        // `VariantNames` keeps the `#[strum(disabled)]` variants that `EnumString`
+        // and `EnumIter` drop, which is what lets the two fingerprints below cover
+        // every postcard discriminant. Asserted rather than assumed, so a strum
+        // upgrade that changed it says so instead of quietly narrowing the guard.
+        assert!(Type::VARIANTS.contains(&"instance"));
+        assert!(MontyType::VARIANTS.contains(&"instance"));
+        assert!(MontyType::VARIANTS.contains(&"exception"));
+
+        assert_eq!(
+            variant_order_fingerprint(Type::VARIANTS),
+            0x689e_d8e1_ffb2_3ba1,
+            "Type variants changed for dump version {DUMP_VERSION}"
+        );
+        assert_eq!(
+            variant_order_fingerprint(MontyType::VARIANTS),
+            0x9acb_9e35_39c5_7020,
+            "MontyType variants changed for dump version {DUMP_VERSION}"
+        );
+    }
+
+    /// FNV-1a over variant names in declaration order.
+    ///
+    /// `Type` and `MontyType` are postcard-encoded by variant index inside a
+    /// `Dump`, so inserting a variant rewrites what older dumps decode to rather
+    /// than failing the version check. Appending leaves this unchanged for every
+    /// existing variant; inserting or reordering does not.
+    ///
+    /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`,
+    /// `MontyType::{Instance, Exception}` — which carry discriminants like any
+    /// other despite having no name to round-trip through `EnumString`.
+    fn variant_order_fingerprint(variants: &[&str]) -> u64 {
+        const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+        const PRIME: u64 = 0x0100_0000_01b3;
+
+        let mut hash = OFFSET_BASIS;
+        for name in variants {
+            for byte in name.as_bytes() {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(PRIME);
+            }
+            hash ^= 0xff;
+            hash = hash.wrapping_mul(PRIME);
+        }
+        hash
     }
 
     /// `TypeCheckingFormat` reaches the dump schema through

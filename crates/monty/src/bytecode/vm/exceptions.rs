@@ -14,16 +14,22 @@ use crate::{
     value::Value,
 };
 
+/// Result of handling an exception until execution can resume, it escapes, or
+/// it needs to be propagated in a waiting task.
+enum ExceptionHandlingResult {
+    /// Execution can resume without propagating an error to the caller.
+    Caught,
+    /// The error should be returned to the VM caller.
+    Unhandled(RunError),
+    /// The error should be handled in the waiting task.
+    PropagateToWaiter(RunError),
+}
+
 impl VM<'_> {
     /// Returns the current function name, or `<module>` outside a function.
-    /// The empty-stack fallback keeps traceback generation total after async
-    /// paths drain their frames.
     fn current_frame_name(&self) -> StringId {
-        match self.frames.last() {
-            Some(frame) => match frame.function_id {
-                Some(func_id) => self.interns.get_function(func_id).name.name_id,
-                None => StaticStrings::Module.into(),
-            },
+        match self.current_frame().function_id {
+            Some(func_id) => self.interns.get_function(func_id).name.name_id,
             None => StaticStrings::Module.into(),
         }
     }
@@ -32,11 +38,7 @@ impl VM<'_> {
     ///
     /// Used when raising exceptions to capture traceback information.
     fn make_stack_frame(&self) -> RawStackFrame {
-        RawStackFrame::new(
-            self.current_position().unwrap_or_default(),
-            self.current_frame_name(),
-            None,
-        )
+        RawStackFrame::new(self.current_position(), self.current_frame_name(), None)
     }
 
     /// Attaches initial frame information to an error if it doesn't have any.
@@ -95,7 +97,7 @@ impl VM<'_> {
 
         // Create frame with appropriate hide_caret setting
         let frame = if is_raise {
-            RawStackFrame::from_raise(self.current_position().unwrap_or_default(), self.current_frame_name())
+            RawStackFrame::from_raise(self.current_position(), self.current_frame_name())
         } else {
             self.make_stack_frame()
         };
@@ -217,7 +219,7 @@ impl VM<'_> {
 
     /// Creates an `AssertionError` raised at the current source position.
     fn assertion_error(&self, msg: Option<String>) -> RunError {
-        let frame = RawStackFrame::from_raise(self.current_position().unwrap_or_default(), self.current_frame_name());
+        let frame = RawStackFrame::from_raise(self.current_position(), self.current_frame_name());
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new(ExcType::AssertionError, msg),
             frame: Some(frame),
@@ -246,8 +248,19 @@ impl VM<'_> {
     pub(super) fn handle_exception_with_value(
         &mut self,
         mut error: RunError,
-        raised: Option<Value>,
+        mut raised: Option<Value>,
     ) -> Option<RunError> {
+        loop {
+            match self.handle_exception_step(error, raised.take()) {
+                ExceptionHandlingResult::Caught => return None,
+                ExceptionHandlingResult::Unhandled(error) => return Some(error),
+                ExceptionHandlingResult::PropagateToWaiter(waiter_error) => error = waiter_error,
+            }
+        }
+    }
+
+    /// Handles one propagation step, yielding when the error moves to a waiter.
+    fn handle_exception_step(&mut self, mut error: RunError, raised: Option<Value>) -> ExceptionHandlingResult {
         // Ensure exception has initial frame info
         error = self.attach_frame_to_error(error);
 
@@ -257,7 +270,7 @@ impl VM<'_> {
             if let Some(raised) = raised {
                 raised.drop_with(self);
             }
-            return Some(self.unwind_for_traceback(error));
+            return ExceptionHandlingResult::Unhandled(self.unwind_for_traceback(error));
         }
 
         let exc_value = if let Some(raised) = raised {
@@ -320,11 +333,11 @@ impl VM<'_> {
                 // Jump to handler
                 this.current_frame_mut().ip = handler_offset;
 
-                return None; // Continue execution at handler
+                return ExceptionHandlingResult::Caught;
             }
 
             // No handler in this frame - pop frame and try outer
-            if this.frames.len() <= 1 {
+            if this.suspended_frames.is_empty() {
                 // No more frames - exception is unhandled
                 let is_spawned = this.is_spawned_task();
 
@@ -333,19 +346,16 @@ impl VM<'_> {
 
                 // For spawned tasks, fail the task instead of propagating
                 if is_spawned {
-                    match self.handle_task_failure(error) {
+                    return match self.handle_task_failure(error) {
                         Ok(()) => {
                             // Switched to next task - continue execution
-                            return None;
+                            ExceptionHandlingResult::Caught
                         }
-                        Err(waiter_error) => {
-                            // Switched to waiter - handle error in waiter's context
-                            return self.handle_exception(waiter_error);
-                        }
-                    }
+                        Err(waiter_error) => ExceptionHandlingResult::PropagateToWaiter(waiter_error),
+                    };
                 }
 
-                return Some(error);
+                return ExceptionHandlingResult::Unhandled(error);
             }
 
             // Get the caller's call-site offset before popping frame.
@@ -356,7 +366,7 @@ impl VM<'_> {
             if this.pop_frame() {
                 // The frame indicated evaluation should stop - e.g. inside `evaluate_function` - return the error
                 // now to stop unwinding.
-                return Some(error);
+                return ExceptionHandlingResult::Unhandled(error);
             }
 
             // Add caller frame info to traceback (if we have a call site).
@@ -380,7 +390,7 @@ impl VM<'_> {
     /// but still need a complete traceback showing all active call frames.
     fn unwind_for_traceback(&mut self, mut error: RunError) -> RunError {
         // Pop frames and add caller frame info to the traceback
-        while self.frames.len() > 1 {
+        while !self.suspended_frames.is_empty() {
             // Get the caller's call-site offset before popping frame
             let call_offset = self.current_frame().call_offset;
 

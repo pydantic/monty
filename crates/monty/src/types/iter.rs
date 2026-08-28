@@ -85,7 +85,12 @@ impl<'h, I: CollectIter<'h>> Iterator for HeapedIterator<'_, 'h, I> {
             Ok(Some(value)) => {
                 self.yielded += 1;
                 let estimated = self.yielded.saturating_mul(VALUE_SIZE);
-                match check_estimated_size(estimated, self.vm.heap.tracker()) {
+                // Size alone does not bound a source whose items are cheap or
+                // interned, and the drain reaches no VM dispatch checkpoint of
+                // its own, so `max_duration` needs its own poll here.
+                let checked = check_estimated_size(estimated, &self.vm.heap.tracker)
+                    .and_then(|()| self.vm.heap.tracker.check_time_every(self.yielded));
+                match checked {
                     Ok(()) => Some(value),
                     Err(error) => {
                         *self.error = Some(error.into());
@@ -144,7 +149,7 @@ where
 {
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
-    let preallocation_hint = checked_preallocation_hint(iterator.iter_size_hint(vm), VALUE_SIZE, vm.heap.tracker())?;
+    let preallocation_hint = checked_preallocation_hint(iterator.iter_size_hint(vm), VALUE_SIZE, &vm.heap.tracker)?;
     let mut values_guard = DropGuard::new(T::default(), vm);
     let (values, vm) = values_guard.as_parts_mut();
     let mut error = None;
@@ -186,7 +191,7 @@ pub fn iterator_next(iter_value: &Value, default: Option<Value>, vm: &mut VM<'_>
     let Value::Ref(iter_id) = iter_value else {
         return Err(ExcType::type_error_not_iterator(&iter_value.py_type_name(vm)));
     };
-    match vm.heap.read(*iter_id).py_next(Some(*iter_id), vm)? {
+    match vm.heap.read(*iter_id).py_next(vm)? {
         Some(item) => Ok(item),
         None => match default_guard.into_inner() {
             Some(default) => Ok(default),

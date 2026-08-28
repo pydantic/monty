@@ -23,7 +23,7 @@ static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 #[derive(Parser)]
 #[command(version)]
 pub(crate) struct Cli {
-    /// Start interactive REPL mode.
+    /// Start interactive REPL mode, this is the default if no file or command is provided.
     #[arg(short = 'i', long = "interactive")]
     interactive: bool,
 
@@ -50,6 +50,9 @@ pub(crate) struct Cli {
     /// Uses `::` as separator to avoid ambiguity with Windows drive letters.
     /// Modes: `ro` (read-only, default), `rw` (read-write), `overlay` (in-memory overlay).
     /// `write_limit_bytes` is optional and applies to all write modes.
+    ///
+    /// WARNING: with `rw`, files written by sandboxed code persist on the
+    /// host, where your own tools may later execute them. Prefer `overlay`.
     #[arg(short = 'm', long = "mount")]
     mounts: Vec<String>,
 

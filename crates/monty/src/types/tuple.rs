@@ -32,14 +32,14 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource_checks::check_repeat_size,
     types::{
         LazyHeapSet, Type,
         list::repr_sequence_fmt,
         long_int::repeat_count,
-        slice::{normalize_sequence_index, slice_collect_iterator},
+        slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -177,7 +177,7 @@ impl<'h> HeapRead<'h, Tuple> {
     /// `MemoryError` instead of bursting past the allocator's hard limit.
     fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<TupleVec> {
         let len = self.get(vm.heap).items.len();
-        vm.heap.tracker().check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let mut result = TupleVec::with_capacity(len);
         for i in 0..len {
             result.push(self.clone_item(i, vm));
@@ -246,12 +246,12 @@ impl<'a, 'h> TupleIter<'a, 'h> {
     /// until the iterator itself is dropped), at which point the held item
     /// is released.
     ///
-    /// Performs a [`check_time`](Heap::check_time) on every call so long
-    /// Rust-side loops cannot bypass the configured timeout.
+    /// Performs an amortized time-limit check (a clock read every 64th
+    /// call) so long Rust-side loops cannot bypass the configured timeout.
     pub(crate) fn next<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<&'i Value>> {
         // Drop the previously-yielded item (no-op when `current` is `Undefined`).
         mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_time_every(self.index)?;
         let items = &self.tuple.get(vm.heap).items;
         if self.index >= items.len() {
             return Ok(None);
@@ -279,7 +279,7 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for TupleIter<'_, 'h> {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
@@ -287,7 +287,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     /// Linear search by equality, stored element on the left of `==` as CPython's
     /// `tuplecontains` does. `TupleIter` owns each yielded item, so a user
     /// `__eq__` re-entering the VM cannot invalidate the walk.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(el) = iter.next(vm)? {
@@ -302,8 +302,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Type::Tuple
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(TupleIterator::from_tuple(self_id.expect("heap values have an id"), vm))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(TupleIterator::from_tuple(self.id(), vm))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -364,7 +364,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     /// Caches the computed hash on first call. We only cache the `Some(_)`
     /// outcome — `None` (unhashable child) is uncommon and skipping it
     /// keeps the cache slot free of a 3-state encoding.
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         if let Some(cached) = self.get(vm.heap).cached_hash.get() {
             return Ok(Some(cached));
         }
@@ -430,7 +430,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -450,12 +450,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         check_repeat_size(
             value.as_slice().len().saturating_mul(mem::size_of::<Value>()),
             count,
-            vm.heap.tracker(),
+            &vm.heap.tracker,
         )?;
         let mut result = SmallVec::with_capacity(value.as_slice().len() * count);
-        for _ in 0..count {
+        for rep in 0..count {
             result.extend(value.as_slice().iter().map(|value| value.clone_with_heap(vm.heap)));
-            vm.heap.check_time()?;
+            vm.heap.tracker.check_time_every(rep)?;
         }
         Ok(Some(allocate_tuple(result, vm.heap)))
     }
@@ -464,13 +464,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         self.py_mul_impl(other, vm)
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         match attr.static_string() {
             Some(StaticStrings::Index) => tuple_index(self, args, vm).map(CallResult::Value),
             Some(StaticStrings::Count) => tuple_count(self, args, vm).map(CallResult::Value),
@@ -505,7 +499,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
             return Ok(());
         }
 
-        repr_sequence_fmt('(', ')', len, |heap, i| &self.get(heap).as_slice()[i], f, vm, heap_ids)
+        repr_sequence_fmt('(', ')', |heap, i| self.get(heap).as_slice().get(i), f, vm, heap_ids)
     }
 }
 
@@ -542,12 +536,12 @@ fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>
         [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
         [value] => (value, 0, len),
         [value, start_arg] => {
-            let start = normalize_sequence_index(start_arg.as_int(vm)?, len);
+            let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
             (value, start, len)
         }
         [value, start_arg, end_arg] => {
-            let start = normalize_sequence_index(start_arg.as_int(vm)?, len);
-            let end = normalize_sequence_index(end_arg.as_int(vm)?, len).max(start);
+            let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
+            let end = normalize_sequence_index(value_to_i64_bound(end_arg, vm)?, len).max(start);
             (value, start, end)
         }
         other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
@@ -653,7 +647,7 @@ impl HeapItem for TupleIterator {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, TupleIterator> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, TupleIterator> {
     fn py_is_iterable(&self, _: &VM<'h>) -> bool {
         true
     }
@@ -670,13 +664,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TupleIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        let self_id = self_id.expect("heap values have an id");
-        vm.heap.inc_ref(self_id);
-        Ok(Value::Ref(self_id))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(self.clone_value(vm.heap))
     }
 
-    fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let (source_id, index) = {
             let iter = self.get(vm.heap);
             (iter.source_id(), iter.index)

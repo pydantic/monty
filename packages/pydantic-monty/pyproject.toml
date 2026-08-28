@@ -33,11 +33,18 @@ classifiers = [
 ]
 # version and both pins are rewritten from the Cargo workspace version by
 # `crates/monty-python/build.rs` — don't edit them by hand
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
-    "pydantic-monty-client==0.0.20",
-    "pydantic-monty-runtime==0.0.20",
+    "pydantic-monty-client==0.0.21",
+    "pydantic-monty-runtime==0.0.21",
 ]
+
+[project.scripts]
+# the `monty` binary comes from `pydantic-monty-runtime`, so without this the
+# metapackage provides no executable of its own and `uvx pydantic-monty` fails.
+# The implementation lives in the exactly-pinned client; it must NOT be named
+# `monty` — see that module's docstring.
+pydantic-monty = "pydantic_monty._cli:main"
 
 [project.urls]
 Homepage = "https://github.com/pydantic/monty"

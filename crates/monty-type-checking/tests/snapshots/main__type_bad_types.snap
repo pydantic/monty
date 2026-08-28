@@ -1,13 +1,14 @@
 ---
 source: crates/monty-type-checking/tests/main.rs
+assertion_line: 199
 expression: actual
 ---
 bad_types.py:22:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `Literal["hello"]`
-bad_types.py:23:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `float`
+bad_types.py:23:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `float*`
 bad_types.py:24:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `Literal[42]`
 bad_types.py:25:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `list[int]`
 bad_types.py:28:16: error[invalid-argument-type] Argument to function `takes_list_int` is incorrect: Expected `list[int]`, found `list[int | str]`
-bad_types.py:29:16: error[invalid-argument-type] Argument to function `takes_list_int` is incorrect: Expected `list[int]`, found `list[int | float]`
+bad_types.py:29:16: error[invalid-argument-type] Argument to function `takes_list_int` is incorrect: Expected `list[int]`, found `list[float]`
 bad_types.py:36:12: error[invalid-return-type] Return type does not match returned value: expected `int`, found `Literal["oops"]`
 bad_types.py:40:12: error[invalid-return-type] Return type does not match returned value: expected `str`, found `Literal[123]`
 bad_types.py:44:12: error[invalid-return-type] Return type does not match returned value: expected `list[int]`, found `list[int | str]`

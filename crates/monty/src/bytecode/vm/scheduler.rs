@@ -9,6 +9,7 @@
 use std::{collections::VecDeque, mem};
 
 use ahash::AHashMap;
+use smallvec::{SmallVec, smallvec};
 
 use crate::{
     asyncio::{Awaiter, CallId, ExternalFutureState, TaskId},
@@ -78,10 +79,13 @@ pub(crate) struct Task {
     /// Coroutine being executed by this task (if any).
     /// Used to mark the coroutine as Completed when the task finishes.
     pub coroutine_id: Option<HeapId>,
-    /// GatherFuture this task belongs to (if spawned by gather).
-    /// Used to cancel sibling tasks when this task fails. The gather itself
-    /// stores the slot-index mapping under `AwaitedGather::pending_children`.
-    pub gather_id: Option<HeapId>,
+    /// Where this task's result goes, owning whatever the `Awaiter` owns —
+    /// for the `GatherSlot` a spawned child gets, an inc_ref on its gather.
+    ///
+    /// `None` means nothing wants the result: the main task, or a child whose
+    /// gather settled before it finished. Such a task still runs to
+    /// completion; its result is dropped on arrival.
+    pub awaiter: Option<Awaiter>,
     /// Current execution state.
     pub state: TaskState,
 }
@@ -94,8 +98,8 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
         if let Some(coro_id) = self.coroutine_id.take() {
             heap.heap_mut().dec_ref(coro_id);
         }
-        if let Some(gid) = self.gather_id.take() {
-            heap.heap_mut().dec_ref(gid);
+        if let Some(awaiter) = self.awaiter.take() {
+            awaiter.drop_with(heap);
         }
     }
 }
@@ -131,8 +135,8 @@ impl Task {
     /// # Arguments
     /// * `id` - Unique task identifier
     /// * `coroutine_id` - Optional HeapId of the coroutine being executed
-    /// * `gather_id` - Optional HeapId of the GatherFuture this task belongs to
-    pub fn new(id: TaskId, coroutine_id: Option<HeapId>, gather_id: Option<HeapId>) -> Self {
+    /// * `awaiter` - Where the task's result goes; owned (see [`Task::awaiter`])
+    pub fn new(id: TaskId, coroutine_id: Option<HeapId>, awaiter: Option<Awaiter>) -> Self {
         Self {
             id,
             frames: Vec::new(),
@@ -140,7 +144,7 @@ impl Task {
             exception_stack: Vec::new(),
             instruction_ip: 0,
             coroutine_id,
-            gather_id,
+            awaiter,
             state: TaskState::Ready,
         }
     }
@@ -222,15 +226,6 @@ impl Scheduler {
         self.current_task
     }
 
-    /// Returns a reference to a task by ID.
-    ///
-    /// # Panics
-    /// Panics if the task ID doesn't exist.
-    #[inline]
-    pub fn get_task(&self, task_id: TaskId) -> &Task {
-        self.tasks.get(&task_id).expect("Scheduler::get_task: task not found")
-    }
-
     /// Returns a mutable reference to a task by ID.
     ///
     /// # Panics
@@ -303,9 +298,10 @@ impl Scheduler {
     /// both coroutine states are still `New`, so the state check in
     /// `await_coroutine` doesn't catch it. Callers translate `None`
     /// into a `RuntimeError: cannot reuse already awaited coroutine`.
-    /// Both `coroutine_id` and `gather_id` (when present) become **owning**
-    /// references held by the new task; the matching `dec_ref` happens in
-    /// [`Scheduler::cancel_task`].
+    /// Both `coroutine_id` and the `GatherSlot` built from `gather_id` become
+    /// **owning** references held by the new task; the matching `dec_ref`
+    /// happens in [`Scheduler::cancel_task`]. It takes `gather_id` rather than
+    /// a ready-made `Awaiter` so the `None` return above has nothing to unwind.
     pub fn spawn(&mut self, heap: &Heap, coroutine_id: HeapId, gather_id: Option<HeapId>) -> Option<TaskId> {
         if self.coroutine_to_task.contains_key(&coroutine_id) {
             return None;
@@ -316,26 +312,23 @@ impl Scheduler {
 
         // Take ownership of the heap references — the task now holds an inc_ref'd
         // pointer to its coroutine and (if applicable) its enclosing gather.
+        // The slot is keyed by the coroutine's own id, which is what
+        // `resolve_child` looks up.
         heap.inc_ref(coroutine_id);
-        if let Some(gid) = gather_id {
-            heap.inc_ref(gid);
-        }
+        let awaiter = gather_id.map(|gather| {
+            heap.inc_ref(gather);
+            Awaiter::GatherSlot {
+                gather,
+                source: coroutine_id,
+            }
+        });
 
-        let task = Task::new(task_id, Some(coroutine_id), gather_id);
+        let task = Task::new(task_id, Some(coroutine_id), awaiter);
         self.tasks.insert(task_id, task);
         self.coroutine_to_task.insert(coroutine_id, task_id);
         self.ready_queue.push_back(task_id);
 
         Some(task_id)
-    }
-
-    /// Returns the task driving `coroutine_id`, if any.
-    ///
-    /// Each spawned task owns exactly one coroutine for its lifetime; this
-    /// looks up the inverse mapping populated in [`Scheduler::spawn`].
-    #[inline]
-    pub fn task_for_coroutine(&self, coroutine_id: HeapId) -> Option<TaskId> {
-        self.coroutine_to_task.get(&coroutine_id).copied()
     }
 
     /// Gets the next ready task from the queue.
@@ -366,15 +359,10 @@ impl Scheduler {
 
     /// Marks a task as failed with an error.
     ///
-    /// If the task is part of a gather, returns the gather_id so the caller
-    /// can collect siblings from the gather on the heap.
-    ///
-    /// # Returns
-    /// The gather_id if this task belongs to a gather (for sibling lookup).
-    pub fn fail_task(&mut self, task_id: TaskId, error: RunError, heap: &mut Heap) -> Option<HeapId> {
-        let gather_id = self.get_task(task_id).gather_id;
+    /// Only the state changes: the task keeps its `Awaiter`, so whoever wanted
+    /// its result is still reachable when the failure is delivered.
+    pub fn fail_task(&mut self, task_id: TaskId, error: RunError, heap: &mut Heap) {
         self.set_state(task_id, TaskState::Failed(error), heap);
-        gather_id
     }
 
     /// Cancels a task, fully releasing its resources and removing it from the
@@ -384,8 +372,24 @@ impl Scheduler {
     /// result, and tears down any inner gather it was blocked on. After this
     /// call the task no longer exists in `Scheduler::tasks`; its owning
     /// references to its coroutine and (outer) gather are released by the
-    /// `Task::drop_with` call at the end.
+    /// `Task::drop_with` in [`Scheduler::cancel_one`].
+    ///
+    /// Drains a worklist rather than recursing into inner gathers: a chain of
+    /// blocked tasks costs no native stack to *build*, so recursive teardown
+    /// turned that stored depth back into frames and overflowed.
     pub fn cancel_task(&mut self, task_id: TaskId, heap: &mut HeapReader<'_>) {
+        let mut pending: SmallVec<[TaskId; 4]> = smallvec![task_id];
+        while let Some(task_id) = pending.pop() {
+            self.cancel_one(task_id, heap, &mut pending);
+        }
+    }
+
+    /// Cancels one task, queueing the tasks spawned under any gather it was
+    /// blocked on for [`Scheduler::cancel_task`] to drain.
+    ///
+    /// Dropping this task ahead of the children it queued is sound: each owns
+    /// an inc_ref on that same gather (see [`Scheduler::spawn`]).
+    fn cancel_one(&mut self, task_id: TaskId, heap: &mut HeapReader<'_>, pending: &mut SmallVec<[TaskId; 4]>) {
         // No-op if the task has already been removed (idempotent — finalization
         // sites may iterate task ids that include already-cancelled siblings).
         let Some(task) = self.tasks.remove(&task_id) else {
@@ -407,35 +411,49 @@ impl Scheduler {
         if !task.is_finished() {
             self.ready_queue.retain(|&id| id != task_id);
 
-            // If blocked on an awaitable, dispatch by kind via `heap.read`.
-            // For a gather: recursively cancel its task children — external
-            // children manage themselves via the owning `Awaiter::GatherSlot`
-            // (the gather stays alive until each external resolves and
-            // releases its inc_ref), but spawned tasks have no such anchor
-            // and would otherwise linger in `self.tasks` holding inc_refs.
-            // For an external future: no extra teardown.
-            if let TaskState::Blocked(blocked_id) = task.state
-                && let HeapReadOutput::GatherFuture(gather) = heap.read(blocked_id)
-            {
-                let inner_task_ids: Vec<TaskId> = gather
-                    .get(heap)
-                    .as_awaited()
-                    .map(|awaited| {
-                        awaited
-                            .pending_children
-                            .keys()
-                            .filter_map(|id| self.coroutine_to_task.get(id).copied())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                drop(gather);
-                for inner_task_id in inner_task_ids {
-                    self.cancel_task(inner_task_id, heap);
-                }
+            // Blocked on a gather: queue the tasks spawned under it. An
+            // external future needs no extra teardown.
+            if let TaskState::Blocked(blocked_id) = task.state {
+                self.queue_gather_tasks(blocked_id, heap, pending);
             }
         }
 
         task.drop_with(heap);
+    }
+
+    /// Queues every task spawned under the gather `root`, walking nested
+    /// gathers iteratively.
+    ///
+    /// A gather item can itself be a gather (`gather(gather(coro()))`), whose
+    /// tasks are just as orphaned as direct coroutine children if left in
+    /// `self.tasks` — they would keep running and then deliver a result to the
+    /// task cancelled here. External children *are* left alone: the owning
+    /// `Awaiter::GatherSlot` anchors them.
+    ///
+    /// Must run while the cancelled task still holds its `Blocked` inc_ref on
+    /// `root`, since the walk takes no references of its own: each nested
+    /// gather is kept alive by its parent's `items`, and the parent in turn by
+    /// the `Awaiter::GatherSlot` inc_ref that nested child holds.
+    fn queue_gather_tasks(&self, root: HeapId, heap: &HeapReader<'_>, pending: &mut SmallVec<[TaskId; 4]>) {
+        // Gathers nest as a tree — a gather may only be awaited once, so the
+        // walk cannot revisit a node and terminates.
+        let mut gathers: SmallVec<[HeapId; 4]> = smallvec![root];
+        while let Some(gather_id) = gathers.pop() {
+            // Coroutine and external children land here too; only gathers have
+            // children of their own to walk.
+            let HeapReadOutput::GatherFuture(gather) = heap.read(gather_id) else {
+                continue;
+            };
+            if let Some(awaited) = gather.get(heap).as_awaited() {
+                for child_id in awaited.pending_children.keys() {
+                    match self.coroutine_to_task.get(child_id) {
+                        Some(&task_id) => pending.push(task_id),
+                        None => gathers.push(*child_id),
+                    }
+                }
+            }
+            drop(gather);
+        }
     }
 
     /// Records a host-side failure for `call_id` and returns the awaiter the
@@ -444,10 +462,10 @@ impl Scheduler {
     /// Looks up the `ExternalFuture` heap entry, transitions it to `Failed`
     /// with a clone of the error, and yields the awaiter that owned the
     /// future's `Pending` slot — except for `Awaiter::Task(t)` where `t` is a
-    /// child of a gather: in that case we tear the gather down here (rather
-    /// than leaving the parked task `Failed` for a sibling's resolution to
-    /// discover later) and return the gather's awaiter instead, so the
-    /// caller's chain walk picks up at the right level.
+    /// child of a still-running gather: in that case we settle the gather here
+    /// (rather than leaving the parked task `Failed` for a sibling's
+    /// resolution to discover later) and return the gather's awaiter instead,
+    /// so the caller's chain walk picks up at the right level.
     ///
     /// The returned `Awaiter` is owned (callers must walk it via
     /// `deliver_awaiter_failure`, which drops every link).
@@ -472,34 +490,63 @@ impl Scheduler {
         heap.dec_ref(future_id);
 
         match awaiter {
+            // Nothing is waiting on this call — it was never awaited. The
+            // failure stays cached on the future for a later await to replay.
             None => None,
             Some(Awaiter::Task(task_id)) => {
-                let gather_id = self.tasks.get(&task_id).and_then(|t| t.gather_id);
-                if let Some(gather_id) = gather_id {
+                // A task's own awaiter is the `GatherSlot` its gather gave it;
+                // borrow that gather's id without taking the task's ref, which
+                // stays until the task is cancelled.
+                let gather_id = match self.tasks.get(&task_id).and_then(|t| t.awaiter.as_ref()) {
+                    Some(Awaiter::GatherSlot { gather, .. }) => Some(*gather),
+                    Some(Awaiter::Task(_)) | None => None,
+                };
+                match gather_id {
                     // The task that was awaiting the future is itself in a
-                    // gather. Tear that gather down here so the failure
-                    // anchors at the same site as the resolution; return
-                    // the gather's awaiter for the caller to chain.
-                    let HeapReadOutput::GatherFuture(mut gather_rd) = heap.read(gather_id) else {
-                        panic!("gather_id doesn't point to a GatherFuture")
-                    };
-                    let outer_awaiter = gather_rd.fail(self, heap, error);
-                    drop(gather_rd);
-                    Some(outer_awaiter)
-                } else {
-                    Some(Awaiter::Task(task_id))
+                    // gather. Settle that gather here so the failure anchors
+                    // at the same site as the resolution; return the gather's
+                    // awaiter for the caller to chain. A gather that has
+                    // already settled takes nothing more, and the failure is
+                    // the parked task's own to raise.
+                    Some(gather_id) => {
+                        let HeapReadOutput::GatherFuture(mut gather_rd) = heap.read(gather_id) else {
+                            panic!("gather_id doesn't point to a GatherFuture")
+                        };
+                        let outer_awaiter = gather_rd.fail(heap, error);
+                        // Dropped before the cancel below: that releases the
+                        // task's `GatherSlot` inc_ref on this gather, which
+                        // must not run under a live reader on it.
+                        drop(gather_rd);
+                        match outer_awaiter {
+                            // The gather handed the failure outwards, so
+                            // nothing will ever deliver it to `task_id`. Its
+                            // `await` raised, so it is finished — drop it, or
+                            // it stays `Blocked` forever on a future that was
+                            // just failed and unregistered, holding its
+                            // coroutine and this gather alive for the rest of
+                            // the session. Siblings are untouched: the task is
+                            // blocked on an external future, so the cancel
+                            // walk finds no gather to cascade into.
+                            Some(outer) => {
+                                self.cancel_task(task_id, heap);
+                                Some(outer)
+                            }
+                            None => Some(Awaiter::Task(task_id)),
+                        }
+                    }
+                    None => Some(Awaiter::Task(task_id)),
                 }
             }
             Some(Awaiter::GatherSlot { gather, .. }) => {
                 let HeapReadOutput::GatherFuture(mut gather_rd) = heap.read(gather) else {
                     panic!("gather_id doesn't point to a GatherFuture")
                 };
-                let outer_awaiter = gather_rd.fail(self, heap, error);
+                let outer_awaiter = gather_rd.fail(heap, error);
                 drop(gather_rd);
                 // Release the inc_ref the destructured `GatherSlot` owned
-                // on `gather` (we tore that gather down above).
+                // on `gather` (we settled that gather above).
                 heap.dec_ref(gather);
-                Some(outer_awaiter)
+                outer_awaiter
             }
         }
     }
@@ -518,6 +565,16 @@ impl Scheduler {
     #[inline]
     pub fn has_task(&self, task_id: TaskId) -> bool {
         self.tasks.contains_key(&task_id)
+    }
+
+    /// Number of tasks the scheduler still holds.
+    ///
+    /// Test-only: a task whose await has already failed must not stay parked,
+    /// and a finished run tears the scheduler down, so this count while
+    /// suspended is the only way a test can see one.
+    #[cfg(feature = "test-hooks")]
+    pub fn task_count(&self) -> usize {
+        self.tasks.len()
     }
 
     /// Cleans up all scheduler resources: the pending-future inc_refs and

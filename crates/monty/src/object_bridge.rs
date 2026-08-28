@@ -5,7 +5,7 @@
 
 use ahash::AHashSet;
 use monty_types::{
-    DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta,
+    DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
     MontyTimeZone, MontyType,
 };
 
@@ -25,7 +25,7 @@ use crate::{
         list::List,
         set::{FrozenSet, Set},
         str::allocate_string,
-        timedelta as timedelta_type,
+        time as time_type, timedelta as timedelta_type,
     },
     value::{EitherStr, Value},
 };
@@ -165,6 +165,35 @@ impl MontyObjectExt for MontyObject {
                 )
                 .map_err(|_| InvalidInputError::invalid_type("datetime"))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(value))))
+            }
+            Self::Time(time) => {
+                let MontyTime {
+                    hour,
+                    minute,
+                    second,
+                    microsecond,
+                    offset_seconds,
+                    timezone_name,
+                    fold,
+                } = time;
+                if offset_seconds.is_none() && timezone_name.is_some() {
+                    return Err(InvalidInputError::invalid_type("time"));
+                }
+                let tzinfo = offset_seconds
+                    .map(|offset| TimeZone::new(offset, timezone_name))
+                    .transpose()
+                    .map_err(|_| InvalidInputError::invalid_type("time"))?;
+                let value = time_type::from_boundary_components(
+                    i32::from(hour),
+                    i32::from(minute),
+                    i32::from(second),
+                    i32::try_from(microsecond).map_err(|_| InvalidInputError::invalid_type("time"))?,
+                    i32::from(fold),
+                    tzinfo,
+                    vm.heap,
+                )
+                .map_err(|_| InvalidInputError::invalid_type("time"))?;
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Time(value))))
             }
             Self::TimeDelta(delta) => {
                 let delta = timedelta_type::new(delta.days, delta.seconds, delta.microseconds)
@@ -407,6 +436,20 @@ impl MontyObjectExt for MontyObject {
                             repr_or_error(object, vm)
                         }
                     }
+                    HeapReadOutput::Time(t) => {
+                        let time = t.get(vm.heap);
+                        let (hour, minute, second, microsecond, fold) = time.to_components();
+                        let tz = time_type::attached_timezone(time, vm.heap);
+                        Self::Time(MontyTime {
+                            hour,
+                            minute,
+                            second,
+                            microsecond,
+                            offset_seconds: tz.as_ref().map(|tz| tz.offset_seconds),
+                            timezone_name: tz.and_then(|tz| tz.name),
+                            fold,
+                        })
+                    }
                     HeapReadOutput::TimeDelta(td) => {
                         let (days, seconds, microseconds) = timedelta_type::components(td.get(vm.heap));
                         Self::TimeDelta(MontyTimeDelta {
@@ -548,6 +591,7 @@ impl MontyTypeExt for MontyType {
             Self::Slice => Some(Type::Slice),
             Self::Date => Some(Type::Date),
             Self::DateTime => Some(Type::DateTime),
+            Self::Time => Some(Type::Time),
             Self::TimeDelta => Some(Type::TimeDelta),
             Self::TimeZone => Some(Type::TimeZone),
             Self::Str => Some(Type::Str),
@@ -570,6 +614,10 @@ impl MontyTypeExt for MontyType {
             Self::ItertoolsIslice => Some(Type::ItertoolsIslice),
             Self::ItertoolsChain => Some(Type::ItertoolsChain),
             Self::ItertoolsCycle => Some(Type::ItertoolsCycle),
+            Self::ItertoolsTakeWhile => Some(Type::ItertoolsTakeWhile),
+            Self::ItertoolsDropWhile => Some(Type::ItertoolsDropWhile),
+            Self::ItertoolsFilterFalse => Some(Type::ItertoolsFilterFalse),
+            Self::ItertoolsStarMap => Some(Type::ItertoolsStarMap),
             Self::ItertoolsCount => Some(Type::ItertoolsCount),
             Self::ItertoolsRepeat => Some(Type::ItertoolsRepeat),
             Self::Tuple => Some(Type::Tuple),
@@ -596,9 +644,11 @@ impl MontyTypeExt for MontyType {
             Self::SpecialForm => Some(Type::SpecialForm),
             Self::Path => Some(Type::Path),
             Self::Property => Some(Type::Property),
+            Self::Object => Some(Type::Object),
             Self::RePattern => Some(Type::RePattern),
             Self::ReMatch => Some(Type::ReMatch),
             Self::Field => Some(Type::DataclassField),
+            Self::DataclassParams => Some(Type::DataclassParams),
         }
     }
 
@@ -622,6 +672,7 @@ impl MontyTypeExt for MontyType {
             Type::Slice => Self::Slice,
             Type::Date => Self::Date,
             Type::DateTime => Self::DateTime,
+            Type::Time => Self::Time,
             Type::TimeDelta => Self::TimeDelta,
             Type::TimeZone => Self::TimeZone,
             Type::Str => Self::Str,
@@ -647,6 +698,10 @@ impl MontyTypeExt for MontyType {
             Type::ItertoolsIslice => Self::ItertoolsIslice,
             Type::ItertoolsChain => Self::ItertoolsChain,
             Type::ItertoolsCycle => Self::ItertoolsCycle,
+            Type::ItertoolsTakeWhile => Self::ItertoolsTakeWhile,
+            Type::ItertoolsDropWhile => Self::ItertoolsDropWhile,
+            Type::ItertoolsFilterFalse => Self::ItertoolsFilterFalse,
+            Type::ItertoolsStarMap => Self::ItertoolsStarMap,
             Type::ItertoolsCount => Self::ItertoolsCount,
             Type::ItertoolsRepeat => Self::ItertoolsRepeat,
             Type::Tuple => Self::Tuple,
@@ -676,9 +731,11 @@ impl MontyTypeExt for MontyType {
             Type::SpecialForm => Self::SpecialForm,
             Type::Path => Self::Path,
             Type::Property => Self::Property,
+            Type::Object => Self::Object,
             Type::RePattern => Self::RePattern,
             Type::ReMatch => Self::ReMatch,
             Type::DataclassField => Self::Field,
+            Type::DataclassParams => Self::DataclassParams,
         }
     }
 

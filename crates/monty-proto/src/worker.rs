@@ -16,26 +16,19 @@
 //! the host transport surfaces that; it only ensures every *graceful* turn ends
 //! with exactly one turn-ending event.
 
-use std::{borrow::Cow, mem, ops::RangeInclusive};
+use std::{borrow::Cow, mem};
 
 use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MONTY_VERSION, MontyException, MontyObject,
-    OsFunctionCall, PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckState, TypeCheckingConfig,
+    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
+    PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
-    FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, ProtoConvertError,
-    WireFunctionCall, exceeds_max_frame_len, exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
+    FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError, WireFunctionCall, check_protocol_version,
+    exceeds_max_frame_len, exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
 };
-
-/// Protocol versions this build serves; a `Configure` outside it is fatal.
-///
-/// Zero is excluded by construction, so a parent that declared nothing — one
-/// predating `Configure.protocol_version`, or not a monty parent at all — is
-/// rejected rather than assumed compatible.
-const SUPPORTED_PROTOCOL_VERSIONS: RangeInclusive<u32> = MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -234,20 +227,8 @@ impl Child {
                 // An unsupported protocol version is fatal: the parent may frame
                 // or interpret later messages differently, so serving it risks a
                 // silent desync. Emit the fatal last gasp and stop the child.
-                //
-                // The message names the range this build serves so a parent
-                // deployed separately from its worker can downgrade and retry —
-                // there is no handshake to discover it from. The package
-                // versions ride along purely as a diagnostic.
-                if !SUPPORTED_PROTOCOL_VERSIONS.contains(&configure.protocol_version) {
-                    sink.send(&self.fatal_event(&format!(
-                        "unsupported protocol version {} (this build serves {}..={}); \
-                         parent monty {:?}, child monty {MONTY_VERSION:?}",
-                        configure.protocol_version,
-                        MIN_SUPPORTED_PROTOCOL_VERSION,
-                        PROTOCOL_VERSION,
-                        configure.monty_version,
-                    )))?;
+                if let Err(refusal) = check_protocol_version(configure.protocol_version) {
+                    sink.send(&self.fatal_event(&refusal))?;
                     return Ok(HandleOutcome::Fatal);
                 }
                 self.handle_configure(configure)
@@ -468,7 +449,7 @@ impl Child {
             type_check_color: _,
             // range-checked when `Configure` arrived
             protocol_version: _,
-            // informational only — reported, never checked
+            // informational only — never checked
             monty_version: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();

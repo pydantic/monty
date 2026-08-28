@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::{
     cell::{Cell, UnsafeCell},
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fmt,
     iter::once,
     marker::PhantomData,
@@ -17,29 +17,24 @@ use std::{
     sync::Arc,
 };
 
-use monty_types::{ResourceError, ResourceTracker};
-use serde::ser::SerializeStruct;
+use monty_types::ResourceTracker;
+use serde::{de::Error as _, ser::SerializeStruct};
 
-// Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
-// to resolve (used by the `defer_drop!` macros and throughout the codebase).
-pub(crate) use crate::heap_data::HeapData;
-pub(crate) use crate::heap_traits::{ContainsHeap, DropGuard, DropWithContext, HeapItem};
 #[cfg(feature = "ref-count-return")]
 use crate::types::Type;
 use crate::{
-    asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
-    exception_private::SimpleException,
-    heap_data::{CellValue, Closure, FunctionDefaults},
-    modules::dataclasses::DataclassField,
+    asyncio::{Awaiter, ExternalFutureState, GatherState},
     types::{
-        BoundMethod, Bytes, BytesIterator, Class, Dataclass, Deque, Dict, DictItemIterator, DictItemsView,
-        DictKeyIterator, DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance,
-        ItertoolsIter, List, LongInt, Module, NamedTuple, NamedTupleClass, OpenFile, Path, Range, RangeIterator,
-        ReMatch, RePattern, Set, SetIterator, Slice, Str, StringIterator, TimeZone, Tuple, TupleIterator,
-        callable_iterator::CallableIterator, date, datetime, deque::DequeIterator, list::ListIterator, timedelta,
-        timezone,
+        ExtFunction, TimeZone, Tuple, datetime,
+        timezone::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS},
     },
     value::Value,
+};
+// Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
+// to resolve (used by the `defer_drop!` macros and throughout the codebase).
+pub(crate) use crate::{
+    heap_data::HeapData,
+    heap_traits::{ContainsHeap, DropGuard, DropWithContext, HeapItem},
 };
 
 mod free_list;
@@ -168,7 +163,31 @@ impl<'a> HeapReader<'a> {
     /// delegates the typed match/reader-count logic there. Panics if `id` is out
     /// of bounds or the slot is currently freed.
     pub fn read(&self, id: HeapId) -> HeapReadOutput<'a> {
-        self.read_ptr(id).read(self)
+        self.read_ptr(id).read(id, self)
+    }
+
+    /// Reads `id` as the requested concrete payload type.
+    ///
+    /// Returns `None` when the live entry stores a different payload type.
+    pub fn read_as<T: HeapPayload>(&self, id: HeapId) -> Option<HeapObjectRead<'a, T>> {
+        T::try_from_read(self.read(id)).ok()
+    }
+
+    /// Allocates a concrete payload and returns an owning, typed handle to it.
+    ///
+    /// The allocation's initial reference must eventually be transferred with
+    /// `into_value`/`into_id`, or released by guarding the handle with `DropGuard`.
+    pub fn allocate_as<T: HeapPayload>(&self, value: T) -> HeapAllocation<'a, T> {
+        let entry = self.heap.new_entry(value.into_heap_data());
+        let (id, slot) = self.heap.entries.allocate_with_slot(entry);
+        HeapAllocation {
+            id,
+            ptr: HeapPtr {
+                inner: NonNull::from(slot),
+                brand: PhantomData,
+            },
+            read: None,
+        }
     }
 
     #[expect(clippy::unused_self, reason = "'a lifetime is used to create the safety guarantees")]
@@ -219,59 +238,164 @@ impl DerefMut for HeapReader<'_> {
     }
 }
 
-pub enum HeapReadOutput<'a> {
-    Str(HeapRead<'a, Str>),
-    Bytes(HeapRead<'a, Bytes>),
-    List(HeapRead<'a, List>),
-    Deque(HeapRead<'a, Deque>),
-    Tuple(HeapRead<'a, Tuple>),
-    NamedTuple(HeapRead<'a, NamedTuple>),
-    NamedTupleClass(HeapRead<'a, NamedTupleClass>),
-    Dict(HeapRead<'a, Dict>),
-    DictItemsView(HeapRead<'a, DictItemsView>),
-    DictKeysView(HeapRead<'a, DictKeysView>),
-    DictValuesView(HeapRead<'a, DictValuesView>),
-    Set(HeapRead<'a, Set>),
-    FrozenSet(HeapRead<'a, FrozenSet>),
-    Closure(HeapRead<'a, Closure>),
-    FunctionDefaults(HeapRead<'a, FunctionDefaults>),
-    ExtFunction(HeapRead<'a, ExtFunction>),
-    Cell(HeapRead<'a, CellValue>),
-    Range(HeapRead<'a, Range>),
-    Slice(HeapRead<'a, Slice>),
-    Exception(HeapRead<'a, SimpleException>),
-    Dataclass(HeapRead<'a, Dataclass>),
-    Class(HeapRead<'a, Class>),
-    Instance(HeapRead<'a, Instance>),
-    BoundMethod(HeapRead<'a, BoundMethod>),
-    DataclassField(HeapRead<'a, DataclassField>),
-    ListIterator(HeapRead<'a, ListIterator>),
-    DequeIterator(HeapRead<'a, DequeIterator>),
-    TupleIterator(HeapRead<'a, TupleIterator>),
-    StringIterator(HeapRead<'a, StringIterator>),
-    BytesIterator(HeapRead<'a, BytesIterator>),
-    RangeIterator(HeapRead<'a, RangeIterator>),
-    DictKeyIterator(HeapRead<'a, DictKeyIterator>),
-    DictItemIterator(HeapRead<'a, DictItemIterator>),
-    DictValueIterator(HeapRead<'a, DictValueIterator>),
-    SetIterator(HeapRead<'a, SetIterator>),
-    CallableIterator(HeapRead<'a, CallableIterator>),
-    Itertools(HeapRead<'a, ItertoolsIter>),
-    LongInt(HeapRead<'a, LongInt>),
-    Module(HeapRead<'a, Module>),
-    Coroutine(HeapRead<'a, Coroutine>),
-    GatherFuture(HeapRead<'a, GatherFuture>),
-    ExternalFuture(HeapRead<'a, ExternalFuture>),
-    Path(HeapRead<'a, Path>),
-    OpenFile(HeapRead<'a, OpenFile>),
-    RePattern(HeapRead<'a, RePattern>),
-    ReMatch(HeapRead<'a, ReMatch>),
-    Date(HeapRead<'a, date::Date>),
-    DateTime(HeapRead<'a, datetime::DateTime>),
-    TimeDelta(HeapRead<'a, timedelta::TimeDelta>),
-    TimeZone(HeapRead<'a, timezone::TimeZone>),
+macro_rules! heap_storage_value {
+    (inline $value:expr) => {
+        $value
+    };
+    (boxed $value:expr) => {
+        Box::new($value)
+    };
 }
 
+/// Maps a concrete Rust payload to its heap representation and typed read variant.
+///
+/// Implementations are generated from `heap_data::heap_payloads`, keeping each
+/// payload's storage conversion and typed read extraction in the central registry.
+pub(crate) trait HeapPayload: Sized {
+    /// Wraps this payload in its corresponding `HeapData` variant.
+    fn into_heap_data(self) -> HeapData;
+
+    /// Extracts this payload's typed handle from a dynamic heap read.
+    fn try_from_read(read: HeapReadOutput<'_>) -> Result<HeapObjectRead<'_, Self>, HeapReadOutput<'_>>;
+}
+
+macro_rules! define_heap_read_support {
+    ($(
+        $(#[$meta:meta])*
+        $variant:ident($storage:ident $payload:ty)
+    ),* $(,)?) => {
+        /// A type-safe read handle for any payload stored in the heap.
+        pub enum HeapReadOutput<'a> {
+            $(
+                $(#[$meta])*
+                $variant(HeapObjectRead<'a, $payload>),
+            )*
+        }
+
+        impl HeapReadOutput<'_> {
+            /// Returns the heap entry containing the complete dynamically read object.
+            pub fn id(&self) -> HeapId {
+                match self {
+                    $(Self::$variant(value) => value.id(),)*
+                }
+            }
+        }
+
+        $(
+            impl HeapPayload for $payload {
+                #[inline]
+                fn into_heap_data(self) -> HeapData {
+                    HeapData::$variant(heap_storage_value!($storage self))
+                }
+
+                #[inline]
+                fn try_from_read(
+                    read: HeapReadOutput<'_>,
+                ) -> Result<HeapObjectRead<'_, Self>, HeapReadOutput<'_>> {
+                    if let HeapReadOutput::$variant(value) = read {
+                        Ok(value)
+                    } else {
+                        Err(read)
+                    }
+                }
+            }
+        )*
+
+    };
+}
+
+crate::heap_data::heap_payloads!(define_heap_read_support);
+
+/// A newly allocated heap object with its initial owned reference.
+///
+/// Typed access is created lazily by [`Self::read`], so transferring an allocation
+/// directly into a `Value` or raw ID does not touch the entry's reader count.
+#[must_use = "the allocation's initial reference must be transferred"]
+pub struct HeapAllocation<'a, T> {
+    id: HeapId,
+    ptr: HeapPtr<'a>,
+    read: Option<HeapObjectRead<'a, T>>,
+}
+
+impl<'a, T: HeapPayload> HeapAllocation<'a, T> {
+    /// Returns the allocated object's identity without transferring ownership.
+    pub fn id(&self) -> HeapId {
+        self.id
+    }
+
+    /// Creates the typed read handle on first access and reuses it thereafter.
+    pub fn read(&mut self, heap: &HeapReader<'a>) -> &mut HeapObjectRead<'a, T> {
+        let id = self.id;
+        let ptr = self.ptr;
+        self.read.get_or_insert_with(|| {
+            T::try_from_read(ptr.read(id, heap))
+                .unwrap_or_else(|_| unreachable!("allocated payload has its registered type"))
+        })
+    }
+
+    /// Transfers the allocation's initial reference into a `Value`.
+    pub fn into_value(self) -> Value {
+        Value::Ref(self.into_id())
+    }
+
+    /// Transfers the allocation's initial reference as an owned raw ID.
+    pub fn into_id(mut self) -> HeapId {
+        let id = self.id();
+        drop(self.read.take());
+        id
+    }
+}
+
+impl<C: ContainsHeap, T> DropWithContext<C> for HeapAllocation<'_, T> {
+    fn drop_with(mut self, ctx: &mut C) {
+        drop(self.read.take());
+        Value::Ref(self.id).drop_with(ctx);
+    }
+}
+
+/// A typed read handle for a Python object stored in a specific heap entry.
+///
+/// Unlike [`HeapRead`], this always represents the complete object rather than
+/// protected external data or a projected field, so its [`HeapId`] is available
+/// to operations that need Python identity or an owned reference to `self`.
+pub struct HeapObjectRead<'a, T: ?Sized> {
+    /// Identity of the complete Python object exposed by `read`.
+    id: HeapId,
+    /// Typed access guard that keeps the entry alive.
+    read: HeapRead<'a, T>,
+}
+
+impl<'a, T: ?Sized> HeapObjectRead<'a, T> {
+    /// Returns the heap entry containing this object.
+    pub fn id(&self) -> HeapId {
+        self.id
+    }
+
+    /// Returns a new owned reference to this object.
+    pub fn clone_value(&self, heap: &HeapReader<'a>) -> Value {
+        heap.inc_ref(self.id);
+        Value::Ref(self.id)
+    }
+}
+
+impl<'a, T: ?Sized> Deref for HeapObjectRead<'a, T> {
+    type Target = HeapRead<'a, T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.read
+    }
+}
+
+impl<T: ?Sized> DerefMut for HeapObjectRead<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.read
+    }
+}
+
+/// A typed, identity-free view protected by a [`HeapReader`].
+///
+/// Complete heap objects are exposed as [`HeapObjectRead`]; this lower-level
+/// handle also supports projected fields and data protected by `protect`.
 pub struct HeapRead<'a, T: ?Sized> {
     value: NonNull<T>,
     /// Pointer to the `readers` counter in the owning `HeapValue`.
@@ -565,31 +689,39 @@ impl<'a> HeapPtr<'a> {
     }
 
     /// Returns the typed [`HeapReadOutput`] for this entry, incrementing the
-    /// reader count so the produced [`HeapRead<T>`] handles participate in the
-    /// reader-count GC safety net (they are decremented on `Drop`).
+    /// reader count so the wrapped [`HeapRead<T>`] participates in the
+    /// reader-count GC safety net (it is decremented on `Drop`).
     ///
     /// All `HeapRead<T>` handle pointers are derived through the `UnsafeHeapData`
     /// `UnsafeCell`, so they retain `SharedReadWrite` permission and remain valid
     /// for both read and mutable access (the latter via `HeapRead::get_mut`,
     /// which requires `&mut HeapReader`).
-    pub fn read(self, reader: &HeapReader<'a>) -> HeapReadOutput<'a> {
+    fn read(self, id: HeapId, reader: &HeapReader<'a>) -> HeapReadOutput<'a> {
         /// Computes a `HeapRead` from the raw `UnsafeCell` pointer and a shared reference
         /// to the variant field. The `&T` is only used to compute the field's byte offset
         /// within the `HeapData` enum; the returned `NonNull` is derived from the original
         /// `*mut HeapData` pointer so it inherits the `SharedReadWrite` permission from
         /// the `UnsafeCell`, allowing both reads and writes.
         #[inline]
-        fn heap_read<'a, T>(base: *mut HeapData, field: &T, readers: NonNull<Cell<usize>>) -> HeapRead<'a, T> {
+        fn heap_read<'a, T>(
+            id: HeapId,
+            base: *mut HeapData,
+            field: &T,
+            readers: NonNull<Cell<usize>>,
+        ) -> HeapObjectRead<'a, T> {
             let base_addr = base as usize;
             let field_addr = ptr::from_ref(field) as usize;
             let offset = field_addr - base_addr;
-            HeapRead {
-                // SAFETY: The pointer is derived from the UnsafeCell's `*mut` via byte
-                // offset, preserving the `SharedReadWrite` permission. No reference retag
-                // occurs — we only use the `&T` for its address, not to derive the pointer.
-                value: unsafe { NonNull::new_unchecked(base.byte_add(offset).cast::<T>()) },
-                readers,
-                borrow: PhantomData,
+            HeapObjectRead {
+                id,
+                read: HeapRead {
+                    // SAFETY: The pointer is derived from the UnsafeCell's `*mut` via byte
+                    // offset, preserving the `SharedReadWrite` permission. No reference retag
+                    // occurs — we only use the `&T` for its address, not to derive the pointer.
+                    value: unsafe { NonNull::new_unchecked(base.byte_add(offset).cast::<T>()) },
+                    readers,
+                    borrow: PhantomData,
+                },
             }
         }
 
@@ -606,10 +738,11 @@ impl<'a> HeapPtr<'a> {
             reason = "We intentionally take &Box<T> to signal this is for boxed HeapData variants; &T would lose that context"
         )]
         fn heap_read_boxed<'a, T>(
+            id: HeapId,
             base: *mut HeapData,
             boxed: &Box<T>,
             readers: NonNull<Cell<usize>>,
-        ) -> HeapRead<'a, T> {
+        ) -> HeapObjectRead<'a, T> {
             let base_addr = base as usize;
             let field_addr = ptr::from_ref(boxed) as usize;
             let offset = field_addr - base_addr;
@@ -620,11 +753,23 @@ impl<'a> HeapPtr<'a> {
             // loading the field as `*mut T` yields the box's data pointer together with
             // the read/write provenance it was stored with.
             let value = unsafe { NonNull::new_unchecked(base.byte_add(offset).cast::<*mut T>().read()) };
-            HeapRead {
-                value,
-                readers,
-                borrow: PhantomData,
+            HeapObjectRead {
+                id,
+                read: HeapRead {
+                    value,
+                    readers,
+                    borrow: PhantomData,
+                },
             }
+        }
+
+        macro_rules! heap_read_value {
+            (inline $id:expr, $base:expr, $value:expr, $readers:expr) => {
+                heap_read($id, $base, $value, $readers)
+            };
+            (boxed $id:expr, $base:expr, $value:expr, $readers:expr) => {
+                heap_read_boxed($id, $base, $value, $readers)
+            };
         }
 
         let entry = self.entry(reader);
@@ -634,73 +779,29 @@ impl<'a> HeapPtr<'a> {
         let readers = NonNull::from(&entry.readers);
         // Get the raw pointer from the UnsafeCell — this has SharedReadWrite permission.
         let base: *mut HeapData = entry.data.0.get();
+
+        macro_rules! read_heap_payload {
+            ($(
+                $(#[$meta:meta])*
+                $variant:ident($storage:ident $payload:ty)
+            ),* $(,)?) => {
+                // SAFETY: `base` points to this live entry's `UnsafeHeapData`.
+                match unsafe { &*base } {
+                    $(
+                        HeapData::$variant(value) => HeapReadOutput::$variant(
+                            heap_read_value!($storage id, base, value, readers)
+                        ),
+                    )*
+                }
+            };
+        }
+
         // SAFETY: Match on a shared reference (`&*base`) to read the discriminant without
         // creating a Unique retag. The shared retag is compatible with existing
         // SharedReadWrite permissions from prior `read()` calls into the same UnsafeCell.
         // The `heap_read` helper then derives the NonNull from `base` (not from `&T`),
         // so the returned pointer retains full SharedReadWrite permission.
-        match unsafe { &*base } {
-            HeapData::Str(s) => HeapReadOutput::Str(heap_read(base, s, readers)),
-            HeapData::Bytes(bytes) => HeapReadOutput::Bytes(heap_read(base, bytes, readers)),
-            HeapData::List(list) => HeapReadOutput::List(heap_read(base, list, readers)),
-            HeapData::Deque(deque) => HeapReadOutput::Deque(heap_read(base, deque, readers)),
-            HeapData::Tuple(tuple) => HeapReadOutput::Tuple(heap_read(base, tuple, readers)),
-            HeapData::NamedTuple(named_tuple) => {
-                HeapReadOutput::NamedTuple(heap_read_boxed(base, named_tuple, readers))
-            }
-            HeapData::NamedTupleClass(class) => HeapReadOutput::NamedTupleClass(heap_read_boxed(base, class, readers)),
-            HeapData::Dict(dict) => HeapReadOutput::Dict(heap_read(base, dict, readers)),
-            HeapData::DictItemsView(v) => HeapReadOutput::DictItemsView(heap_read(base, v, readers)),
-            HeapData::DictKeysView(v) => HeapReadOutput::DictKeysView(heap_read(base, v, readers)),
-            HeapData::DictValuesView(v) => HeapReadOutput::DictValuesView(heap_read(base, v, readers)),
-            HeapData::Set(set) => HeapReadOutput::Set(heap_read(base, set, readers)),
-            HeapData::FrozenSet(frozen_set) => HeapReadOutput::FrozenSet(heap_read(base, frozen_set, readers)),
-            HeapData::Closure(closure) => HeapReadOutput::Closure(heap_read(base, closure, readers)),
-            HeapData::FunctionDefaults(function_defaults) => {
-                HeapReadOutput::FunctionDefaults(heap_read(base, function_defaults, readers))
-            }
-            HeapData::ExtFunction(name) => HeapReadOutput::ExtFunction(heap_read(base, name, readers)),
-            HeapData::Cell(cell_value) => HeapReadOutput::Cell(heap_read(base, cell_value, readers)),
-            HeapData::Range(range) => HeapReadOutput::Range(heap_read(base, range, readers)),
-            HeapData::Slice(slice) => HeapReadOutput::Slice(heap_read(base, slice, readers)),
-            HeapData::Exception(simple_exception) => {
-                HeapReadOutput::Exception(heap_read(base, simple_exception, readers))
-            }
-            HeapData::Dataclass(dataclass) => HeapReadOutput::Dataclass(heap_read_boxed(base, dataclass, readers)),
-            HeapData::Class(class) => HeapReadOutput::Class(heap_read_boxed(base, class, readers)),
-            HeapData::Instance(instance) => HeapReadOutput::Instance(heap_read_boxed(base, instance, readers)),
-            HeapData::BoundMethod(bound_method) => HeapReadOutput::BoundMethod(heap_read(base, bound_method, readers)),
-            HeapData::DataclassField(field) => HeapReadOutput::DataclassField(heap_read(base, field, readers)),
-            HeapData::ListIterator(iter) => HeapReadOutput::ListIterator(heap_read(base, iter, readers)),
-            HeapData::DequeIterator(iter) => HeapReadOutput::DequeIterator(heap_read(base, iter, readers)),
-            HeapData::TupleIterator(iter) => HeapReadOutput::TupleIterator(heap_read(base, iter, readers)),
-            HeapData::StringIterator(iter) => HeapReadOutput::StringIterator(heap_read(base, iter, readers)),
-            HeapData::BytesIterator(iter) => HeapReadOutput::BytesIterator(heap_read(base, iter, readers)),
-            HeapData::RangeIterator(iter) => HeapReadOutput::RangeIterator(heap_read(base, iter, readers)),
-            HeapData::DictKeyIterator(iter) => HeapReadOutput::DictKeyIterator(heap_read(base, iter, readers)),
-            HeapData::DictItemIterator(iter) => HeapReadOutput::DictItemIterator(heap_read(base, iter, readers)),
-            HeapData::DictValueIterator(iter) => HeapReadOutput::DictValueIterator(heap_read(base, iter, readers)),
-            HeapData::SetIterator(iter) => HeapReadOutput::SetIterator(heap_read(base, iter, readers)),
-            HeapData::CallableIterator(c) => HeapReadOutput::CallableIterator(heap_read(base, c, readers)),
-            HeapData::Itertools(i) => HeapReadOutput::Itertools(heap_read(base, i, readers)),
-            HeapData::LongInt(l) => HeapReadOutput::LongInt(heap_read(base, l, readers)),
-            HeapData::Module(module) => HeapReadOutput::Module(heap_read_boxed(base, module, readers)),
-            HeapData::Coroutine(coroutine) => HeapReadOutput::Coroutine(heap_read(base, coroutine, readers)),
-            HeapData::GatherFuture(gather_future) => {
-                HeapReadOutput::GatherFuture(heap_read_boxed(base, gather_future, readers))
-            }
-            HeapData::ExternalFuture(external_future) => {
-                HeapReadOutput::ExternalFuture(heap_read_boxed(base, external_future, readers))
-            }
-            HeapData::Path(path) => HeapReadOutput::Path(heap_read(base, path, readers)),
-            HeapData::OpenFile(file) => HeapReadOutput::OpenFile(heap_read_boxed(base, file, readers)),
-            HeapData::RePattern(re_pattern) => HeapReadOutput::RePattern(heap_read_boxed(base, re_pattern, readers)),
-            HeapData::ReMatch(re_match) => HeapReadOutput::ReMatch(heap_read_boxed(base, re_match, readers)),
-            HeapData::Date(d) => HeapReadOutput::Date(heap_read(base, d, readers)),
-            HeapData::DateTime(d) => HeapReadOutput::DateTime(heap_read(base, d, readers)),
-            HeapData::TimeDelta(d) => HeapReadOutput::TimeDelta(heap_read(base, d, readers)),
-            HeapData::TimeZone(d) => HeapReadOutput::TimeZone(heap_read(base, d, readers)),
-        }
+        crate::heap_data::heap_payloads!(read_heap_payload)
     }
 }
 
@@ -803,7 +904,7 @@ pub(crate) struct Heap {
     /// Paged storage for heap entries with integrated free list.
     entries: StableHeap<HeapEntry>,
     /// Resource tracker for enforcing limits and scheduling GC.
-    tracker: ResourceTracker,
+    pub tracker: ResourceTracker,
     /// Number of entries currently flagged [`Purple`](CcColor::Purple) — i.e.,
     /// suspected cycle roots awaiting collection.
     ///
@@ -871,15 +972,7 @@ impl<'de> serde::Deserialize<'de> for Heap {
         }
         let fields = HeapFields::deserialize(deserializer)?;
         let mut entries = fields.entries;
-        let mut ext_function_cache = BTreeMap::new();
-        for index in 0..entries.len() {
-            let id = HeapId::from_index(index);
-            if let Some(mut entry) = entries.entry(id)
-                && let HeapData::ExtFunction(function) = entry.get_mut().data.0.get_mut()
-            {
-                ext_function_cache.insert(function.cache_key(), id);
-            }
-        }
+        let ext_function_cache = restore_entries(&mut entries, fields.timezone_utc).map_err(D::Error::custom)?;
         Ok(Self {
             entries,
             tracker: fields.tracker,
@@ -891,6 +984,92 @@ impl<'de> serde::Deserialize<'de> for Heap {
             ext_function_cache,
         })
     }
+}
+
+/// Rebuilds the derived state a restored heap needs, and rejects entries whose
+/// contents a dump could not have produced.
+///
+/// Deserializing installs heap data verbatim, so every invariant the interpreter
+/// treats as guaranteed by its constructors has to be re-established here, or a
+/// forged dump becomes a panic or a self-contradictory value later: `time`
+/// components are read back by `naive_time` as already validated, and the `tzinfo`
+/// references on `time` and `datetime`, along with the `timezone_utc` cache, are
+/// dereferenced without checking what they land on. Returns the rebuilt
+/// external-function cache, which is derived rather than serialized.
+///
+/// A `time` needs no agreement check: it stores only the reference, so there is
+/// no second copy to contradict. A `datetime` keeps an inline offset and name —
+/// dumps predating `tzinfo_ref` have no reference to read instead — so its two
+/// copies are still checked against each other.
+fn restore_entries(
+    entries: &mut StableHeap<HeapEntry>,
+    timezone_utc: Option<HeapId>,
+) -> Result<BTreeMap<Arc<str>, HeapId>, &'static str> {
+    let mut ext_function_cache = BTreeMap::new();
+    // Both sides of every timezone check, as owned copies: only one entry can be
+    // borrowed at a time, and whether a reference is sound is not knowable until
+    // every entry has been visited. Each copy mirrors one already in the heap.
+    let mut timezones: HashMap<HeapId, TimeZone> = HashMap::new();
+    let mut datetime_tzinfo_refs: Vec<(HeapId, Option<TimeZone>)> = Vec::new();
+    let mut time_tzinfo_refs: Vec<HeapId> = Vec::new();
+    for index in 0..entries.len() {
+        let id = HeapId::from_index(index);
+        let Some(mut entry) = entries.entry(id) else {
+            continue;
+        };
+        match entry.get_mut().data.0.get_mut() {
+            HeapData::ExtFunction(function) => {
+                ext_function_cache.insert(function.cache_key(), id);
+            }
+            HeapData::TimeZone(tz) => {
+                // Checked here rather than at each referrer: this is the only copy
+                // of the offset a `time` has, and `format_offset_hms` negates it.
+                if !(MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&tz.offset_seconds) {
+                    return Err("timezone offset out of range");
+                }
+                timezones.insert(id, tz.clone());
+            }
+            HeapData::Time(t) => {
+                if !t.components_in_range() {
+                    return Err("time component out of range");
+                }
+                time_tzinfo_refs.extend(t.tzinfo_ref());
+            }
+            HeapData::DateTime(dt) => {
+                datetime_tzinfo_refs.extend(dt.tzinfo_ref().map(|tz_id| (tz_id, datetime::timezone_info(dt))));
+            }
+            _ => {}
+        }
+    }
+    // A `datetime`'s `tzinfo` reference must land on a live `timezone` holding
+    // exactly what the datetime answers `utcoffset()` and `tzname()` from, or the
+    // two disagree; the `timezone_utc` cache must land on UTC's, since
+    // `get_timezone_utc` hands its target straight back as `datetime.timezone.utc`
+    // without looking at it.
+    let holds = |id: HeapId, expected: &TimeZone| timezones.get(&id).is_some_and(|tz| timezone_matches(tz, expected));
+    // The attached copy is absent only for a naive `datetime` that kept a
+    // reference anyway, leaving the referenced timezone nothing to agree with.
+    let agrees = |(id, attached): &(HeapId, Option<TimeZone>)| attached.as_ref().is_some_and(|tz| holds(*id, tz));
+    // A `time` reads its offset and name straight off the target, so the target
+    // only has to *be* a timezone; `attached_timezone` treats that as established.
+    if !time_tzinfo_refs.iter().all(|id| timezones.contains_key(id)) {
+        Err("time tzinfo reference does not point at a timezone")
+    } else if !datetime_tzinfo_refs.iter().all(agrees) {
+        Err("tzinfo reference does not match the attached timezone")
+    } else if timezone_utc.is_some_and(|id| !holds(id, &TimeZone::utc())) {
+        Err("timezone.utc cache does not point to the utc timezone")
+    } else {
+        Ok(ext_function_cache)
+    }
+}
+
+/// Whether two timezones agree on everything a Python program can observe.
+///
+/// Not `==`, which is CPython's offset-only equality: a restored `time` whose
+/// `tzinfo` object carries a different *name* than its own copy would report one
+/// from `tzname()` and the other from `tzinfo.tzname()`.
+fn timezone_matches(a: &TimeZone, b: &TimeZone) -> bool {
+    a.offset_seconds == b.offset_seconds && a.name == b.name
 }
 
 /// Default GC interval — run cycle collection every 100 000 GC-tracked
@@ -942,30 +1121,6 @@ impl Heap {
         this
     }
 
-    /// Returns a reference to the resource tracker.
-    pub fn tracker(&self) -> &ResourceTracker {
-        &self.tracker
-    }
-
-    /// Returns a mutable reference to the resource tracker.
-    pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
-        &mut self.tracker
-    }
-
-    /// Checks whether a configured time or memory limit has been exceeded.
-    ///
-    /// Delegates to the resource tracker's `check_time()`, which polls
-    /// allocator-backed usage against `max_memory` and elapsed execution time
-    /// against `max_duration` (each a no-op when unset).
-    ///
-    /// Call this inside Rust-side loops (builtins, sort, iterator collection)
-    /// that execute within a single bytecode instruction and would otherwise
-    /// bypass the VM's per-instruction checkpoint.
-    #[inline]
-    pub fn check_time(&self) -> Result<(), ResourceError> {
-        self.tracker.check_time()
-    }
-
     /// Number of entries in the heap (including freed slots).
     pub fn size(&self) -> usize {
         self.entries.len()
@@ -990,19 +1145,22 @@ impl Heap {
     /// (strings, bytes, …) cannot participate in cycles and don't count
     /// against the GC interval.
     pub fn allocate(&self, data: HeapData) -> HeapId {
+        self.entries.allocate(self.new_entry(data))
+    }
+
+    /// Builds the initialized entry shared by typed and untyped allocation.
+    fn new_entry(&self, data: HeapData) -> HeapEntry {
         if data.is_gc_tracked() {
             self.allocations_since_gc
                 .set(self.allocations_since_gc.get().wrapping_add(1));
         }
 
-        let new_entry = HeapEntry {
+        HeapEntry {
             refcount: Cell::new(1),
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(data)),
             color: Cell::new(CcColor::Black),
-        };
-
-        self.entries.allocate(new_entry)
+        }
     }
 
     /// Returns the singleton empty tuple.
@@ -1838,6 +1996,12 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(tz_id);
             }
         }
+        HeapData::Time(t) => {
+            // Same retained-tzinfo contract as `DateTime` above.
+            if let Some(tz_id) = t.tzinfo_ref() {
+                on_child(tz_id);
+            }
+        }
         HeapData::OpenFile(file) => {
             // Kept in sync with `py_dec_ref_ids_for_data`: the file owns one
             // ref on its loaded buffer. (`OpenFile` is not GC-tracked today, so
@@ -1894,6 +2058,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
         HeapData::DataclassField(field) => field.py_dec_ref_ids(stack),
+        HeapData::DataclassParams(params) => params.py_dec_ref_ids(stack),
         HeapData::ListIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::DequeIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::TupleIterator(iter) => iter.py_dec_ref_ids(stack),
@@ -1949,6 +2114,12 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             // Mirror `for_each_child_id`: when an aware datetime is freed we must
             // also drop the retained tzinfo reference so its refcount is balanced.
             if let Some(tz_id) = dt.tzinfo_ref() {
+                stack.push(tz_id);
+            }
+        }
+        HeapData::Time(t) => {
+            // Mirror `for_each_child_id`: an aware time owns its tzinfo reference.
+            if let Some(tz_id) = t.tzinfo_ref() {
                 stack.push(tz_id);
             }
         }
@@ -2151,7 +2322,7 @@ mod tests {
     /// Pure `cargo test` cannot observe this — the pointer arithmetic still
     /// reads valid bytes — but `cargo +nightly miri test` flags the access.
     /// The branch is reachable from normal Monty code (e.g. `list.remove`
-    /// on a self-referential list holds a `HeapRead<List>`, clones the
+    /// on a self-referential list holds a `HeapObjectRead<List>`, clones the
     /// matching element, and the deferred drop of that clone calls
     /// `dec_ref` on the same `HeapId` while the list reader is still live).
     #[test]

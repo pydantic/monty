@@ -4,8 +4,8 @@
 use std::borrow::Cow;
 
 use monty_types::{
-    FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone,
-    MontyType, StringRepr,
+    FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
+    MontyTimeZone, MontyType, StringRepr,
 };
 use num_bigint::BigInt;
 use pyo3::{
@@ -15,7 +15,7 @@ use pyo3::{
     sync::PyOnceLock,
     types::{
         PyBool, PyBytes, PyDate, PyDateAccess, PyDateTime, PyDelta, PyDeltaAccess, PyDict, PyFloat, PyFrozenSet, PyInt,
-        PyList, PyModule, PySet, PyString, PyTimeAccess, PyTuple, PyType, PyTzInfo, PyTzInfoAccess,
+        PyList, PyModule, PySet, PyString, PyTime, PyTimeAccess, PyTuple, PyType, PyTzInfo, PyTzInfoAccess,
     },
 };
 
@@ -150,6 +150,8 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
             month: date.get_month(),
             day: date.get_day(),
         }))
+    } else if let Ok(time) = obj.cast::<PyTime>() {
+        py_time_to_monty(time)
     } else if let Ok(delta) = obj.cast::<PyDelta>() {
         Ok(MontyObject::TimeDelta(py_timedelta_to_monty(delta)))
     } else if obj.is_instance(get_datetime_timezone_type(obj.py())?)? {
@@ -237,6 +239,10 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::ItertoolsIslice,
             MontyType::ItertoolsChain,
             MontyType::ItertoolsCycle,
+            MontyType::ItertoolsTakeWhile,
+            MontyType::ItertoolsDropWhile,
+            MontyType::ItertoolsFilterFalse,
+            MontyType::ItertoolsStarMap,
             MontyType::Tuple,
             MontyType::Dict,
             MontyType::Set,
@@ -247,6 +253,7 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::Property,
             MontyType::Date,
             MontyType::DateTime,
+            MontyType::Time,
             MontyType::TimeDelta,
             MontyType::TimeZone,
             MontyType::RePattern,
@@ -386,13 +393,14 @@ pub(crate) fn monty_to_py_inner(
             .map(Bound::into_any)
             .map(Bound::unbind),
         MontyObject::DateTime(datetime) => monty_datetime_to_py(py, datetime),
+        MontyObject::Time(time) => monty_time_to_py(py, time),
         MontyObject::TimeDelta(delta) => PyDelta::new(py, delta.days, delta.seconds, delta.microseconds, true)
             .map(Bound::into_any)
             .map(Bound::unbind),
         MontyObject::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
         // Return the host Python type object the sandbox type maps to.
         MontyObject::Type(t) => type_object_to_py(py, t.clone()),
-        MontyObject::BuiltinFunction(f) => import_builtins(py)?.getattr(py, f.to_string()),
+        MontyObject::BuiltinFunction(f) => builtin_function_to_py(py, &f.to_string()),
         // Dataclass - use registry to reconstruct original type if available
         MontyObject::Dataclass {
             name,
@@ -421,6 +429,19 @@ pub(crate) fn monty_to_py_inner(
     }
 }
 
+/// Resolves a builtin function's host object from the name Monty renders it as.
+///
+/// Nearly every name is a plain `builtins` attribute, but `object.__setattr__`
+/// is dotted — it lives on `object`, not on the module — so the name is walked
+/// segment by segment rather than looked up whole.
+fn builtin_function_to_py(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
+    let mut obj: Py<PyAny> = import_builtins(py)?.clone_ref(py).into_any();
+    for segment in name.split('.') {
+        obj = obj.getattr(py, segment)?;
+    }
+    Ok(obj)
+}
+
 pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
     static BUILTINS: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 
@@ -447,6 +468,7 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
     match t {
         MontyType::Date => cached!("datetime", "date"),
         MontyType::DateTime => cached!("datetime", "datetime"),
+        MontyType::Time => cached!("datetime", "time"),
         MontyType::Deque => cached!("collections", "deque"),
         MontyType::TimeDelta => cached!("datetime", "timedelta"),
         MontyType::TimeZone => cached!("datetime", "timezone"),
@@ -459,6 +481,10 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         MontyType::ItertoolsIslice => cached!("itertools", "islice"),
         MontyType::ItertoolsChain => cached!("itertools", "chain"),
         MontyType::ItertoolsCycle => cached!("itertools", "cycle"),
+        MontyType::ItertoolsTakeWhile => cached!("itertools", "takewhile"),
+        MontyType::ItertoolsDropWhile => cached!("itertools", "dropwhile"),
+        MontyType::ItertoolsFilterFalse => cached!("itertools", "filterfalse"),
+        MontyType::ItertoolsStarMap => cached!("itertools", "starmap"),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
         MontyType::Path => get_pure_posix_path(py).map(|b| b.clone().unbind()),
@@ -553,6 +579,41 @@ fn py_timezone_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyTimeZone> {
     })
 }
 
+/// Converts a Monty time payload to a native Python `datetime.time`.
+///
+/// A name with no offset cannot be built: `datetime.timezone` has no such form,
+/// and the wire rejects the pair, so it can only come from a hand-built value.
+fn monty_time_to_py(py: Python<'_>, time: &MontyTime) -> PyResult<Py<PyAny>> {
+    let tzinfo_obj = match (time.offset_seconds, &time.timezone_name) {
+        (None, None) => None,
+        (Some(offset_seconds), timezone_name) => Some(monty_timezone_to_py(
+            py,
+            &MontyTimeZone {
+                offset_seconds,
+                name: timezone_name.clone(),
+            },
+        )?),
+        (None, Some(_)) => {
+            return Err(PyTypeError::new_err("invalid Monty time: timezone name without offset"));
+        }
+    };
+    let tzinfo = tzinfo_obj
+        .as_ref()
+        .map(|obj| obj.bind(py).cast::<PyTzInfo>())
+        .transpose()?;
+    PyTime::new_with_fold(
+        py,
+        time.hour,
+        time.minute,
+        time.second,
+        time.microsecond,
+        tzinfo,
+        time.fold != 0,
+    )
+    .map(Bound::into_any)
+    .map(Bound::unbind)
+}
+
 /// Converts a Monty datetime payload to a native Python `datetime.datetime`.
 fn monty_datetime_to_py(py: Python<'_>, datetime: &MontyDateTime) -> PyResult<Py<PyAny>> {
     match (datetime.offset_seconds, &datetime.timezone_name) {
@@ -628,6 +689,38 @@ fn py_datetime_to_monty(datetime: &Bound<'_, PyDateTime>) -> PyResult<MontyObjec
         microsecond: datetime.get_microsecond(),
         offset_seconds,
         timezone_name,
+    }))
+}
+
+/// Converts a host `datetime.time`, preserving `fold` and its timezone.
+///
+/// A naive time has no instant for `utcoffset()` to resolve against, so unlike
+/// `datetime` only a `datetime.timezone` is accepted: CPython passes `None` to
+/// `tzinfo.utcoffset(None)`, and a zone that needs a date (`ZoneInfo`) returns
+/// `None` there rather than a usable offset.
+fn py_time_to_monty(time: &Bound<'_, PyTime>) -> PyResult<MontyObject> {
+    let (offset_seconds, timezone_name) = match time.get_tzinfo() {
+        Some(tzinfo) if tzinfo.is_instance(get_datetime_timezone_type(tzinfo.py())?)? => {
+            let timezone = py_timezone_to_monty(&tzinfo)?;
+            (Some(timezone.offset_seconds), timezone.name)
+        }
+        Some(tzinfo) => {
+            return Err(PyTypeError::new_err(format!(
+                "cannot convert datetime.time with tzinfo of type '{}' to a Monty value",
+                tzinfo.get_type().name()?
+            )));
+        }
+        None => (None, None),
+    };
+
+    Ok(MontyObject::Time(MontyTime {
+        hour: time.get_hour(),
+        minute: time.get_minute(),
+        second: time.get_second(),
+        microsecond: time.get_microsecond(),
+        offset_seconds,
+        timezone_name,
+        fold: u8::from(time.get_fold()),
     }))
 }
 

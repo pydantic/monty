@@ -1,15 +1,15 @@
 error[E0521]: borrowed data escapes outside of closure
-  --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:93:9
+  --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:95:9
    |
-87 |     let mut smuggled: Option<HeapRead<'_, List>> = None;
+89 |     let mut smuggled: Option<HeapObjectRead<'_, List>> = None;
    |         ------------ `smuggled` declared here, outside of the closure body
-88 |     HeapReader::with(heap, &mut (), |heap, ()| {
+90 |     HeapReader::with(heap, &mut (), |heap, ()| {
    |                                      ---- `heap` is a reference that is only valid in the closure body
 ...
-93 |         smuggled = Some(a);
+95 |         smuggled = Some(a);
    |         ^^^^^^^^ `heap` escapes the closure body here
    |
-   = note: requirement occurs because of the type `heap::HeapRead<'_, list::List>`, which makes the generic argument `'_` invariant
-   = note: the struct `heap::HeapRead<'a, T>` is invariant over the parameter `'a`
+   = note: requirement occurs because of the type `heap::HeapObjectRead<'_, list::List>`, which makes the generic argument `'_` invariant
+   = note: the struct `heap::HeapObjectRead<'a, T>` is invariant over the parameter `'a`
    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
 For more information about this error, try `rustc --explain E0521`.

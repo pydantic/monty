@@ -1,5 +1,7 @@
 #![doc = include_str!("../README.md")]
 
+use std::ops::RangeInclusive;
+
 mod convert;
 mod frame;
 mod generated;
@@ -22,17 +24,37 @@ pub mod worker;
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
-///
-/// The gap between this and `PROTOCOL_VERSION` is the migration window: how far
-/// a separately-deployed parent (a WebSocket client, say) may lag behind its
-/// worker before being rejected. Raise it only when supporting an old version
-/// becomes a real cost — every raise is a breaking change for lagging clients.
 pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 1;
 
-// The supported range must be non-empty, and must exclude zero — which is what
-// a parent that declared no version sends, and must never be servable.
+// The supported range must be non-empty, and must exclude zero
 const _: () = assert!(MIN_SUPPORTED_PROTOCOL_VERSION >= 1);
 const _: () = assert!(MIN_SUPPORTED_PROTOCOL_VERSION <= PROTOCOL_VERSION);
+
+/// Protocol versions this build serves; a `Configure` outside it is fatal.
+const SUPPORTED_PROTOCOL_VERSIONS: RangeInclusive<u32> = MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION;
+
+/// Checks a peer's declared [`pb::Configure::protocol_version`] against the
+/// range this build serves.
+pub fn check_protocol_version(version: u32) -> Result<(), String> {
+    if SUPPORTED_PROTOCOL_VERSIONS.contains(&version) {
+        Ok(())
+    } else {
+        Err(format!(
+            "unsupported protocol version {version} ({})",
+            supported_versions()
+        ))
+    }
+}
+
+/// Names [`SUPPORTED_PROTOCOL_VERSIONS`] for the refusal above, singular while
+/// the window is one version wide — "1 to 1" reads as a range it is not.
+fn supported_versions() -> String {
+    if MIN_SUPPORTED_PROTOCOL_VERSION == PROTOCOL_VERSION {
+        format!("this build supports protocol version {PROTOCOL_VERSION}")
+    } else {
+        format!("this build supports protocol versions {MIN_SUPPORTED_PROTOCOL_VERSION} to {PROTOCOL_VERSION}")
+    }
+}
 
 pub use convert::{MAX_VALUE_DEPTH, ProtoConvertError, exceeds_max_value_depth, future_results_from_proto};
 pub use frame::{

@@ -1,12 +1,13 @@
 use std::time::Duration;
 
+use insta::assert_snapshot;
 use monty::MontyRun;
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use monty_types::{
     CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
-    MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTimeDelta, MontyTimeZone,
-    MontyType, NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
-    ResourceLimits, StackFrame, UnicodeErrorData,
+    MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTime, MontyTimeDelta,
+    MontyTimeZone, MontyType, NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
+    RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData,
 };
 use num_bigint::BigInt;
 use prost::Message;
@@ -136,6 +137,48 @@ fn datetime_values_round_trip() {
     }));
 }
 
+/// The decode budget is charged `host_size`, so every owned string a decoded
+/// value carries has to be counted there — the temporal values each hold a
+/// caller-supplied timezone name, and the rest of their fields are scalars.
+#[test]
+fn timezone_names_are_charged_to_the_decode_budget() {
+    let name = "z".repeat(500);
+    let sizes = |name: Option<String>| {
+        [
+            MontyObject::DateTime(MontyDateTime {
+                year: 2026,
+                month: 1,
+                day: 1,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                microsecond: 0,
+                offset_seconds: Some(0),
+                timezone_name: name.clone(),
+            }),
+            MontyObject::Time(MontyTime {
+                hour: 0,
+                minute: 0,
+                second: 0,
+                microsecond: 0,
+                offset_seconds: Some(0),
+                timezone_name: name.clone(),
+                fold: 0,
+            }),
+            MontyObject::TimeZone(MontyTimeZone {
+                offset_seconds: 0,
+                name,
+            }),
+        ]
+        .map(|obj| obj.host_size())
+    };
+    let named = sizes(Some(name.clone()));
+    let unnamed = sizes(None);
+    for (named, unnamed) in named.into_iter().zip(unnamed) {
+        assert_eq!(named - unnamed, name.len());
+    }
+}
+
 #[test]
 fn exception_and_type_values_round_trip() {
     assert_value_round_trip(&MontyObject::Exception {
@@ -154,6 +197,16 @@ fn exception_and_type_values_round_trip() {
     assert_value_round_trip(&MontyObject::Type(MontyType::Instance("Foo".to_owned())));
     let builtin = MontyObject::builtin_function_from_name("len").expect("len is a builtin");
     assert_value_round_trip(&builtin);
+    // A dotted builtin name must survive too: `object.__setattr__` is the one
+    // whose name is not just its lowercased variant, so it is the only variant
+    // that can drift between the strum and serde spellings.
+    let dotted =
+        MontyObject::builtin_function_from_name("object.__setattr__").expect("object.__setattr__ is a builtin");
+    assert_value_round_trip(&dotted);
+    assert_eq!(
+        serde_json::to_string(&dotted).expect("serializes"),
+        r#"{"BuiltinFunction":"object.__setattr__"}"#
+    );
 }
 
 #[test]
@@ -266,6 +319,32 @@ fn invalid_stack_frame_coordinates_are_rejected() {
         })
     ));
     StackFrame::try_from(frame(1, 6)).expect("in-range columns must convert");
+}
+
+/// Multi-line spans render their preview as a pre-computed block with no
+/// caret math, and legitimately end on a lower column than they start (a
+/// call closed by a hanging `)`), so the same-line column validation must
+/// not reject them — regression test for issue #631, where such frames were
+/// discarded as "invalid exception payload", replacing the real exception.
+#[test]
+fn multiline_stack_frame_with_lower_end_column_converts() {
+    let frame = pb::StackFrame {
+        filename: "main.py".to_owned(),
+        start: Some(pb::CodeLoc { line: 4, column: 5 }),
+        end: Some(pb::CodeLoc { line: 6, column: 2 }),
+        frame_name: None,
+        preview_line: Some("r = f(\n    a=1,\n)".to_owned()),
+        hide_caret: false,
+        hide_frame_name: false,
+    };
+    let frame = StackFrame::try_from(frame).expect("multi-line span must convert");
+    // rendering takes the caret-free block path, so hostile columns are inert
+    assert_snapshot!(frame, @r#"
+      File "main.py", line 4, in <module>
+        r = f(
+            a=1,
+        )
+    "#);
 }
 
 #[test]

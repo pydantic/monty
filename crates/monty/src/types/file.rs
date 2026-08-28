@@ -76,7 +76,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::PendingOsEffect,
     types::str::StringRepr,
@@ -299,7 +299,7 @@ impl HeapItem for OpenFile {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
     fn py_type(&self, vm: &VM<'h>) -> Type {
         self.get(vm.heap).file_type()
     }
@@ -329,13 +329,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         Ok(())
     }
 
-    fn py_call_attr(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(
@@ -345,12 +339,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         };
 
         match method {
-            StaticStrings::Read => self.read(self_id, vm, args),
-            StaticStrings::Readline => self.readline(self_id, vm, args),
-            StaticStrings::Readlines => self.readlines(self_id, vm, args),
+            StaticStrings::Read => self.read(vm, args),
+            StaticStrings::Readline => self.readline(vm, args),
+            StaticStrings::Readlines => self.readlines(vm, args),
             StaticStrings::Tell => self.tell(vm, args),
-            StaticStrings::Seek => self.seek(self_id, vm, args),
-            StaticStrings::Write => self.write(self_id, vm, args),
+            StaticStrings::Seek => self.seek(vm, args),
+            StaticStrings::Write => self.write(vm, args),
             StaticStrings::Close => self.close(vm, args),
             StaticStrings::Flush => self.flush(vm, args),
             StaticStrings::Readable => self.readable(vm, args),
@@ -370,7 +364,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         true
     }
 
-    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn py_enter(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         // Match CPython: entering on a closed file raises before the body runs.
         // (Reusing a closed file as a context manager is rare but the error
         // message is part of the user contract.)
@@ -379,11 +373,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         // Value::Ref its own count — constructing a fresh Value::Ref without
         // an inc_ref would let the Drop impl panic when an in-flight value
         // is later discarded without a matching drop_with.
-        vm.heap.inc_ref(self_id);
-        Ok(CallResult::Value(Value::Ref(self_id)))
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_exit(&mut self, _self_id: HeapId, vm: &mut VM<'h>, _exc: Option<HeapId>) -> RunResult<CallResult> {
+    fn py_exit(&mut self, vm: &mut VM<'h>, _exc: Option<HeapId>) -> RunResult<CallResult> {
         // `with open(...) as f:` always closes the file on exit, success or
         // failure. We don't suppress exceptions: returning `None` is falsy, so
         // any in-flight exception propagates as it would in CPython.
@@ -419,7 +412,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
     }
 }
 
-impl<'h> HeapRead<'h, OpenFile> {
+impl<'h> HeapObjectRead<'h, OpenFile> {
     /// Implements `file.read()` and `file.read(size)`.
     ///
     /// All variants flow through the same buffer-store hook so the file's
@@ -427,7 +420,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// caller mixes bare `read()`, sized `read(N)`, or line-oriented
     /// operations. The buffer holds the full file content; further reads
     /// slice it in pure Monty.
-    fn read(&mut self, self_id: HeapId, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
+    fn read(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         let spec = parse_read_size_arg(args.get_zero_one_arg("read", vm.heap)?, vm)?;
         if matches!(spec, ReadSpec::Size(0)) {
             // `read(0)`: empty result without any OS call, position unchanged.
@@ -442,23 +435,23 @@ impl<'h> HeapRead<'h, OpenFile> {
             };
             Ok(CallResult::Value(empty_result(binary, vm.heap)))
         } else {
-            self.read_with_spec(self_id, vm, spec)
+            self.read_with_spec(vm, spec)
         }
     }
 
     /// Implements `file.readline()` — yields up to and including the next
     /// `\n`, or the rest of the buffer if the final line has no newline. At
     /// EOF returns `''`/`b''`.
-    fn readline(&mut self, self_id: HeapId, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
+    fn readline(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("readline", vm.heap)?;
-        self.read_with_spec(self_id, vm, ReadSpec::Line)
+        self.read_with_spec(vm, ReadSpec::Line)
     }
 
     /// Implements `file.readlines()` — returns a `list[str]` (or `list[bytes]`
     /// for binary mode) of every remaining line.
-    fn readlines(&mut self, self_id: HeapId, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
+    fn readlines(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("readlines", vm.heap)?;
-        self.read_with_spec(self_id, vm, ReadSpec::Lines)
+        self.read_with_spec(vm, ReadSpec::Lines)
     }
 
     /// Implements `file.tell()` — returns the current position as an int.
@@ -482,10 +475,10 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// Implements `file.seek(offset, whence=0)` — repositions within the
     /// buffer, loading it on demand if not yet present, then returns the new
     /// absolute position.
-    fn seek(&mut self, self_id: HeapId, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
+    fn seek(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         let (offset, whence) = parse_seek_args(args, vm)?;
         if self.get(vm.heap).mode.readable() {
-            self.read_with_spec(self_id, vm, ReadSpec::Seek { offset, whence })
+            self.read_with_spec(vm, ReadSpec::Seek { offset, whence })
         } else {
             let (target, file_length) = {
                 let file = self.get(vm.heap);
@@ -512,7 +505,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// Otherwise records the spec on the file and yields a
     /// [`CallResult::OsCallWithEffect`] so the host loads the full content
     /// and the resume hook completes the operation.
-    fn read_with_spec(&mut self, self_id: HeapId, vm: &mut VM<'h>, spec: ReadSpec) -> RunResult<CallResult> {
+    fn read_with_spec(&mut self, vm: &mut VM<'h>, spec: ReadSpec) -> RunResult<CallResult> {
         let (binary, buffer_loaded) = {
             let file = self.get(vm.heap);
             file.ensure_open()?;
@@ -544,10 +537,11 @@ impl<'h> HeapRead<'h, OpenFile> {
         } else {
             OsFunctionCall::ReadText(path)
         };
-        inc_ref_for_pending_oscall(vm, self_id);
+        let file_id = self.id();
+        inc_ref_for_pending_oscall(vm, file_id);
         Ok(CallResult::OsCallWithEffect {
             call,
-            effect: PendingOsEffect::BufferStore { file_id: self_id },
+            effect: PendingOsEffect::BufferStore { file_id },
         })
     }
 
@@ -555,7 +549,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     ///
     /// As with [`Self::read`], the first OS-call argument is the file object
     /// itself, delivered to the host as a `MontyObject::FileHandle`.
-    fn write(&mut self, self_id: HeapId, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
+    fn write(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         let data = args.get_one_arg("write", vm.heap)?;
         defer_drop!(data, vm);
         let binary = self.get(vm.heap).mode.is_binary();
@@ -599,11 +593,12 @@ impl<'h> HeapRead<'h, OpenFile> {
             }
         };
 
-        inc_ref_for_pending_oscall(vm, self_id);
+        let file_id = self.id();
+        inc_ref_for_pending_oscall(vm, file_id);
         // The effect travels with the call and is armed at dispatch, so a
         // call rejected before dispatch cannot leave stale write state.
         let effect = PendingOsEffect::WritePosition {
-            file_id: self_id,
+            file_id,
             previous_position: self.get(vm.heap).position,
             previous_length: self.get(vm.heap).file_length,
         };

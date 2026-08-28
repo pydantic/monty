@@ -57,7 +57,8 @@ class CollectStreams:
     """Collect printed output as `(stream, text)` tuples.
 
     Defaults to a 10 MiB cap. Pass `max_bytes=None` to disable (trusted hosts).
-    Exceeding the cap raises `MemoryError`. Not covered by `ResourceLimits.max_memory`.
+    Exceeding the cap fails the feed with `MontyRuntimeError` wrapping a
+    `MemoryError`. Not covered by `ResourceLimits.max_memory`.
     The cap includes a fixed per-entry overhead (many tiny fragments).
     """
 
@@ -71,7 +72,8 @@ class CollectString:
     """Collect printed output as one concatenated string.
 
     Defaults to a 10 MiB cap. Pass `max_bytes=None` to disable (trusted hosts).
-    Exceeding the cap raises `MemoryError`. Not covered by `ResourceLimits.max_memory`.
+    Exceeding the cap fails the feed with `MontyRuntimeError` wrapping a
+    `MemoryError`. Not covered by `ResourceLimits.max_memory`.
     """
 
     def __new__(cls, max_bytes: int | None = 10 * 1024 * 1024) -> CollectString: ...
@@ -86,6 +88,23 @@ class MountDir:
     The directory is opened here, and every feed this mount is passed to serves
     that same directory — so build one and reuse it. `'overlay'` writes live in
     each feed's own table and are discarded when the feed ends.
+
+    **Warning: `mode='read-write'` writes files from untrusted code to your
+    real filesystem.**
+
+    Those files are untrusted input; do not execute them. Importing counts as
+    executing, and the import can be indirect: with a directory on `sys.path`
+    mounted, sandboxed code can write `json.py`, or any module not yet
+    imported, and the next `import` runs it. That includes imports made by
+    `pydantic_monty` itself. `sys.path[0]` is the script's directory, or the
+    cwd for `python -m`, `python -c` and the REPL.
+
+    Tools also read files without an explicit import: `conftest.py`,
+    `sitecustomize.py`, `.git/hooks/*`, `Makefile`, `.env`, `__pycache__`.
+
+    The `'overlay'` default keeps writes in memory, so nothing reaches the host
+    filesystem. Use `'read-write'` only with a directory that contains no code
+    or config and is not on `sys.path` or any other execution path.
 
     ```python
     from pathlib import Path
@@ -139,10 +158,11 @@ class MountDir:
                 relative — an absolute target raises `PermissionError` in the
                 sandbox even when it points back into the same mount.
             virtual_path: Absolute POSIX-style path prefix inside the sandbox
-                (e.g. `'/data'`), regardless of host OS. Raises `ValueError`
+                (e.g. `'/data'`), regardless of host OS. Raises `TypeError`
                 if not absolute.
             mode: `'read-only'` — reads only, writes raise `PermissionError`;
-                `'read-write'` — writes through to the host directory;
+                `'read-write'` — writes through to the host directory, where
+                the files persist after the feed (see the warning above);
                 `'overlay'` (default) — reads fall through to the host, writes
                 are captured in memory per feed and discarded when it ends.
             write_bytes_limit: Cap on cumulative bytes written through the
@@ -437,8 +457,8 @@ class Monty:
                 checkouts beyond it wait for a worker to be returned.
             checkout_timeout: Seconds `checkout()` waits for a free worker
                 before raising `TimeoutError`. `None` waits forever.
-            request_timeout: Parent-side deadline in seconds — a worker that
-                exceeds it is killed and the call raises `MontyCrashedError`
+            request_timeout: Per-turn parent-side deadline in seconds — a worker
+                that exceeds it is killed and the call raises `MontyCrashedError`
                 with `timed_out=True`. Trusted synchronous telemetry callbacks
                 delay enforcement while they run. Backstops sandbox `limits`.
             max_checkouts_per_worker: Recycle a worker after this many sessions.
@@ -790,7 +810,7 @@ class AsyncMontyWebsocket:
                 count); checkouts beyond it wait.
             checkout_timeout: Seconds `checkout()` waits for capacity before
                 raising `TimeoutError`. `None` waits forever.
-            request_timeout: Hard per-call deadline in seconds (default 10.0) — a
+            request_timeout: Hard per-turn deadline in seconds (default 10.0) — a
                 worker that exceeds it has its connection killed and the call
                 raises `MontyCrashedError` with `timed_out=True`. This also
                 bounds the wait when a relay accepts the connection but never

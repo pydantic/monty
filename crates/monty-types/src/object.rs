@@ -97,6 +97,8 @@ pub enum MontyObject {
     Date(MontyDate),
     /// Python `datetime.datetime`.
     DateTime(MontyDateTime),
+    /// Python `datetime.time`.
+    Time(MontyTime),
     /// Python `datetime.timedelta`.
     TimeDelta(MontyTimeDelta),
     /// Python `datetime.timezone` fixed-offset timezone.
@@ -208,6 +210,7 @@ impl MontyObject {
         const STR_OVERHEAD: usize = size_of::<String>();
 
         let names_len = |names: &[String]| -> usize { names.iter().map(|s| STR_OVERHEAD + s.len()).sum() };
+        let name_len = |name: &Option<String>| -> usize { name.as_ref().map_or(0, String::len) };
 
         let payload = match self {
             Self::String(s) | Self::Path(s) | Self::Repr(s) => s.len(),
@@ -227,6 +230,11 @@ impl MontyObject {
             // `String` (the other `MontyType`s are payload-free), so charge it here
             // like the `String`/`Function`/... names above.
             Self::Type(MontyType::Instance(name)) => name.len(),
+            // The temporal values each carry an owned timezone name, which is
+            // caller-supplied and unbounded — the rest of their fields are scalars.
+            Self::DateTime(dt) => name_len(&dt.timezone_name),
+            Self::Time(t) => name_len(&t.timezone_name),
+            Self::TimeZone(tz) => name_len(&tz.name),
             _ => 0,
         };
         BASE + payload
@@ -374,6 +382,33 @@ impl MontyObject {
                 }
                 f.write_char(')')
             }
+            Self::Time(time) => {
+                write!(f, "datetime.time({}, {}", time.hour, time.minute)?;
+                // CPython prints `second` whenever either sub-minute field is
+                // set, so `time(1, 2, 0, 4)` reprs as `(1, 2, 0, 4)`.
+                if time.second != 0 || time.microsecond != 0 {
+                    write!(f, ", {}", time.second)?;
+                }
+                if time.microsecond != 0 {
+                    write!(f, ", {}", time.microsecond)?;
+                }
+                if let Some(offset) = time.offset_seconds {
+                    if offset == 0 && time.timezone_name.is_none() {
+                        f.write_str(", tzinfo=datetime.timezone.utc")?;
+                    } else {
+                        let timedelta_repr = format_offset_timedelta_repr(offset);
+                        write!(f, ", tzinfo=datetime.timezone({timedelta_repr}")?;
+                        if let Some(name) = &time.timezone_name {
+                            write!(f, ", {}", StringRepr(name))?;
+                        }
+                        f.write_char(')')?;
+                    }
+                }
+                if time.fold != 0 {
+                    write!(f, ", fold={}", time.fold)?;
+                }
+                f.write_char(')')
+            }
             Self::TimeDelta(delta) => {
                 if delta.days == 0 && delta.seconds == 0 && delta.microseconds == 0 {
                     return f.write_str("datetime.timedelta(0)");
@@ -485,6 +520,7 @@ impl MontyObject {
             Self::FrozenSet(fs) => !fs.is_empty(),
             Self::Date(_) => true,
             Self::DateTime(_) => true,
+            Self::Time(_) => true,
             Self::TimeDelta(delta) => delta.days != 0 || delta.seconds != 0 || delta.microseconds != 0,
             Self::TimeZone(_) => true,
             Self::Exception { .. } => true,
@@ -519,6 +555,7 @@ impl MontyObject {
             Self::FrozenSet(_) => "frozenset",
             Self::Date(_) => "date",
             Self::DateTime(_) => "datetime",
+            Self::Time(_) => "time",
             Self::TimeDelta(_) => "timedelta",
             Self::TimeZone(_) => "timezone",
             Self::Exception { .. } => "Exception",
@@ -563,6 +600,7 @@ impl Hash for MontyObject {
             Self::Bytes(bytes) => bytes.hash(state),
             Self::Date(date) => date.hash(state),
             Self::DateTime(datetime) => datetime.hash(state),
+            Self::Time(time) => time.hash(state),
             Self::TimeDelta(delta) => delta.hash(state),
             Self::TimeZone(timezone) => timezone.hash(state),
             Self::Path(path) => path.hash(state),
@@ -597,6 +635,7 @@ impl PartialEq for MontyObject {
             (Self::Tuple(a), Self::Tuple(b)) => a == b,
             (Self::Date(a), Self::Date(b)) => a == b,
             (Self::DateTime(a), Self::DateTime(b)) => a == b,
+            (Self::Time(a), Self::Time(b)) => a == b,
             (Self::TimeDelta(a), Self::TimeDelta(b)) => a == b,
             (Self::TimeZone(a), Self::TimeZone(b)) => a == b,
             (
@@ -712,6 +751,7 @@ impl AsRef<Self> for MontyObject {
     strum::EnumIter,
     strum::EnumString,
     strum::IntoStaticStr,
+    strum::VariantNames,
 )]
 #[strum(serialize_all = "lowercase")]
 pub enum MontyType {
@@ -830,6 +870,23 @@ pub enum MontyType {
     ItertoolsCycle,
     #[strum(serialize = "NotImplementedType")]
     NotImplementedType,
+    /// The `__dataclass_params__` of a sandbox `@dataclass`: the options it was
+    /// decorated with, named as CPython's private class reports itself.
+    #[strum(serialize = "_DataclassParams")]
+    DataclassParams,
+    #[strum(serialize = "itertools.takewhile")]
+    ItertoolsTakeWhile,
+    #[strum(serialize = "itertools.dropwhile")]
+    ItertoolsDropWhile,
+    #[strum(serialize = "itertools.filterfalse")]
+    ItertoolsFilterFalse,
+    #[strum(serialize = "itertools.starmap")]
+    ItertoolsStarMap,
+    /// The builtin `object`, which the sandbox exposes as a name only — it is
+    /// not a base class and cannot be constructed.
+    Object,
+    #[strum(serialize = "datetime.time")]
+    Time,
 }
 
 impl fmt::Display for MontyType {
@@ -854,9 +911,9 @@ impl MontyType {
 
     /// Parses a name produced by [`Display`](fmt::Display)/[`name`](Self::name)
     /// back to the `MontyType` — the wire-protocol decode path for builtin
-    /// type names. Never yields [`Instance`](Self::Instance) (`"object"` and
-    /// class names return `None`); the wire carries instance types in a
-    /// dedicated field instead.
+    /// type names. Never yields [`Instance`](Self::Instance): class names
+    /// return `None` (the wire carries instance types in a dedicated field
+    /// instead), and `"object"` parses to the builtin [`Object`](Self::Object).
     ///
     /// `EnumString` parses via the same strum `serialize` attributes that
     /// `IntoStaticStr` renders with, so the two stay in lockstep by
@@ -900,11 +957,39 @@ pub struct MontyDateTime {
     /// Microsecond in range 0..=999_999.
     pub microsecond: u32,
     /// Fixed offset seconds for aware datetimes, or `None` for naive values.
+    ///
+    /// Within [`MIN_TIMEZONE_OFFSET_SECONDS`]..=[`MAX_TIMEZONE_OFFSET_SECONDS`] when set.
     pub offset_seconds: Option<i32>,
     /// Optional explicit timezone name for aware datetimes.
     ///
     /// Must be `None` when `offset_seconds` is `None`.
     pub timezone_name: Option<String>,
+}
+
+/// A Python `datetime.time` value: a wall clock with no date attached.
+///
+/// `fold` is carried so the flag survives the boundary, but neither monty nor
+/// this type interprets it — as in CPython it takes no part in equality.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MontyTime {
+    /// Hour in range 0..=23.
+    pub hour: u8,
+    /// Minute in range 0..=59.
+    pub minute: u8,
+    /// Second in range 0..=59.
+    pub second: u8,
+    /// Microsecond in range 0..=999_999.
+    pub microsecond: u32,
+    /// Fixed offset seconds for aware times, or `None` for naive values.
+    ///
+    /// Within [`MIN_TIMEZONE_OFFSET_SECONDS`]..=[`MAX_TIMEZONE_OFFSET_SECONDS`] when set.
+    pub offset_seconds: Option<i32>,
+    /// Optional explicit timezone name for aware times.
+    ///
+    /// Must be `None` when `offset_seconds` is `None`.
+    pub timezone_name: Option<String>,
+    /// Fold flag, 0 or 1.
+    pub fold: u8,
 }
 
 /// A Python `datetime.timedelta` value representing a duration.
@@ -918,13 +1003,64 @@ pub struct MontyTimeDelta {
     pub microseconds: i32,
 }
 
+/// Smallest UTC offset `datetime.timezone` accepts, -23:59:59.
+///
+/// CPython requires an offset strictly inside ±24 hours. Shared with the wire
+/// decoder so a forged offset is rejected at the boundary rather than by the
+/// sandbox-side constructor, which by then can only report a generic bad value.
+pub const MIN_TIMEZONE_OFFSET_SECONDS: i32 = -86_399;
+/// Largest UTC offset `datetime.timezone` accepts, +23:59:59.
+///
+/// See [`MIN_TIMEZONE_OFFSET_SECONDS`].
+pub const MAX_TIMEZONE_OFFSET_SECONDS: i32 = 86_399;
+
 /// A Python `datetime.timezone` fixed-offset timezone.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MontyTimeZone {
-    /// Fixed UTC offset in seconds.
+    /// Fixed UTC offset in seconds, within [`MIN_TIMEZONE_OFFSET_SECONDS`]..=[`MAX_TIMEZONE_OFFSET_SECONDS`].
     pub offset_seconds: i32,
     /// Optional display name.
     pub name: Option<String>,
+}
+
+/// Wall-clock microseconds since midnight, before any offset is applied.
+///
+/// Every field is range-bounded by its type, so this is total and cannot
+/// overflow — unlike the datetime equivalent, which can fail on an invalid date.
+fn monty_time_local_micros(time: &MontyTime) -> i64 {
+    i64::from(time.hour) * 3_600_000_000
+        + i64::from(time.minute) * 60_000_000
+        + i64::from(time.second) * 1_000_000
+        + i64::from(time.microsecond)
+}
+
+/// Comparison key: offset-adjusted microseconds for an aware time, wall-clock
+/// microseconds for a naive one.
+///
+/// The adjusted value is deliberately NOT wrapped into a 24-hour day — a bare
+/// time has no date to carry into, so `time(1, 0, utc)` differs from
+/// `time(23, 0, minus_two)`, as in CPython.
+fn monty_time_key(time: &MontyTime) -> i64 {
+    monty_time_local_micros(time) - i64::from(time.offset_seconds.unwrap_or(0)) * 1_000_000
+}
+
+/// Aware and naive times never compare equal, and `fold` takes no part —
+/// both matching CPython.
+impl PartialEq for MontyTime {
+    fn eq(&self, other: &Self) -> bool {
+        self.offset_seconds.is_some() == other.offset_seconds.is_some() && monty_time_key(self) == monty_time_key(other)
+    }
+}
+
+impl Eq for MontyTime {}
+
+impl Hash for MontyTime {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Must agree with `PartialEq`: awareness and the adjusted key only,
+        // never `fold`.
+        self.offset_seconds.is_some().hash(state);
+        monty_time_key(self).hash(state);
+    }
 }
 
 impl PartialEq for MontyDateTime {

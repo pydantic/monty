@@ -67,13 +67,14 @@ class Q:
 }
 
 #[test]
-fn keyword_form_is_rejected() {
-    // Naming the unsupported form beats the bare decorator's arity error.
+fn unimplemented_option_names_itself() {
+    // `eq` and `frozen` are implemented; the rest are refused by name rather
+    // than accepted and ignored.
     let err = expect_error(
         r"
 from dataclasses import dataclass
 
-@dataclass(frozen=True)
+@dataclass(order=True)
 class F:
     x: int
 ",
@@ -81,9 +82,9 @@ class F:
     assert_snapshot!(err, @r#"
     Traceback (most recent call last):
       File "test.py", line 4, in <module>
-        @dataclass(frozen=True)
-         ~~~~~~~~~~~~~~~~~~~~~~
-    NotImplementedError: dataclass() keyword options (eq, order, frozen, unsafe_hash, ...) are not yet supported
+        @dataclass(order=True)
+         ~~~~~~~~~~~~~~~~~~~~~
+    NotImplementedError: dataclass() does not yet support the order option
     "#);
 }
 
@@ -194,5 +195,40 @@ class B:
         @dataclass
          ~~~~~~~~~
     ValueError: mutable default <class 'Eq'> for field v is not allowed: use default_factory
+    "#);
+}
+
+#[test]
+fn non_class_is_reported_directly() {
+    // CPython's decorator instead trips over `cls.__module__` on the way in, so
+    // the direct report is Monty's, through both spellings of the decorator.
+    let err = expect_error(
+        r"
+from dataclasses import dataclass
+
+dataclass(5)
+",
+    );
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "test.py", line 4, in <module>
+        dataclass(5)
+        ~~~~~~~~~~~~
+    TypeError: dataclass() should be called on a class, not 'int'
+    "#);
+
+    let err = expect_error(
+        r"
+from dataclasses import dataclass
+
+dataclass(frozen=True)('nope')
+",
+    );
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "test.py", line 4, in <module>
+        dataclass(frozen=True)('nope')
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    TypeError: dataclass() should be called on a class, not 'str'
     "#);
 }

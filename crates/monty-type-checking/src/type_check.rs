@@ -2,15 +2,18 @@ use std::{fmt, io::ErrorKind, mem};
 
 use monty_types::{TypeCheckingConfig, TypeCheckingFormat};
 use ruff_db::{
+    Db as _,
     diagnostic::{
         Annotation, Diagnostic, DiagnosticFormat, DiagnosticId, DisplayDiagnosticConfig, DisplayDiagnostics,
         UnifiedFile,
     },
+    file_revision::FileRevision,
     files::{File, system_path_to_file},
-    system::{DbWithTestSystem, DbWithWritableSystem as _, SystemPathBuf},
+    system::{DbWithTestSystem, DbWithWritableSystem as _, SystemPath, SystemPathBuf},
 };
 use ruff_text_size::{TextRange, TextSize};
-use ty_python_semantic::check_file_unwrap;
+use salsa::Setter as _;
+use ty_python_semantic::{Db as _, check_file_unwrap};
 
 use crate::db::{MemoryDb, SRC_ROOT};
 
@@ -34,6 +37,7 @@ impl<'a> SourceFile<'a> {
 pub struct TypeChecker {
     db: MemoryDb,
     touched_files: Vec<TouchedRootFile>,
+    next_revision: u128,
 }
 
 impl TypeChecker {
@@ -83,7 +87,7 @@ impl TypeChecker {
         // and unsupported-syntax errors are included — otherwise malformed input
         // (e.g. deeply nested parentheses that ruff's parser rejects) would silently
         // type-check clean.
-        let mut diagnostics = check_file_unwrap(&self.db, main_file);
+        let mut diagnostics = check_file_unwrap(&self.db, self.db.program_file(main_file));
         diagnostics.retain(filter_diagnostics);
 
         if diagnostics.is_empty() {
@@ -96,15 +100,16 @@ impl TypeChecker {
             // and then adjust each span in the error message to account for the injected stubs import
             if code_offset > 0 {
                 let offset = TextSize::new(code_offset);
+                let source_len = TextSize::try_from(main_source.len()).map_err(to_string)?;
                 for diagnostic in &mut diagnostics {
                     // Adjust spans in main diagnostic annotations (only for spans in the main file)
                     for ann in diagnostic.annotations_mut() {
-                        adjust_annotation_span(ann, main_file, offset);
+                        adjust_annotation_span(ann, main_file, offset, source_len);
                     }
                     // Adjust spans in sub-diagnostic annotations (e.g., "info: Function defined here")
                     for sub in diagnostic.sub_diagnostics_mut() {
                         for ann in sub.annotations_mut() {
-                            adjust_annotation_span(ann, main_file, offset);
+                            adjust_annotation_span(ann, main_file, offset, source_len);
                         }
                     }
                 }
@@ -127,6 +132,7 @@ impl TypeChecker {
     /// so the tracking list must not grow with the number of feeds.
     fn write_root_file(&mut self, path: &SystemPathBuf, source: &str) -> Result<File, String> {
         self.db.write_file(path, source).map_err(to_string)?;
+        self.bump_revisions(path);
 
         // The write above succeeded, so interning the path must succeed — otherwise the
         // file would live in the db but be untracked, poisoning cleanup, hence the panic.
@@ -150,7 +156,32 @@ impl TypeChecker {
             self.touched_files.iter().any(|t| &t.path == path),
             "rewrite_root_file called for untracked path '{path}' — must call write_root_file first",
         );
-        self.db.write_file(path, source).map_err(to_string)
+        self.db.write_file(path, source).map_err(to_string)?;
+        self.bump_revisions(path);
+        Ok(())
+    }
+
+    /// Force a fresh Salsa revision for `path` and its ancestor directories.
+    ///
+    /// `write_file` derives the revision from an mtime, and wasm's clock only
+    /// ticks once a millisecond, so two writes to one path can share a revision
+    /// and the second becomes invisible. Directories need it too — module
+    /// resolution keys off them, so stubs recreated after [`Self::reset`] would
+    /// stay unresolvable.
+    fn bump_revisions(&mut self, path: &SystemPath) {
+        let mut files = Vec::new();
+        let mut current = Some(path);
+        while let Some(path) = current {
+            if let Some(file) = self.db.files().try_system(&self.db, path) {
+                files.push(file);
+            }
+            current = path.parent();
+        }
+        self.next_revision = self.next_revision.wrapping_add(1);
+        for file in files {
+            file.set_revision(&mut self.db)
+                .to(FileRevision::new(self.next_revision));
+        }
     }
 
     /// Remove every file written since the last reset and sync the filesystem
@@ -180,14 +211,19 @@ impl TypeChecker {
 /// This is used when we inject a stub import at the beginning of the source code,
 /// and need to adjust all spans to account for the injected code.
 /// Only adjusts spans that belong to the main file being type-checked.
-fn adjust_annotation_span(ann: &mut Annotation, main_file: File, offset: TextSize) {
+///
+/// The result is clamped into the source: `TextSize` is a `u32`, so a span
+/// inside the injected import would wrap and panic the renderer, killing the
+/// session.
+fn adjust_annotation_span(ann: &mut Annotation, main_file: File, offset: TextSize, source_len: TextSize) {
     let span = ann.get_span();
     // Only adjust spans for the main file (not stubs or other files)
     if let UnifiedFile::Ty(span_file) = span.file()
         && *span_file == main_file
         && let Some(range) = span.range()
     {
-        let new_range = TextRange::new(range.start() - offset, range.end() - offset);
+        let shift = |position: TextSize| position.checked_sub(offset).unwrap_or_default().min(source_len);
+        let new_range = TextRange::new(shift(range.start()), shift(range.end()));
         let new_span = span.clone().with_range(new_range);
         ann.set_span(new_span);
     }
@@ -236,7 +272,7 @@ impl fmt::Display for TypeCheckingDiagnostics<'_> {
 fn filter_diagnostics(d: &Diagnostic) -> bool {
     !(matches!(d.id(), DiagnosticId::InvalidSyntax)
         && matches!(
-            d.primary_message(),
+            d.headline_message(),
             "`await` statement outside of a function" | "`await` outside of an asynchronous function"
         ))
 }

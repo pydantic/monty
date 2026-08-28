@@ -73,6 +73,7 @@ class Plain:
 
 pl = Plain()
 assert repr(pl).startswith('<Plain object at 0x')
+assert int(repr(pl).rsplit(' at ', 1)[1][:-1], 16) == id(pl)
 assert str(pl) == repr(pl)
 assert type(pl).__name__ == 'Plain'
 

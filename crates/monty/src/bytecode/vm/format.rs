@@ -10,7 +10,10 @@ use crate::{
     },
     heap::HeapReadOutput,
     resource_checks::check_repeat_size,
-    types::{PyTrait, date::format_date_strftime, datetime::format_datetime_strftime, str::allocate_string},
+    types::{
+        PyTrait, date::format_date_strftime, datetime::format_datetime_strftime, str::allocate_string,
+        time::format_time_strftime,
+    },
     value::Value,
 };
 
@@ -63,9 +66,9 @@ impl VM<'_> {
         let formatted = if let Some(spec_value) = format_spec {
             defer_drop!(spec_value, this);
 
-            // date/datetime: with no conversion flag, CPython hands the whole
-            // spec to the value's `__format__`, which treats it as a strftime
-            // string (`f"{dt:%Y-%m-%d}"`). Only the runtime (dynamic) spec path
+            // date/datetime/time: with no conversion flag, CPython hands the
+            // whole spec to the value's `__format__`, which treats it as a
+            // strftime string (`f"{dt:%Y-%m-%d}"`). Only the runtime (dynamic) spec path
             // carries the raw string; a valid mini-language spec on a temporal
             // value (rare/nonsensical) still takes the generic route below.
             let temporal = if conversion == 0 && !static_spec {
@@ -81,7 +84,7 @@ impl VM<'_> {
 
                 // Pre-check: reject format specs with huge width before pad_string
                 // allocates an untracked Rust String.
-                check_repeat_size(spec.width, spec.fill.len_utf8(), this.heap.tracker())?;
+                check_repeat_size(spec.width, spec.fill.len_utf8(), &this.heap.tracker)?;
 
                 if conversion == 0 {
                     // No conversion: format the original value through its own
@@ -119,8 +122,8 @@ impl VM<'_> {
         Ok(())
     }
 
-    /// Formats a `date`/`datetime` value by treating the spec as a `strftime`
-    /// string, mirroring CPython's `__format__` for temporal types
+    /// Formats a `date`, `datetime` or `time` value by treating the spec as a
+    /// `strftime` string, mirroring CPython's `__format__` for temporal types
     /// (`f"{dt:%Y-%m-%d}"`).
     ///
     /// Returns `Ok(None)` for any non-temporal value so the caller falls back
@@ -135,7 +138,7 @@ impl VM<'_> {
         let id = *id;
         let temporal = matches!(
             this.heap.read(id),
-            HeapReadOutput::Date(_) | HeapReadOutput::DateTime(_)
+            HeapReadOutput::Date(_) | HeapReadOutput::DateTime(_) | HeapReadOutput::Time(_)
         );
         if !temporal {
             return Ok(None);
@@ -153,6 +156,7 @@ impl VM<'_> {
         let formatted = match this.heap.read(id) {
             HeapReadOutput::Date(d) => format_date_strftime(*d.get(this.heap), spec_str),
             HeapReadOutput::DateTime(d) => format_datetime_strftime(d.get(this.heap), spec_str),
+            HeapReadOutput::Time(t) => format_time_strftime(t.get(this.heap), spec_str),
             _ => unreachable!("temporal-ness checked above"),
         };
         formatted.map(Some)

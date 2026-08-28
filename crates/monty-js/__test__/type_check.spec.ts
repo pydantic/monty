@@ -18,7 +18,6 @@ const unsupportedOperatorDiagnostics = (scriptName: string) =>
     '  | |         |',
     '  | |         Has type `Literal[1]`',
     '  | Has type `Literal["hello"]`',
-    '  |',
     '',
     '',
   ].join('\n')

@@ -27,5 +27,8 @@
 # Python virtualenvs
 .venv/
 
+# mkdocs build output
+/site/
+
 # Local perf planning notes
 /perf-plan.md
