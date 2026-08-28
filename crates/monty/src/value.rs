@@ -2372,6 +2372,25 @@ impl EitherStr {
         }
     }
 
+    /// Re-resolves a heap string to its interned id when the interner already
+    /// knows the text.
+    ///
+    /// Builtin attribute dispatch matches on `StringId`, so a name computed at
+    /// runtime (`getattr(x, 'up' + 'per')`) arrives as [`Heap`](Self::Heap) and
+    /// misses every builtin attribute — while still resolving on instances and
+    /// modules, which compare by text. Interning is a lookup, never an insert,
+    /// so sandboxed code cannot grow the interner by guessing names.
+    #[must_use]
+    pub fn resolve_interned(self, interns: &Interns) -> Self {
+        match self {
+            Self::Heap(s) => match interns.get_string_id_by_name(&s) {
+                Some(id) => Self::Interned(id),
+                None => Self::Heap(s),
+            },
+            already @ Self::Interned(_) => already,
+        }
+    }
+
     /// Checks whether this keyword matches the given interned identifier.
     pub fn matches(&self, target: StringId, interns: &Interns) -> bool {
         match self {

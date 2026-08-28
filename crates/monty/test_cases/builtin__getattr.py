@@ -82,3 +82,15 @@ except TypeError as e:
     attr_name = 'ar' + 'gs'
     args = getattr(e, attr_name)
     assert args == ('dynamic test',)
+
+# === Dynamic names on builtin types ===
+# Builtin attributes dispatch on interned string ids, so a name built at
+# runtime has to be resolved back through the interner before dispatch.
+import datetime
+
+assert getattr(datetime.timezone, 'ut' + 'c') is datetime.timezone.utc
+assert getattr(datetime.time(12, 30), 'ho' + 'ur') == 12
+assert getattr(datetime.date(2024, 6, 15), 'mon' + 'th') == 6
+assert getattr(datetime.timedelta(hours=1), 'sec' + 'onds') == 3600
+# a name the interner has never seen still misses, rather than erroring oddly
+assert getattr(datetime.date(2024, 6, 15), 'no' + 'pe', 'MISSING') == 'MISSING'

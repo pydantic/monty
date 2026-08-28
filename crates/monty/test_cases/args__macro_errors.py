@@ -834,3 +834,24 @@ try:
     assert False, 'crc32() with a keyword should raise'
 except TypeError as e:
     assert str(e) == 'binascii.crc32() takes no keyword arguments'
+
+# === check_zero_args: keywords are reported before the positional count ===
+# CPython's `PyArg_NoKeywords` runs first, so a lone keyword never reports
+# `(0 given)`, and a keyword alongside positionals still wins.
+try:
+    datetime.date(2020, 1, 1).isoformat(timespec='minutes')
+    assert False, 'isoformat(timespec=) should raise'
+except TypeError as e:
+    assert str(e) == 'date.isoformat() takes no keyword arguments'
+
+try:
+    datetime.date(2020, 1, 1).isoformat(1, bogus=2)
+    assert False, 'isoformat(1, bogus=) should raise'
+except TypeError as e:
+    assert str(e) == 'date.isoformat() takes no keyword arguments'
+
+try:
+    datetime.date(2020, 1, 1).isoformat(1)
+    assert False, 'isoformat(1) should raise'
+except TypeError as e:
+    assert str(e) == 'date.isoformat() takes no arguments (1 given)'

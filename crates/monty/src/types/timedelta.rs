@@ -460,7 +460,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
             args.check_zero_args("timedelta.total_seconds", vm.heap)?;
             return Ok(CallResult::Value(Value::Float(total_seconds(&td))));
         }
-        Err(ExcType::attribute_error(Type::TimeDelta, attr.as_str(vm.interns)))
+        Err(ExcType::attribute_error_method(Type::TimeDelta, attr, args, vm))
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {

@@ -38,7 +38,7 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         too_many => return Err(ExcType::type_error_at_most("getattr", 3, too_many.len())),
     };
 
-    let Some(attr) = name.as_either_str(vm.heap) else {
+    let Some(attr) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
         let ty = name.py_type_name(vm);
         return Err(
             SimpleException::new_msg(ExcType::TypeError, format!("attribute name must be string, not '{ty}'")).into(),

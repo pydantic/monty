@@ -46,10 +46,26 @@ impl ArgValues {
         match self {
             Self::Empty => Ok(()),
             other => {
+                // CPython checks keywords first and reports them separately, so a
+                // stray kwarg is never described as `(0 given)`.
+                let has_kwargs = other.has_kwargs();
                 let count = other.count();
                 other.drop_with(heap);
-                Err(ExcType::type_error_no_args(name, count))
+                if has_kwargs {
+                    Err(ExcType::type_error_no_kwargs(name))
+                } else {
+                    Err(ExcType::type_error_no_args(name, count))
+                }
             }
+        }
+    }
+
+    /// Whether any keyword argument was passed.
+    #[must_use]
+    fn has_kwargs(&self) -> bool {
+        match self {
+            Self::Empty | Self::One(_) | Self::Two(_, _) => false,
+            Self::Kwargs(kwargs) | Self::ArgsKargs { kwargs, .. } => !kwargs.is_empty(),
         }
     }
 

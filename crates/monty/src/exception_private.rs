@@ -11,7 +11,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     fstring::{FormatError, ascii_escape},
-    heap::{HeapData, HeapRead},
+    heap::{DropWithContext, HeapData, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     source_map::{SourceMap, StackFrameExt},
@@ -53,6 +53,19 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
         })
+    }
+
+    /// Creates an AttributeError for an unknown *method*, releasing the
+    /// arguments the call has already evaluated.
+    ///
+    /// Prefer this over [`attribute_error`](Self::attribute_error) anywhere the
+    /// arguments are already owned: that one releases nothing, so calling it from
+    /// a `py_call_attr` fall-through leaks a reference per call — something
+    /// sandboxed code can repeat in a loop.
+    #[must_use]
+    fn attribute_error_method(type_name: impl Display, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunError {
+        args.drop_with(vm);
+        Self::attribute_error(type_name, attr.as_str(vm.interns))
     }
 
     /// Creates an AttributeError for a missing attribute on a class object.
@@ -1117,7 +1130,10 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates a TypeError for functions that don't accept keyword arguments.
     ///
-    /// Matches CPython's format: `TypeError: {name}() takes no keyword arguments`
+    /// Matches CPython's `PyArg_NoKeywords` format: `TypeError: {name}() takes
+    /// no keyword arguments`. CPython checks keywords before the positional
+    /// count, so a no-argument method given only a kwarg reports this rather
+    /// than `(0 given)`.
     #[must_use]
     fn type_error_no_kwargs(name: &str) -> RunError {
         SimpleException::new_msg(ExcType::TypeError, format!("{name}() takes no keyword arguments")).into()

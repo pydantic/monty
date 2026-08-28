@@ -48,3 +48,11 @@ try:
     assert False, 'hasattr() with None name should raise TypeError'
 except TypeError as e:
     assert str(e) == "attribute name must be string, not 'NoneType'", str(e)
+
+# === Dynamic names on builtin types ===
+# Same interner round-trip as `getattr`: a runtime-built name must resolve.
+import datetime
+
+assert hasattr(datetime.timezone, 'ut' + 'c')
+assert hasattr(datetime.time(12, 30), 'ho' + 'ur')
+assert not hasattr(datetime.time(12, 30), 'no' + 'pe')

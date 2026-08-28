@@ -26,7 +26,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type,
@@ -572,12 +572,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
                 // Only fixed-offset zones exist, and none of them observes DST.
                 Ok(CallResult::Value(Value::None))
             }
-            _ => {
-                // The arguments were already evaluated and are owned by us, so an
-                // unknown attribute must still release them.
-                args.drop_with(vm);
-                Err(ExcType::attribute_error(Type::Time, attr.as_str(vm.interns)))
-            }
+            _ => Err(ExcType::attribute_error_method(Type::Time, attr, args, vm)),
         }
     }
 
