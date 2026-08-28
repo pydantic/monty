@@ -619,8 +619,7 @@ jobs:
             pgo-runtime: false
           - os: windows
             target: x86_64
-            pgo-runtime: true
-            pgo-args: --pgo -i python
+            pgo-runtime: false
           - os: windows
             target: i686
             pgo-runtime: false
