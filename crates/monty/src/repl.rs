@@ -349,16 +349,20 @@ impl MontyRepl {
                     let old = mem::replace(&mut vm.globals[args_slot], args_tuple);
                     old.drop_with(vm);
 
-                    match vm.run_module() {
-                        Ok(FrameExit::Return(value)) => Ok(MontyObject::new(value, vm)),
-                        Ok(exit) => Err(vm
-                            .unsupported_frame_exit("MontyRepl::call_function", exit)
-                            .into_python_exception(&executor.interns, |fname| {
-                                self.sources.get(fname).map(String::as_str)
-                            })),
-                        Err(error) => Err(error.into_python_exception(&executor.interns, |fname| {
-                            self.sources.get(fname).map(String::as_str)
-                        })),
+                    let mut run_result = vm.run_module();
+                    loop {
+                        run_result = match run_result {
+                            Ok(FrameExit::Return(value)) => break Ok(MontyObject::new(value, vm)),
+                            Ok(exit) => {
+                                let error = vm.unsupported_frame_exit("MontyRepl::call_function", exit);
+                                vm.resume_with_exception(error)
+                            }
+                            Err(error) => {
+                                break Err(error.into_python_exception(&executor.interns, |fname| {
+                                    self.sources.get(fname).map(String::as_str)
+                                }));
+                            }
+                        };
                     }
                 }
                 Err(error) => Err(error),

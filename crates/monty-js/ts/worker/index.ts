@@ -1,8 +1,8 @@
 // The wasm worker path's public surface (`@pydantic/monty/wasm`).
 //
 // The canonical API is `Monty.create(options)`. Lower-level consumers can call
-// `createWorkerPool(module, options)` when they need to supply a compiled
-// `WebAssembly.Module` themselves.
+// `createWorkerPool(modules, options)` when they need to supply the compiled
+// core modules of the component themselves.
 //
 // `createWorkerPool` picks the backend: a browser Web Worker where
 // `Worker` exists (off-thread + a hard-kill watchdog), else in-process wasm as
@@ -11,6 +11,7 @@
 // (separate so browser bundles never pull in `node:worker_threads`).
 
 import { browserWorkerFactory } from './browserFactory.js'
+import type { ComponentModules } from './host.js'
 import { type WorkerFactory, WorkerPool, inProcessFactory } from './pool.js'
 
 export interface WasmPoolOptions {
@@ -33,12 +34,12 @@ export interface WasmPoolOptions {
 }
 
 /** Creates a pool over the best backend for this environment. */
-export async function createWorkerPool(module: WebAssembly.Module, options: WasmPoolOptions = {}): Promise<WorkerPool> {
+export async function createWorkerPool(modules: ComponentModules, options: WasmPoolOptions = {}): Promise<WorkerPool> {
   const requestTimeoutMs = options.requestTimeout === undefined ? undefined : options.requestTimeout * 1000
   const factory: WorkerFactory =
     'Worker' in globalThis
-      ? browserWorkerFactory(module, { requestTimeoutMs }, options.workerUrl)
-      : inProcessFactory(module)
+      ? browserWorkerFactory(modules, { requestTimeoutMs }, options.workerUrl)
+      : inProcessFactory(modules)
   return WorkerPool.create(factory, {
     minWorkers: options.minProcesses,
     maxWorkers: options.maxProcesses,
@@ -51,7 +52,7 @@ export class Monty {
   static async create(_options: WasmPoolOptions = {}): Promise<WorkerPool> {
     throw new Error(
       'Monty.create could not auto-load the monty wasm module in this environment; ' +
-        'compile it yourself and call createWorkerPool(module) instead',
+        'compile it yourself and call createWorkerPool(modules) instead',
     )
   }
 }
@@ -102,7 +103,7 @@ export { WorkerTransport } from './transport.js'
 export type { ResourceLimits, WorkerSessionConfig } from './transport.js'
 export type { AssertMessageAnnotations, TypeCheckFormat } from '../options.js'
 export { WasmHost, inProcessDispatcher } from './host.js'
-export type { Dispatcher } from './host.js'
+export type { ComponentModules, Dispatcher } from './host.js'
 export { WorkerChannel } from './channel.js'
 export type { WorkerChannelOptions, WorkerLike } from './channel.js'
 export { browserWorkerFactory } from './browserFactory.js'

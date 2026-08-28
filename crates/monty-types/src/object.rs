@@ -196,6 +196,18 @@ impl MontyObject {
         name.parse::<BuiltinsFunctions>().ok().map(Self::BuiltinFunction)
     }
 
+    /// Returns the fixed host footprint charged for each decoded object.
+    #[must_use]
+    pub const fn host_base_size() -> usize {
+        size_of::<Self>()
+    }
+
+    /// Returns the host footprint of one owned string in a metadata vector.
+    #[must_use]
+    pub const fn host_metadata_string_size(value: &str) -> usize {
+        size_of::<String>().saturating_add(value.len())
+    }
+
     /// Shallow host footprint of a freshly decoded `obj`: the fixed [`MontyObject`]
     /// size plus any leaf payload it owns *directly* (string/bytes/bigint bytes, and
     /// the `Vec<String>` field names of structured values, which aren't themselves
@@ -203,13 +215,8 @@ impl MontyObject {
     /// excluded — each charges its own size via `monty-proto`'s `decode_field`, so a list charges
     /// 88 bytes here.
     pub fn host_size(&self) -> usize {
-        /// Fixed size of one `MontyObject` (88 bytes today) — the per-element cost
-        /// that makes cheap wire elements amplify on the host.
-        const BASE: usize = size_of::<MontyObject>();
-        /// `String` header counted per owned metadata string; content dominates.
-        const STR_OVERHEAD: usize = size_of::<String>();
-
-        let names_len = |names: &[String]| -> usize { names.iter().map(|s| STR_OVERHEAD + s.len()).sum() };
+        let names_len =
+            |names: &[String]| -> usize { names.iter().map(|value| Self::host_metadata_string_size(value)).sum() };
         let name_len = |name: &Option<String>| -> usize { name.as_ref().map_or(0, String::len) };
 
         let payload = match self {
@@ -237,7 +244,35 @@ impl MontyObject {
             Self::TimeZone(tz) => name_len(&tz.name),
             _ => 0,
         };
-        BASE + payload
+        Self::host_base_size().saturating_add(payload)
+    }
+
+    /// Returns the recursively expanded host footprint used by transport budgets.
+    ///
+    /// Unlike [`Self::host_size`], this includes every value stored in a container.
+    #[must_use]
+    pub fn deep_host_size(&self) -> usize {
+        let mut size = self.host_size();
+        match self {
+            Self::List(items)
+            | Self::Tuple(items)
+            | Self::Set(items)
+            | Self::FrozenSet(items)
+            | Self::NamedTuple { values: items, .. } => {
+                for item in items {
+                    size = size.saturating_add(item.deep_host_size());
+                }
+            }
+            Self::Dict(pairs) | Self::Dataclass { attrs: pairs, .. } => {
+                for (key, value) in pairs {
+                    size = size
+                        .saturating_add(key.deep_host_size())
+                        .saturating_add(value.deep_host_size());
+                }
+            }
+            _ => {}
+        }
+        size
     }
 
     /// Returns the Python `repr()` string for this value.

@@ -1,93 +1,78 @@
-// Loads the lean wasip1 worker module under a single-threaded WASI shim and
-// runs it one protocol turn at a time.
-//
-// The module (`crates/monty-wasm-runtime`) is a WASI reactor exporting
-// `monty_dispatch_turn`: it reads one framed request from stdin and writes the
-// turn's framed events to stdout. This host owns the instance (so session state
-// persists across turns) and swaps the stdin/stdout buffers around each call.
-//
-// In Node this drives the module directly; in a browser the same code runs
-// inside a Web Worker. Nothing here is napi- or pool-specific.
+// Hosts the WIT-defined Monty component inside a Web Worker, a Node worker
+// thread, or the in-process fallback. Each host owns one component instance so
+// its protocol child and REPL state persist across turns.
 
-import { File, OpenFile, WASI } from '@bjorn3/browser_wasi_shim'
+import { WASIShim } from '@bytecodealliance/preview2-shim/instantiation'
 
-/** Status codes returned by the module's `monty_dispatch_turn` export. */
-export const TurnStatus = {
-  Continue: 0,
-  Shutdown: 1,
-  IoError: 2,
-} as const
+import { instantiate } from './component/monty.component.js'
+import type {
+  DispatchResult as ComponentDispatchResult,
+  Request as ComponentRequest,
+} from './component/monty.component.js'
 
-interface WasmExports {
-  monty_dispatch_turn(): number
-  monty_decode_child_events(): number
-}
+/** Core modules emitted by Jco for one transpiled WebAssembly component. */
+export type ComponentModules = Readonly<Record<string, WebAssembly.Module>>
 
-/**
- * Sends one framed request and resolves to the turn's framed reply. The
- * abstraction `WorkerTransport` drives, so the same transport works over an
- * in-process [`WasmHost`] (see [`inProcessDispatcher`]) and over a Web Worker
- * `postMessage` channel.
- */
-export type Dispatcher = (
-  requestFrame: Uint8Array,
-) => Promise<{ reply: Uint8Array; status: number; events?: DecodedChildEvent[] }>
+/** Semantic request accepted by the Rust component. */
+export type DispatchRequest = ComponentRequest
+
+/** Semantic events and worker status returned by the Rust component. */
+export type DispatchResult = ComponentDispatchResult
+
+/** Sends one semantic request to a persistent component instance. */
+export type Dispatcher = (request: DispatchRequest) => Promise<DispatchResult>
 
 /** Adapts a synchronous in-process [`WasmHost`] to the async [`Dispatcher`]. */
 export function inProcessDispatcher(host: WasmHost): Dispatcher {
-  return (requestFrame) => Promise.resolve(host.dispatch(requestFrame))
+  return (request) => Promise.resolve(host.dispatch(request))
 }
 
-/** One instantiated worker module; reused across turns. */
+/** One instantiated Monty component, retaining its child across turns. */
 export class WasmHost {
-  private constructor(
-    private readonly wasi: WASI,
-    private readonly exports: WasmExports,
-  ) {}
+  private constructor(private readonly dispatchComponent: (request: DispatchRequest) => DispatchResult) {}
 
-  /** Instantiates the module and runs its WASI reactor initializer. */
-  static async create(module: WebAssembly.Module): Promise<WasmHost> {
-    const wasi = new WASI([], [], [stdio(), stdio(), stdio()])
-    const instance = await WebAssembly.instantiate(module, { wasi_snapshot_preview1: wasi.wasiImport })
-    // browser_wasi_shim types `initialize` against its own narrower instance
-    // shape; a core `WebAssembly.Instance` satisfies it structurally.
-    wasi.initialize(instance as unknown as Parameters<WASI['initialize']>[0])
-    return new WasmHost(wasi, instance.exports as unknown as WasmExports)
+  /** Instantiates all core modules and links their capability-limited WASI imports. */
+  static async create(modules: ComponentModules): Promise<WasmHost> {
+    const component = await instantiate((path) => getModule(modules, path), wasiImports())
+    return new WasmHost(component.worker.dispatch)
   }
 
-  /**
-   * Runs one turn: feeds `requestFrame` on stdin, returns the concatenated
-   * framed reply events from stdout and the turn's status code.
-   */
-  dispatch(requestFrame: Uint8Array): { reply: Uint8Array; status: number; events: DecodedChildEvent[] } {
-    const { output: reply, status } = this.callWithStdio(requestFrame, () => this.exports.monty_dispatch_turn())
-    const events = status === TurnStatus.IoError ? [] : this.decodeChildEvents(reply)
-    return { reply, status, events }
-  }
-
-  /** Decodes framed `ChildEvent`s with the worker module's Rust protobuf code. */
-  decodeChildEvents(reply: Uint8Array): DecodedChildEvent[] {
-    const { output, status } = this.callWithStdio(reply, () => this.exports.monty_decode_child_events())
-    if (status !== TurnStatus.Continue) {
-      throw new Error('failed to decode wasm worker reply')
-    }
-    return JSON.parse(new TextDecoder().decode(output)) as DecodedChildEvent[]
-  }
-
-  private callWithStdio(input: Uint8Array, call: () => number): { output: Uint8Array; status: number } {
-    this.wasi.fds[0] = new OpenFile(new File(Array.from(input)))
-    const out = new File([])
-    this.wasi.fds[1] = new OpenFile(out)
-    const status = call()
-    return { output: out.data, status }
+  /** Runs one turn entirely through the semantic component interface. */
+  dispatch(request: DispatchRequest): DispatchResult {
+    return this.dispatchComponent(request)
   }
 }
 
-export interface DecodedChildEvent {
-  kind: number
-  bytes: number[]
+/** Creates isolated WASI imports with no host filesystem, environment, or network. */
+function wasiImports(): Record<string, unknown> {
+  const imports = new WASIShim({ sandbox: { preopens: {}, env: {}, args: [] } }).getImportObject()
+  return {
+    'wasi:cli/environment': imports['wasi:cli/environment'],
+    'wasi:cli/exit': {
+      exit: denyProcessExit,
+      exitWithCode: denyProcessExit,
+    },
+    'wasi:cli/stderr': imports['wasi:cli/stderr'],
+    'wasi:cli/stdin': imports['wasi:cli/stdin'],
+    'wasi:cli/stdout': imports['wasi:cli/stdout'],
+    'wasi:clocks/monotonic-clock': imports['wasi:clocks/monotonic-clock'],
+    'wasi:clocks/wall-clock': imports['wasi:clocks/wall-clock'],
+    'wasi:filesystem/preopens': imports['wasi:filesystem/preopens'],
+    'wasi:filesystem/types': imports['wasi:filesystem/types'],
+    'wasi:io/error': imports['wasi:io/error'],
+    'wasi:io/streams': imports['wasi:io/streams'],
+    'wasi:random/random': imports['wasi:random/random'],
+  }
 }
 
-function stdio(): OpenFile {
-  return new OpenFile(new File([]))
+/** Turns a guest exit into a component failure instead of terminating Node. */
+function denyProcessExit(): never {
+  throw new Error('Monty wasm component requested process exit')
+}
+
+/** Resolves Jco's relative core-module path against the precompiled module map. */
+function getModule(modules: ComponentModules, path: string): WebAssembly.Module {
+  const module = modules[path] ?? modules[path.replace(/^\.\//, '')]
+  if (!module) throw new Error(`component core module is missing: ${path}`)
+  return module
 }

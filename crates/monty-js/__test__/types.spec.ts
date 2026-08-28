@@ -2,6 +2,7 @@ import { test } from 'vitest'
 import { t } from './assertions.js'
 
 import { setupPool } from './helpers.js'
+import { encodeValue } from '../ts/worker/value.js'
 
 const { run } = setupPool()
 
@@ -263,6 +264,38 @@ test('tuple containing set', async () => {
   t.true(tuple[0] instanceof Set)
   t.deepEqual(tuple[0], new Set([1, 2]))
   t.is(tuple[1], 'hello')
+})
+
+// =============================================================================
+// Datetime tests
+// =============================================================================
+
+test('datetime input preserves timezone presence', () => {
+  const datetime = {
+    __monty_type__: 'DateTime',
+    year: 2020,
+    month: 1,
+    day: 2,
+    hour: 3,
+    minute: 4,
+    second: 5,
+    microsecond: 6,
+  }
+  const expected = {
+    root: 0,
+    nodes: [
+      {
+        tag: 'datetime',
+        val: { year: 2020, month: 1, day: 2, hour: 3, minute: 4, second: 5, microsecond: 6 },
+      },
+    ],
+  }
+  t.deepEqual(encodeValue({ ...datetime, offsetSeconds: null }), expected)
+  t.deepEqual(encodeValue(datetime), expected)
+  t.throws(() => encodeValue({ ...datetime, timezoneName: 'orphaned' }), {
+    instanceOf: TypeError,
+    message: 'MontyDateTime timezoneName requires offsetSeconds',
+  })
 })
 
 // =============================================================================

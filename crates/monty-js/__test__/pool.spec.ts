@@ -6,12 +6,28 @@ import { join } from 'node:path'
 
 import { t } from './assertions.js'
 import { skipIfBrowser } from './env.js'
+import { WorkerTransport } from '../ts/worker/transport.js'
 
 import { Monty, MontyCrashedError, MontyRuntimeError, MountDir } from '@pydantic/monty/node'
 
 // =============================================================================
 // Pool lifecycle
 // =============================================================================
+
+test('wasm transport discards a component after shutdown', async () => {
+  let dispatches = 0
+  const transport = await WorkerTransport.create(async () => {
+    dispatches += 1
+    return { status: 'shutdown', events: [{ tag: 'ok' }] }
+  })
+  let reusable: boolean | undefined
+  transport.onFinish = (value) => {
+    reusable = value
+  }
+  await transport.finish()
+  t.is(reusable, false)
+  t.is(dispatches, 1)
+})
 
 test('checkout after close rejects', async (ctx) => {
   skipIfBrowser(ctx)

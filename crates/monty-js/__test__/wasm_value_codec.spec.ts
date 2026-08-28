@@ -1,8 +1,6 @@
-// The wasm path decodes values in TypeScript (`ts/worker/value.ts`) rather than
-// through napi, so its codec is a second, independent implementation of the
-// `monty-proto` wire format. `datetime.time` exercises the parts most easily got
-// wrong: implicit-presence scalars that vanish at zero, explicit-presence
-// `offsetSeconds`/`timezoneName`, and `fold` sitting after them at field 7.
+// The wasm path converts component value arenas in TypeScript rather than
+// through napi. `datetime.time` exercises optional timezone presence, scalar
+// defaults, and `fold` across that boundary.
 
 import { test } from 'vitest'
 
@@ -15,7 +13,7 @@ test('a time decodes over the wasm transport', async (ctx) => {
   await using pool = await Monty.create()
   await using session = await pool.checkout({})
 
-  // every field at its default: only the submessage key reaches the wire
+  // Every field is at its default.
   t.deepEqual(await session.feedRun('import datetime\ndatetime.time(0, 0)'), {
     __monty_type__: 'Time',
     hour: 0,
@@ -55,9 +53,7 @@ test('a time round-trips through the wasm transport', async (ctx) => {
   t.deepEqual(await session.feedRun('x', { inputs: { x: time } }), time)
   t.is(await session.feedRun('x.isoformat()', { inputs: { x: time } }), '01:02:03.000004+02:00')
 
-  // A zero offset is what explicit presence is for: it is the only thing making
-  // this time aware, so encoding it away as a proto3 default would hand back a
-  // naive time that formats without a suffix.
+  // A zero offset is the only thing distinguishing this from a naive time.
   const utc = {
     __monty_type__: 'Time',
     hour: 12,

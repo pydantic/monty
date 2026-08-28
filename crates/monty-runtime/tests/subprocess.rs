@@ -379,6 +379,78 @@ fn os_call_bubbles_to_parent_without_mounts() {
     child.shutdown();
 }
 
+/// A suspension announcement is *lent* its payload rather than given a copy of
+/// it, so the child must have taken it back by the time anything else can see
+/// the suspension. Dumping straight after the announcement is what proves it:
+/// the dump is built from the stored call, so a payload left behind in the
+/// event would come back from `Load` as an argument-less call.
+#[test]
+fn suspended_call_keeps_its_arguments_for_a_dump() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let (_, event) = child.feed("ext('hello', 1, key='value')");
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected FunctionCall, got {event:?}");
+    };
+    assert_eq!(
+        call.args,
+        vec![MontyObject::String("hello".to_owned()), MontyObject::Int(1)]
+    );
+
+    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+        panic!("expected DumpResult");
+    };
+    drop(child);
+
+    let mut fresh = ChildProc::spawn();
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    let (_, event) = fresh.recv_turn();
+    let pb::child_event::Kind::FunctionCall(restored) = event else {
+        panic!("expected re-emitted FunctionCall after Load, got {event:?}");
+    };
+    assert_eq!(restored.args, call.args);
+    assert_eq!(restored.kwargs, call.kwargs);
+    assert_eq!(restored.function_name, "ext");
+    fresh.shutdown();
+}
+
+/// The same loan applies to an `OsCall`'s payload, which is swapped out for a
+/// `GetEnviron` placeholder while the announcement is on the wire — a lost
+/// payload would come back from `Load` as that placeholder rather than the
+/// write.
+#[test]
+fn suspended_os_call_keeps_its_payload_for_a_dump() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let (_, event) = child.feed("from pathlib import Path\nPath('/data.txt').write_text('contents')");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+
+    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+        panic!("expected DumpResult");
+    };
+    drop(child);
+
+    let mut fresh = ChildProc::spawn();
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    let (_, event) = fresh.recv_turn();
+    let pb::child_event::Kind::OsCall(restored) = event else {
+        panic!("expected re-emitted OsCall after Load, got {event:?}");
+    };
+    assert_eq!(restored.call, call.call);
+    assert_eq!(
+        restored.call,
+        Some(pb::os_call::Call::WriteText(pb::os_call::TextWrite {
+            path: "/data.txt".to_owned(),
+            data: "contents".to_owned(),
+        }))
+    );
+    fresh.shutdown();
+}
+
 #[test]
 fn os_call_error_resume_carries_exception() {
     let mut child = ChildProc::spawn();
@@ -510,6 +582,84 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
         child.shutdown();
     }
+}
+
+/// Announcing a suspension must not cost extra copies of the value being
+/// announced. A host-call argument sized as a *fraction of the limit* is what
+/// makes this a regression test for that amplification rather than for one
+/// absolute number: at three copies (interpreter value, converted args, encode
+/// buffer) a 3/8 argument fits, at four it crossed the allocator's hard ceiling
+/// and the worker was killed mid-announcement.
+#[test]
+fn large_host_call_arguments_survive_being_announced() {
+    const LIMIT: usize = 8 * 1024 * 1024;
+    const ARG: usize = LIMIT * 3 / 8;
+
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(LIMIT as u64));
+    let (_, event) = child.feed(&format!("s = 'A' * {ARG}\nfoobar(s)"));
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected FunctionCall, got {event:?}");
+    };
+    assert_eq!(call.args.len(), 1);
+    assert_eq!(call.args[0], MontyObject::String("A".repeat(ARG)));
+
+    // the session is still usable afterwards, i.e. nothing overshot into a
+    // soft-limit `MemoryError` on the next checkpoint either
+    let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::ReturnValue(int_value(7)));
+    assert_eq!(expect_complete(event), MontyObject::Int(7));
+    assert_eq!(
+        child.feed_complete("len(s)"),
+        MontyObject::Int(i64::try_from(ARG).unwrap())
+    );
+    child.shutdown();
+}
+
+/// The asymmetry the amplification produced: a value small enough to *return*
+/// to the host was not necessarily small enough to *pass* to a host function,
+/// because only the announcement path cloned it. Both directions now cost the
+/// same, so one limit governs both.
+#[test]
+fn a_returnable_value_can_also_be_passed_to_a_host_function() {
+    const LIMIT: usize = 8 * 1024 * 1024;
+    const ARG: usize = LIMIT * 3 / 8;
+
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(LIMIT as u64));
+    child.feed_complete(&format!("s = 'A' * {ARG}"));
+    // the same binding, first returned to the host...
+    assert_eq!(string_len(&child.feed_complete("s")), ARG);
+
+    // ...then passed to a host function, which must cost no more
+    let (_, event) = child.feed("foobar(s)");
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected FunctionCall, got {event:?}");
+    };
+    assert_eq!(string_len(&call.args[0]), ARG);
+    child.shutdown();
+}
+
+/// The length of a `str` value, for assertions that care only about its size —
+/// printing a multi-megabyte string on failure helps nobody.
+#[track_caller]
+fn string_len(value: &MontyObject) -> usize {
+    match value {
+        MontyObject::String(s) => s.len(),
+        other => panic!("expected a string, got {other:?}"),
+    }
+}
+
+/// The fix must not have quietly stopped enforcing: an argument that genuinely
+/// does not fit still fails as a recoverable session error rather than taking
+/// the worker with it.
+#[test]
+fn host_call_arguments_over_the_limit_still_fail_gracefully() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    let (_, event) = child.feed("foobar('A' * (16 * 1024 * 1024))");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
 }
 
 /// A bounded deque retains at most `maxlen` items, so extending it from a huge

@@ -7,18 +7,17 @@ same public API to a Web Worker pool backed by a lean wasm build.
 [Monty](https://github.com/pydantic/monty) is a sandboxed Python interpreter
 written in Rust. A sandbox process can never be made fully crash-proof against
 memory errors (stack overflow, allocator aborts), so the native binding
-(`@pydantic/monty`, `@pydantic/monty/node`) _only_ runs the interpreter in
-worker subprocesses: a worker that crashes raises `MontyCrashedError`, is
-replaced by the pool, and your Node.js process is never at risk. The wasm entry
-(`@pydantic/monty/wasm`, and the `browser` export) has no subprocess to use — it
-runs off-thread in a `Worker` in the browser, and in-process under Node, which
-has no global `Worker`.
+(`@pydantic/monty`, `@pydantic/monty/node`) only runs the interpreter in worker
+subprocesses. A worker that crashes raises `MontyCrashedError` and is replaced
+by the pool. The wasm entry (`@pydantic/monty/wasm`, and the `browser` export)
+runs off-thread in a `Worker` in browsers, but in-process under Node, which has
+no global `Worker`.
 
 The native binding and the `monty` binary ship together via platform-specific
 npm packages installed automatically (like esbuild). Browser builds use the
 package `browser` export and never import the napi loader; they run the sandbox
-in a Web Worker (`wasm32-wasip1`) with the same pool/session API. Advanced
-Node-only helpers are available from `@pydantic/monty/node`, and wasm-specific
+in a Web Worker as a WIT-defined WASI 0.2 component with the same pool/session
+API. Advanced Node-only helpers are available from `@pydantic/monty/node`, and wasm-specific
 factories from `@pydantic/monty/wasm`.
 
 ## Installation

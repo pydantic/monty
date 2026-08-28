@@ -1,678 +1,355 @@
-// `MontyObject` <-> JS value conversion for the wasm worker transport.
+// JavaScript value conversion for the semantic WASM component boundary.
 //
-// This mirrors the napi conversion in `crates/monty-js/src/convert.rs`: the
-// browser path must hand back exactly the same JS shapes the native path does,
-// so `MontySession`'s drive loop and user code see no difference between
-// transports. Native JS types are used where they exist (number/BigInt/string/
-// Buffer/Array/Map/Set); the `__tuple__` marker distinguishes tuples from
-// lists and `__monty_type__` marks types with no JS equivalent.
-//
-// Scope: scalars, containers, the datetime family, named tuples (→ plain
-// tuple), dataclasses, file handles, function values (→ name), and the marker
-// types. See `convert.rs` for the full mapping.
+// WIT cannot express recursive types, so values cross as a flat node arena.
+// This file maps normal JavaScript values to and from that arena; all protobuf
+// encoding, decoding, validation, and protocol dispatch now stays in Rust.
 
 import { MontyFileHandle, canonicalFileMode, validateFilePosition } from '../types.js'
-import { Reader, Writer, bitsToDouble, readInt32, unzigzag } from './proto.js'
-
-// MontyObject oneof field numbers (monty.v1.MontyObject).
-const Tag = {
-  Ellipsis: 1,
-  None: 2,
-  Bool: 3,
-  Int: 4,
-  BigInt: 5,
-  Float: 6,
-  Str: 7,
-  Bytes: 8,
-  List: 9,
-  Tuple: 10,
-  NamedTuple: 11,
-  Dict: 12,
-  Set: 13,
-  FrozenSet: 14,
-  Date: 15,
-  DateTime: 16,
-  TimeDelta: 17,
-  TimeZone: 18,
-  Exception: 19,
-  Type: 20,
-  BuiltinFunction: 21,
-  Path: 22,
-  FileHandle: 23,
-  Dataclass: 24,
-  Function: 25,
-  Repr: 26,
-  Cycle: 27,
-  NotImplemented: 29,
-  Time: 30,
-} as const
+import type { NodePair, Value as ComponentValue, ValueNode } from './component/monty.component.js'
 
 const I64_MIN = -(2n ** 63n)
 const I64_MAX = 2n ** 63n - 1n
 const SAFE = BigInt(Number.MAX_SAFE_INTEGER)
+const TYPE_MARKER = '__monty_type__'
 
 /** A non-enumerable marker stamped on arrays that came from Python tuples. */
 export const TUPLE_MARKER = '__tuple__'
 
-// === encode: JS -> MontyObject message bytes ===
-
-/** Encodes a JS value to the bytes of one `MontyObject` message. */
-export function encodeMontyObject(value: unknown): Uint8Array {
-  const w = new Writer()
-  writeKind(w, value)
-  return w.finish()
+/** Converts a JavaScript value into the component's flat value arena. */
+export function encodeValue(value: unknown): ComponentValue {
+  const nodes: ValueNode[] = []
+  const root = pushValue(value, nodes)
+  return { root, nodes }
 }
 
-function writeKind(w: Writer, value: unknown): void {
+/** Converts a component value arena into its public JavaScript shape. */
+export function decodeValue(value: ComponentValue): unknown {
+  return readValue(value.root, value.nodes, new Set())
+}
+
+/** Appends one JavaScript value and its children, returning its node index. */
+function pushValue(value: unknown, nodes: ValueNode[]): number {
+  let node: ValueNode
   if (value === null || value === undefined) {
-    w.lengthDelimited(Tag.None, EMPTY)
+    node = { tag: 'none' }
   } else if (typeof value === 'boolean') {
-    w.bool(Tag.Bool, value)
+    node = { tag: 'boolean', val: value }
   } else if (typeof value === 'number') {
-    if (Number.isInteger(value) && (Number.isSafeInteger(value) || value === Number(I64_MIN))) {
-      w.sint64(Tag.Int, BigInt(value))
-    } else {
-      w.double(Tag.Float, value)
-    }
+    node =
+      Number.isInteger(value) && (Number.isSafeInteger(value) || value === Number(I64_MIN))
+        ? { tag: 'integer', val: BigInt(value) }
+        : { tag: 'float', val: value }
   } else if (typeof value === 'bigint') {
-    if (value >= I64_MIN && value <= I64_MAX) {
-      w.sint64(Tag.Int, value)
-    } else {
-      w.lengthDelimited(Tag.BigInt, encodeBigInt(value))
-    }
+    node =
+      value >= I64_MIN && value <= I64_MAX ? { tag: 'integer', val: value } : { tag: 'bigint', val: value.toString() }
   } else if (typeof value === 'string') {
-    w.string(Tag.Str, value)
+    node = { tag: 'text', val: value }
   } else if (value instanceof Uint8Array) {
-    w.bytes(Tag.Bytes, value)
+    node = { tag: 'bytes', val: value }
   } else if (Array.isArray(value)) {
-    w.lengthDelimited(isTuple(value) ? Tag.Tuple : Tag.List, encodeList(value))
+    const items = Uint32Array.from(value.map((item) => pushValue(item, nodes)))
+    node = { tag: isTuple(value) ? 'tuple-value' : 'list-value', val: items }
   } else if (value instanceof Map) {
-    w.lengthDelimited(Tag.Dict, encodeDict([...value.entries()]))
+    node = { tag: 'dict', val: pushPairs([...value.entries()], nodes) }
   } else if (value instanceof Set) {
-    w.lengthDelimited(Tag.Set, encodeList([...value.values()]))
+    node = { tag: 'set', val: Uint32Array.from([...value].map((item) => pushValue(item, nodes))) }
   } else if (typeof value === 'function') {
-    w.lengthDelimited(Tag.Function, encodeFunction(value as { name?: string }))
+    node = { tag: 'function', val: { name: value.name ?? '' } }
   } else if (typeof value === 'object') {
-    const obj = value as Record<string, unknown>
-    if (TYPE_MARKER in obj) {
-      writeMarked(w, obj)
-    } else {
-      // a plain object becomes a string-keyed dict, matching convert.rs
-      w.lengthDelimited(Tag.Dict, encodeDict(Object.entries(obj)))
-    }
+    const object = value as Record<string, unknown>
+    node =
+      TYPE_MARKER in object ? pushMarked(object, nodes) : { tag: 'dict', val: pushPairs(Object.entries(object), nodes) }
   } else if (typeof value === 'symbol') {
     throw new TypeError('Cannot convert JS Symbol to Monty value')
   } else {
     throw unsupported(`value of type ${typeof value}`)
   }
+  const index = nodes.length
+  nodes.push(node)
+  return index
 }
 
-/** Encodes a `__monty_type__`-marked value back to its `MontyObject` kind. */
-function writeMarked(w: Writer, obj: Record<string, unknown>): void {
-  const type = obj[TYPE_MARKER]
-  switch (type) {
+/** Converts a `__monty_type__` marker into one semantic value node. */
+function pushMarked(object: Record<string, unknown>, nodes: ValueNode[]): ValueNode {
+  switch (object[TYPE_MARKER]) {
     case 'Ellipsis':
-      w.lengthDelimited(Tag.Ellipsis, EMPTY)
-      break
+      return { tag: 'ellipsis' }
     case 'NotImplemented':
-      w.lengthDelimited(Tag.NotImplemented, EMPTY)
-      break
+      return { tag: 'not-implemented' }
     case 'Date':
-      w.lengthDelimited(Tag.Date, encodeDate(obj))
-      break
+      return {
+        tag: 'date',
+        val: { year: Number(object.year), month: Number(object.month), day: Number(object.day) },
+      }
     case 'DateTime':
-      w.lengthDelimited(Tag.DateTime, encodeDateTime(obj))
-      break
+      return {
+        tag: 'datetime',
+        val: {
+          year: Number(object.year),
+          month: Number(object.month),
+          day: Number(object.day),
+          hour: Number(object.hour),
+          minute: Number(object.minute),
+          second: Number(object.second),
+          microsecond: Number(object.microsecond),
+          ...timeZoneFields(object, 'DateTime'),
+        },
+      }
     case 'Time':
-      w.lengthDelimited(Tag.Time, encodeTime(obj))
-      break
+      return {
+        tag: 'time',
+        val: {
+          hour: Number(object.hour),
+          minute: Number(object.minute),
+          second: Number(object.second),
+          microsecond: Number(object.microsecond),
+          ...timeZoneFields(object, 'Time'),
+          fold: Number(object.fold ?? 0),
+        },
+      }
     case 'TimeDelta':
-      w.lengthDelimited(Tag.TimeDelta, encodeTimeDelta(obj))
-      break
+      return {
+        tag: 'timedelta',
+        val: {
+          days: Number(object.days),
+          seconds: Number(object.seconds),
+          microseconds: Number(object.microseconds),
+        },
+      }
     case 'TimeZone':
-      w.lengthDelimited(Tag.TimeZone, encodeTimeZone(obj))
-      break
+      return {
+        tag: 'timezone',
+        val: {
+          offsetSeconds: Number(object.offsetSeconds),
+          ...(object.name === undefined ? {} : { name: String(object.name) }),
+        },
+      }
     case 'Exception':
-      w.lengthDelimited(Tag.Exception, encodeExceptionValue(obj))
-      break
+      return {
+        tag: 'exception',
+        val: {
+          excType: String(object.excType),
+          ...(typeof object.message === 'string' ? { message: object.message } : {}),
+        },
+      }
     case 'Dataclass':
-      w.lengthDelimited(Tag.Dataclass, encodeDataclass(obj))
-      break
+      return pushDataclass(object, nodes)
     case 'FileHandle':
-      w.lengthDelimited(Tag.FileHandle, encodeFileHandle(obj))
-      break
+      return pushFileHandle(object)
     case 'Type':
-      w.string(Tag.Type, String(obj.value))
-      break
+      return { tag: 'type-name', val: String(object.value) }
     case 'BuiltinFunction':
-      w.string(Tag.BuiltinFunction, String(obj.value))
-      break
+      return { tag: 'builtin-function', val: String(object.value) }
     default:
-      throw new TypeError(`Unknown Monty marker type: ${String(type)}`)
+      throw new TypeError(`Unknown Monty marker type: ${String(object[TYPE_MARKER])}`)
   }
 }
 
-function encodeFileHandle(obj: Record<string, unknown>): Uint8Array {
-  if (typeof obj.path !== 'string') throw new TypeError('MontyFileHandle path must be a string')
-  if (typeof obj.mode !== 'string') throw new TypeError('MontyFileHandle mode must be a string')
-  const mode = canonicalFileMode(obj.mode)
-  const position = obj.position === undefined ? 0 : obj.position
+/** Preserves aware-time metadata while rejecting an orphaned timezone name. */
+function timeZoneFields(
+  object: Record<string, unknown>,
+  typeName: 'DateTime' | 'Time',
+): { offsetSeconds?: number; timezoneName?: string } {
+  const aware = object.offsetSeconds !== undefined && object.offsetSeconds !== null
+  if (!aware && object.timezoneName !== undefined && object.timezoneName !== null) {
+    throw new TypeError(`Monty${typeName} timezoneName requires offsetSeconds`)
+  }
+  return aware
+    ? {
+        offsetSeconds: Number(object.offsetSeconds),
+        ...(typeof object.timezoneName === 'string' ? { timezoneName: object.timezoneName } : {}),
+      }
+    : {}
+}
+
+/** Validates and converts a host dataclass marker. */
+function pushDataclass(object: Record<string, unknown>, nodes: ValueNode[]): ValueNode {
+  if (typeof object.typeId !== 'bigint') {
+    throw new TypeError(
+      `Object property 'typeId' type mismatch. Expect value to be BigInt, but received ${jsType(object.typeId)}`,
+    )
+  }
+  if (!Array.isArray(object.fieldNames)) {
+    throw new TypeError(
+      `Object property 'fieldNames' type mismatch. Expect value to be Array, but received ${jsType(object.fieldNames)}`,
+    )
+  }
+  const fields = (object.fields ?? {}) as Record<string, unknown>
+  return {
+    tag: 'dataclass',
+    val: {
+      name: String(object.name),
+      typeId: object.typeId,
+      fieldNames: object.fieldNames.map(String),
+      attrs: pushPairs(Object.entries(fields), nodes),
+      frozen: Boolean(object.frozen),
+    },
+  }
+}
+
+/** Validates and converts a sandbox file-handle marker. */
+function pushFileHandle(object: Record<string, unknown>): ValueNode {
+  if (typeof object.path !== 'string') throw new TypeError('MontyFileHandle path must be a string')
+  if (typeof object.mode !== 'string') throw new TypeError('MontyFileHandle mode must be a string')
+  const position = object.position === undefined ? 0 : object.position
   validateFilePosition(position)
-
-  const w = new Writer()
-  w.string(1, obj.path)
-  w.string(2, mode)
-  if (position !== 0) w.uint(3, position)
-  return w.finish()
-}
-
-function encodeFunction(value: { name?: string }): Uint8Array {
-  const w = new Writer()
-  w.string(1, value.name ?? '') // Function.name
-  return w.finish()
-}
-
-function encodeDataclass(obj: Record<string, unknown>): Uint8Array {
-  if (typeof obj.typeId !== 'bigint') {
-    throw new TypeError(
-      `Object property 'typeId' type mismatch. Expect value to be BigInt, but received ${jsType(obj.typeId)}`,
-    )
-  }
-  if (!Array.isArray(obj.fieldNames)) {
-    throw new TypeError(
-      `Object property 'fieldNames' type mismatch. Expect value to be Array, but received ${jsType(obj.fieldNames)}`,
-    )
-  }
-  const w = new Writer()
-  w.string(1, String(obj.name)) // Dataclass.name
-  w.uint(2, obj.typeId) // Dataclass.type_id
-  for (const fieldName of obj.fieldNames) w.string(3, String(fieldName)) // Dataclass.field_names
-  const fields = (obj.fields ?? {}) as Record<string, unknown>
-  w.lengthDelimited(4, encodeDict(Object.entries(fields))) // Dataclass.attrs
-  if (obj.frozen) w.bool(5, true) // Dataclass.frozen
-  return w.finish()
-}
-
-// The temporal messages are where proto3's two presence rules meet: a plain
-// scalar is *implicit*-presence and its zero value is omitted from the wire,
-// while an `optional` field is *explicit* and is written whenever it is set,
-// zero included. `monty-proto` encodes on those rules, so this codec must too or
-// the same value reaches the worker as different bytes from each transport.
-
-/** Writes an implicit-presence `uint32`, which proto3 omits at its zero default. */
-function uintIfSet(w: Writer, field: number, value: number): void {
-  if (value !== 0) w.uint(field, value)
-}
-
-/** Writes an implicit-presence `int32`, which proto3 omits at its zero default. */
-function int32IfSet(w: Writer, field: number, value: number): void {
-  if (value !== 0) w.int32(field, value)
-}
-
-/**
- * Writes an aware value's explicit-presence offset and name, at the field
- * numbers the enclosing message gives them.
- *
- * A name without an offset is not a naive value with a label: the wire forbids
- * the combination and `monty-proto` rejects it on decode, so encoding it away
- * silently would turn an invalid input into a different value.
- */
-function encodeTimeZoneFields(w: Writer, obj: Record<string, unknown>, offsetField: number, nameField: number): void {
-  const aware = obj.offsetSeconds !== undefined && obj.offsetSeconds !== null
-  if (!aware && obj.timezoneName !== undefined && obj.timezoneName !== null) {
-    throw new TypeError(`Monty${String(obj[TYPE_MARKER])} timezoneName requires offsetSeconds`)
-  }
-  if (aware) {
-    w.int32(offsetField, num(obj.offsetSeconds))
-    if (typeof obj.timezoneName === 'string') w.string(nameField, obj.timezoneName)
+  return {
+    tag: 'file-handle',
+    val: { path: object.path, mode: canonicalFileMode(object.mode), position: BigInt(position) },
   }
 }
 
-function encodeDate(obj: Record<string, unknown>): Uint8Array {
-  const w = new Writer()
-  int32IfSet(w, 1, num(obj.year))
-  uintIfSet(w, 2, num(obj.month))
-  uintIfSet(w, 3, num(obj.day))
-  return w.finish()
+/** Appends key/value pairs while preserving their insertion order. */
+function pushPairs(pairs: [unknown, unknown][], nodes: ValueNode[]): NodePair[] {
+  return pairs.map(([key, value]) => ({ key: pushValue(key, nodes), value: pushValue(value, nodes) }))
 }
 
-function encodeTime(obj: Record<string, unknown>): Uint8Array {
-  const w = new Writer()
-  uintIfSet(w, 1, num(obj.hour))
-  uintIfSet(w, 2, num(obj.minute))
-  uintIfSet(w, 3, num(obj.second))
-  uintIfSet(w, 4, num(obj.microsecond))
-  encodeTimeZoneFields(w, obj, 5, 6)
-  uintIfSet(w, 7, num(obj.fold ?? 0))
-  return w.finish()
-}
-
-function encodeDateTime(obj: Record<string, unknown>): Uint8Array {
-  const w = new Writer()
-  int32IfSet(w, 1, num(obj.year))
-  uintIfSet(w, 2, num(obj.month))
-  uintIfSet(w, 3, num(obj.day))
-  uintIfSet(w, 4, num(obj.hour))
-  uintIfSet(w, 5, num(obj.minute))
-  uintIfSet(w, 6, num(obj.second))
-  uintIfSet(w, 7, num(obj.microsecond))
-  encodeTimeZoneFields(w, obj, 8, 9)
-  return w.finish()
-}
-
-function encodeTimeDelta(obj: Record<string, unknown>): Uint8Array {
-  const w = new Writer()
-  int32IfSet(w, 1, num(obj.days))
-  int32IfSet(w, 2, num(obj.seconds))
-  int32IfSet(w, 3, num(obj.microseconds))
-  return w.finish()
-}
-
-function encodeTimeZone(obj: Record<string, unknown>): Uint8Array {
-  const w = new Writer()
-  // `TimeZone.offset_seconds` is a plain `int32`, unlike the `optional` offsets
-  // on `time`/`datetime`: UTC's zero offset is carried by the field's absence.
-  int32IfSet(w, 1, num(obj.offsetSeconds))
-  if (typeof obj.name === 'string') w.string(2, obj.name)
-  return w.finish()
-}
-
-function encodeExceptionValue(obj: Record<string, unknown>): Uint8Array {
-  const w = new Writer()
-  w.string(1, String(obj.excType))
-  if (typeof obj.message === 'string') w.string(2, obj.message)
-  return w.finish()
-}
-
-function encodeList(items: unknown[]): Uint8Array {
-  const w = new Writer()
-  for (const item of items) w.lengthDelimited(1, encodeMontyObject(item)) // ObjectList.items
-  return w.finish()
-}
-
-function encodeDict(pairs: [unknown, unknown][]): Uint8Array {
-  const w = new Writer()
-  for (const [key, value] of pairs) {
-    const pair = new Writer()
-    pair.lengthDelimited(1, encodeMontyObject(key)) // Pair.key
-    pair.lengthDelimited(2, encodeMontyObject(value)) // Pair.value
-    w.lengthDelimited(1, pair.finish()) // Dict.pairs
+/** Reads one arena node recursively, rejecting malformed indexes and cycles. */
+function readValue(index: number, nodes: ValueNode[], visiting: Set<number>): unknown {
+  const node = nodes[index]
+  if (node === undefined) throw new Error(`component value node index ${index} is out of bounds`)
+  if (visiting.has(index)) throw new Error('component value arena contains a cycle')
+  visiting.add(index)
+  let value: unknown
+  switch (node.tag) {
+    case 'ellipsis':
+      value = { [TYPE_MARKER]: 'Ellipsis' }
+      break
+    case 'not-implemented':
+      value = { [TYPE_MARKER]: 'NotImplemented' }
+      break
+    case 'none':
+      value = null
+      break
+    case 'boolean':
+    case 'float':
+    case 'text':
+      value = node.val
+      break
+    case 'integer':
+      value = node.val >= -SAFE && node.val <= SAFE ? Number(node.val) : node.val
+      break
+    case 'bigint':
+      value = BigInt(node.val)
+      break
+    case 'bytes':
+      value = typeof Buffer === 'undefined' ? node.val : Buffer.from(node.val)
+      break
+    case 'list-value':
+      value = readItems(node.val, nodes, visiting)
+      break
+    case 'tuple-value':
+      value = asTuple(readItems(node.val, nodes, visiting))
+      break
+    case 'named-tuple':
+      value = asTuple(readItems(node.val.items, nodes, visiting))
+      break
+    case 'dict':
+      value = new Map(node.val.map((pair) => readPair(pair, nodes, visiting)))
+      break
+    case 'set':
+    case 'frozen-set':
+      value = new Set(readItems(node.val, nodes, visiting))
+      break
+    case 'date':
+      value = { [TYPE_MARKER]: 'Date', ...node.val }
+      break
+    case 'datetime':
+      value = { [TYPE_MARKER]: 'DateTime', ...node.val }
+      break
+    case 'time':
+      value = { [TYPE_MARKER]: 'Time', ...node.val }
+      break
+    case 'timedelta':
+      value = { [TYPE_MARKER]: 'TimeDelta', ...node.val }
+      break
+    case 'timezone':
+      value = { [TYPE_MARKER]: 'TimeZone', ...node.val }
+      break
+    case 'exception':
+      value = { [TYPE_MARKER]: 'Exception', excType: node.val.excType, message: node.val.message ?? '' }
+      break
+    case 'type-name':
+    case 'instance-type':
+      value = { [TYPE_MARKER]: 'Type', value: node.val }
+      break
+    case 'builtin-function':
+      value = { [TYPE_MARKER]: 'BuiltinFunction', value: node.val }
+      break
+    case 'path':
+    case 'repr':
+      value = node.val
+      break
+    case 'file-handle':
+      if (node.val.position > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new TypeError("MontyFileHandle position exceeds JavaScript's maximum safe integer")
+      }
+      value = new MontyFileHandle(node.val.path, node.val.mode, { position: Number(node.val.position) })
+      break
+    case 'dataclass':
+      value = readDataclass(node.val, nodes, visiting)
+      break
+    case 'function':
+      value = node.val.name
+      break
+    case 'cycle':
+      value = node.val.placeholder
+      break
   }
-  return w.finish()
+  visiting.delete(index)
+  return value
 }
 
-function encodeBigInt(value: bigint): Uint8Array {
-  const w = new Writer()
-  w.bool(1, value < 0n) // BigInt.negative
-  let n = value < 0n ? -value : value
-  const magnitude: number[] = []
-  while (n > 0n) {
-    magnitude.push(Number(n & 0xffn))
-    n >>= 8n
-  }
-  magnitude.reverse() // big-endian
-  w.bytes(2, Uint8Array.from(magnitude)) // BigInt.magnitude
-  return w.finish()
+/** Reads child indexes into a JavaScript array. */
+function readItems(items: Uint32Array, nodes: ValueNode[], visiting: Set<number>): unknown[] {
+  return [...items].map((index) => readValue(index, nodes, visiting))
 }
 
-// === decode: MontyObject message bytes -> JS ===
+/** Reads one indexed key/value pair. */
+function readPair(pair: NodePair, nodes: ValueNode[], visiting: Set<number>): [unknown, unknown] {
+  return [readValue(pair.key, nodes, visiting), readValue(pair.value, nodes, visiting)]
+}
 
-/** Decodes the bytes of one `MontyObject` message to a JS value. */
-export function decodeMontyObject(bytes: Uint8Array): unknown {
-  const reader = new Reader(bytes)
-  if (reader.done) throw new Error('empty MontyObject')
-  const f = reader.next()
-  switch (f.field) {
-    case Tag.Ellipsis:
-      return { [TYPE_MARKER]: 'Ellipsis' }
-    case Tag.NotImplemented:
-      return { [TYPE_MARKER]: 'NotImplemented' }
-    case Tag.None:
-      return null
-    case Tag.Bool:
-      return f.value !== 0n
-    case Tag.Int: {
-      const n = unzigzag(f.value)
-      return n >= -SAFE && n <= SAFE ? Number(n) : n
+/** Rebuilds the public dataclass marker without prototype-setting assignment. */
+function readDataclass(
+  dataclass: Extract<ValueNode, { tag: 'dataclass' }>['val'],
+  nodes: ValueNode[],
+  visiting: Set<number>,
+): Record<string, unknown> {
+  const fields: Record<string, unknown> = {}
+  for (const pair of dataclass.attrs) {
+    const [key, value] = readPair(pair, nodes, visiting)
+    if (typeof key === 'string') {
+      Object.defineProperty(fields, key, { value, enumerable: true, writable: true, configurable: true })
     }
-    case Tag.BigInt:
-      return decodeBigInt(f.bytes)
-    case Tag.Float:
-      return bitsToDouble(f.value)
-    case Tag.Str:
-    case Tag.Path:
-    case Tag.Repr:
-      return decodeString(f.bytes)
-    case Tag.Bytes:
-      return typeof Buffer === 'undefined' ? f.bytes : Buffer.from(f.bytes)
-    case Tag.List:
-      return decodeList(f.bytes)
-    case Tag.Tuple:
-      return asTuple(decodeList(f.bytes))
-    case Tag.NamedTuple:
-      // the JS representation discards field names (a plain tuple), matching convert.rs
-      return asTuple(decodeNamedTupleValues(f.bytes))
-    case Tag.Dict:
-      return decodeDict(f.bytes)
-    case Tag.Set:
-    case Tag.FrozenSet:
-      return new Set(decodeList(f.bytes))
-    case Tag.Date:
-      return decodeDate(f.bytes)
-    case Tag.DateTime:
-      return decodeDateTime(f.bytes)
-    case Tag.Time:
-      return decodeTime(f.bytes)
-    case Tag.TimeDelta:
-      return decodeTimeDelta(f.bytes)
-    case Tag.TimeZone:
-      return decodeTimeZone(f.bytes)
-    case Tag.Exception:
-      return decodeException(f.bytes)
-    case Tag.FileHandle:
-      return decodeFileHandle(f.bytes)
-    case Tag.Dataclass:
-      return decodeDataclass(f.bytes)
-    case Tag.Type:
-      return { [TYPE_MARKER]: 'Type', value: decodeString(f.bytes) }
-    case Tag.BuiltinFunction:
-      return { [TYPE_MARKER]: 'BuiltinFunction', value: decodeString(f.bytes) }
-    case Tag.Function:
-      return decodeStringField(f.bytes, 1) // Function.name -> the name string
-    case Tag.Cycle:
-      return decodeStringField(f.bytes, 2) // Cycle.placeholder
-    default:
-      throw unsupported(`MontyObject kind field ${f.field}`)
   }
-}
-
-function decodeFileHandle(bytes: Uint8Array): MontyFileHandle {
-  let path = ''
-  let mode = ''
-  let position = 0n
-  const reader = new Reader(bytes)
-  while (!reader.done) {
-    const f = reader.next()
-    if (f.field === 1) path = decodeString(f.bytes)
-    else if (f.field === 2) mode = decodeString(f.bytes)
-    else if (f.field === 3) position = f.value
-  }
-  if (position > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new TypeError("MontyFileHandle position exceeds JavaScript's maximum safe integer")
-  }
-  return new MontyFileHandle(path, mode, { position: Number(position) })
-}
-
-function decodeNamedTupleValues(bytes: Uint8Array): unknown[] {
-  const reader = new Reader(bytes)
-  const values: unknown[] = []
-  while (!reader.done) {
-    const f = reader.next()
-    if (f.field === 3) values.push(decodeMontyObject(f.bytes)) // NamedTuple.values
-  }
-  return values
-}
-
-function decodeDataclass(bytes: Uint8Array): MarkedValue {
-  const dataclass: MarkedValue = {
+  return {
     [TYPE_MARKER]: 'Dataclass',
-    name: '',
-    typeId: 0n,
-    fieldNames: [] as string[],
-    fields: {} as Record<string, unknown>,
-    frozen: false,
+    name: dataclass.name,
+    typeId: dataclass.typeId,
+    fieldNames: dataclass.fieldNames,
+    fields,
+    frozen: dataclass.frozen,
   }
-  const fieldNames = dataclass.fieldNames as string[]
-  const fields = dataclass.fields as Record<string, unknown>
-  const reader = new Reader(bytes)
-  while (!reader.done) {
-    const f = reader.next()
-    switch (f.field) {
-      case 1:
-        dataclass.name = decodeString(f.bytes)
-        break
-      case 2:
-        dataclass.typeId = f.value // uint64 -> BigInt
-        break
-      case 3:
-        fieldNames.push(decodeString(f.bytes))
-        break
-      case 4:
-        for (const [key, value] of decodeDict(f.bytes)) {
-          // defineProperty (not assignment) so a "__proto__" field can't pollute
-          if (typeof key === 'string') {
-            Object.defineProperty(fields, key, { value, enumerable: true, writable: true, configurable: true })
-          }
-        }
-        break
-      case 5:
-        dataclass.frozen = f.value !== 0n
-        break
-    }
-  }
-  return dataclass
 }
 
-function decodeStringField(bytes: Uint8Array, field: number): string {
-  const reader = new Reader(bytes)
-  while (!reader.done) {
-    const f = reader.next()
-    if (f.field === field) return decodeString(f.bytes)
-  }
-  return ''
-}
-
-function decodeList(bytes: Uint8Array): unknown[] {
-  const reader = new Reader(bytes)
-  const items: unknown[] = []
-  while (!reader.done) {
-    const f = reader.next()
-    if (f.field === 1) items.push(decodeMontyObject(f.bytes)) // ObjectList.items
-  }
-  return items
-}
-
-function decodeDict(bytes: Uint8Array): Map<unknown, unknown> {
-  const reader = new Reader(bytes)
-  const map = new Map<unknown, unknown>()
-  while (!reader.done) {
-    const f = reader.next()
-    if (f.field !== 1) continue // Dict.pairs
-    let key: unknown = null
-    let value: unknown = null
-    const pair = new Reader(f.bytes)
-    while (!pair.done) {
-      const pf = pair.next()
-      if (pf.field === 1) key = decodeMontyObject(pf.bytes)
-      else if (pf.field === 2) value = decodeMontyObject(pf.bytes)
-    }
-    map.set(key, value)
-  }
-  return map
-}
-
-function decodeDate(bytes: Uint8Array): MarkedValue {
-  const date: MarkedValue = { [TYPE_MARKER]: 'Date', year: 0, month: 0, day: 0 }
-  const reader = new Reader(bytes)
-  while (!reader.done) {
-    const f = reader.next()
-    if (f.field === 1) date.year = readInt32(f.value)
-    else if (f.field === 2) date.month = Number(f.value)
-    else if (f.field === 3) date.day = Number(f.value)
-  }
-  return date
-}
-
-function decodeTime(bytes: Uint8Array): MarkedValue {
-  const t: MarkedValue = {
-    [TYPE_MARKER]: 'Time',
-    hour: 0,
-    minute: 0,
-    second: 0,
-    microsecond: 0,
-    fold: 0,
-  }
-  const reader = new Reader(bytes)
-  while (!reader.done) {
-    const f = reader.next()
-    switch (f.field) {
-      case 1:
-        t.hour = Number(f.value)
-        break
-      case 2:
-        t.minute = Number(f.value)
-        break
-      case 3:
-        t.second = Number(f.value)
-        break
-      case 4:
-        t.microsecond = Number(f.value)
-        break
-      case 5:
-        t.offsetSeconds = readInt32(f.value)
-        break
-      case 6:
-        t.timezoneName = decodeString(f.bytes)
-        break
-      case 7:
-        t.fold = Number(f.value)
-        break
-    }
-  }
-  return t
-}
-
-function decodeDateTime(bytes: Uint8Array): MarkedValue {
-  const dt: MarkedValue = {
-    [TYPE_MARKER]: 'DateTime',
-    year: 0,
-    month: 0,
-    day: 0,
-    hour: 0,
-    minute: 0,
-    second: 0,
-    microsecond: 0,
-  }
-  const reader = new Reader(bytes)
-  while (!reader.done) {
-    const f = reader.next()
-    switch (f.field) {
-      case 1:
-        dt.year = readInt32(f.value)
-        break
-      case 2:
-        dt.month = Number(f.value)
-        break
-      case 3:
-        dt.day = Number(f.value)
-        break
-      case 4:
-        dt.hour = Number(f.value)
-        break
-      case 5:
-        dt.minute = Number(f.value)
-        break
-      case 6:
-        dt.second = Number(f.value)
-        break
-      case 7:
-        dt.microsecond = Number(f.value)
-        break
-      case 8:
-        dt.offsetSeconds = readInt32(f.value)
-        break
-      case 9:
-        dt.timezoneName = decodeString(f.bytes)
-        break
-    }
-  }
-  return dt
-}
-
-function decodeTimeDelta(bytes: Uint8Array): MarkedValue {
-  const td: MarkedValue = { [TYPE_MARKER]: 'TimeDelta', days: 0, seconds: 0, microseconds: 0 }
-  const reader = new Reader(bytes)
-  while (!reader.done) {
-    const f = reader.next()
-    if (f.field === 1) td.days = readInt32(f.value)
-    else if (f.field === 2) td.seconds = readInt32(f.value)
-    else if (f.field === 3) td.microseconds = readInt32(f.value)
-  }
-  return td
-}
-
-export function decodeTimeZone(bytes: Uint8Array): MarkedValue {
-  const tz: MarkedValue = { [TYPE_MARKER]: 'TimeZone', offsetSeconds: 0 }
-  const reader = new Reader(bytes)
-  while (!reader.done) {
-    const f = reader.next()
-    if (f.field === 1) tz.offsetSeconds = readInt32(f.value)
-    else if (f.field === 2) tz.name = decodeString(f.bytes)
-  }
-  return tz
-}
-
-function decodeException(bytes: Uint8Array): MarkedValue {
-  const reader = new Reader(bytes)
-  let excType = ''
-  let message: string | undefined
-  while (!reader.done) {
-    const f = reader.next()
-    if (f.field === 1)
-      excType = decodeString(f.bytes) // Exception.exc_type
-    else if (f.field === 2) message = decodeString(f.bytes) // Exception.arg
-  }
-  return { [TYPE_MARKER]: 'Exception', excType, message }
-}
-
-function decodeBigInt(bytes: Uint8Array): bigint {
-  const reader = new Reader(bytes)
-  let negative = false
-  let magnitude: Uint8Array = EMPTY
-  while (!reader.done) {
-    const f = reader.next()
-    if (f.field === 1)
-      negative = f.value !== 0n // BigInt.negative
-    else if (f.field === 2) magnitude = f.bytes // BigInt.magnitude
-  }
-  let n = 0n
-  for (const b of magnitude) n = (n << 8n) | BigInt(b)
-  return negative ? -n : n
-}
-
-// === helpers ===
-
-const EMPTY = new Uint8Array(0)
-const TYPE_MARKER = '__monty_type__'
-
-interface MarkedValue {
-  [TYPE_MARKER]: string
-  [key: string]: unknown
-}
-
-function decodeString(bytes: Uint8Array): string {
-  return new TextDecoder().decode(bytes)
-}
-
-/** Stamps the non-enumerable `__tuple__` marker, matching convert.rs. */
+/** Stamps the non-enumerable tuple marker used by both JS transports. */
 function asTuple(items: unknown[]): unknown[] {
   Object.defineProperty(items, TUPLE_MARKER, { value: true, enumerable: false })
   return items
 }
 
+/** Whether an input array represents a Python tuple. */
 function isTuple(array: unknown[]): boolean {
   return (array as { [TUPLE_MARKER]?: unknown })[TUPLE_MARKER] === true
 }
 
-/** Coerces a marked-value field (typed `unknown`) to a number for encoding. */
-function num(value: unknown): number {
-  return Number(value)
-}
-
+/** Creates the established unsupported-value conversion error. */
 function unsupported(what: string): Error {
   return new Error(`monty wasm transport does not support ${what}`)
 }
 
+/** Produces napi-compatible JavaScript type names for conversion errors. */
 function jsType(value: unknown): string {
   if (value === undefined) {
     return 'Undefined'

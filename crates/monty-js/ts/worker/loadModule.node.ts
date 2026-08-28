@@ -1,14 +1,19 @@
-// Loads the bundled wasm module from disk — Node and other WASI/file-system
-// hosts. Selected by the `node` condition of the `@pydantic/monty/wasm` export.
-//
-// The `.wasm` ships next to this module (copied into `dist/worker/` by
-// `scripts/copy-wasm.mjs`), so `import.meta.url` resolves it in both the
-// published package and local dev.
+// Loads the bundled component's core modules from disk under Node.
 
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
-export async function loadModule(): Promise<WebAssembly.Module> {
-  const path = fileURLToPath(new URL('./monty_wasm_runtime.wasm', import.meta.url))
-  return WebAssembly.compile(await readFile(path))
+import { COMPONENT_MODULE_NAMES } from './componentModules.js'
+import type { ComponentModules } from './host.js'
+
+/** Reads and compiles every core module needed to instantiate the component. */
+export async function loadModule(): Promise<ComponentModules> {
+  const entries = await Promise.all(
+    COMPONENT_MODULE_NAMES.map(async (name) => {
+      const path = fileURLToPath(new URL(`./component/${name}`, import.meta.url))
+      const module = await WebAssembly.compile(await readFile(path))
+      return [name, module] as const
+    }),
+  )
+  return Object.fromEntries(entries)
 }

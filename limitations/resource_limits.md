@@ -57,6 +57,13 @@ without one is unlimited.
   decoding, loading snapshots, and type checking do not reach an interpreter
   checkpoint. A sufficiently large allocation there can cross the hard ceiling
   and kill the worker.
+- **A value crossing to the host needs room for about three copies of itself.**
+  Returning a result, or passing an argument to a host function, holds the
+  sandbox value, its converted host-side form, and the encoded frame at once.
+  The effective ceiling for a single such value is therefore around a third of
+  `max_memory`, not all of it — well under the limit for ordinary payloads, but
+  a multi-MiB argument under a tight budget can cross the hard ceiling while
+  announcing the call.
 - **It binds the worker's allocator, not the process.** Only bytes requested
   from Rust's global allocator are counted, which is everything sandboxed code
   can cause to be allocated, but not memory obtained another way: thread stacks,

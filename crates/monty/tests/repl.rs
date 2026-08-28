@@ -1168,7 +1168,24 @@ fn call_function_that_calls_undefined_name_fails() {
     let err = s
         .call_function("call_missing", vec![], PrintWriter::Stdout)
         .unwrap_err();
-    assert_snapshot!(err, @"NotImplementedError: MontyRepl::call_function: external function 'unknown_func' is not yet supported in this context");
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "<python-input-1>", line 1, in <module>
+        call_missing()
+        ~~~~~~~~~~~~~~
+      File "<python-input-0>", line 1, in call_missing
+        def call_missing(): return unknown_func()
+                                   ~~~~~~~~~~~~~~
+    NotImplementedError: MontyRepl::call_function: external function 'unknown_func' is not yet supported in this context
+    "#);
+}
+
+#[test]
+fn call_function_catches_unsupported_os_call() {
+    let mut s =
+        repl_with_code("def try_open():\n    try:\n        open('/x.txt')\n    except:\n        return 'caught'");
+    let result = s.call_function("try_open", vec![], PrintWriter::Stdout).unwrap();
+    assert_eq!(result, MontyObject::String("caught".to_owned()));
 }
 
 #[test]

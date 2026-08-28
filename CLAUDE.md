@@ -367,10 +367,11 @@ make build-js             Build the JS package (compile TypeScript)
 make lint-js              Lint JS code with oxlint
 make test-js              Test the JS package (builds the monty binary the workers run)
 make dev-py-release       Install the python package for development with a release build
-make build-wasm           Build the lean wasm worker module (requires the wasm32-wasip1 target)
-make test-wasm            Test the wasm worker module from node, with no browser
-make test-browser         Browser (Vitest) test of the wasm path in a real headless browser
-make dev-py-pgo           Install the python package for development with profile-guided optimization
+make build-wasm           Build the WASI 0.2 worker component (requires the wasm32-wasip1 target)
+make check-wasm-types     Verify checked-in component declarations match the WIT interface
+make test-wasm            Test the wasm worker component from Node, with no browser
+make test-browser         Build and test the wasm worker path in headless Chromium
+make dev-py-pgo           Install the Python package with a PGO-optimized Monty runtime
 make format-rs            Format Rust code with fmt
 make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!
 make format-js            Format JS code with prettier
@@ -831,7 +832,7 @@ recovery, framing and value conversion all live in Rust.
   `session.ts` (MontySession + drive loop), `errors.ts`, `binary.ts`
   (monty binary resolution), `mount.ts`, `native.ts` (turn-object typings)
 - `crates/monty-js/ts/worker/` - the browser/wasm worker path (exported as
-  `@pydantic/monty/wasm`): `proto.ts`/`value.ts` (TS `monty-proto` codec),
+  `@pydantic/monty/wasm`): `value.ts` (JS ↔ flat semantic WIT values),
   `transport.ts` (WorkerTransport, the `NativeSession`-shaped seam),
   `host.ts`/`channel.ts` (in-process and message-channel dispatch),
   `pool.ts` (WorkerPool, the TS `monty-pool` analog), `nodeFactory.ts` /
@@ -842,9 +843,8 @@ recovery, framing and value conversion all live in Rust.
   `.node` library *and* the `monty` binary (`@pydantic/monty-<platform>`,
   selected via optionalDependencies; `napi create-npm-dirs` +
   `scripts/create-platform-packages.mjs`)
-- `crates/monty-js/__test__/` - Tests using vitest (`wasm_*.spec.ts` drive the
-  wasm worker pool/transport without the napi build, and need `make build-wasm`
-  first — `npm test` excludes them, `npm run test:wasm` runs them)
+- `crates/monty-js/__test__/` - Vitest tests shared by the native Node and
+  browser/WASM backends; `wasm_*.spec.ts` drive the wasm worker without napi
 
 ### Current API
 
@@ -873,7 +873,9 @@ See `crates/monty-js/README.md` for full API documentation.
 ```bash
 make install-js   # npm install
 make build-js     # napi debug build + compile TypeScript
-make test-js      # builds the napi binding + debug monty binary, then runs vitest
+make test-js      # builds the napi binding + debug monty binary, then runs Vitest
+make test-wasm    # builds and tests the wasm path from Node
+make test-browser # builds and tests the wasm path in headless Chromium
 make lint-js      # oxlint
 make format-js    # prettier
 make smoke-test-js  # packs + installs the package and platform binary package
@@ -885,7 +887,7 @@ Tests run straight from `ts/` via `@oxc-node/core` against the locally built
 
 ### JavaScript Test Guidelines
 
-- Tests use [vitest](https://vitest.dev) and live in `crates/monty-js/__test__/`
+- Tests use [Vitest](https://vitest.dev/) and live in `crates/monty-js/__test__/`
 - Tests are written in TypeScript; use the `setupPool` helper from `__test__/helpers.ts`
 - Follow the existing test style in the `__test__/` directory
 
@@ -896,27 +898,26 @@ Worker** instead of a subprocess, exposed under the `/wasm` subpath. The same
 pool → checkout → session → `feedRun` model and drive loop are used; only the
 transport differs. The pieces:
 
-- `crates/monty-wasm-runtime` — a lean `wasm32-wasip1` module: a WASI reactor wrapping
-  the transport-agnostic `monty-worker` `Child` state machine, exporting one
-  `monty_dispatch_turn` (read a framed request from stdin, run one turn, write
-  framed events to stdout). No napi, no threads, no `SharedArrayBuffer`. It
-  declares the `monty-alloc` global allocator, so a session's `max_memory`
-  bounds what the module allocates too; exceeding it traps, which the host
-  already reads as a dead instance.
+- `crates/monty-wasm-runtime` — a WIT-defined WASI 0.2 component wrapping the
+  transport-agnostic `monty-proto` `Child` state machine. Rust builds a
+  `wasm32-wasip1` core module, then Jco applies the Preview 1 reactor adapter
+  and generates JavaScript canonical-ABI bindings. No napi, threads, stdio RPC,
+  or `SharedArrayBuffer`. Its `monty-alloc` global allocator applies a session's
+  `max_memory` to component allocations; exceeding the hard limit traps.
 - `crates/monty-js/ts/worker/` — the TS pool/transport that drives it
   (`createWorkerPool`): a browser `Worker` backend (`browserFactory.ts`, whose
   `Worker.terminate()` is the watchdog's hard kill), a Node `worker_threads`
   backend (`nodeFactory.ts`), and an in-process degrade for environments with
-  no `Worker` (same API, but no crash isolation or preemption). Values cross as
-  `monty-proto` frames decoded in TypeScript (`proto.ts`/`value.ts`), not via
-  napi.
+  no `Worker` (same API, but no crash isolation or preemption). Semantic WIT
+  requests and events cross the component's typed `dispatch` export; recursive
+  Python values use flat node arenas because WIT types cannot be recursive.
+  Protobuf remains internal to Rust's shared `monty-proto` child state machine.
 
-Build the worker module locally with `make build-wasm` (needs the
-`wasm32-wasip1` target); it is built and tested in CI. `make test-browser` runs
-the whole suite against it in headless Chromium, and `make test-wasm` drives it
-from Node with no browser (`__test__/wasm_*.spec.ts`, run by their own
-`vitest.wasm.config.ts` — `npm test` excludes them, since it does not build the
-module).
+Build the worker component locally with `make build-wasm` (needs the
+`wasm32-wasip1` target); it is built and tested in CI. This also refreshes the
+checked-in WIT-derived declarations under `crates/monty-js/ts/worker/component/`;
+do not edit those files directly. `make test-browser` runs the whole suite in
+headless Chromium, while `make test-wasm` runs `wasm_*.spec.ts` from Node.
 
 ## Documentation surfaces that must stay in sync
 

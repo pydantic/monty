@@ -371,6 +371,8 @@ impl VM<'_> {
     /// User-defined functions run until their frame returns. An unresolved name raises
     /// `NameError`; external, OS, method, and future suspensions raise a variant-specific
     /// `NotImplementedError` because this context cannot preserve and resume its state.
+    /// These are raised at the suspension point inside the callee's frames, so the
+    /// callee can catch them with an ordinary `try`/`except` like any other exception.
     ///
     /// The nested `self.run()` below recurses on the native Rust stack, so
     /// re-entry is bounded via [`enter_run_reentry`](Self::enter_run_reentry)
@@ -391,30 +393,31 @@ impl VM<'_> {
         let mut guard = RunReentryGuard::new(self);
         let this = &mut *guard;
 
-        let exit = match this.call_function(callable, args)? {
-            CallResult::Value(v) => return Ok(v),
+        match this.call_function(callable, args)? {
+            CallResult::Value(v) => Ok(v),
             CallResult::FramePushed => {
                 // A new frame was pushed for a defined function call - we need to run it
                 // to completion.
-                let stack_depth = this.suspended_frames.len();
                 // Mark the frame as an exit point from the `run()` loop
                 this.current_frame_mut().should_return = true;
-                match this.run()? {
-                    FrameExit::Return(v) => return Ok(v),
-                    exit => {
-                        // Pop frames off the stack from this failed evaluation
-                        // (including the one just pushed)
-                        while this.suspended_frames.len() >= stack_depth {
-                            this.pop_frame();
+                loop {
+                    match this.run()? {
+                        FrameExit::Return(v) => return Ok(v),
+                        exit => {
+                            // Raise unsupported suspensions inside the callee so its
+                            // exception handlers can observe them.
+                            let error = this.unsupported_frame_exit(ctx, exit);
+                            // The `should_return` frame stops unwinding before an
+                            // outer handler can consume this error.
+                            if let Some(error) = this.handle_exception(error) {
+                                return Err(error);
+                            }
                         }
-                        exit
                     }
                 }
             }
-            unsupported => return Err(this.unsupported_call_result(ctx, unsupported)),
-        };
-
-        Err(this.unsupported_frame_exit(ctx, exit))
+            unsupported => Err(this.unsupported_call_result(ctx, unsupported)),
+        }
     }
 
     /// Converts a direct call suspension into a specific synchronous-context error.

@@ -572,7 +572,7 @@ jobs:
           name: pypi_files-meta
           path: packages/pydantic-monty/dist
 
-  # Build wheels for exotic architectures (non-PGO)
+  # Build extension wheels and one runtime wheel for every supported platform
   build:
     name: build on ${{ matrix.os }} (${{ matrix.target }} - ${{ matrix.manylinux || 'auto' }})
     # only run on push to main, on tags, or if 'Full Build' label is present
@@ -581,37 +581,50 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux aarch64
+          - os: linux
+            target: x86_64
+            pgo-runtime: true
+            pgo-args: --pgo -i /opt/uv-python/cpython-3.14-linux-x86_64-gnu/bin/python3.14
           - os: linux
             target: aarch64
-          # Linux i686
+            runs-on: ubuntu-24.04-arm
+            pgo-runtime: true
+            pgo-args: --pgo -i /opt/uv-python/cpython-3.14-linux-aarch64-gnu/bin/python3.14
           - os: linux
             target: i686
-          # Linux armv7
+            pgo-runtime: false
           - os: linux
             target: armv7
-          # Linux ppc64le
+            pgo-runtime: false
           - os: linux
             target: ppc64le
-          # Linux s390x
+            pgo-runtime: false
           - os: linux
             target: s390x
-          # Linux x86_64 musl
+            pgo-runtime: false
           - os: linux
             target: x86_64
             manylinux: musllinux_1_1
-          # Linux aarch64 musl
+            pgo-runtime: false
           - os: linux
             target: aarch64
             manylinux: musllinux_1_1
-          # macOS x86_64 (Intel)
+            pgo-runtime: false
+          - os: macos
+            target: aarch64
+            pgo-runtime: true
+            pgo-args: --pgo -i python
           - os: macos
             target: x86_64
-          # Windows i686
+            pgo-runtime: false
+          - os: windows
+            target: x86_64
+            pgo-runtime: false
           - os: windows
             target: i686
+            pgo-runtime: false
 
-    runs-on: ${{ (matrix.os == 'linux' && 'ubuntu-latest') || (matrix.os == 'macos' && 'macos-latest') || (matrix.os == 'windows' && 'windows-latest') }}
+    runs-on: ${{ matrix.runs-on || (matrix.os == 'linux' && 'ubuntu-latest') || (matrix.os == 'macos' && 'macos-latest') || (matrix.os == 'windows' && 'windows-latest') }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -619,9 +632,9 @@ jobs:
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.12'
+          python-version: '3.14'
 
-      - name: build wheels
+      - name: build Python wheels
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
           target: ${{ matrix.target }}
@@ -631,101 +644,36 @@ jobs:
           docker-options: -e CI
           working-directory: crates/monty-python
 
-      # the pydantic-monty-runtime wheel ships the `monty` worker binary
-      # (bin bindings, one py3-none wheel per platform). `-i` is required so
-      # maturin can find a Python to read pyproject.toml — the produced wheel
-      # is `py3-none-<plat>` and doesn't depend on a specific Python version.
-      - name: build cli wheel
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: pypi_files-python-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
+          path: crates/monty-python/dist
+
+      # Maturin performs one PGO cycle for bin bindings for all versions (runtime is not
+      # tied to the Python ABI).
+      - name: build runtime wheel
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
-          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
+          # `uv` provides Python 3.14 inside the manylinux container. Maturin
+          # needs its full path; the `3.14` selector does not search uv installs.
+          before-script-linux: |
+            if [[ "$PGO_RUNTIME" == 'true' ]]; then
+              curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL=/usr/local/bin sh
+              UV_PYTHON_INSTALL_DIR=/opt/uv-python uv python install 3.14
+            fi
+          args: --release ${{ matrix.pgo-args }} --out dist
           rust-toolchain: stable
-          docker-options: -e CI
-          working-directory: crates/monty-runtime
-
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: pypi_files-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
-          path: crates/monty-python/dist
-
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: pypi_files-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}-cli
-          path: crates/monty-runtime/dist
-
-  # PGO-optimized builds for main platforms
-  build-pgo:
-    name: build pgo on ${{ matrix.os }}
-    # only run on push to main, on tags, or if 'Full Build' label is present
-    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux x86_64 (manylinux)
-          - os: linux
-            runs-on: ubuntu-latest
-            interpreter: 3.10 3.11 3.12 3.13 3.14
-          # Windows x86_64
-          - os: windows
-            runs-on: windows-latest
-            interpreter: 3.10 3.11 3.12 3.13 3.14
-          # macOS aarch64 (Apple Silicon)
-          - os: macos
-            runs-on: macos-latest
-            interpreter: 3.10 3.11 3.12 3.13 3.14
-
-    runs-on: ${{ matrix.runs-on }}
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: '3.12'
-
-      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
-        with:
-          toolchain: stable
-          components: llvm-tools
-
-      - name: build PGO wheel
-        id: pgo
-        uses: ./.github/actions/build-pgo-wheel
-        with:
-          interpreter: ${{ matrix.interpreter }}
-          rust-toolchain: stable
-
-      # the PGO-optimized cli wheel for the main platforms — reuses the
-      # merged profile data from the build-pgo-wheel action above (which
-      # exercised an instrumented monty binary via `exercise.py`).
-      # `-i` is required so maturin can find a Python to read pyproject.toml
-      # inside the manylinux docker container; the produced wheel is
-      # `py3-none-<plat>` and doesn't depend on a specific Python version.
-      - name: build cli wheel
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
-        with:
-          manylinux: manylinux_2_28
-          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
-          rust-toolchain: stable
-          docker-options: -e CI
+          rustup-components: ${{ matrix.pgo-runtime && 'llvm-tools-preview' || '' }}
+          docker-options: -e CI -e UV_PYTHON -e PGO_RUNTIME
           working-directory: crates/monty-runtime
         env:
-          RUSTFLAGS: '-Cprofile-use=${{ github.workspace }}/merged.profdata'
+          PGO_RUNTIME: ${{ matrix.pgo-runtime }}
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: pypi_files-${{ matrix.os }}-pgo
-          path: ${{ steps.pgo.outputs.wheel-dir }}
-
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: pypi_files-${{ matrix.os }}-pgo-cli
+          name: pypi_files-runtime-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
           path: crates/monty-runtime/dist
 
   # Test wheels on exotic architectures via QEMU
@@ -746,7 +694,7 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: pypi_files-linux-${{ matrix.target }}-*
+          pattern: pypi_files-*-linux-${{ matrix.target }}-*
           merge-multiple: true
           path: dist
 
@@ -777,7 +725,7 @@ jobs:
   # Test wheels on main OS platforms
   test-builds-os:
     name: test build on ${{ matrix.os }}
-    needs: [build, build-pgo]
+    needs: [build]
     runs-on: ${{ matrix.runs-on }}
 
     strategy:
@@ -802,7 +750,7 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: pypi_files-${{ matrix.os }}-*
+          pattern: pypi_files-*-${{ matrix.os }}-*
           merge-multiple: true
           path: dist
 
@@ -834,7 +782,7 @@ jobs:
 
   # Inspect built artifacts
   inspect-python-assets:
-    needs: [build, build-pgo, build-sdist]
+    needs: [build, build-sdist]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -847,7 +795,7 @@ jobs:
         run: |
           ls -lhR dist/
           ls -1 dist/ | wc -l
-          echo "Expected ~64 files (5 Python versions × 10 platform variants + 12 cli wheels + sdists + metapackage)"
+          echo "Expected 76 files (5 Python versions × 12 platform variants + 12 runtime wheels + 2 sdists + 2 metapackage files)"
 
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
         with:
@@ -1094,14 +1042,14 @@ jobs:
         run: npm install
         working-directory: crates/monty-js
 
-      - name: Build wasm package assets
-        run: make build-wasm
+      - name: Build wasm package assets and verify generated declarations
+        run: make check-wasm-types
 
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: wasm-bindings
-          path: crates/monty-js/dist/worker/monty_wasm_runtime.wasm
+          path: crates/monty-js/dist/worker/component
           if-no-files-found: error
     env:
       CARGO_INCREMENTAL: '1'
@@ -1131,11 +1079,11 @@ jobs:
         run: npm run build:ts
         working-directory: crates/monty-js
 
-      - name: Download wasm module
+      - name: Download wasm component
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: wasm-bindings
-          path: crates/monty-js/dist/worker
+          path: crates/monty-js/dist/worker/component
 
       # the wasm specs are node-only, and this is the job that has the module
       - name: Test wasm module in node
@@ -1150,7 +1098,6 @@ jobs:
     name: assemble JS packages
     needs:
       - build
-      - build-pgo
       - build-js-binaries
       - build-wasm
     runs-on: ubuntu-latest
@@ -1188,14 +1135,14 @@ jobs:
       - name: Download runtime wheel artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: pypi_files-*-cli
+          pattern: pypi_files-runtime-*
           path: crates/monty-js/artifacts
 
-      - name: Download wasm artifact
+      - name: Download wasm component
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: wasm-bindings
-          path: crates/monty-js/dist/worker
+          path: crates/monty-js/dist/worker/component
 
       - name: Assemble, validate, and pack
         run: npm run assemble-packages

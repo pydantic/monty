@@ -57,7 +57,7 @@
     "build:debug": "run-s build:napi:debug build:ts",
     "build:napi": "napi build --platform --release --esm --js native-addon.js --dts native-addon.generated.d.ts",
     "build:napi:debug": "napi build --platform --esm --js native-addon.js --dts native-addon.generated.d.ts",
-    "build:wasm": "cargo build -p monty-wasm-runtime --target wasm32-wasip1 --release && node scripts/copy-wasm.mjs",
+    "build:wasm": "cargo build -p monty-wasm-runtime --target wasm32-wasip1 --release && node scripts/build-component.mjs",
     "build:ts": "tsc",
     "format": "prettier . -w",
     "lint": "oxlint .",
@@ -68,9 +68,10 @@
     "create-platform-packages": "node scripts/create-platform-packages.mjs"
   },
   "dependencies": {
-    "@bjorn3/browser_wasi_shim": "^0.4.1"
+    "@bytecodealliance/preview2-shim": "^0.19.0"
   },
   "devDependencies": {
+    "@bytecodealliance/jco": "^1.25.2",
     "@emnapi/core": "^1.5.0",
     "@emnapi/runtime": "^1.5.0",
     "@napi-rs/cli": "^3.2.0",

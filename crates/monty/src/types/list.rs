@@ -901,7 +901,7 @@ fn do_list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<
     let items = mem::take(&mut list.get_mut(vm.heap).items);
     defer_drop_mut!(items, vm);
 
-    let sort_result = parse_and_sort(items, args, vm);
+    let sort_result = parse_and_sort("sort() key argument", items, args, vm);
 
     // Swap our (sorted) buffer back into the list. Whatever the user placed
     // on the live empty list during the sort ends up in `items`; if
