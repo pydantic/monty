@@ -735,6 +735,11 @@ fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
 /// jump from below the soft limit past the hard ceiling. The reported figure is
 /// what each result really costs, so it pins down that the refusal accounted for
 /// the whole allocation rather than tripping on some smaller intermediate.
+///
+/// Every case here refuses at a one-shot preflight, whose size is deterministic.
+/// A refusal that instead depends on where a fill loop's poll lands has no
+/// stable figure to pin — test that as a property, as the `batched` case below
+/// does.
 #[test]
 fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
@@ -775,12 +780,6 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         (
             "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
             16_032_590,
-        ),
-        // A hint-less source gets no preflight, so only the fill loop's own
-        // poll can stop `batched` short of the hard limit.
-        (
-            "import itertools\nnext(itertools.batched(itertools.count(), 1_000_000_000))",
-            1_081_395,
         ),
     ];
 
@@ -900,6 +899,33 @@ fn reading_partial_args_cannot_kill_the_worker() {
     child.shutdown();
 }
 
+/// A hint-less source gets no preflight, so only the fill loop's own memory
+/// poll can stop `batched` short of the hard limit. Where that poll lands
+/// depends on how far the batch's `Vec` has doubled, so this pins the property
+/// — refused above the soft limit, well short of the hard ceiling — rather than
+/// a byte figure a single reallocation would move by ~1 MiB.
+#[test]
+fn a_hint_less_batched_is_stopped_by_the_fill_loop_poll() {
+    const SOFT_LIMIT: u64 = 1024 * 1024;
+    // `monty-alloc`'s headroom above the soft limit, without type checking
+    const HARD_CEILING: u64 = SOFT_LIMIT + 4 * 1024 * 1024;
+
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(SOFT_LIMIT));
+    let code = "import itertools\nnext(itertools.batched(itertools.count(), 1_000_000_000))";
+    let (_, event) = child.feed(code);
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError");
+    let message = error.message.expect("MemoryError should have a message");
+    let used = reported_usage(&message, code);
+    assert!(
+        (SOFT_LIMIT..HARD_CEILING).contains(&used),
+        "{code}: reported {used} bytes, expected a refusal between {SOFT_LIMIT} and {HARD_CEILING}"
+    );
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
 /// A small `n` caps a batch however long the source, so batching a huge
 /// exact-hint iterable must not trip the `batched` preflight — the memory
 /// really is bounded by `n`, not by the source.
@@ -934,16 +960,22 @@ fn bounded_deque_extend_is_not_preflighted() {
 fn assert_reported_usage(message: &str, expected: u64, code: &str) {
     const TOLERANCE: u64 = 1024;
 
-    let used: u64 = message
-        .strip_prefix("memory limit exceeded: ")
-        .and_then(|rest| rest.strip_suffix(" bytes > 1048576 bytes"))
-        .unwrap_or_else(|| panic!("{code}: unexpected message {message:?}"))
-        .parse()
-        .unwrap_or_else(|_| panic!("{code}: unexpected message {message:?}"));
+    let used = reported_usage(message, code);
     assert!(
         used.abs_diff(expected) <= TOLERANCE,
         "{code}: reported {used} bytes, expected within {TOLERANCE} of {expected}"
     );
+}
+
+/// Parse the bytes-used figure out of a `memory limit exceeded` message raised
+/// against a 1 MiB limit, panicking with `code` if the message is not one.
+fn reported_usage(message: &str, code: &str) -> u64 {
+    message
+        .strip_prefix("memory limit exceeded: ")
+        .and_then(|rest| rest.strip_suffix(" bytes > 1048576 bytes"))
+        .unwrap_or_else(|| panic!("{code}: unexpected message {message:?}"))
+        .parse()
+        .unwrap_or_else(|_| panic!("{code}: unexpected message {message:?}"))
 }
 
 /// A refused allocation must leave the parent something it can classify: the
