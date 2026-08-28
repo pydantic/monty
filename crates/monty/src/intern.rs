@@ -1127,6 +1127,24 @@ pub enum StaticStrings {
     Func,
     /// `partial.keywords` attribute.
     Keywords,
+    /// `base64.a85encode()` function.
+    #[strum(serialize = "a85encode")]
+    A85Encode,
+    /// `base64.a85decode()` function.
+    #[strum(serialize = "a85decode")]
+    A85Decode,
+    /// `foldspaces` parameter of `base64.a85encode()` / `a85decode()`.
+    #[strum(serialize = "foldspaces")]
+    Foldspaces,
+    /// `wrapcol` parameter of `base64.a85encode()`.
+    #[strum(serialize = "wrapcol")]
+    Wrapcol,
+    /// `adobe` parameter of `base64.a85encode()` / `a85decode()`.
+    #[strum(serialize = "adobe")]
+    Adobe,
+    /// `ignorechars` parameter of `base64.a85decode()`.
+    #[strum(serialize = "ignorechars")]
+    Ignorechars,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.
