@@ -198,7 +198,7 @@ mod tests {
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0x3ee2_697e_439b_44b2,
+            0xbff4_0ba6_89e0_878a,
             "static strings changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(static_strings_fingerprint())
         );

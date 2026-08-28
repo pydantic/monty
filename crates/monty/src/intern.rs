@@ -1380,6 +1380,16 @@ pub enum StaticStrings {
     Size,
     /// `state` parameter of `Random.setstate()`.
     State,
+
+    // ==========================
+    // copy module strings, appended at the enum end for the same reason.
+    /// `copy.deepcopy()`. The module name and `copy.copy()` reuse [`Self::Copy`].
+    Deepcopy,
+    /// `memo` parameter of `copy.deepcopy()`.
+    Memo,
+    /// `_nil` parameter of `copy.deepcopy()`, CPython's private sentinel.
+    #[strum(serialize = "_nil")]
+    NilSentinel,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

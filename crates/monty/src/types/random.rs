@@ -23,9 +23,12 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_bytes, hash_python_str, identity_hash},
-    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    modules::random::{RandomFunctions, random_dispatch},
+    modules::{
+        copy::{Memo, PyDeepCopy},
+        random::{RandomFunctions, random_dispatch},
+    },
     types::{LazyHeapSet, PyTrait, Type, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
@@ -582,5 +585,31 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Random> {
             args.drop_with(vm);
             Err(ExcType::attribute_error("Random", attr.as_str(vm.interns)))
         }
+    }
+}
+
+impl<'h> HeapRead<'h, Random> {
+    /// Allocates a generator at the same point in the same sequence.
+    ///
+    /// How `copy.copy` rebuilds a generator: CPython pickles `getstate()` into
+    /// a fresh `Random`, so the two draw the same numbers from then on. An
+    /// unseeded generator copies as unseeded, and the two then take *separate*
+    /// entropy from the host — CPython seeds at construction, so its copies
+    /// agree (see `limitations/copy.md`).
+    pub(crate) fn allocate_like(&self, vm: &mut VM<'h>) -> Value {
+        let source = self.get(vm.heap);
+        let copy = Random {
+            rng: source.rng.clone(),
+            gauss_next: source.gauss_next,
+        };
+        Value::Ref(vm.heap.allocate(HeapData::Random(Box::new(copy))))
+    }
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, Random> {
+    /// A generator holds no Python values, so its deep copy is the shallow one.
+    #[inline(never)]
+    fn py_deep_copy(&self, _source: &Value, _memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(self.allocate_like(vm))
     }
 }

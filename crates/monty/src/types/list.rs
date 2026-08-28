@@ -14,6 +14,7 @@ use crate::{
         HeapReader,
     },
     intern::StaticStrings,
+    modules::copy::{Memo, PyDeepCopy, deep_copy},
     resource_checks::check_repeat_size,
     sorting::parse_and_sort,
     types::{
@@ -212,9 +213,10 @@ impl<'h> HeapRead<'h, List> {
 
     /// Clones the item at `index`, or `None` once the list has shrunk past it.
     ///
-    /// The comparison walks index the *other* list directly while a user
-    /// `__eq__` may be shrinking it, so its length cannot be trusted between
-    /// iterations.
+    /// For walks that run Python between steps and so cannot trust a length
+    /// read earlier: the comparison walks index the *other* list directly
+    /// while a user `__eq__` may be shrinking it, and `copy.deepcopy` runs a
+    /// `__deepcopy__` hook between items.
     pub(crate) fn try_clone_item(&self, index: usize, vm: &mut VM<'h>) -> Option<Value> {
         self.get(vm.heap)
             .items
@@ -1086,6 +1088,40 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
             self.get_mut(vm.heap).index += 1;
         }
         Ok(item)
+    }
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
+    /// Copies into a shell memoized before its items are, so a list holding
+    /// itself resolves to the shell rather than recursing forever.
+    #[inline(never)]
+    fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let copy_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
+        let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
+        let (copy, vm) = guard.as_parts_mut();
+        memo.insert(source, copy, vm)?;
+        let len = self.get(vm.heap).len();
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        // The length is never cached across a step: copying an item runs Python
+        // (a `__deepcopy__` hook, or a `__hash__` reached while filling a nested
+        // dict), which can shrink the source. Reading it live also visits items
+        // appended mid-walk, which is what CPython's `for a in x` does.
+        for index in 0.. {
+            let (_, vm) = guard.as_parts_mut();
+            vm.heap.tracker.check_time_every(index)?;
+            let Some(item) = self.try_clone_item(index, vm) else {
+                break;
+            };
+            let copied = deep_copy(&item, memo, vm);
+            item.drop_with(vm);
+            let copied = copied?;
+            let HeapReadOutput::List(mut dest) = vm.heap.read(copy_id) else {
+                unreachable!("copy was allocated as a list")
+            };
+            dest.append(vm, copied);
+        }
+        let (copy, _) = guard.into_parts();
+        Ok(copy)
     }
 }
 

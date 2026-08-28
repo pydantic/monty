@@ -34,6 +34,7 @@ use crate::{
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
+    modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     resource_checks::check_repeat_size,
     types::{
         LazyHeapSet, Type,
@@ -683,5 +684,26 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TupleIterator> {
             self.get_mut(vm.heap).index += 1;
         }
         Ok(item)
+    }
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, Tuple> {
+    /// Copies a tuple, rebuilding it only when deep-copying changed an item — so
+    /// a tuple of immutables copies to itself, as in CPython.
+    #[inline(never)]
+    fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let items = deep_copy_slots(self.get(vm.heap).as_slice().len(), memo, vm, |index, vm| {
+            self.clone_item(index, vm)
+        })?;
+        let unchanged = items
+            .iter()
+            .enumerate()
+            .all(|(index, item)| self.get(vm.heap).as_slice()[index].id() == item.id());
+        if unchanged {
+            items.drop_with(vm);
+            Ok(source.clone_with_heap(vm.heap))
+        } else {
+            Ok(allocate_tuple(items.into_iter().collect(), vm.heap))
+        }
     }
 }
