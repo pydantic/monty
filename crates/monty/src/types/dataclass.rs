@@ -189,7 +189,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dataclass> {
         let vm = &mut *guard;
         let mut hasher = DefaultHasher::new();
         // Hash the class name
-        self.get(vm.heap).name.hash(&mut hasher);
+        self.get(vm.heap).name.as_str(vm.interns).hash(&mut hasher);
         // Hash each declared field (name, value) pair in order
         let field_count = self.get(vm.heap).field_names.len();
         for i in 0..field_count {

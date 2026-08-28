@@ -70,17 +70,11 @@ test-browser: install-js ## Browser (Vitest) test of the wasm path in a real hea
 	cd crates/monty-js && npm run build:wasm && npm run build:ts && npx playwright install chromium && npm run test:browser
 
 .PHONY: dev-py-pgo
-dev-py-pgo: install-py ## Install the python package for development with profile-guided optimization
-	$(eval PROFDATA := $(shell mktemp -d))
-	# the profiling run below spawns `monty` workers; build the runtime outside
-	# the instrumented build so only the client extension is profiled
-	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml --release
-	RUSTFLAGS='-Cprofile-generate=$(PROFDATA)' uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
-	uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
-	$(eval LLVM_PROFDATA := $(shell rustup run stable bash -c 'echo $$RUSTUP_HOME/toolchains/$$RUSTUP_TOOLCHAIN/lib/rustlib/$$(rustc -Vv | grep host | cut -d " " -f 2)/bin/llvm-profdata'))
-	$(LLVM_PROFDATA) merge -o $(PROFDATA)/merged.profdata $(PROFDATA)
-	RUSTFLAGS='-Cprofile-use=$(PROFDATA)/merged.profdata' $(uv-run-no-sync) maturin develop --uv -m crates/monty-python/Cargo.toml --release
-	@rm -rf $(PROFDATA)
+dev-py-pgo: install-py ## Install the Python package with a PGO-optimized Monty interpreter
+	rustup component add llvm-tools --toolchain stable
+	rm -rf target/pgo-wheels
+	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml --pgo
+	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
 .PHONY: format-rs
 format-rs:  ## Format Rust code with fmt

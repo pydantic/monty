@@ -2475,11 +2475,13 @@ dependencies = [
  "datatest-stable",
  "monty",
  "monty-fs",
+ "monty-pool",
  "monty-types",
  "pyo3",
  "pyo3-build-config",
  "similar 2.7.0",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

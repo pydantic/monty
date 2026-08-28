@@ -371,7 +371,7 @@ make build-wasm           Build the WASI 0.2 worker component (requires the wasm
 make check-wasm-types     Verify checked-in component declarations match the WIT interface
 make test-wasm            Test the wasm worker component from Node, with no browser
 make test-browser         Build and test the wasm worker path in headless Chromium
-make dev-py-pgo           Install the python package for development with profile-guided optimization
+make dev-py-pgo           Install the Python package with a PGO-optimized Monty runtime
 make format-rs            Format Rust code with fmt
 make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!
 make format-js            Format JS code with prettier
