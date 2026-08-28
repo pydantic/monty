@@ -2,8 +2,11 @@
 
 `typing` exists so type-annotated code can `import` it without
 `ModuleNotFoundError`. **No runtime type checking happens.** The forms are
-inert marker objects; subscripting them (`list[int]`, `Optional[str]`,
-`Union[int, str]`) returns a placeholder value and validates nothing.
+inert marker objects and none of them can be subscripted: `Optional[str]`,
+`List[int]` and `Callable[[int], str]` raise `TypeError: 'typing._SpecialForm'
+object is not subscriptable`, and `Union[int, str]` raises the `'type' object`
+wording the builtins use for `list[int]`. Annotations are unaffected, being
+stringized rather than evaluated (see below).
 
 ## Names defined
 
