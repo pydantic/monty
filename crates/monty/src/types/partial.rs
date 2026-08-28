@@ -147,17 +147,12 @@ impl Partial {
     /// `inc_ref`), so a caller holding this partial through a `&HeapData` can
     /// lift its contents out and then release the borrow.
     ///
-    /// Preflights the slot bytes both vectors need, as the container clones do
-    /// (`List::clone_all_items`, `Dict::clone_all_pairs`): every call of a
-    /// partial rebuilds them, so a widely bound one would otherwise burst past
-    /// the allocator's hard limit instead of raising `MemoryError`.
+    /// Preflights both vectors through [`check_clone_slots`].
     pub(crate) fn clone_parts(&self, heap: &impl ContainsHeap) -> RunResult<PartialParts> {
-        let slots = self
-            .args
-            .len()
-            .saturating_add(self.keywords.len().saturating_mul(2))
-            .saturating_mul(VALUE_SIZE);
-        heap.heap().tracker.check_allocation(slots)?;
+        check_clone_slots(
+            self.args.len().saturating_add(self.keywords.len().saturating_mul(2)),
+            heap,
+        )?;
         Ok((
             self.func.clone_with_heap(heap),
             self.args.iter().map(|arg| arg.clone_with_heap(heap)).collect(),
@@ -167,6 +162,17 @@ impl Partial {
                 .collect(),
         ))
     }
+}
+
+/// Preflights the bytes a bulk clone of `slots` values will allocate.
+///
+/// Every path that lifts a partial's contents out — a call, `p.args`,
+/// `p.keywords` — rebuilds them in full, so each needs the up-front check the
+/// container clones use (`List::clone_all_items`, `Dict::clone_all_pairs`);
+/// without it a widely bound partial bursts past the allocator's hard limit
+/// and kills the worker instead of raising `MemoryError`.
+fn check_clone_slots(slots: usize, heap: &impl ContainsHeap) -> RunResult<()> {
+    Ok(heap.heap().tracker.check_allocation(slots.saturating_mul(VALUE_SIZE))?)
 }
 
 /// Merges a call's `args` beneath the arguments a `partial` has bound.
@@ -382,12 +388,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
                 Ok(Some(CallResult::Value(func)))
             }
             "args" => {
+                check_clone_slots(self.get(vm.heap).args.len(), vm.heap)?;
                 let args: SmallVec<_> = (0..self.get(vm.heap).args.len())
                     .map(|index| self.get(vm.heap).args[index].clone_with_heap(vm))
                     .collect();
                 Ok(Some(CallResult::Value(allocate_tuple(args, vm.heap))))
             }
             "keywords" => {
+                check_clone_slots(self.get(vm.heap).keywords.len().saturating_mul(2), vm.heap)?;
                 let pairs: Vec<(Value, Value)> = (0..self.get(vm.heap).keywords.len())
                     .map(|index| {
                         let (name, value) = &self.get(vm.heap).keywords[index];

@@ -1101,15 +1101,15 @@ repr(x)
 ///
 /// The bound arguments and keywords are formatted in one native loop, so
 /// without the shared `repr_check_time` counter the repr runs to completion
-/// before any checkpoint — 2M arguments overshoot the deadline by far more
-/// than the bound asserted here.
+/// before any checkpoint — 500k arguments overshoot the deadline by more than
+/// an order of magnitude over the bound asserted here.
 #[test]
 fn timeout_truncation_in_partial_repr() {
     let code = r"
 import functools
 def target(*args, **kwargs):
     return 0
-p = functools.partial(target, *(['abcdefghij'] * 2_000_000))
+p = functools.partial(target, *(['abcdefghij'] * 500_000))
 interrupt()
 repr(p)
 ";

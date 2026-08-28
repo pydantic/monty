@@ -570,6 +570,16 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [None] * 40_000\np()",
             1_314_563,
         ),
+        // Reading `p.args` / `p.keywords` rebuilds them in full, so both are
+        // preflighted like any other bulk container copy.
+        (
+            "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [0] * 40_000\np.args",
+            1_314_563,
+        ),
+        (
+            "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
+            1_071_419,
+        ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
@@ -664,6 +674,31 @@ fn host_call_arguments_over_the_limit_still_fail_gracefully() {
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
     let (_, event) = child.feed("foobar('A' * (16 * 1024 * 1024))");
     assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// Reading `p.args` off a widely bound partial must raise `MemoryError` and
+/// leave the session usable, not kill the worker.
+///
+/// The materialization is a single 16 MiB burst, four times the allocator's
+/// hard-limit headroom, so before the preflight in `check_clone_slots` this
+/// exited with `OOM_EXIT_CODE` mid-turn and the pool had to replace the child.
+#[test]
+fn reading_partial_args_cannot_kill_the_worker() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(64 * 1024 * 1024));
+    // Sized to sit just under the soft limit, so the burst would cross the hard
+    // ceiling rather than merely exceeding what a checkpoint would have caught.
+    let build = "import functools\n\
+                 def f(*a):\n    return 0\n\
+                 p = functools.partial(f, *range(1_000_000))\n\
+                 junk = [0] * 2_800_000";
+    assert_eq!(child.feed_complete(build), MontyObject::None);
+
+    let (_, event) = child.feed("p.args");
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError");
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
     child.shutdown();
 }
