@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import functools
 import json
 import os
 import re
@@ -605,6 +606,14 @@ for x_it in iter([1, 2, 3]):
     assert_type(x_it, int)
 # two-argument iter(callable, sentinel)
 assert_type(list(iter(lambda: 0, 0)), list[int])
+
+# ty models `functools.partial` itself, so a call through one keeps the wrapped
+# return type. The annotation is the part the stub's `Generic[_T]` base carries:
+# dropping it makes `partial[...]` a `not-subscriptable` error here, while this
+# same annotation runs fine, Monty stringizing annotations rather than
+# evaluating them.
+partial_ann: functools.partial[list[int]] = functools.partial(get_list_int)
+assert_type(partial_ann(), list[int])
 
 # Loop variables keep their element type for every iterable, not just lists
 for x_list in get_list_int():

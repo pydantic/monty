@@ -49,6 +49,10 @@ These names are absent from the module namespace rather than stubbed, so they ar
   the type.
 - **`partial` objects carry no dunder attributes.** `p.__call__` and `p.__doc__` both raise `AttributeError`, where
   CPython has a method-wrapper and the type's docstring respectively.
+- **`partial[int]` is not subscriptable at runtime.** CPython returns a `types.GenericAlias`; Monty raises
+  `TypeError: 'type' object is not subscriptable`, as it does for `list[int]` — there are no runtime generic aliases
+  at all (see ./typing.md). The type checker accepts the expression, so this is one of the few divergences the stubs
+  cannot reject up front. Annotations are unaffected, Monty stringizing them rather than evaluating them.
 - **A `partial` crossing the host boundary marshals as its `repr`.** Python and JavaScript hosts receive
   `MontyObject::Repr("functools.partial(...)")` rather than a callable, since neither side can call back into a value
   that only exists inside the sandbox.
