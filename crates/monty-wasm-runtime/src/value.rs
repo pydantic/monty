@@ -8,13 +8,13 @@ use std::{borrow::Cow, mem::size_of};
 
 use monty_proto::{DEFAULT_MAX_DECODE_BYTES, MAX_VALUE_DEPTH, exceeds_max_value_depth};
 use monty_types::{
-    DictPairs, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone,
-    MontyType,
+    DictPairs, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
+    MontyTimeZone, MontyType,
 };
 
 use crate::bindings::exports::pydantic::monty::worker::{
     CycleNode, DataclassNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode, FunctionNode, NamedTupleNode,
-    NodePair, TimedeltaNode, TimezoneNode, Value, ValueNode,
+    NodePair, TimeNode, TimedeltaNode, TimezoneNode, Value, ValueNode,
 };
 
 /// Remaining expanded-value allowance shared by every arena in one request.
@@ -79,6 +79,9 @@ fn node_host_size(node: &ValueNode) -> usize {
         }
         ValueNode::Bytes(value) => value.len(),
         ValueNode::NamedTuple(value) => value.type_name.len().saturating_add(strings_size(&value.field_names)),
+        ValueNode::Datetime(value) => value.timezone_name.as_ref().map_or(0, String::len),
+        ValueNode::Time(value) => value.timezone_name.as_ref().map_or(0, String::len),
+        ValueNode::Timezone(value) => value.name.as_ref().map_or(0, String::len),
         ValueNode::Exception(value) => value.message.as_ref().map_or(0, String::len),
         ValueNode::FileHandle(value) => value.path.len(),
         ValueNode::Dataclass(value) => value.name.len().saturating_add(strings_size(&value.field_names)),
@@ -154,6 +157,18 @@ fn read_node(index: u32, nodes: &mut [Option<ValueNode>], depth: usize) -> Resul
                 microsecond: value.microsecond,
                 offset_seconds: value.offset_seconds,
                 timezone_name: value.timezone_name,
+            })
+        }
+        ValueNode::Time(value) => {
+            validate_time(&value)?;
+            MontyObject::Time(MontyTime {
+                hour: value.hour,
+                minute: value.minute,
+                second: value.second,
+                microsecond: value.microsecond,
+                offset_seconds: value.offset_seconds,
+                timezone_name: value.timezone_name,
+                fold: value.fold,
             })
         }
         ValueNode::Timedelta(value) => {
@@ -269,6 +284,25 @@ fn validate_datetime(value: &DatetimeNode) -> Result<(), String> {
     }
 }
 
+/// Validates time ranges and timezone-name presence.
+fn validate_time(value: &TimeNode) -> Result<(), String> {
+    if value.hour > 23 {
+        Err(format!("Time.hour {} is outside the range 0..=23", value.hour))
+    } else if value.minute > 59 {
+        Err(format!("Time.minute {} is outside the range 0..=59", value.minute))
+    } else if value.second > 59 {
+        Err(format!("Time.second {} is outside the range 0..=59", value.second))
+    } else if value.microsecond > 999_999 {
+        Err(format!("Time.microsecond {} exceeds maximum 999999", value.microsecond))
+    } else if value.offset_seconds.is_none() && value.timezone_name.is_some() {
+        Err("Time.timezone_name requires offset_seconds".to_owned())
+    } else if value.fold > 1 {
+        Err(format!("Time.fold {} is outside the range 0..=1", value.fold))
+    } else {
+        Ok(())
+    }
+}
+
 /// Validates normalized timedelta components.
 fn validate_timedelta(value: &TimedeltaNode) -> Result<(), String> {
     if !(0..86_400).contains(&value.seconds) {
@@ -338,6 +372,15 @@ fn push_node(object: MontyObject, nodes: &mut Vec<ValueNode>) -> u32 {
             microsecond: value.microsecond,
             offset_seconds: value.offset_seconds,
             timezone_name: value.timezone_name,
+        }),
+        MontyObject::Time(value) => ValueNode::Time(TimeNode {
+            hour: value.hour,
+            minute: value.minute,
+            second: value.second,
+            microsecond: value.microsecond,
+            offset_seconds: value.offset_seconds,
+            timezone_name: value.timezone_name,
+            fold: value.fold,
         }),
         MontyObject::TimeDelta(value) => ValueNode::Timedelta(TimedeltaNode {
             days: value.days,

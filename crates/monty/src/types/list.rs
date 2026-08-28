@@ -19,7 +19,7 @@ use crate::{
     types::{
         LazyHeapSet, Type,
         long_int::repeat_count,
-        slice::{normalize_sequence_index, slice_collect_iterator},
+        slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -826,15 +826,19 @@ fn list_index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -
     let pos_args = args.into_pos_only("list.index", vm.heap)?;
     defer_drop!(pos_args, vm);
 
-    // Bounds are coerced before the length is read: `as_int` may dispatch a user
-    // `__index__` that mutates this list, and CPython normalizes against the
+    // Bounds are coerced before the length is read: the coercion may dispatch a
+    // user `__index__` that mutates this list, and CPython normalizes against the
     // length *after* argument parsing. Reading it first would resolve a negative
     // bound against a stale length and search the wrong window.
     let (value, start_arg, end_arg) = match pos_args.as_slice() {
         [] => return Err(ExcType::type_error_at_least("list.index", 1, 0)),
         [value] => (value, None, None),
-        [value, start_arg] => (value, Some(start_arg.as_int(vm)?), None),
-        [value, start_arg, end_arg] => (value, Some(start_arg.as_int(vm)?), Some(end_arg.as_int(vm)?)),
+        [value, start_arg] => (value, Some(value_to_i64_bound(start_arg, vm)?), None),
+        [value, start_arg, end_arg] => (
+            value,
+            Some(value_to_i64_bound(start_arg, vm)?),
+            Some(value_to_i64_bound(end_arg, vm)?),
+        ),
         other => return Err(ExcType::type_error_at_most("list.index", 3, other.len())),
     };
 

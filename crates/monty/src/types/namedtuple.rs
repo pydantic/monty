@@ -42,7 +42,7 @@ use crate::{
         iter::collect_owned_iterable,
         long_int::repeat_count,
         py_trait::LazyHeapSet,
-        slice::{normalize_sequence_index, slice_collect_iterator},
+        slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
         str::allocate_string,
         tuple::TupleVec,
     },
@@ -674,12 +674,12 @@ impl<'h> HeapRead<'h, NamedTuple> {
             [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
             [value] => (value, 0, len),
             [value, start_arg] => {
-                let start = normalize_sequence_index(start_arg.as_int(vm)?, len);
+                let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
                 (value, start, len)
             }
             [value, start_arg, end_arg] => {
-                let start = normalize_sequence_index(start_arg.as_int(vm)?, len);
-                let end = normalize_sequence_index(end_arg.as_int(vm)?, len).max(start);
+                let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
+                let end = normalize_sequence_index(value_to_i64_bound(end_arg, vm)?, len).max(start);
                 (value, start, end)
             }
             other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),

@@ -92,12 +92,19 @@ function pushMarked(object: Record<string, unknown>, nodes: ValueNode[]): ValueN
           minute: Number(object.minute),
           second: Number(object.second),
           microsecond: Number(object.microsecond),
-          ...(object.offsetSeconds === undefined || object.offsetSeconds === null
-            ? {}
-            : {
-                offsetSeconds: Number(object.offsetSeconds),
-                ...(typeof object.timezoneName === 'string' ? { timezoneName: object.timezoneName } : {}),
-              }),
+          ...timeZoneFields(object, 'DateTime'),
+        },
+      }
+    case 'Time':
+      return {
+        tag: 'time',
+        val: {
+          hour: Number(object.hour),
+          minute: Number(object.minute),
+          second: Number(object.second),
+          microsecond: Number(object.microsecond),
+          ...timeZoneFields(object, 'Time'),
+          fold: Number(object.fold ?? 0),
         },
       }
     case 'TimeDelta':
@@ -136,6 +143,23 @@ function pushMarked(object: Record<string, unknown>, nodes: ValueNode[]): ValueN
     default:
       throw new TypeError(`Unknown Monty marker type: ${String(object[TYPE_MARKER])}`)
   }
+}
+
+/** Preserves aware-time metadata while rejecting an orphaned timezone name. */
+function timeZoneFields(
+  object: Record<string, unknown>,
+  typeName: 'DateTime' | 'Time',
+): { offsetSeconds?: number; timezoneName?: string } {
+  const aware = object.offsetSeconds !== undefined && object.offsetSeconds !== null
+  if (!aware && object.timezoneName !== undefined && object.timezoneName !== null) {
+    throw new TypeError(`Monty${typeName} timezoneName requires offsetSeconds`)
+  }
+  return aware
+    ? {
+        offsetSeconds: Number(object.offsetSeconds),
+        ...(typeof object.timezoneName === 'string' ? { timezoneName: object.timezoneName } : {}),
+      }
+    : {}
 }
 
 /** Validates and converts a host dataclass marker. */
@@ -232,6 +256,9 @@ function readValue(index: number, nodes: ValueNode[], visiting: Set<number>): un
       break
     case 'datetime':
       value = { [TYPE_MARKER]: 'DateTime', ...node.val }
+      break
+    case 'time':
+      value = { [TYPE_MARKER]: 'Time', ...node.val }
       break
     case 'timedelta':
       value = { [TYPE_MARKER]: 'TimeDelta', ...node.val }

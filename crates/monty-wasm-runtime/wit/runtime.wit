@@ -48,6 +48,17 @@ interface worker {
         timezone-name: option<string>,
     }
 
+    /// Components of a Python `datetime.time`.
+    record time-node {
+        hour: u8,
+        minute: u8,
+        second: u8,
+        microsecond: u32,
+        offset-seconds: option<s32>,
+        timezone-name: option<string>,
+        fold: u8,
+    }
+
     /// Normalized components of a Python `datetime.timedelta`.
     record timedelta-node {
         days: s32,
@@ -117,6 +128,7 @@ interface worker {
         frozen-set(list<u32>),
         date(date-node),
         datetime(datetime-node),
+        time(time-node),
         timedelta(timedelta-node),
         timezone(timezone-node),
         exception(exception-value-node),

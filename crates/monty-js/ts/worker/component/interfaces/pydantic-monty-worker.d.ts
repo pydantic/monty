@@ -35,6 +35,15 @@ export interface DatetimeNode {
   offsetSeconds?: number
   timezoneName?: string
 }
+export interface TimeNode {
+  hour: number
+  minute: number
+  second: number
+  microsecond: number
+  offsetSeconds?: number
+  timezoneName?: string
+  fold: number
+}
 export interface TimedeltaNode {
   days: number
   seconds: number
@@ -86,6 +95,7 @@ export type ValueNode =
   | ValueNodeFrozenSet
   | ValueNodeDate
   | ValueNodeDatetime
+  | ValueNodeTime
   | ValueNodeTimedelta
   | ValueNodeTimezone
   | ValueNodeException
@@ -162,6 +172,10 @@ export interface ValueNodeDate {
 export interface ValueNodeDatetime {
   tag: 'datetime'
   val: DatetimeNode
+}
+export interface ValueNodeTime {
+  tag: 'time'
+  val: TimeNode
 }
 export interface ValueNodeTimedelta {
   tag: 'timedelta'
