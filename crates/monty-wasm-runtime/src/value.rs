@@ -4,7 +4,7 @@
 //! flat node arena whose container nodes hold indexes. Protobuf remains an
 //! internal detail of `monty-proto`; no wire bytes cross into JavaScript.
 
-use std::{borrow::Cow, mem::size_of};
+use std::borrow::Cow;
 
 use monty_proto::{DEFAULT_MAX_DECODE_BYTES, MAX_VALUE_DEPTH, exceeds_max_value_depth};
 use monty_types::{
@@ -32,13 +32,13 @@ impl Default for DecodeBudget {
 
 impl DecodeBudget {
     /// Charges an arena before conversion allocates its `MontyObject` tree.
-    fn charge(&mut self, nodes: &[ValueNode]) -> Result<(), String> {
+    fn charge(&mut self, nodes: &[ValueNode]) -> Result<usize, String> {
         let bytes = nodes
             .iter()
             .fold(0usize, |total, node| total.saturating_add(node_host_size(node)));
         if let Some(remaining) = self.remaining.checked_sub(bytes) {
             self.remaining = remaining;
-            Ok(())
+            Ok(bytes)
         } else {
             Err("component request values exceed the host-memory budget".to_owned())
         }
@@ -48,13 +48,15 @@ impl DecodeBudget {
 /// Converts one component value arena into an owned Monty boundary value.
 pub fn from_component(value: Value, budget: &mut DecodeBudget) -> Result<MontyObject, String> {
     let Value { root, nodes } = value;
-    budget.charge(&nodes)?;
+    let estimated_size = budget.charge(&nodes)?;
     let mut nodes = nodes.into_iter().map(Some).collect::<Vec<_>>();
     let object = read_node(root, &mut nodes, 0)?;
     if let Some(index) = nodes.iter().position(Option::is_some) {
         Err(format!("value node index {index} is unreachable from the root"))
     } else if exceeds_max_value_depth(&object) {
         Err("value exceeds the maximum nesting depth".to_owned())
+    } else if object.deep_host_size() > estimated_size {
+        Err("component value host-memory estimate is smaller than its decoded value".to_owned())
     } else {
         Ok(object)
     }
@@ -62,12 +64,9 @@ pub fn from_component(value: Value, budget: &mut DecodeBudget) -> Result<MontyOb
 
 /// Conservatively estimates one node using `MontyObject::host_size` accounting.
 fn node_host_size(node: &ValueNode) -> usize {
-    const BASE: usize = size_of::<MontyObject>();
-    const STR_OVERHEAD: usize = size_of::<String>();
-
     let strings_size = |strings: &[String]| {
         strings.iter().fold(0usize, |size, value| {
-            size.saturating_add(STR_OVERHEAD.saturating_add(value.len()))
+            size.saturating_add(MontyObject::host_metadata_string_size(value))
         })
     };
     let payload = match node {
@@ -90,9 +89,23 @@ fn node_host_size(node: &ValueNode) -> usize {
             .len()
             .saturating_add(value.docstring.as_ref().map_or(0, String::len)),
         ValueNode::Cycle(value) => value.placeholder.len(),
-        _ => 0,
+        ValueNode::Ellipsis
+        | ValueNode::NotImplemented
+        | ValueNode::None
+        | ValueNode::Boolean(_)
+        | ValueNode::Integer(_)
+        | ValueNode::Float(_)
+        | ValueNode::ListValue(_)
+        | ValueNode::TupleValue(_)
+        | ValueNode::Dict(_)
+        | ValueNode::Set(_)
+        | ValueNode::FrozenSet(_)
+        | ValueNode::Date(_)
+        | ValueNode::Timedelta(_)
+        | ValueNode::TypeName(_)
+        | ValueNode::BuiltinFunction(_) => 0,
     };
-    BASE.saturating_add(payload)
+    MontyObject::host_base_size().saturating_add(payload)
 }
 
 /// Converts one owned Monty boundary value into a component value arena.

@@ -121,14 +121,36 @@ impl EventSink for ComponentEventSink {
                 len,
                 max: MAX_FRAME_LEN,
             })
-        } else if event_values_host_size(event) > DEFAULT_MAX_DECODE_BYTES {
-            Err(FrameError::Io(io::Error::other(
-                "component event values exceed the host-memory budget",
-            )))
         } else {
-            self.events.push(event_from_proto(event.clone()));
+            let mut event = event.clone();
+            let component_event = match event.kind.take() {
+                Some(pb::child_event::Kind::OsCall(call)) => match PreparedOsEvent::from_proto(call) {
+                    Ok(event) => {
+                        check_event_value_budget(event.values_host_size())?;
+                        event.into_component()
+                    }
+                    Err(event) => event,
+                },
+                kind => {
+                    event.kind = kind;
+                    check_event_value_budget(event_values_host_size(&event))?;
+                    event_from_proto(event)
+                }
+            };
+            self.events.push(component_event);
             Ok(())
         }
+    }
+}
+
+/// Rejects a component event whose values exceed the expanded-memory budget.
+fn check_event_value_budget(size: usize) -> Result<(), FrameError> {
+    if size > DEFAULT_MAX_DECODE_BYTES {
+        Err(FrameError::Io(io::Error::other(
+            "component event values exceed the host-memory budget",
+        )))
+    } else {
+        Ok(())
     }
 }
 
@@ -139,47 +161,74 @@ fn event_values_host_size(event: &pb::ChildEvent) -> usize {
             .value
             .as_ref()
             .and_then(|value| value.0.as_ref())
-            .map_or(0, object_host_size),
-        Some(pb::child_event::Kind::FunctionCall(call)) => call
-            .args
-            .iter()
-            .chain(call.kwargs.iter().flat_map(|(key, value)| [key, value]))
-            .fold(0, |size, value| size.saturating_add(object_host_size(value))),
-        Some(pb::child_event::Kind::OsCall(call)) => match &call.call {
-            Some(pb::os_call::Call::Getenv(getenv)) => getenv
-                .default
-                .as_ref()
-                .and_then(|value| value.0.as_ref())
-                .map_or(0, object_host_size),
-            _ => 0,
-        },
+            .map_or(0, MontyObject::deep_host_size),
+        Some(pb::child_event::Kind::FunctionCall(call)) => values_host_size(
+            call.args
+                .iter()
+                .chain(call.kwargs.iter().flat_map(|(key, value)| [key, value])),
+        ),
         _ => 0,
     }
 }
 
-/// Estimates one value tree using the same accounting as protobuf decoding.
-fn object_host_size(object: &MontyObject) -> usize {
-    let mut size = object.host_size();
-    match object {
-        MontyObject::List(items)
-        | MontyObject::Tuple(items)
-        | MontyObject::Set(items)
-        | MontyObject::FrozenSet(items)
-        | MontyObject::NamedTuple { values: items, .. } => {
-            for item in items {
-                size = size.saturating_add(object_host_size(item));
+/// Totals the recursively expanded host footprint of boundary values.
+fn values_host_size<'a>(values: impl Iterator<Item = &'a MontyObject>) -> usize {
+    values.fold(0, |size, value| size.saturating_add(value.deep_host_size()))
+}
+
+/// An OS call projected once into the generic callback values lifted to JS.
+struct PreparedOsEvent {
+    function_name: String,
+    args: Vec<MontyObject>,
+    kwargs: Vec<(MontyObject, MontyObject)>,
+    call_id: u32,
+}
+
+impl PreparedOsEvent {
+    /// Validates and projects a typed protocol call without building WIT arenas.
+    fn from_proto(call: pb::OsCall) -> Result<Self, Event> {
+        let call_id = call.call_id;
+        match call.call.map(OsFunctionCall::try_from) {
+            Some(Ok(call)) => {
+                let function_name = call.name().to_owned();
+                let (args, kwargs) = call.to_args();
+                Ok(Self {
+                    function_name,
+                    args,
+                    kwargs,
+                    call_id,
+                })
             }
+            Some(Err(error)) => Err(invalid_event(&format!("invalid OS call: {error}"))),
+            None => Err(invalid_event("OsCall carried no call")),
         }
-        MontyObject::Dict(pairs) | MontyObject::Dataclass { attrs: pairs, .. } => {
-            for (key, value) in pairs {
-                size = size
-                    .saturating_add(object_host_size(key))
-                    .saturating_add(object_host_size(value));
-            }
-        }
-        _ => {}
     }
-    size
+
+    /// Returns the collective host footprint of every positional and keyword value.
+    fn values_host_size(&self) -> usize {
+        values_host_size(
+            self.args
+                .iter()
+                .chain(self.kwargs.iter().flat_map(|(key, value)| [key, value])),
+        )
+    }
+
+    /// Moves the already-budgeted values into semantic component arenas.
+    fn into_component(self) -> Event {
+        Event::OsCall(OsCallEvent {
+            function_name: self.function_name,
+            args: self.args.into_iter().map(value::into_component).collect(),
+            kwargs: self
+                .kwargs
+                .into_iter()
+                .map(|(key, value)| ValuePair {
+                    key: value::into_component(key),
+                    value: value::into_component(value),
+                })
+                .collect(),
+            call_id: self.call_id,
+        })
+    }
 }
 
 /// Converts a semantic component request into the child state machine's type.
@@ -313,7 +362,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
             call_id: call.call_id,
             method_call: call.method_call,
         }),
-        Some(pb::child_event::Kind::OsCall(call)) => os_event_from_proto(call),
+        Some(pb::child_event::Kind::OsCall(_)) => invalid_event("OsCall event bypassed component budget preparation"),
         Some(pb::child_event::Kind::NameLookup(lookup)) => Event::NameLookup(lookup.name),
         Some(pb::child_event::Kind::ResolveFutures(futures)) => Event::ResolveFutures(futures.pending_call_ids),
         Some(pb::child_event::Kind::Complete(complete)) => complete
@@ -331,31 +380,6 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
         Some(pb::child_event::Kind::FatalError(error)) => Event::FatalError(error.message),
         Some(pb::child_event::Kind::Shutdown(shutdown)) => Event::Shutdown(shutdown.dump),
         None => invalid_event("ChildEvent carried no kind"),
-    }
-}
-
-/// Projects a typed protocol OS call into the public callback shape.
-fn os_event_from_proto(call: pb::OsCall) -> Event {
-    let call_id = call.call_id;
-    match call.call.map(OsFunctionCall::try_from) {
-        Some(Ok(call)) => {
-            let function_name = call.name().to_owned();
-            let (args, kwargs) = call.to_args();
-            Event::OsCall(OsCallEvent {
-                function_name,
-                args: args.into_iter().map(value::into_component).collect(),
-                kwargs: kwargs
-                    .into_iter()
-                    .map(|(key, value)| ValuePair {
-                        key: value::into_component(key),
-                        value: value::into_component(value),
-                    })
-                    .collect(),
-                call_id,
-            })
-        }
-        Some(Err(error)) => invalid_event(&format!("invalid OS call: {error}")),
-        None => invalid_event("OsCall carried no call"),
     }
 }
 
