@@ -216,6 +216,47 @@ sorted([1, 2, 3], key=key_fn)
     );
 }
 
+/// An uncaught key-function error returns to the sorting call before an outer
+/// handler runs, preserving the synchronous evaluation boundary.
+#[test]
+fn not_implemented_in_sort_key_catchable_outside_key_fn() {
+    let code = "
+seen = []
+
+def key_fn(x):
+    seen.append(x)
+    ext_fn()
+
+try:
+    sorted([1, 2], key=key_fn)
+except NotImplementedError:
+    seen.append('caught')
+seen.append('after')
+seen
+";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let result = ex
+        .run_no_limits(vec![MontyObject::Function {
+            name: "ext_fn".to_owned(),
+            docstring: None,
+        }])
+        .unwrap();
+    assert_eq!(
+        result,
+        MontyObject::List(vec![
+            MontyObject::Int(1),
+            MontyObject::String("caught".to_owned()),
+            MontyObject::String("after".to_owned()),
+        ])
+    );
+}
+
 /// Rejected-suspension errors identify `list.sort()` rather than `sorted()`.
 #[test]
 fn not_implemented_in_list_sort_key_names_sort() {

@@ -398,7 +398,6 @@ impl VM<'_> {
             CallResult::FramePushed => {
                 // A new frame was pushed for a defined function call - we need to run it
                 // to completion.
-                let stack_depth = this.suspended_frames.len();
                 // Mark the frame as an exit point from the `run()` loop
                 this.current_frame_mut().should_return = true;
                 loop {
@@ -408,12 +407,9 @@ impl VM<'_> {
                             // Raise unsupported suspensions inside the callee so its
                             // exception handlers can observe them.
                             let error = this.unsupported_frame_exit(ctx, exit);
+                            // The `should_return` frame stops unwinding before an
+                            // outer handler can consume this error.
                             if let Some(error) = this.handle_exception(error) {
-                                // Unwinding normally stops after popping the `should_return`
-                                // frame; cover any frames still above the evaluation boundary.
-                                while this.suspended_frames.len() >= stack_depth {
-                                    this.pop_frame();
-                                }
                                 return Err(error);
                             }
                         }
