@@ -130,9 +130,10 @@ fn external_function_as_init_raises_not_implemented() {
 
 /// A user `__next__` calling an external function cannot suspend: like
 /// `__repr__`/`__str__` it runs synchronously via `evaluate_function`, so the
-/// call raises `NotImplementedError` (see `limitations/classes.md`). Rust-side
-/// for the same reason as `external_function_as_init_raises_not_implemented`:
-/// on CPython the external is a real function and the loop would succeed.
+/// call raises `NotImplementedError` at the `ext_fn()` call site inside
+/// `__next__` (see `limitations/classes.md`). Rust-side for the same reason as
+/// `external_function_as_init_raises_not_implemented`: on CPython the external
+/// is a real function and the loop would succeed.
 #[test]
 fn external_function_in_next_raises_not_implemented() {
     let code = "class Foo:\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return ext_fn()\n\nfor _x in Foo():\n    pass";
@@ -151,7 +152,66 @@ fn external_function_in_next_raises_not_implemented() {
         .unwrap_err();
     assert_eq!(
         err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 8, in <module>\n    for _x in Foo():\n              ~~~~~\nNotImplementedError: __next__: external function 'ext_fn' is not yet supported in this context"
+        "Traceback (most recent call last):\n  File \"test.py\", line 6, in __next__\n    return ext_fn()\n           ~~~~~~~~\nNotImplementedError: __next__: external function 'ext_fn' is not yet supported in this context"
+    );
+}
+
+/// The rejected-suspension `NotImplementedError` is raised at the offending
+/// call *inside* the key function's frame, so an ordinary `try`/`except`
+/// there observes it and the surrounding sort completes (#712). Rust-side
+/// because on CPython the external is a real function and never raises.
+#[test]
+fn not_implemented_in_sort_key_catchable_inside_key_fn() {
+    let code = "
+def key_fn(x):
+    try:
+        ext_fn()
+    except NotImplementedError:
+        return -x
+    return 0
+
+sorted([1, 2, 3], key=key_fn)
+";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let result = ex
+        .run_no_limits(vec![MontyObject::Function {
+            name: "ext_fn".to_owned(),
+            docstring: None,
+        }])
+        .unwrap();
+    assert_eq!(
+        result,
+        MontyObject::List(vec![MontyObject::Int(3), MontyObject::Int(2), MontyObject::Int(1)])
+    );
+}
+
+/// The rejected-suspension error names the builtin the user actually called:
+/// `list.sort()` must say `sort()`, not `sorted()` (#712).
+#[test]
+fn not_implemented_in_list_sort_key_names_sort() {
+    let code = "[1, 2].sort(key=lambda x: ext_fn())";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let err = ex
+        .run_no_limits(vec![MontyObject::Function {
+            name: "ext_fn".to_owned(),
+            docstring: None,
+        }])
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <lambda>\n    [1, 2].sort(key=lambda x: ext_fn())\n                              ~~~~~~~~\nNotImplementedError: sort() key argument: external function 'ext_fn' is not yet supported in this context"
     );
 }
 

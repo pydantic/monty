@@ -371,6 +371,8 @@ impl VM<'_> {
     /// User-defined functions run until their frame returns. An unresolved name raises
     /// `NameError`; external, OS, method, and future suspensions raise a variant-specific
     /// `NotImplementedError` because this context cannot preserve and resume its state.
+    /// These are raised at the suspension point inside the callee's frames, so the
+    /// callee can catch them with an ordinary `try`/`except` like any other exception.
     ///
     /// The nested `self.run()` below recurses on the native Rust stack, so
     /// re-entry is bounded via [`enter_run_reentry`](Self::enter_run_reentry)
@@ -391,30 +393,39 @@ impl VM<'_> {
         let mut guard = RunReentryGuard::new(self);
         let this = &mut *guard;
 
-        let exit = match this.call_function(callable, args)? {
-            CallResult::Value(v) => return Ok(v),
+        match this.call_function(callable, args)? {
+            CallResult::Value(v) => Ok(v),
             CallResult::FramePushed => {
                 // A new frame was pushed for a defined function call - we need to run it
                 // to completion.
                 let stack_depth = this.frames.len();
                 // Mark the frame as an exit point from the `run()` loop
                 this.current_frame_mut().should_return = true;
-                match this.run()? {
-                    FrameExit::Return(v) => return Ok(v),
-                    exit => {
-                        // Pop frames off the stack from this failed evaluation
-                        // (including the one just pushed)
-                        while this.frames.len() >= stack_depth {
-                            this.pop_frame();
+                loop {
+                    match this.run()? {
+                        FrameExit::Return(v) => return Ok(v),
+                        exit => {
+                            // A suspension this context cannot service. Raise the
+                            // error *at the suspension point*, inside the still-live
+                            // callee frames, so a `try`/`except` in the callee
+                            // observes it like any other exception (#712).
+                            let error = this.unsupported_frame_exit(ctx, exit);
+                            if let Some(error) = this.handle_exception(error) {
+                                // Uncaught. Unwinding normally stops after popping
+                                // the `should_return` frame; the loop covers the
+                                // depth-1 direct-call case where it stops early.
+                                while this.frames.len() >= stack_depth {
+                                    this.pop_frame();
+                                }
+                                return Err(error);
+                            }
+                            // Caught inside the callee — keep running it.
                         }
-                        exit
                     }
                 }
             }
-            unsupported => return Err(this.unsupported_call_result(ctx, unsupported)),
-        };
-
-        Err(this.unsupported_frame_exit(ctx, exit))
+            unsupported => Err(this.unsupported_call_result(ctx, unsupported)),
+        }
     }
 
     /// Converts a direct call suspension into a specific synchronous-context error.

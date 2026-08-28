@@ -39,7 +39,16 @@ struct ListSortArgs {
 /// builtin — sharing here is what makes unknown-kwarg errors uniformly
 /// read `sort() got an unexpected keyword argument 'X'` (matching
 /// CPython, whose `sorted` delegates to `list.sort` internally).
-pub fn parse_and_sort(items: &mut [Value], args: ArgValues, vm: &mut VM<'_>) -> RunResult<()> {
+///
+/// `key_context` names the calling builtin in rejected-suspension errors
+/// (`"sorted() key argument"` / `"sort() key argument"`), which are
+/// Monty-specific and so must name what the user actually called.
+pub fn parse_and_sort(
+    key_context: &'static str,
+    items: &mut [Value],
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<()> {
     let ListSortArgs { key, reverse } = ListSortArgs::from_args(args, vm)?;
     let key_fn = match key {
         Some(v) if matches!(v, Value::None) => {
@@ -49,11 +58,18 @@ pub fn parse_and_sort(items: &mut [Value], args: ArgValues, vm: &mut VM<'_>) -> 
         other => other,
     };
     defer_drop!(key_fn, vm);
-    sort_values(items, key_fn.as_ref(), reverse.bool(), vm)
+    sort_values(key_context, items, key_fn.as_ref(), reverse.bool(), vm)
 }
 
 /// Sorts a vector of values, with optional key function.
-pub fn sort_values(values: &mut [Value], key_fn: Option<&Value>, reverse: bool, vm: &mut VM<'_>) -> RunResult<()> {
+/// `key_context` names the calling builtin — see [`parse_and_sort`].
+pub fn sort_values(
+    key_context: &'static str,
+    values: &mut [Value],
+    key_fn: Option<&Value>,
+    reverse: bool,
+    vm: &mut VM<'_>,
+) -> RunResult<()> {
     if let Some(f) = key_fn {
         // Sort by key function: compute all the keys, sort an index buffer, then
         // rearrange the original values in-place according to the sorted indices.
@@ -66,7 +82,7 @@ pub fn sort_values(values: &mut [Value], key_fn: Option<&Value>, reverse: bool, 
         for (i, item) in values.iter().enumerate() {
             vm.heap.tracker.check_time_every(i)?;
             let item = item.clone_with_heap(vm);
-            keys.push(vm.evaluate_function("sorted() key argument", f, ArgValues::One(item))?);
+            keys.push(vm.evaluate_function(key_context, f, ArgValues::One(item))?);
         }
 
         // 2. Sort indices by comparing key values (or values themselves if no key)

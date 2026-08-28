@@ -203,7 +203,9 @@ e.g. return a `dict` of the fields.
   by default, so a custom `__ne__` is ignored.
 - `__iter__` / `__next__` / `__contains__` **are** dispatched, but like
   `__repr__`/`__str__` they run synchronously, so one that calls an external or
-  OS function cannot suspend and raises `NotImplementedError`. Two related
+  OS function cannot suspend and raises `NotImplementedError`. The error is
+  raised at the offending call inside the callee, so a `try`/`except` there
+  catches it like any other exception. Two related
   protocols are still not dispatched, so a class relying on either is not
   iterable:
   - the legacy `__getitem__`-only fallback — CPython iterates a class defining
