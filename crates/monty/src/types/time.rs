@@ -26,7 +26,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type,
@@ -57,21 +57,14 @@ pub(crate) struct Time {
     /// of a DST fall-back; Monty has no DST model, so it round-trips the value
     /// without interpreting it (as CPython does, it is excluded from `==`/`hash`).
     fold: u8,
-    /// The attached timezone, or `None` for a naive time.
-    tzinfo: Option<AttachedTimeZone>,
-}
-
-/// The fixed-offset timezone attached to an aware `time`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct AttachedTimeZone {
-    /// UTC offset in seconds, mirroring `TimeZone::offset_seconds`.
-    offset_seconds: i32,
-    /// Optional display name, mirroring `TimeZone::name`.
-    name: Option<String>,
-    /// Owned heap reference to the `timezone` the time was built with, so
-    /// `t.tzinfo is input_tz` holds and repeated access returns one object.
-    /// Released and traced through [`Time::tzinfo_ref`].
-    tzinfo_ref: HeapId,
+    /// Owned heap reference to the attached `timezone`, or `None` for a naive
+    /// time.
+    ///
+    /// The referenced object is the *only* copy of the offset and name, so the
+    /// two cannot drift apart; read it with [`attached_timezone`] or
+    /// [`attached_offset`]. It also gives `t.tzinfo is input_tz`. Released and
+    /// traced through [`Time::tzinfo_ref`].
+    tzinfo: Option<HeapId>,
 }
 
 impl Time {
@@ -81,18 +74,7 @@ impl Time {
     /// omitting it from the cascade leaks the timezone, omitting it from traversal
     /// frees it early.
     pub(crate) fn tzinfo_ref(&self) -> Option<HeapId> {
-        self.tzinfo.as_ref().map(|tz| tz.tzinfo_ref)
-    }
-
-    /// The attached timezone's data, cloned, for aware times.
-    ///
-    /// The heap identity is *not* included; pair this with [`Self::tzinfo_ref`]
-    /// when the caller needs to keep `is` identity.
-    pub(crate) fn timezone_info(&self) -> Option<TimeZone> {
-        self.tzinfo.as_ref().map(|tz| TimeZone {
-            offset_seconds: tz.offset_seconds,
-            name: tz.name.clone(),
-        })
+        self.tzinfo
     }
 
     /// The wall-clock components and `fold`, for a value crossing to the host.
@@ -104,40 +86,42 @@ impl Time {
     }
 
     /// Whether every stored component is inside the range [`from_components`]
-    /// enforces, and the attached offset inside [`TimeZone::new`]'s.
+    /// enforces.
     ///
     /// Deserializing writes these fields directly, so `Heap`'s restore pass
     /// re-checks them: [`naive_time`] treats the ranges as established by
     /// construction, and a forged dump carrying `hour = 255` would panic there
-    /// the first time the restored value reached `strftime()`.
+    /// the first time the restored value reached `strftime()`. The offset is not
+    /// checked here — it lives on the referenced `timezone`, which restore
+    /// range-checks once for every referrer.
     pub(crate) fn components_in_range(&self) -> bool {
-        self.hour <= 23
-            && self.minute <= 59
-            && self.second <= 59
-            && self.microsecond <= 999_999
-            && self.fold <= 1
-            && self.tzinfo.as_ref().is_none_or(|tz| {
-                (timezone::MIN_TIMEZONE_OFFSET_SECONDS..=timezone::MAX_TIMEZONE_OFFSET_SECONDS)
-                    .contains(&tz.offset_seconds)
-            })
+        self.hour <= 23 && self.minute <= 59 && self.second <= 59 && self.microsecond <= 999_999 && self.fold <= 1
     }
 }
 
-impl PartialEq for Time {
-    fn eq(&self, other: &Self) -> bool {
-        // Aware and naive times never compare equal in CPython, whatever the fields.
-        self.tzinfo.is_some() == other.tzinfo.is_some() && self.adjusted_micros() == other.adjusted_micros()
+/// The attached timezone of an aware time, cloned from the heap.
+///
+/// The heap identity is *not* included; pair this with [`Time::tzinfo_ref`] when
+/// the caller needs to keep `is` identity.
+pub(crate) fn attached_timezone(time: &Time, heap: &HeapReader<'_>) -> Option<TimeZone> {
+    let tz_id = time.tzinfo?;
+    match heap.read(tz_id) {
+        HeapReadOutput::TimeZone(tz) => Some(tz.get(heap).clone()),
+        // Constructors only ever attach a `timezone`, and restore rejects a dump
+        // whose reference lands anywhere else.
+        _ => unreachable!("a time's tzinfo reference always points at a timezone"),
     }
 }
 
-impl Eq for Time {}
-
-impl Hash for Time {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        // Must agree with `PartialEq`: awareness participates so an aware and a
-        // naive time with the same adjusted micros land in different buckets.
-        self.tzinfo.is_some().hash(state);
-        self.adjusted_micros().hash(state);
+/// The UTC offset of an aware time, in seconds.
+///
+/// [`attached_timezone`] without the name's `String` clone, for the comparison
+/// and formatting paths that only need the offset.
+fn attached_offset(time: &Time, heap: &HeapReader<'_>) -> Option<i32> {
+    let tz_id = time.tzinfo?;
+    match heap.read(tz_id) {
+        HeapReadOutput::TimeZone(tz) => Some(tz.get(heap).offset_seconds),
+        _ => unreachable!("a time's tzinfo reference always points at a timezone"),
     }
 }
 
@@ -147,13 +131,17 @@ impl Time {
     /// The one key used for both ordering and equality: subtracting the offset makes
     /// two aware times with different offsets but the same UTC clock compare equal.
     /// Not wrapped into a 24-hour day; see the module docs.
-    fn adjusted_micros(&self) -> i64 {
+    ///
+    /// The offset is passed in rather than read here because it lives on the
+    /// referenced `timezone`; this is why `Time` has no `PartialEq`/`Hash` of its
+    /// own, and `py_eq_impl`, `py_hash` and `py_cmp` share this instead.
+    fn adjusted_micros(&self, offset_seconds: Option<i32>) -> i64 {
         let local = i64::from(self.hour) * 3_600_000_000
             + i64::from(self.minute) * 60_000_000
             + i64::from(self.second) * 1_000_000
             + i64::from(self.microsecond);
-        match &self.tzinfo {
-            Some(tz) => local - i64::from(tz.offset_seconds) * 1_000_000,
+        match offset_seconds {
+            Some(offset_seconds) => local - i64::from(offset_seconds) * 1_000_000,
             None => local,
         }
     }
@@ -195,8 +183,10 @@ pub(crate) fn allocate(
     // before `check_tzinfo_subclass` runs, so `time(25, tzinfo='x')` reports the
     // hour rather than the tzinfo.
     let time = from_components(hour, minute, second, microsecond, fold)?;
-    let (tz, tz_ref) = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
-    Ok(allocate_with_tz(vm, time, tz, tz_ref))
+    // Only the reference is kept: the `timezone` object itself carries the offset
+    // and name, so `tzinfo_from_value`'s decoded copy is used for validation only.
+    let (_, tz_ref) = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
+    Ok(allocate_with_tz(vm, time, tz_ref))
 }
 
 /// Attaches an already-resolved timezone to a validated `Time` and allocates it.
@@ -206,8 +196,11 @@ pub(crate) fn allocate(
 /// `replace()`, which carries the existing zone over without a `Value` to
 /// re-resolve (and must not fabricate a borrowed `Value::Ref`, which the
 /// reference-counting checks reject).
-fn allocate_with_tz(vm: &mut VM<'_>, time: Time, tz: Option<TimeZone>, tz_ref: Option<HeapId>) -> Value {
-    let time = attach_tzinfo(time, tz, tz_ref, vm);
+fn allocate_with_tz(vm: &mut VM<'_>, mut time: Time, tz_ref: Option<HeapId>) -> Value {
+    if let Some(tz_ref) = tz_ref {
+        vm.heap.inc_ref(tz_ref);
+        time.tzinfo = Some(tz_ref);
+    }
     Value::Ref(vm.heap.allocate(HeapData::Time(time)))
 }
 
@@ -236,12 +229,8 @@ pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult
         // Validates the offset bounds with CPython's wording before we commit to
         // an aware time; `allocate_tzinfo_ref` then hands back an owned
         // reference (the `timezone.utc` singleton for a `Z`/`+00:00` suffix).
-        let tz = TimeZone::new(offset_seconds, None)?;
-        time.tzinfo = Some(AttachedTimeZone {
-            offset_seconds: tz.offset_seconds,
-            name: tz.name,
-            tzinfo_ref: allocate_tzinfo_ref(offset_seconds, None, vm.heap),
-        });
+        TimeZone::new(offset_seconds, None)?;
+        time.tzinfo = Some(allocate_tzinfo_ref(offset_seconds, None, vm.heap));
     }
 
     Ok(Value::Ref(vm.heap.allocate(HeapData::Time(time))))
@@ -328,36 +317,14 @@ pub(crate) fn from_boundary_components(
 ) -> RunResult<Time> {
     let mut time = from_components(hour, minute, second, microsecond, fold)?;
     if let Some(tz) = tzinfo {
-        let name = tz.name.clone();
-        time.tzinfo = Some(AttachedTimeZone {
-            offset_seconds: tz.offset_seconds,
-            name: tz.name,
-            tzinfo_ref: allocate_tzinfo_ref(tz.offset_seconds, name, heap),
-        });
+        time.tzinfo = Some(allocate_tzinfo_ref(tz.offset_seconds, tz.name, heap));
     }
     Ok(time)
 }
 
-/// Attaches the constructor's timezone, taking an owned reference to it.
-///
-/// `tz` and `tz_ref` always arrive together from [`tzinfo_from_value`]: both `Some`
-/// for a `timezone` argument, both `None` for `None`. That is what makes the
-/// aware/attached invariant hold by construction.
-fn attach_tzinfo(mut time: Time, tz: Option<TimeZone>, tz_ref: Option<HeapId>, vm: &mut VM<'_>) -> Time {
-    if let (Some(tz), Some(tz_ref)) = (tz, tz_ref) {
-        vm.heap.inc_ref(tz_ref);
-        time.tzinfo = Some(AttachedTimeZone {
-            offset_seconds: tz.offset_seconds,
-            name: tz.name,
-            tzinfo_ref: tz_ref,
-        });
-    }
-    time
-}
-
 /// Formats a `Time` as `HH[:MM[:SS[.fff[fff]]]][±HH:MM[:SS]]` for `isoformat()`
 /// and `str()`, at the precision `spec` asks for.
-fn format_isoformat(time: &Time, spec: TimeSpec) -> String {
+fn format_isoformat(time: &Time, offset_seconds: Option<i32>, spec: TimeSpec) -> String {
     let mut s = String::new();
     spec.write_clock(
         &mut s,
@@ -366,8 +333,8 @@ fn format_isoformat(time: &Time, spec: TimeSpec) -> String {
         u32::from(time.second),
         time.microsecond,
     );
-    if let Some(tz) = &time.tzinfo {
-        s.push_str(&timezone::format_offset_hms(tz.offset_seconds));
+    if let Some(offset_seconds) = offset_seconds {
+        s.push_str(&timezone::format_offset_hms(offset_seconds));
     }
     s
 }
@@ -493,23 +460,35 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
         let Some(HeapReadOutput::Time(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        Ok(Some(self.get(vm.heap) == other.get(vm.heap)))
+        let (a, b) = (self.get(vm.heap), other.get(vm.heap));
+        // Aware and naive times never compare equal in CPython, whatever the fields.
+        Ok(Some(
+            a.tzinfo.is_some() == b.tzinfo.is_some()
+                && a.adjusted_micros(attached_offset(a, vm.heap)) == b.adjusted_micros(attached_offset(b, vm.heap)),
+        ))
     }
 
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        let time = self.get(vm.heap);
         let mut hasher = DefaultHasher::new();
-        self.get(vm.heap).hash(&mut hasher);
+        // Must agree with `py_eq_impl`: awareness participates so an aware and a
+        // naive time with the same adjusted micros land in different buckets.
+        time.tzinfo.is_some().hash(&mut hasher);
+        time.adjusted_micros(attached_offset(time, vm.heap)).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        let a = self.get(vm.heap);
-        let b = other.get(vm.heap);
+        let (a, b) = (self.get(vm.heap), other.get(vm.heap));
         if a.tzinfo.is_some() != b.tzinfo.is_some() {
             // CPython raises `TypeError` rather than ordering aware against naive.
             return Ok(CmpOrder::Incomparable);
         }
-        Ok(CmpOrder::Ordered(a.adjusted_micros().cmp(&b.adjusted_micros())))
+        let (a_micros, b_micros) = (
+            a.adjusted_micros(attached_offset(a, vm.heap)),
+            b.adjusted_micros(attached_offset(b, vm.heap)),
+        );
+        Ok(CmpOrder::Ordered(a_micros.cmp(&b_micros)))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
@@ -528,7 +507,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
         if t.microsecond != 0 {
             write!(f, ", {}", t.microsecond)?;
         }
-        if let Some(tz) = &t.tzinfo {
+        if let Some(tz) = attached_timezone(t, vm.heap) {
             if tz.offset_seconds == 0 && tz.name.is_none() {
                 f.write_str(", tzinfo=datetime.timezone.utc")?;
             } else {
@@ -548,7 +527,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
     }
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        let s = format_isoformat(self.get(vm.heap), TimeSpec::Auto);
+        let time = self.get(vm.heap);
+        let s = format_isoformat(time, attached_offset(time, vm.heap), TimeSpec::Auto);
         Ok(allocate_string_no_interning(s, vm.heap))
     }
 
@@ -561,7 +541,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
                     Some(timespec) => TimeSpec::parse(timespec.as_str(vm))?,
                     None => TimeSpec::Auto,
                 };
-                let s = format_isoformat(self.get(vm.heap), spec);
+                let time = self.get(vm.heap);
+                let s = format_isoformat(time, attached_offset(time, vm.heap), spec);
                 Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)))
             }
             Some(id) if id == StaticStrings::Strftime => {
@@ -575,12 +556,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
             Some(id) if id == StaticStrings::Replace => self.replace(vm, args).map(CallResult::Value),
             Some(id) if id == StaticStrings::Utcoffset => {
                 args.check_zero_args("time.utcoffset", vm.heap)?;
-                let offset_seconds = self.get(vm.heap).tzinfo.as_ref().map(|tz| tz.offset_seconds);
+                let offset_seconds = attached_offset(self.get(vm.heap), vm.heap);
                 Ok(CallResult::Value(timezone::utcoffset_value(offset_seconds, vm.heap)))
             }
             Some(id) if id == StaticStrings::Tzname => {
                 args.check_zero_args("time.tzname", vm.heap)?;
-                let Some(tz) = &self.get(vm.heap).tzinfo else {
+                let Some(tz) = attached_timezone(self.get(vm.heap), vm.heap) else {
                     return Ok(CallResult::Value(Value::None));
                 };
                 let name = timezone::tzname_string(tz.offset_seconds, tz.name.as_deref());
@@ -639,7 +620,7 @@ impl<'h> HeapObjectRead<'h, Time> {
         let time = self.get(vm.heap);
         let (current_hour, current_minute, current_second) = (time.hour, time.minute, time.second);
         let (current_microsecond, current_fold) = (time.microsecond, time.fold);
-        let (current_tz, current_tz_ref) = (time.timezone_info(), time.tzinfo_ref());
+        let current_tz_ref = time.tzinfo_ref();
 
         let TimeReplaceArgs {
             hour,
@@ -661,7 +642,7 @@ impl<'h> HeapObjectRead<'h, Time> {
             // Absent kwarg: carry the current zone over.
             None => {
                 let replaced = from_components(hour, minute, second, microsecond, fold)?;
-                Ok(allocate_with_tz(vm, replaced, current_tz, current_tz_ref))
+                Ok(allocate_with_tz(vm, replaced, current_tz_ref))
             }
             Some(tzinfo) => {
                 defer_drop!(tzinfo, vm);

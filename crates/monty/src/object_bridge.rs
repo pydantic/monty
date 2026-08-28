@@ -439,7 +439,7 @@ impl MontyObjectExt for MontyObject {
                     HeapReadOutput::Time(t) => {
                         let time = t.get(vm.heap);
                         let (hour, minute, second, microsecond, fold) = time.to_components();
-                        let tz = time.timezone_info();
+                        let tz = time_type::attached_timezone(time, vm.heap);
                         Self::Time(MontyTime {
                             hour,
                             minute,

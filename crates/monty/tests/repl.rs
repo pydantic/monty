@@ -101,6 +101,11 @@ fn dump_header_rejects_incompatible_data() {
 /// `time` entry that no constructor could have produced must be rejected at load
 /// rather than panicking, or contradicting itself, later — when the ranges and the
 /// `tzinfo` reference are read back as established facts.
+///
+/// A `time` stores only a reference to its zone, so a disagreement between an
+/// attached offset and the object it points at is not representable. What is left
+/// is a component out of range, a reference that is not a timezone, and an offset
+/// out of range on the timezone itself.
 #[test]
 fn dump_rejects_forged_time_entries() {
     // Distinctive components so the encoded `time` can be found in the payload:
@@ -119,27 +124,32 @@ fn dump_rejects_forged_time_entries() {
         DumpError::Payload(postcard::Error::SerdeDeCustom)
     );
 
-    // The attached copy is what answers `utcoffset()` and `tzname()`, while
-    // `.tzinfo` hands back the referenced object, so a dump making the two disagree
-    // is as invalid as one whose reference misses a timezone altogether. A *named*
-    // zero offset keeps an entry of its own instead of canonicalizing onto the
-    // `timezone.utc` singleton, which gives both a name and an offset to forge.
+    // A *named* offset keeps a timezone entry of its own instead of canonicalizing
+    // onto the `timezone.utc` singleton, and 23 hours encodes as a three-byte
+    // varint, leaving room to forge a value outside the range `timezone()` accepts.
     let aware = dump_repl(
-        "import datetime\ntz = datetime.timezone(datetime.timedelta(0), 'AB')\nt = datetime.time(11, 22, 33, 444555, tzinfo=tz)",
+        "import datetime\ntz = datetime.timezone(datetime.timedelta(hours=23), 'AB')\nt = datetime.time(11, 22, 33, 444555, tzinfo=tz)",
     );
-    // ... followed by fold and an attached tzinfo: offset, name, and then the heap
-    // id of the timezone object the time holds a reference to.
-    let attached = offset_of(&aware, &[COMPONENTS.as_slice(), &[0, 1, 0, 1, 2], b"AB"].concat());
     assert!(Dump::load(&aware).is_ok());
 
-    for (field, byte, what) in [
-        (8, 2, "an offset its `tzinfo` object does not carry"),
-        (12, b'A', "a name its `tzinfo` object does not carry"),
+    // ... followed by fold and `Some(_)`, so the heap id ends the marker.
+    let tzinfo_ref = offset_of(&aware, &[COMPONENTS.as_slice(), &[0, 1]].concat()) + 8;
+    // The timezone entry: 82800 seconds zigzag-encoded, then `Some("AB")`.
+    let tz_offset = offset_of(&aware, &[0xE0, 0x8D, 0x0A, 1, 2, b'A', b'B']);
+
+    for (index, byte, what) in [
         // The empty-tuple singleton: a live entry, but not a timezone.
-        (13, 0, "a `tzinfo` reference to something that is not a timezone"),
+        (
+            tzinfo_ref,
+            0,
+            "a `tzinfo` reference to something that is not a timezone",
+        ),
+        (tzinfo_ref, 100, "a `tzinfo` reference to no entry at all"),
+        // `format_offset_hms` negates the offset, which panics on `i32::MIN`.
+        (tz_offset + 2, 0x7f, "a `tzinfo` object whose offset is out of range"),
     ] {
         let mut forged = aware.clone();
-        forged[attached + field] = byte;
+        forged[index] = byte;
         assert_eq!(
             Dump::load(&forged).unwrap_err(),
             DumpError::Payload(postcard::Error::SerdeDeCustom),

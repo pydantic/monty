@@ -24,7 +24,10 @@ use serde::{de::Error as _, ser::SerializeStruct};
 use crate::types::Type;
 use crate::{
     asyncio::{Awaiter, ExternalFutureState, GatherState},
-    types::{ExtFunction, TimeZone, Tuple, datetime},
+    types::{
+        ExtFunction, TimeZone, Tuple, datetime,
+        timezone::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS},
+    },
     value::Value,
 };
 // Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
@@ -993,6 +996,11 @@ impl<'de> serde::Deserialize<'de> for Heap {
 /// references on `time` and `datetime`, along with the `timezone_utc` cache, are
 /// dereferenced without checking what they land on. Returns the rebuilt
 /// external-function cache, which is derived rather than serialized.
+///
+/// A `time` needs no agreement check: it stores only the reference, so there is
+/// no second copy to contradict. A `datetime` keeps an inline offset and name —
+/// dumps predating `tzinfo_ref` have no reference to read instead — so its two
+/// copies are still checked against each other.
 fn restore_entries(
     entries: &mut StableHeap<HeapEntry>,
     timezone_utc: Option<HeapId>,
@@ -1002,7 +1010,8 @@ fn restore_entries(
     // borrowed at a time, and whether a reference is sound is not knowable until
     // every entry has been visited. Each copy mirrors one already in the heap.
     let mut timezones: HashMap<HeapId, TimeZone> = HashMap::new();
-    let mut tzinfo_refs: Vec<(HeapId, Option<TimeZone>)> = Vec::new();
+    let mut datetime_tzinfo_refs: Vec<(HeapId, Option<TimeZone>)> = Vec::new();
+    let mut time_tzinfo_refs: Vec<HeapId> = Vec::new();
     for index in 0..entries.len() {
         let id = HeapId::from_index(index);
         let Some(mut entry) = entries.entry(id) else {
@@ -1013,29 +1022,39 @@ fn restore_entries(
                 ext_function_cache.insert(function.cache_key(), id);
             }
             HeapData::TimeZone(tz) => {
+                // Checked here rather than at each referrer: this is the only copy
+                // of the offset a `time` has, and `format_offset_hms` negates it.
+                if !(MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&tz.offset_seconds) {
+                    return Err("timezone offset out of range");
+                }
                 timezones.insert(id, tz.clone());
             }
             HeapData::Time(t) => {
                 if !t.components_in_range() {
                     return Err("time component out of range");
                 }
-                tzinfo_refs.extend(t.tzinfo_ref().map(|tz_id| (tz_id, t.timezone_info())));
+                time_tzinfo_refs.extend(t.tzinfo_ref());
             }
             HeapData::DateTime(dt) => {
-                tzinfo_refs.extend(dt.tzinfo_ref().map(|tz_id| (tz_id, datetime::timezone_info(dt))));
+                datetime_tzinfo_refs.extend(dt.tzinfo_ref().map(|tz_id| (tz_id, datetime::timezone_info(dt))));
             }
             _ => {}
         }
     }
-    // A `tzinfo` reference must land on a live `timezone` holding exactly what its
-    // referrer answers `utcoffset()` and `tzname()` from, or the two disagree; the
-    // `timezone_utc` cache must land on UTC's, since `get_timezone_utc` hands its
-    // target straight back as `datetime.timezone.utc` without looking at it.
+    // A `datetime`'s `tzinfo` reference must land on a live `timezone` holding
+    // exactly what the datetime answers `utcoffset()` and `tzname()` from, or the
+    // two disagree; the `timezone_utc` cache must land on UTC's, since
+    // `get_timezone_utc` hands its target straight back as `datetime.timezone.utc`
+    // without looking at it.
     let holds = |id: HeapId, expected: &TimeZone| timezones.get(&id).is_some_and(|tz| timezone_matches(tz, expected));
     // The attached copy is absent only for a naive `datetime` that kept a
     // reference anyway, leaving the referenced timezone nothing to agree with.
     let agrees = |(id, attached): &(HeapId, Option<TimeZone>)| attached.as_ref().is_some_and(|tz| holds(*id, tz));
-    if !tzinfo_refs.iter().all(agrees) {
+    // A `time` reads its offset and name straight off the target, so the target
+    // only has to *be* a timezone; `attached_timezone` treats that as established.
+    if !time_tzinfo_refs.iter().all(|id| timezones.contains_key(id)) {
+        Err("time tzinfo reference does not point at a timezone")
+    } else if !datetime_tzinfo_refs.iter().all(agrees) {
         Err("tzinfo reference does not match the attached timezone")
     } else if timezone_utc.is_some_and(|id| !holds(id, &TimeZone::utc())) {
         Err("timezone.utc cache does not point to the utc timezone")
