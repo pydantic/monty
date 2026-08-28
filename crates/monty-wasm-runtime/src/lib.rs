@@ -38,6 +38,7 @@ use monty_proto::{
     decode_frame, pb,
     worker::{Child, HandleOutcome, dispatch_frame},
 };
+use monty_types::memory_limit_with_headroom;
 use pb::child_event::Kind;
 use prost::Message;
 use serde::Serialize;
@@ -52,8 +53,8 @@ thread_local! {
 /// Counts the bytes the module asks for against the session's `max_memory`
 /// (see the `monty-alloc` crate) — not the linear memory it has grown to, which
 /// never shrinks. A wasm module may declare an allocator because its own is
-/// shared with nothing; exceeding the limit traps, which is already how the
-/// host learns an instance died — it has no exit status to read.
+/// shared with nothing; exceeding the hard limit traps, which is already how
+/// the host learns an instance died — it has no exit status to read.
 #[global_allocator]
 static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 
@@ -88,7 +89,8 @@ pub extern "C" fn monty_dispatch_turn() -> i32 {
         // subprocess shell does: a dump restored by `Load` brings its own
         // limits, and a rejected request must not disturb the limit.
         let budget = child.session_budget();
-        let allocator_ready = monty_alloc::set_limit(budget.max_memory, budget.type_check).is_ok();
+        let hard_memory_limit = memory_limit_with_headroom(budget.max_memory, budget.type_check);
+        let allocator_ready = monty_alloc::set_hard_limit(hard_memory_limit).is_ok();
         (reply, outcome, allocator_ready)
     });
 

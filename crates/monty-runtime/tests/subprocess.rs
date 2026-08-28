@@ -448,8 +448,8 @@ fn small_memory_limit_leaves_normal_work_alone() {
     child.shutdown();
 }
 
-/// Crossing the allocator's soft limit raises an ordinary session error rather
-/// than killing the worker, and unwinding releases the incomplete result.
+/// Crossing the interpreter's soft limit raises an ordinary session error
+/// rather than killing the worker, and unwinding releases the incomplete result.
 #[test]
 fn exceeding_the_soft_memory_limit_preserves_the_worker() {
     let mut child = ChildProc::spawn();

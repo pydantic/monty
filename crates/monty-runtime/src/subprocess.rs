@@ -20,6 +20,7 @@ use monty_proto::{
     worker::{Child, EventSink, HandleOutcome, fatal_error_event, protocol_violation},
     write_frame,
 };
+use monty_types::memory_limit_with_headroom;
 
 /// BSD `sysexits.h` "remote error in protocol" — the frame stream desynchronized, or
 /// an event too large to frame left the response unsendable.
@@ -81,8 +82,8 @@ pub(crate) fn run() -> ExitCode {
     }
 }
 
-/// Applies the memory limit of whatever session the child now holds, after
-/// every request.
+/// Applies the hard memory limit of whatever session the child now holds,
+/// after every request.
 ///
 /// Reading the child's state rather than the request is what keeps the limit
 /// honest: a rejected `Configure` changes nothing, a `Load` brings the dump's
@@ -91,8 +92,8 @@ pub(crate) fn run() -> ExitCode {
 /// allocator: the wasm worker does the same thing in its own turn loop.
 fn apply_memory_limit(child: &Child) {
     let budget = child.session_budget();
-    monty_alloc::set_limit(budget.max_memory, budget.type_check)
-        .expect("monty-runtime must install LimitedAllocator globally");
+    let hard_memory_limit = memory_limit_with_headroom(budget.max_memory, budget.type_check);
+    monty_alloc::set_hard_limit(hard_memory_limit).expect("monty-runtime must install LimitedAllocator globally");
 }
 
 /// Writes framed child events to stdout.

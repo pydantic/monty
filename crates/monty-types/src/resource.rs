@@ -31,6 +31,27 @@ pub static LIVE_MEMORY: AtomicUsize = AtomicUsize::new(0);
 /// costs to exist, before any session ran.
 pub static BASELINE_MEMORY: AtomicUsize = AtomicUsize::new(usize::MAX);
 
+/// Headroom for exception machinery and work between interpreter checkpoints.
+const MEMORY_LIMIT_HEADROOM: usize = 4 * 1024 * 1024;
+/// Extra headroom for type-checker stubs and caches outside Python execution.
+const TYPE_CHECK_MEMORY_LIMIT_HEADROOM: usize = 32 * 1024 * 1024;
+
+/// Converts an interpreter soft memory limit into a worker allocator budget.
+///
+/// The returned budget includes operational headroom but remains relative to
+/// the worker baseline, which `monty-alloc` adds when arming its hard ceiling.
+#[must_use]
+pub fn memory_limit_with_headroom(max_memory: Option<usize>, type_check: bool) -> Option<usize> {
+    max_memory.map(|bytes| {
+        let headroom = if type_check {
+            TYPE_CHECK_MEMORY_LIMIT_HEADROOM
+        } else {
+            MEMORY_LIMIT_HEADROOM
+        };
+        bytes.saturating_add(headroom)
+    })
+}
+
 /// Threshold in bytes above which `check_large_result` is called.
 ///
 /// Operations that may produce results larger than this threshold (100KB) should call
@@ -203,7 +224,8 @@ impl ResourceTracker {
     /// executes, so the tracker can be created any amount of time before
     /// the first run without consuming the duration budget. A configured
     /// `max_memory` requires `monty-alloc` installed as the global allocator
-    /// and armed via its `set_limit`; otherwise it is silently not enforced.
+    /// and armed via `set_hard_limit(memory_limit_with_headroom(...))`;
+    /// otherwise it is silently not enforced.
     #[must_use]
     pub fn new(limits: ResourceLimits) -> Self {
         Self {

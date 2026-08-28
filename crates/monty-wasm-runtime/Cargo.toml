@@ -22,6 +22,7 @@ crate-type = ["cdylib"]
 [dependencies]
 monty-alloc = { workspace = true }
 monty-proto = { workspace = true, features = ["worker"] }
+monty-types = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

@@ -1,8 +1,8 @@
 # monty-alloc
 
 The global allocator [Monty](https://github.com/pydantic/monty) workers run
-under: it counts live bytes against the sandbox session's soft and hard memory
-limits, and ends the process if the hard limit or system allocator refuses.
+under: it exposes live-byte usage to the interpreter and ends the process if
+the worker's hard memory ceiling or system allocator refuses an allocation.
 
 Monty executes untrusted Python, so a host has to be able to cap what a session
 may allocate. Enforcing that in the allocator catches every byte the worker asks
@@ -17,14 +17,16 @@ sandboxed code can allocate, but not a direct `mmap`.
 #[global_allocator]
 static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 
-// After each request, from the session the worker now holds.
-monty_alloc::set_limit(Some(8 * 1024 * 1024), false).unwrap();
+// The caller chooses headroom above the interpreter's soft limit.
+let hard_budget = monty_types::memory_limit_with_headroom(Some(8 * 1024 * 1024), false);
+monty_alloc::set_hard_limit(hard_budget).unwrap();
 ```
 
-The soft limit is the worker baseline plus the session's budget. The interpreter
-reads real usage at execution checkpoints and raises `MemoryError` after crossing
-it. A higher hard limit leaves room for exception machinery and allocations
-between checkpoints; crossing it ends the worker. `None` lifts both limits. See
+The interpreter compares live usage with the session's soft limit at execution
+checkpoints and raises `MemoryError` after crossing it. The caller gives this
+crate a higher hard budget, leaving room for exception machinery and allocations
+between checkpoints; this crate adds the worker baseline and ends the worker if
+that ceiling is crossed. `None` lifts the hard ceiling. See
 `limitations/resource_limits.md` for how each outcome surfaces to a host.
 
 ## Ending the process

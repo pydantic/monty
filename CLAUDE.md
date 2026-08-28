@@ -144,10 +144,10 @@ subprocesses:
   are cancel-safe (partial-frame state lives in the worker, no pump task),
   and turn deadlines are tokio timers rather than a watchdog thread.
 - `crates/monty-alloc` — the `#[global_allocator]` both workers run under: it
-  counts live bytes against soft and hard session limits (via
-  `Child::session_budget`, re-armed after every request). The interpreter reads
-  the soft limit at execution checkpoints; crossing the hard limit ends the
-  process rather than letting Rust abort. Its `exit-code` feature picks how:
+  exposes live-byte usage for the interpreter's soft-limit checks and enforces
+  the hard ceiling selected from `Child::session_budget` after every request.
+  Crossing the hard limit ends the process rather than letting Rust abort. Its
+  `exit-code` feature picks how:
   `monty-runtime` enables it and exits with `OOM_EXIT_CODE` for the pool to
   classify, `monty-wasm-runtime` leaves it off and traps, having no exit status
   to offer. Only a binary or a wasm module may declare a global allocator, so

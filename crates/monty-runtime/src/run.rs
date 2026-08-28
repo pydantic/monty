@@ -24,7 +24,7 @@ use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CompileOptions, ExtFunctionResult, MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits,
-    ResourceTracker, TypeCheckingConfig,
+    ResourceTracker, TypeCheckingConfig, memory_limit_with_headroom,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
@@ -103,8 +103,8 @@ fn run_cli(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    monty_alloc::set_limit(limits.max_memory, type_check.is_some())
-        .expect("monty-runtime must install LimitedAllocator globally");
+    let hard_memory_limit = memory_limit_with_headroom(limits.max_memory, type_check.is_some());
+    monty_alloc::set_hard_limit(hard_memory_limit).expect("monty-runtime must install LimitedAllocator globally");
 
     // Build mount table early to fail fast on bad -m args.
     let mount_table = match build_mount_table(&cli.mounts) {
