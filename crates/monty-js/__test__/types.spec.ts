@@ -382,9 +382,7 @@ test('time input round-trips', async () => {
 
 test('time input is a real sandbox time', async () => {
   const time = { __monty_type__: 'Time', hour: 10, minute: 20, second: 0, microsecond: 0 }
-  // `__name__` is the qualified spelling, as it is for `datetime` — see
-  // limitations/datetime.md
-  t.is(await run('type(x).__name__', { inputs: { x: time } }), 'datetime.time')
+  t.is(await run('type(x).__name__', { inputs: { x: time } }), 'time')
   t.is(await run('x.hour * 60 + x.minute', { inputs: { x: time } }), 620)
   t.is(await run('x.isoformat()', { inputs: { x: time } }), '10:20:00')
 })
