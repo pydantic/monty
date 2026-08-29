@@ -63,8 +63,8 @@ pub enum Type {
     Slice,
     /// The four `datetime` classes are qualified like `collections.deque`:
     /// this is the `tp_name` CPython gives these C types, so it is the
-    /// spelling its reprs and type-naming error messages use. Only `__name__`
-    /// diverges — see `limitations/datetime.md`.
+    /// spelling its reprs and type-naming error messages use. `__name__`
+    /// reports the bare name, see `dunder_name`.
     #[strum(serialize = "datetime.date")]
     Date,
     #[strum(serialize = "datetime.datetime")]
@@ -185,8 +185,8 @@ pub enum Type {
     #[strum(serialize = "Field")]
     DataclassField,
     /// `collections.deque` — qualified like `datetime.datetime`/`re.Pattern` so
-    /// the name matches CPython's `repr` and error messages; only `__name__`
-    /// diverges from CPython's bare `'deque'`. See `limitations/collections.md`.
+    /// the name matches CPython's `repr` and error messages; `__name__` reports
+    /// the bare `'deque'`, see `dunder_name`.
     #[strum(serialize = "collections.deque")]
     Deque,
     /// `iter(deque(...))` — CPython's `_collections._deque_iterator`.
