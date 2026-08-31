@@ -1,0 +1,25 @@
+uv.lock
+  ai_agent 9-12
+crates/monty-type-checking/tests/main.rs
+  s_13bf6f7b8f1711::t_0344f4c5b2a5c6 381-413
+crates/monty-typeshed/update.py
+  s_13bf6f7b8f1711::t_f0bb3d2e7f1dfc 121-124,126
+crates/monty-typeshed/vendor/typeshed/stdlib/_typeshed/_type_checker_internals.pyi
+  ai_agent 1-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4c3350208df2d0d17c3f422f77de9cb731fd5765",
+  "prompts": {},
+  "sessions": {
+    "s_13bf6f7b8f1711": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2c39b9b3-7f3b-474d-8790-5d4c1378306f",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
