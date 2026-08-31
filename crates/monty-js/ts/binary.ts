@@ -33,18 +33,20 @@ export function platformTriple(): string | null {
   return null
 }
 
-/** Detects the musl loader used by Alpine and other musl-based Linux systems. */
+let musl: boolean | undefined
+
+/** Detects and caches the libc used by Alpine and other musl-based Linux systems. */
 function isMusl(): boolean {
+  return (musl ??= detectMusl())
+}
+
+/** Detects musl from its `ldd` script, then from Node's diagnostic report. */
+function detectMusl(): boolean {
   try {
     return readFileSync('/usr/bin/ldd', 'utf8').includes('musl')
   } catch {
-    const report = process.report?.getReport() as
-      | { header: { glibcVersionRuntime?: string }; sharedObjects?: string[] }
-      | undefined
-    if (report?.header.glibcVersionRuntime !== undefined) {
-      return false
-    }
-    return report?.sharedObjects?.some((file) => file.includes('libc.musl-') || file.includes('ld-musl-')) ?? false
+    const report = process.report?.getReport() as { header: { glibcVersionRuntime?: string } } | undefined
+    return report !== undefined && report.header.glibcVersionRuntime === undefined
   }
 }
 
