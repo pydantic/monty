@@ -1077,7 +1077,7 @@ jobs:
           - host: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             triple: linux-arm64-musl
-            native-musl: true
+            use-cross: true
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1100,9 +1100,10 @@ jobs:
         with:
           tool: cargo-zigbuild
 
-      - name: Install the native musl linker
-        if: matrix.settings.native-musl
-        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - uses: taiki-e/install-action@1ed3272338f573e042a2e6bca3893aa19f43b47a # v2.71.3
+        if: matrix.settings.use-cross
+        with:
+          tool: cross
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -1121,11 +1122,8 @@ jobs:
         working-directory: crates/monty-js
 
       - name: Build the napi shared library
-        run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }} ${{ matrix.settings.cross-compile && '--cross-compile' || '' }}
+        run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }} ${{ matrix.settings.cross-compile && '--cross-compile' || matrix.settings.use-cross && '--use-cross' || '' }}
         working-directory: crates/monty-js
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.settings.native-musl && 'musl-gcc' || '' }}
-          RUSTFLAGS: ${{ matrix.settings.native-musl && '-C link-arg=-static-libgcc' || '' }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
