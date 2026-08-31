@@ -1125,6 +1125,7 @@ jobs:
         working-directory: crates/monty-js
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.settings.native-musl && 'musl-gcc' || '' }}
+          RUSTFLAGS: ${{ matrix.settings.native-musl && '-C link-arg=-static-libgcc' || '' }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
