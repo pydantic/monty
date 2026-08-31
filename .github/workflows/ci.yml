@@ -1077,7 +1077,7 @@ jobs:
           - host: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             triple: linux-arm64-musl
-            use-cross: true
+            cross-compile: true
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1098,12 +1098,7 @@ jobs:
       - uses: taiki-e/install-action@1ed3272338f573e042a2e6bca3893aa19f43b47a # v2.71.3
         if: matrix.settings.cross-compile
         with:
-          tool: cargo-zigbuild
-
-      - uses: taiki-e/install-action@1ed3272338f573e042a2e6bca3893aa19f43b47a # v2.71.3
-        if: matrix.settings.use-cross
-        with:
-          tool: cross
+          tool: cargo-zigbuild@0.23.3
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -1122,7 +1117,7 @@ jobs:
         working-directory: crates/monty-js
 
       - name: Build the napi shared library
-        run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }} ${{ matrix.settings.cross-compile && '--cross-compile' || matrix.settings.use-cross && '--use-cross' || '' }}
+        run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }} ${{ matrix.settings.cross-compile && '--cross-compile' || '' }}
         working-directory: crates/monty-js
 
       - name: Upload artifact
