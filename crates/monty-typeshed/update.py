@@ -118,8 +118,12 @@ COPY_FILES = [
     'collections/__init__.pyi',
     'collections/abc.pyi',
     # ==============================
-    # Take only `__init__.pyi` from _typeshed dir
+    # From the _typeshed dir take `__init__.pyi` plus
+    # `_type_checker_internals.pyi`: ty synthesizes TypedDict members from its
+    # `TypedDictFallback`; without it attribute access on a TypedDict silently
+    # resolves to `Unknown` instead of `unresolved-attribute` (issue #799)
     '_typeshed/__init__.pyi',
+    '_typeshed/_type_checker_internals.pyi',
     # ==============================
     # all of pathlib dir
     'pathlib/__init__.pyi',
