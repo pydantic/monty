@@ -8,7 +8,7 @@
 // 4. `monty` on PATH,
 // 5. a cargo workspace `target/{debug,release}` build (development fallback).
 
-import { accessSync, constants, existsSync, statSync } from 'node:fs'
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,12 +25,27 @@ export function platformTriple(): string | null {
     return `darwin-${arch}`
   }
   if (platform === 'linux' && (arch === 'x64' || arch === 'arm64')) {
-    return `linux-${arch}-gnu`
+    return `linux-${arch}-${isMusl() ? 'musl' : 'gnu'}`
   }
   if (platform === 'win32' && arch === 'x64') {
     return 'win32-x64-msvc'
   }
   return null
+}
+
+/** Detects the musl loader used by Alpine and other musl-based Linux systems. */
+function isMusl(): boolean {
+  try {
+    return readFileSync('/usr/bin/ldd', 'utf8').includes('musl')
+  } catch {
+    const report = process.report?.getReport() as
+      | { header: { glibcVersionRuntime?: string }; sharedObjects?: string[] }
+      | undefined
+    if (report?.header.glibcVersionRuntime !== undefined) {
+      return false
+    }
+    return report?.sharedObjects?.some((file) => file.includes('libc.musl-') || file.includes('ld-musl-')) ?? false
+  }
 }
 
 /**

@@ -10,7 +10,9 @@ const runtimeArtifacts = {
   'darwin-x64': 'pypi_files-runtime-macos-x86_64-manylinux',
   'darwin-arm64': 'pypi_files-runtime-macos-aarch64-manylinux',
   'linux-x64-gnu': 'pypi_files-runtime-linux-x86_64-manylinux',
+  'linux-x64-musl': 'pypi_files-runtime-linux-x86_64-musllinux_1_1',
   'linux-arm64-gnu': 'pypi_files-runtime-linux-aarch64-manylinux',
+  'linux-arm64-musl': 'pypi_files-runtime-linux-aarch64-musllinux_1_1',
   'win32-x64-msvc': 'pypi_files-runtime-windows-x86_64-manylinux',
 }
 const triples = Object.keys(runtimeArtifacts)
