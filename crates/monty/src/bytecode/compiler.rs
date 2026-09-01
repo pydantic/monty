@@ -24,7 +24,8 @@ use crate::{
     exception_private::ExcType,
     expressions::{
         AssignTarget, Callable, CaptureSource, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier,
-        Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedGeneratorExpression, PreparedNode,
+        SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
@@ -1416,6 +1417,14 @@ impl<'a> Compiler<'a> {
                 captured_slots,
             } => {
                 self.compile_dict_comp(key, value, generators, captured_slots)?;
+            }
+
+            Expr::Generator { generator } => {
+                self.compile_generator_expression(generator)?;
+            }
+
+            Expr::GeneratorRaw { .. } => {
+                unreachable!("Expr::GeneratorRaw should not exist after prepare phase")
             }
 
             Expr::Lambda { func_def } => {
@@ -2882,6 +2891,87 @@ impl<'a> Compiler<'a> {
     // Comprehension Compilation
     // ========================================================================
 
+    /// Compiles a generator expression into an eager iterator and resumable code object.
+    fn compile_generator_expression(&mut self, generator: &PreparedGeneratorExpression) -> Result<(), CompileError> {
+        let first = generator
+            .generators
+            .first()
+            .expect("generator expression must have a comprehension");
+        check_comp_generators(generator.generators.len(), generator.elt.position)?;
+
+        self.compile_expr(&first.iter)?;
+        self.code.emit(Opcode::GetIter)?;
+
+        let namespace_size = check_namespace_size_u16(generator.func_def.namespace_size, "generator expression")?;
+        let functions = mem::take(&mut self.functions);
+        let mut body_compiler = Compiler::new(
+            self.interns,
+            functions,
+            false,
+            namespace_size,
+            self.assert_message_annotations,
+        );
+        body_compiler.enter_captured_comp_cells(&generator.captured_slots, generator.elt.position)?;
+        body_compiler.code.emit(Opcode::LoadLocal0)?;
+        body_compiler.compile_comprehension_generators(&generator.generators, 0, true, |compiler| {
+            compiler.compile_expr(&generator.elt)?;
+            compiler.code.emit(Opcode::YieldValue)
+        })?;
+        body_compiler.exit_captured_comp_cells(&generator.captured_slots)?;
+        body_compiler.code.emit(Opcode::LoadNone)?;
+        body_compiler.code.emit(Opcode::ReturnValue)?;
+        let body_code = body_compiler.code.build(namespace_size);
+        let mut functions = body_compiler.functions;
+
+        let func_def = &generator.func_def;
+        let enclosing_slot_metadata = func_def
+            .free_var_enclosing_slots
+            .iter()
+            .map(|source| match source {
+                CaptureSource::Namespace(slot) => *slot,
+                CaptureSource::CompVar(slot) => {
+                    NamespaceId::new(usize::from(*slot)).expect("comp-var slot fits in NamespaceId")
+                }
+            })
+            .collect();
+        let function = Function::new(
+            func_def.name,
+            func_def.signature.clone(),
+            func_def.namespace_size,
+            enclosing_slot_metadata,
+            func_def.free_var_slots.clone(),
+            func_def.cell_var_slots.clone(),
+            func_def.cell_param_indices.clone(),
+            0,
+            false,
+            body_code,
+        );
+        let function_id = functions.len();
+        functions.push(function);
+        self.functions = functions;
+
+        for source in &func_def.free_var_enclosing_slots {
+            let slot = match source {
+                CaptureSource::Namespace(slot) => slot.as_u16(),
+                CaptureSource::CompVar(slot) => match self.comp_slots.get(usize::from(*slot)).copied().flatten() {
+                    Some(CompSlot::UnboundCell(offset) | CompSlot::Cell(offset)) => offset,
+                    Some(CompSlot::Value(_)) | None => {
+                        panic!("captured comprehension cell must be active while building generator")
+                    }
+                },
+            };
+            self.code.emit_load_local(slot)?;
+        }
+        let function_id = check_function_count_u16(function_id, generator.elt.position)?;
+        let cell_count = check_call_args_u8(
+            func_def.free_var_enclosing_slots.len(),
+            "generator closure variables",
+            generator.elt.position,
+        )?;
+        self.code.emit_u16_u8(Opcode::MakeGenerator, function_id, cell_count)?;
+        Ok(())
+    }
+
     /// Compiles a list comprehension: `[elt for target in iter if cond...]`
     ///
     /// Bytecode structure:
@@ -2923,7 +3013,7 @@ impl<'a> Compiler<'a> {
             .expect("list comp: BuildList kept us live, stack_depth must be Some");
         self.enter_captured_comp_cells(captured_slots, elt.position)?;
 
-        self.compile_comprehension_generators(generators, 0, |compiler| {
+        self.compile_comprehension_generators(generators, 0, false, |compiler| {
             compiler.compile_expr(elt)?;
             if compiler.code.is_dead() {
                 return Ok(());
@@ -2954,7 +3044,7 @@ impl<'a> Compiler<'a> {
             .expect("set comp: BuildSet kept us live, stack_depth must be Some");
         self.enter_captured_comp_cells(captured_slots, elt.position)?;
 
-        self.compile_comprehension_generators(generators, 0, |compiler| {
+        self.compile_comprehension_generators(generators, 0, false, |compiler| {
             compiler.compile_expr(elt)?;
             if compiler.code.is_dead() {
                 return Ok(());
@@ -2986,7 +3076,7 @@ impl<'a> Compiler<'a> {
             .expect("dict comp: BuildDict kept us live, stack_depth must be Some");
         self.enter_captured_comp_cells(captured_slots, key.position)?;
 
-        self.compile_comprehension_generators(generators, 0, |compiler| {
+        self.compile_comprehension_generators(generators, 0, false, |compiler| {
             compiler.compile_expr(key)?;
             compiler.compile_expr(value)?;
             if compiler.code.is_dead() {
@@ -3081,13 +3171,15 @@ impl<'a> Compiler<'a> {
         &mut self,
         generators: &[Comprehension],
         index: usize,
+        first_iterator_ready: bool,
         body_fn: impl FnOnce(&mut Self) -> Result<(), CompileError>,
     ) -> Result<(), CompileError> {
         let generator = &generators[index];
 
-        // Compile iterator expression
-        self.compile_expr(&generator.iter)?;
-        self.code.emit(Opcode::GetIter)?;
+        if index != 0 || !first_iterator_ready {
+            self.compile_expr(&generator.iter)?;
+            self.code.emit(Opcode::GetIter)?;
+        }
 
         // Loop start
         let loop_start = self.code.current_jump_target();
@@ -3112,7 +3204,7 @@ impl<'a> Compiler<'a> {
 
         // Recurse or emit body.
         if index + 1 < generators.len() {
-            self.compile_comprehension_generators(generators, index + 1, body_fn)?;
+            self.compile_comprehension_generators(generators, index + 1, first_iterator_ready, body_fn)?;
         } else {
             body_fn(self)?;
         }

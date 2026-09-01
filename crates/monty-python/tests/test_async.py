@@ -616,7 +616,7 @@ async def test_llm_gather_fan_out(asession: AsyncMontySession):
 import asyncio
 
 items = ['apple', 'banana', 'cherry', 'date', 'elderberry']
-prices = await asyncio.gather(*(fetch_price(item) for item in items))
+prices = await asyncio.gather(*[fetch_price(item) for item in items])
 dict(zip(items, prices))
 """
     result = await asession.feed_run(code, external_lookup={'fetch_price': fetch_price})

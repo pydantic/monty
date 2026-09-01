@@ -877,6 +877,16 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, msg).into()
     }
 
+    /// Creates the error raised by recursively advancing an active generator.
+    fn generator_already_executing() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "generator already executing").into()
+    }
+
+    /// Creates the PEP 479 replacement for `StopIteration` escaping a generator.
+    fn generator_raised_stop_iteration() -> SimpleException {
+        SimpleException::new_msg(ExcType::RuntimeError, "generator raised StopIteration")
+    }
+
     /// Creates a TypeError for bytes() constructor with invalid type.
     ///
     /// Matches CPython's format: `TypeError: cannot convert '{type}' object to bytes`

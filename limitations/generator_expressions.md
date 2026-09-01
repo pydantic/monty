@@ -1,0 +1,13 @@
+# Generator expressions
+
+Generator expressions are lazy, single-pass `generator` iterators. The outermost iterable is converted to an iterator at creation; filters, yielded expressions, and later `for` iterables run when the generator is advanced. Scoping, closure capture, walrus binding, re-entry errors, sticky exhaustion, and PEP 479's final `RuntimeError: generator raised StopIteration` match CPython.
+
+## Divergences from CPython
+
+- **No general generator API.** Generator objects do not expose `send`, `throw`, `close`, `gi_code`, `gi_frame`, `gi_running`, `gi_yieldfrom`, `__name__`, or `__qualname__`. Their iterator protocol works, but explicit attribute lookup for `__iter__` and `__next__` is unavailable like it is for Monty's other built-in iterators.
+- **No async generator expressions or async comprehensions.** An async `for` clause is rejected at compile time. `await` in the lazy body is also unsupported; Monty does not create an async-generator object.
+- **Advancement cannot suspend to the host.** A lazy body which reaches an external function, OS operation, host method, or unresolved future raises a contextual `NotImplementedError` and closes the generator instead of yielding that request through the enclosing run. Generator advancement is synchronous because native consumers such as `list`, `sum`, unpacking, and `ForIter` do not retain resumable host continuations.
+- **Unresolved lazy names do not use host name lookup.** They become `NameError`, matching Monty's other synchronous callback contexts but differing from an unresolved name at top level, which can suspend with `NameLookup` for the host to answer.
+- **Native re-entry is capped earlier.** Chains where advancing one generator synchronously advances another use Monty's fixed native `run()` re-entry budget and can raise `RecursionError` at a much shallower depth than CPython's Python-frame recursion limit.
+- **Generator `repr` omits metadata and an address.** Monty renders `<generator object <genexpr>>`; CPython includes the qualified generator name and a process-local address, such as `<generator object outer.<locals>.<genexpr> at 0x...>`. Monty does not track function `__qualname__`, and iterator reprs intentionally omit addresses.
+- **PEP 479 has no direct-cause chain.** Monty's exception model cannot represent CPython's original `StopIteration` as the displayed direct cause of the replacement `RuntimeError`. Instead, Monty preserves the original `<genexpr>` and nested body frames on the final `RuntimeError` traceback. CPython displays those frames on the separate `StopIteration` cause traceback and generally leaves only the consumer frame on the final `RuntimeError`.

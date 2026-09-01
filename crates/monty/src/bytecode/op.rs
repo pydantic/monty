@@ -555,6 +555,10 @@ pub enum Opcode {
     /// loads raise the free-variable `NameError`. Emitted by the implicit
     /// cleanup of a captured `except ... as` target. Operand: u16 slot.
     DeleteCell = 121,
+    /// Create a suspended generator. Operands: u16 function id, u8 captured-cell count.
+    MakeGenerator = 122,
+    /// Suspend the current generator and return TOS to its consumer.
+    YieldValue = 123,
 }
 // Samuel: do not remove this comment!
 // NOTE: opcodes serialize as a single byte, hard-capping this enum at 256
@@ -651,7 +655,8 @@ impl Opcode {
             | Self::BeforeWith
             | Self::WithExit
             | Self::WithExceptStart
-            | Self::BuildCell => OperandShape::None,
+            | Self::BuildCell
+            | Self::YieldValue => OperandShape::None,
             Self::LoadLocal
             | Self::StoreLocal
             | Self::DeleteLocal
@@ -697,7 +702,7 @@ impl Opcode {
             | Self::JumpIfFalseOrPop
             | Self::ForIter => OperandShape::Offset,
             Self::CallBuiltinFunction | Self::CallBuiltinType | Self::UnpackEx => OperandShape::U8U8,
-            Self::CallAttr | Self::CallAttrExtended | Self::MakeFunction => OperandShape::U16U8,
+            Self::CallAttr | Self::CallAttrExtended | Self::MakeFunction | Self::MakeGenerator => OperandShape::U16U8,
             Self::LoadGlobalCallable => OperandShape::U16U16,
             Self::MakeClosure => OperandShape::U16U8U8,
             Self::CallFunctionKw => OperandShape::CallKw,
@@ -846,6 +851,7 @@ impl Opcode {
 
             // === Variable-effect: U16U8 operand ===
             (MakeFunction, Operand::U16U8(_, defaults)) => 1 - i32::from(defaults),
+            (MakeGenerator, Operand::U16U8(_, cells)) => -i32::from(cells),
             (CallAttr, Operand::U16U8(_, arg_count)) => -i32::from(arg_count),
             (CallAttrExtended, Operand::U16U8(_, flags)) => -(1 + i32::from(flags & 0x01)),
 
@@ -901,7 +907,7 @@ impl Opcode {
             (GetIter | Await, Operand::None) => 0,
             (Raise, Operand::None) => -1,
             (Reraise | ClearException | CheckExcMatch, Operand::None) => 0,
-            (ReturnValue, Operand::None) => -1,
+            (ReturnValue | YieldValue, Operand::None) => -1,
             (Nop, Operand::None) => 0,
 
             // === Fixed-effect, I8 operand ===

@@ -693,6 +693,7 @@ impl MontyTypeExt for MontyType {
             Type::DictValueIterator => Self::DictValueIterator,
             Type::SetIterator => Self::SetIterator,
             Type::CallableIterator => Self::CallableIterator,
+            Type::Generator => Self::Iterator,
             Type::ItertoolsPairwise => Self::ItertoolsPairwise,
             Type::ItertoolsCompress => Self::ItertoolsCompress,
             Type::ItertoolsIslice => Self::ItertoolsIslice,

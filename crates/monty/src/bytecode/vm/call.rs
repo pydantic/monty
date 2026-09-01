@@ -887,7 +887,7 @@ impl VM<'_> {
     /// coroutine creation, including the exact-positional-call fast path
     /// (which always passes an empty `cells` slice, since it only applies when
     /// `cell_var_slots`/`free_var_slots` are both empty).
-    fn install_closure_cells(&mut self, func: &Function, cells: &[HeapId], namespace: &mut Vec<Value>) {
+    pub(super) fn install_closure_cells(&mut self, func: &Function, cells: &[HeapId], namespace: &mut Vec<Value>) {
         namespace.resize_with(func.namespace_size, || Value::Undefined);
 
         for (i, &slot) in func.cell_var_slots.iter().enumerate() {

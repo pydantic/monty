@@ -20,9 +20,8 @@ any code runs.
   inside a class body are unavailable. See ./classes.md.
 - **`async with` statements** — not yet supported.
 - **`yield` / `yield from` expressions** — no generator functions. Generator
-  *expressions* (`(x for x in ...)`) parse but currently materialize to a
-  `list` rather than a lazy iterator, a known temporary divergence; see
-  `iter__generator_expr_type.py`.
+  expressions are lazy single-pass iterators; their unsupported object API and
+  suspension limitations are documented in ./generator_expressions.md.
 - **`match` statements** — structural pattern matching is not supported.
 - **`del` statements** — neither `del x` nor `del d[k]` parse.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
@@ -185,8 +184,7 @@ direct `x == x` (`False` on both). Named tuples inherit all of this from `tuple`
 
 - Functions (`def`, `async def`), nested functions, closures, and decorators on
   them, but not on methods (see above).
-- List / dict / set comprehensions; generator comprehensions degrade to
-  lists (see above).
+- List / dict / set comprehensions and lazy generator expressions.
 - `try` / `except` / `else` / `finally`, `raise ... from ...`.
 - `for` / `while` / `if` / `elif` / `else`, `break`, `continue`, `pass`,
   `assert`, `global`, `nonlocal`, `return`.

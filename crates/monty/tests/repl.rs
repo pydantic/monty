@@ -445,6 +445,41 @@ fn repl_dump_load_survives_between_snippets() {
 }
 
 #[test]
+fn repl_dump_load_preserves_suspended_generator() {
+    let (mut repl, _) = init_repl("generator = (x * 2 for x in [1, 2, 3])");
+    assert_eq!(
+        feed_run_print(&mut repl, "next(generator)").unwrap(),
+        MontyObject::Int(2)
+    );
+
+    let mut loaded = round_trip_repl(&repl);
+
+    assert_eq!(
+        feed_run_print(&mut loaded, "next(generator)").unwrap(),
+        MontyObject::Int(4)
+    );
+    assert_eq!(
+        feed_run_print(&mut loaded, "next(generator)").unwrap(),
+        MontyObject::Int(6)
+    );
+    let error = feed_run_print(&mut loaded, "next(generator)").unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::StopIteration);
+    let error = feed_run_print(&mut loaded, "next(generator)").unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::StopIteration);
+}
+
+#[test]
+fn repl_dump_load_preserves_unstarted_generator() {
+    let (repl, _) = init_repl("source = [1, 2]\ngenerator = (x for x in source)\nsource.append(3)");
+    let mut loaded = round_trip_repl(&repl);
+
+    assert_eq!(
+        feed_run_print(&mut loaded, "list(generator)").unwrap(),
+        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3),])
+    );
+}
+
+#[test]
 fn repl_dump_load_derives_exact_positional_call_plans() {
     let (repl, _) = init_repl("def add(a, b):\n    return a + b\n\nasync def async_add(a, b):\n    return a + b");
     let mut loaded = round_trip_repl(&repl);

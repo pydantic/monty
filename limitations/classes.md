@@ -135,12 +135,13 @@ order and error wording, but with these divergences:
   evaluation such as `map()`, `filter()`, `sorted()`/`list.sort(key=...)`,
   `min()`/`max(key=...)`, and exotic `__init__` recursion (see the "Recursion"
   section of ./resource_limits.md).
-- **Comprehensions in the class body** can see class variables, because Monty
-  inlines comprehensions into the enclosing scope. In CPython a comprehension
-  has its own scope that skips the class scope, so only the *leftmost iterable*
-  is evaluated in class scope and the body cannot see class variables
-  (`[n + offset for n in nums]` referencing a class variable `offset` raises
-  `NameError` in CPython but succeeds in Monty).
+- **List/set/dict comprehensions in the class body** can see class variables,
+  because Monty inlines those comprehensions into the enclosing scope. In
+  CPython their synthetic scope skips the class scope, so only the *leftmost
+  iterable* sees class variables (`[n + offset for n in nums]` referencing a
+  class variable `offset` raises `NameError` in CPython but succeeds in Monty).
+  Generator expressions use a synthetic scope and therefore skip class scope
+  like CPython.
 - **Same-name collision is rejected, not resolved.** When an enclosing-function
   local and a class variable share a name *and* a method captures the enclosing
   one, CPython keeps the two distinct (a class-dict entry vs. a closure cell).
@@ -242,7 +243,7 @@ first, e.g. return a `dict` of the fields.
 - `__next__` is looked up on the class only, never the instance `__dict__`, and
   a `StopIteration` raised anywhere inside it ends the iteration, including one
   that propagates out of a nested call, where CPython's PEP 479 protections
-  apply only to generators, which Monty does not have.
+  apply only to generator functions and generator expressions.
 - **A `__contains__` returning a user instance is always `True`.** The result is
   coerced by Monty's truthiness, which reports every instance as truthy (see
   above), where CPython's `PyObject_IsTrue` consults the returned object's

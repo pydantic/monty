@@ -25,6 +25,13 @@ fn yield_expressions_return_not_implemented_error() {
 }
 
 #[test]
+fn async_generator_expression_body_is_rejected() {
+    let err = get_parse_err("async def foo():\n    return (await bar(x) for x in [1])");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support async generator expressions");
+}
+
+#[test]
 fn simple_classes_compile_successfully() {
     // Simple classes are supported; only the advanced forms below are rejected.
     let result = MontyRun::new(

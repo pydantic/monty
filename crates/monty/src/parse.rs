@@ -1434,17 +1434,15 @@ impl<'a> Parser<'a> {
             AstExpr::Generator(ast::ExprGenerator {
                 elt, generators, range, ..
             }) => {
-                // TODO: When proper generators are implemented, this should produce
-                // Expr::Generator instead of Expr::ListComp. Currently we treat generator
-                // expressions as list comprehensions since we don't have generator support.
+                let name_id = self.interner.intern("<genexpr>");
                 let elt = Box::new(self.parse_expression(*elt)?);
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::ListComp {
+                    Expr::GeneratorRaw {
+                        name_id,
                         elt,
                         generators,
-                        captured_slots: Vec::new(),
                     },
                 ))
             }

@@ -34,6 +34,43 @@ impl VM<'_> {
         }
     }
 
+    /// Unwinds a synthesized synchronous-context error through the generator boundary.
+    pub(super) fn unwind_generator_exit(&mut self, error: RunError) -> RunError {
+        let mut error = self.attach_frame_to_error(error);
+        loop {
+            let frame = self.current_frame();
+            let call_offset = frame.call_offset;
+            let is_generator = frame.generator_id.is_some();
+            self.pop_frame();
+            if is_generator {
+                return error;
+            }
+            if let Some(offset) = call_offset {
+                let position = self.resolve_offset(offset);
+                let frame_name = self.current_frame_name();
+                match &mut error {
+                    RunError::Exc(exc) => exc.add_caller_frame(position, frame_name),
+                    RunError::UncatchableExc(exc) => exc.add_caller_frame(position, frame_name),
+                    RunError::Internal(_) => {}
+                }
+            }
+        }
+    }
+
+    /// Adds the generator consumer call site after a nested run boundary unwinds.
+    pub(super) fn add_generator_caller_frame(&self, error: &mut RunError, call_offset: Option<u32>) {
+        let Some(offset) = call_offset else {
+            return;
+        };
+        let position = self.resolve_offset(offset);
+        let frame_name = self.current_frame_name();
+        match error {
+            RunError::Exc(exc) => exc.add_caller_frame(position, frame_name),
+            RunError::UncatchableExc(exc) => exc.add_caller_frame(position, frame_name),
+            RunError::Internal(_) => {}
+        }
+    }
+
     /// Creates a `RawStackFrame` for the current execution point.
     ///
     /// Used when raising exceptions to capture traceback information.

@@ -213,6 +213,8 @@ pub enum Type {
     Object,
     #[strum(serialize = "datetime.time")]
     Time,
+    /// Iterator produced by a generator expression.
+    Generator,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -356,6 +358,7 @@ impl Type {
                 | Self::ItertoolsDropWhile
                 | Self::ItertoolsFilterFalse
                 | Self::ItertoolsStarMap
+                | Self::Generator
         )
     }
 
