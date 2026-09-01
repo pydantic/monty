@@ -1,0 +1,42 @@
+crates/monty/src/types/host_class.rs
+  s_bf68572fceb021::t_01f28191f8945c 401-402,439-440,442-443
+  s_bf68572fceb021::t_e5b1c12223baeb 529,533
+crates/monty-js/ts/session.ts
+  s_bf68572fceb021::t_391413f3dc2cae 594-596
+crates/monty-python/python/pydantic_monty/class_instance.py
+  s_bf68572fceb021::t_2ac9d50221f63a 150-152
+crates/monty-python/src/external.rs
+  s_bf68572fceb021::t_a843342fc80117 55-58
+crates/monty-js/ts/classInstance.ts
+  s_bf68572fceb021::t_2ac9d50221f63a 154-159
+  s_bf68572fceb021::t_391413f3dc2cae 193-196
+crates/monty-proto/src/python/class_instance.rs
+  s_bf68572fceb021::t_a843342fc80117 374-376
+limitations/classes.md
+  s_bf68572fceb021::t_391413f3dc2cae 193-195,233-236,239-244
+crates/monty/src/bytecode/vm/call.rs
+  s_bf68572fceb021::t_f516b25027968a 552-555,557
+crates/monty-types/src/uuid.rs
+  s_bf68572fceb021::t_9185d16377c469 100-101
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_bf68572fceb021::t_6a92b4360a53d6 218
+  s_bf68572fceb021::t_de4542c2e0e004 621-622
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_bf68572fceb021::t_de4542c2e0e004 762-763
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2d70a5f2ce4c464670cd62ffb82a9701cb8bf3d9",
+  "prompts": {},
+  "sessions": {
+    "s_bf68572fceb021": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8ff2ad2-c7e9-4cb1-9a42-b2f5d74a4d5e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
