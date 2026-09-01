@@ -488,7 +488,7 @@ fn call_accumulate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Value::None => None,
         initial => Some(initial),
     };
-    let iter = ItertoolsIter::Accumulate(Accumulate::new(source, func, initial));
+    let iter = ItertoolsIter::Accumulate(Box::new(Accumulate::new(source, func, initial)));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 

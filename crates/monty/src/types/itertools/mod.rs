@@ -74,7 +74,9 @@ pub(crate) enum ItertoolsIter {
     DropWhile(DropWhile),
     FilterFalse(FilterFalse),
     StarMap(StarMap),
-    Accumulate(Accumulate),
+    /// Boxed: three `Value`s make it 56 bytes, wide enough to set `HeapData`'s
+    /// size on 32-bit. See the budget below.
+    Accumulate(Box<Accumulate>),
     Batched(Batched),
     ZipLongest(ZipLongest),
 }
@@ -87,6 +89,13 @@ pub(crate) enum ItertoolsIter {
 // not the enum and not at the `HeapData` boundary.
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(size_of::<ItertoolsIter>() <= size_of::<Dict>());
+
+// On 32-bit `Dict` is 36 bytes while these adaptors, built from `Value`s that
+// stay 16 bytes either way, do not shrink — so this family *is* what sets
+// `HeapData`'s size and no other variant can serve as the budget. 48 is the
+// width already paid; every byte past it costs `PAGE_SIZE` more per heap page.
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(size_of::<ItertoolsIter>() <= 48);
 
 /// Which adaptor an [`ItertoolsIter`] is, without borrowing it.
 ///
