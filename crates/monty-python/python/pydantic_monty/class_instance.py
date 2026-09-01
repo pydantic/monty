@@ -20,7 +20,7 @@ to transform values crossing the boundary.
 from __future__ import annotations
 
 from collections.abc import Coroutine, Iterable, Sequence
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import KW_ONLY, dataclass, field, fields, is_dataclass
 from inspect import iscoroutine
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -43,6 +43,7 @@ class ClassInstance:
 
     value: Any
     """The instance to send."""
+    _: KW_ONLY
 
     eager_attrs: Sequence[str] | Literal['all'] | None = None
     """Attributes sent into the sandbox up front; `'all'` sends dataclass
@@ -59,9 +60,9 @@ class ClassInstance:
     `None` auto-detects frozen dataclasses; any other object defaults to mutable."""
 
     id: UUID = field(default_factory=uuid4)
-    """The instance's sandbox identity; per wrapper, so reuse one wrapper to
-    re-send an object under the same id. On `ClassType`, the class's id —
-    a class's first crossing in a session fixes its id."""
+    """The instance's sandbox identity: reuse one wrapper to re-send an object
+    under the same id; reusing an id for a different object raises `ValueError`.
+    On `ClassType`, the class's id, fixed by the class's first crossing."""
 
     def get_eager_attrs(self) -> dict[str, Any]:
         """The attributes to send into the sandbox with the instance."""

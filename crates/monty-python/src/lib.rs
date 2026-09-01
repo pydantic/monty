@@ -81,7 +81,7 @@ mod _monty {
     // boundary; export it as part of the `pydantic_monty` surface.
     // `MontyClassProxy` is the read-only proxy the conversion layer builds
     // for class instances with no original host object (sandbox-defined, or
-    // returned after a session restore into a fresh process).
+    // returned after a session restore into a fresh session).
     #[pymodule_export]
     use monty_proto::python::PyMontyClassProxy as MontyClassProxy;
     #[pymodule_export]

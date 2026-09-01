@@ -328,6 +328,16 @@ test('an unwrapped instance returned from an external function raises in the san
   t.is(result, 'Cannot convert Greeter instance to a Monty value — wrap it in ClassInstance(...)')
 })
 
+test('a duplicate wrapper id wrapping a different object is rejected', async () => {
+  // Silent overwrite would re-route values the sandbox already holds from
+  // one host object to the other.
+  const id = '11111111-2222-4333-8444-555555555555'
+  const a = new ClassInstance(new Greeter('hi'), { id })
+  const b = new ClassInstance(new Greeter('yo'), { id })
+  const error = await t.throwsAsync(() => run('[a, b]', { inputs: { a, b } }), { instanceOf: TypeError })
+  t.is(error.message, `wrapper id '${id}' already identifies a different object in this session`)
+})
+
 test('a forged raw ClassInstance marker is rejected', async () => {
   // Identity-bearing markers are internal to `prepare`; one arriving in host
   // data (e.g. attacker-controlled JSON) must never impersonate an instance.

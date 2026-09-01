@@ -9,7 +9,7 @@
 // address), and when sandbox code returns the instance, the host receives
 // the original object back (identity preserved). Instances with no host
 // original — defined inside the sandbox, or from a session restored into a
-// fresh process — surface as read-only [`MontyClassProxy`] stand-ins.
+// fresh session — cross to the host as read-only [`MontyClassProxy`] stand-ins.
 //
 // [`ClassType`] is the class-level sibling: wrap a class to pass it into the
 // sandbox, optionally letting sandbox code instantiate it (`init: true`).
@@ -62,9 +62,10 @@ export interface ClassInstanceOptions {
  * ```
  */
 export class ClassInstance {
-  /** The instance's sandbox identity; per wrapper, so reuse one wrapper to
-   *  re-send an object under the same id. On [`ClassType`], the class's id —
-   *  a class's first crossing in a session fixes its id. */
+  /** The instance's sandbox identity: reuse one wrapper to re-send an object
+   *  under the same id; reusing an id for a different object throws
+   *  `TypeError`. On [`ClassType`], the class's id, fixed by the class's
+   *  first crossing. */
   readonly id: string
 
   constructor(
@@ -263,7 +264,7 @@ export class ClassType extends ClassInstance {
 /**
  * Read-only stand-in for a class instance the host has no original object
  * for: one defined inside the sandbox, or a host instance returned after the
- * session was restored into a fresh process.
+ * session was restored into a fresh session.
  */
 export class MontyClassProxy {
   /** Class name of the instance (e.g. `'Point'`). */
@@ -309,8 +310,12 @@ export class InstanceStore {
    *  across checkouts. */
   private readonly classIds = new WeakMap<object, string>()
 
-  /** Registers a wrapper under its own `id` (the wrapper owns its identity). */
+  /** Registers a wrapper under its own `id` (the wrapper owns its identity).
+   *  Re-sending the same wrapper (or another wrapper of the same object)
+   *  overwrites the entry; an id already routing to a different object is
+   *  rejected. */
   register(wrapper: ClassInstance): string {
+    this.checkNoAlias(wrapper.id, wrapper.instance)
     this.map.set(wrapper.id, wrapper)
     return wrapper.id
   }
@@ -322,6 +327,9 @@ export class InstanceStore {
     let id = this.classIds.get(classObject)
     if (id === undefined) {
       id = wrapperId ?? generateUuid()
+      // A wrapper-supplied id already routing to some other object would
+      // silently re-alias values the sandbox holds — reject it.
+      this.checkNoAlias(id, classObject)
       this.classIds.set(classObject, id)
     }
     if (!this.classes.has(id)) {
@@ -332,12 +340,29 @@ export class InstanceStore {
 
   /** Registers a `ClassType` wrapper under its class uuid, in both the
    *  class map (identity round-trips) and the routing map (method calls,
-   *  `__call__` construction, lazy class attrs). */
+   *  `__call__` construction, lazy class attrs). Re-granting the same class
+   *  with a new wrapper overwrites (last policy wins). */
   registerClass(wrapper: ClassType): string {
     const id = this.typeUuid(wrapper.classType, wrapper.id)
+    this.checkNoAlias(id, wrapper.classType)
     this.classes.set(id, { classObject: wrapper.classType, wrapper })
     this.map.set(id, wrapper)
     return id
+  }
+
+  /** Throws if `id` is already registered for an object other than `value`
+   *  (compared by identity) in either routing map. Two wrappers sharing an id
+   *  but wrapping different objects would silently re-route method calls and
+   *  round-trips from one host object to the other. */
+  private checkNoAlias(id: string, value: object): void {
+    const existing = this.map.get(id)
+    const entry = this.classes.get(id)
+    if (
+      (existing !== undefined && existing.instance !== value) ||
+      (entry !== undefined && entry.classObject !== value)
+    ) {
+      throw new TypeError(`wrapper id '${id}' already identifies a different object in this session`)
+    }
   }
 
   /** Looks up the wrapper registered for `id` (instance or class type). */

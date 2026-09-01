@@ -561,7 +561,7 @@ class TurnAnswerer {
       const message =
         known === undefined
           ? `no host object registered for method call '${call.functionName}' (id ${objectId}) — ` +
-            'the instance store is empty after loading a session into a new process'
+            'the instance store is empty after loading a dump into a fresh session'
           : `no host class registered for '${call.functionName}' on '${known}' (id ${objectId}) — ` +
             'pass the class as a ClassType(...)'
       return this.native.resumeError('RuntimeError', message, onPrint)

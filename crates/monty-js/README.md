@@ -139,7 +139,7 @@ option) is the id the sandbox routes by, so reuse one wrapper to re-send an
 object under the same identity.
 
 Instances the host has no original for — defined inside the sandbox, or
-returned after a dump was restored into a fresh process — cross to the host as read-only
+returned after a dump was restored into a fresh session — cross to the host as read-only
 `MontyClassProxy` stand-ins (`name`, `attributes`, `isDataclass`).
 
 ### Host classes (`ClassType`)

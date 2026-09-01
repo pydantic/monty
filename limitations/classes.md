@@ -220,7 +220,7 @@ other address-derived value). Divergences from real CPython objects:
   values, but each send allocates its own proxy, so `a is b` is `False`.
 - **Instance and class uuids are per session** (host classes) — instances of
   "the same" host class from two different sessions, or from a dump restored
-  into a fresh process, compare unequal by class. Sandbox-defined uuids live
+  into a fresh session, compare unequal by class. Sandbox-defined uuids live
   in the heap and survive dump/restore.
 - The wire carries each class's direct bases (`parents`), but **inheritance
   is not functional in the sandbox**: base-class attributes and methods are

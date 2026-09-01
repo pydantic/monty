@@ -6,6 +6,7 @@ import re
 from dataclasses import FrozenInstanceError, dataclass
 from functools import cached_property
 from typing import Any, NoReturn
+from uuid import uuid4
 
 import pytest
 from conftest import RunMonty
@@ -586,7 +587,7 @@ def test_dump_load_into_new_session_falls_back_to_proxy(pool: Monty):
         assert isinstance(inner, RuntimeError)
         # the message embeds the (unstable) host id — normalize it before comparing
         assert re.sub(r'\(id [0-9a-f-]+\)', '(id ...)', str(inner)) == snapshot(
-            "no host object registered for method call 'greeting' (id ...) — the instance store is empty after loading a session into a new process"
+            "no host object registered for method call 'greeting' (id ...) — the instance store is empty after loading a dump into a fresh session"
         )
 
     with pool.checkout() as session:
@@ -744,3 +745,51 @@ def test_instance_uuid_is_stable_across_feeds(session: MontySession):
     session.feed_run('a = x', inputs={'x': wrapper})
     result = session.feed_run('a == b', inputs={'b': wrapper})
     assert result is True
+
+
+# === Wrapper identity ids ===
+
+
+def test_duplicate_wrapper_id_rejected(monty_run: RunMonty):
+    """Two wrappers sharing an id but wrapping different objects would alias
+    routing (calls dispatch to whichever registered last) — rejected."""
+    shared = uuid4()
+    a = ClassInstance(Person(name='A', age=1), id=shared)
+    b = ClassInstance(Person(name='B', age=2), id=shared)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('[x, y]', inputs={'x': a, 'y': b})
+    assert (
+        str(exc_info.value) == f'ValueError: wrapper id {shared} already identifies a different object in this session'
+    )
+
+
+def test_class_type_duplicate_id_rejected(monty_run: RunMonty):
+    shared = uuid4()
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run(
+            '1',
+            inputs={
+                'A': pydantic_monty.ClassType(Person, id=shared),
+                'B': pydantic_monty.ClassType(Greeter, id=shared),
+            },
+        )
+    assert (
+        str(exc_info.value) == f'ValueError: wrapper id {shared} already identifies a different object in this session'
+    )
+
+
+def test_unhashable_metaclass_class(monty_run: RunMonty):
+    """Class identity in the store is `is`-based: a metaclass defining
+    `__eq__` (which makes the class object unhashable) is never consulted."""
+
+    class Meta(type):
+        def __eq__(self, other: object) -> bool:
+            return False
+
+    class Odd(metaclass=Meta):
+        def __init__(self) -> None:
+            self.x = 5
+
+    with pytest.raises(TypeError):
+        hash(Odd)  # precondition: the metaclass made the class unhashable
+    assert monty_run('o.x', inputs={'o': ClassInstance(Odd(), eager_attrs='all')}) == 5

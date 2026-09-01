@@ -19,7 +19,7 @@
 use monty_types::{ClassType, DictPairs, MontyObject, MontyType, MontyUuid};
 use pyo3::{
     Bound,
-    exceptions::{PyAttributeError, PyRuntimeError, PyTypeError},
+    exceptions::{PyAttributeError, PyRuntimeError, PyTypeError, PyValueError},
     intern,
     prelude::*,
     sync::PyOnceLock,
@@ -188,7 +188,7 @@ fn class_type_for(
 ///
 /// When `instance_id` is found in `store`, returns the ORIGINAL wrapped object
 /// (identity preserved — `result is obj` holds). Otherwise — a sandbox-defined
-/// instance, or an id from a session restored into a fresh process — builds a
+/// instance, or an id from a session restored into a fresh session — builds a
 /// read-only [`PyMontyClassProxy`] proxy.
 ///
 /// `depth` is the caller's current recursion depth; it is forwarded to
@@ -223,7 +223,7 @@ pub fn class_instance_to_py(
 
 /// Resolves a class type object crossing back out of the sandbox: the
 /// original class when its uuid is registered, else `None` (a sandbox class,
-/// or a host class from a session restored into a fresh process).
+/// or a host class from a session restored into a fresh session).
 pub fn class_type_to_py(py: Python<'_>, class_type: &ClassType, store: &InstanceStore) -> PyResult<Option<Py<PyAny>>> {
     if class_type.host_defined {
         store.get_class(py, &class_type.id)
@@ -263,12 +263,12 @@ pub struct InstanceStore {
     /// and through it the wrapped object.
     objects: Py<PyDict>,
     /// uuid bytes → `(class, ClassType wrapper | None)`; pins the class, and
-    /// carries the wrapper whose policy gates instantiation.
+    /// carries the wrapper whose policy gates instantiation. Doubles as the
+    /// class-id table: [`Self::type_uuid`] scans it comparing classes by
+    /// identity (`is`), so a metaclass overriding `__eq__`/`__hash__` (which
+    /// can make a class unhashable, or make distinct classes compare equal)
+    /// is never consulted.
     classes: Py<PyDict>,
-    /// class object → uuid bytes: one id per class per session, fixed by the
-    /// class's first crossing. Keyed (and pinned) by the class itself, so no
-    /// address-derived key exists anywhere.
-    class_ids: Py<PyDict>,
 }
 
 impl InstanceStore {
@@ -278,7 +278,6 @@ impl InstanceStore {
         Self {
             objects: PyDict::new(py).unbind(),
             classes: PyDict::new(py).unbind(),
-            class_ids: PyDict::new(py).unbind(),
         }
     }
 
@@ -291,7 +290,6 @@ impl InstanceStore {
         Self {
             objects: self.objects.clone_ref(py),
             classes: self.classes.clone_ref(py),
-            class_ids: self.class_ids.clone_ref(py),
         }
     }
 
@@ -302,26 +300,32 @@ impl InstanceStore {
     /// would break in-sandbox type equality and `__call__` routing.
     pub fn type_uuid(&self, class: &Bound<'_, PyAny>, wrapper_id: Option<MontyUuid>) -> PyResult<MontyUuid> {
         let py = class.py();
-        let ids = self.class_ids.bind(py);
-        if let Some(existing) = ids.get_item(class)? {
-            let bytes: [u8; 16] = existing.extract()?;
-            return Ok(MontyUuid::from_bytes(bytes));
+        let classes = self.classes.bind(py);
+        // Identity scan rather than a class-keyed dict: dict lookup would run
+        // the metaclass `__hash__`/`__eq__`, and identity is the wanted
+        // semantics anyway. Sessions hold few distinct classes.
+        for (key, entry) in classes.iter() {
+            if entry.get_item(0)?.is(class) {
+                let bytes: [u8; 16] = key.extract()?;
+                return Ok(MontyUuid::from_bytes(bytes));
+            }
         }
         let uuid = wrapper_id.unwrap_or_else(|| MontyUuid::from_bytes(*uuid::Uuid::new_v4().as_bytes()));
-        ids.set_item(class, PyBytes::new(py, uuid.as_bytes()))?;
-        let key = PyBytes::new(py, uuid.as_bytes());
+        // A wrapper-supplied id already routing to some other object would
+        // silently re-alias values the sandbox holds — reject it.
+        self.check_no_alias(&uuid, class)?;
         // First crossing pins the class with no wrapper; a `ClassType` wrapper
         // upgrades the entry via `register_class_wrapper`.
-        if !self.classes.bind(py).contains(&key)? {
-            self.classes.bind(py).set_item(key, (class, py.None()))?;
-        }
+        classes.set_item(PyBytes::new(py, uuid.as_bytes()), (class, py.None()))?;
         Ok(uuid)
     }
 
-    /// Registers an instance wrapper under its uuid. Idempotent — re-sending
-    /// the same wrapper overwrites its entry.
+    /// Registers an instance wrapper under its uuid. Re-sending the same
+    /// wrapper (or another wrapper of the same object) overwrites the entry;
+    /// an id already routing to a different object is rejected.
     pub fn register_instance(&self, uuid: &MontyUuid, wrapper: &Bound<'_, PyAny>) -> PyResult<()> {
         let py = wrapper.py();
+        self.check_no_alias(uuid, &wrapper.getattr(intern!(py, "value"))?)?;
         self.objects
             .bind(py)
             .set_item(PyBytes::new(py, uuid.as_bytes()), wrapper)
@@ -329,7 +333,9 @@ impl InstanceStore {
 
     /// Registers a `ClassType` wrapper for the class under its uuid, in both
     /// the class map (identity round-trips) and the routing map (method
-    /// calls, `__call__` construction, lazy class attrs).
+    /// calls, `__call__` construction, lazy class attrs). Re-granting the
+    /// same class with a new wrapper overwrites (last policy wins); an id
+    /// already routing to a different object is rejected.
     pub fn register_class_wrapper(
         &self,
         uuid: &MontyUuid,
@@ -337,12 +343,37 @@ impl InstanceStore {
         wrapper: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         let py = wrapper.py();
+        self.check_no_alias(uuid, class)?;
         self.classes
             .bind(py)
             .set_item(PyBytes::new(py, uuid.as_bytes()), (class, wrapper))?;
         self.objects
             .bind(py)
             .set_item(PyBytes::new(py, uuid.as_bytes()), wrapper)
+    }
+
+    /// Errors if `uuid` is already registered for an object other than
+    /// `value` (compared by identity) in either routing map. Two wrappers
+    /// sharing an id but wrapping different objects would silently re-route
+    /// method calls and round-trips from one host object to the other.
+    fn check_no_alias(&self, uuid: &MontyUuid, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let py = value.py();
+        let key = PyBytes::new(py, uuid.as_bytes());
+        let objects_conflict = match self.objects.bind(py).get_item(&key)? {
+            Some(existing) => !existing.getattr(intern!(py, "value"))?.is(value),
+            None => false,
+        };
+        let classes_conflict = match self.classes.bind(py).get_item(&key)? {
+            Some(entry) => !entry.get_item(0)?.is(value),
+            None => false,
+        };
+        if objects_conflict || classes_conflict {
+            Err(PyValueError::new_err(format!(
+                "wrapper id {uuid} already identifies a different object in this session"
+            )))
+        } else {
+            Ok(())
+        }
     }
 
     /// Looks up the wrapper registered for `uuid` (instance or class type).
@@ -405,7 +436,7 @@ impl InstanceStore {
     /// The error a routed call on an unregistered uuid raises. A known class
     /// that crossed without a `ClassType` wrapper (e.g. via `type(x)`) gets a
     /// hint to grant one; otherwise the store is empty because the session
-    /// was restored into a new process.
+    /// was restored into a fresh session.
     fn store_miss_error(&self, py: Python<'_>, name: &str, uuid: &MontyUuid) -> PyResult<PyErr> {
         let entry = self.classes.bind(py).get_item(PyBytes::new(py, uuid.as_bytes()))?;
         Ok(if let Some(entry) = entry {
@@ -417,7 +448,7 @@ impl InstanceStore {
         } else {
             PyRuntimeError::new_err(format!(
                 "no host object registered for method call '{name}' (id {uuid}) — \
-                 the instance store is empty after loading a session into a new process"
+                 the instance store is empty after loading a dump into a fresh session"
             ))
         })
     }
@@ -439,7 +470,7 @@ fn wrapper_uuid(wrapper: &Bound<'_, PyAny>) -> PyResult<MontyUuid> {
 
 /// Read-only proxy for a class instance the host has no original object for:
 /// a sandbox-defined instance, or a host instance returned after the session
-/// was restored into a fresh process.
+/// was restored into a fresh session.
 ///
 /// A plain data holder — attribute values were converted when the value
 /// crossed the wire, and there is no live sandbox object behind it.

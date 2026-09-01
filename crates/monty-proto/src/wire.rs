@@ -705,8 +705,8 @@ fn decode_field(
             }
         }
         tag::TYPE => {
-            let ty: pb::Type = merge_message(wire_type, buf, ctx)?;
-            MontyObject::Type(pb_type_to_monty(ty)?)
+            let ty: TypeBody = merge_message(wire_type, buf, ctx)?;
+            MontyObject::Type(type_body_to_monty(ty)?)
         }
         tag::BUILTIN_FUNCTION => {
             let name = merge_string(wire_type, buf, ctx)?;
@@ -732,7 +732,7 @@ fn decode_field(
                 .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.type")))?;
             // An instance's class is never a builtin, so its Type must decode
             // to a class type (origin SANDBOX or HOST).
-            let MontyType::Instance(class_type) = pb_type_to_monty(ty)? else {
+            let MontyType::Instance(class_type) = type_body_to_monty(ty)? else {
                 return Err(to_decode_err(ProtoConvertError::InvalidValue {
                     field: "ClassInstance.type",
                     reason: "must be a class type, not a builtin".to_owned(),
@@ -927,6 +927,72 @@ impl Message for PairList {
     }
 }
 
+/// Decode-only `prost::Message` for a wire `Type`, charging the decode budget
+/// per `parents` entry *as it streams in*. The generated `pb::Type` would
+/// materialize the whole repeated tree before [`decode_field`]'s post-hoc
+/// charge runs — an empty `parents` entry costs 2 wire bytes but ~200 bytes
+/// resident, so one cheap frame could amplify far past the budget. `attrs`
+/// pairs are budgeted the same way via [`PairList`]. Decode-only; types
+/// encode via [`monty_type_to_pb`].
+#[derive(Default)]
+struct TypeBody {
+    name: String,
+    id: Option<pb::Uuid>,
+    origin: i32,
+    parents: Vec<Self>,
+    is_dataclass: bool,
+    frozen: bool,
+    attrs: Option<PairList>,
+}
+
+impl Message for TypeBody {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        // Field numbers from `Type` in monty.proto; unknown → skip.
+        match tag {
+            1 => encoding::string::merge(wire_type, &mut self.name, buf, ctx),
+            2 => encoding::message::merge(wire_type, self.id.get_or_insert_with(pb::Uuid::default), buf, ctx),
+            3 => encoding::int32::merge(wire_type, &mut self.origin, buf, ctx),
+            4 => {
+                // Charge the entry up front: decoding it allocates this body
+                // and conversion adds a `ClassType`, so per-entry charging is
+                // what bounds `parents` fanout within the budget.
+                charge_decode(size_of::<Self>() + size_of::<ClassType>())?;
+                let parent = merge_message::<Self>(wire_type, buf, ctx)?;
+                self.parents.push(parent);
+                Ok(())
+            }
+            5 => encoding::bool::merge(wire_type, &mut self.is_dataclass, buf, ctx),
+            6 => encoding::bool::merge(wire_type, &mut self.frozen, buf, ctx),
+            7 => encoding::message::merge(wire_type, self.attrs.get_or_insert_with(PairList::default), buf, ctx),
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("TypeBody is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("TypeBody is decode-only")
+    }
+
+    fn clear(&mut self) {
+        self.name.clear();
+        self.id = None;
+        self.origin = 0;
+        self.parents.clear();
+        self.is_dataclass = false;
+        self.frozen = false;
+        self.attrs = None;
+    }
+}
+
 /// Decode-only `prost::Message` for `NamedTuple`, materializing the
 /// `repeated MontyObject values` field straight into `Vec<MontyObject>` (the
 /// [`ObjectList`] trick inlined alongside the other two fields) instead of the
@@ -978,7 +1044,7 @@ impl Message for NamedTupleBody {
 /// is rejected by the caller (presence, not a default). Decode-only.
 #[derive(Default)]
 struct ClassInstanceBody {
-    class_type: Option<pb::Type>,
+    class_type: Option<TypeBody>,
     instance_id: Option<pb::Uuid>,
     attrs: Option<PairList>,
 }
@@ -997,7 +1063,7 @@ impl Message for ClassInstanceBody {
         match tag {
             1 => encoding::message::merge(
                 wire_type,
-                self.class_type.get_or_insert_with(pb::Type::default),
+                self.class_type.get_or_insert_with(TypeBody::default),
                 buf,
                 ctx,
             ),
@@ -1107,13 +1173,13 @@ fn class_type_to_pb(class_type: &ClassType) -> pb::Type {
     }
 }
 
-/// Validates a wire `Type` and converts it to a [`MontyType`].
+/// Validates a decoded wire `Type` and converts it to a [`MontyType`].
 ///
 /// Enforces the id-presence invariants per origin (BUILTIN must not carry an
 /// id or parents; SANDBOX/HOST must carry an id). Recursion over `parents` is
 /// bounded because prost's decode already depth-limits message nesting before
-/// this conversion runs.
-fn pb_type_to_monty(ty: pb::Type) -> Result<MontyType, DecodeError> {
+/// this conversion runs, and [`TypeBody`] charged the budget per entry.
+fn type_body_to_monty(ty: TypeBody) -> Result<MontyType, DecodeError> {
     let origin = pb::TypeOrigin::try_from(ty.origin).map_err(|_| {
         to_decode_err(ProtoConvertError::InvalidValue {
             field: "Type.origin",
@@ -1142,32 +1208,14 @@ fn pb_type_to_monty(ty: pb::Type) -> Result<MontyType, DecodeError> {
         }
         pb::TypeOrigin::Sandbox | pb::TypeOrigin::Host => {
             let id = ty.id.ok_or_else(|| invalid("a class type must carry an id"))?;
-            let parents = ty.parents.into_iter().map(pb_type_to_monty).collect::<Result<_, _>>()?;
-            let attrs = ty
-                .attrs
-                .map(|dict| {
-                    dict.pairs
-                        .into_iter()
-                        .map(|pair| {
-                            let key = pair
-                                .key
-                                .ok_or(ProtoConvertError::MissingField("Pair.key"))
-                                .map_err(to_decode_err)?
-                                .into_object()
-                                .map_err(to_decode_err)?;
-                            let value = pair
-                                .value
-                                .ok_or(ProtoConvertError::MissingField("Pair.value"))
-                                .map_err(to_decode_err)?
-                                .into_object()
-                                .map_err(to_decode_err)?;
-                            Ok::<_, DecodeError>((key, value))
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()?
-                .map(DictPairs::from)
-                .unwrap_or_default();
+            let parents = ty
+                .parents
+                .into_iter()
+                .map(type_body_to_monty)
+                .collect::<Result<_, _>>()?;
+            // `PairList` already validated each pair (key and value present)
+            // and charged their values against the budget while decoding.
+            let attrs = ty.attrs.map(|pairs| DictPairs::from(pairs.0)).unwrap_or_default();
             Ok(MontyType::Instance(Box::new(ClassType {
                 name: ty.name,
                 id: pb_uuid_to_monty(&id, "Type.id")?,

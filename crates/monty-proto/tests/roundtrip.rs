@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
+use monty_proto::{
+    DEFAULT_MAX_DECODE_BYTES, MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb,
+    reset_decode_budget,
+};
 use monty_types::{
     ClassType, CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData,
     MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTime,
@@ -10,7 +13,10 @@ use monty_types::{
     PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData,
 };
 use num_bigint::BigInt;
-use prost::Message;
+use prost::{
+    Message,
+    encoding::{WireType, encode_key, encode_varint},
+};
 
 /// Asserts `obj` survives `MontyObject -> wire bytes -> MontyObject` through
 /// the hand-written `WireObject` codec (both directions).
@@ -177,6 +183,34 @@ fn timezone_names_are_charged_to_the_decode_budget() {
     for (named, unnamed) in named.into_iter().zip(unnamed) {
         assert_eq!(named - unnamed, name.len());
     }
+}
+
+/// A compromised worker must not amplify a cheap frame into unbounded host
+/// memory through `Type.parents`: an empty entry costs 2 wire bytes but ~200
+/// bytes resident, so `TypeBody` charges the budget per entry *during*
+/// decode. These bytes must fail the budget mid-decode — a decoder that
+/// materializes the whole tree first would build ~2 GiB of `Type`s from this
+/// 32 MiB buffer and only fail origin validation afterwards.
+#[test]
+fn type_parents_fanout_is_charged_during_decode() {
+    reset_decode_budget();
+    // Each entry charges well over 64 bytes, so budget/64 empty entries are
+    // guaranteed to overrun the budget partway through the buffer.
+    let entries = DEFAULT_MAX_DECODE_BYTES / 64;
+    let mut type_payload = Vec::with_capacity(entries * 2);
+    for _ in 0..entries {
+        type_payload.extend_from_slice(&[0x22, 0x00]); // field 4 (parents), len 0
+    }
+    // MontyObject { Type type = 23 }: length-delimited key, then the payload.
+    let mut bytes = Vec::with_capacity(type_payload.len() + 8);
+    encode_key(23, WireType::LengthDelimited, &mut bytes);
+    encode_varint(type_payload.len() as u64, &mut bytes);
+    bytes.extend_from_slice(&type_payload);
+
+    let err = WireObject::decode(bytes.as_slice()).expect_err("over-fanout Type must be rejected");
+    assert_snapshot!(err, @"failed to decode Protobuf message: frame exceeds decode memory budget");
+    // Leave the shared thread-local budget full for other decodes.
+    reset_decode_budget();
 }
 
 #[test]
