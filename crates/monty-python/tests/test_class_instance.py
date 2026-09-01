@@ -338,39 +338,16 @@ def test_bare_dataclass_from_external_function_rejected(monty_run: RunMonty):
     )
 
 
-# === Frozen behavior ===
+# === Frozen dataclasses cross as ordinary mutable copies ===
 
 
-def test_frozen_auto_detected(monty_run: RunMonty):
-    """Frozen dataclasses are auto-detected; in-sandbox setattr raises FrozenInstanceError."""
+def test_frozen_dataclass_setattr_mutates_sandbox_copy(monty_run: RunMonty):
+    """There is no frozen policy: in-sandbox setattr succeeds on the sandbox
+    copy even for a frozen dataclass, and the host object is untouched."""
     p = FrozenPoint(x=1, y=2)
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        monty_run('p.x = 100', inputs={'p': ClassInstance(p, eager_attrs='all')})
-    inner = exc_info.value.exception()
-    assert isinstance(inner, FrozenInstanceError)
-    assert inner.args[0] == snapshot("cannot assign to field 'x'")
-
-
-def test_frozen_explicit_on_plain_class(monty_run: RunMonty):
-    g = Greeter('hi')
-    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        monty_run("g.greeting = 'bye'", inputs={'g': ClassInstance(g, eager_attrs='all', frozen=True)})
-    assert isinstance(exc_info.value.exception(), FrozenInstanceError)
-
-
-def test_frozen_false_overrides_auto_detect(monty_run: RunMonty):
-    p = FrozenPoint(x=1, y=2)
-    result = monty_run('p.x = 5\np.x', inputs={'p': ClassInstance(p, eager_attrs='all', frozen=False)})
+    result = monty_run('p.x = 5\np.x', inputs={'p': ClassInstance(p, eager_attrs='all')})
     assert result == snapshot(5)
-    # the host object is untouched
     assert p.x == snapshot(1)
-
-
-def test_frozen_instance_error_catchable_as_attribute_error(monty_run: RunMonty):
-    p = FrozenPoint(x=1, y=2)
-    code = "try:\n    p.x = 100\n    r = 'unexpected'\nexcept AttributeError as e:\n    r = str(e)\nr"
-    result = monty_run(code, inputs={'p': ClassInstance(p, eager_attrs='all')})
-    assert result == snapshot("cannot assign to field 'x'")
 
 
 def test_frozen_instance_error_from_external_function(monty_run: RunMonty):
@@ -430,22 +407,13 @@ def test_equality_different_classes(monty_run: RunMonty):
     assert monty_run('a == b', inputs=inputs) is False
 
 
-def test_frozen_instances_hashable(monty_run: RunMonty):
-    inputs = {
-        'a': ClassInstance(FrozenPoint(x=1, y=2), eager_attrs='all'),
-        'b': ClassInstance(FrozenPoint(x=1, y=2), eager_attrs='all'),
-    }
-    assert monty_run('len({a, b})', inputs=inputs) == snapshot(1)
-
-
-def test_hash_is_attr_order_independent(monty_run: RunMonty):
-    """Equal instances whose eager attrs were sent in different orders must
-    hash equal — eq compares attrs order-insensitively, so hash must too."""
-    inputs = {
-        'a': ClassInstance(FrozenPoint(x=1, y=2), eager_attrs=['x', 'y']),
-        'b': ClassInstance(FrozenPoint(x=1, y=2), eager_attrs=['y', 'x']),
-    }
-    assert monty_run('(a == b, hash(a) == hash(b), len({a, b}))', inputs=inputs) == snapshot((True, True, 1))
+def test_frozen_dataclass_instances_unhashable(monty_run: RunMonty):
+    """All host instances are unhashable (they define eq by attrs), frozen
+    dataclasses included — matching CPython's eq-without-hash rule."""
+    p = FrozenPoint(x=1, y=2)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('hash(x)', inputs={'x': ClassInstance(p, eager_attrs='all')})
+    assert str(exc_info.value) == snapshot("TypeError: unhashable type: 'FrozenPoint'")
 
 
 def test_mutable_instances_unhashable(monty_run: RunMonty):
@@ -718,15 +686,14 @@ def test_class_type_denied_classmethod(monty_run: RunMonty):
     assert str(exc_info.value) == snapshot("AttributeError: type object 'Shape' has no attribute 'unit'")
 
 
-def test_type_of_instance_call_hints_class_type(monty_run: RunMonty):
-    """Calling a class obtained via type(x) that was never granted as a
-    ClassType fails with a hint naming the wrapper to pass."""
+def test_type_of_instance_call_denied_without_init(monty_run: RunMonty):
+    """Every ClassInstance materializes a default ClassType for its class, so
+    calling type(x) is denied by that wrapper's init=False policy — not a
+    store miss."""
     p = Person(name='Alice', age=30)
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         monty_run('type(x)("Bob", 2)', inputs={'x': ClassInstance(p)})
-    assert re.sub(r'\(id [0-9a-f-]+\)', '(id ...)', str(exc_info.value)) == snapshot(
-        "RuntimeError: no host class registered for '__call__' on 'Person' (id ...) — pass the class as a pydantic_monty.ClassType(...)"
-    )
+    assert str(exc_info.value) == snapshot("TypeError: cannot instantiate host class 'Person'")
 
 
 def test_type_of_host_instance_round_trips_to_class(monty_run: RunMonty):

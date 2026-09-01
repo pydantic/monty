@@ -808,9 +808,6 @@ fn sandbox_class_type(class_id: HeapId, vm: &mut VM<'_>) -> ClassType {
     let HeapReadOutput::Class(mut class) = vm.heap.read(class_id) else {
         unreachable!("sandbox_class_type called with a non-class heap id");
     };
-    // Only a `@dataclass(frozen=True)` class rejects setattr; the options are
-    // meaningless (defaults) for a plain class.
-    let frozen = is_dataclass && class.get(vm.heap).dataclass_options().frozen;
     ClassType {
         name: class_name(class_id, vm.heap, vm.interns).into_owned(),
         id: class.get_mut(vm.heap).boundary_uuid(),
@@ -818,7 +815,6 @@ fn sandbox_class_type(class_id: HeapId, vm: &mut VM<'_>) -> ClassType {
         // The sandbox does not support inheritance, so a class has no bases.
         parents: vec![],
         is_dataclass,
-        frozen,
         attrs: DictPairs::default(),
     }
 }

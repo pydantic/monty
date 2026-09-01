@@ -466,7 +466,6 @@ mod tests {
             host_defined: true,
             parents: vec![],
             is_dataclass,
-            frozen: false,
             attrs: DictPairs::default(),
         }
     }

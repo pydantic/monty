@@ -1,7 +1,7 @@
 # call-external
 # === Basic dataclass tests ===
 
-# Get immutable dataclass from external function
+# Get dataclass instance from external function
 point = make_point()
 
 # === repr and str ===
@@ -12,32 +12,18 @@ assert str(point) == 'Point(x=1, y=2)'
 # Dataclasses are always truthy (like Python class instances)
 assert bool(point)
 
-# === Hash for immutable dataclass ===
-# Immutable (frozen) dataclasses are hashable
-h1 = hash(point)
-assert h1 != 0
-
-# Hash is consistent - same object hashes to same value
-h2 = hash(point)
-assert h1 == h2
-
-# Equal frozen dataclasses hash to same value
+# === Host instances are unhashable ===
+# A dataclass with eq (the default) and no frozen=True defines __eq__ without
+# __hash__, so instances are unhashable — in CPython and in the sandbox.
 point2 = make_point()
-assert hash(point) == hash(point2)
+try:
+    hash(point)
+    assert False, 'expected TypeError from hash()'
+except TypeError as e:
+    assert str(e) == "unhashable type: 'Point'"
 
-# Frozen dataclass can be used as dict key
-d = {point: 'first'}
-assert d[point] == 'first'
-assert d[point2] == 'first'
-
-# Frozen dataclass can be added to set
-s = {point, point2}
-assert len(s) == 1
-
-# Different field values produce different hash
 alice = make_user('Alice')
 bob = make_user('Bob')
-assert hash(alice) != hash(bob)
 
 # === Equality ===
 assert point == point2
@@ -207,15 +193,12 @@ empty = make_empty()
 assert repr(empty) == 'Empty()'
 assert str(empty) == 'Empty()'
 
-# === FrozenInstanceError is subclass of AttributeError ===
-# Catching AttributeError should also catch FrozenInstanceError
-frozen_point = make_point()
-caught = False
-try:
-    frozen_point.x = 10
-except AttributeError:
-    caught = True
-assert caught
+# === setattr mutates the sandbox copy only ===
+copy_point = make_point()
+copy_point.x = 10
+assert copy_point.x == 10
+# a fresh instance from the host is unaffected
+assert make_point().x == 1
 
 # === Error: accessing non-existent attribute ===
 try:
@@ -353,8 +336,8 @@ assert mut_point.dimensions == 2
 assert point.dimensions == 2
 # lazy attrs are not part of repr or equality
 assert repr(point) == 'Point(x=1, y=2)'
-# a frozen instance still allows lazy attribute reads
-assert frozen_point.dimensions == 2
+# a locally mutated instance still allows lazy attribute reads
+assert copy_point.dimensions == 2
 
 # === Lazy lookup answered Undefined raises AttributeError ===
 try:

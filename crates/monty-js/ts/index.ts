@@ -9,6 +9,7 @@ export {
   ClassType,
   MontyClassProxy,
   type AttrPolicy,
+  type BaseWrapperOptions,
   type ClassInstanceOptions,
   type ClassTypeOptions,
 } from './classInstance.js'

@@ -701,7 +701,6 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
             host_defined: true,
             parents: vec![],
             is_dataclass: true,
-            frozen: true,
             attrs: DictPairs::default(),
         },
         instance_id: MontyUuid::from_u128(42),

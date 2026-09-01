@@ -28,9 +28,6 @@ prost = { workspace = true }
 monty-type-checking = { workspace = true, optional = true }
 # Optional: powers the `python` feature's Python ↔ MontyObject conversion layer
 pyo3 = { workspace = true, optional = true, features = ["num-bigint"] }
-# Optional: uuid4 generation for class/instance identity (`python` feature only,
-# so wasm and pure-Rust builds never pull an RNG)
-uuid = { version = "1", optional = true, features = ["v4"] }
 # generation-only dependencies (see src/bin/generate.rs); exact pins so the
 # checked-in generated code is reproducible across contributors and CI
 prost-build = { version = "=0.14.4", optional = true }
@@ -43,7 +40,7 @@ generate = ["dep:prost-build", "dep:protox"]
 # Enables the `python` module: PyO3-based conversions between Python objects
 # and `MontyObject`/`MontyException`. Off by default so pure-Rust consumers
 # (monty-pool, monty-runtime) never build or link against libpython.
-python = ["dep:pyo3", "dep:uuid"]
+python = ["dep:pyo3"]
 # Enables the `worker` module: the child-side Child state machine that drives
 # the interpreter. Off by default so host-side consumers (monty-pool, the
 # bindings) never link the interpreter itself.

@@ -11,7 +11,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead,
@@ -36,9 +36,9 @@ use crate::{
 /// Lazy lookups are NOT cached: every access is a fresh round trip to the
 /// host, so host-side mutations stay visible.
 ///
-/// When `frozen` is true the instance rejects `setattr` with
-/// `FrozenInstanceError` and is hashable (over its eager attrs); otherwise it
-/// is mutable and unhashable, matching frozen-dataclass semantics.
+/// `setattr` mutates only this sandbox copy (the host object is never
+/// touched). Instances are unhashable, matching CPython's rule for a class
+/// that defines `__eq__` — equality here compares class id + eager attrs.
 #[derive(Debug)]
 pub(crate) struct HostClass {
     /// The class name (e.g., "Point", "User")
@@ -55,8 +55,6 @@ pub(crate) struct HostClass {
     parents: Vec<MontyType>,
     /// Eagerly-sent attributes, in order (both fields and dynamically added)
     attrs: Dict,
-    /// Whether this instance is immutable (affects hashability)
-    frozen: bool,
     /// Whether `dataclasses.is_dataclass(obj)` is true on the host side.
     is_dataclass: bool,
 }
@@ -73,7 +71,6 @@ impl HostClass {
             host_defined: class_type.host_defined,
             parents: class_type.parents,
             attrs,
-            frozen: class_type.frozen,
             is_dataclass: class_type.is_dataclass,
         }
     }
@@ -89,7 +86,6 @@ impl HostClass {
             host_defined: self.host_defined,
             parents: self.parents.clone(),
             is_dataclass: self.is_dataclass,
-            frozen: self.frozen,
             attrs: DictPairs::default(),
         }
     }
@@ -133,25 +129,13 @@ impl HostClass {
 }
 
 impl<'h> HeapRead<'h, HostClass> {
-    /// Sets an attribute value.
+    /// Sets an attribute value on the sandbox copy (the host object is
+    /// never touched).
     ///
     /// The caller transfers ownership of both `name` and `value`. Returns the
     /// old value if the attribute existed (caller must drop it), or None if this
     /// is a new attribute.
-    ///
-    /// Returns `FrozenInstanceError` if the instance is frozen.
     pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        if self.get(vm.heap).frozen {
-            defer_drop!(name, vm);
-            value.drop_with(vm);
-            let name_repr = name.py_repr(vm)?;
-            defer_drop!(name_repr, vm);
-            let exc = SimpleException::new_msg(
-                ExcType::FrozenInstanceError,
-                format!("cannot assign to field {}", name_repr.to_str(vm)?),
-            );
-            return Err(exc.into());
-        }
         self.attrs_mut().set(name, value, vm)
     }
 
@@ -195,48 +179,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         Ok(Some(self.attrs().eq_dict(&other.attrs(), vm)?))
     }
 
-    /// Hashes a frozen instance by its class name and eager attrs.
-    ///
-    /// Per-pair hashes are folded with a wrapping sum so the result is
-    /// independent of attr insertion order — `py_eq_impl` compares via the
-    /// order-insensitive `eq_dict`, and equal values must hash equal even
-    /// when two wrappers sent the same attrs in different orders.
-    ///
-    /// Mutable (non-frozen) instances return `None` (unhashable).
-    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        // Only frozen (immutable) instances are hashable
-        if !self.get(vm.heap).frozen {
-            return Ok(None);
-        }
-        let mut guard = vm.recursion_guard()?;
-        let vm = &mut *guard;
-        let mut hasher = DefaultHasher::new();
-        // Hash the class name
-        self.get(vm.heap).name.as_str(vm.interns).hash(&mut hasher);
-        // Fold each (key, value) attr pair order-independently
-        let mut attrs_hash = 0u64;
-        let attr_count = self.get(vm.heap).attrs.len();
-        for i in 0..attr_count {
-            let Some((key, value)) = self.get(vm.heap).attrs.item_at(i) else {
-                break;
-            };
-            let key = key.clone_with_heap(vm.heap);
-            let value = value.clone_with_heap(vm.heap);
-            defer_drop!(key, vm);
-            defer_drop!(value, vm);
-            let mut pair_hasher = DefaultHasher::new();
-            match key.py_hash(vm)? {
-                Some(h) => h.hash(&mut pair_hasher),
-                None => return Ok(None),
-            }
-            match value.py_hash(vm)? {
-                Some(h) => h.hash(&mut pair_hasher),
-                None => return Ok(None),
-            }
-            attrs_hash = attrs_hash.wrapping_add(pair_hasher.finish());
-        }
-        attrs_hash.hash(&mut hasher);
-        Ok(Some(HashValue::new(hasher.finish())))
+    /// Always `None`: host instances are unhashable, matching CPython's rule
+    /// for a class that defines `__eq__` without `__hash__` (equality here
+    /// compares class id + attrs, and attrs are mutable).
+    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        Ok(None)
     }
 
     fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
@@ -419,8 +366,6 @@ pub(crate) struct HostClassType {
     parents: Vec<MontyType>,
     /// Whether `dataclasses.is_dataclass` is true for the class.
     is_dataclass: bool,
-    /// Whether instances reject `setattr` with `FrozenInstanceError`.
-    frozen: bool,
     /// Eagerly-sent class attributes (class constants). Excluded from
     /// equality/hash, which go by class identity alone.
     attrs: Dict,
@@ -437,7 +382,6 @@ impl HostClassType {
             host_defined: class_type.host_defined,
             parents: class_type.parents,
             is_dataclass: class_type.is_dataclass,
-            frozen: class_type.frozen,
             attrs,
         }
     }
@@ -472,7 +416,6 @@ impl HostClassType {
             host_defined: self.host_defined,
             parents: self.parents.clone(),
             is_dataclass: self.is_dataclass,
-            frozen: self.frozen,
             attrs: DictPairs::default(),
         }
     }
@@ -589,18 +532,17 @@ impl HeapItem for HostClassType {
     }
 }
 
-// Custom serde implementation for HostClass; serializes all eight fields so
+// Custom serde implementation for HostClass; serializes all seven fields so
 // suspended state (dumps) round-trips exactly.
 impl serde::Serialize for HostClass {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("HostClass", 8)?;
+        let mut state = serializer.serialize_struct("HostClass", 7)?;
         state.serialize_field("name", &self.name)?;
         state.serialize_field("instance_id", &self.instance_id)?;
         state.serialize_field("type_id", &self.type_id)?;
         state.serialize_field("host_defined", &self.host_defined)?;
         state.serialize_field("parents", &self.parents)?;
         state.serialize_field("attrs", &self.attrs)?;
-        state.serialize_field("frozen", &self.frozen)?;
         state.serialize_field("is_dataclass", &self.is_dataclass)?;
         state.end()
     }
@@ -616,7 +558,6 @@ impl<'de> serde::Deserialize<'de> for HostClass {
             host_defined: bool,
             parents: Vec<MontyType>,
             attrs: Dict,
-            frozen: bool,
             is_dataclass: bool,
         }
         let hc = HostClassData::deserialize(deserializer)?;
@@ -627,7 +568,6 @@ impl<'de> serde::Deserialize<'de> for HostClass {
             host_defined: hc.host_defined,
             parents: hc.parents,
             attrs: hc.attrs,
-            frozen: hc.frozen,
             is_dataclass: hc.is_dataclass,
         })
     }

@@ -776,8 +776,6 @@ pub struct ClassType {
     pub parents: Vec<MontyType>,
     /// Whether `dataclasses.is_dataclass` is true for the class.
     pub is_dataclass: bool,
-    /// Whether instances reject `setattr` with `FrozenInstanceError`.
-    pub frozen: bool,
     /// Class attributes sent eagerly with the type object (class constants,
     /// per the sending wrapper's policy). Empty for the `type` branch inside
     /// a `ClassInstance` and for `parents` entries.

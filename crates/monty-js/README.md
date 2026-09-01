@@ -128,15 +128,16 @@ through unchanged, so unwrapped class instances are rejected with a
 `TypeError` — wrapping is always an explicit host decision, with policies
 chosen per value (deliberately nothing inherits another wrapper's policies).
 
-Two more options: `name` overrides the class name the sandbox sees (default
-`instance.constructor.name`), and `frozen: true` makes in-sandbox `setattr`
-raise `FrozenInstanceError`. `frozen` defaults to `false`, so by default
-sandbox code may set attributes — on its own copy only: sandbox mutations
-never touch the wrapped host object.
+One more option: `name` overrides the class name the sandbox sees (default
+`instance.constructor.name`). Sandbox code may set attributes — on its own
+copy only: sandbox mutations never touch the wrapped host object.
 
 Each wrapper owns its identity: `wrapper.id` (a uuid4 by default, or the `id`
 option) is the id the sandbox routes by, so reuse one wrapper to re-send an
-object under the same identity.
+object under the same identity. Every `ClassInstance` also carries a
+`ClassType` wrapper for its class — a default one built from the
+constructor, or the `classType` option to grant class-level policies (or pin
+a class id) alongside the instance.
 
 Instances the host has no original for — defined inside the sandbox, or
 returned after a dump was restored into a fresh session — cross to the host as read-only
@@ -144,15 +145,15 @@ returned after a dump was restored into a fresh session — cross to the host as
 
 ### Host classes (`ClassType`)
 
-Wrap a _class_ in `ClassType` to pass it into the sandbox. It extends
-`ClassInstance`, applied to the class object itself: `eagerAttrs` sends
+Wrap a _class_ in `ClassType` to pass it into the sandbox. It is
+`ClassInstance`'s sibling, applied to the class object itself: `eagerAttrs` sends
 static class constants with the type, `lazyAttrs` serves them on demand, and
 `allowedMethods` exposes static methods (each routed back to the real class).
 With `init: true`, sandbox code may also call the class; the construction
 arrives as a `__call__` method call, runs host-side (the wrapper re-checks
 its own `init` policy on every request), and the constructed instance
 crosses back wrapped with the `instance*` policies (`instanceEagerAttrs` /
-`instanceLazyAttrs` / `instanceAllowedMethods`, plus the shared `frozen`):
+`instanceLazyAttrs` / `instanceAllowedMethods`):
 
 ```ts
 import { ClassType } from '@pydantic/monty'

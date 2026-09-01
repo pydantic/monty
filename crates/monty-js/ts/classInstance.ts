@@ -22,8 +22,8 @@ import { notCallableMessage } from './errors.js'
  */
 export type AttrPolicy = readonly string[] | ReadonlySet<string> | 'all'
 
-/** Options for [`ClassInstance`] — all policies default to "expose nothing". */
-export interface ClassInstanceOptions {
+/** Options shared by both wrappers — all policies default to "expose nothing". */
+export interface BaseWrapperOptions {
   /** Attributes sent into the sandbox with the instance: `'all'` sends the
    *  instance's own enumerable string-keyed props (skipping `_`-prefixed
    *  names), an explicit list reads exactly those props. */
@@ -35,11 +35,6 @@ export interface ClassInstanceOptions {
   allowedMethods?: AttrPolicy
   /** Class name shown to the sandbox; defaults to the constructor name. */
   name?: string
-  /** Whether sandbox `setattr` raises `FrozenInstanceError` (default false). */
-  frozen?: boolean
-  /** The wrapper's identity uuid (canonical lowercase uuid4); defaults to a
-   *  fresh one per wrapper. See [`ClassInstance.id`]. */
-  id?: string
   /**
    * Transforms each value crossing to the sandbox — applied exactly once per
    * value: to each eager attr, each lazy lookup result, and each method
@@ -51,32 +46,30 @@ export interface ClassInstanceOptions {
   convertValue?: (name: string, value: unknown) => unknown
 }
 
-/**
- * Policy wrapper exposing a host class instance to the Monty sandbox. Pass it
- * as an input or return it from an external function:
- *
- * ```ts
- * await session.feedRun('assert user.greeting() == "hi Samuel"', {
- *   inputs: { user: new ClassInstance(user, { eagerAttrs: 'all', allowedMethods: ['greeting'] }) },
- * })
- * ```
- */
-export class ClassInstance {
-  /** The instance's sandbox identity: reuse one wrapper to re-send an object
-   *  under the same id; reusing an id for a different object throws
-   *  `TypeError`. On [`ClassType`], the class's id, fixed by the class's
-   *  first crossing. */
-  readonly id: string
+/** Options for [`ClassInstance`]. */
+export interface ClassInstanceOptions extends BaseWrapperOptions {
+  /** The wrapper's identity uuid (canonical lowercase uuid4); defaults to a
+   *  fresh one per wrapper. See [`ClassInstance.id`]. */
+  id?: string
+  /** A [`ClassType`] wrapper for the instance's class, overriding the default
+   *  one materialized from the constructor — pass one to grant class-level
+   *  policies (or a pinned class id) alongside the instance. Must wrap the
+   *  instance's own constructor. */
+  classType?: ClassType
+}
 
+/** Shared behavior of [`ClassInstance`] and [`ClassType`]: the wrapped value,
+ *  the attr/method exposure policies, and the dispatch entry points the
+ *  session layer calls (`getEagerAttrs`, `lookupLazyAttr`, `callMethod`). */
+export abstract class BaseWrapper {
   constructor(
     /** The wrapped host object; returned unchanged when the sandbox returns the instance. */
     readonly instance: object,
-    readonly options: ClassInstanceOptions = {},
+    readonly options: BaseWrapperOptions = {},
   ) {
     if ((typeof instance !== 'object' && typeof instance !== 'function') || instance === null) {
       throw new TypeError('ClassInstance expects an object instance')
     }
-    this.id = options.id ?? generateUuid()
   }
 
   /** Class name shown to the sandbox: `options.name`, else the constructor name. */
@@ -162,17 +155,55 @@ export class ClassInstance {
   }
 }
 
+/**
+ * Policy wrapper exposing a host class instance to the Monty sandbox. Pass it
+ * as an input or return it from an external function:
+ *
+ * ```ts
+ * await session.feedRun('assert user.greeting() == "hi Samuel"', {
+ *   inputs: { user: new ClassInstance(user, { eagerAttrs: 'all', allowedMethods: ['greeting'] }) },
+ * })
+ * ```
+ */
+export class ClassInstance extends BaseWrapper {
+  /** The instance's sandbox identity: reuse one wrapper to re-send an object
+   *  under the same id; reusing an id for a different object throws
+   *  `TypeError`. */
+  readonly id: string
+  /** The [`ClassType`] wrapper carrying the class's identity and policies:
+   *  `options.classType` if given, else a default one materialized from the
+   *  constructor (`undefined` only for a null-prototype object). */
+  readonly classType?: ClassType
+
+  declare readonly options: ClassInstanceOptions
+
+  constructor(instance: object, options: ClassInstanceOptions = {}) {
+    super(instance, options)
+    this.id = options.id ?? generateUuid()
+    const ctor = instanceClass(instance)
+    if (options.classType !== undefined) {
+      if (options.classType.classType !== ctor) {
+        throw new TypeError("classType does not match the instance's class")
+      }
+      this.classType = options.classType
+    } else if (ctor !== undefined) {
+      this.classType = new ClassType(ctor as new (...args: never[]) => object)
+    }
+  }
+}
+
 /** Options for [`ClassType`]: the inherited policies applied to the class
  *  object itself (class constants, static methods), the `init` gate, and the
- *  `instance*` policies applied to every constructed instance. `frozen` is
- *  the exception — a type object rejects setattr regardless, so it governs
- *  constructed instances. */
-export interface ClassTypeOptions extends ClassInstanceOptions {
+ *  `instance*` policies applied to every constructed instance. */
+export interface ClassTypeOptions extends BaseWrapperOptions {
+  /** The class's identity uuid; defaults to a process-wide id per class, so
+   *  every wrapper of one class shares it. See [`ClassType.id`]. */
+  id?: string
   /** Whether sandbox code may instantiate the class (default false). Purely
    *  a host-side policy: it never crosses the wire, and `construct` checks
    *  it on every request. */
   init?: boolean
-  /** Policy applied to constructed instances (see [`ClassInstanceOptions`]). */
+  /** Policy applied to constructed instances (see [`BaseWrapperOptions`]). */
   instanceEagerAttrs?: AttrPolicy
   /** Policy applied to constructed instances. */
   instanceLazyAttrs?: AttrPolicy
@@ -181,13 +212,13 @@ export interface ClassTypeOptions extends ClassInstanceOptions {
 }
 
 /**
- * Policy wrapper exposing a host *class* to the Monty sandbox. Extends
- * [`ClassInstance`], applied to the class object itself: `eagerAttrs` sends
- * static class constants with the type, `lazyAttrs` serves them on demand,
- * and `allowedMethods` exposes static methods. With `init: true`, sandbox
- * code may call the class; the construction arrives as a `__call__` method
- * call, runs host-side, and the result crosses back wrapped in a
- * [`ClassInstance`] carrying the `instance*` policies:
+ * Policy wrapper exposing a host *class* to the Monty sandbox, applied to the
+ * class object itself: `eagerAttrs` sends static class constants with the
+ * type, `lazyAttrs` serves them on demand, and `allowedMethods` exposes
+ * static methods. With `init: true`, sandbox code may call the class; the
+ * construction arrives as a `__call__` method call, runs host-side, and the
+ * result crosses back wrapped in a [`ClassInstance`] carrying the `instance*`
+ * policies:
  *
  * ```ts
  * await session.feedRun('p = Point(1, 2)\nassert p.x == 1', {
@@ -195,7 +226,13 @@ export interface ClassTypeOptions extends ClassInstanceOptions {
  * })
  * ```
  */
-export class ClassType extends ClassInstance {
+export class ClassType extends BaseWrapper {
+  /** The class's sandbox identity. Defaults to a process-wide id per class
+   *  object (every wrapper of one class agrees), so instances keep a stable
+   *  type identity; pass `id` to pin it explicitly, e.g. when restoring a
+   *  dump in a fresh process. */
+  readonly id: string
+
   declare readonly options: ClassTypeOptions
 
   constructor(classType: new (...args: never[]) => object, options: ClassTypeOptions = {}) {
@@ -203,6 +240,7 @@ export class ClassType extends ClassInstance {
       throw new TypeError('ClassType expects a class (constructor function)')
     }
     super(classType, options)
+    this.id = options.id ?? classIdFor(classType)
   }
 
   /** The wrapped host class (the inherited `instance` field). */
@@ -242,16 +280,14 @@ export class ClassType extends ClassInstance {
     return this.instanceWrapper(new this.classType(...(callArgs as never[])))
   }
 
-  /** Wraps a constructed instance with the `instance*` policies (and the
-   *  shared `frozen`). Override to customize how constructed instances are
-   *  exposed. */
+  /** Wraps a constructed instance with the `instance*` policies. Override to
+   *  customize how constructed instances are exposed. */
   instanceWrapper(instance: object): ClassInstance {
-    const { instanceEagerAttrs, instanceLazyAttrs, instanceAllowedMethods, frozen, convertValue } = this.options
+    const { instanceEagerAttrs, instanceLazyAttrs, instanceAllowedMethods, convertValue } = this.options
     return new ClassInstance(instance, {
       eagerAttrs: instanceEagerAttrs,
       lazyAttrs: instanceLazyAttrs,
       allowedMethods: instanceAllowedMethods,
-      frozen,
       convertValue,
     })
   }
@@ -297,19 +333,13 @@ export class MontyClassProxy {
  * alive for the session, mirroring pydantic_monty's `InstanceStore`.
  */
 export class InstanceStore {
-  /** uuid → wrapper; re-sending the same wrapper overwrites its entry. */
-  readonly map = new Map<string, ClassInstance>()
+  /** uuid → wrapper (instances and class types — one routing namespace,
+   *  since `callMethod` / `lookupLazyAttr` are the shared wrapper surface);
+   *  re-sending the same wrapper overwrites its entry. */
+  readonly map = new Map<string, BaseWrapper>()
   /** class uuid → the class plus the `ClassType` wrapper gating
    *  instantiation (undefined until one crosses). Pins the class. */
   readonly classes = new Map<string, { classObject: object; wrapper?: ClassType }>()
-  /** class object → uuid: one id per class per session, fixed by the class's
-   *  first crossing (instances that crossed earlier already carry it, and a
-   *  second id for the same class would break in-sandbox type equality and
-   *  `__call__` routing). Session-local on purpose — ids shared across
-   *  stores would let a compromised worker recognise the same host class
-   *  across checkouts. */
-  private readonly classIds = new WeakMap<object, string>()
-
   /** Registers a wrapper under its own `id` (the wrapper owns its identity).
    *  Re-sending the same wrapper (or another wrapper of the same object)
    *  overwrites the entry; an id already routing to a different object is
@@ -320,22 +350,14 @@ export class InstanceStore {
     return wrapper.id
   }
 
-  /** The class's session uuid, pinned on first crossing: an already-recorded
-   *  id wins, then `wrapperId` (a `ClassType` wrapper's `id`), then a fresh
-   *  uuid4. */
-  typeUuid(classObject: object, wrapperId?: string): string {
-    let id = this.classIds.get(classObject)
-    if (id === undefined) {
-      id = wrapperId ?? generateUuid()
-      // A wrapper-supplied id already routing to some other object would
-      // silently re-alias values the sandbox holds — reject it.
-      this.checkNoAlias(id, classObject)
-      this.classIds.set(classObject, id)
-    }
+  /** Pins a class in the class map under `id` (with no routing wrapper)
+   *  unless already present, so round-tripped type objects resolve back to
+   *  the class. Throws if the id already identifies a different object. */
+  pinClass(id: string, classObject: object): void {
+    this.checkNoAlias(id, classObject)
     if (!this.classes.has(id)) {
       this.classes.set(id, { classObject })
     }
-    return id
   }
 
   /** Registers a `ClassType` wrapper under its class uuid, in both the
@@ -343,11 +365,21 @@ export class InstanceStore {
    *  `__call__` construction, lazy class attrs). Re-granting the same class
    *  with a new wrapper overwrites (last policy wins). */
   registerClass(wrapper: ClassType): string {
-    const id = this.typeUuid(wrapper.classType, wrapper.id)
-    this.checkNoAlias(id, wrapper.classType)
-    this.classes.set(id, { classObject: wrapper.classType, wrapper })
-    this.map.set(id, wrapper)
-    return id
+    this.checkNoAlias(wrapper.id, wrapper.classType)
+    this.classes.set(wrapper.id, { classObject: wrapper.classType, wrapper })
+    this.map.set(wrapper.id, wrapper)
+    return wrapper.id
+  }
+
+  /** [`registerClass`](InstanceStore.registerClass), but only when the class
+   *  has no routing wrapper yet — used for the `ClassType` a `ClassInstance`
+   *  materializes, so an auto-built default policy never clobbers an
+   *  explicitly granted one. */
+  registerClassIfAbsent(wrapper: ClassType): string {
+    if (this.classes.get(wrapper.id)?.wrapper !== undefined) {
+      return wrapper.id
+    }
+    return this.registerClass(wrapper)
   }
 
   /** Throws if `id` is already registered for an object other than `value`
@@ -366,7 +398,7 @@ export class InstanceStore {
   }
 
   /** Looks up the wrapper registered for `id` (instance or class type). */
-  get(id: string): ClassInstance | undefined {
+  get(id: string): BaseWrapper | undefined {
     return this.map.get(id)
   }
 
@@ -515,10 +547,27 @@ function wrapperToMarker(wrapper: ClassInstance, store: InstanceStore, depth: nu
     .map(([name, value]): [string, unknown] => [name, prepareInner(value, store, depth + 1)])
   return {
     __monty_type__: 'ClassInstance',
-    type: classTypeObject(wrapper.getName(), instanceClass(wrapper.instance), wrapper.options, store),
+    type: instanceTypeObject(wrapper, store),
     instanceId,
     attrs,
   }
+}
+
+/** The `type` object for an instance marker, from the wrapper's [`ClassType`].
+ *  Registered for routing only when the class has no wrapper yet, so an
+ *  auto-materialized default never clobbers an explicit grant. The name comes
+ *  from the instance wrapper, preserving its `name` override. */
+function instanceTypeObject(wrapper: ClassInstance, store: InstanceStore): Record<string, unknown> {
+  const ct = wrapper.classType
+  if (ct === undefined) {
+    // A null-prototype object has no constructor: key its class identity on
+    // `Object.prototype` so repeats stay stable within the process.
+    const id = classIdFor(Object.prototype)
+    store.pinClass(id, Object.prototype)
+    return { name: wrapper.getName(), id, hostDefined: true, parents: [], isDataclass: false, attrs: [] }
+  }
+  store.registerClassIfAbsent(ct)
+  return classTypeObject(wrapper.getName(), ct, store)
 }
 
 /** Registers a `ClassType` wrapper and builds its `Type` wire marker. */
@@ -531,34 +580,30 @@ function classTypeToMarker(wrapper: ClassType, store: InstanceStore, depth: numb
     .map(([name, value]): [string, unknown] => [name, prepareInner(value, store, depth + 1)])
   return {
     __monty_type__: 'Type',
-    classType: classTypeObject(wrapper.getName(), wrapper.classType, wrapper.options, store, attrs),
+    classType: classTypeObject(wrapper.getName(), wrapper, store, attrs),
   }
 }
 
 /**
  * The plain `classType` object shared by ClassInstance and Type markers:
- * name, session uuid, the wrapper policy flags, and `parents` from the
- * constructor prototype chain (each ancestor a `Type` marker with its own
- * uuid and default flags).
+ * name, the wrapper's uuid, and `parents` from the constructor prototype
+ * chain (each ancestor a `Type` marker whose id comes from the same
+ * process-wide class-id table). Pins the class in the store.
  */
 function classTypeObject(
   name: string,
-  classObject: object | undefined,
-  options: ClassInstanceOptions,
+  wrapper: ClassType,
   store: InstanceStore,
   attrs: Array<[string, unknown]> = [],
 ): Record<string, unknown> {
-  // An object with no constructor still needs a class identity: key it on
-  // `Object.prototype` so repeats stay stable within the session.
-  const id = store.typeUuid(classObject ?? Object.prototype)
+  store.pinClass(wrapper.id, wrapper.classType)
   return {
     name,
-    id,
+    id: wrapper.id,
     hostDefined: true,
-    parents: classObject === undefined ? [] : parentMarkers(classObject, store),
+    parents: parentMarkers(wrapper.classType, store),
     // JS has no dataclasses; host-wrapped objects always cross as plain classes
     isDataclass: false,
-    frozen: options.frozen ?? false,
     attrs,
   }
 }
@@ -569,13 +614,14 @@ function parentMarkers(classObject: object, store: InstanceStore): Array<Record<
   let parent: unknown = Object.getPrototypeOf(classObject)
   while (typeof parent === 'function' && parent !== Function.prototype) {
     const parentName = typeof parent.name === 'string' && parent.name !== '' ? parent.name : 'object'
+    const id = classIdFor(parent as object)
+    store.pinClass(id, parent as object)
     parents.push({
       name: parentName,
-      id: store.typeUuid(parent as object),
+      id,
       hostDefined: true,
       parents: [],
       isDataclass: false,
-      frozen: false,
       attrs: [],
     })
     parent = Object.getPrototypeOf(parent)
@@ -681,6 +727,23 @@ function walkPlainObject(
 }
 
 // === identity / classification helpers ===
+
+/** Process-wide class-id table: every wrapper of one class object agrees on
+ *  its default id, so instances keep a stable type identity across sessions.
+ *  Class identity is never secret (the name crosses anyway); instance ids
+ *  stay per-wrapper. An explicit `id` option bypasses (and never writes)
+ *  this table — that is how a dump restored in a fresh process pins ids. */
+const classIds = new WeakMap<object, string>()
+
+/** The process-wide default id for `classObject`, generated on first use. */
+function classIdFor(classObject: object): string {
+  let id = classIds.get(classObject)
+  if (id === undefined) {
+    id = generateUuid()
+    classIds.set(classObject, id)
+  }
+  return id
+}
 
 /** Generates a canonical lowercase uuid4 string. `getRandomValues` rather than
  *  `randomUUID` so insecure browser contexts work too. */

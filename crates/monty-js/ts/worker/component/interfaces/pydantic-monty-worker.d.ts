@@ -68,7 +68,6 @@ export interface ClassTypeNode {
   hostDefined: boolean
   parents: Uint32Array
   isDataclass: boolean
-  frozen: boolean
   attrs: Array<NodePair>
 }
 export interface ClassInstanceNode {

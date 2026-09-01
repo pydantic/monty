@@ -46,7 +46,6 @@ fn instance_type_is_not_nameable() {
         host_defined: false,
         parents: vec![],
         is_dataclass: false,
-        frozen: false,
         attrs: DictPairs::default(),
     }));
     assert_eq!(t.to_string(), "Foo");

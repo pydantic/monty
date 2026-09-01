@@ -941,7 +941,6 @@ struct TypeBody {
     origin: i32,
     parents: Vec<Self>,
     is_dataclass: bool,
-    frozen: bool,
     attrs: Option<PairList>,
 }
 
@@ -968,8 +967,7 @@ impl Message for TypeBody {
                 Ok(())
             }
             5 => encoding::bool::merge(wire_type, &mut self.is_dataclass, buf, ctx),
-            6 => encoding::bool::merge(wire_type, &mut self.frozen, buf, ctx),
-            7 => encoding::message::merge(wire_type, self.attrs.get_or_insert_with(PairList::default), buf, ctx),
+            6 => encoding::message::merge(wire_type, self.attrs.get_or_insert_with(PairList::default), buf, ctx),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
@@ -988,7 +986,6 @@ impl Message for TypeBody {
         self.origin = 0;
         self.parents.clear();
         self.is_dataclass = false;
-        self.frozen = false;
         self.attrs = None;
     }
 }
@@ -1168,7 +1165,6 @@ fn class_type_to_pb(class_type: &ClassType) -> pb::Type {
         origin: origin as i32,
         parents: class_type.parents.iter().map(monty_type_to_pb).collect(),
         is_dataclass: class_type.is_dataclass,
-        frozen: class_type.frozen,
         attrs,
     }
 }
@@ -1222,7 +1218,6 @@ fn type_body_to_monty(ty: TypeBody) -> Result<MontyType, DecodeError> {
                 host_defined: origin == pb::TypeOrigin::Host,
                 parents,
                 is_dataclass: ty.is_dataclass,
-                frozen: ty.frozen,
                 attrs,
             })))
         }

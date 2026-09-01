@@ -175,7 +175,6 @@ fn corpus() -> Vec<MontyObject> {
             host_defined: false,
             parents: vec![],
             is_dataclass: false,
-            frozen: false,
             attrs: DictPairs::default(),
         }))),
         MontyObject::Type(MontyType::Instance(Box::new(ClassType {
@@ -190,12 +189,10 @@ fn corpus() -> Vec<MontyObject> {
                     host_defined: true,
                     parents: vec![],
                     is_dataclass: true,
-                    frozen: true,
                     attrs: DictPairs::default(),
                 })),
             ],
             is_dataclass: true,
-            frozen: false,
             attrs: vec![
                 (MontyObject::String("SIDES".to_owned()), MontyObject::Int(4)),
                 (
@@ -220,7 +217,6 @@ fn corpus() -> Vec<MontyObject> {
                 host_defined: false,
                 parents: vec![],
                 is_dataclass: false,
-                frozen: false,
                 attrs: DictPairs::default(),
             },
             instance_id: MontyUuid::from_u128(0),
@@ -233,7 +229,6 @@ fn corpus() -> Vec<MontyObject> {
                 host_defined: true,
                 parents: vec![],
                 is_dataclass: true,
-                frozen: true,
                 attrs: DictPairs::default(),
             },
             instance_id: MontyUuid::from_u128(0xFEED_FACE),
@@ -389,7 +384,6 @@ fn oracle_class_type(class_type: &ClassType) -> oracle::Type {
         origin: origin as i32,
         parents: class_type.parents.iter().map(oracle_type).collect(),
         is_dataclass: class_type.is_dataclass,
-        frozen: class_type.frozen,
         attrs,
     }
 }

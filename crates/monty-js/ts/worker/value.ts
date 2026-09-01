@@ -244,7 +244,6 @@ function pushClassType(
     hostDefined: object.hostDefined === true,
     parents: new Uint32Array(parents),
     isDataclass: object.isDataclass === true,
-    frozen: object.frozen === true,
     attrs: pushPairs(attrPairs, nodes),
   }
 }
@@ -455,7 +454,6 @@ function readClassType(
     hostDefined: classType.hostDefined,
     parents,
     isDataclass: classType.isDataclass,
-    frozen: classType.frozen,
     attrs,
   }
 }

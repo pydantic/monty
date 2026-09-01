@@ -595,7 +595,6 @@ fn invalid_input_repr_in_class_instance_attrs() {
             host_defined: true,
             parents: vec![],
             is_dataclass: false,
-            frozen: false,
             attrs: DictPairs::default(),
         },
         instance_id: MontyUuid::from_u128(2),
@@ -621,7 +620,6 @@ fn host_class_type_input() -> MontyObject {
         host_defined: true,
         parents: vec![],
         is_dataclass: false,
-        frozen: false,
         attrs: vec![(
             MontyObject::String("data".to_owned()),
             MontyObject::List(vec![MontyObject::Int(1)]),

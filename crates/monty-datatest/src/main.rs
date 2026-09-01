@@ -482,18 +482,17 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>, registry: &mut Fix
         }
         "make_point" => {
             assert!(args.is_empty(), "make_point requires no arguments");
-            // Register and return an immutable Point(x=1, y=2)
+            // Register and return a Point(x=1, y=2)
             DispatchResult::Sync(registry.make_point(1, 2).into())
         }
         "make_mutable_point" => {
             assert!(args.is_empty(), "make_mutable_point requires no arguments");
-            // Register and return a mutable MutablePoint(x=1, y=2)
+            // Register and return a MutablePoint(x=1, y=2)
             DispatchResult::Sync(
                 registry
                     .register(Fixture {
                         class_name: "MutablePoint",
                         type_id: 2, // distinct per fixture class (real hosts pass the Python type id)
-                        frozen: false,
                         attrs: vec![("x", MontyObject::Int(1)), ("y", MontyObject::Int(2))],
                     })
                     .into(),
@@ -502,13 +501,12 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>, registry: &mut Fix
         "make_user" => {
             assert!(args.len() == 1, "make_user requires 1 argument");
             let name = String::try_from(&args[0]).expect("make_user: first arg must be str");
-            // Register and return an immutable User(name=name, active=True)
+            // Register and return a User(name=name, active=True)
             DispatchResult::Sync(
                 registry
                     .register(Fixture {
                         class_name: "User",
                         type_id: 3, // distinct per fixture class (real hosts pass the Python type id)
-                        frozen: true,
                         attrs: vec![("name", MontyObject::String(name)), ("active", MontyObject::Bool(true))],
                     })
                     .into(),
@@ -516,13 +514,12 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>, registry: &mut Fix
         }
         "make_empty" => {
             assert!(args.is_empty(), "make_empty requires no arguments");
-            // Register and return an immutable empty dataclass with no fields
+            // Register and return an empty dataclass with no fields
             DispatchResult::Sync(
                 registry
                     .register(Fixture {
                         class_name: "Empty",
                         type_id: 4, // distinct per fixture class (real hosts pass the Python type id)
-                        frozen: true,
                         attrs: vec![],
                     })
                     .into(),
@@ -572,7 +569,6 @@ struct FixtureRegistry {
 struct Fixture {
     class_name: &'static str,
     type_id: u64,
-    frozen: bool,
     attrs: Vec<(&'static str, MontyObject)>,
 }
 
@@ -595,7 +591,6 @@ impl FixtureRegistry {
                 host_defined: true,
                 parents: vec![],
                 is_dataclass: true,
-                frozen: fixture.frozen,
                 attrs: DictPairs::default(),
             },
             instance_id,
@@ -610,12 +605,11 @@ impl FixtureRegistry {
         value
     }
 
-    /// Registers and returns a frozen `Point(x, y)` (type_id 1).
+    /// Registers and returns a `Point(x, y)` (type_id 1).
     fn make_point(&mut self, x: i64, y: i64) -> MontyObject {
         self.register(Fixture {
             class_name: "Point",
             type_id: 1, // distinct per fixture class (real hosts pass the Python type id)
-            frozen: true,
             attrs: vec![("x", MontyObject::Int(x)), ("y", MontyObject::Int(y))],
         })
     }

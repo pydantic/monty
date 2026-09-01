@@ -97,7 +97,6 @@ interface worker {
         /// Indexes of class-type / type-name parent nodes.
         parents: list<u32>,
         is-dataclass: bool,
-        frozen: bool,
         /// Eagerly-sent class attributes (class constants); empty for the
         /// class-type of an instance and for parent entries.
         attrs: list<node-pair>,

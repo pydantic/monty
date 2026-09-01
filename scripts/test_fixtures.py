@@ -46,7 +46,7 @@ def raise_error(exc_type: str, message: str) -> None:
     raise exc_types[exc_type](message)
 
 
-@dataclass(frozen=True)
+@dataclass
 class Point:
     x: int
     y: int
@@ -92,7 +92,7 @@ def make_mutable_point() -> MutablePoint:
     return MutablePoint(x=1, y=2)
 
 
-@dataclass(frozen=True)
+@dataclass
 class User:
     name: str
     active: bool = True

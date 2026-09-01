@@ -174,13 +174,10 @@ pub struct Type {
     /// Whether `dataclasses.is_dataclass` is true for the class.
     #[prost(bool, tag = "5")]
     pub is_dataclass: bool,
-    /// Frozen instances reject setattr with FrozenInstanceError in the sandbox.
-    #[prost(bool, tag = "6")]
-    pub frozen: bool,
     /// Class attributes sent eagerly with the type object (class constants, per
     /// the sending wrapper's policy). Empty for the `type` field inside a
     /// ClassInstance and for `parents` entries.
-    #[prost(message, optional, tag = "7")]
+    #[prost(message, optional, tag = "6")]
     pub attrs: ::core::option::Option<Dict>,
 }
 /// A class instance crossing the sandbox boundary. Host-backed instances route

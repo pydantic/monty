@@ -7,8 +7,8 @@ methods sandbox code may call. The sandbox routes lazy attribute lookups and
 method calls back to the wrapped instance by a session-local uuid, and when
 sandbox code returns the instance, the host receives the original object back.
 
-`ClassType` is the class-level subclass: wrap a *class* to pass it into the
-sandbox. The inherited policies expose the class object itself (class
+`ClassType` is the class-level sibling: wrap a *class* to pass it into the
+sandbox. Its shared policies expose the class object itself (class
 constants via `eager_attrs`/`lazy_attrs`, classmethods via
 `allowed_methods`), `init=True` lets sandbox code instantiate it, and the
 `instance_*` policies are applied to each constructed instance.
@@ -22,24 +22,15 @@ from __future__ import annotations
 from collections.abc import Coroutine, Iterable, Sequence
 from dataclasses import KW_ONLY, dataclass, field, fields, is_dataclass
 from inspect import iscoroutine
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
 __all__ = 'ClassInstance', 'ClassType'
 
 
 @dataclass
-class ClassInstance:
-    """Policy wrapper exposing a host class instance to the Monty sandbox.
-
-    Example:
-    ```python
-    session.feed_run(
-        'assert user.greeting() == "hi Samuel"',
-        inputs={'user': ClassInstance(user, eager_attrs='all', allowed_methods={'greeting'})},
-    )
-    ```
-    """
+class BaseWrapper:
+    """Base type for instance and type wrappers."""
 
     value: Any
     """The instance to send."""
@@ -54,15 +45,6 @@ class ClassInstance:
 
     allowed_methods: set[str] | Literal['all'] | None = None
     """Methods the sandbox may call on the instance."""
-
-    frozen: bool | None = None
-    """Whether the sandbox rejects `setattr` with `FrozenInstanceError`.
-    `None` auto-detects frozen dataclasses; any other object defaults to mutable."""
-
-    id: UUID = field(default_factory=uuid4)
-    """The instance's sandbox identity: reuse one wrapper to re-send an object
-    under the same id; reusing an id for a different object raises `ValueError`.
-    On `ClassType`, the class's id, fixed by the class's first crossing."""
 
     def get_eager_attrs(self) -> dict[str, Any]:
         """The attributes to send into the sandbox with the instance."""
@@ -141,24 +123,53 @@ class ClassInstance:
         """Whether the wrapped value is a dataclass."""
         return is_dataclass(self.value)
 
-    def get_frozen(self) -> bool:
-        """Whether the sandbox copy is frozen; auto-detects frozen dataclasses."""
-        if self.frozen is not None:
-            return self.frozen
-        # instance lookup falls through to the class, where dataclasses store it
-        params = getattr(self.value, '__dataclass_params__', None)
-        return params.frozen if params is not None else False
+
+@dataclass
+class ClassInstance(BaseWrapper):
+    """Policy wrapper exposing a host class instance to the Monty sandbox.
+
+    Example:
+    ```python
+    session.feed_run(
+        'assert user.greeting() == "hi Samuel"',
+        inputs={'user': ClassInstance(user, eager_attrs='all', allowed_methods={'greeting'})},
+    )
+    ```
+    """
+
+    _: KW_ONLY
+
+    id: UUID = field(default_factory=uuid4)
+    """Unique id for the value."""
+
+    class_type: ClassType | None = None
+    """The ClassType wrapper for the value's type."""
+
+    def __post_init__(self) -> None:
+        if self.class_type is None:
+            self.class_type = ClassType(cast(type[Any], type(self.value)))
+        else:
+            # validate
+            if self.class_type.value is not type(self.value):
+                raise ValueError(
+                    f'class_type {self.class_type.value.__name__} does not match value {type(self.value).__name__}'
+                )
+
+
+type_id_cache: dict[str, UUID] = {}
+"""Process-wide class ids, keyed by `module.qualname`: every `ClassType` of
+one class agrees on its default id, so instances keep a stable type identity
+across sessions. Pre-seed it (or pass `ClassType(..., id=...)`) to pin class
+ids when restoring a dump in a fresh process."""
 
 
 @dataclass
-class ClassType(ClassInstance):
+class ClassType(BaseWrapper):
     """Policy wrapper exposing a host *class* to the Monty sandbox.
 
-    Inherits `ClassInstance`, applied to the class object itself: `eager_attrs`
+    `ClassInstance`'s sibling, applied to the class object itself: `eager_attrs`
     sends class constants with the type, `lazy_attrs` serves them on demand,
-    and `allowed_methods` exposes classmethods/staticmethods. `frozen` is the
-    exception — a type object rejects `setattr` regardless, so it (with the
-    `instance_*` policies) governs constructed instances instead.
+    and `allowed_methods` exposes classmethods/staticmethods.
 
     With `init=True`, sandbox code may call the class; the construction
     arrives as a `__call__` method call, runs host-side, and the result
@@ -177,6 +188,14 @@ class ClassType(ClassInstance):
     value: type[Any]
     """The type/class to send."""
 
+    _: KW_ONLY
+
+    id: UUID | None = None
+    """Unique id for the type.
+
+    If unset an ID will be reused or generated.
+    """
+
     init: bool = False
     """Whether sandbox code may instantiate the class.
 
@@ -192,6 +211,14 @@ class ClassType(ClassInstance):
 
     instance_allowed_methods: set[str] | Literal['all'] | None = None
     """Policy applied to constructed instances (see `ClassInstance`)."""
+
+    def __post_init__(self) -> None:
+        if self.id is None:
+            name = f'{self.value.__module__}.{self.value.__qualname__}'
+            if cached_id := type_id_cache.get(name):
+                self.id = cached_id
+            else:
+                self.id = type_id_cache[name] = uuid4()
 
     def get_eager_attrs(self) -> dict[str, Any]:
         """Class-object variant of eager attrs: `'all'` sends public
@@ -230,15 +257,15 @@ class ClassType(ClassInstance):
         return self.instance_wrapper(instance)
 
     def instance_wrapper(self, instance: Any) -> ClassInstance:
-        """Wraps a constructed instance with the `instance_*` policies (and
-        the shared `frozen`). Override to customize how constructed instances
-        are exposed."""
+        """Wraps a constructed instance with the `instance_*` policies.
+
+        Override to customize how constructed instances are exposed.
+        """
         return ClassInstance(
             instance,
             eager_attrs=self.instance_eager_attrs,
             lazy_attrs=self.instance_lazy_attrs,
             allowed_methods=self.instance_allowed_methods,
-            frozen=self.frozen,
         )
 
     def attr_error(self, name: str) -> AttributeError:
