@@ -289,6 +289,7 @@ export class WorkerTransport {
           callId: event.val.callId,
           // null (not undefined) for plain calls, matching the napi turn shape
           instanceId: event.val.instanceId ?? null,
+          typeId: event.val.typeId ?? null,
         }
       case 'os-call':
         this.pendingCallId = event.val.callId

@@ -8,7 +8,9 @@
 
 use std::mem;
 
-use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
+use monty_types::{
+    CallReceiver, ExcType, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
+};
 
 use crate::{
     asyncio::CallId,
@@ -103,9 +105,9 @@ impl RunProgress {
 /// When using async resolution, the code continues and may `await` the future later.
 /// If the future isn't resolved when awaited, execution yields with `ResolveFutures`.
 ///
-/// When `instance_id` is set, this represents a method call on a host class
-/// instance: route it to the host object with that `id(obj)` — the receiver is
-/// NOT included in `args`.
+/// When `receiver` is set, this represents a method call on a host class
+/// instance (or an instantiation of a host class): route it to the host
+/// object with that uuid — the receiver is NOT included in `args`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct FunctionCall {
     /// The name of the function or method being called.
@@ -116,9 +118,9 @@ pub struct FunctionCall {
     pub kwargs: Vec<(MontyObject, MontyObject)>,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
-    /// Host identity of the receiver for a method call on a host class
-    /// instance; `None` for plain external function calls.
-    pub instance_id: Option<u64>,
+    /// The routed receiver — an instance (method call) or class
+    /// (instantiation); `None` for plain external function calls.
+    pub receiver: Option<CallReceiver>,
     /// Internal execution snapshot.
     snapshot: Snapshot,
 }
@@ -130,7 +132,7 @@ impl FunctionCall {
         args: Vec<MontyObject>,
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
-        instance_id: Option<u64>,
+        receiver: Option<CallReceiver>,
         snapshot: Snapshot,
     ) -> Self {
         Self {
@@ -138,7 +140,7 @@ impl FunctionCall {
             args,
             kwargs,
             call_id,
-            instance_id,
+            receiver,
             snapshot,
         }
     }
@@ -282,7 +284,7 @@ pub(crate) enum LookupScope {
     /// Lazy attribute on a host class instance.
     Instance {
         /// Host identity of the instance whose attribute is read.
-        instance_id: u64,
+        instance_id: MontyUuid,
         /// Class name captured at suspension for the AttributeError message.
         class_name: String,
     },
@@ -290,7 +292,7 @@ pub(crate) enum LookupScope {
 
 impl LookupScope {
     /// The host instance id when this is a lazy attribute lookup.
-    pub(crate) fn instance_id(&self) -> Option<u64> {
+    pub(crate) fn instance_id(&self) -> Option<MontyUuid> {
         match self {
             Self::Namespace { .. } => None,
             Self::Instance { instance_id, .. } => Some(*instance_id),
@@ -328,7 +330,7 @@ impl NameLookup {
     /// Host identity of the instance for a lazy attribute lookup; `None` for a
     /// plain global/local name lookup.
     #[must_use]
-    pub fn instance_id(&self) -> Option<u64> {
+    pub fn instance_id(&self) -> Option<MontyUuid> {
         self.scope.instance_id()
     }
 
@@ -673,13 +675,14 @@ impl ExtFunctionResultExt for ExtFunctionResult {}
 pub(crate) enum ConvertedExit {
     /// Execution completed with a final result.
     Complete(MontyObject),
-    /// External function call or host-class method call (`instance_id` set).
+    /// External function call, or a host-routed method call / instantiation
+    /// (`receiver` set).
     FunctionCall {
         function_name: String,
         args: Vec<MontyObject>,
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
-        instance_id: Option<u64>,
+        receiver: Option<CallReceiver>,
     },
     /// OS-level operation.
     OsCall {
@@ -728,7 +731,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 args: args_py,
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
-                instance_id: None,
+                receiver: None,
             }
         }
         Ok(FrameExit::OsCall {
@@ -748,7 +751,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             method_name,
             args,
             call_id,
-            instance_id,
+            receiver,
         }) => {
             let name = method_name.into_string(vm.interns);
             let (args_py, kwargs_py) = args.into_py_objects(vm);
@@ -757,7 +760,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 args: args_py,
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
-                instance_id: Some(instance_id),
+                receiver: Some(receiver),
             }
         }
         Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
@@ -831,13 +834,13 @@ pub(crate) fn build_run_progress(
             args,
             kwargs,
             call_id,
-            instance_id,
+            receiver,
         } => Ok(RunProgress::FunctionCall(FunctionCall::new(
             function_name,
             args,
             kwargs,
             call_id,
-            instance_id,
+            receiver,
             new_snapshot!(),
         ))),
         ConvertedExit::OsCall { function_call, call_id } => Ok(RunProgress::OsCall(OsCall::new(

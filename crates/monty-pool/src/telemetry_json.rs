@@ -307,7 +307,9 @@ fn write_utc_offset(iso: &mut String, offset: i32) {
 // is not part of the pool's public API
 #[cfg(test)]
 mod tests {
-    use monty_types::{DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta};
+    use monty_types::{
+        ClassType, DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyUuid,
+    };
 
     use super::{serialize_capped, serialize_dict_capped, serialize_named_capped, serialize_seq_capped};
 
@@ -456,18 +458,28 @@ mod tests {
         assert_eq!(json(&nt), "[1,2]");
     }
 
+    /// A minimal host class type for fixtures.
+    fn test_class_type(name: &str, is_dataclass: bool) -> ClassType {
+        ClassType {
+            name: name.to_owned(),
+            id: MontyUuid::from_u128(1),
+            host_defined: true,
+            parents: vec![],
+            is_dataclass,
+            frozen: false,
+            init: false,
+        }
+    }
+
     #[test]
     fn class_instance_is_an_object_of_its_attrs() {
         let ci = MontyObject::ClassInstance {
-            name: "Point".to_owned(),
-            instance_id: 7,
-            type_id: 1,
+            class_type: test_class_type("Point", true),
+            instance_id: MontyUuid::from_u128(7),
             attrs: DictPairs::from(vec![
                 (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
                 (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
             ]),
-            frozen: false,
-            is_dataclass: true,
         };
         assert_eq!(json(&ci), r#"{"x":1,"y":2}"#);
     }
@@ -480,12 +492,9 @@ mod tests {
             .map(|index| (MontyObject::String(format!("extra_{index}")), MontyObject::None))
             .collect::<Vec<_>>();
         let value = MontyObject::ClassInstance {
-            name: "Large".to_owned(),
-            instance_id: 7,
-            type_id: 1,
+            class_type: test_class_type("Large", false),
+            instance_id: MontyUuid::from_u128(7),
             attrs: DictPairs::from(attrs),
-            frozen: false,
-            is_dataclass: false,
         };
         assert!(serialize_capped(&value, 64).1);
     }

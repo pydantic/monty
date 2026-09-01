@@ -21,7 +21,8 @@ use pyo3::{
 
 use super::{
     class_instance::{
-        InstanceStore, class_instance_to_monty, class_instance_to_py, is_class_instance_wrapper, is_dataclass,
+        InstanceStore, class_instance_to_monty, class_instance_to_py, class_type_to_monty, class_type_to_py,
+        is_class_instance_wrapper, is_class_type_wrapper, is_dataclass,
     },
     exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_object},
 };
@@ -32,7 +33,7 @@ use crate::MAX_VALUE_DEPTH;
 /// checking here gives the caller a clean `Max input depth exceeded` error
 /// before anything is sent to a worker.
 #[expect(clippy::cast_possible_truncation, reason = "MAX_VALUE_DEPTH is 48")]
-const MAX_INPUT_DEPTH: u8 = MAX_VALUE_DEPTH as u8;
+pub(super) const MAX_INPUT_DEPTH: u8 = MAX_VALUE_DEPTH as u8;
 /// Depth limit when converting sandbox values back to Python objects; values
 /// arriving over the wire are already bounded well below this, so it is a
 /// pure defence-in-depth backstop.
@@ -150,6 +151,8 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore, mut depth: u8)
         Ok(exc_to_monty_object(exc))
     } else if is_class_instance_wrapper(obj)? {
         class_instance_to_monty(obj, store, depth)
+    } else if is_class_type_wrapper(obj)? {
+        class_type_to_monty(obj, store, depth)
     } else if is_dataclass(obj) {
         // Bare dataclasses no longer auto-convert: the wrapper carries the
         // exposure policy and the instance identity the sandbox routes by.
@@ -198,7 +201,7 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore, mut depth: u8)
 /// report `pathlib._local` on 3.13). Every `pathlib` path class collapses to
 /// [`MontyType::Path`]. Returns `None` for classes Monty does not model, which the
 /// caller then represents as a [`MontyObject::Function`].
-fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option<MontyType>> {
+pub(super) fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option<MontyType>> {
     let py = ty.py();
     for (obj, t) in round_trip_type_table(py)? {
         if ty.is(obj) {
@@ -396,18 +399,27 @@ pub(crate) fn monty_to_py_inner(
             .map(Bound::into_any)
             .map(Bound::unbind),
         MontyObject::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
-        // Return the host Python type object the sandbox type maps to.
+        // Return the host Python type object the sandbox type maps to; a
+        // registered host class resolves to the original class object.
+        MontyObject::Type(MontyType::Instance(class_type)) => {
+            if let Some(class) = class_type_to_py(py, class_type, store)? {
+                Ok(class)
+            } else {
+                Err(PyValueError::new_err(format!(
+                    "cannot convert class '{}' to a host type object",
+                    class_type.name
+                )))
+            }
+        }
         MontyObject::Type(t) => type_object_to_py(py, t.clone()),
         MontyObject::BuiltinFunction(f) => builtin_function_to_py(py, &f.to_string()),
         // Class instance — resolve the original object from the store when
         // host-backed, else build a read-only proxy.
         MontyObject::ClassInstance {
-            name,
+            class_type,
             instance_id,
             attrs,
-            is_dataclass,
-            ..
-        } => class_instance_to_py(py, name, *instance_id, attrs, *is_dataclass, store, depth),
+        } => class_instance_to_py(py, class_type, instance_id, attrs, store, depth),
         // Path - convert to Python pathlib.Path
         MontyObject::Path(p) => {
             let pure_posix_path = get_pure_posix_path(py)?;
@@ -500,10 +512,11 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         // the singletons (`type(None)` / `type(...)`).
         MontyType::NoneType => Ok(py.None().bind(py).get_type().into_any().unbind()),
         MontyType::Ellipsis => Ok(py.Ellipsis().bind(py).get_type().into_any().unbind()),
-        // A sandbox-defined class — or the `type(x)` of a host class instance,
-        // which shares this output shape — has no host type object to map to.
-        MontyType::Instance(name) => Err(PyValueError::new_err(format!(
-            "cannot convert class '{name}' to a host type object"
+        // A class type reaching here was not resolvable through the store
+        // (`monty_to_py` handles the registered-host-class path first).
+        MontyType::Instance(class_type) => Err(PyValueError::new_err(format!(
+            "cannot convert class '{}' to a host type object",
+            class_type.name
         ))),
         _ => import_builtins(py)?.getattr(py, t.to_string()),
     }

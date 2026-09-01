@@ -316,7 +316,7 @@ fn external_function_round_trip() {
         panic!("expected FunctionCall, got {event:?}");
     };
     assert_eq!(call.function_name, "add");
-    assert_eq!(call.instance_id, None);
+    assert_eq!(call.receiver, None);
     assert_eq!(call.args, vec![MontyObject::Int(1), MontyObject::Int(2)]);
 
     let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::ReturnValue(int_value(3)));
@@ -602,17 +602,17 @@ fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
 fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
     let cases = [
-        ("'x' * 10_000_000", 10_030_889),
-        ("b'x' * 10_000_000", 10_031_021),
-        ("[None] * 1_000_000", 16_031_143),
-        ("2 ** 10_000_000", 10_030_982),
-        ("1 << 10_000_000", 1_280_983),
-        ("('a' * 1000).replace('a', 'b' * 2000)", 2_034_521),
+        ("'x' * 10_000_000", 10_033_185),
+        ("b'x' * 10_000_000", 10_033_317),
+        ("[None] * 1_000_000", 16_033_439),
+        ("2 ** 10_000_000", 10_033_278),
+        ("1 << 10_000_000", 1_283_279),
+        ("('a' * 1000).replace('a', 'b' * 2000)", 2_036_817),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
-        ("x = [None] * 40_000\nx += x", 1_951_587),
-        ("t = (None,) * 40_000\nt + t", 1_311_587),
-        ("x = [None] * 40_000\nx.copy()", 1_311_337),
+        ("x = [None] * 40_000\nx += x", 1_953_883),
+        ("t = (None,) * 40_000\nt + t", 1_313_883),
+        ("x = [None] * 40_000\nx.copy()", 1_313_633),
         // A partial re-clones its bound arguments on every call, so that clone
         // is preflighted like any other bulk container copy.
         (
@@ -632,7 +632,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `deque.extend` preflights exact-hint iterators up front.
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
-            16_031_723,
+            16_034_019,
         ),
     ];
 

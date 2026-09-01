@@ -20,6 +20,7 @@ use crate::{
     file_mode::FileMode,
     format::{FormatFloat, StringRepr, bytes_repr_fmt, format_offset_timedelta_repr, string_repr_fmt},
     resource::ResourceError,
+    uuid::MontyUuid,
 };
 
 /// An owned Python value exchanged between Monty and its host.
@@ -123,25 +124,18 @@ pub enum MontyObject {
     FileHandle(MontyFileHandle),
     /// A class instance crossing the sandbox boundary.
     ///
-    /// Host-backed instances carry the host's `id(obj)` as `instance_id`, so
+    /// Host-backed instances carry a host-minted uuid as `instance_id`, so
     /// method calls and lazy attribute lookups on names missing from `attrs`
     /// suspend back to the host, routed by that id (public names only).
-    /// Sandbox-defined instances cross outward with `instance_id` 0.
+    /// Sandbox-defined instances carry a worker-minted uuid instead; either
+    /// way the id never encodes a memory address.
     ClassInstance {
-        /// The class name (e.g., "Point", "User").
-        name: String,
-        /// Identity of the instance, from `id(obj)` on the host; 0 when the
-        /// instance was defined inside the sandbox (not host-backed).
-        instance_id: u64,
-        /// Identity of the class, from `id(type(obj))` on the host; 0 for
-        /// sandbox-defined instances.
-        type_id: u64,
+        /// The instance's class (never a builtin type).
+        class_type: ClassType,
+        /// Identity of the instance, minted by whichever side defined it.
+        instance_id: MontyUuid,
         /// Eagerly-sent attribute name -> value mapping, in order.
         attrs: DictPairs,
-        /// Whether the instance rejects `setattr` with `FrozenInstanceError`.
-        frozen: bool,
-        /// Whether `dataclasses.is_dataclass(obj)` is true on the origin side.
-        is_dataclass: bool,
     },
     /// An external function provided by the host.
     ///
@@ -237,11 +231,11 @@ impl MontyObject {
             Self::NamedTuple {
                 type_name, field_names, ..
             } => type_name.len() + names_len(field_names),
-            Self::ClassInstance { name, .. } => name.len(),
-            // A `Type::Instance` carries the resolved class name as an owned leaf
-            // `String` (the other `MontyType`s are payload-free), so charge it here
-            // like the `String`/`Function`/... names above.
-            Self::Type(MontyType::Instance(name)) => name.len(),
+            Self::ClassInstance { class_type, .. } => class_type.names_len(),
+            // A `Type::Instance` carries the resolved class type with owned name
+            // strings (the other `MontyType`s are payload-free), so charge it
+            // here like the `String`/`Function`/... names above.
+            Self::Type(MontyType::Instance(class_type)) => class_type.names_len(),
             // The temporal values each carry an owned timezone name, which is
             // caller-supplied and unbounded — the rest of their fields are scalars.
             Self::DateTime(dt) => name_len(&dt.timezone_name),
@@ -494,11 +488,11 @@ impl MontyObject {
                 }
                 f.write_char(')')
             }
-            Self::ClassInstance { name, attrs, .. } => {
+            Self::ClassInstance { class_type, attrs, .. } => {
                 // Format: ClassName(attr1=value1, attr2=value2, ...) over the
                 // eager attrs in order. Non-string keys are defensive: inputs
                 // are host-built, so render them via repr rather than panic.
-                f.write_str(name)?;
+                f.write_str(&class_type.name)?;
                 f.write_char('(')?;
                 for (i, (key, value)) in attrs.iter().enumerate() {
                     if i > 0 {
@@ -700,29 +694,16 @@ impl PartialEq for MontyObject {
             ) => a_type == b_type && a_arg == b_arg,
             (
                 Self::ClassInstance {
-                    name: a_name,
+                    class_type: a_class_type,
                     instance_id: a_instance_id,
-                    type_id: a_type_id,
                     attrs: a_attrs,
-                    frozen: a_frozen,
-                    is_dataclass: a_is_dataclass,
                 },
                 Self::ClassInstance {
-                    name: b_name,
+                    class_type: b_class_type,
                     instance_id: b_instance_id,
-                    type_id: b_type_id,
                     attrs: b_attrs,
-                    frozen: b_frozen,
-                    is_dataclass: b_is_dataclass,
                 },
-            ) => {
-                a_name == b_name
-                    && a_instance_id == b_instance_id
-                    && a_type_id == b_type_id
-                    && a_attrs == b_attrs
-                    && a_frozen == b_frozen
-                    && a_is_dataclass == b_is_dataclass
-            }
+            ) => a_class_type == b_class_type && a_instance_id == b_instance_id && a_attrs == b_attrs,
             (Self::Path(a), Self::Path(b)) => a == b,
             (
                 Self::FileHandle(MontyFileHandle {
@@ -764,17 +745,67 @@ impl AsRef<Self> for MontyObject {
     }
 }
 
+/// A non-builtin class type object crossing the sandbox boundary — the
+/// payload of [`MontyType::Instance`] and the class half of
+/// [`MontyObject::ClassInstance`].
+///
+/// `id` is minted by whichever side defined the class (host uuid4, or a
+/// worker uuid for sandbox classes) and is the identity used for equality
+/// and for routing instantiation requests; it never encodes an address.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the wire `Type` message's independent flags"
+)]
+pub struct ClassType {
+    /// The Python-visible class name (e.g. `"Point"`).
+    pub name: String,
+    /// Identity of the class, minted by whichever side defined it.
+    pub id: MontyUuid,
+    /// True for a host-defined class (wire origin `HOST`); false for a
+    /// sandbox-defined class (`SANDBOX`). Builtins never use `ClassType`.
+    pub host_defined: bool,
+    /// Direct base classes: builtin bases are plain [`MontyType`] variants,
+    /// class bases are [`MontyType::Instance`]. Carried on the wire but
+    /// inheritance is not functional in the sandbox yet.
+    pub parents: Vec<MontyType>,
+    /// Whether `dataclasses.is_dataclass` is true for the class.
+    pub is_dataclass: bool,
+    /// Whether instances reject `setattr` with `FrozenInstanceError`.
+    pub frozen: bool,
+    /// Whether the sandbox may instantiate the class (host classes only;
+    /// the host re-checks its own policy on every instantiation request).
+    pub init: bool,
+}
+
+impl ClassType {
+    /// Total owned name bytes, recursively over `parents` — the class type's
+    /// contribution to host-size accounting.
+    #[must_use]
+    pub fn names_len(&self) -> usize {
+        self.name.len()
+            + self
+                .parents
+                .iter()
+                .map(|p| match p {
+                    MontyType::Instance(class_type) => class_type.names_len(),
+                    _ => 0,
+                })
+                .sum::<usize>()
+    }
+}
+
 /// The Python type of a value at the host boundary — the public mirror of the
 /// internal runtime `Type` enum.
 ///
 /// Where the runtime `Type::Instance` carries a transient heap id, the public
-/// [`MontyType::Instance`] carries the *resolved class name* as an owned
-/// `String`, so a `MontyType` is always self-contained: it can be serialized,
+/// [`MontyType::Instance`] carries the resolved [`ClassType`] (name, uuid,
+/// flags), so a `MontyType` is always self-contained: it can be serialized,
 /// sent over the subprocess wire protocol, and displayed without heap access.
 ///
-/// `Instance` is output-only: a class binding cannot be reconstructed from a
-/// name, so passing `MontyType::Instance` as an *input* is rejected with an
-/// [`InvalidInputError`] (see [`MontyObject`] input conversion).
+/// A *sandbox* class type is output-only: its class binding cannot be
+/// reconstructed host-side, so passing one back as an input is rejected with
+/// an [`InvalidInputError`]. Host class types round-trip.
 #[derive(
     Debug,
     Clone,
@@ -837,13 +868,15 @@ pub enum MontyType {
     /// reprs, but `type(x)` renders as `HostClass`.
     #[strum(serialize = "HostClass")]
     HostClass,
-    /// An instance of a sandbox-defined class (`class Foo: ...`), carrying the
-    /// resolved class name (e.g. `"Foo"`). Output-only — rejected as an input.
+    /// A non-builtin class type object — a sandbox-defined or host-defined
+    /// class, carrying the resolved [`ClassType`] (name, uuid, flags).
+    /// Sandbox class types are output-only (rejected as inputs); host class
+    /// types round-trip.
     ///
     /// `#[strum(disabled)]`: excluded from `EnumIter` (no meaningful default
     /// name; the name round-trip tests iterate the nameable variants only).
     #[strum(disabled)]
-    Instance(String),
+    Instance(Box<ClassType>),
     /// Exception types render/parse via `ExcType`'s own strum name
     /// (`"ValueError"`, `"json.JSONDecodeError"`, ...), so this variant is
     /// `#[strum(disabled)]`: [`name`](Self::name) and
@@ -948,7 +981,7 @@ impl MontyType {
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
-            Self::Instance(name) => name,
+            Self::Instance(class_type) => &class_type.name,
             Self::Exception(exc_type) => (*exc_type).into(),
             // Every remaining variant is named by strum's `IntoStaticStr`
             // (`Exception`/`Instance` are peeled off above).

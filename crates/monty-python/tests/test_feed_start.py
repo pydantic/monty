@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -56,12 +57,13 @@ def test_kwargs_surface(session: MontySession):
 
 def test_method_call_snapshot_has_instance_id(session: MontySession):
     # a sandbox method call on a host instance surfaces as a FunctionSnapshot
-    # whose instance_id is the host id() of the receiver (not included in args)
+    # whose instance_id is the receiver's session uuid (not included in args)
     counter = _Counter(value=5)
     snap = session.feed_start('c.add(3)', inputs={'c': ClassInstance(counter, allowed_methods='all')})
     assert isinstance(snap, FunctionSnapshot)
     assert snap.function_name == snapshot('add')
-    assert snap.instance_id == id(counter)
+    assert isinstance(snap.instance_id, uuid.UUID)
+    assert snap.type_id is None
     assert snap.args == snapshot((3,))
     done = snap.resume_auto()
     assert isinstance(done, MontyComplete)
@@ -74,7 +76,7 @@ def test_lazy_attr_name_lookup_snapshot_has_instance_id(session: MontySession):
     snap = session.feed_start('c.value', inputs={'c': ClassInstance(counter, lazy_attrs='all')})
     assert isinstance(snap, NameLookupSnapshot)
     assert snap.variable_name == snapshot('value')
-    assert snap.instance_id == id(counter)
+    assert isinstance(snap.instance_id, uuid.UUID)
     done = snap.resume_auto()
     assert isinstance(done, MontyComplete)
     assert done.output == snapshot(7)

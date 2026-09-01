@@ -1,3 +1,4 @@
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Literal, NoReturn, final
 
@@ -1050,10 +1051,16 @@ class FunctionSnapshot:
     @property
     def is_os_function(self) -> bool: ...
     @property
-    def instance_id(self) -> int | None:
-        """Host `id()` of the receiver for a method call on a host class
-        instance sent via `ClassInstance`; `None` for plain external functions
-        and OS calls. The receiver is not included in `args`."""
+    def instance_id(self) -> uuid.UUID | None:
+        """Session uuid of the receiver for a method call on a host class
+        instance sent via `ClassInstance`; `None` for plain external functions,
+        OS calls, and instantiations. The receiver is not included in `args`."""
+
+    @property
+    def type_id(self) -> uuid.UUID | None:
+        """Session uuid of the class for an instantiation request on a host
+        class sent via `ClassType`; `None` otherwise. At most one of
+        `instance_id` / `type_id` is set."""
 
     @property
     def function_name(self) -> str | OsFunction: ...
@@ -1101,9 +1108,9 @@ class NameLookupSnapshot:
     @property
     def variable_name(self) -> str: ...
     @property
-    def instance_id(self) -> int | None:
-        """Host `id()` of the instance for a lazy attribute lookup; `None` for
-        a plain undefined-name lookup. An omitted-`value` resume raises
+    def instance_id(self) -> uuid.UUID | None:
+        """Session uuid of the instance for a lazy attribute lookup; `None`
+        for a plain undefined-name lookup. An omitted-`value` resume raises
         `AttributeError` (not `NameError`) for instance lookups."""
     def resume(self, *, value: Any = ...) -> SyncSnapshot:
         """Resume by binding the name to `value` (any value, including `None`), or
@@ -1155,7 +1162,9 @@ class AsyncFunctionSnapshot:
     @property
     def is_os_function(self) -> bool: ...
     @property
-    def instance_id(self) -> int | None: ...
+    def instance_id(self) -> uuid.UUID | None: ...
+    @property
+    def type_id(self) -> uuid.UUID | None: ...
     @property
     def function_name(self) -> str | OsFunction: ...
     @property
@@ -1183,7 +1192,7 @@ class AsyncNameLookupSnapshot:
     @property
     def variable_name(self) -> str: ...
     @property
-    def instance_id(self) -> int | None: ...
+    def instance_id(self) -> uuid.UUID | None: ...
     async def resume(self, *, value: Any = ...) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
         """Async sibling of `NameLookupSnapshot.resume_auto`."""

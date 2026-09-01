@@ -528,7 +528,7 @@ def test_dump_load_into_new_session_falls_back_to_proxy(pool: Monty):
         inner = exc_info.value.exception()
         assert isinstance(inner, RuntimeError)
         # the message embeds the (unstable) host id — normalize it before comparing
-        assert re.sub(r'\(id \d+\)', '(id ...)', str(inner)) == snapshot(
+        assert re.sub(r'\(id [0-9a-f-]+\)', '(id ...)', str(inner)) == snapshot(
             "no host instance registered for method call 'greeting' (id ...) — the instance store is empty after loading a session into a new process"
         )
 
@@ -537,3 +537,74 @@ def test_dump_load_into_new_session_falls_back_to_proxy(pool: Monty):
         with pytest.raises(pydantic_monty.MontyRuntimeError) as attr_exc_info:
             session.feed_run('x.age')
         assert str(attr_exc_info.value) == snapshot("AttributeError: 'Person' object has no attribute 'age'")
+
+
+# === ClassType instantiation ===
+
+
+def test_class_type_instantiation(monty_run: RunMonty):
+    result = monty_run(
+        'p = Person("Sam", 4)\np.greeting()',
+        inputs={'Person': pydantic_monty.ClassType(Person, init=True, eager_attrs='all', allowed_methods='all')},
+    )
+    assert result == snapshot('hi Sam')
+
+
+def test_class_type_constructed_instance_round_trips(monty_run: RunMonty):
+    result = monty_run(
+        'Person("Ada", 36)',
+        inputs={'Person': pydantic_monty.ClassType(Person, init=True, eager_attrs='all')},
+    )
+    assert result == Person(name='Ada', age=36)
+
+
+def test_class_type_init_false_raises_in_sandbox(monty_run: RunMonty):
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('Person("Sam", 4)', inputs={'Person': pydantic_monty.ClassType(Person)})
+    assert str(exc_info.value) == snapshot("TypeError: cannot instantiate host class 'Person'")
+
+
+def test_class_type_constructor_exception_propagates(monty_run: RunMonty):
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run(
+            'Person("Sam")',
+            inputs={'Person': pydantic_monty.ClassType(Person, init=True)},
+        )
+    assert str(exc_info.value) == snapshot("TypeError: Person.__init__() missing 1 required positional argument: 'age'")
+
+
+def test_class_type_kwargs_and_instance_policy(monty_run: RunMonty):
+    # kwargs reach the constructor; the constructed instance obeys the
+    # wrapper's instance policy (allowed_methods here)
+    result = monty_run(
+        'c = Calculator(value=10)\nc.add(5)',
+        inputs={'Calculator': pydantic_monty.ClassType(Calculator, init=True, allowed_methods={'add'})},
+    )
+    assert result == snapshot(15)
+
+
+def test_class_type_denied_method_on_constructed_instance(monty_run: RunMonty):
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run(
+            'Calculator(value=10).boom()',
+            inputs={'Calculator': pydantic_monty.ClassType(Calculator, init=True, allowed_methods={'add'})},
+        )
+    assert str(exc_info.value) == snapshot("AttributeError: 'Calculator' object has no attribute 'boom'")
+
+
+def test_type_of_host_instance_round_trips_to_class(monty_run: RunMonty):
+    # type(x) of a host instance crosses back and resolves to the real class
+    p = Person(name='Alice', age=30)
+    result = monty_run('type(x)', inputs={'x': ClassInstance(p)})
+    assert result is Person
+
+
+def test_instance_uuid_is_stable_across_feeds(session: MontySession):
+    # the same host object keeps one identity for the whole session, so two
+    # sends compare equal (each send still allocates its own sandbox proxy,
+    # so `a is b` stays False — see limitations/classes.md)
+    p = Person(name='Alice', age=30)
+    wrapper = ClassInstance(p, eager_attrs='all')
+    session.feed_run('a = x', inputs={'x': wrapper})
+    result = session.feed_run('a == b', inputs={'b': wrapper})
+    assert result is True

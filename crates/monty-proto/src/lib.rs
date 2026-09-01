@@ -21,10 +21,10 @@ pub mod worker;
 /// or repurposing a field, changing a field's meaning, or adding one the child
 /// requires. Purely additive changes an older peer can ignore do not need a
 /// bump.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 1;
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 2;
 
 // The supported range must be non-empty, and must exclude zero
 const _: () = assert!(MIN_SUPPORTED_PROTOCOL_VERSION >= 1);
@@ -63,4 +63,4 @@ pub use frame::{
 };
 pub use generated::pb;
 pub use requirement::validate_requirement;
-pub use wire::{WireFunctionCall, WireObject, reset_decode_budget};
+pub use wire::{CallReceiver, WireFunctionCall, WireObject, reset_decode_budget};

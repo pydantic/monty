@@ -36,13 +36,12 @@ use monty_pool::{
     TurnEvent,
 };
 use monty_types::{
-    AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintStream, StackFrame, TypeCheckingConfig,
-    TypeCheckingFormat,
+    AssertMessageAnnotations, CallReceiver, ExcType, MontyException, MontyObject, PrintStream, StackFrame,
+    TypeCheckingConfig, TypeCheckingFormat,
 };
 use napi::{
     bindgen_prelude::{
-        Array, BigInt, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw,
-        Unknown,
+        Array, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw, Unknown,
     },
     threadsafe_function::UnknownReturnValue,
     Env, Error, Result,
@@ -776,15 +775,21 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
             args,
             kwargs,
             call_id,
-            instance_id,
+            receiver,
         }) => {
             obj.set("kind", "functionCall")?;
             obj.set("functionName", function_name)?;
             obj.set("args", values_to_js(env, &args)?)?;
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
             obj.set("callId", call_id)?;
-            // BigInt: instance ids are host `id()`s and can exceed 2^53
-            obj.set("instanceId", instance_id.map(BigInt::from))?;
+            // uuids as canonical strings; at most one of the two is set
+            let (instance_id, type_id) = match receiver {
+                Some(CallReceiver::Instance(uuid)) => (Some(uuid.to_string()), None),
+                Some(CallReceiver::Type(uuid)) => (None, Some(uuid.to_string())),
+                None => (None, None),
+            };
+            obj.set("instanceId", instance_id)?;
+            obj.set("typeId", type_id)?;
         }
         TurnOutcome::Event(TurnEvent::OsCall {
             function_name,
@@ -801,8 +806,8 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
         TurnOutcome::Event(TurnEvent::NameLookup { name, instance_id }) => {
             obj.set("kind", "nameLookup")?;
             obj.set("name", name)?;
-            // BigInt: instance ids are host `id()`s and can exceed 2^53
-            obj.set("instanceId", instance_id.map(BigInt::from))?;
+            // uuids as canonical strings
+            obj.set("instanceId", instance_id.map(|uuid| uuid.to_string()))?;
         }
         TurnOutcome::Event(TurnEvent::ResolveFutures { pending_call_ids }) => {
             obj.set("kind", "resolveFutures")?;

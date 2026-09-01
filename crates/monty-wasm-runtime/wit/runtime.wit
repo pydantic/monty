@@ -85,14 +85,30 @@ interface worker {
         position: u64,
     }
 
-    /// A host-backed class instance and indexes of its attribute keys and values.
-    record class-instance-node {
+    /// A class type object (`type` is a WIT keyword, hence the name). The
+    /// real class lives on whichever side minted `id`; parents index other
+    /// nodes in the same arena, each of which must be a class-type or
+    /// type-name node (validated on read).
+    record class-type-node {
         name: string,
-        instance-id: u64,
-        type-id: u64,
-        attrs: list<node-pair>,
-        frozen: bool,
+        /// Canonical lowercase uuid string.
+        id: string,
+        host-defined: bool,
+        /// Indexes of class-type / type-name parent nodes.
+        parents: list<u32>,
         is-dataclass: bool,
+        frozen: bool,
+        /// Whether the sandbox may instantiate the class (host re-checked).
+        init: bool,
+    }
+
+    /// A class instance and indexes of its attribute keys and values.
+    record class-instance-node {
+        /// Index of this instance's class-type node.
+        class-type: u32,
+        /// Canonical lowercase uuid string.
+        instance-id: string,
+        attrs: list<node-pair>,
     }
 
     /// An external function value.
@@ -134,7 +150,7 @@ interface worker {
         timezone(timezone-node),
         exception(exception-value-node),
         type-name(string),
-        instance-type(string),
+        class-type(class-type-node),
         builtin-function(string),
         path(string),
         file-handle(file-handle-node),
@@ -274,22 +290,25 @@ interface worker {
         text: string,
     }
 
-    /// A suspended external function call.
+    /// A suspended external function call. At most one of `instance-id` /
+    /// `type-id` is set (the wire `FunctionCall.receiver` oneof).
     record function-call-event {
         function-name: string,
         args: list<value>,
         kwargs: list<value-pair>,
         call-id: u32,
-        /// Set for a method call on a host instance (`FunctionCall.instance_id`).
-        instance-id: option<u64>,
+        /// Set for a method call on a host instance: its uuid string.
+        instance-id: option<string>,
+        /// Set for an instantiation of a host class: its uuid string.
+        type-id: option<string>,
     }
 
     /// A suspended name or lazy-attribute lookup.
     record name-lookup-event {
         name: string,
-        /// Set for a lazy attribute lookup on a host instance
-        /// (`NameLookup.instance_id`).
-        instance-id: option<u64>,
+        /// Set for a lazy attribute lookup on a host instance: its uuid
+        /// string (`NameLookup.instance_id`).
+        instance-id: option<string>,
     }
 
     /// A suspended OS call projected into the public callback shape.

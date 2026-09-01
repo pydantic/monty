@@ -11,7 +11,8 @@ use monty::{
     detect_repl_continuation_mode, dump,
 };
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, PrintWriter, ResourceTracker,
+    CallReceiver, ClassType, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid,
+    PrintWriter, ResourceTracker,
 };
 
 #[test]
@@ -694,16 +695,21 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
     // Create a REPL with a host class instance input and call a method on it.
     // This exercises the MethodCall path in repl.rs handle_repl_vm_result.
     let point = MontyObject::ClassInstance {
-        name: "Point".to_string(),
-        instance_id: 42,
-        type_id: 0,
+        class_type: ClassType {
+            name: "Point".to_string(),
+            id: MontyUuid::from_u128(7),
+            host_defined: true,
+            parents: vec![],
+            is_dataclass: true,
+            frozen: true,
+            init: false,
+        },
+        instance_id: MontyUuid::from_u128(42),
         attrs: vec![
             (MontyObject::String("x".to_string()), MontyObject::Int(1)),
             (MontyObject::String("y".to_string()), MontyObject::Int(2)),
         ]
         .into(),
-        frozen: true,
-        is_dataclass: true,
     };
 
     let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
@@ -716,7 +722,11 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
     let call = progress.into_function_call().expect("expected method call");
 
     assert_eq!(call.function_name, "sum");
-    assert_eq!(call.instance_id, Some(42), "should be a method call on instance 42");
+    assert_eq!(
+        call.receiver,
+        Some(CallReceiver::Instance(MontyUuid::from_u128(42))),
+        "should be a method call on instance 42"
+    );
     // The receiver is NOT smuggled into args anymore
     assert!(call.args.is_empty(), "receiver must not be included in args");
 

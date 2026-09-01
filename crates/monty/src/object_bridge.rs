@@ -5,8 +5,8 @@
 
 use ahash::AHashSet;
 use monty_types::{
-    DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
-    MontyTimeZone, MontyType,
+    ClassType, DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
+    MontyTimeDelta, MontyTimeZone, MontyType,
 };
 
 use crate::{
@@ -15,10 +15,9 @@ use crate::{
     defer_drop,
     exception_private::{RunError, SimpleException},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapReadOutput},
-    intern::Interns,
     modules::dataclasses,
     types::{
-        HostClass, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type, allocate_tuple,
+        HostClass, HostClassType, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type, allocate_tuple,
         bytes::Bytes,
         date as date_type, datetime as datetime_type,
         dict::Dict,
@@ -214,23 +213,20 @@ impl MontyObjectExt for MontyObject {
                 let exc = SimpleException::new(exc_type, arg);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(exc))))
             }
-            // Always allocated host-backed, even for instance_id 0 (a
-            // round-tripped sandbox instance): the interpreter cannot rebuild
-            // the original class binding, so method calls / lazy lookups on an
-            // id-0 instance surface with instance_id 0 and hosts answer
-            // Undefined, which raises AttributeError.
+            // Always allocated host-backed, even for a round-tripped sandbox
+            // instance: the interpreter cannot rebuild the original class
+            // binding, so method calls / lazy lookups on such an instance
+            // suspend with its uuid and the host's guaranteed store miss
+            // produces the usual errors.
             Self::ClassInstance {
-                name,
+                class_type,
                 instance_id,
-                type_id,
                 attrs,
-                frozen,
-                is_dataclass,
             } => {
                 let pairs = convert_pairs(attrs, vm)?;
                 let dict = Dict::from_pairs(pairs, vm)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable class instance attr keys"))?;
-                let hc = HostClass::new(name, instance_id, type_id, dict, frozen, is_dataclass);
+                let hc = HostClass::new(class_type, instance_id, dict);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::HostClass(Box::new(hc)))))
             }
             Self::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s))))),
@@ -238,14 +234,26 @@ impl MontyObjectExt for MontyObject {
                 let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(Box::new(file)))))
             }
-            Self::Type(t) => match t.to_internal() {
-                Some(ty) => Ok(Value::Builtin(Builtins::Type(ty))),
-                // `MontyType::Instance` carries only a class name — the class
-                // binding cannot be reconstructed inside the sandbox (see the
-                // invariant on the runtime `Type::Instance` variant).
-                None => Err(InvalidInputError::invalid_type(
+            Self::Type(t) => match t {
+                // A host class type object is a valid input: it materializes
+                // as a `HostClassType`, callable when the host granted `init`.
+                MontyType::Instance(class_type) if class_type.host_defined => {
+                    let name = EitherStr::Heap(class_type.name.clone());
+                    let ty = HostClassType::new(name, *class_type);
+                    Ok(Value::Ref(vm.heap.allocate(HeapData::HostClassType(ty))))
+                }
+                // A sandbox class binding cannot be reconstructed from its
+                // wire shape (see the invariant on the runtime
+                // `Type::Instance` variant).
+                MontyType::Instance(_) => Err(InvalidInputError::invalid_type(
                     "a sandbox class type object is not a valid input value",
                 )),
+                t => match t.to_internal() {
+                    Some(ty) => Ok(Value::Builtin(Builtins::Type(ty))),
+                    None => Err(InvalidInputError::invalid_type(
+                        "a sandbox class type object is not a valid input value",
+                    )),
+                },
             },
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
             Self::Function { name, .. } => Ok(vm.heap.get_ext_function(&name)),
@@ -480,54 +488,42 @@ impl MontyObjectExt for MontyObject {
                         }
                     }
                     HeapReadOutput::HostClass(hc) => {
-                        let (name, instance_id, type_id, frozen, is_dataclass) = {
+                        let (class_type, instance_id) = {
                             let hc_ref = hc.get(vm.heap);
-                            (
-                                hc_ref.name(vm.interns).to_owned(),
-                                hc_ref.instance_id(),
-                                hc_ref.type_id(),
-                                hc_ref.is_frozen(),
-                                hc_ref.is_dataclass(),
-                            )
+                            (hc_ref.class_type(vm.interns), hc_ref.instance_id())
                         };
                         // Snapshot before recursing: attrs are mutable via `setattr`.
                         let children = snapshot_dict_pairs(hc.get(vm.heap).attrs(), vm.heap);
                         defer_drop!(children, vm);
                         Self::ClassInstance {
-                            name,
+                            class_type,
                             instance_id,
-                            type_id,
                             attrs: pairs_to_objects(children, vm, visited).into(),
-                            frozen,
-                            is_dataclass,
                         }
                     }
-                    // The type object of a host class renders like a class
-                    // object: `<class 'Point'>` via the resolved-name
-                    // `MontyType::Instance` output shape (output-only, like
-                    // sandbox class objects).
+                    // The type object of a host class crosses out with its
+                    // full class type (uuid included), so hosts can resolve
+                    // it back to the real class.
                     HeapReadOutput::HostClassType(ty) => {
-                        Self::Type(MontyType::Instance(ty.get(vm.heap).name(vm.interns).to_owned()))
+                        Self::Type(MontyType::Instance(Box::new(ty.get(vm.heap).class_type(vm.interns))))
                     }
                     // Sandbox-defined class instances cross out structured
-                    // (instance_id/type_id 0 = not host-backed) rather than as a
-                    // repr string, so hosts get name + attrs + dataclass-ness.
-                    // Class *objects* keep their type representation.
-                    HeapReadOutput::Instance(inst) => {
+                    // rather than as a repr string, so hosts get name + attrs
+                    // + dataclass-ness, plus worker-minted uuids (stored on
+                    // the heap objects, so stable across crossings and
+                    // dump/restore). Class *objects* keep their type
+                    // representation.
+                    HeapReadOutput::Instance(mut inst) => {
                         let class_id = inst.get(vm.heap).class();
-                        let name = class_name(class_id, vm.heap, vm.interns).into_owned();
-                        let is_dataclass = dataclasses::is_dataclass_class(class_id, vm);
+                        let instance_id = inst.get_mut(vm.heap).boundary_uuid();
+                        let class_type = sandbox_class_type(class_id, vm);
                         // Snapshot before recursing: attrs are mutable via `setattr`.
                         let children = snapshot_dict_pairs(inst.get(vm.heap).attrs(), vm.heap);
                         defer_drop!(children, vm);
                         Self::ClassInstance {
-                            name,
-                            instance_id: 0,
-                            type_id: 0,
+                            class_type,
+                            instance_id,
                             attrs: pairs_to_objects(children, vm, visited).into(),
-                            // native `@dataclass` does not support `frozen=True`
-                            frozen: false,
-                            is_dataclass,
                         }
                     }
                     // Iterators are internal objects — represent as a fixed type
@@ -585,7 +581,7 @@ impl MontyObjectExt for MontyObject {
                 visited.remove(id);
                 result
             }
-            Value::Builtin(Builtins::Type(t)) => Self::Type(MontyType::from_internal(*t, vm.heap, vm.interns)),
+            Value::Builtin(Builtins::Type(t)) => Self::Type(MontyType::from_internal(*t, vm)),
             Value::Builtin(Builtins::ExcType(e)) => Self::Type(MontyType::Exception(*e)),
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
             #[cfg(feature = "memory-model-checks")]
@@ -605,7 +601,7 @@ pub(crate) trait MontyTypeExt: Sized {
 
     fn from_internal_static(ty: Type) -> Self;
 
-    fn from_internal(ty: Type, heap: &Heap, interns: &Interns) -> Self;
+    fn from_internal(ty: Type, vm: &mut VM<'_>) -> Self;
 }
 
 impl MontyTypeExt for MontyType {
@@ -779,12 +775,39 @@ impl MontyTypeExt for MontyType {
     }
 
     /// The total mirror of a runtime [`Type`]: `Instance` resolves its class
-    /// name via the heap.
-    fn from_internal(ty: Type, heap: &Heap, interns: &Interns) -> Self {
+    /// via the heap, minting the class's boundary uuid on first crossing.
+    fn from_internal(ty: Type, vm: &mut VM<'_>) -> Self {
         match ty {
-            Type::Instance(class_id) => Self::Instance(class_name(class_id, heap, interns).into_owned()),
+            Type::Instance(class_id) => Self::Instance(Box::new(sandbox_class_type(class_id, vm))),
             other => Self::from_internal_static(other),
         }
+    }
+}
+
+/// Builds the wire [`ClassType`] for a sandbox-defined class, minting and
+/// storing its boundary uuid on first crossing so repeated crossings (and
+/// dump/restore) observe the same id.
+///
+/// # Panics
+/// If `class_id` does not refer to a `Class` heap entry — every producer of a
+/// class id guarantees it does, so this is a programmer-error tripwire.
+fn sandbox_class_type(class_id: HeapId, vm: &mut VM<'_>) -> ClassType {
+    let is_dataclass = dataclasses::is_dataclass_class(class_id, vm);
+    let HeapReadOutput::Class(mut class) = vm.heap.read(class_id) else {
+        unreachable!("sandbox_class_type called with a non-class heap id");
+    };
+    // Only a `@dataclass(frozen=True)` class rejects setattr; the options are
+    // meaningless (defaults) for a plain class.
+    let frozen = is_dataclass && class.get(vm.heap).dataclass_options().frozen;
+    ClassType {
+        name: class_name(class_id, vm.heap, vm.interns).into_owned(),
+        id: class.get_mut(vm.heap).boundary_uuid(),
+        host_defined: false,
+        // The sandbox does not support inheritance, so a class has no bases.
+        parents: vec![],
+        is_dataclass,
+        frozen,
+        init: false,
     }
 }
 

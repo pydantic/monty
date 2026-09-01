@@ -146,32 +146,56 @@ pub struct FileHandle {
     #[prost(uint64, tag = "3")]
     pub position: u64,
 }
-/// A class instance crossing the sandbox boundary. Host-backed instances carry
-/// the host's `id(obj)` so method calls and lazy attribute lookups route back
-/// to the real object (`FunctionCall.instance_id` / `NameLookup.instance_id`);
-/// sandbox-defined instances cross outward with instance_id 0.
+/// A 16-byte UUID (uuid4). Exactly 16 bytes; validated on decode. Class and
+/// instance ids are minted by whichever side defined the object, so they never
+/// encode a memory address and cannot be reused the way CPython reuses `id()`.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Uuid {
+    #[prost(bytes = "vec", tag = "1")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+}
+/// A Python type object crossing the sandbox boundary.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ClassInstance {
-    /// Class name, e.g. "Point".
+pub struct Type {
+    /// Python-visible name: builtin Display name ("int", "datetime.datetime")
+    /// or class name ("Point").
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    /// Host-side identity of the instance, from `id(obj)`; 0 when the instance
-    /// was defined inside the sandbox (not host-backed).
-    #[prost(uint64, tag = "2")]
-    pub instance_id: u64,
-    /// Host-side identity of the class, from `id(type(obj))`; 0 for
-    /// sandbox-defined instances.
-    #[prost(uint64, tag = "3")]
-    pub type_id: u64,
-    /// Eagerly-sent attributes, in order.
-    #[prost(message, optional, tag = "4")]
-    pub attrs: ::core::option::Option<Dict>,
-    /// Frozen instances reject setattr with FrozenInstanceError in the sandbox.
+    /// Identity of the class; absent iff origin == TYPE_ORIGIN_BUILTIN.
+    #[prost(message, optional, tag = "2")]
+    pub id: ::core::option::Option<Uuid>,
+    #[prost(enumeration = "TypeOrigin", tag = "3")]
+    pub origin: i32,
+    /// Direct base classes (multiple inheritance); carried on the wire but not
+    /// functional in the sandbox yet.
+    #[prost(message, repeated, tag = "4")]
+    pub parents: ::prost::alloc::vec::Vec<Type>,
+    /// Whether `dataclasses.is_dataclass` is true for the class.
     #[prost(bool, tag = "5")]
-    pub frozen: bool,
-    /// Whether `dataclasses.is_dataclass(obj)` is true on the origin side.
-    #[prost(bool, tag = "6")]
     pub is_dataclass: bool,
+    /// Frozen instances reject setattr with FrozenInstanceError in the sandbox.
+    #[prost(bool, tag = "6")]
+    pub frozen: bool,
+    /// Whether the sandbox may instantiate this type (host classes only; the
+    /// host re-checks its own policy on every instantiation request).
+    #[prost(bool, tag = "7")]
+    pub init: bool,
+}
+/// A class instance crossing the sandbox boundary. Host-backed instances route
+/// method calls and lazy attribute lookups back to the real object by uuid
+/// (`FunctionCall.instance_id` / `NameLookup.instance_id`); sandbox-defined
+/// instances carry a worker-minted uuid instead.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClassInstance {
+    /// The instance's class; origin SANDBOX or HOST (never BUILTIN).
+    #[prost(message, optional, tag = "1")]
+    pub r#type: ::core::option::Option<Type>,
+    /// Identity of the instance, minted by whichever side defined it.
+    #[prost(message, optional, tag = "2")]
+    pub instance_id: ::core::option::Option<Uuid>,
+    /// Eagerly-sent attributes, in order.
+    #[prost(message, optional, tag = "3")]
+    pub attrs: ::core::option::Option<Dict>,
 }
 /// An external (host-provided) function value, usually supplied by the parent
 /// in response to a `NameLookup` event.
@@ -783,10 +807,10 @@ pub mod os_call {
 pub struct NameLookup {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    /// Set for attribute lookups on a host-backed `ClassInstance`: the host id
-    /// of the instance whose attribute is being read.
-    #[prost(uint64, optional, tag = "2")]
-    pub instance_id: ::core::option::Option<u64>,
+    /// Set for attribute lookups on a host-backed `ClassInstance`: the uuid of
+    /// the instance whose attribute is being read.
+    #[prost(message, optional, tag = "2")]
+    pub instance_id: ::core::option::Option<Uuid>,
 }
 /// Suspension: every sandbox task is blocked on external futures previously
 /// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
@@ -851,6 +875,48 @@ pub struct ShutdownDump {
     /// when there was no session yet or the dump itself failed.
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+/// Where a `Type` comes from — drives id presence and input validation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum TypeOrigin {
+    /// Rejected on decode.
+    Unspecified = 0,
+    /// `name` must parse as a known builtin type name ("int", "ValueError");
+    /// valid as an execution input. `id` must be absent. Kept distinct from
+    /// SANDBOX so a sandbox class shadowing a builtin name ("int") cannot be
+    /// confused with the builtin type.
+    Builtin = 1,
+    /// A sandbox-defined class; `id` required. Accepted by the decoder but
+    /// rejected as an execution input (the class binding cannot be
+    /// reconstructed host-side).
+    Sandbox = 2,
+    /// A host-defined class; `id` required.
+    Host = 3,
+}
+impl TypeOrigin {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "TYPE_ORIGIN_UNSPECIFIED",
+            Self::Builtin => "TYPE_ORIGIN_BUILTIN",
+            Self::Sandbox => "TYPE_ORIGIN_SANDBOX",
+            Self::Host => "TYPE_ORIGIN_HOST",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "TYPE_ORIGIN_UNSPECIFIED" => Some(Self::Unspecified),
+            "TYPE_ORIGIN_BUILTIN" => Some(Self::Builtin),
+            "TYPE_ORIGIN_SANDBOX" => Some(Self::Sandbox),
+            "TYPE_ORIGIN_HOST" => Some(Self::Host),
+            _ => None,
+        }
+    }
 }
 /// Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's
 /// `DiagnosticFormat`.

@@ -46,10 +46,13 @@ export interface FunctionCallTurn {
    */
   kwargs: [unknown, unknown][]
   callId: number
-  /** Set for method calls on a host-backed class instance: the id of the
+  /** Set for method calls on a host-backed class instance: the uuid of the
    *  receiver in the session's `InstanceStore` (the receiver is NOT in
-   *  `args`). Null/absent for plain external function calls. */
-  instanceId?: bigint | null
+   *  `args`). Null/absent otherwise. */
+  instanceId?: string | null
+  /** Set for instantiations of a host class (`ClassType` with `init`): the
+   *  class's uuid. At most one of `instanceId` / `typeId` is set. */
+  typeId?: string | null
 }
 
 /** The sandbox performed an OS operation no mount handled. */
@@ -66,9 +69,9 @@ export interface NameLookupTurn {
   kind: 'nameLookup'
   name: string
   /** Set for lazy attribute lookups on a host-backed class instance: the
-   *  instance's id. Answering `resumeNameLookup(null, null, ...)` then makes
-   *  the sandbox raise `AttributeError` (not `NameError`). */
-  instanceId?: bigint | null
+   *  instance's uuid. Answering `resumeNameLookup(null, null, ...)` then
+   *  makes the sandbox raise `AttributeError` (not `NameError`). */
+  instanceId?: string | null
 }
 
 /** Every sandbox task is blocked on external futures. */

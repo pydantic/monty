@@ -29,6 +29,7 @@ use super::{
     FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError, WireFunctionCall, check_protocol_version,
     exceeds_max_frame_len, exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
 };
+use crate::wire::uuid_to_pb;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -906,7 +907,7 @@ fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::Chi
         args: mem::take(&mut call.args),
         kwargs: mem::take(&mut call.kwargs),
         call_id: call.call_id,
-        instance_id: call.instance_id,
+        receiver: call.receiver,
     }))
 }
 
@@ -968,7 +969,7 @@ fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
         ReplProgress::OsCall(call) => suspension_event_os_call(call),
         ReplProgress::NameLookup(lookup) => event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: lookup.name.clone(),
-            instance_id: lookup.instance_id(),
+            instance_id: lookup.instance_id().as_ref().map(uuid_to_pb),
         })),
         ReplProgress::ResolveFutures(state) => event(pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
             pending_call_ids: state.pending_call_ids().to_vec(),

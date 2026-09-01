@@ -11,7 +11,7 @@
 //! `external_lookup`.
 
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty, py_to_monty_value};
-use monty_types::{ExtFunctionResult, MontyObject};
+use monty_types::{ExtFunctionResult, MontyObject, MontyUuid};
 use pyo3::{
     exceptions::PyAttributeError,
     prelude::*,
@@ -26,7 +26,7 @@ use crate::exceptions::MontyConversionError;
 pub fn dispatch_instance_call(
     py: Python<'_>,
     function_name: &str,
-    instance_id: u64,
+    instance_id: &MontyUuid,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
     instances: &InstanceStore,
@@ -41,7 +41,7 @@ pub fn dispatch_instance_call(
 fn dispatch_instance_call_inner(
     py: Python<'_>,
     function_name: &str,
-    instance_id: u64,
+    instance_id: &MontyUuid,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
     instances: &InstanceStore,
@@ -50,18 +50,55 @@ fn dispatch_instance_call_inner(
     py_to_monty(&result, instances, 0)
 }
 
+/// Dispatches an instantiation of a host class, routed by `type_id` through
+/// the session's [`InstanceStore`] to the `ClassType` wrapper's `construct` —
+/// which re-checks its own `init` policy, so a forged wire flag from a
+/// compromised worker cannot bypass it. The constructed instance comes back
+/// as a registered `ClassInstance` wrapper and crosses like any other value.
+pub fn dispatch_instantiate(
+    py: Python<'_>,
+    class_name: &str,
+    type_id: &MontyUuid,
+    args: &[MontyObject],
+    kwargs: &[(MontyObject, MontyObject)],
+    instances: &InstanceStore,
+) -> ExtFunctionResult {
+    let result = (|| {
+        let (py_args_tuple, py_kwargs) = wire_call_arguments(py, args, kwargs, instances)?;
+        let constructed = instances.instantiate(py, type_id, class_name, &py_args_tuple, &py_kwargs)?;
+        py_to_monty(constructed.bind(py), instances, 0)
+    })();
+    match result {
+        Ok(result) => ExtFunctionResult::Return(result),
+        Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
+    }
+}
+
 /// Converts the wire args/kwargs and invokes `wrapper.call_method` through the
 /// store, returning the raw Python result (shared by the sync and coroutine
 /// dispatch paths).
 fn call_instance_method_raw<'py>(
     py: Python<'py>,
     function_name: &str,
-    instance_id: u64,
+    instance_id: &MontyUuid,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
     instances: &InstanceStore,
 ) -> PyResult<Bound<'py, PyAny>> {
     validate_host_method_name(function_name)?;
+    let (py_args_tuple, py_kwargs) = wire_call_arguments(py, args, kwargs, instances)?;
+    instances
+        .call_method(py, instance_id, function_name, &py_args_tuple, &py_kwargs)
+        .map(|obj| obj.into_bound(py))
+}
+
+/// Converts wire args/kwargs into the Python tuple/dict a host call needs.
+fn wire_call_arguments<'py>(
+    py: Python<'py>,
+    args: &[MontyObject],
+    kwargs: &[(MontyObject, MontyObject)],
+    instances: &InstanceStore,
+) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
     let py_args: PyResult<Vec<Py<PyAny>>> = args.iter().map(|arg| monty_to_py(py, arg, instances)).collect();
     let py_args_tuple = PyTuple::new(py, py_args?)?;
 
@@ -71,10 +108,7 @@ fn call_instance_method_raw<'py>(
         let py_value = monty_to_py(py, value, instances)?;
         py_kwargs.set_item(py_key, py_value)?;
     }
-
-    instances
-        .call_method(py, instance_id, function_name, &py_args_tuple, &py_kwargs)
-        .map(|obj| obj.into_bound(py))
+    Ok((py_args_tuple, py_kwargs))
 }
 
 /// Answers a lazy attribute lookup on a host class instance (`NameLookup` with
@@ -84,7 +118,7 @@ fn call_instance_method_raw<'py>(
 pub fn resolve_instance_attr(
     py: Python<'_>,
     name: &str,
-    instance_id: u64,
+    instance_id: &MontyUuid,
     instances: &InstanceStore,
 ) -> PyResult<Option<MontyObject>> {
     if name.starts_with('_') {
@@ -279,7 +313,7 @@ pub enum CallResult {
 pub fn dispatch_instance_call_or_coroutine(
     py: Python<'_>,
     function_name: &str,
-    instance_id: u64,
+    instance_id: &MontyUuid,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
     instances: &InstanceStore,

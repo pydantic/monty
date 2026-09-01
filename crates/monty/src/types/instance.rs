@@ -1,8 +1,11 @@
 use std::{borrow::Cow, fmt::Write};
 
+use monty_types::MontyUuid;
+
 use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
     args::{ArgValues, KwargsValues},
+    boundary_uuid::mint_uuid,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -29,13 +32,26 @@ pub(crate) struct Instance {
     class: HeapId,
     /// Instance attributes (`__dict__`).
     attrs: Dict,
+    /// Boundary identity, minted lazily the first time the instance crosses
+    /// to the host; dumped with the heap so it stays stable across restores.
+    uuid: Option<MontyUuid>,
 }
 
 impl Instance {
     /// Creates a new instance of `class` with the given initial attributes.
     #[must_use]
     pub fn new(class: HeapId, attrs: Dict) -> Self {
-        Self { class, attrs }
+        Self {
+            class,
+            attrs,
+            uuid: None,
+        }
+    }
+
+    /// Boundary identity of the instance, minting and storing it on first use
+    /// so repeated crossings (and dump/restore) observe the same id.
+    pub fn boundary_uuid(&mut self) -> MontyUuid {
+        *self.uuid.get_or_insert_with(mint_uuid)
     }
 
     /// Returns the `HeapId` of the instance's class object.

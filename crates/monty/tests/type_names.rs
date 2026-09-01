@@ -1,4 +1,4 @@
-use monty_types::{ExcType, MontyType};
+use monty_types::{ClassType, ExcType, MontyType, MontyUuid};
 use strum::IntoEnumIterator;
 
 /// `MontyType::from_type_name` must be the exact inverse of `Display`/`name()`
@@ -40,7 +40,15 @@ fn exception_type_names_round_trip() {
 /// confusion this guards against.
 #[test]
 fn instance_type_is_not_nameable() {
-    let t = MontyType::Instance("Foo".to_owned());
+    let t = MontyType::Instance(Box::new(ClassType {
+        name: "Foo".to_owned(),
+        id: MontyUuid::from_u128(1),
+        host_defined: false,
+        parents: vec![],
+        is_dataclass: false,
+        frozen: false,
+        init: false,
+    }));
     assert_eq!(t.to_string(), "Foo");
     assert_eq!(t.name(), "Foo");
     assert_eq!(MontyType::from_type_name("Foo"), None);

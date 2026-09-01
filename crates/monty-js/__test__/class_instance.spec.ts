@@ -7,6 +7,8 @@ import { t } from './assertions.js'
 
 import {
   ClassInstance,
+  ClassType,
+  FunctionSnapshot,
   MontyClassInstance,
   MontyComplete,
   MontyRuntimeError,
@@ -332,6 +334,67 @@ test('NameLookupSnapshot.resumeValue answers a lazy attribute lookup by hand', a
     const done = await lookup.resumeValue('manual')
     t.true(done instanceof MontyComplete)
     t.is((done as MontyComplete).output, 'manual!')
+  } finally {
+    await session.close()
+  }
+})
+
+// === ClassType instantiation ===
+
+test('sandbox instantiation of a host class via ClassType', async () => {
+  const wrapper = new ClassType(Calculator, { init: true, allowedMethods: 'all' })
+  t.is(await run('c = Calculator(10)\nc.add(5)', { inputs: { Calculator: wrapper } }), 15)
+})
+
+test('a constructed instance round-trips to a real host instance', async () => {
+  const wrapper = new ClassType(Greeter, { init: true })
+  const result = await run("Greeter('hi')", { inputs: { Greeter: wrapper } })
+  t.true(result instanceof Greeter)
+  t.is((result as Greeter).greet('Sam'), 'hi Sam')
+})
+
+test('init false raises TypeError in the sandbox', async () => {
+  const wrapper = new ClassType(Calculator)
+  const error = await t.throwsAsync(() => run('Calculator(10)', { inputs: { Calculator: wrapper } }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, "TypeError: cannot instantiate host class 'Calculator'")
+})
+
+test('constructor kwargs arrive as a trailing options bag', async () => {
+  class Config {
+    options: Record<string, unknown>
+    constructor(options: Record<string, unknown> = {}) {
+      this.options = options
+    }
+    read(): unknown {
+      return this.options['mode']
+    }
+  }
+  const wrapper = new ClassType(Config, { init: true, allowedMethods: 'all' })
+  t.is(await run("Config(mode='fast').read()", { inputs: { Config: wrapper } }), 'fast')
+})
+
+test('a denied method on a constructed instance raises AttributeError', async () => {
+  const wrapper = new ClassType(Calculator, { init: true, allowedMethods: ['add'] })
+  const error = await t.throwsAsync(() => run('Calculator(1).boom()', { inputs: { Calculator: wrapper } }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, "AttributeError: 'Calculator' object has no attribute 'boom'")
+})
+
+test('instantiate turns carry the class uuid as typeId', async () => {
+  const session = await pool().checkout()
+  try {
+    const wrapper = new ClassType(Calculator, { init: true })
+    const snap = await session.feedStart('Calculator(1)', { inputs: { Calculator: wrapper } })
+    t.true(snap instanceof FunctionSnapshot)
+    const call = snap as FunctionSnapshot
+    t.is(call.functionName, 'Calculator')
+    t.is(call.instanceId, null)
+    t.regex(call.typeId ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    const done = await call.resumeAuto()
+    t.true(done instanceof MontyComplete)
   } finally {
     await session.close()
   }

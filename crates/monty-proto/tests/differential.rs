@@ -16,10 +16,10 @@
 //! messages a misbehaving peer produces.
 
 use monty::MontyRun;
-use monty_proto::{WireFunctionCall, WireObject, pb};
+use monty_proto::{CallReceiver, WireFunctionCall, WireObject, pb};
 use monty_types::{
-    CompileOptions, DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType,
+    ClassType, CompileOptions, DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
+    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
 };
 use num_bigint::{BigInt, Sign};
 use prost::Message;
@@ -169,7 +169,35 @@ fn corpus() -> Vec<MontyObject> {
         },
         MontyObject::Type(MontyType::Int),
         MontyObject::Type(MontyType::Exception(ExcType::KeyError)),
-        MontyObject::Type(MontyType::Instance("Foo".to_owned())),
+        MontyObject::Type(MontyType::Instance(Box::new(ClassType {
+            name: "Foo".to_owned(),
+            id: MontyUuid::from_u128(0xF00),
+            host_defined: false,
+            parents: vec![],
+            is_dataclass: false,
+            frozen: false,
+            init: false,
+        }))),
+        MontyObject::Type(MontyType::Instance(Box::new(ClassType {
+            name: "Child".to_owned(),
+            id: MontyUuid::from_u128(0xF01),
+            host_defined: true,
+            parents: vec![
+                MontyType::Str,
+                MontyType::Instance(Box::new(ClassType {
+                    name: "Base".to_owned(),
+                    id: MontyUuid::from_u128(0xF02),
+                    host_defined: true,
+                    parents: vec![],
+                    is_dataclass: true,
+                    frozen: true,
+                    init: false,
+                })),
+            ],
+            is_dataclass: true,
+            frozen: false,
+            init: true,
+        }))),
         MontyObject::builtin_function_from_name("len").expect("len is a builtin"),
         MontyObject::Path(String::new()),
         MontyObject::Path("/mnt/data/file.txt".to_owned()),
@@ -179,23 +207,33 @@ fn corpus() -> Vec<MontyObject> {
             position: 0,
         }),
         MontyObject::ClassInstance {
-            name: String::new(),
-            instance_id: 0,
-            type_id: 0,
+            class_type: ClassType {
+                name: String::new(),
+                id: MontyUuid::from_u128(0),
+                host_defined: false,
+                parents: vec![],
+                is_dataclass: false,
+                frozen: false,
+                init: false,
+            },
+            instance_id: MontyUuid::from_u128(0),
             attrs: DictPairs::from(Vec::new()),
-            frozen: false,
-            is_dataclass: false,
         },
         MontyObject::ClassInstance {
-            name: "Point".to_owned(),
-            instance_id: 0xFEED_FACE,
-            type_id: 0xDEAD_BEEF,
+            class_type: ClassType {
+                name: "Point".to_owned(),
+                id: MontyUuid::from_u128(0xDEAD_BEEF),
+                host_defined: true,
+                parents: vec![],
+                is_dataclass: true,
+                frozen: true,
+                init: true,
+            },
+            instance_id: MontyUuid::from_u128(0xFEED_FACE),
             attrs: DictPairs::from(vec![
                 (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
                 (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
             ]),
-            frozen: true,
-            is_dataclass: true,
         },
         MontyObject::Function {
             name: "f".to_owned(),
@@ -284,8 +322,7 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             exc_type: exc_type.to_string(),
             arg: arg.clone(),
         }),
-        MontyObject::Type(MontyType::Instance(name)) => Kind::InstanceType(name.clone()),
-        MontyObject::Type(t) => Kind::Type(t.to_string()),
+        MontyObject::Type(t) => Kind::Type(oracle_type(t)),
         MontyObject::BuiltinFunction(bf) => Kind::BuiltinFunction(bf.to_string()),
         MontyObject::Path(p) => Kind::Path(p.clone()),
         MontyObject::FileHandle(fh) => Kind::FileHandle(oracle::FileHandle {
@@ -294,19 +331,13 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             position: fh.position,
         }),
         MontyObject::ClassInstance {
-            name,
+            class_type,
             instance_id,
-            type_id,
             attrs,
-            frozen,
-            is_dataclass,
         } => Kind::ClassInstance(oracle::ClassInstance {
-            name: name.clone(),
-            instance_id: *instance_id,
-            type_id: *type_id,
+            r#type: Some(oracle_class_type(class_type)),
+            instance_id: Some(oracle_uuid(instance_id)),
             attrs: Some(oracle_dict(attrs)),
-            frozen: *frozen,
-            is_dataclass: *is_dataclass,
         }),
         MontyObject::Function { name, docstring } => Kind::Function(oracle::Function {
             name: name.clone(),
@@ -319,6 +350,43 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
         }),
     };
     oracle::MontyObject { kind: Some(kind) }
+}
+
+/// Oracle mirror of a `MontyType` as the wire `Type` message.
+fn oracle_type(t: &MontyType) -> oracle::Type {
+    match t {
+        MontyType::Instance(class_type) => oracle_class_type(class_type),
+        other => oracle::Type {
+            name: other.to_string(),
+            origin: oracle::TypeOrigin::Builtin as i32,
+            ..oracle::Type::default()
+        },
+    }
+}
+
+/// Oracle mirror of a `ClassType`, recursing over parents.
+fn oracle_class_type(class_type: &ClassType) -> oracle::Type {
+    let origin = if class_type.host_defined {
+        oracle::TypeOrigin::Host
+    } else {
+        oracle::TypeOrigin::Sandbox
+    };
+    oracle::Type {
+        name: class_type.name.clone(),
+        id: Some(oracle_uuid(&class_type.id)),
+        origin: origin as i32,
+        parents: class_type.parents.iter().map(oracle_type).collect(),
+        is_dataclass: class_type.is_dataclass,
+        frozen: class_type.frozen,
+        init: class_type.init,
+    }
+}
+
+/// Oracle mirror of a `MontyUuid`.
+fn oracle_uuid(uuid: &MontyUuid) -> oracle::Uuid {
+    oracle::Uuid {
+        data: uuid.as_bytes().to_vec(),
+    }
 }
 
 fn oracle_list(items: &[MontyObject]) -> oracle::ObjectList {
@@ -398,22 +466,35 @@ fn hand_call_payloads_match_generated_encoding() {
         (MontyObject::String("count".to_owned()), MontyObject::Int(3)),
     ];
 
-    // Both presence states of `instance_id`: a method call (Some, including
-    // the explicit-presence 0 case) and a plain external call (None).
-    for instance_id in [Some(7u64), Some(0), None] {
+    // Every receiver state: a method call, an instantiation, and a plain
+    // external call (absent oneof).
+    let receivers = [
+        Some(CallReceiver::Instance(MontyUuid::from_u128(7))),
+        Some(CallReceiver::Type(MontyUuid::from_u128(9))),
+        None,
+    ];
+    for receiver in receivers {
+        let oracle_receiver = receiver.map(|receiver| match receiver {
+            CallReceiver::Instance(uuid) => oracle::function_call::Receiver::InstanceId(oracle::Uuid {
+                data: uuid.as_bytes().to_vec(),
+            }),
+            CallReceiver::Type(uuid) => oracle::function_call::Receiver::TypeId(oracle::Uuid {
+                data: uuid.as_bytes().to_vec(),
+            }),
+        });
         let hand_call = WireFunctionCall {
             function_name: "external".to_owned(),
             args: args.clone(),
             kwargs: kwargs.clone(),
             call_id: 42,
-            instance_id,
+            receiver,
         };
         let generated_call = oracle::FunctionCall {
             function_name: "external".to_owned(),
             args: args.iter().map(to_oracle).collect(),
             kwargs: oracle_pairs(&kwargs),
             call_id: 42,
-            instance_id,
+            receiver: oracle_receiver,
         };
         assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
         assert_eq!(
@@ -518,8 +599,76 @@ fn invalid_values_are_rejected_during_decode() {
         "failed to decode Protobuf message: unknown exception type \"NotARealError\""
     );
     assert_eq!(
-        rejected(Kind::Type("NotAType".to_owned())),
+        rejected(Kind::Type(oracle::Type {
+            name: "NotAType".to_owned(),
+            origin: oracle::TypeOrigin::Builtin as i32,
+            ..oracle::Type::default()
+        })),
         "failed to decode Protobuf message: unknown type name \"NotAType\""
+    );
+    // origin must be specified
+    assert_eq!(
+        rejected(Kind::Type(oracle::Type {
+            name: "int".to_owned(),
+            ..oracle::Type::default()
+        })),
+        "failed to decode Protobuf message: invalid value for Type: origin must be specified"
+    );
+    // a builtin must not carry an id
+    assert_eq!(
+        rejected(Kind::Type(oracle::Type {
+            name: "int".to_owned(),
+            origin: oracle::TypeOrigin::Builtin as i32,
+            id: Some(oracle::Uuid { data: vec![0; 16] }),
+            ..oracle::Type::default()
+        })),
+        "failed to decode Protobuf message: invalid value for Type: a builtin type must not carry an id"
+    );
+    // a class type must carry an id
+    assert_eq!(
+        rejected(Kind::Type(oracle::Type {
+            name: "Foo".to_owned(),
+            origin: oracle::TypeOrigin::Host as i32,
+            ..oracle::Type::default()
+        })),
+        "failed to decode Protobuf message: invalid value for Type: a class type must carry an id"
+    );
+    // a uuid must be exactly 16 bytes
+    assert_eq!(
+        rejected(Kind::Type(oracle::Type {
+            name: "Foo".to_owned(),
+            origin: oracle::TypeOrigin::Sandbox as i32,
+            id: Some(oracle::Uuid { data: vec![0; 5] }),
+            ..oracle::Type::default()
+        })),
+        "failed to decode Protobuf message: invalid value for Type.id: uuid must be 16 bytes, got 5"
+    );
+    // a class instance's type must not be a builtin
+    assert_eq!(
+        rejected(Kind::ClassInstance(oracle::ClassInstance {
+            r#type: Some(oracle::Type {
+                name: "int".to_owned(),
+                origin: oracle::TypeOrigin::Builtin as i32,
+                ..oracle::Type::default()
+            }),
+            instance_id: Some(oracle::Uuid { data: vec![0; 16] }),
+            attrs: Some(oracle::Dict::default()),
+        })),
+        "failed to decode Protobuf message: invalid value for ClassInstance.type: must be a class type, not a builtin"
+    );
+    // instance_id is required
+    assert_eq!(
+        rejected(Kind::ClassInstance(oracle::ClassInstance {
+            r#type: Some(oracle::Type {
+                name: "Foo".to_owned(),
+                origin: oracle::TypeOrigin::Sandbox as i32,
+                id: Some(oracle::Uuid { data: vec![7; 16] }),
+                ..oracle::Type::default()
+            }),
+            instance_id: None,
+            attrs: Some(oracle::Dict::default()),
+        })),
+        "failed to decode Protobuf message: missing required field ClassInstance.instance_id"
     );
     assert_eq!(
         rejected(Kind::BuiltinFunction("not_a_builtin".to_owned())),

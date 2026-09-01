@@ -61,9 +61,8 @@ message MontyObject {
     // A simple exception VALUE (no traceback) — e.g. an exception stored in a
     // variable. Errors that terminate execution use `RaisedException` instead.
     Exception exception = 19;
-    // A Python type object, named by monty's `Type` Display string, e.g.
-    // "int", "str", "datetime.datetime", "ValueError".
-    string type = 20;
+    // A Python type object — builtin, sandbox class, or host class.
+    Type type = 31;
     // A builtin function, named by its Python name, e.g. "len", "print".
     string builtin_function = 21;
     // A pathlib.Path value (always a virtual POSIX path, never a host path).
@@ -75,15 +74,12 @@ message MontyObject {
     string repr = 26;
     // OUTPUT-ONLY marker breaking reference cycles in container output.
     Cycle cycle = 27;
-    // The type object of a sandbox-defined class, named by its class name,
-    // e.g. "Foo". Kept separate from `type` so a class shadowing a builtin
-    // name ("int") cannot be confused with the builtin type. Accepted by the
-    // decoder but rejected as an execution input (the class binding cannot be
-    // reconstructed from a name).
-    string instance_type = 28;
     Unit not_implemented = 29;
     Time time = 30;
   }
+  // 20 was `string type` (builtin type names) and 28 `string instance_type`
+  // (sandbox class names); both are replaced by the `Type` message arm.
+  reserved 20, 28;
 }
 
 message ObjectList {
@@ -188,25 +184,61 @@ message FileHandle {
   uint64 position = 3;
 }
 
-// A class instance crossing the sandbox boundary. Host-backed instances carry
-// the host's `id(obj)` so method calls and lazy attribute lookups route back
-// to the real object (`FunctionCall.instance_id` / `NameLookup.instance_id`);
-// sandbox-defined instances cross outward with instance_id 0.
-message ClassInstance {
-  // Class name, e.g. "Point".
+// A 16-byte UUID (uuid4). Exactly 16 bytes; validated on decode. Class and
+// instance ids are minted by whichever side defined the object, so they never
+// encode a memory address and cannot be reused the way CPython reuses `id()`.
+message Uuid {
+  bytes data = 1;
+}
+
+// Where a `Type` comes from — drives id presence and input validation.
+enum TypeOrigin {
+  // Rejected on decode.
+  TYPE_ORIGIN_UNSPECIFIED = 0;
+  // `name` must parse as a known builtin type name ("int", "ValueError");
+  // valid as an execution input. `id` must be absent. Kept distinct from
+  // SANDBOX so a sandbox class shadowing a builtin name ("int") cannot be
+  // confused with the builtin type.
+  TYPE_ORIGIN_BUILTIN = 1;
+  // A sandbox-defined class; `id` required. Accepted by the decoder but
+  // rejected as an execution input (the class binding cannot be
+  // reconstructed host-side).
+  TYPE_ORIGIN_SANDBOX = 2;
+  // A host-defined class; `id` required.
+  TYPE_ORIGIN_HOST = 3;
+}
+
+// A Python type object crossing the sandbox boundary.
+message Type {
+  // Python-visible name: builtin Display name ("int", "datetime.datetime")
+  // or class name ("Point").
   string name = 1;
-  // Host-side identity of the instance, from `id(obj)`; 0 when the instance
-  // was defined inside the sandbox (not host-backed).
-  uint64 instance_id = 2;
-  // Host-side identity of the class, from `id(type(obj))`; 0 for
-  // sandbox-defined instances.
-  uint64 type_id = 3;
-  // Eagerly-sent attributes, in order.
-  Dict attrs = 4;
+  // Identity of the class; absent iff origin == TYPE_ORIGIN_BUILTIN.
+  Uuid id = 2;
+  TypeOrigin origin = 3;
+  // Direct base classes (multiple inheritance); carried on the wire but not
+  // functional in the sandbox yet.
+  repeated Type parents = 4;
+  // Whether `dataclasses.is_dataclass` is true for the class.
+  bool is_dataclass = 5;
   // Frozen instances reject setattr with FrozenInstanceError in the sandbox.
-  bool frozen = 5;
-  // Whether `dataclasses.is_dataclass(obj)` is true on the origin side.
-  bool is_dataclass = 6;
+  bool frozen = 6;
+  // Whether the sandbox may instantiate this type (host classes only; the
+  // host re-checks its own policy on every instantiation request).
+  bool init = 7;
+}
+
+// A class instance crossing the sandbox boundary. Host-backed instances route
+// method calls and lazy attribute lookups back to the real object by uuid
+// (`FunctionCall.instance_id` / `NameLookup.instance_id`); sandbox-defined
+// instances carry a worker-minted uuid instead.
+message ClassInstance {
+  // The instance's class; origin SANDBOX or HOST (never BUILTIN).
+  Type type = 1;
+  // Identity of the instance, minted by whichever side defined it.
+  Uuid instance_id = 2;
+  // Eagerly-sent attributes, in order.
+  Dict attrs = 3;
 }
 
 // An external (host-provided) function value, usually supplied by the parent
@@ -575,18 +607,23 @@ message Print {
   string text = 2;
 }
 
-// Suspension: the sandbox called an external function, or — when
-// `instance_id` is set — a method on a host-backed class instance (the
-// instance is NOT included in `args`; the host routes by id). Answer with
-// `ResumeCall`.
+// Suspension: the sandbox called an external function, or — when a
+// `receiver` is set — a method on a host-backed class instance or a host
+// class constructor (the receiver is NOT included in `args`; the host routes
+// by uuid). Answer with `ResumeCall`.
 message FunctionCall {
   string function_name = 1;
   repeated MontyObject args = 2;
   repeated Pair kwargs = 3;
   uint32 call_id = 4;
-  // Set for method calls on a host-backed `ClassInstance`: the host id of the
-  // receiver. Absent for plain external function calls.
-  optional uint64 instance_id = 5;
+  // Absent for plain external function calls.
+  oneof receiver {
+    // Method call on a host-backed `ClassInstance`: the uuid of the receiver.
+    Uuid instance_id = 5;
+    // Instantiation of a host class (its `Type.init` must be true): the uuid
+    // of the class to construct.
+    Uuid type_id = 6;
+  }
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent
@@ -678,9 +715,9 @@ message OsCall {
 // AttributeError (not NameError) inside the sandbox.
 message NameLookup {
   string name = 1;
-  // Set for attribute lookups on a host-backed `ClassInstance`: the host id
-  // of the instance whose attribute is being read.
-  optional uint64 instance_id = 2;
+  // Set for attribute lookups on a host-backed `ClassInstance`: the uuid of
+  // the instance whose attribute is being read.
+  Uuid instance_id = 2;
 }
 
 // Suspension: every sandbox task is blocked on external futures previously

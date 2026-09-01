@@ -4,10 +4,10 @@ use insta::assert_snapshot;
 use monty::MontyRun;
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use monty_types::{
-    CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
-    MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTime, MontyTimeDelta,
-    MontyTimeZone, MontyType, NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData,
+    ClassType, CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData,
+    MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTime,
+    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, OpenCallArgs, OsFunctionCall,
+    PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData,
 };
 use num_bigint::BigInt;
 use prost::Message;
@@ -194,7 +194,36 @@ fn exception_and_type_values_round_trip() {
     // Qualified name (`collections.deque`) must survive the wire round-trip.
     assert_value_round_trip(&MontyObject::Type(MontyType::Deque));
     assert_value_round_trip(&MontyObject::Type(MontyType::Exception(ExcType::KeyError)));
-    assert_value_round_trip(&MontyObject::Type(MontyType::Instance("Foo".to_owned())));
+    // Class types round-trip with their uuid, origin, flags and parents.
+    assert_value_round_trip(&MontyObject::Type(MontyType::Instance(Box::new(ClassType {
+        name: "Foo".to_owned(),
+        id: MontyUuid::from_u128(0xFEED),
+        host_defined: false,
+        parents: vec![],
+        is_dataclass: false,
+        frozen: false,
+        init: false,
+    }))));
+    assert_value_round_trip(&MontyObject::Type(MontyType::Instance(Box::new(ClassType {
+        name: "Child".to_owned(),
+        id: MontyUuid::from_u128(0xBEEF),
+        host_defined: true,
+        parents: vec![
+            MontyType::Int,
+            MontyType::Instance(Box::new(ClassType {
+                name: "Base".to_owned(),
+                id: MontyUuid::from_u128(0xCAFE),
+                host_defined: true,
+                parents: vec![],
+                is_dataclass: true,
+                frozen: false,
+                init: false,
+            })),
+        ],
+        is_dataclass: true,
+        frozen: true,
+        init: true,
+    }))));
     let builtin = MontyObject::builtin_function_from_name("len").expect("len is a builtin");
     assert_value_round_trip(&builtin);
     // A dotted builtin name must survive too: `object.__setattr__` is the one
@@ -225,24 +254,34 @@ fn file_handle_values_round_trip() {
 #[test]
 fn class_instance_and_function_values_round_trip() {
     assert_value_round_trip(&MontyObject::ClassInstance {
-        name: "Point".to_owned(),
-        instance_id: 0xFEED_FACE,
-        type_id: 0xDEAD_BEEF,
+        class_type: ClassType {
+            name: "Point".to_owned(),
+            id: MontyUuid::from_u128(0xDEAD_BEEF),
+            host_defined: true,
+            parents: vec![],
+            is_dataclass: true,
+            frozen: true,
+            init: false,
+        },
+        instance_id: MontyUuid::from_u128(0xFEED_FACE),
         attrs: DictPairs::from(vec![
             (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
             (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
         ]),
-        frozen: true,
-        is_dataclass: true,
     });
-    // Sandbox-defined shape: zero ids, non-dataclass, mutable.
+    // Sandbox-defined shape: worker-minted ids, non-dataclass, mutable.
     assert_value_round_trip(&MontyObject::ClassInstance {
-        name: "Widget".to_owned(),
-        instance_id: 0,
-        type_id: 0,
+        class_type: ClassType {
+            name: "Widget".to_owned(),
+            id: MontyUuid::from_u128(3),
+            host_defined: false,
+            parents: vec![],
+            is_dataclass: false,
+            frozen: false,
+            init: false,
+        },
+        instance_id: MontyUuid::from_u128(4),
         attrs: DictPairs::from(vec![]),
-        frozen: false,
-        is_dataclass: false,
     });
     assert_value_round_trip(&MontyObject::Function {
         name: "fetch".to_owned(),
@@ -618,13 +657,45 @@ fn nest_dict(depth: usize) -> MontyObject {
 /// levels per level: `MontyObject` + `ClassInstance` + `Dict` + `Pair`).
 fn nest_class_instance(depth: usize) -> MontyObject {
     (0..depth).fold(MontyObject::Int(1), |inner, _| MontyObject::ClassInstance {
-        name: "D".to_owned(),
-        instance_id: 1,
-        type_id: 1,
+        class_type: ClassType {
+            name: "D".to_owned(),
+            id: MontyUuid::from_u128(1),
+            host_defined: true,
+            parents: vec![],
+            is_dataclass: false,
+            frozen: false,
+            init: false,
+        },
+        instance_id: MontyUuid::from_u128(1),
         attrs: DictPairs::from(vec![(MontyObject::String("f".to_owned()), inner)]),
-        frozen: false,
-        is_dataclass: false,
     })
+}
+
+/// A type-object value whose class has a parents chain `depth` `Type`
+/// messages deep in total (1 proto level for `MontyObject`, then one per
+/// nested `Type`).
+fn nest_type_parents(depth: usize) -> MontyObject {
+    let mut ty = MontyType::Instance(Box::new(ClassType {
+        name: "P".to_owned(),
+        id: MontyUuid::from_u128(1),
+        host_defined: true,
+        parents: vec![],
+        is_dataclass: false,
+        frozen: false,
+        init: false,
+    }));
+    for i in 1..depth {
+        ty = MontyType::Instance(Box::new(ClassType {
+            name: "P".to_owned(),
+            id: MontyUuid::from_u128(1 + i as u128),
+            host_defined: true,
+            parents: vec![ty],
+            is_dataclass: false,
+            frozen: false,
+            init: false,
+        }));
+    }
+    MontyObject::Type(ty)
 }
 
 /// Whether `value` decodes when shipped inside the deepest legitimate frame
@@ -653,10 +724,11 @@ fn decodes_in_frame(value: &MontyObject) -> bool {
 fn depth_check_matches_frame_decodability() {
     /// One container shape: name, nesting builder, deepest depth that must pass.
     type DepthCase = (&'static str, fn(usize) -> MontyObject, usize);
-    let cases: [DepthCase; 3] = [
+    let cases: [DepthCase; 4] = [
         ("list", nest_list, MAX_VALUE_DEPTH),        // 48: 2 proto levels each
         ("dict", nest_dict, 32),                     // 3 proto levels each
         ("class_instance", nest_class_instance, 24), // 4 proto levels each
+        ("type_parents", nest_type_parents, 96),     // 1 proto level per parent
     ];
     for (shape, build, max_depth) in cases {
         let deepest = build(max_depth);

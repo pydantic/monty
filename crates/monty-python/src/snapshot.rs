@@ -33,8 +33,8 @@ use std::{
 };
 
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
-use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value};
-use monty_types::{ExtFunctionResult, MontyException, MontyObject};
+use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value, uuid_to_py};
+use monty_types::{CallReceiver, ExtFunctionResult, MontyException, MontyObject, MontyUuid};
 use pyo3::{
     Borrowed,
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
@@ -243,7 +243,7 @@ pub(crate) fn build_snapshot(
             args,
             kwargs,
             call_id,
-            instance_id,
+            receiver,
         } => {
             let call = FunctionCallData {
                 function_name,
@@ -251,7 +251,7 @@ pub(crate) fn build_snapshot(
                 kwargs,
                 call_id,
                 is_os_function: false,
-                instance_id,
+                receiver,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -267,7 +267,7 @@ pub(crate) fn build_snapshot(
                 kwargs,
                 call_id,
                 is_os_function: true,
-                instance_id: None,
+                receiver: None,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -407,6 +407,22 @@ fn ext_result_to_resume(result: ExtFunctionResult) -> ResumeValue {
     }
 }
 
+/// The instance uuid of a method-call receiver as a Python `uuid.UUID`.
+fn receiver_instance_uuid(py: Python<'_>, receiver: Option<&CallReceiver>) -> PyResult<Option<Py<PyAny>>> {
+    match receiver {
+        Some(CallReceiver::Instance(uuid)) => uuid_to_py(py, uuid).map(Some),
+        _ => Ok(None),
+    }
+}
+
+/// The class uuid of an instantiation receiver as a Python `uuid.UUID`.
+fn receiver_type_uuid(py: Python<'_>, receiver: Option<&CallReceiver>) -> PyResult<Option<Py<PyAny>>> {
+    match receiver {
+        Some(CallReceiver::Type(uuid)) => uuid_to_py(py, uuid).map(Some),
+        _ => Ok(None),
+    }
+}
+
 /// Resolves a name against the [`DriveContext`]'s captured `external_lookup=`,
 /// shared by the sync and async name-lookup `resume_auto`. `None` leaves the
 /// name undefined so the sandbox raises `NameError`, matching `feed_run`.
@@ -414,10 +430,10 @@ fn resolve_captured_name(
     py: Python<'_>,
     ctx: &DriveContext,
     name: &str,
-    instance_id: Option<u64>,
+    instance_id: Option<MontyUuid>,
 ) -> PyResult<Option<MontyObject>> {
     if let Some(instance_id) = instance_id {
-        resolve_instance_attr(py, name, instance_id, &ctx.instances)
+        resolve_instance_attr(py, name, &instance_id, &ctx.instances)
     } else {
         ExternalLookup::new(py, ctx.external_lookup.as_ref().map(|d| d.bind(py)), &ctx.instances).resolve_name(name)
     }
@@ -515,9 +531,9 @@ struct FunctionCallData {
     kwargs: Vec<(MontyObject, MontyObject)>,
     call_id: u32,
     is_os_function: bool,
-    /// Host id of the receiver for a method call on a host class instance;
-    /// `None` for plain external functions and OS calls.
-    instance_id: Option<u64>,
+    /// The routed receiver — an instance (method call) or class
+    /// (instantiation); `None` for plain external functions and OS calls.
+    receiver: Option<CallReceiver>,
 }
 
 struct FunctionSnapshot {
@@ -561,8 +577,13 @@ impl PyFunctionSnapshot {
     }
 
     #[getter]
-    fn instance_id(&self) -> Option<u64> {
-        self.0.call.instance_id
+    fn instance_id(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        receiver_instance_uuid(py, self.0.call.receiver.as_ref())
+    }
+
+    #[getter]
+    fn type_id(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        receiver_type_uuid(py, self.0.call.receiver.as_ref())
     }
 
     #[getter]
@@ -625,7 +646,7 @@ impl PyFunctionSnapshot {
         } else {
             match dispatch_function_call(
                 &call.function_name,
-                call.instance_id,
+                call.receiver,
                 &call.args,
                 &call.kwargs,
                 ctx.external_lookup.as_ref(),
@@ -675,8 +696,13 @@ impl PyAsyncFunctionSnapshot {
     }
 
     #[getter]
-    fn instance_id(&self) -> Option<u64> {
-        self.0.call.instance_id
+    fn instance_id(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        receiver_instance_uuid(py, self.0.call.receiver.as_ref())
+    }
+
+    #[getter]
+    fn type_id(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        receiver_type_uuid(py, self.0.call.receiver.as_ref())
     }
 
     #[getter]
@@ -750,7 +776,7 @@ impl PyAsyncFunctionSnapshot {
             } else {
                 match dispatch_function_call(
                     &call.function_name,
-                    call.instance_id,
+                    call.receiver,
                     &call.args,
                     &call.kwargs,
                     ctx.external_lookup.as_ref(),
@@ -794,9 +820,9 @@ impl PyAsyncFunctionSnapshot {
 struct NameLookupSnapshot {
     snapshot: SnapshotState,
     name: String,
-    /// Host id of the instance for a lazy attribute lookup on a host class
+    /// Id of the instance for a lazy attribute lookup on a host class
     /// instance; `None` for a plain undefined-name lookup.
-    instance_id: Option<u64>,
+    instance_id: Option<MontyUuid>,
 }
 
 /// The argument to `NameLookupSnapshot.resume`, distinguishing an omitted value
@@ -852,11 +878,11 @@ impl PyNameLookupSnapshot {
         &self.0.name
     }
 
-    /// Host id of the instance for a lazy attribute lookup; `None` for a
-    /// plain undefined-name lookup.
+    /// Id of the instance for a lazy attribute lookup; `None` for a plain
+    /// undefined-name lookup.
     #[getter]
-    fn instance_id(&self) -> Option<u64> {
-        self.0.instance_id
+    fn instance_id(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        self.0.instance_id.as_ref().map(|uuid| uuid_to_py(py, uuid)).transpose()
     }
 
     #[pyo3(signature = (*, value=MaybeValue::Unset))]
@@ -907,11 +933,11 @@ impl PyAsyncNameLookupSnapshot {
         &self.0.name
     }
 
-    /// Host id of the instance for a lazy attribute lookup; `None` for a
-    /// plain undefined-name lookup.
+    /// Id of the instance for a lazy attribute lookup; `None` for a plain
+    /// undefined-name lookup.
     #[getter]
-    fn instance_id(&self) -> Option<u64> {
-        self.0.instance_id
+    fn instance_id(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        self.0.instance_id.as_ref().map(|uuid| uuid_to_py(py, uuid)).transpose()
     }
 
     #[pyo3(signature = (*, value=MaybeValue::Unset))]

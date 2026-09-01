@@ -3,6 +3,7 @@ use std::{
     hash::{DefaultHasher, Hash, Hasher},
 };
 
+use monty_types::{CallReceiver, ClassType, MontyType, MontyUuid};
 use serde::ser::SerializeStruct;
 
 use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value, str::allocate_string};
@@ -23,9 +24,9 @@ use crate::{
 
 /// A host-backed class instance (the heap form of the wire `ClassInstance`).
 ///
-/// Represents an instance of a host-side class: a class name, host identities
-/// (`instance_id` = `id(obj)`, `type_id` = `id(type(obj))`), and the eagerly
-/// sent attributes. Names missing from `attrs` route back to the host:
+/// Represents an instance of a host-side class: a class name, boundary
+/// identities (uuids minted by whichever side defined the object), and the
+/// eagerly sent attributes. Names missing from `attrs` route back to the host:
 /// - calling a public missing attribute yields [`CallResult::MethodCall`]
 ///   (routed by `instance_id`, the receiver is not passed as an argument);
 /// - reading a public missing attribute yields [`CallResult::AttrLookup`]
@@ -39,41 +40,62 @@ use crate::{
 /// `FrozenInstanceError` and is hashable (over its eager attrs); otherwise it
 /// is mutable and unhashable, matching frozen-dataclass semantics.
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the wire `Type` message's independent flags"
+)]
 pub(crate) struct HostClass {
     /// The class name (e.g., "Point", "User")
     name: EitherStr,
-    /// Identity of the instance, from `id(obj)` on the host; 0 when the
-    /// instance was defined inside the sandbox (not host-backed).
-    instance_id: u64,
-    /// Identity of the class, from `id(type(obj))` on the host; 0 for
-    /// sandbox-defined instances.
-    type_id: u64,
+    /// Identity of the instance, minted by whichever side defined it.
+    instance_id: MontyUuid,
+    /// Identity of the class, minted by whichever side defined it.
+    type_id: MontyUuid,
+    /// Whether the class is host-defined (routing target) rather than a
+    /// round-tripped sandbox class.
+    host_defined: bool,
+    /// Direct base classes, carried for the wire `Type`; inheritance is not
+    /// functional in the sandbox.
+    parents: Vec<MontyType>,
     /// Eagerly-sent attributes, in order (both fields and dynamically added)
     attrs: Dict,
     /// Whether this instance is immutable (affects hashability)
     frozen: bool,
     /// Whether `dataclasses.is_dataclass(obj)` is true on the host side.
     is_dataclass: bool,
+    /// Whether the sandbox may instantiate the class (`Type.init`).
+    init: bool,
 }
 
 impl HostClass {
-    /// Creates a new host class instance; ownership of `attrs` transfers.
+    /// Creates a new host class instance from its wire class type and
+    /// instance id; ownership of `attrs` transfers.
     #[must_use]
-    pub fn new(
-        name: impl Into<EitherStr>,
-        instance_id: u64,
-        type_id: u64,
-        attrs: Dict,
-        frozen: bool,
-        is_dataclass: bool,
-    ) -> Self {
+    pub fn new(class_type: ClassType, instance_id: MontyUuid, attrs: Dict) -> Self {
         Self {
-            name: name.into(),
+            name: class_type.name.into(),
             instance_id,
-            type_id,
+            type_id: class_type.id,
+            host_defined: class_type.host_defined,
+            parents: class_type.parents,
             attrs,
-            frozen,
-            is_dataclass,
+            frozen: class_type.frozen,
+            is_dataclass: class_type.is_dataclass,
+            init: class_type.init,
+        }
+    }
+
+    /// Rebuilds the wire [`ClassType`] this instance's class crossed in as.
+    #[must_use]
+    pub fn class_type(&self, interns: &Interns) -> ClassType {
+        ClassType {
+            name: self.name.as_str(interns).to_owned(),
+            id: self.type_id,
+            host_defined: self.host_defined,
+            parents: self.parents.clone(),
+            is_dataclass: self.is_dataclass,
+            frozen: self.frozen,
+            init: self.init,
         }
     }
 
@@ -90,15 +112,15 @@ impl HostClass {
         &self.name
     }
 
-    /// Returns the host identity of the instance (0 = sandbox-defined).
+    /// Returns the identity of the instance.
     #[must_use]
-    pub fn instance_id(&self) -> u64 {
+    pub fn instance_id(&self) -> MontyUuid {
         self.instance_id
     }
 
-    /// Returns the host identity of the class (0 = sandbox-defined).
+    /// Returns the identity of the class.
     #[must_use]
-    pub fn type_id(&self) -> u64 {
+    pub fn type_id(&self) -> MontyUuid {
         self.type_id
     }
 
@@ -106,12 +128,6 @@ impl HostClass {
     #[must_use]
     pub fn attrs(&self) -> &Dict {
         &self.attrs
-    }
-
-    /// Returns whether this instance is frozen (immutable).
-    #[must_use]
-    pub fn is_frozen(&self) -> bool {
-        self.frozen
     }
 
     /// Returns whether the host object is a dataclass instance.
@@ -176,11 +192,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         let Some(HeapReadOutput::HostClass(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        // Equal only for the same class and equal attrs. The name gate matters
-        // for sandbox-origin instances, which all share type_id 0.
-        if self.get(vm.heap).type_id() != other.get(vm.heap).type_id()
-            || self.get(vm.heap).name(vm.interns) != other.get(vm.heap).name(vm.interns)
-        {
+        // Equal only for the same class (uuids are collision-free, so no name
+        // gate is needed) and equal attrs.
+        if self.get(vm.heap).type_id() != other.get(vm.heap).type_id() {
             return Ok(Some(false));
         }
         Ok(Some(self.attrs().eq_dict(&other.attrs(), vm)?))
@@ -285,11 +299,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
                 .is_none()
         {
             // The receiver is not passed along — the host resolves it by id.
-            let instance_id = self.get(vm.heap).instance_id();
+            let receiver = CallReceiver::Instance(self.get(vm.heap).instance_id());
             Ok(CallResult::MethodCall {
                 name: attr.clone(),
                 args,
-                instance_id,
+                receiver,
             })
         } else {
             // Not a method call — handle directly
@@ -385,33 +399,87 @@ impl HeapItem for HostClass {
     }
 }
 
-/// The type object `type(x)` returns for a [`HostClass`] instance.
+/// The type object for a [`HostClass`] — returned by `type(x)` and produced
+/// when a host passes a bare class in (a `Type` input with a host origin).
 ///
-/// Host classes have no real class object in the sandbox, so `type(x)`
-/// materializes this lightweight stand-in naming the real class (repr
-/// `<class 'Point'>`, equality by class identity). Each `type(x)` call
-/// allocates a fresh one, so `type(a) is type(b)` is `False` even for the
-/// same class (use `==`) — see `limitations/classes.md`. Not callable and
-/// not usable with `isinstance`, since the class itself lives on the host.
+/// The real class lives on the host, so this is a lightweight stand-in
+/// naming it (repr `<class 'Point'>`, equality by class identity). Each
+/// `type(x)` call allocates a fresh one, so `type(a) is type(b)` is `False`
+/// even for the same class (use `==`) — see `limitations/classes.md`. Not
+/// usable with `isinstance`; callable only when the host granted `init`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the wire `Type` message's independent flags"
+)]
 pub(crate) struct HostClassType {
     /// The class name (e.g. "Point").
     name: EitherStr,
-    /// Host identity of the class, matching [`HostClass::type_id`].
-    type_id: u64,
+    /// Identity of the class, matching [`HostClass::type_id`].
+    type_id: MontyUuid,
+    /// Whether the class is host-defined (an instantiation routing target).
+    host_defined: bool,
+    /// Direct base classes, carried for the wire `Type`.
+    parents: Vec<MontyType>,
+    /// Whether `dataclasses.is_dataclass` is true for the class.
+    is_dataclass: bool,
+    /// Whether instances reject `setattr` with `FrozenInstanceError`.
+    frozen: bool,
+    /// Whether the sandbox may instantiate the class.
+    init: bool,
 }
 
 impl HostClassType {
-    /// Creates the type object for a host class.
+    /// Creates the type object for a host class from its wire class type.
     #[must_use]
-    pub fn new(name: EitherStr, type_id: u64) -> Self {
-        Self { name, type_id }
+    pub fn new(name: EitherStr, class_type: ClassType) -> Self {
+        Self {
+            name,
+            type_id: class_type.id,
+            host_defined: class_type.host_defined,
+            parents: class_type.parents,
+            is_dataclass: class_type.is_dataclass,
+            frozen: class_type.frozen,
+            init: class_type.init,
+        }
     }
 
     /// Returns the class name.
     #[must_use]
     pub fn name<'a>(&'a self, interns: &'a Interns) -> &'a str {
         self.name.as_str(interns)
+    }
+
+    /// Whether the sandbox may instantiate this class.
+    #[must_use]
+    pub fn init(&self) -> bool {
+        self.init
+    }
+
+    /// Identity of the class.
+    #[must_use]
+    pub fn type_id(&self) -> MontyUuid {
+        self.type_id
+    }
+
+    /// The class name as stored, for building the instantiation suspension.
+    #[must_use]
+    pub fn name_either(&self) -> &EitherStr {
+        &self.name
+    }
+
+    /// Rebuilds the wire [`ClassType`] this type object crosses out as.
+    #[must_use]
+    pub fn class_type(&self, interns: &Interns) -> ClassType {
+        ClassType {
+            name: self.name.as_str(interns).to_owned(),
+            id: self.type_id,
+            host_defined: self.host_defined,
+            parents: self.parents.clone(),
+            is_dataclass: self.is_dataclass,
+            frozen: self.frozen,
+            init: self.init,
+        }
     }
 }
 
@@ -428,12 +496,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
         let Some(HeapReadOutput::HostClassType(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        // Same class identity: type_id plus the name gate for sandbox-origin
-        // instances, which all share type_id 0 (mirrors HostClass::py_eq_impl).
-        Ok(Some(
-            self.get(vm.heap).type_id == other.get(vm.heap).type_id
-                && self.get(vm.heap).name(vm.interns) == other.get(vm.heap).name(vm.interns),
-        ))
+        // Same class identity — uuids are collision-free, so no name gate
+        // (mirrors HostClass::py_eq_impl).
+        Ok(Some(self.get(vm.heap).type_id == other.get(vm.heap).type_id))
     }
 
     /// Hashes by class identity, consistent with `py_eq_impl` — so equal type
@@ -475,17 +540,20 @@ impl HeapItem for HostClassType {
     }
 }
 
-// Custom serde implementation for HostClass; serializes all six fields so
+// Custom serde implementation for HostClass; serializes all nine fields so
 // suspended state (dumps) round-trips exactly.
 impl serde::Serialize for HostClass {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("HostClass", 6)?;
+        let mut state = serializer.serialize_struct("HostClass", 9)?;
         state.serialize_field("name", &self.name)?;
         state.serialize_field("instance_id", &self.instance_id)?;
         state.serialize_field("type_id", &self.type_id)?;
+        state.serialize_field("host_defined", &self.host_defined)?;
+        state.serialize_field("parents", &self.parents)?;
         state.serialize_field("attrs", &self.attrs)?;
         state.serialize_field("frozen", &self.frozen)?;
         state.serialize_field("is_dataclass", &self.is_dataclass)?;
+        state.serialize_field("init", &self.init)?;
         state.end()
     }
 }
@@ -493,22 +561,29 @@ impl serde::Serialize for HostClass {
 impl<'de> serde::Deserialize<'de> for HostClass {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
+        #[expect(clippy::struct_excessive_bools, reason = "field-for-field mirror of HostClass")]
         struct HostClassData {
             name: EitherStr,
-            instance_id: u64,
-            type_id: u64,
+            instance_id: MontyUuid,
+            type_id: MontyUuid,
+            host_defined: bool,
+            parents: Vec<MontyType>,
             attrs: Dict,
             frozen: bool,
             is_dataclass: bool,
+            init: bool,
         }
         let hc = HostClassData::deserialize(deserializer)?;
         Ok(Self {
             name: hc.name,
             instance_id: hc.instance_id,
             type_id: hc.type_id,
+            host_defined: hc.host_defined,
+            parents: hc.parents,
             attrs: hc.attrs,
             frozen: hc.frozen,
             is_dataclass: hc.is_dataclass,
+            init: hc.init,
         })
     }
 }

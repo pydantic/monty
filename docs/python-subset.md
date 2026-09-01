@@ -21,7 +21,7 @@ the repository, and that directory — not this page — is the source of truth.
 - Decorators on functions and classes
 - Simple classes: instance methods, `__init__`, `__repr__`/`__str__`, `__eq__`/`__hash__`, `__iter__`/`__next__`,
   `__contains__`, class variables
-- `@dataclass`, including the `eq=` and `frozen=` options, and host dataclass instances passed in and out
+- `@dataclass`, including the `eq=` and `frozen=` options, plus host class instances passed in and out (and host classes the sandbox may instantiate when granted)
 - List, dict and set comprehensions
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`

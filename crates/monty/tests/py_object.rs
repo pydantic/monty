@@ -3,7 +3,9 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use monty_types::{DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
+use monty_types::{
+    ClassType, DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone, MontyUuid,
+};
 
 /// Helper to compute a hash for a value.
 fn hash_of(obj: &MontyObject) -> u64 {
@@ -184,12 +186,17 @@ fn type_name() {
     assert_eq!(MontyObject::Path("/tmp".to_string()).type_name(), "PosixPath");
     assert_eq!(
         MontyObject::ClassInstance {
-            name: "Foo".to_string(),
-            instance_id: 0,
-            type_id: 0,
+            class_type: ClassType {
+                name: "Foo".to_string(),
+                id: MontyUuid::from_u128(1),
+                host_defined: false,
+                parents: vec![],
+                is_dataclass: false,
+                frozen: false,
+                init: false,
+            },
+            instance_id: MontyUuid::from_u128(2),
             attrs: DictPairs::from(vec![]),
-            frozen: false,
-            is_dataclass: false,
         }
         .type_name(),
         "HostClass"
@@ -309,12 +316,17 @@ fn is_truthy_path() {
 fn is_truthy_class_instance() {
     assert!(
         MontyObject::ClassInstance {
-            name: "Foo".to_string(),
-            instance_id: 0,
-            type_id: 0,
+            class_type: ClassType {
+                name: "Foo".to_string(),
+                id: MontyUuid::from_u128(1),
+                host_defined: false,
+                parents: vec![],
+                is_dataclass: false,
+                frozen: false,
+                init: false,
+            },
+            instance_id: MontyUuid::from_u128(2),
             attrs: DictPairs::from(vec![]),
-            frozen: false,
-            is_dataclass: false,
         }
         .is_truthy()
     );

@@ -158,7 +158,10 @@ receives a read-only `MontyClassInstance` proxy with `.name`, `.is_dataclass`,
 and `.attributes` (the instance `__dict__`, converted; the JS package spells
 these `.name` / `.isDataclass` / `.attributes`). The host cannot call
 methods on it — the method code lives inside the sandbox, and the proxy holds
-no live object (`instance_id` 0 on the wire means "not host-backed").
+no live object. The instance and its class carry worker-minted uuids (stored
+on the heap objects, so stable across crossings and dump/restore); a method
+call or lazy lookup on such an instance still suspends, and the host's
+guaranteed store miss produces the usual errors.
 
 ```python
 result = session.feed_run('class A:\n    def __init__(self):\n        self.x = 1\nA()')
@@ -177,7 +180,8 @@ package's `ClassInstance` policy wrapper (passing a bare dataclass or class
 instance as an input raises `MontyConversionError` in Python, `TypeError` in
 JS). Inside the sandbox they are proxies
 whose eager attrs were copied at send time; everything else routes back to the
-host by the instance's `id()`. Divergences from real CPython objects:
+host by a session-local uuid minted for the instance (never `id()` or any
+other address-derived value). Divergences from real CPython objects:
 
 - **`type(x)` returns a lightweight stand-in for the real class**, since the
   class itself lives on the host. It names the real class (`type(x).__name__`
@@ -186,10 +190,13 @@ host by the instance's `id()`. Divergences from real CPython objects:
   real class too (`unhashable type: 'Point'`). But it is not the class:
   each `type(x)` call allocates a fresh object, so `type(a) is type(b)` is
   `False` even for the same class (`==` compares class identity and works);
-  it is not callable; it cannot be used as the second argument of
-  `isinstance()`; and — like Monty class objects generally — it exposes only
-  `__name__` (`__module__`, `__qualname__`, `__doc__`, `__mro__`,
-  `__bases__`, ... raise `AttributeError`).
+  it is callable only when the host granted `init` (see below), otherwise
+  calling it raises `TypeError: cannot instantiate host class 'Point'`; it
+  cannot be used as the second argument of `isinstance()`; and — like Monty
+  class objects generally — it exposes only `__name__` (`__module__`,
+  `__qualname__`, `__doc__`, `__mro__`, `__bases__`, ... raise
+  `AttributeError`). Returned to the host, it resolves back to the real
+  class object when the class is registered in the session.
 - **`repr()` shows all eager attrs in order** (`Point(x=1, y=2)`). After
   sandbox code sets a new attribute, that attribute appears in the repr too —
   CPython's dataclass repr shows declared fields only.
@@ -207,7 +214,36 @@ host by the instance's `id()`. Divergences from real CPython objects:
 - **`dataclasses.fields()` / `asdict()` do not work on host instances**;
   `dataclasses.is_dataclass(x)` returns the flag the host sent.
 - Returning a host-sent instance hands the host back the **original object**
-  (identity preserved), discarding any sandbox-side attr mutations.
+  (identity preserved), discarding any sandbox-side attr mutations. Sending
+  the same object twice yields equal (same class uuid + attrs) sandbox
+  values, but each send allocates its own proxy, so `a is b` is `False`.
+- **Instance and class uuids are per session** (host classes) — instances of
+  "the same" host class from two different sessions, or from a dump restored
+  into a fresh process, compare unequal by class. Sandbox-defined uuids live
+  in the heap and survive dump/restore.
+- The wire carries each class's direct bases (`parents`), but **inheritance
+  is not functional in the sandbox**: base-class attributes and methods are
+  not consulted, and `__bases__` still raises `AttributeError`.
+
+## Host class instantiation (`ClassType` wrapper)
+
+A host may pass a bare *class* into the sandbox with the `ClassType` policy
+wrapper (`pydantic_monty.ClassType(Point, init=True)`; JS
+`new ClassType(Point, { init: true })`). With `init` granted, sandbox code
+can call the class; the construction runs **host-side** (the wrapper
+re-checks its own `init` policy on every request — the wire flag alone is
+never trusted) and the constructed instance crosses back wrapped with the
+`ClassType`'s instance policies. Divergences:
+
+- With `init` absent or false, calling the class raises
+  `TypeError: cannot instantiate host class 'Point'` locally (CPython would
+  construct).
+- Constructor exceptions propagate into the sandbox like external-function
+  errors.
+- After a session restore the class registration is gone: instantiation
+  raises `RuntimeError` ("no host class registered...").
+- JS constructors have no keyword arguments; kwargs arrive as a trailing
+  options-bag argument, as with wrapped method calls.
 
 ## What does NOT exist for user code
 

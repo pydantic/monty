@@ -12,7 +12,7 @@ use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, exceeds_max_frame_len, pb,
     worker::{Child, EventSink, HandleOutcome, protocol_violation},
 };
-use monty_types::{ExcType, MONTY_VERSION, MontyException, MontyObject, OsFunctionCall};
+use monty_types::{CallReceiver, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid, OsFunctionCall};
 
 #[expect(
     clippy::same_length_and_capacity,
@@ -186,6 +186,10 @@ struct PreparedOsEvent {
 
 impl PreparedOsEvent {
     /// Validates and projects a typed protocol call without building WIT arenas.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the Event error arm is built once per OS call, never on a hot path"
+    )]
     fn from_proto(call: pb::OsCall) -> Result<Self, Event> {
         let call_id = call.call_id;
         match call.call.map(OsFunctionCall::try_from) {
@@ -348,24 +352,36 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
             stderr: print.stream == i32::from(pb::PrintStream::Stderr),
             text: print.text,
         }),
-        Some(pb::child_event::Kind::FunctionCall(call)) => Event::FunctionCall(FunctionCallEvent {
-            function_name: call.function_name,
-            args: call.args.into_iter().map(value::into_component).collect(),
-            kwargs: call
-                .kwargs
-                .into_iter()
-                .map(|(key, value)| ValuePair {
-                    key: value::into_component(key),
-                    value: value::into_component(value),
-                })
-                .collect(),
-            call_id: call.call_id,
-            instance_id: call.instance_id,
-        }),
+        Some(pb::child_event::Kind::FunctionCall(call)) => {
+            let (instance_id, type_id) = match call.receiver {
+                Some(CallReceiver::Instance(uuid)) => (Some(uuid.to_string()), None),
+                Some(CallReceiver::Type(uuid)) => (None, Some(uuid.to_string())),
+                None => (None, None),
+            };
+            Event::FunctionCall(FunctionCallEvent {
+                function_name: call.function_name,
+                args: call.args.into_iter().map(value::into_component).collect(),
+                kwargs: call
+                    .kwargs
+                    .into_iter()
+                    .map(|(key, value)| ValuePair {
+                        key: value::into_component(key),
+                        value: value::into_component(value),
+                    })
+                    .collect(),
+                call_id: call.call_id,
+                instance_id,
+                type_id,
+            })
+        }
         Some(pb::child_event::Kind::OsCall(_)) => invalid_event("OsCall event bypassed component budget preparation"),
         Some(pb::child_event::Kind::NameLookup(lookup)) => Event::NameLookup(NameLookupEvent {
             name: lookup.name,
-            instance_id: lookup.instance_id,
+            // Self-produced by this worker, so always a valid 16-byte uuid.
+            instance_id: lookup
+                .instance_id
+                .and_then(|uuid| MontyUuid::try_from_slice(&uuid.data))
+                .map(|uuid| uuid.to_string()),
         }),
         Some(pb::child_event::Kind::ResolveFutures(futures)) => Event::ResolveFutures(futures.pending_call_ids),
         Some(pb::child_event::Kind::Complete(complete)) => complete

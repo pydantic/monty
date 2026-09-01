@@ -7,7 +7,9 @@
 use std::mem;
 
 use ahash::AHashMap;
-use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
+use monty_types::{
+    CallReceiver, ExcType, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
+};
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
 
@@ -571,10 +573,10 @@ pub struct ReplFunctionCall {
     pub kwargs: Vec<(MontyObject, MontyObject)>,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
-    /// Host identity of the receiver for a method call on a host class
-    /// instance; `None` for plain external function calls. The receiver is
-    /// NOT included in `args`.
-    pub instance_id: Option<u64>,
+    /// The routed receiver — an instance (method call) or class
+    /// (instantiation); `None` for plain external function calls. The
+    /// receiver is NOT included in `args`.
+    pub receiver: Option<CallReceiver>,
     /// Internal REPL execution snapshot.
     snapshot: ReplSnapshot,
 }
@@ -684,10 +686,10 @@ impl ReplNameLookup {
         self.snapshot.into_repl()
     }
 
-    /// Host identity of the instance for a lazy attribute lookup; `None` for a
+    /// Identity of the instance for a lazy attribute lookup; `None` for a
     /// plain global/local name lookup.
     #[must_use]
-    pub fn instance_id(&self) -> Option<u64> {
+    pub fn instance_id(&self) -> Option<MontyUuid> {
         self.scope.instance_id()
     }
 
@@ -1096,13 +1098,13 @@ fn build_repl_progress(
             args,
             kwargs,
             call_id,
-            instance_id,
+            receiver,
         } => Ok(ReplProgress::FunctionCall(ReplFunctionCall {
             function_name,
             args,
             kwargs,
             call_id,
-            instance_id,
+            receiver,
             snapshot: new_repl_snapshot!(),
         })),
         ConvertedExit::OsCall { function_call, call_id } => Ok(ReplProgress::OsCall(ReplOsCall {

@@ -31,7 +31,7 @@ What Monty **can** do:
 
 - Run a reasonable subset of Python code - enough for your agent to express what it wants to do
 - Completely block access to the host environment: filesystem, env variables and network access are all implemented via external function calls the developer can control
-- Call functions on the host - only functions you give it access to
+- Call functions on the host - only functions you give it access to - and expose host objects and classes with per-attribute/method policies, including letting sandboxed code construct instances of host classes you allow
 - Run typechecking - monty supports full modern python type hints and comes with [ty](https://docs.astral.sh/ty/) included in a single binary to run typechecking
 - Be snapshotted to bytes at external function calls, meaning you can store the interpreter state in a file or database, and resume later
 - Startup extremely fast (<1μs to go from code to execution result), and has runtime performance that is similar to CPython (generally between 5x faster and 5x slower)

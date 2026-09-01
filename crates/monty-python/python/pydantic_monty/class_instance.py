@@ -4,8 +4,12 @@ Wrap any object in `ClassInstance` and pass it as an input (or return it from an
 external function) to send it into the sandbox. The wrapper is a *policy*: it
 decides which attributes cross eagerly, which may be fetched lazily, and which
 methods sandbox code may call. The sandbox routes lazy attribute lookups and
-method calls back to the wrapped instance by `id()`, and when sandbox code
-returns the instance, the host receives the original object back.
+method calls back to the wrapped instance by a session-local uuid, and when
+sandbox code returns the instance, the host receives the original object back.
+
+`ClassType` is the class-level sibling: wrap a *class* to pass it into the
+sandbox, optionally letting sandbox code instantiate it (`init=True`); each
+constructed instance is wrapped with the `ClassType`'s instance policies.
 
 Subclass and override `convert_value` (or `call_method` / `lookup_lazy_attrs`)
 to transform values crossing the boundary.
@@ -17,7 +21,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, fields, is_dataclass
 from typing import Any, Literal
 
-__all__ = ('ClassInstance',)
+__all__ = ('ClassInstance', 'ClassType')
 
 
 @dataclass
@@ -49,6 +53,9 @@ class ClassInstance:
     frozen: bool | None = None
     """Whether the sandbox rejects `setattr` with `FrozenInstanceError`.
     `None` auto-detects frozen dataclasses; any other object defaults to mutable."""
+
+    init: bool = False
+    """Whether sandbox code may instantiate the instance's class via `type(x)(...)`."""
 
     def get_eager_attrs(self) -> dict[str, Any]:
         """The attributes to send into the sandbox with the instance."""
@@ -120,3 +127,70 @@ class ClassInstance:
         # instance lookup falls through to the class, where dataclasses store it
         params = getattr(self.class_instance, '__dataclass_params__', None)
         return params.frozen if params is not None else False
+
+    def get_init(self) -> bool:
+        """Whether the sandbox may instantiate the instance's class."""
+        return self.init
+
+
+@dataclass
+class ClassType:
+    """Policy wrapper exposing a host *class* to the Monty sandbox.
+
+    With `init=True`, sandbox code may call the class to construct instances;
+    the construction runs host-side and the result crosses back wrapped in a
+    `ClassInstance` carrying this wrapper's instance policies.
+
+    Example:
+    ```python
+    session.feed_run(
+        'p = Point(1, 2)\nassert p.x == 1',
+        inputs={'Point': ClassType(Point, init=True, eager_attrs='all')},
+    )
+    ```
+    """
+
+    class_type: type
+    """The class to send."""
+
+    init: bool = False
+    """Whether sandbox code may instantiate the class. Checked here on every
+    construction request — the wire flag alone is never trusted."""
+
+    eager_attrs: Sequence[str] | Literal['all'] | None = None
+    """Instance policy applied to constructed instances (see `ClassInstance`)."""
+
+    lazy_attrs: set[str] | Literal['all'] | None = None
+    """Instance policy applied to constructed instances (see `ClassInstance`)."""
+
+    allowed_methods: set[str] | Literal['all'] | None = None
+    """Instance policy applied to constructed instances (see `ClassInstance`)."""
+
+    frozen: bool | None = None
+    """Instance policy applied to constructed instances (see `ClassInstance`)."""
+
+    def get_init(self) -> bool:
+        """Whether the sandbox may instantiate the class."""
+        return self.init
+
+    def construct(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> ClassInstance:
+        """Constructs an instance for the sandbox, re-checking the `init` policy.
+
+        Returns the instance wrapped with this wrapper's instance policies, so
+        it registers and crosses back like any host-sent `ClassInstance`.
+        """
+        if not self.init:
+            raise TypeError(f'cannot instantiate host class {self.class_type.__name__!r}')
+        instance = self.class_type(*args, **kwargs)
+        return self.instance_wrapper(instance)
+
+    def instance_wrapper(self, instance: Any) -> ClassInstance:
+        """Wraps a constructed instance with this wrapper's instance policies.
+        Override to customize how constructed instances are exposed."""
+        return ClassInstance(
+            instance,
+            eager_attrs=self.eager_attrs,
+            lazy_attrs=self.lazy_attrs,
+            allowed_methods=self.allowed_methods,
+            frozen=self.frozen,
+        )

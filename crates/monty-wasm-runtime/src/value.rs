@@ -8,13 +8,13 @@ use std::borrow::Cow;
 
 use monty_proto::{DEFAULT_MAX_DECODE_BYTES, MAX_VALUE_DEPTH, exceeds_max_value_depth};
 use monty_types::{
-    DictPairs, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
-    MontyTimeZone, MontyType,
+    ClassType, DictPairs, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
+    MontyTimeZone, MontyType, MontyUuid,
 };
 
 use crate::bindings::exports::pydantic::monty::worker::{
-    ClassInstanceNode, CycleNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode, FunctionNode,
-    NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, Value, ValueNode,
+    ClassInstanceNode, ClassTypeNode, CycleNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode,
+    FunctionNode, NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, Value, ValueNode,
 };
 
 /// Remaining expanded-value allowance shared by every arena in one request.
@@ -73,9 +73,7 @@ fn node_host_size(node: &ValueNode) -> usize {
         // Two decimal digits per byte is a conservative bound for the parsed
         // binary integer without allocating it merely to measure its bits.
         ValueNode::Bigint(value) => value.len().div_ceil(2),
-        ValueNode::Text(value) | ValueNode::InstanceType(value) | ValueNode::Path(value) | ValueNode::Repr(value) => {
-            value.len()
-        }
+        ValueNode::Text(value) | ValueNode::Path(value) | ValueNode::Repr(value) => value.len(),
         ValueNode::Bytes(value) => value.len(),
         ValueNode::NamedTuple(value) => value.type_name.len().saturating_add(strings_size(&value.field_names)),
         ValueNode::Datetime(value) => value.timezone_name.as_ref().map_or(0, String::len),
@@ -83,7 +81,8 @@ fn node_host_size(node: &ValueNode) -> usize {
         ValueNode::Timezone(value) => value.name.as_ref().map_or(0, String::len),
         ValueNode::Exception(value) => value.message.as_ref().map_or(0, String::len),
         ValueNode::FileHandle(value) => value.path.len(),
-        ValueNode::ClassInstance(value) => value.name.len(),
+        ValueNode::ClassInstance(value) => value.instance_id.len(),
+        ValueNode::ClassType(value) => value.name.len().saturating_add(value.id.len()),
         ValueNode::Function(value) => value
             .name
             .len()
@@ -206,7 +205,7 @@ fn read_node(index: u32, nodes: &mut [Option<ValueNode>], depth: usize) -> Resul
         ValueNode::TypeName(value) => {
             MontyObject::Type(MontyType::from_type_name(&value).ok_or_else(|| format!("unknown type name {value:?}"))?)
         }
-        ValueNode::InstanceType(value) => MontyObject::Type(MontyType::Instance(value)),
+        ValueNode::ClassType(value) => MontyObject::Type(read_class_type(value, nodes, depth)?),
         ValueNode::BuiltinFunction(value) => MontyObject::builtin_function_from_name(&value)
             .ok_or_else(|| format!("unknown builtin function {value:?}"))?,
         ValueNode::Path(value) => MontyObject::Path(value),
@@ -215,14 +214,22 @@ fn read_node(index: u32, nodes: &mut [Option<ValueNode>], depth: usize) -> Resul
             mode: value.mode.parse::<FileMode>().map_err(Cow::into_owned)?,
             position: value.position,
         }),
-        ValueNode::ClassInstance(value) => MontyObject::ClassInstance {
-            name: value.name,
-            instance_id: value.instance_id,
-            type_id: value.type_id,
-            attrs: read_pairs(value.attrs, nodes, depth)?.into(),
-            frozen: value.frozen,
-            is_dataclass: value.is_dataclass,
-        },
+        ValueNode::ClassInstance(value) => {
+            // The class node is read like any other child, so the
+            // reachable-exactly-once arena invariant covers it too.
+            let class_node = take_node(value.class_type, nodes)?;
+            let ValueNode::ClassType(class_node) = class_node else {
+                return Err("class-instance node's class-type index is not a class-type node".to_owned());
+            };
+            let MontyType::Instance(class_type) = read_class_type(class_node, nodes, depth)? else {
+                unreachable!("read_class_type on a ClassType node always yields Instance");
+            };
+            MontyObject::ClassInstance {
+                class_type: *class_type,
+                instance_id: parse_uuid(&value.instance_id)?,
+                attrs: read_pairs(value.attrs, nodes, depth)?.into(),
+            }
+        }
         ValueNode::Function(value) => MontyObject::Function {
             name: value.name,
             docstring: value.docstring,
@@ -234,6 +241,49 @@ fn read_node(index: u32, nodes: &mut [Option<ValueNode>], depth: usize) -> Resul
         ),
     };
     Ok(object)
+}
+
+/// Takes one node out of the arena by index, enforcing the
+/// reachable-exactly-once invariant (same rules as `read_node`).
+fn take_node(index: u32, nodes: &mut [Option<ValueNode>]) -> Result<ValueNode, String> {
+    let index = usize::try_from(index).map_err(|_| "value node index does not fit in usize")?;
+    nodes
+        .get_mut(index)
+        .ok_or_else(|| format!("value node index {index} is out of bounds"))?
+        .take()
+        .ok_or_else(|| format!("value node index {index} is referenced more than once"))
+}
+
+/// Parses a canonical uuid string from the component boundary.
+fn parse_uuid(value: &str) -> Result<MontyUuid, String> {
+    MontyUuid::parse(value).ok_or_else(|| format!("invalid uuid {value:?}"))
+}
+
+/// Reads a class-type node into `MontyType::Instance`, resolving `parents`
+/// (each must be a class-type or type-name node) recursively.
+fn read_class_type(node: ClassTypeNode, nodes: &mut [Option<ValueNode>], depth: usize) -> Result<MontyType, String> {
+    if depth > MAX_VALUE_DEPTH {
+        return Err("value exceeds the maximum nesting depth".to_owned());
+    }
+    let mut parents = Vec::with_capacity(node.parents.len());
+    for parent_index in node.parents {
+        match take_node(parent_index, nodes)? {
+            ValueNode::ClassType(parent) => parents.push(read_class_type(parent, nodes, depth + 1)?),
+            ValueNode::TypeName(name) => {
+                parents.push(MontyType::from_type_name(&name).ok_or_else(|| format!("unknown type name {name:?}"))?);
+            }
+            _ => return Err("class-type parent index is not a class-type or type-name node".to_owned()),
+        }
+    }
+    Ok(MontyType::Instance(Box::new(ClassType {
+        name: node.name,
+        id: parse_uuid(&node.id)?,
+        host_defined: node.host_defined,
+        parents,
+        is_dataclass: node.is_dataclass,
+        frozen: node.frozen,
+        init: node.init,
+    })))
 }
 
 /// Reads a list of child indexes from an arena.
@@ -409,7 +459,7 @@ fn push_node(object: MontyObject, nodes: &mut Vec<ValueNode>) -> u32 {
             exc_type: exc_type.to_string(),
             message: arg,
         }),
-        MontyObject::Type(MontyType::Instance(name)) => ValueNode::InstanceType(name),
+        MontyObject::Type(MontyType::Instance(class_type)) => ValueNode::ClassType(push_class_type(*class_type, nodes)),
         MontyObject::Type(value) => ValueNode::TypeName(value.to_string()),
         MontyObject::BuiltinFunction(value) => ValueNode::BuiltinFunction(value.to_string()),
         MontyObject::Path(value) => ValueNode::Path(value),
@@ -419,20 +469,19 @@ fn push_node(object: MontyObject, nodes: &mut Vec<ValueNode>) -> u32 {
             position: value.position,
         }),
         MontyObject::ClassInstance {
-            name,
+            class_type,
             instance_id,
-            type_id,
             attrs,
-            frozen,
-            is_dataclass,
-        } => ValueNode::ClassInstance(ClassInstanceNode {
-            name,
-            instance_id,
-            type_id,
-            attrs: push_pairs(attrs, nodes),
-            frozen,
-            is_dataclass,
-        }),
+        } => {
+            let class_node = push_class_type(class_type, nodes);
+            let class_index = u32::try_from(nodes.len()).expect("component value arena exceeds u32::MAX nodes");
+            nodes.push(ValueNode::ClassType(class_node));
+            ValueNode::ClassInstance(ClassInstanceNode {
+                class_type: class_index,
+                instance_id: instance_id.to_string(),
+                attrs: push_pairs(attrs, nodes),
+            })
+        }
         MontyObject::Function { name, docstring } => ValueNode::Function(FunctionNode { name, docstring }),
         MontyObject::Repr(value) => ValueNode::Repr(value),
         MontyObject::Cycle(identity, placeholder) => ValueNode::Cycle(CycleNode {
@@ -443,6 +492,33 @@ fn push_node(object: MontyObject, nodes: &mut Vec<ValueNode>) -> u32 {
     let index = u32::try_from(nodes.len()).expect("component value arena exceeds u32::MAX nodes");
     nodes.push(node);
     index
+}
+
+/// Builds a class-type node, appending its class-type / type-name parent
+/// nodes to the arena and referencing them by index.
+fn push_class_type(class_type: ClassType, nodes: &mut Vec<ValueNode>) -> ClassTypeNode {
+    let parents = class_type
+        .parents
+        .into_iter()
+        .map(|parent| {
+            let node = match parent {
+                MontyType::Instance(parent_class) => ValueNode::ClassType(push_class_type(*parent_class, nodes)),
+                builtin => ValueNode::TypeName(builtin.to_string()),
+            };
+            let index = u32::try_from(nodes.len()).expect("component value arena exceeds u32::MAX nodes");
+            nodes.push(node);
+            index
+        })
+        .collect();
+    ClassTypeNode {
+        name: class_type.name,
+        id: class_type.id.to_string(),
+        host_defined: class_type.host_defined,
+        parents,
+        is_dataclass: class_type.is_dataclass,
+        frozen: class_type.frozen,
+        init: class_type.init,
+    }
 }
 
 /// Appends a sequence's child values and returns their indexes.

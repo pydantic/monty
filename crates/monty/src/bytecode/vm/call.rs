@@ -6,7 +6,7 @@
 
 use std::mem;
 
-use monty_types::OsFunctionCall;
+use monty_types::{CallReceiver, MontyUuid, OsFunctionCall};
 
 use super::{CallFrame, VM, recursion::RunReentryGuard};
 use crate::{
@@ -51,18 +51,21 @@ pub(crate) enum CallResult {
     /// The [`OsFunctionCall`] is a tagged enum whose variants carry their own
     /// typed args, so no separate `ArgValues` is needed at this layer.
     OsCall(OsFunctionCall),
-    /// Host-class method call requested - VM should yield `FrameExit::MethodCall` to host.
+    /// Host-routed call requested - VM should yield `FrameExit::MethodCall`
+    /// to host: a method call on a host-backed instance, or instantiation of
+    /// a host class (`CallReceiver::Type`).
     ///
     /// The receiver is NOT included in `args`: the host routes the call by
-    /// `instance_id` (the host's `id(obj)`, stored on the [`HostClass`]).
-    /// Unlike `External`, `name` is an `EitherStr` because method names are
-    /// only known at runtime when class-instance inputs are provided.
+    /// the receiver's uuid (stored on the [`HostClass`] / [`HostClassType`]).
+    /// Unlike `External`, `name` is an `EitherStr` because method and class
+    /// names are only known at runtime when class inputs are provided.
     ///
     /// [`HostClass`]: crate::types::HostClass
+    /// [`HostClassType`]: crate::types::HostClassType
     MethodCall {
         name: EitherStr,
         args: ArgValues,
-        instance_id: u64,
+        receiver: CallReceiver,
     },
     /// Lazy attribute lookup on a host class instance - VM should yield
     /// `FrameExit::AttrLookup` to host.
@@ -74,7 +77,7 @@ pub(crate) enum CallResult {
     AttrLookup {
         name: EitherStr,
         class_name: String,
-        instance_id: u64,
+        instance_id: MontyUuid,
     },
     /// The call returned a value that should be implicitly awaited.
     ///
@@ -546,6 +549,21 @@ impl VM<'_> {
 
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Class(_) => return self.instantiate_class(heap_id, args),
+            // Calling a host class type suspends to the host to construct the
+            // instance — only when the host granted `init` on the type.
+            HeapData::HostClassType(ty) => {
+                return if ty.init() {
+                    Ok(CallResult::MethodCall {
+                        name: ty.name_either().clone(),
+                        args,
+                        receiver: CallReceiver::Type(ty.type_id()),
+                    })
+                } else {
+                    let name = ty.name(self.interns).to_owned();
+                    args.drop_with(self);
+                    Err(ExcType::type_error(format!("cannot instantiate host class '{name}'")))
+                };
+            }
             // Calling a namedtuple class constructs a `NamedTuple` instance.
             HeapData::NamedTupleClass(_) => {
                 return construct_namedtuple(heap_id, self, args).map(CallResult::Value);

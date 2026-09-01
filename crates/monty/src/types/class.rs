@@ -1,8 +1,11 @@
 use std::fmt::Write;
 
+use monty_types::MontyUuid;
+
 use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
     args::ArgValues,
+    boundary_uuid::mint_uuid,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -65,6 +68,10 @@ pub(crate) struct Class {
     /// CPython generates and Monty cannot yet install: baked in at decoration
     /// so `__dataclass_params__` stays a report, not a rewritable control.
     options: DataclassOptions,
+    /// Boundary identity, minted lazily the first time the class (or one of
+    /// its instances) crosses to the host; dumped with the heap so it stays
+    /// stable across restores.
+    uuid: Option<MontyUuid>,
 }
 
 impl Class {
@@ -78,7 +85,14 @@ impl Class {
             name,
             namespace,
             options: DataclassOptions::default(),
+            uuid: None,
         }
+    }
+
+    /// Boundary identity of the class, minting and storing it on first use so
+    /// repeated crossings (and dump/restore) observe the same id.
+    pub fn boundary_uuid(&mut self) -> MontyUuid {
+        *self.uuid.get_or_insert_with(mint_uuid)
     }
 
     /// The `@dataclass(...)` options in force for this class.

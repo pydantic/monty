@@ -137,6 +137,26 @@ Instances the host has no original for — defined inside the sandbox, or
 returned after a dump was restored into a fresh process — surface as read-only
 `MontyClassInstance` proxies (`name`, `attributes`, `isDataclass`).
 
+### Class instantiation (`ClassType`)
+
+Wrap a _class_ in `ClassType` to pass it into the sandbox. With `init: true`,
+sandbox code may call the class; the construction runs host-side (the wrapper
+re-checks its own `init` policy on every request) and the constructed
+instance crosses back wrapped with the `ClassType`'s instance policies
+(`eagerAttrs` / `lazyAttrs` / `allowedMethods` / `frozen`):
+
+```ts
+import { ClassType } from '@pydantic/monty'
+
+await session.feedRun('w = Wallet(100)\nw.pay(30).balance', {
+  inputs: { Wallet: new ClassType(Wallet, { init: true, eagerAttrs: 'all', allowedMethods: 'all' }) },
+}) // 70
+```
+
+Without `init`, calling the class raises
+`TypeError: cannot instantiate host class 'Wallet'` in the sandbox. Override
+`instanceWrapper` to customize how constructed instances are exposed.
+
 ## Snapshots: pausing and resuming
 
 `feedStart` is the suspendable counterpart of `feedRun`: instead of driving a

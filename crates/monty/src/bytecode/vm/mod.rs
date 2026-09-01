@@ -18,7 +18,7 @@ mod scheduler;
 use std::mem;
 
 pub(crate) use call::CallResult;
-use monty_types::{InvalidInputError, MontyObject, OsFunctionCall, PrintWriter};
+use monty_types::{CallReceiver, InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
 pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;
 
@@ -175,17 +175,13 @@ macro_rules! handle_call_result {
                     effect: Some(effect),
                 });
             }
-            Ok(CallResult::MethodCall {
-                name,
-                args,
-                instance_id,
-            }) => {
+            Ok(CallResult::MethodCall { name, args, receiver }) => {
                 let call_id = $self.allocate_call_id();
                 return Ok(FrameExit::MethodCall {
                     method_name: name,
                     args,
                     call_id,
-                    instance_id,
+                    receiver,
                 });
             }
             Ok(CallResult::AttrLookup {
@@ -260,20 +256,23 @@ pub enum FrameExit {
         effect: Option<PendingOsEffect>,
     },
 
-    /// Execution paused for a method call on a host class instance.
+    /// Execution paused for a host-routed call: a method call on a host
+    /// class instance, or instantiation of a host class.
     ///
-    /// The caller should invoke the method on the original host object
-    /// (routed by `instance_id`) and call `resume()` with the result. The
-    /// receiver is NOT included in `args`.
+    /// The caller should invoke the method / constructor on the original
+    /// host object (routed by the `receiver` uuid) and call `resume()` with
+    /// the result. The receiver is NOT included in `args`.
     MethodCall {
-        /// Method name (e.g., "distance").
+        /// Method name (e.g., "distance"), or the class name for an
+        /// instantiation.
         method_name: EitherStr,
-        /// Arguments for the method (the receiver is not among them).
+        /// Arguments for the call (the receiver is not among them).
         args: ArgValues,
         /// Unique ID for this call, used for async correlation.
         call_id: CallId,
-        /// Host identity of the receiver, from the instance's `instance_id`.
-        instance_id: u64,
+        /// The routed receiver: instance (method call) or class
+        /// (instantiation).
+        receiver: CallReceiver,
     },
 
     /// Execution paused for a lazy attribute lookup on a host class instance.
@@ -287,8 +286,8 @@ pub enum FrameExit {
         name: EitherStr,
         /// Class name of the instance, for the AttributeError message.
         class_name: String,
-        /// Host identity of the instance whose attribute is read.
-        instance_id: u64,
+        /// Identity of the instance whose attribute is read.
+        instance_id: MontyUuid,
     },
 
     /// All tasks are blocked waiting for external futures to resolve.

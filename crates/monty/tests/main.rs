@@ -1,5 +1,7 @@
+use std::mem;
+
 use monty::MontyRun;
-use monty_types::{CompileOptions, MontyObject};
+use monty_types::{ClassType, CompileOptions, DictPairs, MontyObject, MontyUuid};
 
 /// Test we can reuse exec without borrow checker issues.
 #[test]
@@ -34,16 +36,21 @@ fn test_get_interned_string() {
 #[test]
 fn class_instance_method_call_in_standard_mode_errors() {
     let point = MontyObject::ClassInstance {
-        name: "Point".to_string(),
-        instance_id: 1,
-        type_id: 0,
+        class_type: ClassType {
+            name: "Point".to_string(),
+            id: MontyUuid::from_u128(1),
+            host_defined: true,
+            parents: vec![],
+            is_dataclass: true,
+            frozen: true,
+            init: false,
+        },
+        instance_id: MontyUuid::from_u128(2),
         attrs: vec![
             (MontyObject::String("x".to_string()), MontyObject::Int(1)),
             (MontyObject::String("y".to_string()), MontyObject::Int(2)),
         ]
         .into(),
-        frozen: true,
-        is_dataclass: true,
     };
 
     let ex = MontyRun::new(
@@ -356,12 +363,57 @@ fn dynamic_type_with_non_string_key_raises_type_error() {
 /// Structured `ClassInstance` a sandbox `Evil()` instance converts to.
 fn evil_instance() -> MontyObject {
     MontyObject::ClassInstance {
-        name: "Evil".to_owned(),
-        instance_id: 0,
-        type_id: 0,
+        class_type: ClassType {
+            name: "Evil".to_owned(),
+            id: MontyUuid::from_u128(0xE0),
+            host_defined: false,
+            parents: vec![],
+            is_dataclass: false,
+            frozen: false,
+            init: false,
+        },
+        instance_id: MontyUuid::from_u128(0xE1),
         attrs: vec![].into(),
-        frozen: false,
-        is_dataclass: false,
+    }
+}
+
+/// Replaces the worker-minted (random) class/instance uuids in `obj` with the
+/// deterministic ids [`evil_instance`] uses, so structural comparison works.
+fn normalize_instance_uuids(obj: &mut MontyObject) {
+    match obj {
+        MontyObject::ClassInstance {
+            class_type,
+            instance_id,
+            attrs,
+        } => {
+            class_type.id = MontyUuid::from_u128(0xE0);
+            *instance_id = MontyUuid::from_u128(0xE1);
+            let pairs = mem::replace(attrs, DictPairs::from(vec![]))
+                .into_iter()
+                .map(|(mut key, mut value)| {
+                    normalize_instance_uuids(&mut key);
+                    normalize_instance_uuids(&mut value);
+                    (key, value)
+                })
+                .collect::<Vec<_>>();
+            *attrs = pairs.into();
+        }
+        MontyObject::List(items)
+        | MontyObject::Tuple(items)
+        | MontyObject::Set(items)
+        | MontyObject::FrozenSet(items) => items.iter_mut().for_each(normalize_instance_uuids),
+        MontyObject::Dict(pairs) => {
+            let normalized = mem::replace(pairs, DictPairs::from(vec![]))
+                .into_iter()
+                .map(|(mut key, mut value)| {
+                    normalize_instance_uuids(&mut key);
+                    normalize_instance_uuids(&mut value);
+                    (key, value)
+                })
+                .collect::<Vec<_>>();
+            *pairs = normalized.into();
+        }
+        _ => {}
     }
 }
 
@@ -376,7 +428,8 @@ class Evil:
 lst = [Evil(), 1, 2]
 lst";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let mut result = ex.run_no_limits(vec![]).unwrap();
+    normalize_instance_uuids(&mut result);
     assert_eq!(
         result,
         MontyObject::List(vec![evil_instance(), MontyObject::Int(1), MontyObject::Int(2)])
@@ -394,7 +447,8 @@ class Evil:
 d = {'k': Evil(), 'a': 1}
 d";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let mut result = ex.run_no_limits(vec![]).unwrap();
+    normalize_instance_uuids(&mut result);
     assert_eq!(
         result,
         MontyObject::Dict(
@@ -420,7 +474,8 @@ class Evil:
 d = deque([Evil(), 1, 2])
 d";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let mut result = ex.run_no_limits(vec![]).unwrap();
+    normalize_instance_uuids(&mut result);
     assert_eq!(
         result,
         MontyObject::List(vec![evil_instance(), MontyObject::Int(1), MontyObject::Int(2)])

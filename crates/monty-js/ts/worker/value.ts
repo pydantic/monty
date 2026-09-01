@@ -137,6 +137,11 @@ function pushMarked(object: Record<string, unknown>, nodes: ValueNode[]): ValueN
     case 'FileHandle':
       return pushFileHandle(object)
     case 'Type':
+      // A class type marker (`classType`) crosses structurally; builtin type
+      // markers carry only the name.
+      if (typeof object.classType === 'object' && object.classType !== null) {
+        return { tag: 'class-type', val: pushClassType(object.classType as Record<string, unknown>, nodes) }
+      }
       return { tag: 'type-name', val: String(object.value) }
     case 'BuiltinFunction':
       return { tag: 'builtin-function', val: String(object.value) }
@@ -164,19 +169,14 @@ function timeZoneFields(
 
 /**
  * Validates and converts a host `ClassInstance` marker (same shape the napi
- * path produces: `attrs` as ordered `[name, value]` pairs, ids as BigInt).
- * Validation messages mirror napi's so both transports fail malformed
- * markers alike.
+ * path produces: `attrs` as ordered `[name, value]` pairs, uuids as
+ * strings). Validation messages mirror napi's so both transports fail
+ * malformed markers alike.
  */
 function pushClassInstance(object: Record<string, unknown>, nodes: ValueNode[]): ValueNode {
-  if (typeof object.instanceId !== 'bigint') {
+  if (typeof object.type !== 'object' || object.type === null) {
     throw new TypeError(
-      `Object property 'instanceId' type mismatch. Expect value to be BigInt, but received ${jsType(object.instanceId)}`,
-    )
-  }
-  if (typeof object.typeId !== 'bigint') {
-    throw new TypeError(
-      `Object property 'typeId' type mismatch. Expect value to be BigInt, but received ${jsType(object.typeId)}`,
+      `Object property 'type' type mismatch. Expect value to be Object, but received ${jsType(object.type)}`,
     )
   }
   if (!Array.isArray(object.attrs)) {
@@ -191,26 +191,60 @@ function pushClassInstance(object: Record<string, unknown>, nodes: ValueNode[]):
     if (!(1 in pair)) throw new TypeError('ClassInstance attr value missing')
     pairs.push([pair[0], pair[1]])
   }
-  // match the native binding: ids must fit u64 rather than silently encoding
-  // an invalid value
-  const U64_MAX = 0xffff_ffff_ffff_ffffn
-  if (object.instanceId < 0n || object.instanceId > U64_MAX) {
-    throw new TypeError('ClassInstance instanceId must be a non-negative u64 BigInt')
-  }
-  if (object.typeId < 0n || object.typeId > U64_MAX) {
-    throw new TypeError('ClassInstance typeId must be a non-negative u64 BigInt')
-  }
+  const classTypeNode = pushClassType(object.type as Record<string, unknown>, nodes)
+  const classTypeIndex = nodes.length
+  nodes.push({ tag: 'class-type', val: classTypeNode })
   return {
     tag: 'class-instance',
     val: {
-      name: String(object.name),
-      instanceId: object.instanceId,
-      typeId: object.typeId,
+      classType: classTypeIndex,
+      instanceId: uuidString(object.instanceId, 'ClassInstance instanceId'),
       attrs: pushPairs(pairs, nodes),
-      frozen: Boolean(object.frozen),
-      isDataclass: Boolean(object.isDataclass),
     },
   }
+}
+
+/** Builds a class-type node from the plain `classType` marker object,
+ *  appending parent nodes (Type markers) to the arena. */
+function pushClassType(
+  object: Record<string, unknown>,
+  nodes: ValueNode[],
+): Extract<ValueNode, { tag: 'class-type' }>['val'] {
+  const parents: number[] = []
+  if (Array.isArray(object.parents)) {
+    for (const parent of object.parents as unknown[]) {
+      if (typeof parent !== 'object' || parent === null) {
+        throw new TypeError('ClassType parents entries must be Type markers')
+      }
+      const marker = parent as Record<string, unknown>
+      const node: ValueNode =
+        typeof marker.classType === 'object' && marker.classType !== null
+          ? { tag: 'class-type', val: pushClassType(marker.classType as Record<string, unknown>, nodes) }
+          : { tag: 'type-name', val: String(marker.value) }
+      parents.push(nodes.length)
+      nodes.push(node)
+    }
+  }
+  return {
+    name: String(object.name),
+    id: uuidString(object.id, 'ClassType id'),
+    hostDefined: object.hostDefined === true,
+    parents: new Uint32Array(parents),
+    isDataclass: object.isDataclass === true,
+    frozen: object.frozen === true,
+    init: object.init === true,
+  }
+}
+
+/** A canonical uuid string is required for identities crossing the wire. */
+function uuidString(value: unknown, what: string): string {
+  if (
+    typeof value !== 'string' ||
+    !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(value)
+  ) {
+    throw new TypeError(`${what} must be a canonical uuid string`)
+  }
+  return value.toLowerCase()
 }
 
 /** Validates and converts a sandbox file-handle marker. */
@@ -228,6 +262,18 @@ function pushFileHandle(object: Record<string, unknown>): ValueNode {
 /** Appends key/value pairs while preserving their insertion order. */
 function pushPairs(pairs: [unknown, unknown][], nodes: ValueNode[]): NodePair[] {
   return pairs.map(([key, value]) => ({ key: pushValue(key, nodes), value: pushValue(value, nodes) }))
+}
+
+/** Fetches a raw arena node by index with the same bounds/cycle checks as
+ *  `readValue`, for callers that must inspect the node's tag. The index stays
+ *  marked as visiting, so a parent cycle in class-type nodes throws instead
+ *  of recursing forever. */
+function readValueNode(index: number, nodes: ValueNode[], visiting: Set<number>): ValueNode {
+  const node = nodes[index]
+  if (node === undefined) throw new Error(`component value node index ${index} is out of bounds`)
+  if (visiting.has(index)) throw new Error('component value arena contains a cycle')
+  visiting.add(index)
+  return node
 }
 
 /** Reads one arena node recursively, rejecting malformed indexes and cycles. */
@@ -296,8 +342,10 @@ function readValue(index: number, nodes: ValueNode[], visiting: Set<number>): un
       value = { [TYPE_MARKER]: 'Exception', excType: node.val.excType, message: node.val.message ?? '' }
       break
     case 'type-name':
-    case 'instance-type':
       value = { [TYPE_MARKER]: 'Type', value: node.val }
+      break
+    case 'class-type':
+      value = { [TYPE_MARKER]: 'Type', classType: readClassType(node.val, nodes, visiting) }
       break
     case 'builtin-function':
       value = { [TYPE_MARKER]: 'BuiltinFunction', value: node.val }
@@ -339,7 +387,7 @@ function readPair(pair: NodePair, nodes: ValueNode[], visiting: Set<number>): [u
 /**
  * Rebuilds the public `ClassInstance` marker in the shape the napi path
  * produces: `attrs` as ordered `[name, value]` pairs (non-string keys
- * skipped, matching convert.rs) and ids as BigInt. The session layer
+ * skipped, matching convert.rs) and uuids as strings. The session layer
  * (`restore`) maps the marker to the original host object or a proxy.
  */
 function readClassInstance(
@@ -347,6 +395,10 @@ function readClassInstance(
   nodes: ValueNode[],
   visiting: Set<number>,
 ): Record<string, unknown> {
+  const classNode = readValueNode(instance.classType, nodes, visiting)
+  if (classNode.tag !== 'class-type') {
+    throw new Error("class-instance node's class-type index is not a class-type node")
+  }
   const attrs: [string, unknown][] = []
   for (const pair of instance.attrs) {
     const [key, value] = readPair(pair, nodes, visiting)
@@ -354,12 +406,38 @@ function readClassInstance(
   }
   return {
     [TYPE_MARKER]: 'ClassInstance',
-    name: instance.name,
+    type: readClassType(classNode.val, nodes, visiting),
     instanceId: instance.instanceId,
-    typeId: instance.typeId,
     attrs,
-    frozen: instance.frozen,
-    isDataclass: instance.isDataclass,
+  }
+}
+
+/** Rebuilds the plain `classType` marker object from a class-type node,
+ *  resolving parent node indexes (class-type / type-name) recursively. */
+function readClassType(
+  classType: Extract<ValueNode, { tag: 'class-type' }>['val'],
+  nodes: ValueNode[],
+  visiting: Set<number>,
+): Record<string, unknown> {
+  const parents: unknown[] = []
+  for (const parentIndex of classType.parents) {
+    const parent = readValueNode(parentIndex, nodes, visiting)
+    if (parent.tag === 'class-type') {
+      parents.push({ [TYPE_MARKER]: 'Type', classType: readClassType(parent.val, nodes, visiting) })
+    } else if (parent.tag === 'type-name') {
+      parents.push({ [TYPE_MARKER]: 'Type', value: parent.val })
+    } else {
+      throw new Error('class-type parent index is not a class-type or type-name node')
+    }
+  }
+  return {
+    name: classType.name,
+    id: classType.id,
+    hostDefined: classType.hostDefined,
+    parents,
+    isDataclass: classType.isDataclass,
+    frozen: classType.frozen,
+    init: classType.init,
   }
 }
 

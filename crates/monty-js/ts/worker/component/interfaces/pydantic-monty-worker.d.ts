@@ -62,13 +62,19 @@ export interface FileHandleNode {
   mode: string
   position: bigint
 }
-export interface ClassInstanceNode {
+export interface ClassTypeNode {
   name: string
-  instanceId: bigint
-  typeId: bigint
-  attrs: Array<NodePair>
-  frozen: boolean
+  id: string
+  hostDefined: boolean
+  parents: Uint32Array
   isDataclass: boolean
+  frozen: boolean
+  init: boolean
+}
+export interface ClassInstanceNode {
+  classType: number
+  instanceId: string
+  attrs: Array<NodePair>
 }
 export interface FunctionNode {
   name: string
@@ -101,7 +107,7 @@ export type ValueNode =
   | ValueNodeTimezone
   | ValueNodeException
   | ValueNodeTypeName
-  | ValueNodeInstanceType
+  | ValueNodeClassType
   | ValueNodeBuiltinFunction
   | ValueNodePath
   | ValueNodeFileHandle
@@ -194,9 +200,9 @@ export interface ValueNodeTypeName {
   tag: 'type-name'
   val: string
 }
-export interface ValueNodeInstanceType {
-  tag: 'instance-type'
-  val: string
+export interface ValueNodeClassType {
+  tag: 'class-type'
+  val: ClassTypeNode
 }
 export interface ValueNodeBuiltinFunction {
   tag: 'builtin-function'
@@ -399,11 +405,12 @@ export interface FunctionCallEvent {
   args: Array<Value>
   kwargs: Array<ValuePair>
   callId: number
-  instanceId?: bigint
+  instanceId?: string
+  typeId?: string
 }
 export interface NameLookupEvent {
   name: string
-  instanceId?: bigint
+  instanceId?: string
 }
 export interface OsCallEvent {
   functionName: string

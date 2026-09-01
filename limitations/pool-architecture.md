@@ -382,7 +382,9 @@ properties that real CPython does not provide, per the caveat above.
   and NOT part of the dump: restoring into a fresh session/process starts with
   an empty store, so a returned host instance becomes a `MontyClassInstance`
   proxy, a method call on it raises `RuntimeError` ("no host instance
-  registered..."), and a lazy attribute lookup raises `AttributeError`.
+  registered..."), a lazy attribute lookup raises `AttributeError`, and an
+  instantiation of a `ClassType`-granted class raises `RuntimeError` ("no
+  host class registered...").
 - **The class-instance store retains every wrapper sent into the sandbox until
   the session ends** — that retention is what makes method routing and
   original-object return work, and it is not covered by the sandbox's

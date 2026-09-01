@@ -4,7 +4,7 @@
 //! and can be used in Python code execution.
 
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyObject};
+use monty_types::{ClassType, CompileOptions, ExcType, MontyObject, MontyUuid};
 
 // === Immediate Value Tests ===
 
@@ -589,16 +589,21 @@ fn invalid_input_namedtuple_length_mismatch() {
 #[test]
 fn invalid_input_repr_in_class_instance_attrs() {
     let err = run_input(MontyObject::ClassInstance {
-        name: "Point".to_owned(),
-        instance_id: 1,
-        type_id: 1,
+        class_type: ClassType {
+            name: "Point".to_owned(),
+            id: MontyUuid::from_u128(1),
+            host_defined: true,
+            parents: vec![],
+            is_dataclass: false,
+            frozen: false,
+            init: false,
+        },
+        instance_id: MontyUuid::from_u128(2),
         attrs: vec![
             (MontyObject::String("a".to_owned()), heap_element()),
             (MontyObject::String("b".to_owned()), MontyObject::Repr("bad".to_owned())),
         ]
         .into(),
-        frozen: false,
-        is_dataclass: true,
     })
     .unwrap_err();
     assert_eq!(

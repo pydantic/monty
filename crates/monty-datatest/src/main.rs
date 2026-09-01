@@ -30,9 +30,9 @@ use monty::{Dump, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
-    MontyObject, MontyTimeZone, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker,
-    dir_stat, file_stat,
+    CallReceiver, ClassType, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime,
+    MontyException, MontyFileHandle, MontyObject, MontyTimeZone, MontyUuid, NameLookupResult, OsFunctionCall,
+    PrintWriter, ResourceLimits, ResourceTracker, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -555,14 +555,17 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>, registry: &mut Fix
 
 /// Host-side store of the class-instance fixtures handed to the sandbox,
 /// keyed by `instance_id` — the datatest analog of a real host holding its
-/// objects and routing wire calls by `id(obj)`.
+/// objects and routing wire calls by uuid.
+///
+/// Ids are deterministic `MontyUuid::from_u128` values (never random) so
+/// fixtures and expected output stay reproducible.
 ///
 /// Registered instances are snapshots: sandbox-side `setattr` mutates the
 /// sandbox copy only, exactly like a real host's own objects.
 struct FixtureRegistry {
-    /// Next id to hand out; starts at 1 (0 means "sandbox-defined").
-    next_id: u64,
-    instances: HashMap<u64, Fixture>,
+    /// Next id counter to hand out; starts at 1.
+    next_id: u128,
+    instances: HashMap<MontyUuid, Fixture>,
 }
 
 /// One registered host instance: its class identity and eager attrs.
@@ -583,20 +586,25 @@ impl FixtureRegistry {
 
     /// Registers a fixture and returns the `ClassInstance` value to send.
     fn register(&mut self, fixture: Fixture) -> MontyObject {
-        let instance_id = self.next_id;
+        let instance_id = MontyUuid::from_u128(0x1000 + self.next_id);
         self.next_id += 1;
         let value = MontyObject::ClassInstance {
-            name: fixture.class_name.to_string(),
+            class_type: ClassType {
+                name: fixture.class_name.to_string(),
+                id: MontyUuid::from_u128(u128::from(fixture.type_id)),
+                host_defined: true,
+                parents: vec![],
+                is_dataclass: true,
+                frozen: fixture.frozen,
+                init: false,
+            },
             instance_id,
-            type_id: fixture.type_id,
             attrs: fixture
                 .attrs
                 .iter()
                 .map(|(k, v)| (MontyObject::String((*k).to_string()), v.clone()))
                 .collect::<Vec<_>>()
                 .into(),
-            frozen: fixture.frozen,
-            is_dataclass: true,
         };
         self.instances.insert(instance_id, fixture);
         value
@@ -613,7 +621,7 @@ impl FixtureRegistry {
     }
 
     /// The registered fixture for `instance_id`, if the harness handed it out.
-    fn get(&self, instance_id: u64) -> Option<&Fixture> {
+    fn get(&self, instance_id: MontyUuid) -> Option<&Fixture> {
         self.instances.get(&instance_id)
     }
 }
@@ -636,7 +644,7 @@ impl Fixture {
 /// `AttributeError`.
 fn dispatch_method_call(
     method_name: &str,
-    instance_id: u64,
+    instance_id: MontyUuid,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
     registry: &mut FixtureRegistry,
@@ -699,7 +707,7 @@ fn dispatch_method_call(
 /// Answers a lazy attribute lookup on a host class instance (`NameLookup`
 /// with an instance id): class attributes the eager attrs do not carry.
 /// Mirrors the class attributes in `test_fixtures.py`.
-fn dispatch_instance_attr(name: &str, instance_id: u64, registry: &FixtureRegistry) -> NameLookupResult {
+fn dispatch_instance_attr(name: &str, instance_id: MontyUuid, registry: &FixtureRegistry) -> NameLookupResult {
     let Some(fixture) = registry.get(instance_id) else {
         return NameLookupResult::Undefined;
     };
@@ -1824,18 +1832,25 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
         match progress {
             RunProgress::Complete(result) => return Ok(result),
             RunProgress::FunctionCall(call) => {
-                // Method calls on host class instances are routed by
-                // instance_id; unknown methods return AttributeError.
-                if let Some(instance_id) = call.instance_id {
-                    let result = dispatch_method_call(
-                        &call.function_name,
-                        instance_id,
-                        &call.args,
-                        &call.kwargs,
-                        &mut registry,
-                    );
-                    progress = call.resume(result, PrintWriter::Stdout)?;
-                    continue;
+                // Method calls on host class instances are routed by the
+                // receiver uuid; unknown methods return AttributeError. The
+                // harness grants no `init`, so instantiations cannot occur.
+                match call.receiver {
+                    Some(CallReceiver::Instance(instance_id)) => {
+                        let result = dispatch_method_call(
+                            &call.function_name,
+                            instance_id,
+                            &call.args,
+                            &call.kwargs,
+                            &mut registry,
+                        );
+                        progress = call.resume(result, PrintWriter::Stdout)?;
+                        continue;
+                    }
+                    Some(CallReceiver::Type(type_id)) => {
+                        panic!("unexpected instantiation request for class id {type_id}");
+                    }
+                    None => {}
                 }
                 let dispatch_result = dispatch_external_call(&call.function_name, call.args.clone(), &mut registry);
                 match dispatch_result {

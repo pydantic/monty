@@ -78,7 +78,14 @@ export type {
   Snapshot,
 } from '../session.js'
 export { CollectString, CollectStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, type CollectedStreamEntry } from '../print.js'
-export { ClassInstance, MontyClassInstance, type AttrPolicy, type ClassInstanceOptions } from '../classInstance.js'
+export {
+  ClassInstance,
+  ClassType,
+  MontyClassInstance,
+  type AttrPolicy,
+  type ClassInstanceOptions,
+  type ClassTypeOptions,
+} from '../classInstance.js'
 export {
   MontyCrashedError,
   MontyError,

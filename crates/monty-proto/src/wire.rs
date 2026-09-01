@@ -31,9 +31,10 @@
 
 use std::{cell::Cell, fmt::Display, ops::RangeInclusive};
 
+pub use monty_types::CallReceiver;
 use monty_types::{
-    DictPairs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyDate, MontyDateTime, MontyFileHandle,
-    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
+    ClassType, DictPairs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyDate, MontyDateTime,
+    MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -120,10 +121,9 @@ pub struct WireFunctionCall {
     pub kwargs: Vec<(MontyObject, MontyObject)>,
     /// Child-assigned call id used by the matching resume request.
     pub call_id: u32,
-    /// Host id of the receiver for method calls on a host-backed class
-    /// instance; `None` for plain external function calls. The receiver is
-    /// never included in `args`.
-    pub instance_id: Option<u64>,
+    /// The routed receiver (`receiver` oneof); `None` for plain external
+    /// function calls. The receiver is never included in `args`.
+    pub receiver: Option<CallReceiver>,
 }
 
 impl Message for WireFunctionCall {
@@ -132,9 +132,11 @@ impl Message for WireFunctionCall {
         encode_repeated_object(2, &self.args, buf);
         encode_repeated_pair(3, &self.kwargs, buf);
         encode_uint32(4, self.call_id, buf);
-        // `optional uint64` — explicit presence, so 0 still encodes when Some.
-        if let Some(instance_id) = &self.instance_id {
-            encoding::uint64::encode(5, instance_id, buf);
+        // oneof arms always encode when set (message presence).
+        match &self.receiver {
+            Some(CallReceiver::Instance(id)) => encoding::message::encode(5, &uuid_to_pb(id), buf),
+            Some(CallReceiver::Type(id)) => encoding::message::encode(6, &uuid_to_pb(id), buf),
+            None => {}
         }
     }
 
@@ -143,10 +145,11 @@ impl Message for WireFunctionCall {
             + repeated_object_len(2, &self.args)
             + repeated_pair_len(3, &self.kwargs)
             + uint32_len(4, self.call_id)
-            + self
-                .instance_id
-                .as_ref()
-                .map_or(0, |id| encoding::uint64::encoded_len(5, id))
+            + match &self.receiver {
+                Some(CallReceiver::Instance(id)) => encoding::message::encoded_len(5, &uuid_to_pb(id)),
+                Some(CallReceiver::Type(id)) => encoding::message::encoded_len(6, &uuid_to_pb(id)),
+                None => 0,
+            }
     }
 
     fn merge_field(
@@ -161,7 +164,22 @@ impl Message for WireFunctionCall {
             2 => merge_object_item(wire_type, buf, ctx, &mut self.args),
             3 => merge_pair_item(wire_type, buf, ctx, &mut self.kwargs),
             4 => encoding::uint32::merge(wire_type, &mut self.call_id, buf, ctx),
-            5 => encoding::uint64::merge(wire_type, self.instance_id.get_or_insert(0), buf, ctx),
+            // oneof: last arm wins, matching prost's generated decode.
+            5 => {
+                let mut uuid = pb::Uuid::default();
+                encoding::message::merge(wire_type, &mut uuid, buf, ctx)?;
+                self.receiver = Some(CallReceiver::Instance(pb_uuid_to_monty(
+                    &uuid,
+                    "FunctionCall.instance_id",
+                )?));
+                Ok(())
+            }
+            6 => {
+                let mut uuid = pb::Uuid::default();
+                encoding::message::merge(wire_type, &mut uuid, buf, ctx)?;
+                self.receiver = Some(CallReceiver::Type(pb_uuid_to_monty(&uuid, "FunctionCall.type_id")?));
+                Ok(())
+            }
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
@@ -171,7 +189,7 @@ impl Message for WireFunctionCall {
         self.args.clear();
         self.kwargs.clear();
         self.call_id = 0;
-        self.instance_id = None;
+        self.receiver = None;
     }
 }
 
@@ -197,7 +215,6 @@ mod tag {
     pub const TIMEDELTA: u32 = 17;
     pub const TIMEZONE: u32 = 18;
     pub const EXCEPTION: u32 = 19;
-    pub const TYPE: u32 = 20;
     pub const BUILTIN_FUNCTION: u32 = 21;
     pub const PATH: u32 = 22;
     pub const FILE_HANDLE: u32 = 23;
@@ -205,9 +222,11 @@ mod tag {
     pub const FUNCTION: u32 = 25;
     pub const REPR: u32 = 26;
     pub const CYCLE: u32 = 27;
-    pub const INSTANCE_TYPE: u32 = 28;
     pub const NOT_IMPLEMENTED: u32 = 29;
     pub const TIME: u32 = 30;
+    // 20 (builtin type names) and 28 (sandbox class names) are reserved;
+    // both were replaced by the `Type` message arm.
+    pub const TYPE: u32 = 31;
 }
 
 // ============================================================================
@@ -282,12 +301,7 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
             encode_str(1, &name, buf);
             encode_opt_str(2, arg.as_deref(), buf);
         }
-        MontyObject::Type(t) => match t {
-            // Sandbox-class type objects carry the class name in a dedicated
-            // field so a class named e.g. "int" cannot decode as the builtin.
-            MontyType::Instance(name) => encoding::string::encode(tag::INSTANCE_TYPE, name, buf),
-            other => encoding::string::encode(tag::TYPE, &other.to_string(), buf),
-        },
+        MontyObject::Type(t) => encoding::message::encode(tag::TYPE, &monty_type_to_pb(t), buf),
         MontyObject::BuiltinFunction(bf) => encoding::string::encode(tag::BUILTIN_FUNCTION, &bf.to_string(), buf),
         MontyObject::Path(p) => encoding::string::encode(tag::PATH, p, buf),
         MontyObject::FileHandle(fh) => {
@@ -297,31 +311,20 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
             encode_uint64(3, fh.position, buf);
         }
         MontyObject::ClassInstance {
-            name,
+            class_type,
             instance_id,
-            type_id,
             attrs,
-            frozen,
-            is_dataclass,
         } => {
-            encode_message_key(
-                tag::CLASS_INSTANCE,
-                class_instance_len(name, *instance_id, *type_id, attrs, *frozen, *is_dataclass),
-                buf,
-            );
-            encode_str(1, name, buf);
-            encode_uint64(2, *instance_id, buf);
-            encode_uint64(3, *type_id, buf);
-            // attrs is a non-optional message field that senders always
-            // populate, so it encodes even when empty (message presence)
-            encode_message_key(4, dict_len(attrs), buf);
+            let ty = class_type_to_pb(class_type);
+            let id = uuid_to_pb(instance_id);
+            encode_message_key(tag::CLASS_INSTANCE, class_instance_len(&ty, &id, attrs), buf);
+            // type and instance_id are non-optional message fields that
+            // senders always populate, so they encode even when default
+            // (message presence); likewise attrs when empty.
+            encoding::message::encode(1, &ty, buf);
+            encoding::message::encode(2, &id, buf);
+            encode_message_key(3, dict_len(attrs), buf);
             encode_dict(attrs, buf);
-            if *frozen {
-                encoding::bool::encode(5, frozen, buf);
-            }
-            if *is_dataclass {
-                encoding::bool::encode(6, is_dataclass, buf);
-            }
         }
         MontyObject::Function { name, docstring } => {
             encode_message_key(
@@ -374,23 +377,17 @@ fn object_len(obj: &MontyObject) -> usize {
             let name = exc_type.to_string();
             submessage_len(tag::EXCEPTION, str_len(1, &name) + opt_str_len(2, arg.as_deref()))
         }
-        MontyObject::Type(t) => match t {
-            MontyType::Instance(name) => encoding::string::encoded_len(tag::INSTANCE_TYPE, name),
-            other => encoding::string::encoded_len(tag::TYPE, &other.to_string()),
-        },
+        MontyObject::Type(t) => encoding::message::encoded_len(tag::TYPE, &monty_type_to_pb(t)),
         MontyObject::BuiltinFunction(bf) => encoding::string::encoded_len(tag::BUILTIN_FUNCTION, &bf.to_string()),
         MontyObject::Path(p) => encoding::string::encoded_len(tag::PATH, p),
         MontyObject::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
         MontyObject::ClassInstance {
-            name,
+            class_type,
             instance_id,
-            type_id,
             attrs,
-            frozen,
-            is_dataclass,
         } => submessage_len(
             tag::CLASS_INSTANCE,
-            class_instance_len(name, *instance_id, *type_id, attrs, *frozen, *is_dataclass),
+            class_instance_len(&class_type_to_pb(class_type), &uuid_to_pb(instance_id), attrs),
         ),
         MontyObject::Function { name, docstring } => {
             submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
@@ -538,30 +535,9 @@ fn file_handle_len(fh: &MontyFileHandle) -> usize {
     str_len(1, &fh.path) + str_len(2, fh.mode.as_str()) + uint64_len(3, fh.position)
 }
 
-/// `ClassInstance` body: `string name = 1; uint64 instance_id = 2;
-/// uint64 type_id = 3; Dict attrs = 4; bool frozen = 5; bool is_dataclass = 6`.
-fn class_instance_len(
-    name: &str,
-    instance_id: u64,
-    type_id: u64,
-    attrs: &DictPairs,
-    frozen: bool,
-    is_dataclass: bool,
-) -> usize {
-    str_len(1, name)
-        + uint64_len(2, instance_id)
-        + uint64_len(3, type_id)
-        + submessage_len(4, dict_len(attrs))
-        + if frozen {
-            encoding::bool::encoded_len(5, &frozen)
-        } else {
-            0
-        }
-        + if is_dataclass {
-            encoding::bool::encoded_len(6, &is_dataclass)
-        } else {
-            0
-        }
+/// `ClassInstance` body: `Type type = 1; Uuid instance_id = 2; Dict attrs = 3`.
+fn class_instance_len(ty: &pb::Type, id: &pb::Uuid, attrs: &DictPairs) -> usize {
+    encoding::message::encoded_len(1, ty) + encoding::message::encoded_len(2, id) + submessage_len(3, dict_len(attrs))
 }
 
 // --- proto3 field helpers, mirroring prost's generated default-skipping ---
@@ -743,12 +719,9 @@ fn decode_field(
             }
         }
         tag::TYPE => {
-            let name = merge_string(wire_type, buf, ctx)?;
-            MontyType::from_type_name(&name)
-                .map(MontyObject::Type)
-                .ok_or_else(|| to_decode_err(ProtoConvertError::UnknownType(name)))?
+            let ty: pb::Type = merge_message(wire_type, buf, ctx)?;
+            MontyObject::Type(pb_type_to_monty(ty)?)
         }
-        tag::INSTANCE_TYPE => MontyObject::Type(MontyType::Instance(merge_string(wire_type, buf, ctx)?)),
         tag::BUILTIN_FUNCTION => {
             let name = merge_string(wire_type, buf, ctx)?;
             MontyObject::builtin_function_from_name(&name)
@@ -768,16 +741,27 @@ fn decode_field(
         }
         tag::CLASS_INSTANCE => {
             let ci: ClassInstanceBody = merge_message(wire_type, buf, ctx)?;
+            let ty = ci
+                .class_type
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.type")))?;
+            // An instance's class is never a builtin, so its Type must decode
+            // to a class type (origin SANDBOX or HOST).
+            let MontyType::Instance(class_type) = pb_type_to_monty(ty)? else {
+                return Err(to_decode_err(ProtoConvertError::InvalidValue {
+                    field: "ClassInstance.type",
+                    reason: "must be a class type, not a builtin".to_owned(),
+                }));
+            };
+            let instance_id = ci
+                .instance_id
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.instance_id")))?;
             let attrs = ci
                 .attrs
                 .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.attrs")))?;
             MontyObject::ClassInstance {
-                name: ci.name,
-                instance_id: ci.instance_id,
-                type_id: ci.type_id,
+                class_type: *class_type,
+                instance_id: pb_uuid_to_monty(&instance_id, "ClassInstance.instance_id")?,
                 attrs: DictPairs::from(attrs.0),
-                frozen: ci.frozen,
-                is_dataclass: ci.is_dataclass,
             }
         }
         tag::FUNCTION => {
@@ -1004,16 +988,13 @@ impl Message for NamedTupleBody {
 /// Decode-only `prost::Message` for `ClassInstance`, decoding the `attrs`
 /// field (a `Dict`) straight into [`DictPairs`] via [`PairList`] rather
 /// than the `Vec<pb::Pair>` wrapper the generated `pb::ClassInstance` would
-/// build and then unwrap. `attrs` stays `Option` so an absent message field is
-/// rejected by [`decode_field`] (presence, not a default). Decode-only.
+/// build and then unwrap. The message fields stay `Option` so an absent one
+/// is rejected by the caller (presence, not a default). Decode-only.
 #[derive(Default)]
 struct ClassInstanceBody {
-    name: String,
-    instance_id: u64,
-    type_id: u64,
+    class_type: Option<pb::Type>,
+    instance_id: Option<pb::Uuid>,
     attrs: Option<PairList>,
-    frozen: bool,
-    is_dataclass: bool,
 }
 
 impl Message for ClassInstanceBody {
@@ -1025,15 +1006,22 @@ impl Message for ClassInstanceBody {
         ctx: DecodeContext,
     ) -> Result<(), DecodeError> {
         // Field numbers from `ClassInstance` in monty.proto; unknown → skip.
+        // `get_or_insert_with` mirrors prost's message-field merge: repeated
+        // occurrences accumulate into the same message.
         match tag {
-            1 => encoding::string::merge(wire_type, &mut self.name, buf, ctx),
-            2 => encoding::uint64::merge(wire_type, &mut self.instance_id, buf, ctx),
-            3 => encoding::uint64::merge(wire_type, &mut self.type_id, buf, ctx),
-            // `get_or_insert` mirrors prost's message-field merge: repeated
-            // occurrences accumulate `pairs` into the same `PairList`.
-            4 => encoding::message::merge(wire_type, self.attrs.get_or_insert_with(PairList::default), buf, ctx),
-            5 => encoding::bool::merge(wire_type, &mut self.frozen, buf, ctx),
-            6 => encoding::bool::merge(wire_type, &mut self.is_dataclass, buf, ctx),
+            1 => encoding::message::merge(
+                wire_type,
+                self.class_type.get_or_insert_with(pb::Type::default),
+                buf,
+                ctx,
+            ),
+            2 => encoding::message::merge(
+                wire_type,
+                self.instance_id.get_or_insert_with(pb::Uuid::default),
+                buf,
+                ctx,
+            ),
+            3 => encoding::message::merge(wire_type, self.attrs.get_or_insert_with(PairList::default), buf, ctx),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
@@ -1047,12 +1035,9 @@ impl Message for ClassInstanceBody {
     }
 
     fn clear(&mut self) {
-        self.name.clear();
-        self.instance_id = 0;
-        self.type_id = 0;
+        self.class_type = None;
+        self.instance_id = None;
         self.attrs = None;
-        self.frozen = false;
-        self.is_dataclass = false;
     }
 }
 
@@ -1070,6 +1055,102 @@ fn to_decode_err(err: impl Display) -> DecodeError {
 // ============================================================================
 // Leaf conversions and validation (the wire is untrusted)
 // ============================================================================
+
+/// Encodes a [`MontyUuid`] as the wire `Uuid` message (16 raw bytes).
+pub(crate) fn uuid_to_pb(uuid: &MontyUuid) -> pb::Uuid {
+    pb::Uuid {
+        data: uuid.as_bytes().to_vec(),
+    }
+}
+
+/// Validates a wire `Uuid`: exactly 16 bytes, anything else is rejected.
+fn pb_uuid_to_monty(uuid: &pb::Uuid, field: &'static str) -> Result<MontyUuid, DecodeError> {
+    MontyUuid::try_from_slice(&uuid.data).ok_or_else(|| {
+        to_decode_err(ProtoConvertError::InvalidValue {
+            field,
+            reason: format!("uuid must be 16 bytes, got {}", uuid.data.len()),
+        })
+    })
+}
+
+/// Encodes a [`MontyType`] as the wire `Type` message: builtins carry only
+/// their Display name (origin BUILTIN, no id), class types their full
+/// [`ClassType`], recursing over `parents`.
+fn monty_type_to_pb(t: &MontyType) -> pb::Type {
+    match t {
+        MontyType::Instance(class_type) => class_type_to_pb(class_type),
+        other => pb::Type {
+            name: other.to_string(),
+            origin: pb::TypeOrigin::Builtin as i32,
+            ..pb::Type::default()
+        },
+    }
+}
+
+/// The class-type half of [`monty_type_to_pb`].
+fn class_type_to_pb(class_type: &ClassType) -> pb::Type {
+    let origin = if class_type.host_defined {
+        pb::TypeOrigin::Host
+    } else {
+        pb::TypeOrigin::Sandbox
+    };
+    pb::Type {
+        name: class_type.name.clone(),
+        id: Some(uuid_to_pb(&class_type.id)),
+        origin: origin as i32,
+        parents: class_type.parents.iter().map(monty_type_to_pb).collect(),
+        is_dataclass: class_type.is_dataclass,
+        frozen: class_type.frozen,
+        init: class_type.init,
+    }
+}
+
+/// Validates a wire `Type` and converts it to a [`MontyType`].
+///
+/// Enforces the id-presence invariants per origin (BUILTIN must not carry an
+/// id or parents; SANDBOX/HOST must carry an id). Recursion over `parents` is
+/// bounded because prost's decode already depth-limits message nesting before
+/// this conversion runs.
+fn pb_type_to_monty(ty: pb::Type) -> Result<MontyType, DecodeError> {
+    let origin = pb::TypeOrigin::try_from(ty.origin).map_err(|_| {
+        to_decode_err(ProtoConvertError::InvalidValue {
+            field: "Type.origin",
+            reason: format!("unknown origin {}", ty.origin),
+        })
+    })?;
+    let invalid = |reason: &str| {
+        to_decode_err(ProtoConvertError::InvalidValue {
+            field: "Type",
+            reason: reason.to_owned(),
+        })
+    };
+    match origin {
+        pb::TypeOrigin::Unspecified => Err(invalid("origin must be specified")),
+        pb::TypeOrigin::Builtin => {
+            if ty.id.is_some() {
+                Err(invalid("a builtin type must not carry an id"))
+            } else if !ty.parents.is_empty() {
+                Err(invalid("a builtin type must not carry parents"))
+            } else {
+                MontyType::from_type_name(&ty.name)
+                    .ok_or_else(|| to_decode_err(ProtoConvertError::UnknownType(ty.name)))
+            }
+        }
+        pb::TypeOrigin::Sandbox | pb::TypeOrigin::Host => {
+            let id = ty.id.ok_or_else(|| invalid("a class type must carry an id"))?;
+            let parents = ty.parents.into_iter().map(pb_type_to_monty).collect::<Result<_, _>>()?;
+            Ok(MontyType::Instance(Box::new(ClassType {
+                name: ty.name,
+                id: pb_uuid_to_monty(&id, "Type.id")?,
+                host_defined: origin == pb::TypeOrigin::Host,
+                parents,
+                is_dataclass: ty.is_dataclass,
+                frozen: ty.frozen,
+                init: ty.init,
+            })))
+        }
+    }
+}
 
 /// Encodes a `BigInt` as sign + big-endian magnitude.
 fn bigint_to_proto(bi: &BigInt) -> pb::BigInt {

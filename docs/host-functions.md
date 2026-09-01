@@ -107,7 +107,7 @@ The same is true of an `os=` callback's return value.
 `MontyConversionError` is for host values you hand over up front, in `inputs` or `external_lookup`.
 
 Values are also bounded in shape and size.
-Nesting is capped (roughly 48 nested lists, 32 nested dicts, 24 nested dataclasses), and a wire frame — the value plus
+Nesting is capped (roughly 48 nested lists, 32 nested dicts, 24 nested class instances), and a wire frame — the value plus
 its envelope — is capped at 256 MiB.
 Exceeding either fails the call; it does not crash the worker.
 

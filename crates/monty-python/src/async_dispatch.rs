@@ -6,36 +6,45 @@
 //! worker.
 
 use monty_proto::python::InstanceStore;
-use monty_types::{ExtFunctionResult, MontyObject};
+use monty_types::{CallReceiver, ExtFunctionResult, MontyObject};
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use pyo3_async_runtimes::tokio::into_future;
 use tokio::task::{JoinError, JoinSet};
 
 use crate::external::{
-    CallResult, ExternalLookup, dispatch_instance_call_or_coroutine, py_err_to_ext_result, py_obj_to_ext_result,
+    CallResult, ExternalLookup, dispatch_instance_call_or_coroutine, dispatch_instantiate, py_err_to_ext_result,
+    py_obj_to_ext_result,
 };
 
-/// Dispatches a function call to a host-instance method (when `instance_id`
-/// is set) or an external function, returning `CallResult::Coroutine` (for
-/// the caller to spawn) when the Python result is a coroutine.
+/// Dispatches a function call to a host-instance method or class constructor
+/// (when a `receiver` is set) or an external function, returning
+/// `CallResult::Coroutine` (for the caller to spawn) when the Python result
+/// is a coroutine.
 pub(crate) fn dispatch_function_call(
     function_name: &str,
-    instance_id: Option<u64>,
+    receiver: Option<CallReceiver>,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
     external_lookup: Option<&Py<PyDict>>,
     instances: &InstanceStore,
 ) -> CallResult {
-    Python::attach(|py| {
-        if let Some(instance_id) = instance_id {
-            dispatch_instance_call_or_coroutine(py, function_name, instance_id, args, kwargs, instances)
-        } else {
-            ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), instances).call_or_coroutine(
-                function_name,
-                args,
-                kwargs,
-            )
+    Python::attach(|py| match receiver {
+        Some(CallReceiver::Instance(instance_id)) => {
+            dispatch_instance_call_or_coroutine(py, function_name, &instance_id, args, kwargs, instances)
         }
+        Some(CallReceiver::Type(type_id)) => CallResult::Sync(dispatch_instantiate(
+            py,
+            function_name,
+            &type_id,
+            args,
+            kwargs,
+            instances,
+        )),
+        None => ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), instances).call_or_coroutine(
+            function_name,
+            args,
+            kwargs,
+        ),
     })
 }
 
