@@ -40,46 +40,47 @@ message MontyObject {
   oneof kind {
     Unit ellipsis = 1;
     Unit none = 2;
-    bool boolean = 3;
+    Unit not_implemented = 3;
+    bool boolean = 4;
     // Python int fitting in 64 bits.
-    sint64 int = 4;
+    sint64 int = 5;
     // Python int wider than 64 bits.
-    BigInt bigint = 5;
-    double float = 6;
-    string str = 7;
-    bytes bytes = 8;
-    ObjectList list = 9;
-    ObjectList tuple = 10;
-    NamedTuple named_tuple = 11;
-    Dict dict = 12;
-    ObjectList set = 13;
-    ObjectList frozen_set = 14;
-    Date date = 15;
-    DateTime datetime = 16;
-    TimeDelta timedelta = 17;
-    TimeZone timezone = 18;
+    BigInt bigint = 6;
+    double float = 7;
+    string str = 8;
+    bytes bytes = 9;
+    // A uuid.UUID value. Declared so the tag is settled, but NOT YET
+    // IMPLEMENTED: monty has no uuid module, so neither end produces or
+    // accepts this arm (it decodes like any unknown kind — rejected).
+    Uuid uuid = 10;
+    ObjectList list = 11;
+    ObjectList tuple = 12;
+    NamedTuple named_tuple = 13;
+    Dict dict = 14;
+    ObjectList set = 15;
+    ObjectList frozen_set = 16;
+    Date date = 17;
+    Time time = 18;
+    DateTime datetime = 19;
+    TimeDelta timedelta = 20;
+    TimeZone timezone = 21;
     // A simple exception VALUE (no traceback) — e.g. an exception stored in a
     // variable. Errors that terminate execution use `RaisedException` instead.
-    Exception exception = 19;
+    Exception exception = 22;
     // A Python type object — builtin, sandbox class, or host class.
-    Type type = 31;
-    // A builtin function, named by its Python name, e.g. "len", "print".
-    string builtin_function = 21;
-    // A pathlib.Path value (always a virtual POSIX path, never a host path).
-    string path = 22;
-    FileHandle file_handle = 23;
+    Type type = 23;
     ClassInstance class_instance = 24;
     Function function = 25;
+    // A builtin function, named by its Python name, e.g. "len", "print".
+    string builtin_function = 26;
+    // A pathlib.Path value (always a virtual POSIX path, never a host path).
+    string path = 27;
+    FileHandle file_handle = 28;
     // OUTPUT-ONLY fallback: repr() of a value with no other representation.
-    string repr = 26;
+    string repr = 29;
     // OUTPUT-ONLY marker breaking reference cycles in container output.
-    Cycle cycle = 27;
-    Unit not_implemented = 29;
-    Time time = 30;
+    Cycle cycle = 30;
   }
-  // 20 was `string type` (builtin type names) and 28 `string instance_type`
-  // (sandbox class names); both are replaced by the `Type` message arm.
-  reserved 20, 28;
 }
 
 message ObjectList {

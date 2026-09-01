@@ -22,7 +22,7 @@ pub struct Unit {}
 pub struct MontyObject {
     #[prost(
         oneof = "monty_object::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 31, 21, 22, 23, 24, 25, 26, 27, 29, 30"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
     )]
     pub kind: ::core::option::Option<monty_object::Kind>,
 }
@@ -34,69 +34,74 @@ pub mod monty_object {
         Ellipsis(super::Unit),
         #[prost(message, tag = "2")]
         None(super::Unit),
-        #[prost(bool, tag = "3")]
+        #[prost(message, tag = "3")]
+        NotImplemented(super::Unit),
+        #[prost(bool, tag = "4")]
         Boolean(bool),
         /// Python int fitting in 64 bits.
-        #[prost(sint64, tag = "4")]
+        #[prost(sint64, tag = "5")]
         Int(i64),
         /// Python int wider than 64 bits.
-        #[prost(message, tag = "5")]
+        #[prost(message, tag = "6")]
         Bigint(super::BigInt),
-        #[prost(double, tag = "6")]
+        #[prost(double, tag = "7")]
         Float(f64),
-        #[prost(string, tag = "7")]
+        #[prost(string, tag = "8")]
         Str(::prost::alloc::string::String),
-        #[prost(bytes, tag = "8")]
+        #[prost(bytes, tag = "9")]
         Bytes(::prost::alloc::vec::Vec<u8>),
-        #[prost(message, tag = "9")]
-        List(super::ObjectList),
+        /// A uuid.UUID value. Declared so the tag is settled, but NOT YET
+        /// IMPLEMENTED: monty has no uuid module, so neither end produces or
+        /// accepts this arm (it decodes like any unknown kind — rejected).
         #[prost(message, tag = "10")]
-        Tuple(super::ObjectList),
+        Uuid(super::Uuid),
         #[prost(message, tag = "11")]
-        NamedTuple(super::NamedTuple),
+        List(super::ObjectList),
         #[prost(message, tag = "12")]
-        Dict(super::Dict),
+        Tuple(super::ObjectList),
         #[prost(message, tag = "13")]
-        Set(super::ObjectList),
+        NamedTuple(super::NamedTuple),
         #[prost(message, tag = "14")]
-        FrozenSet(super::ObjectList),
+        Dict(super::Dict),
         #[prost(message, tag = "15")]
-        Date(super::Date),
+        Set(super::ObjectList),
         #[prost(message, tag = "16")]
-        Datetime(super::DateTime),
+        FrozenSet(super::ObjectList),
         #[prost(message, tag = "17")]
-        Timedelta(super::TimeDelta),
+        Date(super::Date),
         #[prost(message, tag = "18")]
+        Time(super::Time),
+        #[prost(message, tag = "19")]
+        Datetime(super::DateTime),
+        #[prost(message, tag = "20")]
+        Timedelta(super::TimeDelta),
+        #[prost(message, tag = "21")]
         Timezone(super::TimeZone),
         /// A simple exception VALUE (no traceback) — e.g. an exception stored in a
         /// variable. Errors that terminate execution use `RaisedException` instead.
-        #[prost(message, tag = "19")]
+        #[prost(message, tag = "22")]
         Exception(super::Exception),
         /// A Python type object — builtin, sandbox class, or host class.
-        #[prost(message, tag = "31")]
-        Type(super::Type),
-        /// A builtin function, named by its Python name, e.g. "len", "print".
-        #[prost(string, tag = "21")]
-        BuiltinFunction(::prost::alloc::string::String),
-        /// A pathlib.Path value (always a virtual POSIX path, never a host path).
-        #[prost(string, tag = "22")]
-        Path(::prost::alloc::string::String),
         #[prost(message, tag = "23")]
-        FileHandle(super::FileHandle),
+        Type(super::Type),
         #[prost(message, tag = "24")]
         ClassInstance(super::ClassInstance),
         #[prost(message, tag = "25")]
         Function(super::Function),
-        /// OUTPUT-ONLY fallback: repr() of a value with no other representation.
+        /// A builtin function, named by its Python name, e.g. "len", "print".
         #[prost(string, tag = "26")]
+        BuiltinFunction(::prost::alloc::string::String),
+        /// A pathlib.Path value (always a virtual POSIX path, never a host path).
+        #[prost(string, tag = "27")]
+        Path(::prost::alloc::string::String),
+        #[prost(message, tag = "28")]
+        FileHandle(super::FileHandle),
+        /// OUTPUT-ONLY fallback: repr() of a value with no other representation.
+        #[prost(string, tag = "29")]
         Repr(::prost::alloc::string::String),
         /// OUTPUT-ONLY marker breaking reference cycles in container output.
-        #[prost(message, tag = "27")]
-        Cycle(super::Cycle),
-        #[prost(message, tag = "29")]
-        NotImplemented(super::Unit),
         #[prost(message, tag = "30")]
-        Time(super::Time),
+        Cycle(super::Cycle),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]

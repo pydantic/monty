@@ -198,35 +198,35 @@ impl Message for WireFunctionCall {
 mod tag {
     pub const ELLIPSIS: u32 = 1;
     pub const NONE: u32 = 2;
-    pub const BOOLEAN: u32 = 3;
-    pub const INT: u32 = 4;
-    pub const BIGINT: u32 = 5;
-    pub const FLOAT: u32 = 6;
-    pub const STR: u32 = 7;
-    pub const BYTES: u32 = 8;
-    pub const LIST: u32 = 9;
-    pub const TUPLE: u32 = 10;
-    pub const NAMED_TUPLE: u32 = 11;
-    pub const DICT: u32 = 12;
-    pub const SET: u32 = 13;
-    pub const FROZEN_SET: u32 = 14;
-    pub const DATE: u32 = 15;
-    pub const DATETIME: u32 = 16;
-    pub const TIMEDELTA: u32 = 17;
-    pub const TIMEZONE: u32 = 18;
-    pub const EXCEPTION: u32 = 19;
-    pub const BUILTIN_FUNCTION: u32 = 21;
-    pub const PATH: u32 = 22;
-    pub const FILE_HANDLE: u32 = 23;
+    pub const NOT_IMPLEMENTED: u32 = 3;
+    pub const BOOLEAN: u32 = 4;
+    pub const INT: u32 = 5;
+    pub const BIGINT: u32 = 6;
+    pub const FLOAT: u32 = 7;
+    pub const STR: u32 = 8;
+    pub const BYTES: u32 = 9;
+    // 10 is `Uuid uuid`, declared in the schema but not yet implemented
+    // (monty has no uuid module) — it decodes like any unknown kind.
+    pub const LIST: u32 = 11;
+    pub const TUPLE: u32 = 12;
+    pub const NAMED_TUPLE: u32 = 13;
+    pub const DICT: u32 = 14;
+    pub const SET: u32 = 15;
+    pub const FROZEN_SET: u32 = 16;
+    pub const DATE: u32 = 17;
+    pub const TIME: u32 = 18;
+    pub const DATETIME: u32 = 19;
+    pub const TIMEDELTA: u32 = 20;
+    pub const TIMEZONE: u32 = 21;
+    pub const EXCEPTION: u32 = 22;
+    pub const TYPE: u32 = 23;
     pub const CLASS_INSTANCE: u32 = 24;
     pub const FUNCTION: u32 = 25;
-    pub const REPR: u32 = 26;
-    pub const CYCLE: u32 = 27;
-    pub const NOT_IMPLEMENTED: u32 = 29;
-    pub const TIME: u32 = 30;
-    // 20 (builtin type names) and 28 (sandbox class names) are reserved;
-    // both were replaced by the `Type` message arm.
-    pub const TYPE: u32 = 31;
+    pub const BUILTIN_FUNCTION: u32 = 26;
+    pub const PATH: u32 = 27;
+    pub const FILE_HANDLE: u32 = 28;
+    pub const REPR: u32 = 29;
+    pub const CYCLE: u32 = 30;
 }
 
 // ============================================================================

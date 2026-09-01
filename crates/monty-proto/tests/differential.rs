@@ -692,6 +692,12 @@ fn invalid_values_are_rejected_during_decode() {
         })),
         "failed to decode Protobuf message: invalid value for DateTime.timezone_name: timezone_name requires offset_seconds"
     );
+    // the uuid arm is declared in the schema but not yet implemented: the
+    // hand-written decoder skips it like any unknown tag, leaving no kind
+    assert_eq!(
+        rejected(Kind::Uuid(oracle::Uuid { data: vec![7; 16] })),
+        "missing required field MontyObject.kind"
+    );
     // an absent kind decodes (it is a valid empty message) but cannot be
     // unwrapped into a value
     let empty = oracle::MontyObject { kind: None }.encode_to_vec();
