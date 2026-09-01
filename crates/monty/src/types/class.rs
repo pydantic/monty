@@ -5,7 +5,7 @@ use monty_types::MontyUuid;
 use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
     args::ArgValues,
-    boundary_uuid::mint_uuid,
+    boundary_uuid::create_uuid,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -92,7 +92,7 @@ impl Class {
     /// Boundary identity of the class, minting and storing it on first use so
     /// repeated crossings (and dump/restore) observe the same id.
     pub fn boundary_uuid(&mut self) -> MontyUuid {
-        *self.uuid.get_or_insert_with(mint_uuid)
+        *self.uuid.get_or_insert_with(create_uuid)
     }
 
     /// The `@dataclass(...)` options in force for this class.

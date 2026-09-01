@@ -5,7 +5,7 @@ use monty_types::MontyUuid;
 use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
     args::{ArgValues, KwargsValues},
-    boundary_uuid::mint_uuid,
+    boundary_uuid::create_uuid,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -51,7 +51,7 @@ impl Instance {
     /// Boundary identity of the instance, minting and storing it on first use
     /// so repeated crossings (and dump/restore) observe the same id.
     pub fn boundary_uuid(&mut self) -> MontyUuid {
-        *self.uuid.get_or_insert_with(mint_uuid)
+        *self.uuid.get_or_insert_with(create_uuid)
     }
 
     /// Returns the `HeapId` of the instance's class object.

@@ -13,7 +13,7 @@ use monty_types::MontyUuid;
 /// # Panics
 /// If the OS entropy source fails — unrecoverable, and a worker panic is
 /// treated as a crash by the pool, which replaces the process.
-pub(crate) fn mint_uuid() -> MontyUuid {
+pub(crate) fn create_uuid() -> MontyUuid {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).expect("OS entropy source unavailable");
     MontyUuid::from_random_bytes(bytes)
