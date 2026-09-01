@@ -32,7 +32,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     resource_checks::check_repeat_size,
@@ -695,15 +695,27 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Tuple> {
         let items = deep_copy_slots(self.get(vm.heap).as_slice().len(), memo, vm, |index, vm| {
             self.clone_item(index, vm)
         })?;
+        // The items are guarded from here on: the memo read below can fail, and
+        // two of the three outcomes discard them.
+        let mut guard = DropGuard::new(items, vm);
+        let (items, vm) = guard.as_parts_mut();
+        // A tuple is memoized only after its items are done, so a cycle running
+        // back through a mutable item copies this tuple in full before the
+        // outer call returns. CPython's `_deepcopy_tuple` re-reads the memo
+        // here and hands back that copy, leaving the cycle closed on one tuple
+        // rather than on a second one built from these items.
+        let existing = memo.get(source, vm)?;
         let unchanged = items
             .iter()
             .enumerate()
             .all(|(index, item)| self.get(vm.heap).as_slice()[index].id() == item.id());
-        if unchanged {
-            items.drop_with(vm);
-            Ok(source.clone_with_heap(vm.heap))
-        } else {
-            Ok(allocate_tuple(items.into_iter().collect(), vm.heap))
+        match existing {
+            Some(existing) => Ok(existing),
+            None if unchanged => Ok(source.clone_with_heap(vm.heap)),
+            None => {
+                let (items, vm) = guard.into_parts();
+                Ok(allocate_tuple(items.into_iter().collect(), vm.heap))
+            }
         }
     }
 }
