@@ -11,6 +11,7 @@ members = [
     "crates/monty-wasm-runtime",
     "crates/monty-python",
     "crates/monty-js",
+    "crates/monty-apidoc",
     "crates/monty-datatest",
     "crates/monty-doctest",
     "crates/monty-bench",

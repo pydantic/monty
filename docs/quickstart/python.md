@@ -306,7 +306,8 @@ A loop of quick host calls resets it each turn; set [`max_duration_secs`](../res
 
 ## Where next
 
-- [Host functions](../host-functions.md) — how code in the sandbox calls functions on the host.
+- [`pydantic_monty` API reference](../api/python.md) — every class, method and option.
+- [Host functions](../host-functions.md) — the only way code in the sandbox reaches anything outside it.
 - [Host objects](../host-objects.md) — exposing objects and classes with per-attribute and per-method policies.
 - [Filesystem access](../filesystem.md) — mounts and the `os` callback.
 - [Snapshots](../snapshots.md) — `feed_start`, `dump()` and resuming later.

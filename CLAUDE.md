@@ -380,6 +380,8 @@ make lint-rs              Lint Rust code with clippy and import checks
 make clippy-fix           Fix Rust code with clippy
 make generate-proto       Regenerate monty-proto's checked-in code from the .proto schema
 make check-proto          Verify monty-proto's checked-in code matches the .proto schema
+make generate-api-docs    Regenerate the Rust API reference in docs/api/rust/ from rustdoc JSON
+make check-api-docs       Verify the checked-in docs/api/rust/ pages match the public Rust API
 make lint-py              Lint Python code with ruff
 make lint                 Lint the code with ruff and clippy
 make test-no-features     Run rust tests without any features enabled

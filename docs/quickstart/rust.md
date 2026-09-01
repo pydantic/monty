@@ -2,10 +2,10 @@
 
 There are two ways to run Monty from Rust.
 
-- **[`monty-pool`](https://crates.io/crates/monty-pool)** runs the interpreter only in `monty` worker subprocesses.
+- **[`monty-pool`](../api/rust/monty-pool.md)** runs the interpreter only in `monty` worker subprocesses.
   Use this for untrusted code.
   It is the same engine the Python and JavaScript packages are built on.
-- **[`monty`](https://crates.io/crates/monty)** is the in-process interpreter.
+- **[`monty`](../api/rust/monty.md)** is the in-process interpreter.
   Use it when you control the code being run, or when subprocesses are impossible.
 
 A Monty process can never be made fully crash-proof against memory errors — a stack-overflow abort or an allocator abort
@@ -220,6 +220,6 @@ assert_eq!(result, MontyObject::Int(42));
 ## Which crate depends on what
 
 Host-side crates (`monty-fs`, `monty-pool`, `monty-proto` without its `worker` feature, the Python and JavaScript
-bindings) depend on [`monty-types`](https://crates.io/crates/monty-types), never on `monty`.
+bindings) depend on [`monty-types`](../api/rust/monty-types.md), never on `monty`.
 That keeps the interpreter out of the parent process entirely.
 Only the worker side links it.

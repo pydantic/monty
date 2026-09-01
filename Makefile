@@ -113,6 +113,16 @@ generate-proto: ## Regenerate monty-proto's checked-in code from the .proto sche
 check-proto: generate-proto ## Verify monty-proto's checked-in code matches the .proto schema
 	git diff --exit-code crates/monty-proto/src/generated crates/monty-proto/tests/oracle
 
+.PHONY: generate-api-docs
+generate-api-docs: ## Regenerate the Rust API reference in docs/api/rust/ from rustdoc JSON
+	cargo run -p monty-apidoc
+
+.PHONY: check-api-docs
+check-api-docs: generate-api-docs ## Verify the checked-in docs/api/rust/ pages match the public Rust API
+	git diff --exit-code docs/api/rust
+	@untracked=$$(git ls-files --others --exclude-standard -- docs/api/rust); \
+		test -z "$$untracked" || { echo "Untracked generated API docs:"; echo "$$untracked"; exit 1; }
+
 .PHONY: lint-py
 lint-py: dev-py ## Lint Python code with ruff
 	uv run ruff format --check

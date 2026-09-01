@@ -86,6 +86,15 @@ jobs:
       - name: Check vendored typeshed stubs are in sync
         run: make check-typeshed
 
+      # rustdoc JSON is nightly-only and format-unstable, so the API reference
+      # is generated with the exact nightly matching monty-apidoc's pinned
+      # `rustdoc-types` (see crates/monty-apidoc/src/main.rs)
+      - name: Install the nightly pinned for rustdoc JSON
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal
+
+      - name: Check generated Rust API docs are in sync
+        run: make check-api-docs
+
   # The interpreter itself, under every feature config. Each `--features` flag
   # forces a full rebuild of `monty`, so the three configs are kept together
   # here; the crates layered on top run in parallel in `test-rust-crates`.
