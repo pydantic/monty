@@ -1,0 +1,21 @@
+crates/monty-js/ts/classInstance.ts
+  s_bf68572fceb021::t_50a8838020318f 59
+crates/monty-python/python/pydantic_monty/class_instance.py
+  s_bf68572fceb021::t_50a8838020318f 38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "abdcd6b59b19bc5b390ab453d132c26e72f1ab12",
+  "prompts": {},
+  "sessions": {
+    "s_bf68572fceb021": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8ff2ad2-c7e9-4cb1-9a42-b2f5d74a4d5e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
