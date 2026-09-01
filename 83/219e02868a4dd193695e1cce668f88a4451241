@@ -1,0 +1,21 @@
+crates/monty-proto/src/python/convert.rs
+  s_bf68572fceb021::t_f367b32110021c 158-159
+crates/monty/tests/main.rs
+  s_bf68572fceb021::t_0adf406bf05dec 358-361
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "83219e02868a4dd193695e1cce668f88a4451241",
+  "prompts": {},
+  "sessions": {
+    "s_bf68572fceb021": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8ff2ad2-c7e9-4cb1-9a42-b2f5d74a4d5e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
