@@ -86,7 +86,7 @@ interface worker {
     }
 
     /// A class type object (`type` is a WIT keyword, hence the name). The
-    /// real class lives on whichever side minted `id`; parents index other
+    /// real class lives on whichever side generated `id`; parents index other
     /// nodes in the same arena, each of which must be a class-type or
     /// type-name node (validated on read).
     record class-type-node {

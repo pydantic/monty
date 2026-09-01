@@ -134,8 +134,12 @@ raise `FrozenInstanceError`. `frozen` defaults to `false`, so by default
 sandbox code may set attributes — on its own copy only: sandbox mutations
 never touch the wrapped host object.
 
+Each wrapper owns its identity: `wrapper.id` (a uuid4 by default, or the `id`
+option) is the id the sandbox routes by, so reuse one wrapper to re-send an
+object under the same identity.
+
 Instances the host has no original for — defined inside the sandbox, or
-returned after a dump was restored into a fresh process — surface as read-only
+returned after a dump was restored into a fresh process — cross to the host as read-only
 `MontyClassProxy` stand-ins (`name`, `attributes`, `isDataclass`).
 
 ### Host classes (`ClassType`)

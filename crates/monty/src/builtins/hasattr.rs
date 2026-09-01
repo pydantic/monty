@@ -50,7 +50,7 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             value.drop_with(vm);
             true
         }
-        // hasattr() has no suspension plumbing (unlike e.g. `open`, which
+        // hasattr() cannot suspend (unlike e.g. `open`, which
         // suspends via `OsFunctionCall`), so a lazy host attribute lookup
         // reads as absent (documented divergence — only `obj.attr` syntax
         // consults the host).

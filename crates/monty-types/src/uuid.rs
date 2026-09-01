@@ -1,8 +1,8 @@
 //! The 16-byte UUID carried on the wire for class and instance identity.
 //!
 //! `MontyUuid` only stores, formats and parses ids — it never generates them.
-//! Hosts mint uuid4 values (Python via the `uuid` crate, JS via `crypto`);
-//! the worker mints for sandbox-defined classes/instances from raw entropy
+//! Hosts generate uuid4 values (Python via the `uuid` crate, JS via `crypto`);
+//! the worker generates ids for sandbox-defined classes/instances from raw entropy
 //! via [`MontyUuid::from_random_bytes`]. Keeping generation out of this crate
 //! leaves `monty-types` free of RNG dependencies on every target.
 

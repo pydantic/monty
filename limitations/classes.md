@@ -157,8 +157,8 @@ A sandbox-defined class **instance** crosses out structurally: the host
 receives a read-only `MontyClassProxy` with `.name`, `.is_dataclass`,
 and `.attributes` (the instance `__dict__`, converted; the JS package spells
 these `.name` / `.isDataclass` / `.attributes`). The host cannot call
-methods on it — the method code lives inside the sandbox, and the proxy holds
-no live object. The instance and its class carry worker-minted uuids (stored
+methods on it — the methods are defined only inside the sandbox, and the proxy holds
+no live object. The instance and its class carry worker-generated uuids (stored
 on the heap objects, so stable across crossings and dump/restore); a method
 call or lazy lookup on such an instance still suspends, and the host's
 guaranteed store miss produces the usual errors.
@@ -169,7 +169,7 @@ result = session.feed_run('class A:\n    def __init__(self):\n        self.x = 1
 ```
 
 A sandbox-defined class **object** (`A` itself) still has no structural host
-representation and surfaces as its type text (e.g. `"<class 'A'>"`). A user
+representation and converts to its type text (e.g. `"<class 'A'>"`). A user
 `__repr__` is NOT consulted when an instance crosses the boundary — the host
 gets the structured proxy, not the repr string.
 
@@ -180,11 +180,11 @@ package's `ClassInstance` policy wrapper (passing a bare dataclass or class
 instance as an input raises `MontyConversionError` in Python, `TypeError` in
 JS). Inside the sandbox they are proxies
 whose eager attrs were copied at send time; everything else routes back to the
-host by a session-local uuid minted for the instance (never `id()` or any
+host by a session-local uuid generated for the instance (never `id()` or any
 other address-derived value). Divergences from real CPython objects:
 
 - **`type(x)` returns a lightweight stand-in for the real class**, since the
-  class itself lives on the host. It names the real class (`type(x).__name__`
+  class itself stays on the host. It names the real class (`type(x).__name__`
   is `'Point'`, repr is `<class 'Point'>` — without CPython's module
   qualification like `<class 'mymod.Point'>`), and error messages name the
   real class too (`unhashable type: 'Point'`). But it is not the class:
@@ -214,7 +214,7 @@ other address-derived value). Divergences from real CPython objects:
   not consulted.
 - **`dataclasses.fields()` / `asdict()` do not work on host instances**;
   `dataclasses.is_dataclass(x)` returns the flag the host sent.
-- Returning a host-sent instance hands the host back the **original object**
+- Returning a host-sent instance gives the host the **original object**
   (identity preserved), discarding any sandbox-side attr mutations. Sending
   the same object twice yields equal (same class uuid + attrs) sandbox
   values, but each send allocates its own proxy, so `a is b` is `False`.

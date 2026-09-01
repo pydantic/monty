@@ -269,7 +269,7 @@ fn class_instance_and_function_values_round_trip() {
             (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
         ]),
     });
-    // Sandbox-defined shape: worker-minted ids, non-dataclass, mutable.
+    // Sandbox-defined shape: worker-generated ids, non-dataclass, mutable.
     assert_value_round_trip(&MontyObject::ClassInstance {
         class_type: ClassType {
             name: "Widget".to_owned(),

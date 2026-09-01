@@ -37,6 +37,9 @@ export interface ClassInstanceOptions {
   name?: string
   /** Whether sandbox `setattr` raises `FrozenInstanceError` (default false). */
   frozen?: boolean
+  /** The wrapper's identity uuid (canonical lowercase uuid4); defaults to a
+   *  fresh one per wrapper. See [`ClassInstance.id`]. */
+  id?: string
   /**
    * Transforms each value crossing to the sandbox — applied exactly once per
    * value: to each eager attr, each lazy lookup result, and each method
@@ -53,20 +56,26 @@ export interface ClassInstanceOptions {
  * as an input or return it from an external function:
  *
  * ```ts
- * await session.feedRun('assert user.greeting() == "hi Sam"', {
+ * await session.feedRun('assert user.greeting() == "hi Samuel"', {
  *   inputs: { user: new ClassInstance(user, { eagerAttrs: 'all', allowedMethods: ['greeting'] }) },
  * })
  * ```
  */
 export class ClassInstance {
+  /** The instance's sandbox identity; per wrapper, so reuse one wrapper to
+   *  re-send an object under the same id. On [`ClassType`], the class's id —
+   *  a class's first crossing in a session fixes its id. */
+  readonly id: string
+
   constructor(
-    /** The wrapped host object; handed back as-is when the sandbox returns the instance. */
+    /** The wrapped host object; returned unchanged when the sandbox returns the instance. */
     readonly instance: object,
     readonly options: ClassInstanceOptions = {},
   ) {
     if ((typeof instance !== 'object' && typeof instance !== 'function') || instance === null) {
       throw new TypeError('ClassInstance expects an object instance')
     }
+    this.id = options.id ?? generateUuid()
   }
 
   /** Class name shown to the sandbox: `options.name`, else the constructor name. */
@@ -287,30 +296,34 @@ export class MontyClassProxy {
  * alive for the session, mirroring pydantic_monty's `InstanceStore`.
  */
 export class InstanceStore {
-  /** uuid → wrapper; last wrapper wins when the same object is re-sent. */
+  /** uuid → wrapper; re-sending the same wrapper overwrites its entry. */
   readonly map = new Map<string, ClassInstance>()
   /** class uuid → the class plus the `ClassType` wrapper gating
-   *  instantiation (undefined until one crosses). Pins the class so its
-   *  uuid dedup stays sound. */
+   *  instantiation (undefined until one crosses). Pins the class. */
   readonly classes = new Map<string, { classObject: object; wrapper?: ClassType }>()
-  /** Per-session uuid mints: the WeakMaps make ids stable per object within
-   *  this store without pinning the objects themselves (registrations do the
-   *  pinning where soundness needs it). Session-local on purpose — a shared
-   *  mint would let a compromised worker recognise the same host object
+  /** class object → uuid: one id per class per session, fixed by the class's
+   *  first crossing (instances that crossed earlier already carry it, and a
+   *  second id for the same class would break in-sandbox type equality and
+   *  `__call__` routing). Session-local on purpose — ids shared across
+   *  stores would let a compromised worker recognise the same host class
    *  across checkouts. */
-  private readonly instanceIds = new WeakMap<object, string>()
   private readonly classIds = new WeakMap<object, string>()
 
-  /** Registers a wrapper and returns the instance's session-stable uuid. */
+  /** Registers a wrapper under its own `id` (the wrapper owns its identity). */
   register(wrapper: ClassInstance): string {
-    const id = uuidFor(this.instanceIds, wrapper.instance)
-    this.map.set(id, wrapper)
-    return id
+    this.map.set(wrapper.id, wrapper)
+    return wrapper.id
   }
 
-  /** The class's session uuid, minting and pinning it on first sight. */
-  typeUuid(classObject: object): string {
-    const id = uuidFor(this.classIds, classObject)
+  /** The class's session uuid, pinned on first crossing: an already-recorded
+   *  id wins, then `wrapperId` (a `ClassType` wrapper's `id`), then a fresh
+   *  uuid4. */
+  typeUuid(classObject: object, wrapperId?: string): string {
+    let id = this.classIds.get(classObject)
+    if (id === undefined) {
+      id = wrapperId ?? generateUuid()
+      this.classIds.set(classObject, id)
+    }
     if (!this.classes.has(id)) {
       this.classes.set(id, { classObject })
     }
@@ -321,7 +334,7 @@ export class InstanceStore {
    *  class map (identity round-trips) and the routing map (method calls,
    *  `__call__` construction, lazy class attrs). */
   registerClass(wrapper: ClassType): string {
-    const id = this.typeUuid(wrapper.classType)
+    const id = this.typeUuid(wrapper.classType, wrapper.id)
     this.classes.set(id, { classObject: wrapper.classType, wrapper })
     this.map.set(id, wrapper)
     return id
@@ -644,19 +657,9 @@ function walkPlainObject(
 
 // === identity / classification helpers ===
 
-/** Returns the uuid minted for `key` in `ids`, minting on first sight. */
-function uuidFor(ids: WeakMap<object, string>, key: object): string {
-  let id = ids.get(key)
-  if (id === undefined) {
-    id = mintUuid()
-    ids.set(key, id)
-  }
-  return id
-}
-
-/** Mints a canonical lowercase uuid4 string. `getRandomValues` rather than
+/** Generates a canonical lowercase uuid4 string. `getRandomValues` rather than
  *  `randomUUID` so insecure browser contexts work too. */
-function mintUuid(): string {
+function generateUuid(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16))
   bytes[6] = (bytes[6] & 0x0f) | 0x40 // version 4
   bytes[8] = (bytes[8] & 0x3f) | 0x80 // RFC 4122 variant

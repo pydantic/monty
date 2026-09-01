@@ -20,11 +20,12 @@ to transform values crossing the boundary.
 from __future__ import annotations
 
 from collections.abc import Coroutine, Iterable, Sequence
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from inspect import iscoroutine
 from typing import Any, Literal
+from uuid import UUID, uuid4
 
-__all__ = ('ClassInstance', 'ClassType')
+__all__ = 'ClassInstance', 'ClassType'
 
 
 @dataclass
@@ -34,7 +35,7 @@ class ClassInstance:
     Example:
     ```python
     session.feed_run(
-        'assert user.greeting() == "hi Sam"',
+        'assert user.greeting() == "hi Samuel"',
         inputs={'user': ClassInstance(user, eager_attrs='all', allowed_methods={'greeting'})},
     )
     ```
@@ -56,6 +57,11 @@ class ClassInstance:
     frozen: bool | None = None
     """Whether the sandbox rejects `setattr` with `FrozenInstanceError`.
     `None` auto-detects frozen dataclasses; any other object defaults to mutable."""
+
+    id: UUID = field(default_factory=uuid4)
+    """The instance's sandbox identity; per wrapper, so reuse one wrapper to
+    re-send an object under the same id. On `ClassType`, the class's id —
+    a class's first crossing in a session fixes its id."""
 
     def get_eager_attrs(self) -> dict[str, Any]:
         """The attributes to send into the sandbox with the instance."""

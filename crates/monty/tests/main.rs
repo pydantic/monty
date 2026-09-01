@@ -377,7 +377,7 @@ fn evil_instance() -> MontyObject {
     }
 }
 
-/// Replaces the worker-minted (random) class/instance uuids in `obj` with the
+/// Replaces the worker-generated (random) class/instance uuids in `obj` with the
 /// deterministic ids [`evil_instance`] uses, so structural comparison works.
 fn normalize_instance_uuids(obj: &mut MontyObject) {
     match obj {

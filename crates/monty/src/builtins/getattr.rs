@@ -47,7 +47,7 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     match object.py_getattr(&attr, vm) {
         Ok(CallResult::Value(value)) => Ok(value),
-        // getattr() has no suspension plumbing (unlike e.g. `open`, which
+        // getattr() cannot suspend (unlike e.g. `open`, which
         // suspends via `OsFunctionCall`), so a lazy host attribute lookup
         // degrades to "attribute missing": return the default or the
         // AttributeError an unanswered lookup raises (documented divergence —

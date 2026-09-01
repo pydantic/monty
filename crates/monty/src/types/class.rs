@@ -68,7 +68,7 @@ pub(crate) struct Class {
     /// CPython generates and Monty cannot yet install: baked in at decoration
     /// so `__dataclass_params__` stays a report, not a rewritable control.
     options: DataclassOptions,
-    /// Boundary identity, minted lazily the first time the class (or one of
+    /// Boundary identity, generated lazily the first time the class (or one of
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
     uuid: Option<MontyUuid>,
@@ -89,7 +89,7 @@ impl Class {
         }
     }
 
-    /// Boundary identity of the class, minting and storing it on first use so
+    /// Boundary identity of the class, generated and stored on first use so
     /// repeated crossings (and dump/restore) observe the same id.
     pub fn boundary_uuid(&mut self) -> MontyUuid {
         *self.uuid.get_or_insert_with(create_uuid)

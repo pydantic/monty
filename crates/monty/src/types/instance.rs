@@ -32,7 +32,7 @@ pub(crate) struct Instance {
     class: HeapId,
     /// Instance attributes (`__dict__`).
     attrs: Dict,
-    /// Boundary identity, minted lazily the first time the instance crosses
+    /// Boundary identity, generated lazily the first time the instance crosses
     /// to the host; dumped with the heap so it stays stable across restores.
     uuid: Option<MontyUuid>,
 }
@@ -48,7 +48,7 @@ impl Instance {
         }
     }
 
-    /// Boundary identity of the instance, minting and storing it on first use
+    /// Boundary identity of the instance, generated and stored on first use
     /// so repeated crossings (and dump/restore) observe the same id.
     pub fn boundary_uuid(&mut self) -> MontyUuid {
         *self.uuid.get_or_insert_with(create_uuid)

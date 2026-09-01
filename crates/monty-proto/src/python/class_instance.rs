@@ -11,8 +11,10 @@
 //!   alike — construction arrives as a `__call__` method call) back to the
 //!   host objects
 //!
-//! Identity is a host-minted uuid4 per instance and per class — never
-//! `id()`, which leaks heap addresses to the worker and is reused by CPython.
+//! Identity comes from each wrapper's `id` field (a `uuid.UUID`, uuid4 by
+//! default); classes crossing without a wrapper (an instance's class, parent
+//! classes) get a store-generated uuid4. Never `id()`, which leaks heap
+//! addresses to the worker and is reused by CPython.
 
 use monty_types::{ClassType, DictPairs, MontyObject, MontyType, MontyUuid};
 use pyo3::{
@@ -63,8 +65,9 @@ pub fn class_instance_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore
         store,
         WrapperPolicy { is_dataclass, frozen },
         depth,
+        None,
     )?;
-    let instance_id = store.instance_uuid(&instance)?;
+    let instance_id = wrapper_uuid(wrapper)?;
 
     let eager = wrapper
         .call_method0(intern!(py, "get_eager_attrs"))?
@@ -105,6 +108,7 @@ pub fn class_type_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, de
             frozen,
         },
         depth,
+        Some(wrapper_uuid(wrapper)?),
     )?;
 
     let eager = wrapper
@@ -127,7 +131,8 @@ struct WrapperPolicy {
     frozen: bool,
 }
 
-/// Builds the wire [`ClassType`] for a host class: dedup-minted uuid, wrapper
+/// Builds the wire [`ClassType`] for a host class: the session class uuid
+/// (seeded by `wrapper_id` when a `ClassType` wrapper is crossing), wrapper
 /// policy flags, and `parents` from `__bases__` (skipping `object`; builtin
 /// bases map through the round-trip type table, class bases recurse with
 /// their own uuids and default flags).
@@ -136,6 +141,7 @@ fn class_type_for(
     store: &InstanceStore,
     policy: WrapperPolicy,
     depth: u8,
+    wrapper_id: Option<MontyUuid>,
 ) -> PyResult<ClassType> {
     let py = class.py();
     if depth >= MAX_INPUT_DEPTH {
@@ -162,11 +168,12 @@ fn class_type_for(
             store,
             base_policy,
             depth + 1,
+            None,
         )?)));
     }
     Ok(ClassType {
         name,
-        id: store.type_uuid(class)?,
+        id: store.type_uuid(class, wrapper_id)?,
         host_defined: true,
         parents,
         is_dataclass: policy.is_dataclass,
@@ -235,7 +242,7 @@ pub fn uuid_to_py(py: Python<'_>, uuid: &MontyUuid) -> PyResult<Py<PyAny>> {
     class.call((), Some(&kwargs)).map(Bound::unbind)
 }
 
-/// Per-session identity maps from host-minted uuids to the Python objects
+/// Per-session identity maps from host-generated uuids to the Python objects
 /// behind them.
 ///
 /// Populated whenever a `ClassInstance`/`ClassType` wrapper crosses into the
@@ -244,8 +251,7 @@ pub fn uuid_to_py(py: Python<'_>, uuid: &MontyUuid) -> PyResult<Py<PyAny>> {
 /// host class arrives as a `__call__` method call on the class uuid), and to
 /// hand original objects back when the sandbox returns them. Registered
 /// entries pin their wrapper (and through it the instance / class) for the
-/// life of the session, which is also what keeps the `id()`-keyed *internal*
-/// dedup maps sound — those raw ids never cross the wire.
+/// life of the session.
 ///
 /// Wraps `Py<PyDict>`s so `clone_ref` produces shared handles to the same
 /// underlying dicts; the GIL serializes access, so no lock is needed.
@@ -256,14 +262,12 @@ pub struct InstanceStore {
     /// `lookup_lazy_attrs` are the shared wrapper surface). Pins the wrapper
     /// and through it the wrapped object.
     objects: Py<PyDict>,
-    /// `id(instance)` → uuid bytes; dedup so re-sending an object reuses its
-    /// uuid. Sound because `objects` pins the wrapper (and through it the
-    /// instance) for the session.
-    instance_ids: Py<PyDict>,
     /// uuid bytes → `(class, ClassType wrapper | None)`; pins the class, and
     /// carries the wrapper whose policy gates instantiation.
     classes: Py<PyDict>,
-    /// `id(class)` → uuid bytes; dedup, sound because `classes` pins.
+    /// class object → uuid bytes: one id per class per session, fixed by the
+    /// class's first crossing. Keyed (and pinned) by the class itself, so no
+    /// address-derived key exists anywhere.
     class_ids: Py<PyDict>,
 }
 
@@ -273,7 +277,6 @@ impl InstanceStore {
     pub fn new(py: Python<'_>) -> Self {
         Self {
             objects: PyDict::new(py).unbind(),
-            instance_ids: PyDict::new(py).unbind(),
             classes: PyDict::new(py).unbind(),
             class_ids: PyDict::new(py).unbind(),
         }
@@ -287,28 +290,27 @@ impl InstanceStore {
     pub fn clone_ref(&self, py: Python<'_>) -> Self {
         Self {
             objects: self.objects.clone_ref(py),
-            instance_ids: self.instance_ids.clone_ref(py),
             classes: self.classes.clone_ref(py),
             class_ids: self.class_ids.clone_ref(py),
         }
     }
 
-    /// Returns the instance's session uuid, minting one on first sight.
-    ///
-    /// Dedup is keyed by object identity *inside the host process only*, so
-    /// re-sending the same object (directly or via a round-trip) reuses its
-    /// uuid and identity is preserved.
-    pub fn instance_uuid(&self, instance: &Bound<'_, PyAny>) -> PyResult<MontyUuid> {
-        mint_or_reuse(self.instance_ids.bind(instance.py()), instance)
-    }
-
-    /// Returns the class's session uuid, minting one on first sight and
-    /// pinning the class (with no instantiation wrapper) in the store.
-    pub fn type_uuid(&self, class: &Bound<'_, PyAny>) -> PyResult<MontyUuid> {
+    /// Returns the class's session uuid, fixed by the class's first crossing:
+    /// an already-recorded id wins, then `wrapper_id` (a `ClassType` wrapper's
+    /// `id`), then a fresh uuid4. A recorded id must win — instances that
+    /// crossed earlier already carry it, and a second id for the same class
+    /// would break in-sandbox type equality and `__call__` routing.
+    pub fn type_uuid(&self, class: &Bound<'_, PyAny>, wrapper_id: Option<MontyUuid>) -> PyResult<MontyUuid> {
         let py = class.py();
-        let uuid = mint_or_reuse(self.class_ids.bind(py), class)?;
+        let ids = self.class_ids.bind(py);
+        if let Some(existing) = ids.get_item(class)? {
+            let bytes: [u8; 16] = existing.extract()?;
+            return Ok(MontyUuid::from_bytes(bytes));
+        }
+        let uuid = wrapper_id.unwrap_or_else(|| MontyUuid::from_bytes(*uuid::Uuid::new_v4().as_bytes()));
+        ids.set_item(class, PyBytes::new(py, uuid.as_bytes()))?;
         let key = PyBytes::new(py, uuid.as_bytes());
-        // First sight pins the class with no wrapper; a `ClassType` wrapper
+        // First crossing pins the class with no wrapper; a `ClassType` wrapper
         // upgrades the entry via `register_class_wrapper`.
         if !self.classes.bind(py).contains(&key)? {
             self.classes.bind(py).set_item(key, (class, py.None()))?;
@@ -317,7 +319,7 @@ impl InstanceStore {
     }
 
     /// Registers an instance wrapper under its uuid. Idempotent — re-sending
-    /// the same instance overwrites (last wrapper wins).
+    /// the same wrapper overwrites its entry.
     pub fn register_instance(&self, uuid: &MontyUuid, wrapper: &Bound<'_, PyAny>) -> PyResult<()> {
         let py = wrapper.py();
         self.objects
@@ -421,17 +423,18 @@ impl InstanceStore {
     }
 }
 
-/// Reuses the uuid recorded for `obj` in `ids` (keyed by `id(obj)`, which the
-/// store's pinning keeps stable) or mints a fresh uuid4.
-fn mint_or_reuse(ids: &Bound<'_, PyDict>, obj: &Bound<'_, PyAny>) -> PyResult<MontyUuid> {
-    let key = obj.as_ptr() as usize;
-    if let Some(existing) = ids.get_item(key)? {
-        let bytes: [u8; 16] = existing.extract()?;
-        return Ok(MontyUuid::from_bytes(bytes));
-    }
-    let uuid = MontyUuid::from_bytes(*uuid::Uuid::new_v4().as_bytes());
-    ids.set_item(key, PyBytes::new(ids.py(), uuid.as_bytes()))?;
-    Ok(uuid)
+/// Reads a `ClassInstance`/`ClassType` wrapper's `id` field (a `uuid.UUID`,
+/// uuid4 by default) as a [`MontyUuid`] — the wrapper owns its identity, so
+/// re-sending the same wrapper preserves it and the host never derives ids
+/// from addresses.
+fn wrapper_uuid(wrapper: &Bound<'_, PyAny>) -> PyResult<MontyUuid> {
+    let py = wrapper.py();
+    let bytes: [u8; 16] = wrapper
+        .getattr(intern!(py, "id"))?
+        .getattr(intern!(py, "bytes"))
+        .and_then(|bytes| bytes.extract())
+        .map_err(|_| PyTypeError::new_err("ClassInstance.id must be a uuid.UUID"))?;
+    Ok(MontyUuid::from_bytes(bytes))
 }
 
 /// Read-only proxy for a class instance the host has no original object for:

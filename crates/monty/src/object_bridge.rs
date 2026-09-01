@@ -521,7 +521,7 @@ impl MontyObjectExt for MontyObject {
                     }
                     // Sandbox-defined class instances cross out structured
                     // rather than as a repr string, so hosts get name + attrs
-                    // + dataclass-ness, plus worker-minted uuids (stored on
+                    // + dataclass-ness, plus worker-generated uuids (stored on
                     // the heap objects, so stable across crossings and
                     // dump/restore). Class *objects* keep their type
                     // representation.
@@ -787,7 +787,7 @@ impl MontyTypeExt for MontyType {
     }
 
     /// The total mirror of a runtime [`Type`]: `Instance` resolves its class
-    /// via the heap, minting the class's boundary uuid on first crossing.
+    /// via the heap, generating the class's boundary uuid on first crossing.
     fn from_internal(ty: Type, vm: &mut VM<'_>) -> Self {
         match ty {
             Type::Instance(class_id) => Self::Instance(Box::new(sandbox_class_type(class_id, vm))),
@@ -796,7 +796,7 @@ impl MontyTypeExt for MontyType {
     }
 }
 
-/// Builds the wire [`ClassType`] for a sandbox-defined class, minting and
+/// Builds the wire [`ClassType`] for a sandbox-defined class, generating and
 /// storing its boundary uuid on first crossing so repeated crossings (and
 /// dump/restore) observe the same id.
 ///
