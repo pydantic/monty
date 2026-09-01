@@ -16,7 +16,7 @@
 //! messages a misbehaving peer produces.
 
 use monty::MontyRun;
-use monty_proto::{CallReceiver, WireFunctionCall, WireObject, pb};
+use monty_proto::{WireFunctionCall, WireObject, pb};
 use monty_types::{
     ClassType, CompileOptions, DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
     MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
@@ -176,6 +176,7 @@ fn corpus() -> Vec<MontyObject> {
             parents: vec![],
             is_dataclass: false,
             frozen: false,
+            attrs: DictPairs::default(),
         }))),
         MontyObject::Type(MontyType::Instance(Box::new(ClassType {
             name: "Child".to_owned(),
@@ -190,10 +191,19 @@ fn corpus() -> Vec<MontyObject> {
                     parents: vec![],
                     is_dataclass: true,
                     frozen: true,
+                    attrs: DictPairs::default(),
                 })),
             ],
             is_dataclass: true,
             frozen: false,
+            attrs: vec![
+                (MontyObject::String("SIDES".to_owned()), MontyObject::Int(4)),
+                (
+                    MontyObject::String("KIND".to_owned()),
+                    MontyObject::String("polygon".to_owned()),
+                ),
+            ]
+            .into(),
         }))),
         MontyObject::builtin_function_from_name("len").expect("len is a builtin"),
         MontyObject::Path(String::new()),
@@ -211,6 +221,7 @@ fn corpus() -> Vec<MontyObject> {
                 parents: vec![],
                 is_dataclass: false,
                 frozen: false,
+                attrs: DictPairs::default(),
             },
             instance_id: MontyUuid::from_u128(0),
             attrs: DictPairs::from(Vec::new()),
@@ -223,6 +234,7 @@ fn corpus() -> Vec<MontyObject> {
                 parents: vec![],
                 is_dataclass: true,
                 frozen: true,
+                attrs: DictPairs::default(),
             },
             instance_id: MontyUuid::from_u128(0xFEED_FACE),
             attrs: DictPairs::from(vec![
@@ -366,6 +378,11 @@ fn oracle_class_type(class_type: &ClassType) -> oracle::Type {
     } else {
         oracle::TypeOrigin::Sandbox
     };
+    let attrs = if class_type.attrs.is_empty() {
+        None
+    } else {
+        Some(oracle_dict(&class_type.attrs))
+    };
     oracle::Type {
         name: class_type.name.clone(),
         id: Some(oracle_uuid(&class_type.id)),
@@ -373,6 +390,7 @@ fn oracle_class_type(class_type: &ClassType) -> oracle::Type {
         parents: class_type.parents.iter().map(oracle_type).collect(),
         is_dataclass: class_type.is_dataclass,
         frozen: class_type.frozen,
+        attrs,
     }
 }
 
@@ -460,35 +478,24 @@ fn hand_call_payloads_match_generated_encoding() {
         (MontyObject::String("count".to_owned()), MontyObject::Int(3)),
     ];
 
-    // Every receiver state: a method call, an instantiation, and a plain
-    // external call (absent oneof).
-    let receivers = [
-        Some(CallReceiver::Instance(MontyUuid::from_u128(7))),
-        Some(CallReceiver::Type(MontyUuid::from_u128(9))),
-        None,
-    ];
-    for receiver in receivers {
-        let oracle_receiver = receiver.map(|receiver| match receiver {
-            CallReceiver::Instance(uuid) => oracle::function_call::Receiver::InstanceId(oracle::Uuid {
-                data: uuid.as_bytes().to_vec(),
-            }),
-            CallReceiver::Type(uuid) => oracle::function_call::Receiver::TypeId(oracle::Uuid {
-                data: uuid.as_bytes().to_vec(),
-            }),
-        });
+    // Both receiver states: a routed call (method / `__call__`) and a plain
+    // external call (absent field).
+    let receivers = [Some(MontyUuid::from_u128(7)), None];
+    for object_id in receivers {
+        let oracle_object_id = object_id.map(|uuid| oracle_uuid(&uuid));
         let hand_call = WireFunctionCall {
             function_name: "external".to_owned(),
             args: args.clone(),
             kwargs: kwargs.clone(),
             call_id: 42,
-            receiver,
+            object_id,
         };
         let generated_call = oracle::FunctionCall {
             function_name: "external".to_owned(),
             args: args.iter().map(to_oracle).collect(),
             kwargs: oracle_pairs(&kwargs),
             call_id: 42,
-            receiver: oracle_receiver,
+            object_id: oracle_object_id,
         };
         assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
         assert_eq!(
@@ -617,6 +624,15 @@ fn invalid_values_are_rejected_during_decode() {
             ..oracle::Type::default()
         })),
         "failed to decode Protobuf message: invalid value for Type: a builtin type must not carry an id"
+    );
+    assert_eq!(
+        rejected(Kind::Type(oracle::Type {
+            name: "int".to_owned(),
+            origin: oracle::TypeOrigin::Builtin as i32,
+            attrs: Some(oracle::Dict::default()),
+            ..oracle::Type::default()
+        })),
+        "failed to decode Protobuf message: invalid value for Type: a builtin type must not carry attrs"
     );
     // a class type must carry an id
     assert_eq!(

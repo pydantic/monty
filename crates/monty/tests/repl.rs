@@ -11,7 +11,7 @@ use monty::{
     detect_repl_continuation_mode, dump,
 };
 use monty_types::{
-    CallReceiver, ClassType, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid,
+    ClassType, CompileOptions, DictPairs, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid,
     PrintWriter, ResourceTracker,
 };
 
@@ -702,6 +702,7 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
             parents: vec![],
             is_dataclass: true,
             frozen: true,
+            attrs: DictPairs::default(),
         },
         instance_id: MontyUuid::from_u128(42),
         attrs: vec![
@@ -722,8 +723,8 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
 
     assert_eq!(call.function_name, "sum");
     assert_eq!(
-        call.receiver,
-        Some(CallReceiver::Instance(MontyUuid::from_u128(42))),
+        call.object_id,
+        Some(MontyUuid::from_u128(42)),
         "should be a method call on instance 42"
     );
     // The receiver is NOT smuggled into args anymore

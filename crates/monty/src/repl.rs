@@ -7,9 +7,7 @@
 use std::mem;
 
 use ahash::AHashMap;
-use monty_types::{
-    CallReceiver, ExcType, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
-};
+use monty_types::{ExcType, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker};
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
 
@@ -573,10 +571,10 @@ pub struct ReplFunctionCall {
     pub kwargs: Vec<(MontyObject, MontyObject)>,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
-    /// The routed receiver — an instance (method call) or class
-    /// (instantiation); `None` for plain external function calls. The
-    /// receiver is NOT included in `args`.
-    pub receiver: Option<CallReceiver>,
+    /// Uuid of the routed receiver — an instance, or a class type (a
+    /// classmethod call, or construction spelled `__call__`); `None` for
+    /// plain external function calls. The receiver is NOT included in `args`.
+    pub object_id: Option<MontyUuid>,
     /// Internal REPL execution snapshot.
     snapshot: ReplSnapshot,
 }
@@ -686,11 +684,11 @@ impl ReplNameLookup {
         self.snapshot.into_repl()
     }
 
-    /// Identity of the instance for a lazy attribute lookup; `None` for a
+    /// Identity of the receiver for a lazy attribute lookup; `None` for a
     /// plain global/local name lookup.
     #[must_use]
-    pub fn instance_id(&self) -> Option<MontyUuid> {
-        self.scope.instance_id()
+    pub fn object_id(&self) -> Option<MontyUuid> {
+        self.scope.object_id()
     }
 
     /// Resumes execution after name resolution.
@@ -1098,13 +1096,13 @@ fn build_repl_progress(
             args,
             kwargs,
             call_id,
-            receiver,
+            object_id,
         } => Ok(ReplProgress::FunctionCall(ReplFunctionCall {
             function_name,
             args,
             kwargs,
             call_id,
-            receiver,
+            object_id,
             snapshot: new_repl_snapshot!(),
         })),
         ConvertedExit::OsCall { function_call, call_id } => Ok(ReplProgress::OsCall(ReplOsCall {

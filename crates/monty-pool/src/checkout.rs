@@ -13,8 +13,8 @@ use std::{
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{FrameError, PROTOCOL_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 use monty_types::{
-    AssertMessageAnnotations, CallReceiver, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid,
-    OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig,
+    AssertMessageAnnotations, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid, OsFunctionCall,
+    PrintStream, ResourceLimits, TypeCheckingConfig,
 };
 use tokio::{task::spawn_blocking, time::timeout};
 
@@ -146,15 +146,16 @@ pub enum MountSpecMode {
 #[derive(Debug)]
 pub enum TurnEvent {
     /// The sandbox called an external function — answer with
-    /// [`Checkout::resume`]. When `receiver` is set this is a method call on
-    /// a host class instance, or an instantiation of a host class, routed by
-    /// uuid; the receiver is NOT included in `args`.
+    /// [`Checkout::resume`]. When `object_id` is set this is a method call on
+    /// a host-backed object, routed by uuid — a class instance, or a class
+    /// type (a classmethod call, or construction of a host class, which is
+    /// spelled `__call__`); the receiver is NOT included in `args`.
     FunctionCall {
         function_name: String,
         args: Vec<MontyObject>,
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
-        receiver: Option<CallReceiver>,
+        object_id: Option<MontyUuid>,
     },
     /// The sandbox performed an OS operation (e.g. `"Path.read_text"`).
     /// Answer it from this feed's mounts with
@@ -168,14 +169,12 @@ pub enum TurnEvent {
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
     },
-    /// The sandbox read an undefined name, or — when `instance_id` is set — a
-    /// lazy attribute on the host class instance with that uuid — answer
-    /// with [`Checkout::resume_name_lookup`]. A `None` answer raises
-    /// `NameError` for plain lookups, `AttributeError` for instance lookups.
-    NameLookup {
-        name: String,
-        instance_id: Option<MontyUuid>,
-    },
+    /// The sandbox read an undefined name, or — when `object_id` is set — a
+    /// lazy attribute on the host-backed object with that uuid (a class
+    /// instance, or a class type) — answer with
+    /// [`Checkout::resume_name_lookup`]. A `None` answer raises `NameError`
+    /// for plain lookups, `AttributeError` for attribute lookups.
+    NameLookup { name: String, object_id: Option<MontyUuid> },
     /// Every sandbox task is blocked on external futures — answer with
     /// [`Checkout::resume_futures`].
     ResolveFutures { pending_call_ids: Vec<u32> },
@@ -556,7 +555,7 @@ impl Checkout {
 
     /// Answers a [`TurnEvent::NameLookup`]: `Some(value)` resolves the name,
     /// `None` makes the sandbox raise `NameError` for a plain lookup, or
-    /// `AttributeError` when the lookup carried an `instance_id` (a lazy
+    /// `AttributeError` when the lookup carried an `object_id` (a lazy
     /// attribute on a host class instance).
     pub async fn resume_name_lookup(
         &mut self,
@@ -1024,7 +1023,7 @@ impl Checkout {
                             args: call.args,
                             kwargs: call.kwargs,
                             call_id: call.call_id,
-                            receiver: call.receiver,
+                            object_id: call.object_id,
                         })
                     });
                 }
@@ -1065,19 +1064,19 @@ impl Checkout {
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {
                     // Frames from the child are untrusted — a malformed uuid
                     // is a protocol violation, not a panic.
-                    let instance_id = match lookup.instance_id {
+                    let object_id = match lookup.object_id {
                         None => None,
                         Some(uuid) => match MontyUuid::try_from_slice(&uuid.data) {
                             Some(uuid) => Some(uuid),
                             None => {
-                                return Err(self.protocol_violation("NameLookup.instance_id is not a 16-byte uuid"));
+                                return Err(self.protocol_violation("NameLookup.object_id is not a 16-byte uuid"));
                             }
                         },
                     };
                     self.pending = Some(Pending::NameLookup);
                     return Ok(ControlEvent::Turn(TurnEvent::NameLookup {
                         name: lookup.name,
-                        instance_id,
+                        object_id,
                     }));
                 }
                 Some(pb::child_event::Kind::ResolveFutures(futures)) => {

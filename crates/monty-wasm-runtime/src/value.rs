@@ -260,7 +260,8 @@ fn parse_uuid(value: &str) -> Result<MontyUuid, String> {
 }
 
 /// Reads a class-type node into `MontyType::Instance`, resolving `parents`
-/// (each must be a class-type or type-name node) recursively.
+/// (each must be a class-type or type-name node) and the eager class attrs
+/// recursively.
 fn read_class_type(node: ClassTypeNode, nodes: &mut [Option<ValueNode>], depth: usize) -> Result<MontyType, String> {
     if depth > MAX_VALUE_DEPTH {
         return Err("value exceeds the maximum nesting depth".to_owned());
@@ -275,6 +276,7 @@ fn read_class_type(node: ClassTypeNode, nodes: &mut [Option<ValueNode>], depth: 
             _ => return Err("class-type parent index is not a class-type or type-name node".to_owned()),
         }
     }
+    let attrs = read_pairs(node.attrs, nodes, depth)?;
     Ok(MontyType::Instance(Box::new(ClassType {
         name: node.name,
         id: parse_uuid(&node.id)?,
@@ -282,6 +284,7 @@ fn read_class_type(node: ClassTypeNode, nodes: &mut [Option<ValueNode>], depth: 
         parents,
         is_dataclass: node.is_dataclass,
         frozen: node.frozen,
+        attrs: attrs.into(),
     })))
 }
 
@@ -509,6 +512,7 @@ fn push_class_type(class_type: ClassType, nodes: &mut Vec<ValueNode>) -> ClassTy
             index
         })
         .collect();
+    let attrs = push_pairs(class_type.attrs, nodes);
     ClassTypeNode {
         name: class_type.name,
         id: class_type.id.to_string(),
@@ -516,6 +520,7 @@ fn push_class_type(class_type: ClassType, nodes: &mut Vec<ValueNode>) -> ClassTy
         parents,
         is_dataclass: class_type.is_dataclass,
         frozen: class_type.frozen,
+        attrs,
     }
 }
 

@@ -36,8 +36,8 @@ use monty_pool::{
     TurnEvent,
 };
 use monty_types::{
-    AssertMessageAnnotations, CallReceiver, ExcType, MontyException, MontyObject, PrintStream, StackFrame,
-    TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintStream, StackFrame, TypeCheckingConfig,
+    TypeCheckingFormat,
 };
 use napi::{
     bindgen_prelude::{
@@ -775,21 +775,15 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
             args,
             kwargs,
             call_id,
-            receiver,
+            object_id,
         }) => {
             obj.set("kind", "functionCall")?;
             obj.set("functionName", function_name)?;
             obj.set("args", values_to_js(env, &args)?)?;
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
             obj.set("callId", call_id)?;
-            // uuids as canonical strings; at most one of the two is set
-            let (instance_id, type_id) = match receiver {
-                Some(CallReceiver::Instance(uuid)) => (Some(uuid.to_string()), None),
-                Some(CallReceiver::Type(uuid)) => (None, Some(uuid.to_string())),
-                None => (None, None),
-            };
-            obj.set("instanceId", instance_id)?;
-            obj.set("typeId", type_id)?;
+            // the routed receiver uuid as a canonical string
+            obj.set("objectId", object_id.map(|uuid| uuid.to_string()))?;
         }
         TurnOutcome::Event(TurnEvent::OsCall {
             function_name,
@@ -803,11 +797,11 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
             obj.set("callId", call_id)?;
         }
-        TurnOutcome::Event(TurnEvent::NameLookup { name, instance_id }) => {
+        TurnOutcome::Event(TurnEvent::NameLookup { name, object_id }) => {
             obj.set("kind", "nameLookup")?;
             obj.set("name", name)?;
-            // uuids as canonical strings
-            obj.set("instanceId", instance_id.map(|uuid| uuid.to_string()))?;
+            // the receiver uuid as a canonical string
+            obj.set("objectId", object_id.map(|uuid| uuid.to_string()))?;
         }
         TurnOutcome::Event(TurnEvent::ResolveFutures { pending_call_ids }) => {
             obj.set("kind", "resolveFutures")?;

@@ -275,10 +275,15 @@ pub struct Type {
     /// Frozen instances reject setattr with FrozenInstanceError in the sandbox.
     #[prost(bool, tag = "6")]
     pub frozen: bool,
+    /// Class attributes sent eagerly with the type object (class constants, per
+    /// the sending wrapper's policy). Empty for the `type` field inside a
+    /// ClassInstance and for `parents` entries.
+    #[prost(message, optional, tag = "7")]
+    pub attrs: ::core::option::Option<Dict>,
 }
 /// A class instance crossing the sandbox boundary. Host-backed instances route
 /// method calls and lazy attribute lookups back to the real object by uuid
-/// (`FunctionCall.instance_id` / `NameLookup.instance_id`); sandbox-defined
+/// (`FunctionCall.object_id` / `NameLookup.object_id`); sandbox-defined
 /// instances carry a worker-minted uuid instead.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClassInstance {
@@ -739,10 +744,12 @@ pub struct Print {
     #[prost(string, tag = "2")]
     pub text: ::prost::alloc::string::String,
 }
-/// Suspension: the sandbox called an external function, or — when a
-/// `receiver` is set — a method on a host-backed class instance or a host
-/// class constructor (the receiver is NOT included in `args`; the host routes
-/// by uuid). Answer with `ResumeCall`.
+/// Suspension: the sandbox called an external function, or — when `object_id`
+/// is set — a method on a host-backed object (the receiver is NOT included in
+/// `args`; the host routes by uuid). The receiver may be a class instance or a
+/// class type: calling a host class arrives as a `__call__` method call on the
+/// class's uuid, and the host's own policy decides whether construction is
+/// allowed. Answer with `ResumeCall`.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FunctionCall {
     #[prost(string, tag = "1")]
@@ -753,23 +760,9 @@ pub struct FunctionCall {
     pub kwargs: ::prost::alloc::vec::Vec<Pair>,
     #[prost(uint32, tag = "4")]
     pub call_id: u32,
-    /// Absent for plain external function calls.
-    #[prost(oneof = "function_call::Receiver", tags = "5, 6")]
-    pub receiver: ::core::option::Option<function_call::Receiver>,
-}
-/// Nested message and enum types in `FunctionCall`.
-pub mod function_call {
-    /// Absent for plain external function calls.
-    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
-    pub enum Receiver {
-        /// Method call on a host-backed `ClassInstance`: the uuid of the receiver.
-        #[prost(message, tag = "5")]
-        InstanceId(super::Uuid),
-        /// Instantiation of a host class: the uuid of the class to construct.
-        /// The host's own policy decides whether construction is allowed.
-        #[prost(message, tag = "6")]
-        TypeId(super::Uuid),
-    }
+    /// The uuid of the receiver; absent for plain external function calls.
+    #[prost(message, optional, tag = "5")]
+    pub object_id: ::core::option::Option<Uuid>,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the parent
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
@@ -926,18 +919,18 @@ pub mod os_call {
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
-/// the parent provides an external function — or, when `instance_id` is set, a
-/// lazy attribute lookup on a host-backed `ClassInstance`. Answer with
-/// `ResumeNameLookup`; for instance lookups an `undefined` answer raises
+/// the parent provides an external function — or, when `object_id` is set, a
+/// lazy attribute lookup on a host-backed object. Answer with
+/// `ResumeNameLookup`; for attribute lookups an `undefined` answer raises
 /// AttributeError (not NameError) inside the sandbox.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NameLookup {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    /// Set for attribute lookups on a host-backed `ClassInstance`: the uuid of
-    /// the instance whose attribute is being read.
+    /// Set for attribute lookups on a host-backed object — a class instance, or
+    /// a class type (a lazy class attribute): the uuid of the receiver.
     #[prost(message, optional, tag = "2")]
-    pub instance_id: ::core::option::Option<Uuid>,
+    pub object_id: ::core::option::Option<Uuid>,
 }
 /// Suspension: every sandbox task is blocked on external futures previously
 /// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.

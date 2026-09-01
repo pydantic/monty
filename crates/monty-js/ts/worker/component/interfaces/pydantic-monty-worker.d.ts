@@ -69,6 +69,7 @@ export interface ClassTypeNode {
   parents: Uint32Array
   isDataclass: boolean
   frozen: boolean
+  attrs: Array<NodePair>
 }
 export interface ClassInstanceNode {
   classType: number
@@ -404,12 +405,11 @@ export interface FunctionCallEvent {
   args: Array<Value>
   kwargs: Array<ValuePair>
   callId: number
-  instanceId?: string
-  typeId?: string
+  objectId?: string
 }
 export interface NameLookupEvent {
   name: string
-  instanceId?: string
+  objectId?: string
 }
 export interface OsCallEvent {
   functionName: string

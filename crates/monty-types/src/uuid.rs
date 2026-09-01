@@ -93,20 +93,6 @@ impl fmt::Display for MontyUuid {
     }
 }
 
-/// The routed receiver of a suspended host function call.
-///
-/// Mirrors the wire `FunctionCall.receiver` oneof: a plain external call has
-/// no receiver, a method call routes to a host-backed instance, and an
-/// instantiation routes to a host class (allowed or refused purely by the
-/// host's own policy).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum CallReceiver {
-    /// Method call on the instance with this uuid.
-    Instance(MontyUuid),
-    /// Instantiation of the class with this uuid.
-    Type(MontyUuid),
-}
-
 /// Decodes one ASCII hex digit; `None` for anything else.
 const fn hex_value(c: u8) -> Option<u8> {
     match c {

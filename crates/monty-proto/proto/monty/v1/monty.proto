@@ -225,11 +225,15 @@ message Type {
   bool is_dataclass = 5;
   // Frozen instances reject setattr with FrozenInstanceError in the sandbox.
   bool frozen = 6;
+  // Class attributes sent eagerly with the type object (class constants, per
+  // the sending wrapper's policy). Empty for the `type` field inside a
+  // ClassInstance and for `parents` entries.
+  Dict attrs = 7;
 }
 
 // A class instance crossing the sandbox boundary. Host-backed instances route
 // method calls and lazy attribute lookups back to the real object by uuid
-// (`FunctionCall.instance_id` / `NameLookup.instance_id`); sandbox-defined
+// (`FunctionCall.object_id` / `NameLookup.object_id`); sandbox-defined
 // instances carry a worker-minted uuid instead.
 message ClassInstance {
   // The instance's class; origin SANDBOX or HOST (never BUILTIN).
@@ -606,23 +610,19 @@ message Print {
   string text = 2;
 }
 
-// Suspension: the sandbox called an external function, or — when a
-// `receiver` is set — a method on a host-backed class instance or a host
-// class constructor (the receiver is NOT included in `args`; the host routes
-// by uuid). Answer with `ResumeCall`.
+// Suspension: the sandbox called an external function, or — when `object_id`
+// is set — a method on a host-backed object (the receiver is NOT included in
+// `args`; the host routes by uuid). The receiver may be a class instance or a
+// class type: calling a host class arrives as a `__call__` method call on the
+// class's uuid, and the host's own policy decides whether construction is
+// allowed. Answer with `ResumeCall`.
 message FunctionCall {
   string function_name = 1;
   repeated MontyObject args = 2;
   repeated Pair kwargs = 3;
   uint32 call_id = 4;
-  // Absent for plain external function calls.
-  oneof receiver {
-    // Method call on a host-backed `ClassInstance`: the uuid of the receiver.
-    Uuid instance_id = 5;
-    // Instantiation of a host class: the uuid of the class to construct.
-    // The host's own policy decides whether construction is allowed.
-    Uuid type_id = 6;
-  }
+  // The uuid of the receiver; absent for plain external function calls.
+  Uuid object_id = 5;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent
@@ -708,15 +708,15 @@ message OsCall {
 }
 
 // Suspension: the sandbox read an undefined name — typically probing whether
-// the parent provides an external function — or, when `instance_id` is set, a
-// lazy attribute lookup on a host-backed `ClassInstance`. Answer with
-// `ResumeNameLookup`; for instance lookups an `undefined` answer raises
+// the parent provides an external function — or, when `object_id` is set, a
+// lazy attribute lookup on a host-backed object. Answer with
+// `ResumeNameLookup`; for attribute lookups an `undefined` answer raises
 // AttributeError (not NameError) inside the sandbox.
 message NameLookup {
   string name = 1;
-  // Set for attribute lookups on a host-backed `ClassInstance`: the uuid of
-  // the instance whose attribute is being read.
-  Uuid instance_id = 2;
+  // Set for attribute lookups on a host-backed object — a class instance, or
+  // a class type (a lazy class attribute): the uuid of the receiver.
+  Uuid object_id = 2;
 }
 
 // Suspension: every sandbox task is blocked on external futures previously

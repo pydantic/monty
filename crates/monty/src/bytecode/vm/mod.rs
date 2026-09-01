@@ -18,7 +18,7 @@ mod scheduler;
 use std::mem;
 
 pub(crate) use call::CallResult;
-use monty_types::{CallReceiver, InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
+use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
 pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;
 
@@ -175,24 +175,26 @@ macro_rules! handle_call_result {
                     effect: Some(effect),
                 });
             }
-            Ok(CallResult::MethodCall { name, args, receiver }) => {
+            Ok(CallResult::MethodCall { name, args, object_id }) => {
                 let call_id = $self.allocate_call_id();
                 return Ok(FrameExit::MethodCall {
                     method_name: name,
                     args,
                     call_id,
-                    receiver,
+                    object_id,
                 });
             }
             Ok(CallResult::AttrLookup {
                 name,
                 class_name,
-                instance_id,
+                object_id,
+                type_object,
             }) => {
                 return Ok(FrameExit::AttrLookup {
                     name,
                     class_name,
-                    instance_id,
+                    object_id,
+                    type_object,
                 });
             }
             Ok(CallResult::AwaitValue(value)) => {
@@ -257,37 +259,40 @@ pub enum FrameExit {
     },
 
     /// Execution paused for a host-routed call: a method call on a host
-    /// class instance, or instantiation of a host class.
+    /// class instance, or on a host class type (a classmethod, or
+    /// construction — spelled `__call__`).
     ///
-    /// The caller should invoke the method / constructor on the original
-    /// host object (routed by the `receiver` uuid) and call `resume()` with
-    /// the result. The receiver is NOT included in `args`.
+    /// The caller should invoke the method on the original host object
+    /// (routed by the `object_id` uuid) and call `resume()` with the
+    /// result. The receiver is NOT included in `args`.
     MethodCall {
-        /// Method name (e.g., "distance"), or the class name for an
-        /// instantiation.
+        /// Method name (e.g. "distance", or "__call__" for construction).
         method_name: EitherStr,
         /// Arguments for the call (the receiver is not among them).
         args: ArgValues,
         /// Unique ID for this call, used for async correlation.
         call_id: CallId,
-        /// The routed receiver: instance (method call) or class
-        /// (instantiation).
-        receiver: CallReceiver,
+        /// Uuid of the routed receiver (instance or class type).
+        object_id: MontyUuid,
     },
 
-    /// Execution paused for a lazy attribute lookup on a host class instance.
+    /// Execution paused for a lazy attribute lookup on a host-backed object
+    /// (a class instance, or a class type when `type_object` is true).
     ///
-    /// Produced by `obj.attr` when `attr` is public and missing from the
-    /// instance's eager attrs. Resumed by value like `NameLookup` (no
+    /// Produced by `obj.attr` / `Type.attr` when `attr` is public and
+    /// missing from the eager attrs. Resumed by value like `NameLookup` (no
     /// call_id); an "undefined" answer raises `AttributeError` naming
     /// `class_name`. Carries no heap refs.
     AttrLookup {
         /// The attribute name being looked up.
         name: EitherStr,
-        /// Class name of the instance, for the AttributeError message.
+        /// Class name for the AttributeError message.
         class_name: String,
-        /// Identity of the instance whose attribute is read.
-        instance_id: MontyUuid,
+        /// Uuid of the object whose attribute is read.
+        object_id: MontyUuid,
+        /// True for a lookup on a class type object — selects CPython's
+        /// `type object '...' has no attribute ...` message on failure.
+        type_object: bool,
     },
 
     /// All tasks are blocked waiting for external futures to resolve.

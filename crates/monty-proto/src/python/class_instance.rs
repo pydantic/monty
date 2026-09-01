@@ -7,7 +7,8 @@
 //!   wrapped object when the instance is in the session's [`InstanceStore`],
 //!   else a read-only [`PyMontyClassProxy`] proxy
 //! - [`InstanceStore`]: the per-session uuid → wrapper/class maps that route
-//!   method calls, lazy attribute lookups, and instantiations back to the
+//!   method calls and lazy attribute lookups (on instances and class types
+//!   alike — construction arrives as a `__call__` method call) back to the
 //!   host objects
 //!
 //! Identity is a host-minted uuid4 per instance and per class — never
@@ -96,22 +97,37 @@ pub fn class_instance_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore
 
 /// Converts a `pydantic_monty.ClassType` wrapper to `MontyObject::Type`,
 /// registering the class and wrapper in `store` under the class uuid so
-/// sandbox instantiations (`Type.init` granted) route back to it.
+/// sandbox method calls (`__call__` construction included) and lazy class
+/// attr lookups route back to it.
+///
+/// Eager class attrs come from the wrapper's class-object policy
+/// (`get_eager_attrs`) and cross inside the wire `Type`.
 pub fn class_type_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, depth: u8) -> PyResult<MontyObject> {
     let py = wrapper.py();
     let class = wrapper.getattr(intern!(py, "class_type"))?;
     if !class.is_instance_of::<PyType>() {
         return Err(PyTypeError::new_err("ClassType.class_type must be a class"));
     }
-    let class_type = class_type_for(
+    let frozen: bool = wrapper.call_method0(intern!(py, "get_frozen"))?.extract()?;
+    let mut class_type = class_type_for(
         &class,
         store,
         WrapperPolicy {
             is_dataclass: class.hasattr(intern!(py, "__dataclass_fields__"))?,
-            frozen: is_frozen_dataclass_class(&class),
+            frozen,
         },
         depth,
     )?;
+
+    let eager = wrapper
+        .call_method0(intern!(py, "get_eager_attrs"))?
+        .cast_into::<PyDict>()?;
+    let mut attrs = Vec::with_capacity(eager.len());
+    for (key, value) in eager.iter() {
+        attrs.push((py_to_monty(&key, store, depth)?, py_to_monty(&value, store, depth)?));
+    }
+    class_type.attrs = attrs.into();
+
     store.register_class_wrapper(&class_type.id, &class, wrapper)?;
     Ok(MontyObject::Type(MontyType::Instance(Box::new(class_type))))
 }
@@ -167,6 +183,9 @@ fn class_type_for(
         parents,
         is_dataclass: policy.is_dataclass,
         frozen: policy.frozen,
+        // Eager class attrs are set only when a `ClassType` wrapper crosses
+        // as a value; the type branch of an instance stays attr-less.
+        attrs: DictPairs::default(),
     })
 }
 
@@ -235,20 +254,23 @@ pub fn uuid_to_py(py: Python<'_>, uuid: &MontyUuid) -> PyResult<Py<PyAny>> {
 /// behind them.
 ///
 /// Populated whenever a `ClassInstance`/`ClassType` wrapper crosses into the
-/// sandbox; consulted to answer method calls (`FunctionCall.instance_id`),
-/// instantiations (`FunctionCall.type_id`), lazy attribute lookups
-/// (`NameLookup.instance_id`), and to hand original objects back when the
-/// sandbox returns them. Registered entries pin their wrapper (and through it
-/// the instance / class) for the life of the session, which is also what
-/// keeps the `id()`-keyed *internal* dedup maps sound — those raw ids never
-/// cross the wire.
+/// sandbox; consulted to answer method calls and lazy attribute lookups
+/// (`FunctionCall.object_id` / `NameLookup.object_id` — construction of a
+/// host class arrives as a `__call__` method call on the class uuid), and to
+/// hand original objects back when the sandbox returns them. Registered
+/// entries pin their wrapper (and through it the instance / class) for the
+/// life of the session, which is also what keeps the `id()`-keyed *internal*
+/// dedup maps sound — those raw ids never cross the wire.
 ///
 /// Wraps `Py<PyDict>`s so `clone_ref` produces shared handles to the same
 /// underlying dicts; the GIL serializes access, so no lock is needed.
 #[derive(Debug)]
 pub struct InstanceStore {
-    /// uuid bytes → `ClassInstance` wrapper (pins wrapper + instance).
-    instances: Py<PyDict>,
+    /// uuid bytes → wrapper (`ClassInstance` for instances, `ClassType` for
+    /// classes — one routing namespace, since `call_method` /
+    /// `lookup_lazy_attrs` are the shared wrapper surface). Pins the wrapper
+    /// and through it the wrapped object.
+    objects: Py<PyDict>,
     /// `id(instance)` → uuid bytes; dedup so re-sending an object reuses its
     /// uuid. Sound because `instances` pins the instance for the session.
     instance_ids: Py<PyDict>,
@@ -264,7 +286,7 @@ impl InstanceStore {
     #[must_use]
     pub fn new(py: Python<'_>) -> Self {
         Self {
-            instances: PyDict::new(py).unbind(),
+            objects: PyDict::new(py).unbind(),
             instance_ids: PyDict::new(py).unbind(),
             classes: PyDict::new(py).unbind(),
             class_ids: PyDict::new(py).unbind(),
@@ -278,7 +300,7 @@ impl InstanceStore {
     #[must_use]
     pub fn clone_ref(&self, py: Python<'_>) -> Self {
         Self {
-            instances: self.instances.clone_ref(py),
+            objects: self.objects.clone_ref(py),
             instance_ids: self.instance_ids.clone_ref(py),
             classes: self.classes.clone_ref(py),
             class_ids: self.class_ids.clone_ref(py),
@@ -312,13 +334,14 @@ impl InstanceStore {
     /// the same instance overwrites (last wrapper wins).
     pub fn register_instance(&self, uuid: &MontyUuid, wrapper: &Bound<'_, PyAny>) -> PyResult<()> {
         let py = wrapper.py();
-        self.instances
+        self.objects
             .bind(py)
             .set_item(PyBytes::new(py, uuid.as_bytes()), wrapper)
     }
 
-    /// Registers a `ClassType` wrapper for the class under its uuid — the
-    /// wrapper's policy is what instantiation dispatch consults.
+    /// Registers a `ClassType` wrapper for the class under its uuid, in both
+    /// the class map (identity round-trips) and the routing map (method
+    /// calls, `__call__` construction, lazy class attrs).
     pub fn register_class_wrapper(
         &self,
         uuid: &MontyUuid,
@@ -328,13 +351,16 @@ impl InstanceStore {
         let py = wrapper.py();
         self.classes
             .bind(py)
-            .set_item(PyBytes::new(py, uuid.as_bytes()), (class, wrapper))
+            .set_item(PyBytes::new(py, uuid.as_bytes()), (class, wrapper))?;
+        self.objects
+            .bind(py)
+            .set_item(PyBytes::new(py, uuid.as_bytes()), wrapper)
     }
 
-    /// Looks up the instance wrapper registered for `uuid`.
+    /// Looks up the wrapper registered for `uuid` (instance or class type).
     pub fn get(&self, py: Python<'_>, uuid: &MontyUuid) -> PyResult<Option<Py<PyAny>>> {
         Ok(self
-            .instances
+            .objects
             .bind(py)
             .get_item(PyBytes::new(py, uuid.as_bytes()))?
             .map(Bound::unbind))
@@ -348,11 +374,15 @@ impl InstanceStore {
         Ok(Some(entry.get_item(0)?.unbind()))
     }
 
-    /// Calls `wrapper.call_method(name, args, kwargs)` on the instance
-    /// registered for `uuid`.
+    /// Calls `wrapper.call_method(name, args, kwargs)` on the object
+    /// registered for `uuid` — an instance wrapper, or a `ClassType` wrapper
+    /// (whose `call_method` routes `__call__` to `construct`, re-checking its
+    /// own host-side `init` policy; nothing about instantiability crosses
+    /// the wire).
     ///
-    /// A store miss raises `RuntimeError`: it means the session was restored
-    /// into a process that never sent the instance (e.g. `load_session`).
+    /// A store miss raises `RuntimeError`: the session was restored into a
+    /// process that never sent the object, or the class was never granted
+    /// via a `ClassType` wrapper.
     pub fn call_method(
         &self,
         py: Python<'_>,
@@ -362,7 +392,7 @@ impl InstanceStore {
         kwargs: &Bound<'_, PyDict>,
     ) -> PyResult<Py<PyAny>> {
         let Some(wrapper) = self.get(py, uuid)? else {
-            return Err(store_miss_error(name, uuid));
+            return Err(self.store_miss_error(py, name, uuid)?);
         };
         wrapper
             .bind(py)
@@ -370,35 +400,7 @@ impl InstanceStore {
             .map(Bound::unbind)
     }
 
-    /// Calls `wrapper.construct(args, kwargs)` on the class registered for
-    /// `uuid` — the wrapper's host-side `init` policy decides whether
-    /// construction is allowed; nothing about instantiability crosses the
-    /// wire.
-    ///
-    /// A store miss, or a class that crossed without a `ClassType` wrapper,
-    /// raises `RuntimeError`.
-    pub fn instantiate(
-        &self,
-        py: Python<'_>,
-        uuid: &MontyUuid,
-        name: &str,
-        args: &Bound<'_, PyTuple>,
-        kwargs: &Bound<'_, PyDict>,
-    ) -> PyResult<Py<PyAny>> {
-        let entry = self.classes.bind(py).get_item(PyBytes::new(py, uuid.as_bytes()))?;
-        let wrapper = entry.map(|e| e.get_item(1)).transpose()?;
-        let Some(wrapper) = wrapper.filter(|w| !w.is_none()) else {
-            return Err(PyRuntimeError::new_err(format!(
-                "no host class registered for instantiation of '{name}' (id {uuid}) — \
-                 pass the class as a pydantic_monty.ClassType(..., init=True)"
-            )));
-        };
-        wrapper
-            .call_method1(intern!(py, "construct"), (args, kwargs))
-            .map(Bound::unbind)
-    }
-
-    /// Calls `wrapper.lookup_lazy_attrs(name)` on the instance registered for
+    /// Calls `wrapper.lookup_lazy_attrs(name)` on the object registered for
     /// `uuid`; `Ok(None)` means "not exposed" (store miss or the wrapper
     /// raised `AttributeError`) and the sandbox raises AttributeError.
     pub fn lookup_lazy_attr(&self, py: Python<'_>, uuid: &MontyUuid, name: &str) -> PyResult<Option<Py<PyAny>>> {
@@ -410,6 +412,26 @@ impl InstanceStore {
             Err(err) if err.is_instance_of::<PyAttributeError>(py) => Ok(None),
             Err(err) => Err(err),
         }
+    }
+
+    /// The error a routed call on an unregistered uuid raises. A known class
+    /// that crossed without a `ClassType` wrapper (e.g. via `type(x)`) gets a
+    /// hint to grant one; otherwise the store is empty because the session
+    /// was restored into a new process.
+    fn store_miss_error(&self, py: Python<'_>, name: &str, uuid: &MontyUuid) -> PyResult<PyErr> {
+        let entry = self.classes.bind(py).get_item(PyBytes::new(py, uuid.as_bytes()))?;
+        Ok(if let Some(entry) = entry {
+            let class_name: String = entry.get_item(0)?.getattr(intern!(py, "__name__"))?.extract()?;
+            PyRuntimeError::new_err(format!(
+                "no host class registered for '{name}' on '{class_name}' (id {uuid}) — \
+                 pass the class as a pydantic_monty.ClassType(...)"
+            ))
+        } else {
+            PyRuntimeError::new_err(format!(
+                "no host object registered for method call '{name}' (id {uuid}) — \
+                 the instance store is empty after loading a session into a new process"
+            ))
+        })
     }
 }
 
@@ -424,14 +446,6 @@ fn mint_or_reuse(ids: &Bound<'_, PyDict>, obj: &Bound<'_, PyAny>) -> PyResult<Mo
     let uuid = MontyUuid::from_bytes(*uuid::Uuid::new_v4().as_bytes());
     ids.set_item(key, PyBytes::new(ids.py(), uuid.as_bytes()))?;
     Ok(uuid)
-}
-
-/// The error a method call on an unregistered instance uuid raises.
-fn store_miss_error(name: &str, uuid: &MontyUuid) -> PyErr {
-    PyRuntimeError::new_err(format!(
-        "no host instance registered for method call '{name}' (id {uuid}) — \
-         the instance store is empty after loading a session into a new process"
-    ))
 }
 
 /// Read-only proxy for a class instance the host has no original object for:

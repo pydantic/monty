@@ -44,8 +44,8 @@ use monty_pool::{
 };
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use monty_types::{
-    AssertMessageAnnotations, CallReceiver, ExtFunctionResult, MontyException, MontyObject, PrintStream,
-    TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, ExtFunctionResult, MontyException, MontyObject, PrintStream, TypeCheckingConfig,
+    TypeCheckingFormat,
 };
 use pyo3::{
     Borrowed,
@@ -64,7 +64,7 @@ use crate::{
     async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
     build::{extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
-    external::{CallResult, ExternalLookup, dispatch_instance_call, dispatch_instantiate, resolve_instance_attr},
+    external::{CallResult, ExternalLookup, dispatch_object_call, resolve_object_attr},
     get_not_handled,
     limits::extract_limits,
     mount::PyMountDir,
@@ -1326,33 +1326,20 @@ fn sync_turn_answer(
             function_name,
             args,
             kwargs,
-            receiver,
+            object_id,
             ..
         } => {
-            let result = match receiver {
-                Some(CallReceiver::Instance(instance_id)) => {
-                    dispatch_instance_call(py, &function_name, &instance_id, &args, &kwargs, instances)
-                }
-                Some(CallReceiver::Type(type_id)) => {
-                    dispatch_instantiate(py, &function_name, &type_id, &args, &kwargs, instances)
-                }
+            let result = match object_id {
+                Some(object_id) => dispatch_object_call(py, &function_name, &object_id, &args, &kwargs, instances),
                 None => lookup.call(&function_name, &args, &kwargs),
             };
             Ok(TurnAnswer::Call(ext_to_resume(result)?))
         }
         TurnEvent::NameLookup {
             name,
-            instance_id: Some(instance_id),
-        } => Ok(TurnAnswer::Name(resolve_instance_attr(
-            py,
-            &name,
-            &instance_id,
-            instances,
-        )?)),
-        TurnEvent::NameLookup {
-            name,
-            instance_id: None,
-        } => Ok(TurnAnswer::Name(lookup.resolve_name(&name)?)),
+            object_id: Some(object_id),
+        } => Ok(TurnAnswer::Name(resolve_object_attr(py, &name, &object_id, instances)?)),
+        TurnEvent::NameLookup { name, object_id: None } => Ok(TurnAnswer::Name(lookup.resolve_name(&name)?)),
         TurnEvent::ResolveFutures { .. } => Err(PyRuntimeError::new_err("async external functions require AsyncMonty")),
         TurnEvent::Complete(_) | TurnEvent::OsCall { .. } => {
             unreachable!("Complete and OsCall are handled by the drive loop")
@@ -1544,8 +1531,8 @@ fn async_turn_answer(
             args,
             kwargs,
             call_id,
-            receiver,
-        } => match dispatch_function_call(&function_name, receiver, &args, &kwargs, external_lookup, instances) {
+            object_id,
+        } => match dispatch_function_call(&function_name, object_id, &args, &kwargs, external_lookup, instances) {
             CallResult::Sync(result) => Ok(TurnAnswer::Call(ext_to_resume(result)?)),
             CallResult::Coroutine(coro) => {
                 spawn_coroutine_task(join_set, call_id, coro, instances)?;
@@ -1554,15 +1541,12 @@ fn async_turn_answer(
         },
         TurnEvent::NameLookup {
             name,
-            instance_id: Some(instance_id),
+            object_id: Some(object_id),
         } => {
-            let value = Python::attach(|py| resolve_instance_attr(py, &name, &instance_id, instances))?;
+            let value = Python::attach(|py| resolve_object_attr(py, &name, &object_id, instances))?;
             Ok(TurnAnswer::Name(value))
         }
-        TurnEvent::NameLookup {
-            name,
-            instance_id: None,
-        } => {
+        TurnEvent::NameLookup { name, object_id: None } => {
             let value = Python::attach(|py| {
                 ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), instances).resolve_name(&name)
             })?;

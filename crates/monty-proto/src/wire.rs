@@ -31,7 +31,6 @@
 
 use std::{cell::Cell, fmt::Display, ops::RangeInclusive};
 
-pub use monty_types::CallReceiver;
 use monty_types::{
     ClassType, DictPairs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyDate, MontyDateTime,
     MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
@@ -121,9 +120,10 @@ pub struct WireFunctionCall {
     pub kwargs: Vec<(MontyObject, MontyObject)>,
     /// Child-assigned call id used by the matching resume request.
     pub call_id: u32,
-    /// The routed receiver (`receiver` oneof); `None` for plain external
-    /// function calls. The receiver is never included in `args`.
-    pub receiver: Option<CallReceiver>,
+    /// Uuid of the routed receiver (a host-backed instance, or a class type
+    /// for `__call__`/classmethod calls); `None` for plain external function
+    /// calls. The receiver is never included in `args`.
+    pub object_id: Option<MontyUuid>,
 }
 
 impl Message for WireFunctionCall {
@@ -132,11 +132,8 @@ impl Message for WireFunctionCall {
         encode_repeated_object(2, &self.args, buf);
         encode_repeated_pair(3, &self.kwargs, buf);
         encode_uint32(4, self.call_id, buf);
-        // oneof arms always encode when set (message presence).
-        match &self.receiver {
-            Some(CallReceiver::Instance(id)) => encoding::message::encode(5, &uuid_to_pb(id), buf),
-            Some(CallReceiver::Type(id)) => encoding::message::encode(6, &uuid_to_pb(id), buf),
-            None => {}
+        if let Some(id) = &self.object_id {
+            encoding::message::encode(5, &uuid_to_pb(id), buf);
         }
     }
 
@@ -145,11 +142,10 @@ impl Message for WireFunctionCall {
             + repeated_object_len(2, &self.args)
             + repeated_pair_len(3, &self.kwargs)
             + uint32_len(4, self.call_id)
-            + match &self.receiver {
-                Some(CallReceiver::Instance(id)) => encoding::message::encoded_len(5, &uuid_to_pb(id)),
-                Some(CallReceiver::Type(id)) => encoding::message::encoded_len(6, &uuid_to_pb(id)),
-                None => 0,
-            }
+            + self
+                .object_id
+                .as_ref()
+                .map_or(0, |id| encoding::message::encoded_len(5, &uuid_to_pb(id)))
     }
 
     fn merge_field(
@@ -164,20 +160,10 @@ impl Message for WireFunctionCall {
             2 => merge_object_item(wire_type, buf, ctx, &mut self.args),
             3 => merge_pair_item(wire_type, buf, ctx, &mut self.kwargs),
             4 => encoding::uint32::merge(wire_type, &mut self.call_id, buf, ctx),
-            // oneof: last arm wins, matching prost's generated decode.
             5 => {
                 let mut uuid = pb::Uuid::default();
                 encoding::message::merge(wire_type, &mut uuid, buf, ctx)?;
-                self.receiver = Some(CallReceiver::Instance(pb_uuid_to_monty(
-                    &uuid,
-                    "FunctionCall.instance_id",
-                )?));
-                Ok(())
-            }
-            6 => {
-                let mut uuid = pb::Uuid::default();
-                encoding::message::merge(wire_type, &mut uuid, buf, ctx)?;
-                self.receiver = Some(CallReceiver::Type(pb_uuid_to_monty(&uuid, "FunctionCall.type_id")?));
+                self.object_id = Some(pb_uuid_to_monty(&uuid, "FunctionCall.object_id")?);
                 Ok(())
             }
             _ => skip_field(wire_type, tag, buf, ctx),
@@ -189,7 +175,7 @@ impl Message for WireFunctionCall {
         self.args.clear();
         self.kwargs.clear();
         self.call_id = 0;
-        self.receiver = None;
+        self.object_id = None;
     }
 }
 
@@ -1094,6 +1080,22 @@ fn class_type_to_pb(class_type: &ClassType) -> pb::Type {
     } else {
         pb::TypeOrigin::Sandbox
     };
+    // Eager class attrs clone into the generated message; fine off the hot
+    // path — type values with attrs cross only when a host sends a class or
+    // the sandbox returns one, never per instance.
+    let attrs = if class_type.attrs.is_empty() {
+        None
+    } else {
+        let pairs = class_type
+            .attrs
+            .iter()
+            .map(|(key, value)| pb::Pair {
+                key: Some(WireObject::new(key.clone())),
+                value: Some(WireObject::new(value.clone())),
+            })
+            .collect();
+        Some(pb::Dict { pairs })
+    };
     pb::Type {
         name: class_type.name.clone(),
         id: Some(uuid_to_pb(&class_type.id)),
@@ -1101,6 +1103,7 @@ fn class_type_to_pb(class_type: &ClassType) -> pb::Type {
         parents: class_type.parents.iter().map(monty_type_to_pb).collect(),
         is_dataclass: class_type.is_dataclass,
         frozen: class_type.frozen,
+        attrs,
     }
 }
 
@@ -1130,6 +1133,8 @@ fn pb_type_to_monty(ty: pb::Type) -> Result<MontyType, DecodeError> {
                 Err(invalid("a builtin type must not carry an id"))
             } else if !ty.parents.is_empty() {
                 Err(invalid("a builtin type must not carry parents"))
+            } else if ty.attrs.is_some() {
+                Err(invalid("a builtin type must not carry attrs"))
             } else {
                 MontyType::from_type_name(&ty.name)
                     .ok_or_else(|| to_decode_err(ProtoConvertError::UnknownType(ty.name)))
@@ -1138,6 +1143,31 @@ fn pb_type_to_monty(ty: pb::Type) -> Result<MontyType, DecodeError> {
         pb::TypeOrigin::Sandbox | pb::TypeOrigin::Host => {
             let id = ty.id.ok_or_else(|| invalid("a class type must carry an id"))?;
             let parents = ty.parents.into_iter().map(pb_type_to_monty).collect::<Result<_, _>>()?;
+            let attrs = ty
+                .attrs
+                .map(|dict| {
+                    dict.pairs
+                        .into_iter()
+                        .map(|pair| {
+                            let key = pair
+                                .key
+                                .ok_or(ProtoConvertError::MissingField("Pair.key"))
+                                .map_err(to_decode_err)?
+                                .into_object()
+                                .map_err(to_decode_err)?;
+                            let value = pair
+                                .value
+                                .ok_or(ProtoConvertError::MissingField("Pair.value"))
+                                .map_err(to_decode_err)?
+                                .into_object()
+                                .map_err(to_decode_err)?;
+                            Ok::<_, DecodeError>((key, value))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?
+                .map(DictPairs::from)
+                .unwrap_or_default();
             Ok(MontyType::Instance(Box::new(ClassType {
                 name: ty.name,
                 id: pb_uuid_to_monty(&id, "Type.id")?,
@@ -1145,6 +1175,7 @@ fn pb_type_to_monty(ty: pb::Type) -> Result<MontyType, DecodeError> {
                 parents,
                 is_dataclass: ty.is_dataclass,
                 frozen: ty.frozen,
+                attrs,
             })))
         }
     }

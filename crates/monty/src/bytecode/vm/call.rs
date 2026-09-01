@@ -6,7 +6,7 @@
 
 use std::mem;
 
-use monty_types::{CallReceiver, MontyUuid, OsFunctionCall};
+use monty_types::{MontyUuid, OsFunctionCall};
 
 use super::{CallFrame, VM, recursion::RunReentryGuard};
 use crate::{
@@ -52,32 +52,36 @@ pub(crate) enum CallResult {
     /// typed args, so no separate `ArgValues` is needed at this layer.
     OsCall(OsFunctionCall),
     /// Host-routed call requested - VM should yield `FrameExit::MethodCall`
-    /// to host: a method call on a host-backed instance, or instantiation of
-    /// a host class (`CallReceiver::Type`).
+    /// to host: a method call on a host-backed instance, or on a host class
+    /// type — a classmethod, or construction, which is spelled `__call__`.
     ///
     /// The receiver is NOT included in `args`: the host routes the call by
-    /// the receiver's uuid (stored on the [`HostClass`] / [`HostClassType`]).
-    /// Unlike `External`, `name` is an `EitherStr` because method and class
-    /// names are only known at runtime when class inputs are provided.
+    /// `object_id`, the receiver's uuid (stored on the [`HostClass`] /
+    /// [`HostClassType`]). Unlike `External`, `name` is an `EitherStr`
+    /// because method names are only known at runtime.
     ///
     /// [`HostClass`]: crate::types::HostClass
     /// [`HostClassType`]: crate::types::HostClassType
     MethodCall {
         name: EitherStr,
         args: ArgValues,
-        receiver: CallReceiver,
+        object_id: MontyUuid,
     },
-    /// Lazy attribute lookup on a host class instance - VM should yield
+    /// Lazy attribute lookup on a host-backed object - VM should yield
     /// `FrameExit::AttrLookup` to host.
     ///
-    /// Produced by `obj.attr` when `attr` is public and missing from the
-    /// instance's eager attrs. `class_name` is captured at suspension so the
-    /// resume-undefined AttributeError names the real class without touching
-    /// the heap. Carries no heap refs, so dropping it is trivial.
+    /// Produced by `obj.attr` (or `Type.attr` when `type_object` is true)
+    /// when `attr` is public and missing from the eager attrs. `class_name`
+    /// is captured at suspension so the resume-undefined AttributeError names
+    /// the real class without touching the heap. Carries no heap refs, so
+    /// dropping it is trivial.
     AttrLookup {
         name: EitherStr,
         class_name: String,
-        instance_id: MontyUuid,
+        object_id: MontyUuid,
+        /// True for a lookup on a class type object — selects CPython's
+        /// `type object '...' has no attribute ...` message on failure.
+        type_object: bool,
     },
     /// The call returned a value that should be implicitly awaited.
     ///
@@ -465,8 +469,17 @@ impl VM<'_> {
             // context; report the attribute as missing rather than a
             // NotImplementedError, matching what an unanswered lookup raises.
             // Carries no heap refs, so returning without drop_with is safe.
-            CallResult::AttrLookup { name, class_name, .. } => {
-                return ExcType::attribute_error(class_name, name.as_str(self.interns));
+            CallResult::AttrLookup {
+                name,
+                class_name,
+                type_object,
+                ..
+            } => {
+                return if *type_object {
+                    ExcType::attribute_error_type(class_name, name.as_str(self.interns))
+                } else {
+                    ExcType::attribute_error(class_name, name.as_str(self.interns))
+                };
             }
             CallResult::AwaitValue(_) => {
                 ExcType::not_implemented(format!("{ctx}: awaiting a value is not yet supported in this context"))
@@ -495,8 +508,17 @@ impl VM<'_> {
                 method_name.as_str(self.interns)
             )),
             // Same as the `CallResult::AttrLookup` arm above: no heap refs.
-            FrameExit::AttrLookup { name, class_name, .. } => {
-                return ExcType::attribute_error(class_name, name.as_str(self.interns));
+            FrameExit::AttrLookup {
+                name,
+                class_name,
+                type_object,
+                ..
+            } => {
+                return if *type_object {
+                    ExcType::attribute_error_type(class_name, name.as_str(self.interns))
+                } else {
+                    ExcType::attribute_error(class_name, name.as_str(self.interns))
+                };
             }
             FrameExit::ResolveFutures(_) => ExcType::not_implemented(format!(
                 "{ctx}: resolving async futures is not yet supported in this context"
@@ -549,16 +571,17 @@ impl VM<'_> {
 
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Class(_) => return self.instantiate_class(heap_id, args),
-            // Calling a host class type suspends to the host, whose own
-            // policy decides whether construction is allowed. A sandbox-origin
-            // class type can never be constructed host-side, so it fails
-            // locally without the round trip.
+            // Calling a host class type suspends to the host as a `__call__`
+            // method call on the class's uuid; the host's own policy decides
+            // whether construction is allowed. A sandbox-origin class type can
+            // never be constructed host-side, so it fails locally without the
+            // round trip.
             HeapData::HostClassType(ty) => {
                 return if ty.host_defined() {
                     Ok(CallResult::MethodCall {
-                        name: ty.name_either().clone(),
+                        name: EitherStr::Heap("__call__".to_owned()),
                         args,
-                        receiver: CallReceiver::Type(ty.type_id()),
+                        object_id: ty.type_id(),
                     })
                 } else {
                     let name = ty.name(self.interns).to_owned();

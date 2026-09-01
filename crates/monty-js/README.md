@@ -138,25 +138,32 @@ Instances the host has no original for — defined inside the sandbox, or
 returned after a dump was restored into a fresh process — surface as read-only
 `MontyClassProxy` stand-ins (`name`, `attributes`, `isDataclass`).
 
-### Class instantiation (`ClassType`)
+### Host classes (`ClassType`)
 
-Wrap a _class_ in `ClassType` to pass it into the sandbox. With `init: true`,
-sandbox code may call the class; the construction runs host-side (the wrapper
-re-checks its own `init` policy on every request) and the constructed
-instance crosses back wrapped with the `ClassType`'s instance policies
-(`eagerAttrs` / `lazyAttrs` / `allowedMethods` / `frozen`):
+Wrap a _class_ in `ClassType` to pass it into the sandbox. It extends
+`ClassInstance`, applied to the class object itself: `eagerAttrs` sends
+static class constants with the type, `lazyAttrs` serves them on demand, and
+`allowedMethods` exposes static methods (each routed back to the real class).
+With `init: true`, sandbox code may also call the class; the construction
+arrives as a `__call__` method call, runs host-side (the wrapper re-checks
+its own `init` policy on every request), and the constructed instance
+crosses back wrapped with the `instance*` policies (`instanceEagerAttrs` /
+`instanceLazyAttrs` / `instanceAllowedMethods`, plus the shared `frozen`):
 
 ```ts
 import { ClassType } from '@pydantic/monty'
 
 await session.feedRun('w = Wallet(100)\nw.pay(30).balance', {
-  inputs: { Wallet: new ClassType(Wallet, { init: true, eagerAttrs: 'all', allowedMethods: 'all' }) },
+  inputs: {
+    Wallet: new ClassType(Wallet, { init: true, instanceEagerAttrs: 'all', instanceAllowedMethods: 'all' }),
+  },
 }) // 70
 ```
 
 Without `init`, calling the class raises
 `TypeError: cannot instantiate host class 'Wallet'` in the sandbox. Override
-`instanceWrapper` to customize how constructed instances are exposed.
+`instanceWrapper` to customize how constructed instances are exposed, or
+`convertValue` to transform class attrs and static-method returns.
 
 ## Snapshots: pausing and resuming
 

@@ -907,7 +907,7 @@ fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::Chi
         args: mem::take(&mut call.args),
         kwargs: mem::take(&mut call.kwargs),
         call_id: call.call_id,
-        receiver: call.receiver,
+        object_id: call.object_id,
     }))
 }
 
@@ -969,7 +969,7 @@ fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
         ReplProgress::OsCall(call) => suspension_event_os_call(call),
         ReplProgress::NameLookup(lookup) => event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: lookup.name.clone(),
-            instance_id: lookup.instance_id().as_ref().map(uuid_to_pb),
+            object_id: lookup.object_id().as_ref().map(uuid_to_pb),
         })),
         ReplProgress::ResolveFutures(state) => event(pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
             pending_call_ids: state.pending_call_ids().to_vec(),

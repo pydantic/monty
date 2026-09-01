@@ -554,7 +554,7 @@ def test_dump_load_into_new_session_falls_back_to_proxy(pool: Monty):
         assert isinstance(inner, RuntimeError)
         # the message embeds the (unstable) host id — normalize it before comparing
         assert re.sub(r'\(id [0-9a-f-]+\)', '(id ...)', str(inner)) == snapshot(
-            "no host instance registered for method call 'greeting' (id ...) — the instance store is empty after loading a session into a new process"
+            "no host object registered for method call 'greeting' (id ...) — the instance store is empty after loading a session into a new process"
         )
 
     with pool.checkout() as session:
@@ -570,7 +570,11 @@ def test_dump_load_into_new_session_falls_back_to_proxy(pool: Monty):
 def test_class_type_instantiation(monty_run: RunMonty):
     result = monty_run(
         'p = Person("Sam", 4)\np.greeting()',
-        inputs={'Person': pydantic_monty.ClassType(Person, init=True, eager_attrs='all', allowed_methods='all')},
+        inputs={
+            'Person': pydantic_monty.ClassType(
+                Person, init=True, instance_eager_attrs='all', instance_allowed_methods='all'
+            )
+        },
     )
     assert result == snapshot('hi Sam')
 
@@ -578,7 +582,7 @@ def test_class_type_instantiation(monty_run: RunMonty):
 def test_class_type_constructed_instance_round_trips(monty_run: RunMonty):
     result = monty_run(
         'Person("Ada", 36)',
-        inputs={'Person': pydantic_monty.ClassType(Person, init=True, eager_attrs='all')},
+        inputs={'Person': pydantic_monty.ClassType(Person, init=True, instance_eager_attrs='all')},
     )
     assert result == Person(name='Ada', age=36)
 
@@ -603,7 +607,7 @@ def test_class_type_kwargs_and_instance_policy(monty_run: RunMonty):
     # wrapper's instance policy (allowed_methods here)
     result = monty_run(
         'c = Calculator(value=10)\nc.add(5)',
-        inputs={'Calculator': pydantic_monty.ClassType(Calculator, init=True, allowed_methods={'add'})},
+        inputs={'Calculator': pydantic_monty.ClassType(Calculator, init=True, instance_allowed_methods={'add'})},
     )
     assert result == snapshot(15)
 
@@ -612,9 +616,65 @@ def test_class_type_denied_method_on_constructed_instance(monty_run: RunMonty):
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         monty_run(
             'Calculator(value=10).boom()',
-            inputs={'Calculator': pydantic_monty.ClassType(Calculator, init=True, allowed_methods={'add'})},
+            inputs={'Calculator': pydantic_monty.ClassType(Calculator, init=True, instance_allowed_methods={'add'})},
         )
     assert str(exc_info.value) == snapshot("AttributeError: 'Calculator' object has no attribute 'boom'")
+
+
+class Shape:
+    """Plain class with a class constant, a classmethod, and a staticmethod."""
+
+    SIDES = 4
+    KIND = 'polygon'
+
+    def __init__(self, size: int) -> None:
+        self.size = size
+
+    @classmethod
+    def unit(cls) -> int:
+        return cls.SIDES
+
+    @staticmethod
+    def double(n: int) -> int:
+        return n * 2
+
+
+def test_class_type_eager_class_attrs(monty_run: RunMonty):
+    """eager_attrs on a ClassType sends class constants with the type."""
+    wrapper = pydantic_monty.ClassType(Shape, eager_attrs='all')
+    assert monty_run('Shape.SIDES + len(Shape.KIND)', inputs={'Shape': wrapper}) == snapshot(11)
+
+
+def test_class_type_lazy_class_attr(monty_run: RunMonty):
+    """lazy_attrs on a ClassType serves class constants on demand."""
+    wrapper = pydantic_monty.ClassType(Shape, lazy_attrs={'SIDES'})
+    assert monty_run('Shape.SIDES', inputs={'Shape': wrapper}) == snapshot(4)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('Shape.KIND', inputs={'Shape': wrapper})
+    assert str(exc_info.value) == snapshot("AttributeError: type object 'Shape' has no attribute 'KIND'")
+
+
+def test_class_type_classmethod_call(monty_run: RunMonty):
+    wrapper = pydantic_monty.ClassType(Shape, allowed_methods={'unit', 'double'})
+    assert monty_run('Shape.unit()', inputs={'Shape': wrapper}) == snapshot(4)
+    assert monty_run('Shape.double(21)', inputs={'Shape': wrapper}) == snapshot(42)
+
+
+def test_class_type_denied_classmethod(monty_run: RunMonty):
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('Shape.unit()', inputs={'Shape': pydantic_monty.ClassType(Shape)})
+    assert str(exc_info.value) == snapshot("AttributeError: type object 'Shape' has no attribute 'unit'")
+
+
+def test_type_of_instance_call_hints_class_type(monty_run: RunMonty):
+    """Calling a class obtained via type(x) that was never granted as a
+    ClassType fails with a hint naming the wrapper to pass."""
+    p = Person(name='Alice', age=30)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('type(x)("Bob", 2)', inputs={'x': ClassInstance(p)})
+    assert re.sub(r'\(id [0-9a-f-]+\)', '(id ...)', str(exc_info.value)) == snapshot(
+        "RuntimeError: no host class registered for '__call__' on 'Person' (id ...) — pass the class as a pydantic_monty.ClassType(...)"
+    )
 
 
 def test_type_of_host_instance_round_trips_to_class(monty_run: RunMonty):

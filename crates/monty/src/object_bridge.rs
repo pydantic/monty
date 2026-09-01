@@ -3,6 +3,8 @@
 //! `Value`/`Type` representations. The types themselves (and their pure
 //! methods — reprs, hashing, truthiness) live in `monty-types`.
 
+use std::mem;
+
 use ahash::AHashSet;
 use monty_types::{
     ClassType, DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
@@ -236,11 +238,16 @@ impl MontyObjectExt for MontyObject {
             }
             Self::Type(t) => match t {
                 // A host class type object is a valid input: it materializes
-                // as a `HostClassType`, callable when the host granted `init`.
-                MontyType::Instance(class_type) if class_type.host_defined => {
+                // as a `HostClassType`; calling it (or a classmethod on it)
+                // suspends to the host, whose own policy decides.
+                MontyType::Instance(mut class_type) if class_type.host_defined => {
                     let name = EitherStr::Heap(class_type.name.clone());
-                    let ty = HostClassType::new(name, *class_type);
-                    Ok(Value::Ref(vm.heap.allocate(HeapData::HostClassType(ty))))
+                    // Eager class attrs convert like instance attrs do.
+                    let attr_pairs = convert_pairs(mem::take(&mut class_type.attrs), vm)?;
+                    let attrs = Dict::from_pairs(attr_pairs, vm)
+                        .map_err(|_| InvalidInputError::invalid_type("unhashable class attr keys"))?;
+                    let ty = HostClassType::new(name, *class_type, attrs);
+                    Ok(Value::Ref(vm.heap.allocate(HeapData::HostClassType(Box::new(ty)))))
                 }
                 // A sandbox class binding cannot be reconstructed from its
                 // wire shape (see the invariant on the runtime
@@ -503,9 +510,14 @@ impl MontyObjectExt for MontyObject {
                     }
                     // The type object of a host class crosses out with its
                     // full class type (uuid included), so hosts can resolve
-                    // it back to the real class.
+                    // it back to the real class — eager class attrs included,
+                    // so an echoed type round-trips intact.
                     HeapReadOutput::HostClassType(ty) => {
-                        Self::Type(MontyType::Instance(Box::new(ty.get(vm.heap).class_type(vm.interns))))
+                        let mut class_type = ty.get(vm.heap).class_type(vm.interns);
+                        let children = snapshot_dict_pairs(ty.get(vm.heap).attrs(), vm.heap);
+                        defer_drop!(children, vm);
+                        class_type.attrs = pairs_to_objects(children, vm, visited).into();
+                        Self::Type(MontyType::Instance(Box::new(class_type)))
                     }
                     // Sandbox-defined class instances cross out structured
                     // rather than as a repr string, so hosts get name + attrs
@@ -807,6 +819,7 @@ fn sandbox_class_type(class_id: HeapId, vm: &mut VM<'_>) -> ClassType {
         parents: vec![],
         is_dataclass,
         frozen,
+        attrs: DictPairs::default(),
     }
 }
 

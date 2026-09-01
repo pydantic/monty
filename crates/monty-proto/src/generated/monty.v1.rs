@@ -177,10 +177,15 @@ pub struct Type {
     /// Frozen instances reject setattr with FrozenInstanceError in the sandbox.
     #[prost(bool, tag = "6")]
     pub frozen: bool,
+    /// Class attributes sent eagerly with the type object (class constants, per
+    /// the sending wrapper's policy). Empty for the `type` field inside a
+    /// ClassInstance and for `parents` entries.
+    #[prost(message, optional, tag = "7")]
+    pub attrs: ::core::option::Option<Dict>,
 }
 /// A class instance crossing the sandbox boundary. Host-backed instances route
 /// method calls and lazy attribute lookups back to the real object by uuid
-/// (`FunctionCall.instance_id` / `NameLookup.instance_id`); sandbox-defined
+/// (`FunctionCall.object_id` / `NameLookup.object_id`); sandbox-defined
 /// instances carry a worker-minted uuid instead.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClassInstance {
@@ -796,18 +801,18 @@ pub mod os_call {
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
-/// the parent provides an external function — or, when `instance_id` is set, a
-/// lazy attribute lookup on a host-backed `ClassInstance`. Answer with
-/// `ResumeNameLookup`; for instance lookups an `undefined` answer raises
+/// the parent provides an external function — or, when `object_id` is set, a
+/// lazy attribute lookup on a host-backed object. Answer with
+/// `ResumeNameLookup`; for attribute lookups an `undefined` answer raises
 /// AttributeError (not NameError) inside the sandbox.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NameLookup {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    /// Set for attribute lookups on a host-backed `ClassInstance`: the uuid of
-    /// the instance whose attribute is being read.
+    /// Set for attribute lookups on a host-backed object — a class instance, or
+    /// a class type (a lazy class attribute): the uuid of the receiver.
     #[prost(message, optional, tag = "2")]
-    pub instance_id: ::core::option::Option<Uuid>,
+    pub object_id: ::core::option::Option<Uuid>,
 }
 /// Suspension: every sandbox task is blocked on external futures previously
 /// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.

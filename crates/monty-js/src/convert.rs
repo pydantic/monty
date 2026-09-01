@@ -366,6 +366,7 @@ fn create_js_class_type<'e>(class_type: &ClassType, env: &'e Env) -> Result<Obje
     obj.set_named_property("parents", parents)?;
     obj.set_named_property("isDataclass", class_type.is_dataclass)?;
     obj.set_named_property("frozen", class_type.frozen)?;
+    obj.set_named_property("attrs", create_js_attr_pairs(&class_type.attrs, env)?)?;
     Ok(obj)
 }
 
@@ -440,7 +441,14 @@ fn create_js_class_instance<'e>(
     obj.set_named_property("type", create_js_class_type(class_type, env)?)?;
     // uuids as canonical lowercase strings — JS has no 128-bit integer type
     obj.set_named_property("instanceId", instance_id.to_string())?;
+    obj.set_named_property("attrs", create_js_attr_pairs(attrs, env)?)?;
+    obj.into_unknown(env)
+}
 
+/// Builds the `[name, value]` pair array attrs cross as (order preserved,
+/// non-string keys skipped): pair entries cannot clobber a prototype the way
+/// `obj[k] = v` on a plain object could.
+fn create_js_attr_pairs<'e>(attrs: &DictPairs, env: &'e Env) -> Result<Array<'e>> {
     let string_pairs: Vec<(&String, &MontyObject)> = attrs
         .into_iter()
         .filter_map(|(k, v)| match k {
@@ -455,9 +463,7 @@ fn create_js_class_instance<'e>(
         pair.set(1, monty_to_js(value, env)?)?;
         attrs_arr.set(i.try_into().expect("overflow on attrs index"), pair)?;
     }
-    obj.set_named_property("attrs", attrs_arr)?;
-
-    obj.into_unknown(env)
+    Ok(attrs_arr)
 }
 
 // =============================================================================
@@ -714,6 +720,7 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
                 let class_type: Object = obj.get_named_property("classType")?;
                 Ok(MontyObject::Type(MontyType::Instance(Box::new(parse_js_class_type(
                     &class_type,
+                    &env,
                 )?))))
             } else {
                 let value: String = obj.get_named_property("value")?;
@@ -736,30 +743,13 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
         }
         "ClassInstance" => {
             let class_type: Object = obj.get_named_property("type")?;
-            let class_type = parse_js_class_type(&class_type)?;
+            let class_type = parse_js_class_type(&class_type, &env)?;
             let instance_id = get_uuid_string_property(obj, "instanceId", "ClassInstance")?;
-
-            let attrs_arr: Array = obj.get_named_property("attrs")?;
-            let mut attrs_vec = Vec::with_capacity(attrs_arr.len() as usize);
-            for i in 0..attrs_arr.len() {
-                let Some(pair) = attrs_arr.get::<Array>(i)? else {
-                    return Err(Error::from_reason(
-                        "ClassInstance attrs entries must be [name, value] pairs",
-                    ));
-                };
-                let key: String = pair
-                    .get::<String>(0)?
-                    .ok_or_else(|| Error::from_reason("ClassInstance attr name must be a string"))?;
-                let value = pair
-                    .get::<Unknown>(1)?
-                    .ok_or_else(|| Error::from_reason("ClassInstance attr value missing"))?;
-                attrs_vec.push((MontyObject::String(key), js_to_monty(value, env)?));
-            }
-
+            let attrs = parse_js_attr_pairs(obj.get_named_property("attrs")?, "ClassInstance", &env)?;
             Ok(MontyObject::ClassInstance {
                 class_type,
                 instance_id,
-                attrs: DictPairs::from(attrs_vec),
+                attrs,
             })
         }
         _ => Err(Error::from_reason(format!("Unknown Monty marker type: {monty_type}"))),
@@ -777,7 +767,7 @@ fn get_uuid_string_property(obj: &Object, key: &str, type_name: &str) -> Result<
 }
 
 /// Parses the plain `classType` object of a Type / ClassInstance marker.
-fn parse_js_class_type(obj: &Object) -> Result<ClassType> {
+fn parse_js_class_type(obj: &Object, env: &Env) -> Result<ClassType> {
     let name: String = obj.get_named_property("name")?;
     let id = get_uuid_string_property(obj, "id", "ClassType")?;
     let host_defined: bool = obj.get_named_property("hostDefined")?;
@@ -789,7 +779,7 @@ fn parse_js_class_type(obj: &Object) -> Result<ClassType> {
             .ok_or_else(|| Error::from_reason("ClassType parents entries must be Type markers"))?;
         if marker.has_named_property("classType")? {
             let class_type: Object = marker.get_named_property("classType")?;
-            parents.push(MontyType::Instance(Box::new(parse_js_class_type(&class_type)?)));
+            parents.push(MontyType::Instance(Box::new(parse_js_class_type(&class_type, env)?)));
         } else {
             let value: String = marker.get_named_property("value")?;
             let builtin = MontyType::from_type_name(&value)
@@ -797,6 +787,9 @@ fn parse_js_class_type(obj: &Object) -> Result<ClassType> {
             parents.push(builtin);
         }
     }
+    // Absent on markers built before attrs existed is not a case we keep —
+    // the TS layer always emits the field, empty when there are no attrs.
+    let attrs = parse_js_attr_pairs(obj.get_named_property("attrs")?, "ClassType", env)?;
     Ok(ClassType {
         name,
         id,
@@ -804,7 +797,28 @@ fn parse_js_class_type(obj: &Object) -> Result<ClassType> {
         parents,
         is_dataclass: obj.get_named_property("isDataclass")?,
         frozen: obj.get_named_property("frozen")?,
+        attrs,
     })
+}
+
+/// Parses the `[name, value]` pair array attrs cross as.
+fn parse_js_attr_pairs(attrs_arr: Array, type_name: &str, env: &Env) -> Result<DictPairs> {
+    let mut attrs_vec = Vec::with_capacity(attrs_arr.len() as usize);
+    for i in 0..attrs_arr.len() {
+        let Some(pair) = attrs_arr.get::<Array>(i)? else {
+            return Err(Error::from_reason(format!(
+                "{type_name} attrs entries must be [name, value] pairs"
+            )));
+        };
+        let key: String = pair
+            .get::<String>(0)?
+            .ok_or_else(|| Error::from_reason(format!("{type_name} attr name must be a string")))?;
+        let value = pair
+            .get::<Unknown>(1)?
+            .ok_or_else(|| Error::from_reason(format!("{type_name} attr value missing")))?;
+        attrs_vec.push((MontyObject::String(key), js_to_monty(value, *env)?));
+    }
+    Ok(DictPairs::from(attrs_vec))
 }
 
 /// Reads and validates the optional JavaScript-safe file position.

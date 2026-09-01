@@ -225,6 +225,15 @@ function pushClassType(
       nodes.push(node)
     }
   }
+  const attrPairs: [unknown, unknown][] = []
+  if (Array.isArray(object.attrs)) {
+    for (const pair of object.attrs as unknown[]) {
+      if (!Array.isArray(pair)) throw new TypeError('ClassType attrs entries must be [name, value] pairs')
+      if (typeof pair[0] !== 'string') throw new TypeError('ClassType attr name must be a string')
+      if (!(1 in pair)) throw new TypeError('ClassType attr value missing')
+      attrPairs.push([pair[0], pair[1]])
+    }
+  }
   return {
     name: String(object.name),
     id: uuidString(object.id, 'ClassType id'),
@@ -232,6 +241,7 @@ function pushClassType(
     parents: new Uint32Array(parents),
     isDataclass: object.isDataclass === true,
     frozen: object.frozen === true,
+    attrs: pushPairs(attrPairs, nodes),
   }
 }
 
@@ -429,6 +439,12 @@ function readClassType(
       throw new Error('class-type parent index is not a class-type or type-name node')
     }
   }
+  const attrs: Array<[string, unknown]> = []
+  for (const pair of classType.attrs) {
+    const [key, value] = readPair(pair, nodes, visiting)
+    // non-string class attr keys are not representable host-side; skip
+    if (typeof key === 'string') attrs.push([key, value])
+  }
   return {
     name: classType.name,
     id: classType.id,
@@ -436,6 +452,7 @@ function readClassType(
     parents,
     isDataclass: classType.isDataclass,
     frozen: classType.frozen,
+    attrs,
   }
 }
 

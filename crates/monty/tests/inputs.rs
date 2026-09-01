@@ -4,7 +4,7 @@
 //! and can be used in Python code execution.
 
 use monty::MontyRun;
-use monty_types::{ClassType, CompileOptions, ExcType, MontyObject, MontyUuid};
+use monty_types::{ClassType, CompileOptions, DictPairs, ExcType, MontyObject, MontyUuid};
 
 // === Immediate Value Tests ===
 
@@ -596,6 +596,7 @@ fn invalid_input_repr_in_class_instance_attrs() {
             parents: vec![],
             is_dataclass: false,
             frozen: false,
+            attrs: DictPairs::default(),
         },
         instance_id: MontyUuid::from_u128(2),
         attrs: vec![

@@ -370,7 +370,7 @@ test('NameLookupSnapshot.resumeValue answers a lazy attribute lookup by hand', a
 // === ClassType instantiation ===
 
 test('sandbox instantiation of a host class via ClassType', async () => {
-  const wrapper = new ClassType(Calculator, { init: true, allowedMethods: 'all' })
+  const wrapper = new ClassType(Calculator, { init: true, instanceAllowedMethods: 'all' })
   t.is(await run('c = Calculator(10)\nc.add(5)', { inputs: { Calculator: wrapper } }), 15)
 })
 
@@ -399,28 +399,62 @@ test('constructor kwargs arrive as a trailing options bag', async () => {
       return this.options['mode']
     }
   }
-  const wrapper = new ClassType(Config, { init: true, allowedMethods: 'all' })
+  const wrapper = new ClassType(Config, { init: true, instanceAllowedMethods: 'all' })
   t.is(await run("Config(mode='fast').read()", { inputs: { Config: wrapper } }), 'fast')
 })
 
 test('a denied method on a constructed instance raises AttributeError', async () => {
-  const wrapper = new ClassType(Calculator, { init: true, allowedMethods: ['add'] })
+  const wrapper = new ClassType(Calculator, { init: true, instanceAllowedMethods: ['add'] })
   const error = await t.throwsAsync(() => run('Calculator(1).boom()', { inputs: { Calculator: wrapper } }), {
     instanceOf: MontyRuntimeError,
   })
   t.is(error.message, "AttributeError: 'Calculator' object has no attribute 'boom'")
 })
 
-test('instantiate turns carry the class uuid as typeId', async () => {
+class Shape {
+  static SIDES = 4
+  static KIND = 'polygon'
+  constructor(public size: number) {}
+  static double(n: number): number {
+    return n * 2
+  }
+}
+
+test('eagerAttrs on a ClassType sends static class constants', async () => {
+  const wrapper = new ClassType(Shape, { eagerAttrs: 'all' })
+  t.is(await run('Shape.SIDES + len(Shape.KIND)', { inputs: { Shape: wrapper } }), 11)
+})
+
+test('lazyAttrs on a ClassType serves class constants on demand', async () => {
+  const wrapper = new ClassType(Shape, { lazyAttrs: ['SIDES'] })
+  t.is(await run('Shape.SIDES', { inputs: { Shape: wrapper } }), 4)
+  const error = await t.throwsAsync(() => run('Shape.KIND', { inputs: { Shape: wrapper } }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, "AttributeError: type object 'Shape' has no attribute 'KIND'")
+})
+
+test('allowedMethods on a ClassType exposes static methods', async () => {
+  const wrapper = new ClassType(Shape, { allowedMethods: ['double'] })
+  t.is(await run('Shape.double(21)', { inputs: { Shape: wrapper } }), 42)
+})
+
+test('a denied static method uses the type-object wording', async () => {
+  const error = await t.throwsAsync(() => run('Shape.double(1)', { inputs: { Shape: new ClassType(Shape) } }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, "AttributeError: type object 'Shape' has no attribute 'double'")
+})
+
+test('instantiate turns carry the class uuid as objectId', async () => {
   const session = await pool().checkout()
   try {
     const wrapper = new ClassType(Calculator, { init: true })
     const snap = await session.feedStart('Calculator(1)', { inputs: { Calculator: wrapper } })
     t.true(snap instanceof FunctionSnapshot)
     const call = snap as FunctionSnapshot
-    t.is(call.functionName, 'Calculator')
-    t.is(call.instanceId, null)
-    t.regex(call.typeId ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    t.is(call.functionName, '__call__')
+    t.regex(call.objectId ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     const done = await call.resumeAuto()
     t.true(done instanceof MontyComplete)
   } finally {

@@ -149,10 +149,11 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore, mut depth: u8)
         py_timezone_to_monty(obj).map(MontyObject::TimeZone)
     } else if let Ok(exc) = obj.cast::<PyBaseException>() {
         Ok(exc_to_monty_object(exc))
+    } else if is_class_type_wrapper(obj)? {
+        // ClassType subclasses ClassInstance, so it must be checked first.
+        class_type_to_monty(obj, store, depth)
     } else if is_class_instance_wrapper(obj)? {
         class_instance_to_monty(obj, store, depth)
-    } else if is_class_type_wrapper(obj)? {
-        class_type_to_monty(obj, store, depth)
     } else if is_dataclass(obj) {
         // Bare dataclasses no longer auto-convert: the wrapper carries the
         // exposure policy and the instance identity the sandbox routes by.

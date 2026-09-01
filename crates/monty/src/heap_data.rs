@@ -68,7 +68,7 @@ macro_rules! heap_payloads {
             /// The lightweight type object `type(x)` materializes for a `HostClass`
             /// instance — the real class lives on the host, so this is a named
             /// stand-in (see `HostClassType`).
-            HostClassType(inline $crate::types::HostClassType),
+            HostClassType(boxed $crate::types::HostClassType),
             /// A user-defined class object created by a `class` statement.
             Class(boxed $crate::types::Class),
             /// An instance of a user-defined class.

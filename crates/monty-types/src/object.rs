@@ -269,6 +269,13 @@ impl MontyObject {
                         .saturating_add(value.deep_host_size());
                 }
             }
+            Self::Type(MontyType::Instance(class_type)) => {
+                for (key, value) in &class_type.attrs {
+                    size = size
+                        .saturating_add(key.deep_host_size())
+                        .saturating_add(value.deep_host_size());
+                }
+            }
             _ => {}
         }
         size
@@ -752,7 +759,9 @@ impl AsRef<Self> for MontyObject {
 /// `id` is minted by whichever side defined the class (host uuid4, or a
 /// worker uuid for sandbox classes) and is the identity used for equality
 /// and for routing instantiation requests; it never encodes an address.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+// `Eq` is implemented manually below: `attrs` holds `MontyObject`s, whose
+// float equality is by bit pattern and therefore reflexive.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ClassType {
     /// The Python-visible class name (e.g. `"Point"`).
     pub name: String,
@@ -769,7 +778,15 @@ pub struct ClassType {
     pub is_dataclass: bool,
     /// Whether instances reject `setattr` with `FrozenInstanceError`.
     pub frozen: bool,
+    /// Class attributes sent eagerly with the type object (class constants,
+    /// per the sending wrapper's policy). Empty for the `type` branch inside
+    /// a `ClassInstance` and for `parents` entries.
+    pub attrs: DictPairs,
 }
+
+/// Reflexive despite the float-holding `attrs`: `MontyObject` compares floats
+/// by bit pattern, so `NaN == NaN` holds here.
+impl Eq for ClassType {}
 
 impl ClassType {
     /// Total owned name bytes, recursively over `parents` — the class type's
@@ -1328,7 +1345,7 @@ impl TryFrom<&MontyObject> for bool {
 ///
 /// Used internally by `MontyObject::Dict` to store dictionary entries while preserving
 /// insertion order. Keys and values are both `MontyObject` instances.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DictPairs(Vec<(MontyObject, MontyObject)>);
 
 impl From<Vec<(MontyObject, MontyObject)>> for DictPairs {
@@ -1373,7 +1390,8 @@ impl DictPairs {
         self.0.is_empty()
     }
 
-    fn iter(&self) -> impl Iterator<Item = &(MontyObject, MontyObject)> {
+    /// Iterates the (key, value) pairs in insertion order.
+    pub fn iter(&self) -> impl Iterator<Item = &(MontyObject, MontyObject)> {
         self.0.iter()
     }
 }

@@ -30,7 +30,7 @@ use monty::{Dump, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    CallReceiver, ClassType, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime,
+    ClassType, CompileOptions, DictPairs, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime,
     MontyException, MontyFileHandle, MontyObject, MontyTimeZone, MontyUuid, NameLookupResult, OsFunctionCall,
     PrintWriter, ResourceLimits, ResourceTracker, dir_stat, file_stat,
 };
@@ -596,6 +596,7 @@ impl FixtureRegistry {
                 parents: vec![],
                 is_dataclass: true,
                 frozen: fixture.frozen,
+                attrs: DictPairs::default(),
             },
             instance_id,
             attrs: fixture
@@ -1833,23 +1834,13 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
             RunProgress::FunctionCall(call) => {
                 // Method calls on host class instances are routed by the
                 // receiver uuid; unknown methods return AttributeError. The
-                // harness grants no `init`, so instantiations cannot occur.
-                match call.receiver {
-                    Some(CallReceiver::Instance(instance_id)) => {
-                        let result = dispatch_method_call(
-                            &call.function_name,
-                            instance_id,
-                            &call.args,
-                            &call.kwargs,
-                            &mut registry,
-                        );
-                        progress = call.resume(result, PrintWriter::Stdout)?;
-                        continue;
-                    }
-                    Some(CallReceiver::Type(type_id)) => {
-                        panic!("unexpected instantiation request for class id {type_id}");
-                    }
-                    None => {}
+                // harness registers no class types, so a class-uuid receiver
+                // cannot occur.
+                if let Some(object_id) = call.object_id {
+                    let result =
+                        dispatch_method_call(&call.function_name, object_id, &call.args, &call.kwargs, &mut registry);
+                    progress = call.resume(result, PrintWriter::Stdout)?;
+                    continue;
                 }
                 let dispatch_result = dispatch_external_call(&call.function_name, call.args.clone(), &mut registry);
                 match dispatch_result {
@@ -1894,8 +1885,8 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
             RunProgress::NameLookup(lookup) => {
                 // Instance-scoped lookups are lazy attribute reads on a host
                 // class instance; plain lookups resolve globals as before.
-                if let Some(instance_id) = lookup.instance_id() {
-                    let result = dispatch_instance_attr(&lookup.name, instance_id, &registry);
+                if let Some(object_id) = lookup.object_id() {
+                    let result = dispatch_instance_attr(&lookup.name, object_id, &registry);
                     progress = lookup.resume(result, PrintWriter::Stdout)?;
                     continue;
                 }

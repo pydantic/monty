@@ -190,13 +190,14 @@ other address-derived value). Divergences from real CPython objects:
   real class too (`unhashable type: 'Point'`). But it is not the class:
   each `type(x)` call allocates a fresh object, so `type(a) is type(b)` is
   `False` even for the same class (`==` compares class identity and works);
-  calling it suspends an instantiation request to the host, which only
-  succeeds when the host granted `init` (see below); it cannot be used as
-  the second argument of `isinstance()`; and — like Monty
-  class objects generally — it exposes only `__name__` (`__module__`,
-  `__qualname__`, `__doc__`, `__mro__`, `__bases__`, ... raise
-  `AttributeError`). Returned to the host, it resolves back to the real
-  class object when the class is registered in the session.
+  calling it suspends a `__call__` request to the host, which only succeeds
+  when the host granted `init` on a `ClassType` wrapper (see below); it
+  cannot be used as the second argument of `isinstance()`; and — like Monty
+  class objects generally — it exposes `__name__` plus any eager class
+  attrs the host sent (`__module__`, `__qualname__`, `__doc__`, `__mro__`,
+  `__bases__`, ... raise `AttributeError`). Returned to the host, it
+  resolves back to the real class object when the class is registered in
+  the session.
 - **`repr()` shows all eager attrs in order** (`Point(x=1, y=2)`). After
   sandbox code sets a new attribute, that attribute appears in the repr too —
   CPython's dataclass repr shows declared fields only.
@@ -225,29 +226,43 @@ other address-derived value). Divergences from real CPython objects:
   is not functional in the sandbox**: base-class attributes and methods are
   not consulted, and `__bases__` still raises `AttributeError`.
 
-## Host class instantiation (`ClassType` wrapper)
+## Host classes (`ClassType` wrapper)
 
 A host may pass a bare *class* into the sandbox with the `ClassType` policy
-wrapper (`pydantic_monty.ClassType(Point, init=True)`; JS
-`new ClassType(Point, { init: true })`). With `init` granted, sandbox code
-can call the class; the construction runs **host-side** and the constructed
-instance crosses back wrapped with the `ClassType`'s instance policies.
-`init` is purely host-side policy — it never crosses the wire, and the
-wrapper checks it on every construction request. Divergences:
+wrapper — a subclass of `ClassInstance` applied to the class object itself:
+`eager_attrs` sends class constants with the type, `lazy_attrs` serves them
+on demand, and `allowed_methods` exposes classmethods/staticmethods (calls
+and lazy lookups route to the host by the class uuid, exactly like instance
+routing). With `init=True` (`pydantic_monty.ClassType(Point, init=True)`; JS
+`new ClassType(Point, { init: true })`) sandbox code can also call the
+class; the construction crosses as a `__call__` method call, runs
+**host-side**, and the constructed instance crosses back wrapped with the
+wrapper's `instance_*` policies (`instance_eager_attrs`, `instance_lazy_attrs`,
+`instance_allowed_methods`; JS `instanceEagerAttrs`, ...). `frozen` governs
+constructed instances — a type object rejects `setattr` regardless. `init`
+is purely host-side policy — it never crosses the wire, and the wrapper
+checks it on every construction request. Divergences:
 
+- Missing/denied class attributes raise CPython's type-object wording
+  (`AttributeError: type object 'Point' has no attribute 'x'`). Like
+  instance attrs, only `Type.attr` syntax consults the host, underscore
+  names stay local, and lazy class lookups are not cached.
 - With `init` absent or false, calling the class raises
   `TypeError: cannot instantiate host class 'Point'` (CPython would
   construct); calling a class the host never registered with a `ClassType`
   wrapper — e.g. `type(x)` of a plain `ClassInstance` — raises
-  `RuntimeError` ("no host class registered..."). A sandbox-origin class
-  type raises the `TypeError` locally, since the host could never construct
-  it.
+  `RuntimeError` ("no host class registered for '__call__' on 'Point'...").
+  A sandbox-origin class type raises the `TypeError` locally, since the
+  host could never construct it.
 - Constructor exceptions propagate into the sandbox like external-function
   errors.
-- After a session restore the class registration is gone: instantiation
-  raises `RuntimeError` ("no host class registered...").
+- After a session restore the class registration is gone: construction and
+  classmethod calls raise `RuntimeError`, lazy class attrs raise
+  `AttributeError`.
 - JS constructors have no keyword arguments; kwargs arrive as a trailing
   options-bag argument, as with wrapped method calls.
+- Eager class attrs are a snapshot at send time, and (like eager instance
+  attrs) host-side mutations after send are not visible.
 
 ## What does NOT exist for user code
 

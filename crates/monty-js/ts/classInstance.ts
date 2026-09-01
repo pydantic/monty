@@ -64,7 +64,7 @@ export class ClassInstance {
     readonly instance: object,
     readonly options: ClassInstanceOptions = {},
   ) {
-    if (typeof instance !== 'object' || instance === null) {
+    if ((typeof instance !== 'object' && typeof instance !== 'function') || instance === null) {
       throw new TypeError('ClassInstance expects an object instance')
     }
   }
@@ -97,7 +97,7 @@ export class ClassInstance {
    */
   lookupLazyAttr(name: string): unknown {
     if (!policyAllows(this.options.lazyAttrs, name) || !(name in this.instance)) {
-      throw new AttrNotExposed(this.getName(), name)
+      throw this.attrError(name)
     }
     return this.convertValue(name, (this.instance as Record<string, unknown>)[name])
   }
@@ -113,7 +113,7 @@ export class ClassInstance {
    */
   callMethod(name: string, args: unknown[], kwargs: Record<string, unknown>): unknown {
     if (!policyAllows(this.options.allowedMethods, name) || !(name in this.instance)) {
-      throw new AttrNotExposed(this.getName(), name)
+      throw this.attrError(name)
     }
     const method = (this.instance as Record<string, unknown>)[name]
     if (typeof method !== 'function') {
@@ -140,46 +140,78 @@ export class ClassInstance {
     }
     return value
   }
+
+  /** The sentinel a denied or missing attribute raises; [`ClassType`]
+   *  overrides it with CPython's type-object wording. */
+  protected attrError(name: string): AttrNotExposed {
+    return new AttrNotExposed(attributeErrorMessage(this.getName(), name))
+  }
 }
 
-/** Options for [`ClassType`]: the `init` gate plus the instance policies
- *  applied to every instance the class constructs for the sandbox. */
+/** Options for [`ClassType`]: the inherited policies applied to the class
+ *  object itself (class constants, static methods), the `init` gate, and the
+ *  `instance*` policies applied to every constructed instance. `frozen` is
+ *  the exception — a type object rejects setattr regardless, so it governs
+ *  constructed instances. */
 export interface ClassTypeOptions extends ClassInstanceOptions {
   /** Whether sandbox code may instantiate the class (default false). Purely
    *  a host-side policy: it never crosses the wire, and `construct` checks
    *  it on every request. */
   init?: boolean
+  /** Policy applied to constructed instances (see [`ClassInstanceOptions`]). */
+  instanceEagerAttrs?: AttrPolicy
+  /** Policy applied to constructed instances. */
+  instanceLazyAttrs?: AttrPolicy
+  /** Policy applied to constructed instances. */
+  instanceAllowedMethods?: AttrPolicy
 }
 
 /**
- * Policy wrapper exposing a host *class* to the Monty sandbox. With
- * `init: true`, sandbox code may call the class to construct instances; the
- * construction runs host-side and the result crosses back wrapped in a
- * [`ClassInstance`] carrying this wrapper's instance policies:
+ * Policy wrapper exposing a host *class* to the Monty sandbox. Extends
+ * [`ClassInstance`], applied to the class object itself: `eagerAttrs` sends
+ * static class constants with the type, `lazyAttrs` serves them on demand,
+ * and `allowedMethods` exposes static methods. With `init: true`, sandbox
+ * code may call the class; the construction arrives as a `__call__` method
+ * call, runs host-side, and the result crosses back wrapped in a
+ * [`ClassInstance`] carrying the `instance*` policies:
  *
  * ```ts
  * await session.feedRun('p = Point(1, 2)\nassert p.x == 1', {
- *   inputs: { Point: new ClassType(Point, { init: true, eagerAttrs: 'all' }) },
+ *   inputs: { Point: new ClassType(Point, { init: true, instanceEagerAttrs: 'all' }) },
  * })
  * ```
  */
-export class ClassType {
-  constructor(
-    /** The wrapped host class (a constructor function). */
-    readonly classType: new (...args: never[]) => object,
-    readonly options: ClassTypeOptions = {},
-  ) {
+export class ClassType extends ClassInstance {
+  declare readonly options: ClassTypeOptions
+
+  constructor(classType: new (...args: never[]) => object, options: ClassTypeOptions = {}) {
     if (typeof classType !== 'function') {
       throw new TypeError('ClassType expects a class (constructor function)')
     }
+    super(classType, options)
+  }
+
+  /** The wrapped host class (the inherited `instance` field). */
+  get classType(): new (...args: never[]) => object {
+    return this.instance as new (...args: never[]) => object
   }
 
   /** Class name shown to the sandbox: `options.name`, else the class name. */
-  getName(): string {
+  override getName(): string {
     if (this.options.name !== undefined) {
       return this.options.name
     }
-    return typeof this.classType.name === 'string' && this.classType.name !== '' ? this.classType.name : 'object'
+    const name = (this.instance as { name?: unknown }).name
+    return typeof name === 'string' && name !== '' ? name : 'object'
+  }
+
+  /** Routes `__call__` (construction) to [`construct`](ClassType.construct);
+   *  every other name is a static-method call gated by `allowedMethods`. */
+  override callMethod(name: string, args: unknown[], kwargs: Record<string, unknown>): unknown {
+    if (name === '__call__') {
+      return this.construct(args, kwargs)
+    }
+    return super.callMethod(name, args, kwargs)
   }
 
   /**
@@ -196,11 +228,22 @@ export class ClassType {
     return this.instanceWrapper(new this.classType(...(callArgs as never[])))
   }
 
-  /** Wraps a constructed instance with this wrapper's instance policies.
-   *  Override to customize how constructed instances are exposed. */
+  /** Wraps a constructed instance with the `instance*` policies (and the
+   *  shared `frozen`). Override to customize how constructed instances are
+   *  exposed. */
   instanceWrapper(instance: object): ClassInstance {
-    const { eagerAttrs, lazyAttrs, allowedMethods, frozen, convertValue } = this.options
-    return new ClassInstance(instance, { eagerAttrs, lazyAttrs, allowedMethods, frozen, convertValue })
+    const { instanceEagerAttrs, instanceLazyAttrs, instanceAllowedMethods, frozen, convertValue } = this.options
+    return new ClassInstance(instance, {
+      eagerAttrs: instanceEagerAttrs,
+      lazyAttrs: instanceLazyAttrs,
+      allowedMethods: instanceAllowedMethods,
+      frozen,
+      convertValue,
+    })
+  }
+
+  protected override attrError(name: string): AttrNotExposed {
+    return new AttrNotExposed(`type object '${this.getName()}' has no attribute '${name}'`)
   }
 }
 
@@ -270,32 +313,31 @@ export class InstanceStore {
     return id
   }
 
-  /** Registers a `ClassType` wrapper under its class uuid. */
+  /** Registers a `ClassType` wrapper under its class uuid, in both the
+   *  class map (identity round-trips) and the routing map (method calls,
+   *  `__call__` construction, lazy class attrs). */
   registerClass(wrapper: ClassType): string {
     const id = this.typeUuid(wrapper.classType)
     this.classes.set(id, { classObject: wrapper.classType, wrapper })
+    this.map.set(id, wrapper)
     return id
   }
 
-  /** Looks up the wrapper registered for `id`. */
+  /** Looks up the wrapper registered for `id` (instance or class type). */
   get(id: string): ClassInstance | undefined {
     return this.map.get(id)
   }
 
-  /**
-   * Constructs an instance of the class registered for `typeId` through its
-   * `ClassType` wrapper (which re-checks its own `init` policy). Throws when
-   * the class never crossed with a wrapper — e.g. after a session restore.
-   */
-  instantiate(typeId: string, name: string, args: unknown[], kwargs: Record<string, unknown>): ClassInstance {
-    const wrapper = this.classes.get(typeId)?.wrapper
-    if (wrapper === undefined) {
-      throw new Error(
-        `no host class registered for instantiation of '${name}' (id ${typeId}) — ` +
-          'pass the class as a ClassType(..., { init: true })',
-      )
+  /** The name of a class known under `id` but never granted via a
+   *  `ClassType` wrapper (e.g. it crossed inside `type(x)`) — used to give
+   *  routed-call store misses a "pass a ClassType" hint. */
+  knownClassName(id: string): string | undefined {
+    const entry = this.classes.get(id)
+    if (entry === undefined || entry.wrapper !== undefined) {
+      return undefined
     }
-    return wrapper.construct(args, kwargs)
+    const name = (entry.classObject as { name?: unknown }).name
+    return typeof name === 'string' && name !== '' ? name : 'object'
   }
 }
 
@@ -306,8 +348,8 @@ export class InstanceStore {
  * exported from the package index.
  */
 export class AttrNotExposed extends Error {
-  constructor(typeName: string, attrName: string) {
-    super(attributeErrorMessage(typeName, attrName))
+  constructor(message: string) {
+    super(message)
     this.name = 'AttrNotExposed'
   }
 }
@@ -344,11 +386,12 @@ function prepareInner(value: unknown, store: InstanceStore, depth: number): unkn
   if (typeof value !== 'object' || value === null) {
     return value
   }
+  // ClassType extends ClassInstance, so it must be matched first.
+  if (value instanceof ClassType) {
+    return classTypeToMarker(value, store, depth)
+  }
   if (value instanceof ClassInstance) {
     return wrapperToMarker(value, store, depth)
-  }
-  if (value instanceof ClassType) {
-    return classTypeToMarker(value, store)
   }
   if (Array.isArray(value)) {
     return walkArray(value, store, depth, prepareInner)
@@ -437,11 +480,16 @@ function wrapperToMarker(wrapper: ClassInstance, store: InstanceStore, depth: nu
 }
 
 /** Registers a `ClassType` wrapper and builds its `Type` wire marker. */
-function classTypeToMarker(wrapper: ClassType, store: InstanceStore): Record<string, unknown> {
+function classTypeToMarker(wrapper: ClassType, store: InstanceStore, depth: number): Record<string, unknown> {
   store.registerClass(wrapper)
+  // Eager class attrs (static class constants) cross inside the type, each
+  // prepared recursively so nested wrappers register themselves too.
+  const attrs = wrapper
+    .getEagerAttrs()
+    .map(([name, value]): [string, unknown] => [name, prepareInner(value, store, depth + 1)])
   return {
     __monty_type__: 'Type',
-    classType: classTypeObject(wrapper.getName(), wrapper.classType, wrapper.options, store),
+    classType: classTypeObject(wrapper.getName(), wrapper.classType, wrapper.options, store, attrs),
   }
 }
 
@@ -456,6 +504,7 @@ function classTypeObject(
   classObject: object | undefined,
   options: ClassInstanceOptions,
   store: InstanceStore,
+  attrs: Array<[string, unknown]> = [],
 ): Record<string, unknown> {
   // An object with no constructor still needs a class identity: key it on
   // `Object.prototype` so repeats stay stable within the session.
@@ -468,6 +517,7 @@ function classTypeObject(
     // JS has no dataclasses; host-wrapped objects always cross as plain classes
     isDataclass: false,
     frozen: options.frozen ?? false,
+    attrs,
   }
 }
 
@@ -484,6 +534,7 @@ function parentMarkers(classObject: object, store: InstanceStore): Array<Record<
       parents: [],
       isDataclass: false,
       frozen: false,
+      attrs: [],
     })
     parent = Object.getPrototypeOf(parent)
   }

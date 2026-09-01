@@ -10,14 +10,7 @@
 // delivered when the worker reports everything is blocked (`resolveFutures`).
 
 import type { NativeSession } from '../native-addon.js'
-import {
-  AttrNotExposed,
-  attributeErrorMessage,
-  ClassInstance,
-  InstanceStore,
-  prepare,
-  restore,
-} from './classInstance.js'
+import { AttrNotExposed, attributeErrorMessage, InstanceStore, prepare, restore } from './classInstance.js'
 import {
   MontyCrashedError,
   MontyError,
@@ -477,8 +470,8 @@ class TurnAnswerer {
         next = this.answerOsCall(turn, onPrint)
         break
       case 'nameLookup': {
-        if (turn.instanceId !== undefined && turn.instanceId !== null) {
-          next = this.answerInstanceLookup(turn, turn.instanceId, onPrint)
+        if (turn.objectId !== undefined && turn.objectId !== null) {
+          next = this.answerObjectLookup(turn, turn.objectId, onPrint)
           break
         }
         // A callable entry resolves to a host function (by display name); any
@@ -510,11 +503,8 @@ class TurnAnswerer {
 
   /** Calls the matching external function and resumes with its result. */
   private answerFunctionCall(call: FunctionCallTurn, onPrint: PrintCallback): Promise<object> {
-    if (call.instanceId !== undefined && call.instanceId !== null) {
-      return this.answerMethodCall(call, call.instanceId, onPrint)
-    }
-    if (call.typeId !== undefined && call.typeId !== null) {
-      return this.answerInstantiate(call, call.typeId, onPrint)
+    if (call.objectId !== undefined && call.objectId !== null) {
+      return this.answerMethodCall(call, call.objectId, onPrint)
     }
     // Own keys only, as in the nameLookup branch: an inherited callable (e.g.
     // `Object.prototype.toString`) must never be dispatched as a host function.
@@ -546,16 +536,18 @@ class TurnAnswerer {
   }
 
   /**
-   * Dispatches a method call on the host instance registered under
-   * `instanceId`, routing through the wrapper's `callMethod` policy check.
+   * Dispatches a host-routed call on the object registered under `objectId` —
+   * a method on a class instance, or on a `ClassType` wrapper a classmethod
+   * or `__call__` construction (the wrapper's own `init` policy gates it).
    * Denied/absent names raise `AttributeError` in the sandbox; a
    * promise-returning method is registered as a pending future.
    */
-  private answerMethodCall(call: FunctionCallTurn, instanceId: string, onPrint: PrintCallback): Promise<object> {
-    const wrapper = this.instances.get(instanceId)
-    if (call.functionName.startsWith('_')) {
-      // Defensive re-check of the sandbox's underscore rule: wire frames from
-      // a (possibly compromised) worker are untrusted.
+  private answerMethodCall(call: FunctionCallTurn, objectId: string, onPrint: PrintCallback): Promise<object> {
+    const wrapper = this.instances.get(objectId)
+    if (call.functionName.startsWith('_') && call.functionName !== '__call__') {
+      // Defensive re-check of the sandbox's underscore rule (`__call__` is
+      // the one dunder legitimately routed): wire frames from a (possibly
+      // compromised) worker are untrusted.
       return this.native.resumeError(
         'AttributeError',
         attributeErrorMessage(wrapper?.getName() ?? 'object', call.functionName),
@@ -563,12 +555,16 @@ class TurnAnswerer {
       )
     }
     if (wrapper === undefined) {
-      // e.g. a session restored into a process that never sent the instance
-      return this.native.resumeError(
-        'RuntimeError',
-        `no host instance registered for method call '${call.functionName}' (id ${instanceId})`,
-        onPrint,
-      )
+      // A session restored into a process that never sent the object, or a
+      // class that crossed (e.g. via `type(x)`) without a ClassType wrapper.
+      const known = this.instances.knownClassName(objectId)
+      const message =
+        known === undefined
+          ? `no host object registered for method call '${call.functionName}' (id ${objectId}) — ` +
+            'the instance store is empty after loading a session into a new process'
+          : `no host class registered for '${call.functionName}' on '${known}' (id ${objectId}) — ` +
+            'pass the class as a ClassType(...)'
+      return this.native.resumeError('RuntimeError', message, onPrint)
     }
     let returned: unknown
     try {
@@ -590,32 +586,14 @@ class TurnAnswerer {
   }
 
   /**
-   * Dispatches an instantiation of the host class registered under `typeId`,
-   * routing through the `ClassType` wrapper's `construct` — whose host-side
-   * `init` policy decides whether construction is allowed. The constructed
-   * instance crosses back as a registered `ClassInstance`.
+   * Answers a lazy attribute lookup on the host object registered under
+   * `objectId` (a class instance, or a class type for lazy class attrs). An
+   * undefined answer (`resumeNameLookup(null, null, ...)`) makes the sandbox
+   * raise `AttributeError` — used for underscore names, store misses, and
+   * names the wrapper's policy denies.
    */
-  private answerInstantiate(call: FunctionCallTurn, typeId: string, onPrint: PrintCallback): Promise<object> {
-    let constructed: ClassInstance
-    try {
-      const args = restoreValues(call.args, this.instances)
-      const kwargs = kwargsToRecord(restoreKwargPairs(call.kwargs, this.instances))
-      constructed = this.instances.instantiate(typeId, call.functionName, args, kwargs)
-    } catch (err) {
-      const { excType, message } = jsErrorParts(err)
-      return this.native.resumeError(excType, message, onPrint)
-    }
-    return this.resumeWithValue(constructed, onPrint)
-  }
-
-  /**
-   * Answers a lazy attribute lookup on the host instance registered under
-   * `instanceId`. An undefined answer (`resumeNameLookup(null, null, ...)`)
-   * makes the sandbox raise `AttributeError` — used for underscore names,
-   * store misses, and names the wrapper's policy denies.
-   */
-  private answerInstanceLookup(turn: NameLookupTurn, instanceId: string, onPrint: PrintCallback): Promise<object> {
-    const wrapper = this.instances.get(instanceId)
+  private answerObjectLookup(turn: NameLookupTurn, objectId: string, onPrint: PrintCallback): Promise<object> {
+    const wrapper = this.instances.get(objectId)
     if (wrapper === undefined || turn.name.startsWith('_')) {
       return this.native.resumeNameLookup(null, null, onPrint)
     }
@@ -938,12 +916,10 @@ export class FunctionSnapshot extends SingleUse {
   readonly kwargs: Record<string, unknown>
   readonly callId: number
   readonly isOsFunction: boolean
-  /** Set for method calls on a host-backed class instance: the receiver's
-   *  store uuid (the receiver is not in `args`). `null` otherwise. */
-  readonly instanceId: string | null
-  /** Set for instantiations of a host class: the class's store uuid. At
-   *  most one of `instanceId` / `typeId` is set. */
-  readonly typeId: string | null
+  /** Set for host-routed calls: the receiver's store uuid — a class
+   *  instance, or a class type (a classmethod, or `__call__` construction).
+   *  The receiver is not in `args`; `null` for plain external calls. */
+  readonly objectId: string | null
 
   /** @internal */
   constructor(
@@ -957,8 +933,7 @@ export class FunctionSnapshot extends SingleUse {
     this.kwargs = kwargsToRecord(restoreKwargPairs(turn.kwargs, driver.instances))
     this.callId = turn.callId
     this.isOsFunction = isOsFunction
-    this.instanceId = 'instanceId' in turn ? (turn.instanceId ?? null) : null
-    this.typeId = 'typeId' in turn ? (turn.typeId ?? null) : null
+    this.objectId = 'objectId' in turn ? (turn.objectId ?? null) : null
   }
 
   /** Resumes with the call's return value. */
@@ -1016,9 +991,10 @@ export class FunctionSnapshot extends SingleUse {
 /** A paused execution waiting for the value of an undefined name. */
 export class NameLookupSnapshot extends SingleUse {
   readonly variableName: string
-  /** Set for lazy attribute lookups on a host-backed class instance: the
-   *  instance's store uuid. `null` for plain name lookups. */
-  readonly instanceId: string | null
+  /** Set for lazy attribute lookups on a host-backed object (a class
+   *  instance, or a class type): the receiver's store uuid. `null` for
+   *  plain name lookups. */
+  readonly objectId: string | null
 
   /** @internal */
   constructor(
@@ -1027,12 +1003,12 @@ export class NameLookupSnapshot extends SingleUse {
   ) {
     super()
     this.variableName = turn.name
-    this.instanceId = turn.instanceId ?? null
+    this.objectId = turn.objectId ?? null
   }
 
   /** Resolves the name to an external function by name, or — with no
    *  argument — leaves it unresolved: the sandbox raises `NameError` for a
-   *  plain lookup, `AttributeError` when `instanceId` is set. */
+   *  plain lookup, `AttributeError` when `objectId` is set. */
   resume(functionName?: string): Promise<Snapshot> {
     this.claim()
     return this.driver.resumeNameLookup(functionName ?? null)
@@ -1040,7 +1016,7 @@ export class NameLookupSnapshot extends SingleUse {
 
   /** Resolves the lookup to `value` directly (any convertible value,
    *  including `null`/`undefined` → `None`) — the way to answer a lazy
-   *  `instanceId` attribute lookup by hand, and the counterpart of
+   *  `objectId` attribute lookup by hand, and the counterpart of
    *  pydantic_monty's `resume(value=...)`. Resumes at most once. */
   resumeValue(value: unknown): Promise<Snapshot> {
     this.claim()

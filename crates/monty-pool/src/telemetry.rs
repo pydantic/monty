@@ -15,7 +15,7 @@ use std::fmt::{self, Write};
 
 use logfire::{Logfire, set_local_logfire};
 use monty_proto::{WireFunctionCall, WireObject, pb, pb::os_call::Call};
-use monty_types::{CallReceiver, MontyObject, bytes_repr};
+use monty_types::{MontyObject, MontyUuid, bytes_repr};
 use opentelemetry::Value as OtelValue;
 use tracing::{Span, field::Empty};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -281,8 +281,7 @@ impl Recorder {
                     args = args,
                     kwargs = kwargs,
                     call_id = c.call_id,
-                    instance_id = receiver_instance_id(c.receiver.as_ref()),
-                    type_id = receiver_type_id(c.receiver.as_ref()),
+                    object_id = c.object_id.as_ref().map(MontyUuid::to_string),
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_duration_micros = max_duration,
@@ -599,23 +598,6 @@ fn render_call_ids(ids: &[u32]) -> (Option<String>, bool) {
 /// argument as an `args.*` attribute named after its proto field. Every path
 /// is a virtual sandbox path.
 ///
-/// The instance uuid of a method-call receiver, rendered hyphenated for the
-/// span attribute; `None` for plain calls and instantiations.
-fn receiver_instance_id(receiver: Option<&CallReceiver>) -> Option<String> {
-    match receiver {
-        Some(CallReceiver::Instance(uuid)) => Some(uuid.to_string()),
-        _ => None,
-    }
-}
-
-/// The class uuid of an instantiation receiver; `None` otherwise.
-fn receiver_type_id(receiver: Option<&CallReceiver>) -> Option<String> {
-    match receiver {
-        Some(CallReceiver::Type(uuid)) => Some(uuid.to_string()),
-        _ => None,
-    }
-}
-
 /// Each call shape gets its own macro invocation because the attribute set is
 /// baked into the span's `logfire.json_schema` at compile time — a union-shaped
 /// call would surface every unused argument as `null` in the UI.
@@ -1024,7 +1006,7 @@ mod tests {
             args: vec![MontyObject::Int(2)],
             kwargs: vec![],
             call_id: 1,
-            receiver: None,
+            object_id: None,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
@@ -1077,7 +1059,7 @@ mod tests {
 
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "fetch".to_owned(),
-            instance_id: None,
+            object_id: None,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
             pb::ResumeNameLookup {
@@ -1207,7 +1189,7 @@ mod tests {
         recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "value".to_owned(),
-            instance_id: None,
+            object_id: None,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
             pb::ResumeNameLookup {

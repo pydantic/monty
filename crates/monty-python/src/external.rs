@@ -5,10 +5,10 @@
 //! [`ExternalLookup`] owns both halves of the lazy-resolution protocol — the
 //! `NameLookup` that resolves a bare name and the `FunctionCall` that invokes a
 //! resolved host function — so the callable-vs-value rule linking them lives in
-//! one place. Instance calls (`dispatch_instance_call*`) and lazy attribute
-//! lookups (`resolve_instance_attr`) are a separate concern: they route through
-//! the session's [`InstanceStore`] to the original wrapped object, not
-//! `external_lookup`.
+//! one place. Host-routed calls (`dispatch_object_call*`) and lazy attribute
+//! lookups (`resolve_object_attr`) are a separate concern: they route through
+//! the session's [`InstanceStore`] to the original wrapped object or class,
+//! not `external_lookup`.
 
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty, py_to_monty_value};
 use monty_types::{ExtFunctionResult, MontyObject, MontyUuid};
@@ -20,68 +20,44 @@ use pyo3::{
 
 use crate::exceptions::MontyConversionError;
 
-/// Dispatches a method call on a host class instance, routed by `instance_id`
-/// through the session's [`InstanceStore`] to the original wrapper's
-/// `call_method`. The receiver is NOT in `args`.
-pub fn dispatch_instance_call(
+/// Dispatches a host-routed call — a method on a host class instance, or on
+/// a host class type (a classmethod, or construction spelled `__call__`) —
+/// routed by `object_id` through the session's [`InstanceStore`] to the
+/// wrapper's `call_method`. The receiver is NOT in `args`.
+pub fn dispatch_object_call(
     py: Python<'_>,
     function_name: &str,
-    instance_id: &MontyUuid,
+    object_id: &MontyUuid,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
     instances: &InstanceStore,
 ) -> ExtFunctionResult {
-    match dispatch_instance_call_inner(py, function_name, instance_id, args, kwargs, instances) {
+    match dispatch_object_call_inner(py, function_name, object_id, args, kwargs, instances) {
         Ok(result) => ExtFunctionResult::Return(result),
         Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
     }
 }
 
-/// `PyResult`-returning core of [`dispatch_instance_call`].
-fn dispatch_instance_call_inner(
+/// `PyResult`-returning core of [`dispatch_object_call`].
+fn dispatch_object_call_inner(
     py: Python<'_>,
     function_name: &str,
-    instance_id: &MontyUuid,
+    object_id: &MontyUuid,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
     instances: &InstanceStore,
 ) -> PyResult<MontyObject> {
-    let result = call_instance_method_raw(py, function_name, instance_id, args, kwargs, instances)?;
+    let result = call_object_method_raw(py, function_name, object_id, args, kwargs, instances)?;
     py_to_monty(&result, instances, 0)
-}
-
-/// Dispatches an instantiation of a host class, routed by `type_id` through
-/// the session's [`InstanceStore`] to the `ClassType` wrapper's `construct` —
-/// whose host-side `init` policy decides whether construction is allowed
-/// (nothing about instantiability crosses the wire). The constructed instance
-/// comes back as a registered `ClassInstance` wrapper and crosses like any
-/// other value.
-pub fn dispatch_instantiate(
-    py: Python<'_>,
-    class_name: &str,
-    type_id: &MontyUuid,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
-    instances: &InstanceStore,
-) -> ExtFunctionResult {
-    let result = (|| {
-        let (py_args_tuple, py_kwargs) = wire_call_arguments(py, args, kwargs, instances)?;
-        let constructed = instances.instantiate(py, type_id, class_name, &py_args_tuple, &py_kwargs)?;
-        py_to_monty(constructed.bind(py), instances, 0)
-    })();
-    match result {
-        Ok(result) => ExtFunctionResult::Return(result),
-        Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
-    }
 }
 
 /// Converts the wire args/kwargs and invokes `wrapper.call_method` through the
 /// store, returning the raw Python result (shared by the sync and coroutine
 /// dispatch paths).
-fn call_instance_method_raw<'py>(
+fn call_object_method_raw<'py>(
     py: Python<'py>,
     function_name: &str,
-    instance_id: &MontyUuid,
+    object_id: &MontyUuid,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
     instances: &InstanceStore,
@@ -89,7 +65,7 @@ fn call_instance_method_raw<'py>(
     validate_host_method_name(function_name)?;
     let (py_args_tuple, py_kwargs) = wire_call_arguments(py, args, kwargs, instances)?;
     instances
-        .call_method(py, instance_id, function_name, &py_args_tuple, &py_kwargs)
+        .call_method(py, object_id, function_name, &py_args_tuple, &py_kwargs)
         .map(|obj| obj.into_bound(py))
 }
 
@@ -112,14 +88,15 @@ fn wire_call_arguments<'py>(
     Ok((py_args_tuple, py_kwargs))
 }
 
-/// Answers a lazy attribute lookup on a host class instance (`NameLookup` with
-/// an `instance_id`): `Ok(None)` means "not exposed" — a store miss, an
-/// underscore name, or an `AttributeError` from the wrapper's policy — and the
-/// sandbox raises `AttributeError`. Any other exception fails the turn.
-pub fn resolve_instance_attr(
+/// Answers a lazy attribute lookup on a host-backed object (`NameLookup`
+/// with an `object_id` — an instance, or a class type for lazy class attrs):
+/// `Ok(None)` means "not exposed" — a store miss, an underscore name, or an
+/// `AttributeError` from the wrapper's policy — and the sandbox raises
+/// `AttributeError`. Any other exception fails the turn.
+pub fn resolve_object_attr(
     py: Python<'_>,
     name: &str,
-    instance_id: &MontyUuid,
+    object_id: &MontyUuid,
     instances: &InstanceStore,
 ) -> PyResult<Option<MontyObject>> {
     if name.starts_with('_') {
@@ -127,7 +104,7 @@ pub fn resolve_instance_attr(
         // from a (possibly compromised) child are untrusted.
         return Ok(None);
     }
-    match instances.lookup_lazy_attr(py, instance_id, name)? {
+    match instances.lookup_lazy_attr(py, object_id, name)? {
         Some(value) => py_to_monty_value(value.bind(py), instances)
             .map(Some)
             .map_err(|exc| MontyConversionError::value_conversion_err(py, exc)),
@@ -309,17 +286,17 @@ pub enum CallResult {
     Coroutine(Py<PyAny>),
 }
 
-/// Like [`dispatch_instance_call`] but returns `CallResult::Coroutine` when
+/// Like [`dispatch_object_call`] but returns `CallResult::Coroutine` when
 /// the method returns a coroutine for the async loop to await.
-pub fn dispatch_instance_call_or_coroutine(
+pub fn dispatch_object_call_or_coroutine(
     py: Python<'_>,
     function_name: &str,
-    instance_id: &MontyUuid,
+    object_id: &MontyUuid,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
     instances: &InstanceStore,
 ) -> CallResult {
-    match call_instance_method_raw(py, function_name, instance_id, args, kwargs, instances) {
+    match call_object_method_raw(py, function_name, object_id, args, kwargs, instances) {
         Ok(result) => result_to_call_result(py, &result, instances),
         Err(err) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(py, &err))),
     }
@@ -327,10 +304,12 @@ pub fn dispatch_instance_call_or_coroutine(
 
 /// Rejects private/dunder method dispatch from a worker-controlled name.
 ///
-/// The sandbox never suspends on `_`-prefixed names, so seeing one here means
-/// the frame is forged; wire frames from a child are untrusted.
+/// `__call__` is the one dunder the sandbox legitimately suspends on (calling
+/// a host object; the wrapper's own policy still gates it). Otherwise the
+/// sandbox never suspends on `_`-prefixed names, so seeing one here means the
+/// frame is forged; wire frames from a child are untrusted.
 fn validate_host_method_name(function_name: &str) -> PyResult<()> {
-    if function_name.starts_with('_') {
+    if function_name.starts_with('_') && function_name != "__call__" {
         Err(PyAttributeError::new_err(format!(
             "host method '{function_name}' is not exposed"
         )))

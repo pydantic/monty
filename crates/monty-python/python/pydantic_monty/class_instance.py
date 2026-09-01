@@ -7,9 +7,11 @@ methods sandbox code may call. The sandbox routes lazy attribute lookups and
 method calls back to the wrapped instance by a session-local uuid, and when
 sandbox code returns the instance, the host receives the original object back.
 
-`ClassType` is the class-level sibling: wrap a *class* to pass it into the
-sandbox, optionally letting sandbox code instantiate it (`init=True`); each
-constructed instance is wrapped with the `ClassType`'s instance policies.
+`ClassType` is the class-level subclass: wrap a *class* to pass it into the
+sandbox. The inherited policies expose the class object itself (class
+constants via `eager_attrs`/`lazy_attrs`, classmethods via
+`allowed_methods`), `init=True` lets sandbox code instantiate it, and the
+`instance_*` policies are applied to each constructed instance.
 
 Subclass and override `convert_value` (or `call_method` / `lookup_lazy_attrs`)
 to transform values crossing the boundary.
@@ -19,7 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, fields, is_dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 __all__ = ('ClassInstance', 'ClassType')
 
@@ -106,8 +108,13 @@ class ClassInstance:
     def get_attr(self, name: str, policy: set[str] | Literal['all'] | None) -> Any:
         """Raw attribute access guarded by an exposure policy (no conversion)."""
         if policy != 'all' and (policy is None or name not in policy):
-            raise AttributeError(f'{type(self.class_instance).__name__!r} object has no attribute {name!r}')
+            raise self.attr_error(name)
         return getattr(self.class_instance, name)
+
+    def attr_error(self, name: str) -> AttributeError:
+        """The error a denied or missing attribute raises; `ClassType`
+        overrides it with CPython's type-object wording."""
+        return AttributeError(f'{type(self.class_instance).__name__!r} object has no attribute {name!r}')
 
     def get_frozen(self) -> bool:
         """Whether the sandbox copy is frozen; auto-detects frozen dataclasses."""
@@ -119,45 +126,81 @@ class ClassInstance:
 
 
 @dataclass
-class ClassType:
+class ClassType(ClassInstance):
     """Policy wrapper exposing a host *class* to the Monty sandbox.
 
-    With `init=True`, sandbox code may call the class to construct instances;
-    the construction runs host-side and the result crosses back wrapped in a
-    `ClassInstance` carrying this wrapper's instance policies.
+    Inherits `ClassInstance`, applied to the class object itself: `eager_attrs`
+    sends class constants with the type, `lazy_attrs` serves them on demand,
+    and `allowed_methods` exposes classmethods/staticmethods. `frozen` is the
+    exception — a type object rejects `setattr` regardless, so it (with the
+    `instance_*` policies) governs constructed instances instead.
+
+    With `init=True`, sandbox code may call the class; the construction
+    arrives as a `__call__` method call, runs host-side, and the result
+    crosses back wrapped in a `ClassInstance` carrying the `instance_*`
+    policies.
 
     Example:
     ```python
     session.feed_run(
         'p = Point(1, 2)\nassert p.x == 1',
-        inputs={'Point': ClassType(Point, init=True, eager_attrs='all')},
+        inputs={'Point': ClassType(Point, init=True, instance_eager_attrs='all')},
     )
     ```
     """
 
-    class_type: type
-    """The class to send."""
-
     init: bool = False
-    """Whether sandbox code may instantiate the class."""
+    """Whether sandbox code may instantiate the class. Purely a host-side
+    policy: it never crosses the wire, and `construct` checks it on every
+    request."""
 
-    eager_attrs: Sequence[str] | Literal['all'] | None = None
-    """Instance policy applied to constructed instances (see `ClassInstance`)."""
+    instance_eager_attrs: Sequence[str] | Literal['all'] | None = None
+    """Policy applied to constructed instances (see `ClassInstance`)."""
 
-    lazy_attrs: set[str] | Literal['all'] | None = None
-    """Instance policy applied to constructed instances (see `ClassInstance`)."""
+    instance_lazy_attrs: set[str] | Literal['all'] | None = None
+    """Policy applied to constructed instances (see `ClassInstance`)."""
 
-    allowed_methods: set[str] | Literal['all'] | None = None
-    """Instance policy applied to constructed instances (see `ClassInstance`)."""
+    instance_allowed_methods: set[str] | Literal['all'] | None = None
+    """Policy applied to constructed instances (see `ClassInstance`)."""
 
-    frozen: bool | None = None
-    """Instance policy applied to constructed instances (see `ClassInstance`)."""
+    def __post_init__(self) -> None:
+        if not isinstance(self.class_instance, type):
+            raise TypeError('ClassType expects a class')
+
+    @property
+    def class_type(self) -> type:
+        """The wrapped class (the inherited `class_instance` field)."""
+        return cast(type, self.class_instance)
+
+    def get_eager_attrs(self) -> dict[str, Any]:
+        """Class-object variant of eager attrs: `'all'` sends public
+        non-callable entries of the class `__dict__` (class constants),
+        skipping methods and descriptors; an explicit list reads exactly
+        those names."""
+        if self.eager_attrs is None:
+            return {}
+        if self.eager_attrs == 'all':
+            eager_attrs = [
+                (name, value)
+                for name, value in vars(self.class_type).items()
+                if not name.startswith('_') and not _is_class_machinery(value)
+            ]
+        else:
+            eager_attrs = [(name, getattr(self.class_type, name)) for name in self.eager_attrs]
+        return {name: self.convert_value(name, value) for name, value in eager_attrs}
+
+    def call_method(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        """Routes `__call__` (construction) to `construct`; every other name
+        is a classmethod/staticmethod call gated by `allowed_methods`."""
+        if name == '__call__':
+            return self.construct(args, kwargs)
+        return super().call_method(name, args, kwargs)
 
     def construct(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> ClassInstance:
         """Constructs an instance for the sandbox, re-checking the `init` policy.
 
-        Returns the instance wrapped with this wrapper's instance policies, so
-        it registers and crosses back like any host-sent `ClassInstance`.
+        Returns the instance wrapped with the `instance_*` policies, so it
+        registers and crosses back like any host-sent `ClassInstance`.
         """
         if not self.init:
             raise TypeError(f'cannot instantiate host class {self.class_type.__name__!r}')
@@ -165,12 +208,22 @@ class ClassType:
         return self.instance_wrapper(instance)
 
     def instance_wrapper(self, instance: Any) -> ClassInstance:
-        """Wraps a constructed instance with this wrapper's instance policies.
-        Override to customize how constructed instances are exposed."""
+        """Wraps a constructed instance with the `instance_*` policies (and
+        the shared `frozen`). Override to customize how constructed instances
+        are exposed."""
         return ClassInstance(
             instance,
-            eager_attrs=self.eager_attrs,
-            lazy_attrs=self.lazy_attrs,
-            allowed_methods=self.allowed_methods,
+            eager_attrs=self.instance_eager_attrs,
+            lazy_attrs=self.instance_lazy_attrs,
+            allowed_methods=self.instance_allowed_methods,
             frozen=self.frozen,
         )
+
+    def attr_error(self, name: str) -> AttributeError:
+        return AttributeError(f'type object {self.class_type.__name__!r} has no attribute {name!r}')
+
+
+def _is_class_machinery(value: Any) -> bool:
+    """Whether a class `__dict__` entry is a method or descriptor rather than
+    a class constant — excluded from `eager_attrs='all'` on a `ClassType`."""
+    return callable(value) or isinstance(value, (classmethod, staticmethod, property))

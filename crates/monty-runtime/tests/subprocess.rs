@@ -316,7 +316,7 @@ fn external_function_round_trip() {
         panic!("expected FunctionCall, got {event:?}");
     };
     assert_eq!(call.function_name, "add");
-    assert_eq!(call.receiver, None);
+    assert_eq!(call.object_id, None);
     assert_eq!(call.args, vec![MontyObject::Int(1), MontyObject::Int(2)]);
 
     let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::ReturnValue(int_value(3)));
@@ -602,37 +602,37 @@ fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
 fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
     let cases = [
-        ("'x' * 10_000_000", 10_033_185),
-        ("b'x' * 10_000_000", 10_033_317),
-        ("[None] * 1_000_000", 16_033_439),
-        ("2 ** 10_000_000", 10_033_278),
-        ("1 << 10_000_000", 1_283_279),
-        ("('a' * 1000).replace('a', 'b' * 2000)", 2_036_817),
+        ("'x' * 10_000_000", 10_031_137),
+        ("b'x' * 10_000_000", 10_031_269),
+        ("[None] * 1_000_000", 16_031_391),
+        ("2 ** 10_000_000", 10_031_230),
+        ("1 << 10_000_000", 1_281_231),
+        ("('a' * 1000).replace('a', 'b' * 2000)", 2_034_769),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
-        ("x = [None] * 40_000\nx += x", 1_953_883),
-        ("t = (None,) * 40_000\nt + t", 1_313_883),
-        ("x = [None] * 40_000\nx.copy()", 1_313_633),
+        ("x = [None] * 40_000\nx += x", 1_951_835),
+        ("t = (None,) * 40_000\nt + t", 1_311_835),
+        ("x = [None] * 40_000\nx.copy()", 1_311_585),
         // A partial re-clones its bound arguments on every call, so that clone
         // is preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [None] * 40_000\np()",
-            1_314_563,
+            1_312_515,
         ),
         // Reading `p.args` / `p.keywords` rebuilds them in full, so both are
         // preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [0] * 40_000\np.args",
-            1_314_563,
+            1_312_515,
         ),
         (
             "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
-            1_071_419,
+            1_069_371,
         ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
-            16_034_019,
+            16_031_971,
         ),
     ];
 

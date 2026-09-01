@@ -3,7 +3,7 @@ use std::{
     hash::{DefaultHasher, Hash, Hasher},
 };
 
-use monty_types::{CallReceiver, ClassType, MontyType, MontyUuid};
+use monty_types::{ClassType, DictPairs, MontyType, MontyUuid};
 use serde::ser::SerializeStruct;
 
 use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value, str::allocate_string};
@@ -79,6 +79,8 @@ impl HostClass {
     }
 
     /// Rebuilds the wire [`ClassType`] this instance's class crossed in as.
+    /// The `type` branch of an instance never carries eager class attrs, so
+    /// `attrs` is always empty here.
     #[must_use]
     pub fn class_type(&self, interns: &Interns) -> ClassType {
         ClassType {
@@ -88,6 +90,7 @@ impl HostClass {
             parents: self.parents.clone(),
             is_dataclass: self.is_dataclass,
             frozen: self.frozen,
+            attrs: DictPairs::default(),
         }
     }
 
@@ -291,11 +294,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
                 .is_none()
         {
             // The receiver is not passed along — the host resolves it by id.
-            let receiver = CallReceiver::Instance(self.get(vm.heap).instance_id());
+            let object_id = self.get(vm.heap).instance_id();
             Ok(CallResult::MethodCall {
                 name: attr.clone(),
                 args,
-                receiver,
+                object_id,
             })
         } else {
             // Not a method call — handle directly
@@ -328,7 +331,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
             None if !attr_name.starts_with('_') => Ok(Some(CallResult::AttrLookup {
                 name: attr.clone(),
                 class_name: self.get(vm.heap).name(vm.interns).to_owned(),
-                instance_id: self.get(vm.heap).instance_id(),
+                object_id: self.get(vm.heap).instance_id(),
+                type_object: false,
             })),
             // underscore-prefixed: raise locally with the host class's real
             // name (not the static `HostClass` py_type placeholder)
@@ -395,11 +399,13 @@ impl HeapItem for HostClass {
 /// The type object for a [`HostClass`] — returned by `type(x)` and produced
 /// when a host passes a bare class in (a `Type` input with a host origin).
 ///
-/// The real class lives on the host, so this is a lightweight stand-in
-/// naming it (repr `<class 'Point'>`, equality by class identity). Each
+/// The real class lives on the host, so this is a stand-in naming it (repr
+/// `<class 'Point'>`, equality by class identity) plus its eagerly sent
+/// class attrs. Public names missing from `attrs` route back to the host
+/// like [`HostClass`] attrs do (lazy class attrs, classmethod calls); each
 /// `type(x)` call allocates a fresh one, so `type(a) is type(b)` is `False`
 /// even for the same class (use `==`) — see `limitations/classes.md`. Not
-/// usable with `isinstance`; calling it suspends an instantiation request to
+/// usable with `isinstance`; calling it suspends a `__call__` method call to
 /// the host, whose own policy decides whether construction is allowed.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct HostClassType {
@@ -407,7 +413,7 @@ pub(crate) struct HostClassType {
     name: EitherStr,
     /// Identity of the class, matching [`HostClass::type_id`].
     type_id: MontyUuid,
-    /// Whether the class is host-defined (an instantiation routing target).
+    /// Whether the class is host-defined (a host routing target).
     host_defined: bool,
     /// Direct base classes, carried for the wire `Type`.
     parents: Vec<MontyType>,
@@ -415,12 +421,16 @@ pub(crate) struct HostClassType {
     is_dataclass: bool,
     /// Whether instances reject `setattr` with `FrozenInstanceError`.
     frozen: bool,
+    /// Eagerly-sent class attributes (class constants). Excluded from
+    /// equality/hash, which go by class identity alone.
+    attrs: Dict,
 }
 
 impl HostClassType {
-    /// Creates the type object for a host class from its wire class type.
+    /// Creates the type object for a host class from its wire class type and
+    /// the already-converted eager class attrs (empty for `type(x)` results).
     #[must_use]
-    pub fn new(name: EitherStr, class_type: ClassType) -> Self {
+    pub fn new(name: EitherStr, class_type: ClassType, attrs: Dict) -> Self {
         Self {
             name,
             type_id: class_type.id,
@@ -428,6 +438,7 @@ impl HostClassType {
             parents: class_type.parents,
             is_dataclass: class_type.is_dataclass,
             frozen: class_type.frozen,
+            attrs,
         }
     }
 
@@ -450,13 +461,9 @@ impl HostClassType {
         self.type_id
     }
 
-    /// The class name as stored, for building the instantiation suspension.
-    #[must_use]
-    pub fn name_either(&self) -> &EitherStr {
-        &self.name
-    }
-
-    /// Rebuilds the wire [`ClassType`] this type object crosses out as.
+    /// Rebuilds the wire [`ClassType`] this type object crosses out as —
+    /// minus `attrs`, which hold heap `Value`s: the object bridge converts
+    /// and appends them when the type crosses out as a value.
     #[must_use]
     pub fn class_type(&self, interns: &Interns) -> ClassType {
         ClassType {
@@ -466,7 +473,16 @@ impl HostClassType {
             parents: self.parents.clone(),
             is_dataclass: self.is_dataclass,
             frozen: self.frozen,
+            attrs: DictPairs::default(),
         }
+    }
+}
+
+impl HostClassType {
+    /// Returns a reference to the eager class attrs Dict.
+    #[must_use]
+    pub fn attrs(&self) -> &Dict {
+        &self.attrs
     }
 }
 
@@ -506,24 +522,70 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
         Ok(write!(f, "<class '{}'>", self.get(vm.heap).name(vm.interns))?)
     }
 
+    /// Resolves `Type.attr`: `__name__`, then eager class attrs, then a lazy
+    /// host lookup for public names on a host-defined class.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let attr_name = attr.as_str(vm.interns);
         if attr_name == "__name__" {
             let name = self.get(vm.heap).name(vm.interns).to_owned();
-            Ok(Some(CallResult::Value(allocate_string(name, vm.heap))))
-        } else {
+            return Ok(Some(CallResult::Value(allocate_string(name, vm.heap))));
+        }
+        match self.get(vm.heap).attrs.get_by_str(attr_name, vm.heap, vm.interns) {
+            Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
+            // A sandbox-origin class has no host wrapper to consult, so a
+            // suspension could only ever miss — fail locally instead.
+            None if !attr_name.starts_with('_') && self.get(vm.heap).host_defined => Ok(Some(CallResult::AttrLookup {
+                name: attr.clone(),
+                class_name: self.get(vm.heap).name(vm.interns).to_owned(),
+                object_id: self.get(vm.heap).type_id(),
+                type_object: true,
+            })),
             // CPython wording for missing attrs on a type object.
-            Err(ExcType::attribute_error_type(
+            None => Err(ExcType::attribute_error_type(
                 self.get(vm.heap).name(vm.interns),
                 attr_name,
-            ))
+            )),
+        }
+    }
+
+    /// Mirrors [`HostClass`]'s lazy method detection for classmethods: a
+    /// public name missing from the eager class attrs suspends to the host
+    /// (routed by the class uuid) when the class is host-defined.
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let attr_str = attr.as_str(vm.interns);
+        if !attr_str.starts_with('_')
+            && self.get(vm.heap).host_defined
+            && self
+                .get(vm.heap)
+                .attrs
+                .get_by_str(attr_str, vm.heap, vm.interns)
+                .is_none()
+        {
+            let object_id = self.get(vm.heap).type_id();
+            Ok(CallResult::MethodCall {
+                name: attr.clone(),
+                args,
+                object_id,
+            })
+        } else {
+            defer_drop!(args, vm);
+            if let Some(value) = self.get(vm.heap).attrs.get_by_str(attr_str, vm.heap, vm.interns) {
+                let type_name = value.py_type_name(vm);
+                Err(ExcType::type_error_not_callable_object(&type_name))
+            } else {
+                Err(ExcType::attribute_error_type(
+                    self.get(vm.heap).name(vm.interns),
+                    attr_str,
+                ))
+            }
         }
     }
 }
 
 impl HeapItem for HostClassType {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // Name and type_id hold no heap references.
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // The eager class attrs are the only heap references.
+        self.attrs.py_dec_ref_ids(stack);
     }
 }
 

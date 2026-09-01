@@ -1,4 +1,4 @@
-use monty_types::{ClassType, ExcType, MontyType, MontyUuid};
+use monty_types::{ClassType, DictPairs, ExcType, MontyType, MontyUuid};
 use strum::IntoEnumIterator;
 
 /// `MontyType::from_type_name` must be the exact inverse of `Display`/`name()`
@@ -47,6 +47,7 @@ fn instance_type_is_not_nameable() {
         parents: vec![],
         is_dataclass: false,
         frozen: false,
+        attrs: DictPairs::default(),
     }));
     assert_eq!(t.to_string(), "Foo");
     assert_eq!(t.name(), "Foo");

@@ -1051,16 +1051,12 @@ class FunctionSnapshot:
     @property
     def is_os_function(self) -> bool: ...
     @property
-    def instance_id(self) -> uuid.UUID | None:
-        """Session uuid of the receiver for a method call on a host class
-        instance sent via `ClassInstance`; `None` for plain external functions,
-        OS calls, and instantiations. The receiver is not included in `args`."""
-
-    @property
-    def type_id(self) -> uuid.UUID | None:
-        """Session uuid of the class for an instantiation request on a host
-        class sent via `ClassType`; `None` otherwise. At most one of
-        `instance_id` / `type_id` is set."""
+    def object_id(self) -> uuid.UUID | None:
+        """Session uuid of the routed receiver — a host class instance sent
+        via `ClassInstance`, or a host class sent via `ClassType` (a
+        classmethod call, or construction, which arrives as `__call__`);
+        `None` for plain external functions and OS calls. The receiver is not
+        included in `args`."""
 
     @property
     def function_name(self) -> str | OsFunction: ...
@@ -1100,30 +1096,30 @@ class FunctionSnapshot:
 @final
 class NameLookupSnapshot:
     """A paused execution waiting for the value of an undefined name, or —
-    when `instance_id` is set — a lazy attribute lookup on a host class
-    instance sent via `ClassInstance`."""
+    when `object_id` is set — a lazy attribute lookup on a host-backed object
+    (a `ClassInstance` instance, or a `ClassType` class)."""
 
     @property
     def script_name(self) -> str: ...
     @property
     def variable_name(self) -> str: ...
     @property
-    def instance_id(self) -> uuid.UUID | None:
-        """Session uuid of the instance for a lazy attribute lookup; `None`
+    def object_id(self) -> uuid.UUID | None:
+        """Session uuid of the receiver for a lazy attribute lookup; `None`
         for a plain undefined-name lookup. An omitted-`value` resume raises
-        `AttributeError` (not `NameError`) for instance lookups."""
+        `AttributeError` (not `NameError`) for attribute lookups."""
     def resume(self, *, value: Any = ...) -> SyncSnapshot:
         """Resume by binding the name to `value` (any value, including `None`), or
         omit `value` to leave the name undefined — the sandbox then raises
-        `NameError`, or `AttributeError` when `instance_id` is set (a lazy
-        attribute lookup on a host class instance)."""
+        `NameError`, or `AttributeError` when `object_id` is set (a lazy
+        attribute lookup on a host-backed object)."""
 
     def resume_auto(self) -> SyncSnapshot:
         """Answer this name lookup automatically, then return the next snapshot
         (or `MontyComplete`). A plain lookup resolves from the captured
         `external_lookup=` (an absent name raises `NameError` in the sandbox);
-        an `instance_id` lookup resolves through the sending `ClassInstance`
-        wrapper's `lazy_attrs` policy (a denied or absent attribute raises
+        an `object_id` lookup resolves through the sending wrapper's
+        `lazy_attrs` policy (a denied or absent attribute raises
         `AttributeError`)."""
 
     def dump(self) -> bytes:
@@ -1162,9 +1158,7 @@ class AsyncFunctionSnapshot:
     @property
     def is_os_function(self) -> bool: ...
     @property
-    def instance_id(self) -> uuid.UUID | None: ...
-    @property
-    def type_id(self) -> uuid.UUID | None: ...
+    def object_id(self) -> uuid.UUID | None: ...
     @property
     def function_name(self) -> str | OsFunction: ...
     @property
@@ -1192,7 +1186,7 @@ class AsyncNameLookupSnapshot:
     @property
     def variable_name(self) -> str: ...
     @property
-    def instance_id(self) -> uuid.UUID | None: ...
+    def object_id(self) -> uuid.UUID | None: ...
     async def resume(self, *, value: Any = ...) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
         """Async sibling of `NameLookupSnapshot.resume_auto`."""

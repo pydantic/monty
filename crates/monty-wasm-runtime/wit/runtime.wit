@@ -98,6 +98,9 @@ interface worker {
         parents: list<u32>,
         is-dataclass: bool,
         frozen: bool,
+        /// Eagerly-sent class attributes (class constants); empty for the
+        /// class-type of an instance and for parent entries.
+        attrs: list<node-pair>,
     }
 
     /// A class instance and indexes of its attribute keys and values.
@@ -288,25 +291,26 @@ interface worker {
         text: string,
     }
 
-    /// A suspended external function call. At most one of `instance-id` /
-    /// `type-id` is set (the wire `FunctionCall.receiver` oneof).
+    /// A suspended external function call. When `object-id` is set this is a
+    /// method call on a host-backed object — a class instance, or a class
+    /// type (construction of a host class arrives as a `__call__` call).
     record function-call-event {
         function-name: string,
         args: list<value>,
         kwargs: list<value-pair>,
         call-id: u32,
-        /// Set for a method call on a host instance: its uuid string.
-        instance-id: option<string>,
-        /// Set for an instantiation of a host class: its uuid string.
-        type-id: option<string>,
+        /// Uuid string of the routed receiver (instance or class type);
+        /// absent for plain external calls.
+        object-id: option<string>,
     }
 
     /// A suspended name or lazy-attribute lookup.
     record name-lookup-event {
         name: string,
-        /// Set for a lazy attribute lookup on a host instance: its uuid
-        /// string (`NameLookup.instance_id`).
-        instance-id: option<string>,
+        /// Set for a lazy attribute lookup on a host-backed object (a class
+        /// instance, or a class type): its uuid string
+        /// (`NameLookup.object_id`).
+        object-id: option<string>,
     }
 
     /// A suspended OS call projected into the public callback shape.

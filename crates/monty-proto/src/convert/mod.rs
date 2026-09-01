@@ -125,17 +125,17 @@ fn depth_exceeds(value: &MontyObject, budget: usize) -> bool {
         MontyObject::NamedTuple { values, .. } => seq_exceeds(values, budget, LIST_COST),
         MontyObject::Dict(pairs) => pairs_exceed(pairs, budget, DICT_COST),
         MontyObject::ClassInstance { class_type, attrs, .. } => {
-            // The class type is a sibling branch of the attrs chain; each
-            // parent adds one nested `Type` message level.
+            // The class type is a sibling branch of the attrs chain; its
+            // parents and eager class attrs nest inside the `Type` message.
             let type_branch_exceeds = match budget.checked_sub(CLASS_INSTANCE_TYPE_COST) {
                 None => true,
-                Some(rest) => class_parents_exceed(class_type, rest),
+                Some(rest) => class_type_exceeds(class_type, rest),
             };
             type_branch_exceeds || pairs_exceed(attrs, budget, CLASS_INSTANCE_COST)
         }
         MontyObject::Type(MontyType::Instance(class_type)) => match budget.checked_sub(TYPE_COST) {
             None => true,
-            Some(rest) => class_parents_exceed(class_type, rest),
+            Some(rest) => class_type_exceeds(class_type, rest),
         },
         MontyObject::Type(_) => budget < TYPE_COST,
         // a scalar is one `MontyObject` message level
@@ -143,19 +143,26 @@ fn depth_exceeds(value: &MontyObject, budget: usize) -> bool {
     }
 }
 
-/// Whether a class type's `parents` chain exceeds `budget` further nested
-/// `Type` message levels (the levels above the outermost `Type` are charged
-/// by the caller). Every parent costs one level — a builtin parent is still
-/// a nested `Type` message. Bails as soon as the budget is exhausted, so
-/// recursion stays bounded for adversarially deep parent chains.
-fn class_parents_exceed(class_type: &ClassType, budget: usize) -> bool {
-    class_type.parents.iter().any(|parent| match budget.checked_sub(1) {
+/// Proto message levels the eager class attrs consume under their enclosing
+/// `Type` message (`Dict` + `Pair`; the values then count as usual).
+const TYPE_ATTRS_COST: usize = 2;
+
+/// Whether a class type's `parents` chain or eager class `attrs` exceed
+/// `budget` further message levels nested under the `Type` message itself
+/// (the levels above it are charged by the caller). Every parent costs one
+/// level — a builtin parent is still a nested `Type` message. Bails as soon
+/// as the budget is exhausted, so recursion stays bounded for adversarially
+/// deep parent chains.
+fn class_type_exceeds(class_type: &ClassType, budget: usize) -> bool {
+    let parents_exceed = class_type.parents.iter().any(|parent| match budget.checked_sub(1) {
         None => true,
         Some(rest) => match parent {
-            MontyType::Instance(parent_class) => class_parents_exceed(parent_class, rest),
+            MontyType::Instance(parent_class) => class_type_exceeds(parent_class, rest),
             _ => false,
         },
-    })
+    });
+    // Empty attrs encode as an absent field, consuming no message levels.
+    parents_exceed || (!class_type.attrs.is_empty() && pairs_exceed(&class_type.attrs, budget, TYPE_ATTRS_COST))
 }
 
 fn seq_exceeds(items: &[MontyObject], budget: usize, cost: usize) -> bool {
