@@ -1,0 +1,58 @@
+crates/monty-proto/src/wire.rs
+  s_bf68572fceb021::t_07738b57861e60 970
+crates/monty/src/types/host_class.rs
+  s_bf68572fceb021::t_f5ec0dc6a704ee 14
+  s_bf68572fceb021::t_0a00a3c5a87696 39-41,132-133,182-186,535,539
+crates/monty-python/tests/test_class_instance.py
+  s_bf68572fceb021::t_5f44ae38500122 689-692,696
+  s_bf68572fceb021::t_01f6b72112dad1 341,344-346,348,410-416
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_bf68572fceb021::t_7d66a51263251c 278
+crates/monty-js/README.md
+  s_bf68572fceb021::t_10e3fbf7a963c9 131-133,137-140,148-149,156
+limitations/classes.md
+  s_bf68572fceb021::t_465401fcfc041a 183-184,212-219,226-233,241,250-252,412-415
+scripts/test_fixtures.py
+  s_bf68572fceb021::t_5f2f0b0307e960 49,95
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_bf68572fceb021::t_658c67cfab2a5e 229
+crates/monty/test_cases/builtin__setattr.py
+  s_bf68572fceb021::t_f6ec2991ad5040 24-27
+crates/monty-proto/Cargo.toml
+  s_bf68572fceb021::t_e81d6765deb2a8 43
+crates/monty/test_cases/dataclass__basic.py
+  s_bf68572fceb021::t_5f2f0b0307e960 4,15-17,19-23,196-201,339-340
+crates/monty-js/ts/classInstance.ts
+  s_bf68572fceb021::t_02426b3409fc1a 25-26,49-59,61-64,68,158-194,197-201,206
+  s_bf68572fceb021::t_7f6ffb0adf3c50 353-357,368-382,550,556-572,583,589-591,595,599,602,604,617-618,621,731-746
+  s_bf68572fceb021::t_6a1287c6757df0 215-221,229-235,243,283-284,286
+  s_bf68572fceb021::t_7a45048eff2a10 336-339,401
+crates/monty-datatest/src/main.rs
+  s_bf68572fceb021::t_1d9684575b13e2 485,490,504,517,608
+crates/monty-proto/src/generated/monty.v1.rs
+  s_bf68572fceb021::t_7d66a51263251c 180
+crates/monty-proto/src/python/class_instance.rs
+  s_bf68572fceb021::t_da6df90ce959b8 14-18,52-62,95-96
+  s_bf68572fceb021::t_c2a650372ac80e 111-118,122,124-127,139-141,148,151
+  s_bf68572fceb021::t_1194ee5af07f48 267-270,272-275,277,312-332
+crates/monty-python/python/pydantic_monty/class_instance.py
+  s_bf68572fceb021::t_2fef475872f90d 10-11,25,32-33,126-163,167,170
+crates/monty-js/ts/index.ts
+  s_bf68572fceb021::t_10e3fbf7a963c9 12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5dde280dfe3f611692849d1e7b0cc5214dc3d604",
+  "prompts": {},
+  "sessions": {
+    "s_bf68572fceb021": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8ff2ad2-c7e9-4cb1-9a42-b2f5d74a4d5e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
