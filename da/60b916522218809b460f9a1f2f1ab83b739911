@@ -1,0 +1,23 @@
+crates/monty-types/Cargo.toml
+  s_bf68572fceb021::t_464457c8859ba7 34-37
+crates/monty-types/tests/uuid.rs
+  s_bf68572fceb021::t_249d70822f5466 1-64,69-132,135-144,149-173
+  s_bf68572fceb021::t_df4bda3f131640 65-68,145-148
+  s_bf68572fceb021::t_06fb4ff2921149 133-134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "da60b916522218809b460f9a1f2f1ab83b739911",
+  "prompts": {},
+  "sessions": {
+    "s_bf68572fceb021": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8ff2ad2-c7e9-4cb1-9a42-b2f5d74a4d5e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
