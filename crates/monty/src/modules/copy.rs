@@ -14,7 +14,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Dict, List, Module, instance_call_dunder_sync},
+    types::{Dict, List, Module, instance_call_copy_hook},
     value::{VALUE_SIZE, Value},
 };
 
@@ -139,7 +139,7 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
             Ok(named.allocate_like(items, vm))
         }
         HeapReadOutput::Instance(instance) => {
-            if let Some(copy) = instance_call_dunder_sync(id, "__copy__", None, vm)? {
+            if let Some(copy) = instance_call_copy_hook(id, "__copy__", None, vm)? {
                 Ok(copy)
             } else {
                 let pairs = clone_attrs(id, vm)?;
