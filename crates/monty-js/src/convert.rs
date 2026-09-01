@@ -428,7 +428,7 @@ fn create_js_file_handle<'e>(handle: &MontyFileHandle, env: &'e Env) -> Result<U
 /// non-string keys skipped) rather than a plain object: attr names are
 /// sandbox-controlled, and pair entries cannot clobber a prototype the way
 /// `obj[k] = v` on a plain object could. The TS layer converts the marker to
-/// the original wrapped instance or a `MontyClassInstance` proxy.
+/// the original wrapped instance or a `MontyClassProxy` proxy.
 fn create_js_class_instance<'e>(
     class_type: &ClassType,
     instance_id: &MontyUuid,

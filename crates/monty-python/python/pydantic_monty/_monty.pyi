@@ -27,7 +27,7 @@ __all__ = [
     'CollectString',
     'Frame',
     'Monty',
-    'MontyClassInstance',
+    'MontyClassProxy',
     'MontyConversionError',
     'MontyCrashedError',
     'MontyDisconnectError',
@@ -356,7 +356,7 @@ class MontyFileHandle:
         """`True` if the mode permits `write()` (`'w'`, `'a'`, `'r+'`, `'w+'`, `'a+'`, and binary variants)."""
 
 @final
-class MontyClassInstance:
+class MontyClassProxy:
     """Read-only proxy for a class instance the host has no original object for.
 
     Produced when the sandbox returns a sandbox-defined class instance, or a
@@ -669,7 +669,7 @@ class MontySession:
         limits / type-check state (the `checkout()` config for those is not
         applied). The class-instance store starts empty — it is host state and
         never part of a dump, so restored `ClassInstance` values fall back to
-        `MontyClassInstance` proxies and method calls on them fail. Raises if
+        `MontyClassProxy` stand-ins and method calls on them fail. Raises if
         the dump is actually a suspended snapshot.
         """
 

@@ -81,7 +81,7 @@ export { CollectString, CollectStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, type Co
 export {
   ClassInstance,
   ClassType,
-  MontyClassInstance,
+  MontyClassProxy,
   type AttrPolicy,
   type ClassInstanceOptions,
   type ClassTypeOptions,

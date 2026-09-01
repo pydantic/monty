@@ -380,7 +380,7 @@ properties that real CPython does not provide, per the caveat above.
   its own `script_name` / limits / type-check state (the `checkout()` config
   for those is not applied). The session's class-instance store is host-side
   and NOT part of the dump: restoring into a fresh session/process starts with
-  an empty store, so a returned host instance becomes a `MontyClassInstance`
+  an empty store, so a returned host instance becomes a `MontyClassProxy`
   proxy, a method call on it raises `RuntimeError` ("no host instance
   registered..."), a lazy attribute lookup raises `AttributeError`, and an
   instantiation of a `ClassType`-granted class raises `RuntimeError` ("no

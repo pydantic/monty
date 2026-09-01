@@ -9,7 +9,7 @@
 // address), and when sandbox code returns the instance, the host receives
 // the original object back (identity preserved). Instances with no host
 // original — defined inside the sandbox, or from a session restored into a
-// fresh process — surface as read-only [`MontyClassInstance`] proxies.
+// fresh process — surface as read-only [`MontyClassProxy`] stand-ins.
 //
 // [`ClassType`] is the class-level sibling: wrap a class to pass it into the
 // sandbox, optionally letting sandbox code instantiate it (`init: true`).
@@ -209,7 +209,7 @@ export class ClassType {
  * for: one defined inside the sandbox, or a host instance returned after the
  * session was restored into a fresh process.
  */
-export class MontyClassInstance {
+export class MontyClassProxy {
   /** Class name of the instance (e.g. `'Point'`). */
   readonly name: string
   /** Whether the instance was a dataclass on the side that produced it. */
@@ -366,7 +366,7 @@ function prepareInner(value: unknown, store: InstanceStore, depth: number): unkn
   if (marker === 'ClassInstance') {
     // Identity-bearing markers are produced internally by this walk, never
     // held by host code (`restore` maps them to the original object or a
-    // MontyClassInstance proxy). One arriving here is forged — e.g. embedded
+    // MontyClassProxy). One arriving here is forged — e.g. embedded
     // in attacker-controlled JSON to impersonate a registered instance.
     throw new TypeError('raw ClassInstance markers are not accepted — wrap the object in ClassInstance(...)')
   }
@@ -384,7 +384,7 @@ function prepareInner(value: unknown, store: InstanceStore, depth: number): unkn
 /**
  * Inbound walk over a sandbox value reaching the host: maps `ClassInstance`
  * markers to the original wrapped object when the id is in `store` (identity
- * preserved), else to a [`MontyClassInstance`] proxy with recursively
+ * preserved), else to a [`MontyClassProxy`] proxy with recursively
  * restored attrs; recurses into containers with the same no-copy-when-
  * unchanged behaviour as [`prepare`].
  */
@@ -518,7 +518,7 @@ function markerToInstance(marker: Record<string, unknown>, store: InstanceStore,
     }
   }
   const classType = (marker.type ?? {}) as Record<string, unknown>
-  return new MontyClassInstance(
+  return new MontyClassProxy(
     typeof classType.name === 'string' ? classType.name : 'object',
     classType.isDataclass === true,
     attrs,

@@ -154,7 +154,7 @@ order and error wording, but with these divergences:
 ## Crossing the host boundary (`pydantic_monty` / `@pydantic/monty`)
 
 A sandbox-defined class **instance** crosses out structurally: the host
-receives a read-only `MontyClassInstance` proxy with `.name`, `.is_dataclass`,
+receives a read-only `MontyClassProxy` with `.name`, `.is_dataclass`,
 and `.attributes` (the instance `__dict__`, converted; the JS package spells
 these `.name` / `.isDataclass` / `.attributes`). The host cannot call
 methods on it — the method code lives inside the sandbox, and the proxy holds
@@ -165,7 +165,7 @@ guaranteed store miss produces the usual errors.
 
 ```python
 result = session.feed_run('class A:\n    def __init__(self):\n        self.x = 1\nA()')
-# result is MontyClassInstance(name='A', attributes={'x': 1})
+# result is MontyClassProxy(name='A', attributes={'x': 1})
 ```
 
 A sandbox-defined class **object** (`A` itself) still has no structural host

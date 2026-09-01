@@ -1,4 +1,4 @@
-"""Tests for `pydantic_monty.ClassInstance` wrappers and `MontyClassInstance` proxies."""
+"""Tests for `pydantic_monty.ClassInstance` wrappers and `MontyClassProxy` proxies."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from pydantic_monty import (
     AsyncMonty,
     ClassInstance,
     Monty,
-    MontyClassInstance,
+    MontyClassProxy,
     MontyConversionError,
     MontySession,
 )
@@ -480,23 +480,23 @@ def test_nested_wrapper_identity_round_trip(monty_run: RunMonty):
     assert result is c
 
 
-# === MontyClassInstance proxies for sandbox-defined classes ===
+# === MontyClassProxy stand-ins for sandbox-defined classes ===
 
 
 def test_sandbox_class_returns_proxy(monty_run: RunMonty):
     code = 'class Foo:\n    def __init__(self, a: int):\n        self.a = a\nFoo(1)'
     result = monty_run(code)
-    assert isinstance(result, MontyClassInstance)
+    assert isinstance(result, MontyClassProxy)
     assert result.name == snapshot('Foo')
     assert result.is_dataclass is False
     assert result.attributes == snapshot({'a': 1})
-    assert repr(result) == snapshot("MontyClassInstance(name='Foo', attributes={'a': 1})")
+    assert repr(result) == snapshot("MontyClassProxy(name='Foo', attributes={'a': 1})")
 
 
 def test_sandbox_dataclass_returns_proxy(monty_run: RunMonty):
     code = 'from dataclasses import dataclass\n@dataclass\nclass P:\n    x: int\n    y: int\nP(1, 2)'
     result = monty_run(code)
-    assert isinstance(result, MontyClassInstance)
+    assert isinstance(result, MontyClassProxy)
     assert result.name == snapshot('P')
     assert result.is_dataclass is True
     assert result.attributes == snapshot({'x': 1, 'y': 2})
@@ -542,7 +542,7 @@ def test_dump_load_into_new_session_falls_back_to_proxy(pool: Monty):
     with pool.checkout() as session:
         assert session.load_session(blob) is None
         result = session.feed_run('x')
-        assert isinstance(result, MontyClassInstance)
+        assert isinstance(result, MontyClassProxy)
         assert result.name == snapshot('Person')
         assert result.attributes == snapshot({'name': 'Alice'})
 

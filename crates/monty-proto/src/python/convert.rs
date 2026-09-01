@@ -283,7 +283,7 @@ fn callable_to_monty_function(obj: &Bound<'_, PyAny>) -> MontyObject {
 
 /// Converts Monty's `MontyObject` to a native Python object. A class instance
 /// found in `store` resolves to the ORIGINAL wrapped object (identity
-/// preserved); otherwise it becomes a read-only `MontyClassInstance` proxy.
+/// preserved); otherwise it becomes a read-only `MontyClassProxy` proxy.
 pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, store: &InstanceStore) -> PyResult<Py<PyAny>> {
     monty_to_py_inner(py, obj, store, 0)
 }

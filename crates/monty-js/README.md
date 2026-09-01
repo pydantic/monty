@@ -136,7 +136,7 @@ never touch the wrapped host object.
 
 Instances the host has no original for — defined inside the sandbox, or
 returned after a dump was restored into a fresh process — surface as read-only
-`MontyClassInstance` proxies (`name`, `attributes`, `isDataclass`).
+`MontyClassProxy` stand-ins (`name`, `attributes`, `isDataclass`).
 
 ### Class instantiation (`ClassType`)
 
@@ -429,20 +429,20 @@ path.
 
 ## Value Conversion
 
-| Python            | JavaScript                                              |
-| ----------------- | ------------------------------------------------------- |
-| `None`            | `null`                                                  |
-| `bool`            | `boolean`                                               |
-| `int`             | `number` (±2^53) or `BigInt`                            |
-| `float`           | `number`                                                |
-| `str`             | `string`                                                |
-| `bytes`           | `Buffer`                                                |
-| `list`            | `Array`                                                 |
-| `tuple`           | `Array` with non-enumerable `__tuple__: true`           |
-| `dict`            | `Map` (preserves key types and order)                   |
-| `set`/`frozenset` | `Set`                                                   |
-| datetime types    | marker objects (`{ __monty_type__: 'DateTime', ... }`)  |
-| file handles      | `MontyFileHandle`                                       |
-| class instances   | `ClassInstance` wrappers / `MontyClassInstance` proxies |
+| Python            | JavaScript                                             |
+| ----------------- | ------------------------------------------------------ |
+| `None`            | `null`                                                 |
+| `bool`            | `boolean`                                              |
+| `int`             | `number` (±2^53) or `BigInt`                           |
+| `float`           | `number`                                               |
+| `str`             | `string`                                               |
+| `bytes`           | `Buffer`                                               |
+| `list`            | `Array`                                                |
+| `tuple`           | `Array` with non-enumerable `__tuple__: true`          |
+| `dict`            | `Map` (preserves key types and order)                  |
+| `set`/`frozenset` | `Set`                                                  |
+| datetime types    | marker objects (`{ __monty_type__: 'DateTime', ... }`) |
+| file handles      | `MontyFileHandle`                                      |
+| class instances   | `ClassInstance` wrappers / `MontyClassProxy` stand-ins |
 
 Plain objects are accepted as dict inputs (string keys).

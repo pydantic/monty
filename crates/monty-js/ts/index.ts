@@ -7,7 +7,7 @@ export { Monty, type CheckoutOptions, type MontyOptions, type ResourceLimits } f
 export {
   ClassInstance,
   ClassType,
-  MontyClassInstance,
+  MontyClassProxy,
   type AttrPolicy,
   type ClassInstanceOptions,
   type ClassTypeOptions,

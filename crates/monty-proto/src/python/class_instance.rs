@@ -5,7 +5,7 @@
 //!   wrappers to `MontyObject::ClassInstance` / `MontyObject::Type`
 //! - Converting `MontyObject::ClassInstance` back to Python: the original
 //!   wrapped object when the instance is in the session's [`InstanceStore`],
-//!   else a read-only [`PyMontyClassInstance`] proxy
+//!   else a read-only [`PyMontyClassProxy`] proxy
 //! - [`InstanceStore`]: the per-session uuid → wrapper/class maps that route
 //!   method calls, lazy attribute lookups, and instantiations back to the
 //!   host objects
@@ -175,7 +175,7 @@ fn class_type_for(
 /// When `instance_id` is found in `store`, returns the ORIGINAL wrapped object
 /// (identity preserved — `result is obj` holds). Otherwise — a sandbox-defined
 /// instance, or an id from a session restored into a fresh process — builds a
-/// read-only [`PyMontyClassInstance`] proxy.
+/// read-only [`PyMontyClassProxy`] proxy.
 ///
 /// `depth` is the caller's current recursion depth; it is forwarded to
 /// `monty_to_py_inner` so nested attr values respect the output-depth limit.
@@ -201,7 +201,7 @@ pub fn class_instance_to_py(
                 attributes.set_item(key, monty_to_py_inner(py, value, store, depth)?)?;
             }
         }
-        let proxy = PyMontyClassInstance {
+        let proxy = PyMontyClassProxy {
             name: class_type.name.clone(),
             is_dataclass: class_type.is_dataclass,
             attributes: attributes.unbind(),
@@ -440,8 +440,8 @@ fn store_miss_error(name: &str, uuid: &MontyUuid) -> PyErr {
 ///
 /// A plain data holder — attribute values were converted when the value
 /// crossed the wire, and there is no live sandbox object behind it.
-#[pyclass(name = "MontyClassInstance", module = "pydantic_monty", frozen)]
-pub struct PyMontyClassInstance {
+#[pyclass(name = "MontyClassProxy", module = "pydantic_monty", frozen)]
+pub struct PyMontyClassProxy {
     /// Class name (e.g., "Point", "User").
     name: String,
     /// Whether the origin side reported `dataclasses.is_dataclass(obj)`.
@@ -451,7 +451,7 @@ pub struct PyMontyClassInstance {
 }
 
 #[pymethods]
-impl PyMontyClassInstance {
+impl PyMontyClassProxy {
     /// Class name of the instance (e.g. `"Point"`).
     #[getter]
     fn name(&self) -> &str {
@@ -470,11 +470,11 @@ impl PyMontyClassInstance {
         self.attributes.clone_ref(py)
     }
 
-    /// `MontyClassInstance(name='Point', attributes={'x': 1})`
+    /// `MontyClassProxy(name='Point', attributes={'x': 1})`
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         let attrs_repr: String = self.attributes.bind(py).repr()?.extract()?;
         Ok(format!(
-            "MontyClassInstance(name='{}', attributes={attrs_repr})",
+            "MontyClassProxy(name='{}', attributes={attrs_repr})",
             self.name
         ))
     }

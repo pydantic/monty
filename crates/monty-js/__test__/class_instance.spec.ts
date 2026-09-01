@@ -1,5 +1,5 @@
 // ClassInstance wrappers: exposing host objects to the sandbox with attr /
-// method policies, and MontyClassInstance proxies for instances with no host
+// method policies, and MontyClassProxy stand-ins for instances with no host
 // original. Mirrors pydantic_monty's test_class_instance.py.
 
 import { test } from 'vitest'
@@ -9,7 +9,7 @@ import {
   ClassInstance,
   ClassType,
   FunctionSnapshot,
-  MontyClassInstance,
+  MontyClassProxy,
   MontyComplete,
   MontyRuntimeError,
   NameLookupSnapshot,
@@ -281,14 +281,14 @@ test('a returned override-wrapped instance restores to the original object', asy
 })
 
 // =============================================================================
-// MontyClassInstance proxies for sandbox-defined classes
+// MontyClassProxy stand-ins for sandbox-defined classes
 // =============================================================================
 
-test('a sandbox-defined class instance surfaces as a MontyClassInstance', async () => {
+test('a sandbox-defined class instance surfaces as a MontyClassProxy', async () => {
   const code = 'class Foo:\n    def __init__(self, a: int):\n        self.a = a\nFoo(1)'
   const result = await run(code)
-  t.true(result instanceof MontyClassInstance)
-  const proxy = result as MontyClassInstance
+  t.true(result instanceof MontyClassProxy)
+  const proxy = result as MontyClassProxy
   t.is(proxy.name, 'Foo')
   t.false(proxy.isDataclass)
   t.deepEqual({ ...proxy.attributes }, { a: 1 })
@@ -297,8 +297,8 @@ test('a sandbox-defined class instance surfaces as a MontyClassInstance', async 
 test('a sandbox-defined dataclass instance reports isDataclass', async () => {
   const code = 'from dataclasses import dataclass\n@dataclass\nclass P:\n    x: int\n    y: int\nP(1, 2)'
   const result = await run(code)
-  t.true(result instanceof MontyClassInstance)
-  const proxy = result as MontyClassInstance
+  t.true(result instanceof MontyClassProxy)
+  const proxy = result as MontyClassProxy
   t.is(proxy.name, 'P')
   t.true(proxy.isDataclass)
   t.deepEqual({ ...proxy.attributes }, { x: 1, y: 2 })

@@ -76,7 +76,7 @@ class ClassInstance:
         Raises `AttributeError` when `name` is not exposed by `lazy_attrs`; the
         sandbox then raises the same `AttributeError`.
         """
-        attr_value = self._get_attr(name, self.lazy_attrs)
+        attr_value = self.get_attr(name, self.lazy_attrs)
         return self.convert_value(name, attr_value)
 
     def call_method(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
@@ -85,7 +85,7 @@ class ClassInstance:
         Raises `AttributeError` when `name` is not exposed by `allowed_methods`.
         The return value passes through `convert_value` before crossing back.
         """
-        method = self._get_attr(name, self.allowed_methods)
+        method = self.get_attr(name, self.allowed_methods)
         return self.convert_value(name, method(*args, **kwargs))
 
     def convert_value(self, /, name: str, value: Any) -> Any:
@@ -103,7 +103,7 @@ class ClassInstance:
         """
         return value
 
-    def _get_attr(self, name: str, policy: set[str] | Literal['all'] | None) -> Any:
+    def get_attr(self, name: str, policy: set[str] | Literal['all'] | None) -> Any:
         """Raw attribute access guarded by an exposure policy (no conversion)."""
         if policy != 'all' and (policy is None or name not in policy):
             raise AttributeError(f'{type(self.class_instance).__name__!r} object has no attribute {name!r}')
@@ -139,9 +139,7 @@ class ClassType:
     """The class to send."""
 
     init: bool = False
-    """Whether sandbox code may instantiate the class. Purely a host-side
-    policy: it never crosses the wire, and `construct` checks it on every
-    request."""
+    """Whether sandbox code may instantiate the class."""
 
     eager_attrs: Sequence[str] | Literal['all'] | None = None
     """Instance policy applied to constructed instances (see `ClassInstance`)."""
