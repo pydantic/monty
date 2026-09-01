@@ -985,6 +985,32 @@ fn timeout_in_deepcopy_fill_loop() {
     );
 }
 
+/// `copy.copy` reaches no dispatch checkpoint either. Its per-item work is far
+/// cheaper than `deepcopy`'s, so the loop that can actually overshoot is the
+/// dict one, where every pair is re-hashed into the copy. Built in an earlier
+/// feed for the reason above.
+#[test]
+fn timeout_in_shallow_copy_fill_loop() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "import copy\nx = {}\nfor i in range(600_000):\n    x['key-that-is-fairly-long-to-hash-' + str(i)] = i",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    repl.tracker_mut().set_max_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("copy.copy(x)", vec![], PrintWriter::Stdout)
+        .expect_err("the copy must hit the time limit");
+    let elapsed = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_millis(300),
+        "should stop promptly, took {elapsed:?}"
+    );
+}
+
 /// Feeds shorter than the dispatch-checkpoint interval never probe GC inside
 /// the run loop, so only the host-boundary probe in `finish_host_turn` keeps
 /// a stream of tiny cycle-making snippets from accumulating garbage (and from

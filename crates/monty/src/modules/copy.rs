@@ -530,32 +530,43 @@ impl<C: ContainsHeap> DropWithContext<C> for Memo {
 // ===========================================================================
 
 /// Clones `len` items out of a container, preflighting the slot bytes.
+///
+/// Polls the clock as the deep-copy loops do: a shallow copy of a large
+/// container reaches no instruction checkpoint between entering `copy.copy`
+/// and returning, so without this the whole walk is invisible to
+/// `max_duration`. The clones are guarded because that poll can now cut the
+/// loop short with items already taken.
 pub(crate) fn clone_items<'h>(
     len: usize,
     vm: &mut VM<'h>,
     mut clone_item: impl FnMut(usize, &mut VM<'h>) -> Value,
 ) -> RunResult<Vec<Value>> {
     vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
-    let mut items = Vec::with_capacity(len);
+    let mut guard = DropGuard::new(Vec::with_capacity(len), vm);
     for index in 0..len {
+        let (items, vm) = guard.as_parts_mut();
+        vm.heap.tracker.check_time_every(index)?;
         items.push(clone_item(index, vm));
     }
-    Ok(items)
+    Ok(guard.into_inner())
 }
 
-/// Clones an instance's `__dict__` entries.
+/// Clones an instance's `__dict__` entries, polling and guarded for the reason
+/// [`clone_items`] is.
 fn clone_attrs(id: HeapId, vm: &mut VM<'_>) -> RunResult<Vec<(Value, Value)>> {
     let len = attrs(id, vm).len();
     vm.heap
         .tracker
         .check_allocation(len.saturating_mul(2).saturating_mul(VALUE_SIZE))?;
-    let mut pairs = Vec::with_capacity(len);
+    let mut guard = DropGuard::new(Vec::with_capacity(len), vm);
     for index in 0..len {
+        let (pairs, vm) = guard.as_parts_mut();
+        vm.heap.tracker.check_time_every(index)?;
         let attrs = attrs(id, vm);
         let (key, value) = attrs.item_at(index).expect("index is in bounds");
         pairs.push((key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)));
     }
-    Ok(pairs)
+    Ok(guard.into_inner())
 }
 
 /// Borrows an instance's attribute dict.
@@ -571,10 +582,20 @@ fn attrs<'a>(id: HeapId, vm: &'a VM<'_>) -> &'a Dict {
 /// The iterator is guarded because `set` re-hashes each key, running a user
 /// `__hash__` that can raise: the pairs the loop has not reached yet are still
 /// owned here, and a plain `for` would drop them without releasing them.
+///
+/// That re-hashing also makes this the most expensive of the shallow-copy
+/// loops — a wide dict spends hundreds of milliseconds here — so it polls the
+/// clock as well; see `timeout_in_shallow_copy_fill_loop`. The poll runs
+/// *before* each pair is taken from the iterator, so a timeout leaves every
+/// remaining pair inside the guard; pulling first would strand the one in hand.
 fn insert_pairs(dict_id: HeapId, pairs: Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunResult<()> {
     let pairs = pairs.into_iter();
     defer_drop_mut!(pairs, vm);
-    for (key, value) in pairs {
+    for index in 0.. {
+        vm.heap.tracker.check_time_every(index)?;
+        let Some((key, value)) = pairs.next() else {
+            break;
+        };
         let HeapReadOutput::Dict(mut dest) = vm.heap.read(dict_id) else {
             unreachable!("copy was allocated as a dict")
         };
@@ -586,13 +607,17 @@ fn insert_pairs(dict_id: HeapId, pairs: Vec<(Value, Value)>, vm: &mut VM<'_>) ->
     Ok(())
 }
 
-/// Moves owned `pairs` into the `__dict__` of an instance copy,
-/// bypassing `setattr` as [`deep_copy_attrs`] does. Guarded for the reason
-/// [`insert_pairs`] is, though only a resource error can cut this loop short.
+/// Moves owned `pairs` into the `__dict__` of an instance copy, bypassing
+/// `setattr` as [`deep_copy_attrs`] does. Guarded, and polled before the pull,
+/// for the reasons [`insert_pairs`] is.
 fn insert_attrs(id: HeapId, pairs: Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunResult<()> {
     let pairs = pairs.into_iter();
     defer_drop_mut!(pairs, vm);
-    for (key, value) in pairs {
+    for index in 0.. {
+        vm.heap.tracker.check_time_every(index)?;
+        let Some((key, value)) = pairs.next() else {
+            break;
+        };
         let HeapReadOutput::Instance(mut instance) = vm.heap.read(id) else {
             unreachable!("caller allocated an instance")
         };
