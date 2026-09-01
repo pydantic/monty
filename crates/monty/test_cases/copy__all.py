@@ -333,6 +333,28 @@ class Hooked:
 assert copy.copy(Hooked()) == 'shallow hook'
 assert copy.deepcopy(Hooked()) == 'deep hook'
 
+
+# `copy` calls its hook only `if copier is not None`, so setting one to `None`
+# opts the class out and leaves the ordinary attribute copy.
+class OptedOut:
+    __copy__ = None
+    __deepcopy__ = None
+
+    def __init__(self):
+        self.items = [1]
+
+
+opted_out = OptedOut()
+opted_out_shallow = copy.copy(opted_out)
+assert isinstance(opted_out_shallow, OptedOut)
+assert opted_out_shallow.items is opted_out.items
+
+opted_out_deep = copy.deepcopy(opted_out)
+assert isinstance(opted_out_deep, OptedOut)
+assert opted_out_deep.items is not opted_out.items
+opted_out_deep.items.append(2)
+assert opted_out.items == [1]
+
 # === the memo argument ===
 memo = {}
 memo_source = [[1]]

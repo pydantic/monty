@@ -26,6 +26,12 @@ the same class, built without calling `__init__`, holding a copied `__dict__`.
 A class that customises pickling gets a plain attribute copy instead of the
 representation it asked for.
 
+Both hooks are looked up on the class. CPython reads `__deepcopy__` off the
+*instance* (`getattr(x, "__deepcopy__", None)`), so one set on an instance
+rather than its class is honoured there and ignored here; `__copy__` is a
+class lookup in CPython too, so that half matches. Setting either to `None`
+opts the class out in both, leaving the ordinary attribute copy.
+
 A `__copy__` or `__deepcopy__` that calls a host function (an external
 function, or anything reaching the filesystem) raises `NotImplementedError`;
 copying runs synchronously and cannot suspend, the same limit `sorted(key=...)`
