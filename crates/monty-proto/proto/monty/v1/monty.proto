@@ -215,7 +215,7 @@ message Type {
   string name = 1;
   // Identity of the class; absent iff origin == TYPE_ORIGIN_BUILTIN.
   Uuid id = 2;
-  // where the type was defined (builtin, sandbox, or host).
+  // Where the type was defined (builtin, sandbox, or host).
   TypeOrigin origin = 3;
   // Direct base classes (multiple inheritance); carried on the wire but not
   // functional in the sandbox yet.

@@ -257,6 +257,7 @@ pub struct Type {
     /// Identity of the class; absent iff origin == TYPE_ORIGIN_BUILTIN.
     #[prost(message, optional, tag = "2")]
     pub id: ::core::option::Option<Uuid>,
+    /// Where the type was defined (builtin, sandbox, or host).
     #[prost(enumeration = "TypeOrigin", tag = "3")]
     pub origin: i32,
     /// Direct base classes (multiple inheritance); carried on the wire but not
