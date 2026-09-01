@@ -1,0 +1,67 @@
+crates/monty-datatest/src/main.rs
+  s_bf68572fceb021::t_8bbd27aa92d930 656
+  s_bf68572fceb021::t_b2d1861fbc3c45 653-655,657
+  s_bf68572fceb021::t_805e11937ca486 1837-1841
+crates/monty/src/heap_data.rs
+  s_bf68572fceb021::t_61aed403d7c364 199
+crates/monty/tests/inputs.rs
+  s_bf68572fceb021::t_68edc92766ac7e 7
+  s_bf68572fceb021::t_04ae2cb11da522 615-671
+crates/monty/src/heap/mod.rs
+  s_bf68572fceb021::t_da16ec5b06df2d 1869-1881
+  s_bf68572fceb021::t_f75e61ec61bc42 2070
+crates/monty-js/ts/worker/value.ts
+  s_bf68572fceb021::t_4317389ec837d0 228-233,235-239
+crates/monty/src/run.rs
+  s_bf68572fceb021::t_0caf473d496123 468-481
+crates/monty-python/tests/test_class_instance.py
+  s_bf68572fceb021::t_a99edb2fc7f504 546-558,560-561
+  s_bf68572fceb021::t_a57f85fc38c431 218,222,225
+  s_bf68572fceb021::t_9325793e69e206 7
+  s_bf68572fceb021::t_15f648c0226b00 680-695,697-698
+  s_bf68572fceb021::t_309e9605540614 559
+  s_bf68572fceb021::t_a158135ba7d0ae 213-217,219-221,223-224,226-227
+  s_bf68572fceb021::t_b326278fab7b7c 696
+crates/monty-python/src/snapshot.rs
+  s_bf68572fceb021::t_ebed29fefd6546 417-419
+  s_bf68572fceb021::t_d0af6766d33d64 834-836
+  s_bf68572fceb021::t_4e50418270c09f 847-850
+crates/monty-python/python/pydantic_monty/class_instance.py
+  s_bf68572fceb021::t_1b2d87350c7569 241
+  s_bf68572fceb021::t_e5b22168d4fb3a 22,24
+  s_bf68572fceb021::t_7fcf461fbad543 243-248
+  s_bf68572fceb021::t_4b558059eb0caa 89-92,94-95,97-105
+  s_bf68572fceb021::t_2acaeb945cdf5d 249
+crates/monty-proto/src/python/class_instance.rs
+  s_bf68572fceb021::t_7a0ecb7d1b0c9b 260-261
+crates/monty-pool/src/checkout.rs
+  s_bf68572fceb021::t_d11b5741b53e3c 559
+crates/monty-proto/src/python/convert.rs
+  s_bf68572fceb021::t_6a776ffeb0a3db 59-62
+  s_bf68572fceb021::t_33a8078375401c 177-178
+crates/monty-js/__test__/class_instance.spec.ts
+  s_bf68572fceb021::t_a57f85fc38c431 141-142
+  s_bf68572fceb021::t_33717509fa3a47 138-140,143-146
+crates/monty-js/ts/classInstance.ts
+  s_bf68572fceb021::t_846dbdda79c7c1 113-116,119
+crates/monty/src/repl.rs
+  s_bf68572fceb021::t_517a830428b06b 661-662
+  s_bf68572fceb021::t_c8e5973cf34d8f 672
+  s_bf68572fceb021::t_38ddf22b571545 697-699
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8b6c930b5bf2367f47a31743985d67bad350b7d5",
+  "prompts": {},
+  "sessions": {
+    "s_bf68572fceb021": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8ff2ad2-c7e9-4cb1-9a42-b2f5d74a4d5e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
