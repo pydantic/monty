@@ -591,10 +591,9 @@ class TurnAnswerer {
 
   /**
    * Dispatches an instantiation of the host class registered under `typeId`,
-   * routing through the `ClassType` wrapper's `construct` — which re-checks
-   * its own `init` policy, so a forged wire flag from a compromised worker
-   * cannot bypass it. The constructed instance crosses back as a registered
-   * `ClassInstance`.
+   * routing through the `ClassType` wrapper's `construct` — whose host-side
+   * `init` policy decides whether construction is allowed. The constructed
+   * instance crosses back as a registered `ClassInstance`.
    */
   private answerInstantiate(call: FunctionCallTurn, typeId: string, onPrint: PrintCallback): Promise<object> {
     let constructed: ClassInstance

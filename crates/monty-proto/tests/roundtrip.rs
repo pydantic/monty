@@ -202,7 +202,6 @@ fn exception_and_type_values_round_trip() {
         parents: vec![],
         is_dataclass: false,
         frozen: false,
-        init: false,
     }))));
     assert_value_round_trip(&MontyObject::Type(MontyType::Instance(Box::new(ClassType {
         name: "Child".to_owned(),
@@ -217,12 +216,10 @@ fn exception_and_type_values_round_trip() {
                 parents: vec![],
                 is_dataclass: true,
                 frozen: false,
-                init: false,
             })),
         ],
         is_dataclass: true,
         frozen: true,
-        init: true,
     }))));
     let builtin = MontyObject::builtin_function_from_name("len").expect("len is a builtin");
     assert_value_round_trip(&builtin);
@@ -261,7 +258,6 @@ fn class_instance_and_function_values_round_trip() {
             parents: vec![],
             is_dataclass: true,
             frozen: true,
-            init: false,
         },
         instance_id: MontyUuid::from_u128(0xFEED_FACE),
         attrs: DictPairs::from(vec![
@@ -278,7 +274,6 @@ fn class_instance_and_function_values_round_trip() {
             parents: vec![],
             is_dataclass: false,
             frozen: false,
-            init: false,
         },
         instance_id: MontyUuid::from_u128(4),
         attrs: DictPairs::from(vec![]),
@@ -664,7 +659,6 @@ fn nest_class_instance(depth: usize) -> MontyObject {
             parents: vec![],
             is_dataclass: false,
             frozen: false,
-            init: false,
         },
         instance_id: MontyUuid::from_u128(1),
         attrs: DictPairs::from(vec![(MontyObject::String("f".to_owned()), inner)]),
@@ -682,7 +676,6 @@ fn nest_type_parents(depth: usize) -> MontyObject {
         parents: vec![],
         is_dataclass: false,
         frozen: false,
-        init: false,
     }));
     for i in 1..depth {
         ty = MontyType::Instance(Box::new(ClassType {
@@ -692,7 +685,6 @@ fn nest_type_parents(depth: usize) -> MontyObject {
             parents: vec![ty],
             is_dataclass: false,
             frozen: false,
-            init: false,
         }));
     }
     MontyObject::Type(ty)

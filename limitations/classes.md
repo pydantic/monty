@@ -190,9 +190,9 @@ other address-derived value). Divergences from real CPython objects:
   real class too (`unhashable type: 'Point'`). But it is not the class:
   each `type(x)` call allocates a fresh object, so `type(a) is type(b)` is
   `False` even for the same class (`==` compares class identity and works);
-  it is callable only when the host granted `init` (see below), otherwise
-  calling it raises `TypeError: cannot instantiate host class 'Point'`; it
-  cannot be used as the second argument of `isinstance()`; and — like Monty
+  calling it suspends an instantiation request to the host, which only
+  succeeds when the host granted `init` (see below); it cannot be used as
+  the second argument of `isinstance()`; and — like Monty
   class objects generally — it exposes only `__name__` (`__module__`,
   `__qualname__`, `__doc__`, `__mro__`, `__bases__`, ... raise
   `AttributeError`). Returned to the host, it resolves back to the real
@@ -230,14 +230,18 @@ other address-derived value). Divergences from real CPython objects:
 A host may pass a bare *class* into the sandbox with the `ClassType` policy
 wrapper (`pydantic_monty.ClassType(Point, init=True)`; JS
 `new ClassType(Point, { init: true })`). With `init` granted, sandbox code
-can call the class; the construction runs **host-side** (the wrapper
-re-checks its own `init` policy on every request — the wire flag alone is
-never trusted) and the constructed instance crosses back wrapped with the
-`ClassType`'s instance policies. Divergences:
+can call the class; the construction runs **host-side** and the constructed
+instance crosses back wrapped with the `ClassType`'s instance policies.
+`init` is purely host-side policy — it never crosses the wire, and the
+wrapper checks it on every construction request. Divergences:
 
 - With `init` absent or false, calling the class raises
-  `TypeError: cannot instantiate host class 'Point'` locally (CPython would
-  construct).
+  `TypeError: cannot instantiate host class 'Point'` (CPython would
+  construct); calling a class the host never registered with a `ClassType`
+  wrapper — e.g. `type(x)` of a plain `ClassInstance` — raises
+  `RuntimeError` ("no host class registered..."). A sandbox-origin class
+  type raises the `TypeError` locally, since the host could never construct
+  it.
 - Constructor exceptions propagate into the sandbox like external-function
   errors.
 - After a session restore the class registration is gone: instantiation

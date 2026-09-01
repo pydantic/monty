@@ -467,7 +467,6 @@ mod tests {
             parents: vec![],
             is_dataclass,
             frozen: false,
-            init: false,
         }
     }
 

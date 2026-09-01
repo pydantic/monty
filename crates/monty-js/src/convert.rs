@@ -366,7 +366,6 @@ fn create_js_class_type<'e>(class_type: &ClassType, env: &'e Env) -> Result<Obje
     obj.set_named_property("parents", parents)?;
     obj.set_named_property("isDataclass", class_type.is_dataclass)?;
     obj.set_named_property("frozen", class_type.frozen)?;
-    obj.set_named_property("init", class_type.init)?;
     Ok(obj)
 }
 
@@ -805,7 +804,6 @@ fn parse_js_class_type(obj: &Object) -> Result<ClassType> {
         parents,
         is_dataclass: obj.get_named_property("isDataclass")?,
         frozen: obj.get_named_property("frozen")?,
-        init: obj.get_named_property("init")?,
     })
 }
 

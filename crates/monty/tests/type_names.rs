@@ -47,7 +47,6 @@ fn instance_type_is_not_nameable() {
         parents: vec![],
         is_dataclass: false,
         frozen: false,
-        init: false,
     }));
     assert_eq!(t.to_string(), "Foo");
     assert_eq!(t.name(), "Foo");

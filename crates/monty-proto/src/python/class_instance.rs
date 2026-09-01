@@ -66,14 +66,12 @@ pub fn class_instance_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore
     let instance = wrapper.getattr(intern!(py, "class_instance"))?;
 
     let frozen: bool = wrapper.call_method0(intern!(py, "get_frozen"))?.extract()?;
-    let init: bool = wrapper.call_method0(intern!(py, "get_init"))?.extract()?;
     let class_type = class_type_for(
         &instance.get_type().into_any(),
         store,
         WrapperPolicy {
             is_dataclass: is_dataclass(&instance),
             frozen,
-            init,
         },
         depth,
     )?;
@@ -105,15 +103,12 @@ pub fn class_type_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, de
     if !class.is_instance_of::<PyType>() {
         return Err(PyTypeError::new_err("ClassType.class_type must be a class"));
     }
-    let init: bool = wrapper.call_method0(intern!(py, "get_init"))?.extract()?;
-
     let class_type = class_type_for(
         &class,
         store,
         WrapperPolicy {
             is_dataclass: class.hasattr(intern!(py, "__dataclass_fields__"))?,
             frozen: is_frozen_dataclass_class(&class),
-            init,
         },
         depth,
     )?;
@@ -126,7 +121,6 @@ pub fn class_type_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, de
 struct WrapperPolicy {
     is_dataclass: bool,
     frozen: bool,
-    init: bool,
 }
 
 /// Builds the wire [`ClassType`] for a host class: dedup-minted uuid, wrapper
@@ -158,9 +152,6 @@ fn class_type_for(
         let base_policy = WrapperPolicy {
             is_dataclass: base.hasattr(intern!(py, "__dataclass_fields__"))?,
             frozen: is_frozen_dataclass_class(&base),
-            // A base is not independently instantiable unless passed as its
-            // own `ClassType` wrapper.
-            init: false,
         };
         parents.push(MontyType::Instance(Box::new(class_type_for(
             &base,
@@ -176,7 +167,6 @@ fn class_type_for(
         parents,
         is_dataclass: policy.is_dataclass,
         frozen: policy.frozen,
-        init: policy.init,
     })
 }
 
@@ -381,8 +371,9 @@ impl InstanceStore {
     }
 
     /// Calls `wrapper.construct(args, kwargs)` on the class registered for
-    /// `uuid` — the wrapper re-checks its own `init` policy, so a forged
-    /// `Type.init` flag from a compromised worker cannot bypass it.
+    /// `uuid` — the wrapper's host-side `init` policy decides whether
+    /// construction is allowed; nothing about instantiability crosses the
+    /// wire.
     ///
     /// A store miss, or a class that crossed without a `ClassType` wrapper,
     /// raises `RuntimeError`.

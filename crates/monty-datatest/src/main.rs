@@ -596,7 +596,6 @@ impl FixtureRegistry {
                 parents: vec![],
                 is_dataclass: true,
                 frozen: fixture.frozen,
-                init: false,
             },
             instance_id,
             attrs: fixture

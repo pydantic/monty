@@ -282,7 +282,6 @@ fn read_class_type(node: ClassTypeNode, nodes: &mut [Option<ValueNode>], depth: 
         parents,
         is_dataclass: node.is_dataclass,
         frozen: node.frozen,
-        init: node.init,
     })))
 }
 
@@ -517,7 +516,6 @@ fn push_class_type(class_type: ClassType, nodes: &mut Vec<ValueNode>) -> ClassTy
         parents,
         is_dataclass: class_type.is_dataclass,
         frozen: class_type.frozen,
-        init: class_type.init,
     }
 }
 

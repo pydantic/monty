@@ -52,9 +52,10 @@ fn dispatch_instance_call_inner(
 
 /// Dispatches an instantiation of a host class, routed by `type_id` through
 /// the session's [`InstanceStore`] to the `ClassType` wrapper's `construct` —
-/// which re-checks its own `init` policy, so a forged wire flag from a
-/// compromised worker cannot bypass it. The constructed instance comes back
-/// as a registered `ClassInstance` wrapper and crosses like any other value.
+/// whose host-side `init` policy decides whether construction is allowed
+/// (nothing about instantiability crosses the wire). The constructed instance
+/// comes back as a registered `ClassInstance` wrapper and crosses like any
+/// other value.
 pub fn dispatch_instantiate(
     py: Python<'_>,
     class_name: &str,

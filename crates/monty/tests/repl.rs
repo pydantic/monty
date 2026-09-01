@@ -702,7 +702,6 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
             parents: vec![],
             is_dataclass: true,
             frozen: true,
-            init: false,
         },
         instance_id: MontyUuid::from_u128(42),
         attrs: vec![

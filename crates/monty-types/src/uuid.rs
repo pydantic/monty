@@ -97,8 +97,8 @@ impl fmt::Display for MontyUuid {
 ///
 /// Mirrors the wire `FunctionCall.receiver` oneof: a plain external call has
 /// no receiver, a method call routes to a host-backed instance, and an
-/// instantiation routes to a host class (gated by `Type.init`, which the
-/// host re-checks against its own policy).
+/// instantiation routes to a host class (allowed or refused purely by the
+/// host's own policy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CallReceiver {
     /// Method call on the instance with this uuid.

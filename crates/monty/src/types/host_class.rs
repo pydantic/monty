@@ -40,10 +40,6 @@ use crate::{
 /// `FrozenInstanceError` and is hashable (over its eager attrs); otherwise it
 /// is mutable and unhashable, matching frozen-dataclass semantics.
 #[derive(Debug)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "mirrors the wire `Type` message's independent flags"
-)]
 pub(crate) struct HostClass {
     /// The class name (e.g., "Point", "User")
     name: EitherStr,
@@ -63,8 +59,6 @@ pub(crate) struct HostClass {
     frozen: bool,
     /// Whether `dataclasses.is_dataclass(obj)` is true on the host side.
     is_dataclass: bool,
-    /// Whether the sandbox may instantiate the class (`Type.init`).
-    init: bool,
 }
 
 impl HostClass {
@@ -81,7 +75,6 @@ impl HostClass {
             attrs,
             frozen: class_type.frozen,
             is_dataclass: class_type.is_dataclass,
-            init: class_type.init,
         }
     }
 
@@ -95,7 +88,6 @@ impl HostClass {
             parents: self.parents.clone(),
             is_dataclass: self.is_dataclass,
             frozen: self.frozen,
-            init: self.init,
         }
     }
 
@@ -406,12 +398,9 @@ impl HeapItem for HostClass {
 /// naming it (repr `<class 'Point'>`, equality by class identity). Each
 /// `type(x)` call allocates a fresh one, so `type(a) is type(b)` is `False`
 /// even for the same class (use `==`) — see `limitations/classes.md`. Not
-/// usable with `isinstance`; callable only when the host granted `init`.
+/// usable with `isinstance`; calling it suspends an instantiation request to
+/// the host, whose own policy decides whether construction is allowed.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "mirrors the wire `Type` message's independent flags"
-)]
 pub(crate) struct HostClassType {
     /// The class name (e.g. "Point").
     name: EitherStr,
@@ -425,8 +414,6 @@ pub(crate) struct HostClassType {
     is_dataclass: bool,
     /// Whether instances reject `setattr` with `FrozenInstanceError`.
     frozen: bool,
-    /// Whether the sandbox may instantiate the class.
-    init: bool,
 }
 
 impl HostClassType {
@@ -440,7 +427,6 @@ impl HostClassType {
             parents: class_type.parents,
             is_dataclass: class_type.is_dataclass,
             frozen: class_type.frozen,
-            init: class_type.init,
         }
     }
 
@@ -450,10 +436,11 @@ impl HostClassType {
         self.name.as_str(interns)
     }
 
-    /// Whether the sandbox may instantiate this class.
+    /// Whether the class is host-defined — the only kind an instantiation
+    /// request can ever succeed for.
     #[must_use]
-    pub fn init(&self) -> bool {
-        self.init
+    pub fn host_defined(&self) -> bool {
+        self.host_defined
     }
 
     /// Identity of the class.
@@ -478,7 +465,6 @@ impl HostClassType {
             parents: self.parents.clone(),
             is_dataclass: self.is_dataclass,
             frozen: self.frozen,
-            init: self.init,
         }
     }
 }
@@ -540,11 +526,11 @@ impl HeapItem for HostClassType {
     }
 }
 
-// Custom serde implementation for HostClass; serializes all nine fields so
+// Custom serde implementation for HostClass; serializes all eight fields so
 // suspended state (dumps) round-trips exactly.
 impl serde::Serialize for HostClass {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("HostClass", 9)?;
+        let mut state = serializer.serialize_struct("HostClass", 8)?;
         state.serialize_field("name", &self.name)?;
         state.serialize_field("instance_id", &self.instance_id)?;
         state.serialize_field("type_id", &self.type_id)?;
@@ -553,7 +539,6 @@ impl serde::Serialize for HostClass {
         state.serialize_field("attrs", &self.attrs)?;
         state.serialize_field("frozen", &self.frozen)?;
         state.serialize_field("is_dataclass", &self.is_dataclass)?;
-        state.serialize_field("init", &self.init)?;
         state.end()
     }
 }
@@ -561,7 +546,6 @@ impl serde::Serialize for HostClass {
 impl<'de> serde::Deserialize<'de> for HostClass {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
-        #[expect(clippy::struct_excessive_bools, reason = "field-for-field mirror of HostClass")]
         struct HostClassData {
             name: EitherStr,
             instance_id: MontyUuid,
@@ -571,7 +555,6 @@ impl<'de> serde::Deserialize<'de> for HostClass {
             attrs: Dict,
             frozen: bool,
             is_dataclass: bool,
-            init: bool,
         }
         let hc = HostClassData::deserialize(deserializer)?;
         Ok(Self {
@@ -583,7 +566,6 @@ impl<'de> serde::Deserialize<'de> for HostClass {
             attrs: hc.attrs,
             frozen: hc.frozen,
             is_dataclass: hc.is_dataclass,
-            init: hc.init,
         })
     }
 }

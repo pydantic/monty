@@ -176,7 +176,6 @@ fn corpus() -> Vec<MontyObject> {
             parents: vec![],
             is_dataclass: false,
             frozen: false,
-            init: false,
         }))),
         MontyObject::Type(MontyType::Instance(Box::new(ClassType {
             name: "Child".to_owned(),
@@ -191,12 +190,10 @@ fn corpus() -> Vec<MontyObject> {
                     parents: vec![],
                     is_dataclass: true,
                     frozen: true,
-                    init: false,
                 })),
             ],
             is_dataclass: true,
             frozen: false,
-            init: true,
         }))),
         MontyObject::builtin_function_from_name("len").expect("len is a builtin"),
         MontyObject::Path(String::new()),
@@ -214,7 +211,6 @@ fn corpus() -> Vec<MontyObject> {
                 parents: vec![],
                 is_dataclass: false,
                 frozen: false,
-                init: false,
             },
             instance_id: MontyUuid::from_u128(0),
             attrs: DictPairs::from(Vec::new()),
@@ -227,7 +223,6 @@ fn corpus() -> Vec<MontyObject> {
                 parents: vec![],
                 is_dataclass: true,
                 frozen: true,
-                init: true,
             },
             instance_id: MontyUuid::from_u128(0xFEED_FACE),
             attrs: DictPairs::from(vec![
@@ -378,7 +373,6 @@ fn oracle_class_type(class_type: &ClassType) -> oracle::Type {
         parents: class_type.parents.iter().map(oracle_type).collect(),
         is_dataclass: class_type.is_dataclass,
         frozen: class_type.frozen,
-        init: class_type.init,
     }
 }
 

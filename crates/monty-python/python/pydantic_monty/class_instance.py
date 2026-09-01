@@ -54,9 +54,6 @@ class ClassInstance:
     """Whether the sandbox rejects `setattr` with `FrozenInstanceError`.
     `None` auto-detects frozen dataclasses; any other object defaults to mutable."""
 
-    init: bool = False
-    """Whether sandbox code may instantiate the instance's class via `type(x)(...)`."""
-
     def get_eager_attrs(self) -> dict[str, Any]:
         """The attributes to send into the sandbox with the instance."""
         if self.eager_attrs is None:
@@ -128,10 +125,6 @@ class ClassInstance:
         params = getattr(self.class_instance, '__dataclass_params__', None)
         return params.frozen if params is not None else False
 
-    def get_init(self) -> bool:
-        """Whether the sandbox may instantiate the instance's class."""
-        return self.init
-
 
 @dataclass
 class ClassType:
@@ -154,8 +147,9 @@ class ClassType:
     """The class to send."""
 
     init: bool = False
-    """Whether sandbox code may instantiate the class. Checked here on every
-    construction request — the wire flag alone is never trusted."""
+    """Whether sandbox code may instantiate the class. Purely a host-side
+    policy: it never crosses the wire, and `construct` checks it on every
+    request."""
 
     eager_attrs: Sequence[str] | Literal['all'] | None = None
     """Instance policy applied to constructed instances (see `ClassInstance`)."""
@@ -168,10 +162,6 @@ class ClassType:
 
     frozen: bool | None = None
     """Instance policy applied to constructed instances (see `ClassInstance`)."""
-
-    def get_init(self) -> bool:
-        """Whether the sandbox may instantiate the class."""
-        return self.init
 
     def construct(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> ClassInstance:
         """Constructs an instance for the sandbox, re-checking the `init` policy.

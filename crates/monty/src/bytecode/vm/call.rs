@@ -549,10 +549,12 @@ impl VM<'_> {
 
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Class(_) => return self.instantiate_class(heap_id, args),
-            // Calling a host class type suspends to the host to construct the
-            // instance — only when the host granted `init` on the type.
+            // Calling a host class type suspends to the host, whose own
+            // policy decides whether construction is allowed. A sandbox-origin
+            // class type can never be constructed host-side, so it fails
+            // locally without the round trip.
             HeapData::HostClassType(ty) => {
-                return if ty.init() {
+                return if ty.host_defined() {
                     Ok(CallResult::MethodCall {
                         name: ty.name_either().clone(),
                         args,

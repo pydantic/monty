@@ -69,7 +69,6 @@ export interface ClassTypeNode {
   parents: Uint32Array
   isDataclass: boolean
   frozen: boolean
-  init: boolean
 }
 export interface ClassInstanceNode {
   classType: number

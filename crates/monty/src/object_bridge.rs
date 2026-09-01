@@ -807,7 +807,6 @@ fn sandbox_class_type(class_id: HeapId, vm: &mut VM<'_>) -> ClassType {
         parents: vec![],
         is_dataclass,
         frozen,
-        init: false,
     }
 }
 

@@ -37,9 +37,6 @@ export interface ClassInstanceOptions {
   name?: string
   /** Whether sandbox `setattr` raises `FrozenInstanceError` (default false). */
   frozen?: boolean
-  /** Whether sandbox code may instantiate the instance's class via
-   *  `type(x)(...)` (default false). */
-  init?: boolean
   /**
    * Transforms each value crossing to the sandbox — applied exactly once per
    * value: to each eager attr, each lazy lookup result, and each method
@@ -154,7 +151,12 @@ export class ClassInstance {
 
 /** Options for [`ClassType`]: the `init` gate plus the instance policies
  *  applied to every instance the class constructs for the sandbox. */
-export interface ClassTypeOptions extends ClassInstanceOptions {}
+export interface ClassTypeOptions extends ClassInstanceOptions {
+  /** Whether sandbox code may instantiate the class (default false). Purely
+   *  a host-side policy: it never crosses the wire, and `construct` checks
+   *  it on every request. */
+  init?: boolean
+}
 
 /**
  * Policy wrapper exposing a host *class* to the Monty sandbox. With
@@ -188,10 +190,10 @@ export class ClassType {
   }
 
   /**
-   * Constructs an instance for the sandbox, re-checking the `init` policy —
-   * the wire flag alone is never trusted. JS constructors have no keyword
-   * arguments, so a non-empty `kwargs` is appended as a final options bag,
-   * matching [`ClassInstance.callMethod`].
+   * Constructs an instance for the sandbox, checking the `init` policy —
+   * a purely host-side gate that never crosses the wire. JS constructors
+   * have no keyword arguments, so a non-empty `kwargs` is appended as a
+   * final options bag, matching [`ClassInstance.callMethod`].
    */
   construct(args: unknown[], kwargs: Record<string, unknown>): ClassInstance {
     if (this.options.init !== true) {
@@ -454,7 +456,6 @@ function classTypeObject(
     // JS has no dataclasses; host-wrapped objects always cross as plain classes
     isDataclass: false,
     frozen: options.frozen ?? false,
-    init: options.init ?? false,
   }
 }
 
@@ -471,7 +472,6 @@ function parentMarkers(classObject: object, store: InstanceStore): Array<Record<
       parents: [],
       isDataclass: false,
       frozen: false,
-      init: false,
     })
     parent = Object.getPrototypeOf(parent)
   }

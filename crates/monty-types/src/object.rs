@@ -753,10 +753,6 @@ impl AsRef<Self> for MontyObject {
 /// worker uuid for sandbox classes) and is the identity used for equality
 /// and for routing instantiation requests; it never encodes an address.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "mirrors the wire `Type` message's independent flags"
-)]
 pub struct ClassType {
     /// The Python-visible class name (e.g. `"Point"`).
     pub name: String,
@@ -773,9 +769,6 @@ pub struct ClassType {
     pub is_dataclass: bool,
     /// Whether instances reject `setattr` with `FrozenInstanceError`.
     pub frozen: bool,
-    /// Whether the sandbox may instantiate the class (host classes only;
-    /// the host re-checks its own policy on every instantiation request).
-    pub init: bool,
 }
 
 impl ClassType {

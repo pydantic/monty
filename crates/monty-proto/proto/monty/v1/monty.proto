@@ -215,6 +215,7 @@ message Type {
   string name = 1;
   // Identity of the class; absent iff origin == TYPE_ORIGIN_BUILTIN.
   Uuid id = 2;
+  // where the type was defined (builtin, sandbox, or host).
   TypeOrigin origin = 3;
   // Direct base classes (multiple inheritance); carried on the wire but not
   // functional in the sandbox yet.
@@ -223,9 +224,6 @@ message Type {
   bool is_dataclass = 5;
   // Frozen instances reject setattr with FrozenInstanceError in the sandbox.
   bool frozen = 6;
-  // Whether the sandbox may instantiate this type (host classes only; the
-  // host re-checks its own policy on every instantiation request).
-  bool init = 7;
 }
 
 // A class instance crossing the sandbox boundary. Host-backed instances route
@@ -620,8 +618,8 @@ message FunctionCall {
   oneof receiver {
     // Method call on a host-backed `ClassInstance`: the uuid of the receiver.
     Uuid instance_id = 5;
-    // Instantiation of a host class (its `Type.init` must be true): the uuid
-    // of the class to construct.
+    // Instantiation of a host class: the uuid of the class to construct.
+    // The host's own policy decides whether construction is allowed.
     Uuid type_id = 6;
   }
 }

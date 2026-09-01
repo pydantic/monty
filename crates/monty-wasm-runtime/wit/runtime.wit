@@ -98,8 +98,6 @@ interface worker {
         parents: list<u32>,
         is-dataclass: bool,
         frozen: bool,
-        /// Whether the sandbox may instantiate the class (host re-checked).
-        init: bool,
     }
 
     /// A class instance and indexes of its attribute keys and values.

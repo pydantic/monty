@@ -43,7 +43,6 @@ fn class_instance_method_call_in_standard_mode_errors() {
             parents: vec![],
             is_dataclass: true,
             frozen: true,
-            init: false,
         },
         instance_id: MontyUuid::from_u128(2),
         attrs: vec![
@@ -370,7 +369,6 @@ fn evil_instance() -> MontyObject {
             parents: vec![],
             is_dataclass: false,
             frozen: false,
-            init: false,
         },
         instance_id: MontyUuid::from_u128(0xE1),
         attrs: vec![].into(),

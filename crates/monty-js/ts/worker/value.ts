@@ -232,7 +232,6 @@ function pushClassType(
     parents: new Uint32Array(parents),
     isDataclass: object.isDataclass === true,
     frozen: object.frozen === true,
-    init: object.init === true,
   }
 }
 
@@ -437,7 +436,6 @@ function readClassType(
     parents,
     isDataclass: classType.isDataclass,
     frozen: classType.frozen,
-    init: classType.init,
   }
 }
 

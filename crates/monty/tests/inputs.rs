@@ -596,7 +596,6 @@ fn invalid_input_repr_in_class_instance_attrs() {
             parents: vec![],
             is_dataclass: false,
             frozen: false,
-            init: false,
         },
         instance_id: MontyUuid::from_u128(2),
         attrs: vec![

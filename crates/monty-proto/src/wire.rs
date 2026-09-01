@@ -1101,7 +1101,6 @@ fn class_type_to_pb(class_type: &ClassType) -> pb::Type {
         parents: class_type.parents.iter().map(monty_type_to_pb).collect(),
         is_dataclass: class_type.is_dataclass,
         frozen: class_type.frozen,
-        init: class_type.init,
     }
 }
 
@@ -1146,7 +1145,6 @@ fn pb_type_to_monty(ty: pb::Type) -> Result<MontyType, DecodeError> {
                 parents,
                 is_dataclass: ty.is_dataclass,
                 frozen: ty.frozen,
-                init: ty.init,
             })))
         }
     }

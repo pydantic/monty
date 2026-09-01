@@ -176,10 +176,6 @@ pub struct Type {
     /// Frozen instances reject setattr with FrozenInstanceError in the sandbox.
     #[prost(bool, tag = "6")]
     pub frozen: bool,
-    /// Whether the sandbox may instantiate this type (host classes only; the
-    /// host re-checks its own policy on every instantiation request).
-    #[prost(bool, tag = "7")]
-    pub init: bool,
 }
 /// A class instance crossing the sandbox boundary. Host-backed instances route
 /// method calls and lazy attribute lookups back to the real object by uuid
