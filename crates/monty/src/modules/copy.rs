@@ -484,7 +484,7 @@ impl Memo {
     }
 
     /// Returns the copy this pass already made for `source`, if any.
-    fn get(&self, source: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+    pub(crate) fn get(&self, source: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
         let key = source.id().into_value(vm.heap);
         defer_drop!(key, vm);
         let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id()) else {

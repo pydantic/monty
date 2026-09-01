@@ -65,6 +65,27 @@ cyclic_dict['me'] = cyclic_dict
 cyclic_dict_copy = copy.deepcopy(cyclic_dict)
 assert cyclic_dict_copy['me'] is cyclic_dict_copy
 
+# === a tuple in a cycle closes on one object ===
+# The tuple is memoized only once its items are done, so the walk back through
+# `cycle_items` copies it in full first; `deepcopy` hands that copy back rather
+# than building a second tuple from the same items.
+cycle_items = []
+cycle_tuple = (cycle_items,)
+cycle_items.append(cycle_tuple)
+cycle_tuple_copy = copy.deepcopy(cycle_tuple)
+assert cycle_tuple_copy[0][0] is cycle_tuple_copy
+assert cycle_tuple_copy is not cycle_tuple
+assert cycle_tuple_copy[0] is not cycle_items
+
+# A named tuple has no such re-read in CPython, so its cycle does open out into
+# a second object; Monty matches.
+NamedCycle = namedtuple('NamedCycle', 'items')
+named_items = []
+named_cycle = NamedCycle(named_items)
+named_items.append(named_cycle)
+named_cycle_copy = copy.deepcopy(named_cycle)
+assert named_cycle_copy.items[0] is not named_cycle_copy
+
 # === objects reached twice stay shared ===
 shared = [1]
 pair = [shared, shared]
