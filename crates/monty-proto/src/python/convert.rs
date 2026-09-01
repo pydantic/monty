@@ -155,8 +155,8 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore, mut depth: u8)
     } else if is_class_instance_wrapper(obj)? {
         class_instance_to_monty(obj, store, depth)
     } else if is_dataclass(obj) {
-        // Bare dataclasses no longer auto-convert: the wrapper carries the
-        // exposure policy and the instance identity the sandbox routes by.
+        // Bare dataclasses don't convert: the wrapper carries the exposure
+        // policy and the instance identity the sandbox routes by.
         let name = obj.get_type().qualname()?;
         Err(PyTypeError::new_err(format!(
             "cannot convert dataclass '{name}' to a Monty value — wrap it in pydantic_monty.ClassInstance(...)"

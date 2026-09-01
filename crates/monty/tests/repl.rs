@@ -727,7 +727,6 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
         Some(MontyUuid::from_u128(42)),
         "should be a method call on instance 42"
     );
-    // The receiver is NOT smuggled into args anymore
     assert!(call.args.is_empty(), "receiver must not be included in args");
 
     // Resume with a return value (sum of x + y = 3)

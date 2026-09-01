@@ -10,9 +10,6 @@ use std::fmt;
 
 /// A 16-byte UUID identifying a host or sandbox class/instance across the
 /// sandbox boundary.
-///
-/// Replaces the former `id()`-derived u64 ids, which leaked host heap
-/// addresses and could be reused by CPython within or across sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct MontyUuid([u8; 16]);
 

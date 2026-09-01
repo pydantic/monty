@@ -355,10 +355,10 @@ fn dynamic_type_with_non_string_key_raises_type_error() {
 }
 
 // === Instance output-conversion tests ===
-// Sandbox-defined class instances convert structurally (ClassInstance with
-// instance_id 0), so a user `__repr__` — which used to run during conversion
-// and could mutate the containing collection — is no longer invoked at all.
-// These containers keep all elements, and `Evil.__repr__` never fires.
+// Sandbox-defined class instances convert structurally to `ClassInstance`
+// values: a user `__repr__` never runs during conversion, so it cannot mutate
+// the containing collection. These containers keep all elements, and
+// `Evil.__repr__` never fires.
 
 /// Structured `ClassInstance` a sandbox `Evil()` instance converts to.
 fn evil_instance() -> MontyObject {
