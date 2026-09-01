@@ -612,6 +612,41 @@ pub(crate) fn instance_call_dunder_sync(
         arg.drop_with(vm);
         return Ok(None);
     };
+    call_dunder_member(self_id, dunder, func, arg, vm).map(Some)
+}
+
+/// As [`instance_call_dunder_sync`], but a `None` member counts as absent.
+///
+/// `copy` reads its hooks with `getattr(..., None)` and calls whatever it gets
+/// back only `if copier is not None`, so a class writing `__copy__ = None`
+/// opts out and falls back to the ordinary attribute copy. Separate from
+/// `instance_call_dunder_sync` because everywhere else a `None` member is a
+/// value in its own right — a `None` `__iter__` opts a class out of iteration
+/// rather than leaving it undefined (see [`instance_defines_iter`]).
+pub(crate) fn instance_call_copy_hook(
+    self_id: HeapId,
+    dunder: &'static str,
+    arg: Option<Value>,
+    vm: &mut VM<'_>,
+) -> RunResult<Option<Value>> {
+    let class_id = instance_class(self_id, vm);
+    match class_member(class_id, dunder, vm) {
+        Some(Value::None) | None => {
+            arg.drop_with(vm);
+            Ok(None)
+        }
+        Some(func) => call_dunder_member(self_id, dunder, func, arg, vm).map(Some),
+    }
+}
+
+/// Invokes an already-looked-up dunder member, whose reference it takes.
+fn call_dunder_member(
+    self_id: HeapId,
+    dunder: &'static str,
+    func: Value,
+    arg: Option<Value>,
+    vm: &mut VM<'_>,
+) -> RunResult<Value> {
     defer_drop!(func, vm);
     // Only a plain function binds `self` as a descriptor (CPython's method
     // lookup protocol, mirrored by `call_member_bound`); an already-bound
@@ -629,7 +664,7 @@ pub(crate) fn instance_call_dunder_sync(
             None => ArgValues::Empty,
         }
     };
-    vm.evaluate_function(dunder, func, args).map(Some)
+    vm.evaluate_function(dunder, func, args)
 }
 
 /// Whether `self_id` is an instance whose class has an `__iter__` member —
@@ -817,7 +852,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Instance> {
     #[inline(never)]
     fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
         let id = source.ref_id().expect("a deep copy starts from a heap value");
-        if let Some(copy) = instance_call_dunder_sync(id, "__deepcopy__", Some(memo.dict_value(vm)), vm)? {
+        if let Some(copy) = instance_call_copy_hook(id, "__deepcopy__", Some(memo.dict_value(vm)), vm)? {
             Ok(copy)
         } else {
             let copy_id = self.allocate_empty_like(vm);
