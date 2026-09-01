@@ -50,9 +50,10 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             value.drop_with(vm);
             true
         }
-        // Builtins cannot suspend, so a lazy host attribute lookup reads as
-        // absent (documented divergence — only `obj.attr` syntax consults the
-        // host).
+        // hasattr() has no suspension plumbing (unlike e.g. `open`, which
+        // suspends via `OsFunctionCall`), so a lazy host attribute lookup
+        // reads as absent (documented divergence — only `obj.attr` syntax
+        // consults the host).
         Ok(CallResult::AttrLookup { .. }) => false,
         Ok(other) => {
             other.drop_with(vm);

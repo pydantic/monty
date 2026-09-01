@@ -390,11 +390,13 @@ properties that real CPython does not provide, per the caveat above.
   original-object return work, and it is not covered by the sandbox's
   `max_memory` (it is host memory). Re-sending the same instance overwrites
   its entry (last wrapper's policy wins), but distinct instances accumulate:
-  a method that returns a fresh auto-wrapped object per call grows the store
-  by one entry per call, and wrappers registered during a feed that later
-  fails conversion are kept too. Long-running sessions exposing
-  object-returning methods should bound what their methods hand out (or
-  recycle sessions periodically).
+  a `convert_value` override that wraps a fresh object per method call grows
+  the store by one entry per call — as does every sandbox-driven construction
+  of an `init=True` `ClassType` — and wrappers registered during a feed that
+  later fails conversion are kept too. Long-running sessions exposing
+  object-returning methods or instantiable classes should bound what they
+  hand out (or recycle sessions periodically); the store has no built-in
+  entry cap.
   A *failed* load (wrong dump kind, or a protocol desync) poisons the session
   — its worker is discarded, so every later feed fails too; the load is not
   retryable and the caller must check out a fresh session.

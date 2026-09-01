@@ -330,7 +330,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
                 class_name: self.get(vm.heap).name(vm.interns).to_owned(),
                 instance_id: self.get(vm.heap).instance_id(),
             })),
-            // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
+            // underscore-prefixed: raise locally with the host class's real
+            // name (not the static `HostClass` py_type placeholder)
             None => Err(ExcType::attribute_error(self.get(vm.heap).name(vm.interns), attr_name)),
         }
     }

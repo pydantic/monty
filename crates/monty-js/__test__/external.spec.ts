@@ -399,11 +399,12 @@ except TypeError as exc:
     caught = str(exc)
 caught
 `
-  // a ClassInstance marker without its type / instanceId / attrs fields
+  // a raw ClassInstance marker is rejected by `prepare` before it can reach
+  // the native codec — identity markers are internal, never host data
   const bad = () => ({ __monty_type__: 'ClassInstance', name: 'Broken' })
   t.is(
     await run(code, { externalLookup: { bad } }),
-    "Object property 'type' type mismatch. Expect value to be Object, but received Undefined",
+    'raw ClassInstance markers are not accepted — wrap the object in ClassInstance(...)',
   )
 })
 

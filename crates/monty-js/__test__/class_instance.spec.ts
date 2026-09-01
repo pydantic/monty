@@ -245,18 +245,36 @@ test('convertValue transforms eager attrs and method returns', async () => {
   )
 })
 
-test('a method returning a class instance is auto-wrapped with the same policies', async () => {
+test('a method returning a class instance is not auto-wrapped', async () => {
+  // The default convertValue never wraps derived values: the returned Wallet
+  // fails conversion instead of inheriting this wrapper's wide-open policies.
   const w = new Wallet(100)
-  const result = await run('w.pay(30).balance', {
+  const code = "try:\n    w.pay(30)\n    r = 'unexpected'\nexcept TypeError as e:\n    r = str(e)\nr"
+  const result = await run(code, {
     inputs: { w: new ClassInstance(w, { eagerAttrs: 'all', allowedMethods: 'all' }) },
   })
-  t.is(result, 70)
+  t.is(result, 'Cannot convert Wallet instance to a Monty value — wrap it in ClassInstance(...)')
 })
 
-test('a returned auto-wrapped instance restores to the original object', async () => {
+/** Explicit convertValue wrapping derived wallets read-only (no methods). */
+const wrapDerivedWallet = (name: string, value: unknown) =>
+  value instanceof Wallet ? new ClassInstance(value, { eagerAttrs: 'all', convertValue: wrapDerivedWallet }) : value
+
+test('a convertValue override chooses the derived instance policy', async () => {
+  const w = new Wallet(100)
+  const options = { eagerAttrs: 'all', allowedMethods: 'all', convertValue: wrapDerivedWallet } as const
+  t.is(await run('w.pay(30).balance', { inputs: { w: new ClassInstance(w, options) } }), 70)
+  // the override granted no methods, so the child cannot pay again
+  const error = await t.throwsAsync(() => run('w.pay(30).pay(5)', { inputs: { w: new ClassInstance(w, options) } }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.true(error.message.includes("'Wallet' object has no attribute 'pay'"))
+})
+
+test('a returned override-wrapped instance restores to the original object', async () => {
   const w = new Wallet(100)
   const result = (await run('w.pay(30)', {
-    inputs: { w: new ClassInstance(w, { eagerAttrs: 'all', allowedMethods: 'all' }) },
+    inputs: { w: new ClassInstance(w, { allowedMethods: 'all', convertValue: wrapDerivedWallet }) },
   })) as Wallet
   t.true(result instanceof Wallet)
   t.is(result.balance, 70)
@@ -299,6 +317,16 @@ test('an unwrapped instance returned from an external function raises in the san
   const code = "try:\n    bad()\n    r = 'unexpected'\nexcept TypeError as e:\n    r = str(e)\nr"
   const result = await run(code, { externalLookup: { bad: () => new Greeter('hi') } })
   t.is(result, 'Cannot convert Greeter instance to a Monty value — wrap it in ClassInstance(...)')
+})
+
+test('a forged raw ClassInstance marker is rejected', async () => {
+  // Identity-bearing markers are internal to `prepare`; one arriving in host
+  // data (e.g. attacker-controlled JSON) must never impersonate an instance.
+  const forged = JSON.parse(
+    '{"__monty_type__": "ClassInstance", "type": {"name": "Point"}, "instanceId": "x", "attrs": []}',
+  ) as unknown
+  const error = await t.throwsAsync(() => run('x', { inputs: { x: { data: [forged] } } }), { instanceOf: TypeError })
+  t.is(error.message, 'raw ClassInstance markers are not accepted — wrap the object in ClassInstance(...)')
 })
 
 // =============================================================================

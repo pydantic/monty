@@ -856,9 +856,10 @@ pub enum MontyType {
     DictValues,
     Set,
     FrozenSet,
-    /// The type of a host-backed class instance ([`MontyObject::ClassInstance`]).
-    /// A static placeholder — the real class name appears in error messages and
-    /// reprs, but `type(x)` renders as `HostClass`.
+    /// Internal placeholder type of a host-backed class instance
+    /// ([`MontyObject::ClassInstance`]). `type(x)` never shows it — the
+    /// interpreter builds the real class type object (`<class 'Point'>`)
+    /// instead; the placeholder only backs internal type dispatch.
     #[strum(serialize = "HostClass")]
     HostClass,
     /// A non-builtin class type object — a sandbox-defined or host-defined

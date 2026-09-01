@@ -40,9 +40,10 @@ export interface ClassInstanceOptions {
   /**
    * Transforms each value crossing to the sandbox — applied exactly once per
    * value: to each eager attr, each lazy lookup result, and each method
-   * return value (after the promise settles, for async methods). Replaces the
-   * default conversion, which auto-wraps non-plain objects via
-   * [`ClassInstance.childWrapper`].
+   * return value (after the promise settles, for async methods). The default
+   * passes values through unchanged, so a derived non-plain object fails with
+   * the usual "wrap it in ClassInstance" TypeError — use this hook to wrap
+   * such values with policies chosen per value.
    */
   convertValue?: (name: string, value: unknown) => unknown
 }
@@ -127,25 +128,17 @@ export class ClassInstance {
 
   /**
    * Transforms one value crossing to the sandbox (see
-   * [`ClassInstanceOptions.convertValue`]). The default auto-wraps non-plain
-   * objects — anything [`prepare`] would reject — in [`childWrapper`], so
-   * methods returning class instances work without ceremony.
+   * [`ClassInstanceOptions.convertValue`]). The default passes values through
+   * unchanged — deliberately no automatic wrapping: each object's exposure
+   * must be an explicit host decision, since a wrapper inheriting this
+   * wrapper's policies could silently widen access to an instance the host
+   * had locked down elsewhere.
    */
   convertValue(name: string, value: unknown): unknown {
     if (this.options.convertValue !== undefined) {
       return this.options.convertValue(name, value)
     }
-    if (typeof value === 'object' && value !== null && !(value instanceof ClassInstance) && !isNativeObject(value)) {
-      return this.childWrapper(value)
-    }
     return value
-  }
-
-  /** Wraps a derived value (nested attr / method return) with this wrapper's
-   *  exposure policies; `name` and `frozen` revert to their defaults. */
-  childWrapper(value: object): ClassInstance {
-    const { eagerAttrs, lazyAttrs, allowedMethods, convertValue } = this.options
-    return new ClassInstance(value, { eagerAttrs, lazyAttrs, allowedMethods, convertValue })
   }
 }
 
@@ -253,17 +246,24 @@ export class InstanceStore {
    *  instantiation (undefined until one crosses). Pins the class so its
    *  uuid dedup stays sound. */
   readonly classes = new Map<string, { classObject: object; wrapper?: ClassType }>()
+  /** Per-session uuid mints: the WeakMaps make ids stable per object within
+   *  this store without pinning the objects themselves (registrations do the
+   *  pinning where soundness needs it). Session-local on purpose — a shared
+   *  mint would let a compromised worker recognise the same host object
+   *  across checkouts. */
+  private readonly instanceIds = new WeakMap<object, string>()
+  private readonly classIds = new WeakMap<object, string>()
 
   /** Registers a wrapper and returns the instance's session-stable uuid. */
   register(wrapper: ClassInstance): string {
-    const id = uuidFor(instanceIds, wrapper.instance)
+    const id = uuidFor(this.instanceIds, wrapper.instance)
     this.map.set(id, wrapper)
     return id
   }
 
   /** The class's session uuid, minting and pinning it on first sight. */
   typeUuid(classObject: object): string {
-    const id = uuidFor(classIds, classObject)
+    const id = uuidFor(this.classIds, classObject)
     if (!this.classes.has(id)) {
       this.classes.set(id, { classObject })
     }
@@ -329,9 +329,10 @@ export function prepare(value: unknown, store: InstanceStore): unknown {
   return prepareInner(value, store, 0)
 }
 
-/** Nesting bound for outbound walks — mirrors the wire decoder's limit, so a
- *  too-deep value fails here with a catchable error instead of a stack
- *  overflow (`RangeError`) partway through the recursion. */
+/** Recursion guard for the outbound walk itself, so a too-deep value fails
+ *  with a catchable error instead of a `RangeError` mid-recursion. Not the
+ *  authoritative wire budget: the native layer re-checks every value with
+ *  exact per-shape accounting (`exceeds_max_value_depth`) before encoding. */
 const MAX_INPUT_DEPTH = 48
 /** Backstop for inbound walks; wire values are already bounded well below. */
 const MAX_OUTPUT_DEPTH = 200
@@ -358,7 +359,18 @@ function prepareInner(value: unknown, store: InstanceStore, depth: number): unkn
   if (value instanceof Set) {
     return walkSet(value, store, depth, prepareInner)
   }
-  if (value instanceof Uint8Array || hasTypeMarker(value)) {
+  if (value instanceof Uint8Array) {
+    return value
+  }
+  const marker = readTypeMarker(value)
+  if (marker === 'ClassInstance') {
+    // Identity-bearing markers are produced internally by this walk, never
+    // held by host code (`restore` maps them to the original object or a
+    // MontyClassInstance proxy). One arriving here is forged — e.g. embedded
+    // in attacker-controlled JSON to impersonate a registered instance.
+    throw new TypeError('raw ClassInstance markers are not accepted — wrap the object in ClassInstance(...)')
+  }
+  if (marker !== undefined) {
     return value
   }
   if (isPlainObject(value)) {
@@ -445,9 +457,9 @@ function classTypeObject(
   options: ClassInstanceOptions,
   store: InstanceStore,
 ): Record<string, unknown> {
-  // An object with no constructor still needs a class identity: mint one
-  // keyed on the object itself so repeats stay stable.
-  const id = classObject === undefined ? uuidFor(classIds, Object.prototype) : store.typeUuid(classObject)
+  // An object with no constructor still needs a class identity: key it on
+  // `Object.prototype` so repeats stay stable within the session.
+  const id = store.typeUuid(classObject ?? Object.prototype)
   return {
     name,
     id,
@@ -577,12 +589,7 @@ function walkPlainObject(
 
 // === identity / classification helpers ===
 
-/** Module-level uuid mints for instance and class identities. The WeakMaps
- *  make ids stable per object without pinning the objects themselves; the
- *  store's registrations do the pinning where soundness needs it. */
-const instanceIds = new WeakMap<object, string>()
-const classIds = new WeakMap<object, string>()
-
+/** Returns the uuid minted for `key` in `ids`, minting on first sight. */
 function uuidFor(ids: WeakMap<object, string>, key: object): string {
   let id = ids.get(key)
   if (id === undefined) {
@@ -621,22 +628,6 @@ function policyAllows(policy: AttrPolicy | undefined, name: string): boolean {
 function isPlainObject(value: object): boolean {
   const proto: unknown = Object.getPrototypeOf(value)
   return proto === Object.prototype || proto === null
-}
-
-/** True when the js↔monty conversion accepts the object without a wrapper. */
-function isNativeObject(value: object): boolean {
-  return (
-    isPlainObject(value) ||
-    Array.isArray(value) ||
-    value instanceof Map ||
-    value instanceof Set ||
-    value instanceof Uint8Array ||
-    hasTypeMarker(value)
-  )
-}
-
-function hasTypeMarker(value: object): boolean {
-  return typeof readTypeMarker(value) === 'string'
 }
 
 /** Reads `__monty_type__` without letting a throwing getter escape (mirrors

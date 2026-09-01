@@ -123,9 +123,10 @@ Methods may be sync or async (`await w.fetch()` in the sandbox). JS functions
 have no keyword arguments, so kwargs arrive as a trailing options-bag object.
 Names outside the policy raise `AttributeError` in the sandbox. A
 `convertValue` option hook transforms each value crossing to the sandbox
-(eager attrs, lazy lookup results, method returns); the default auto-wraps
-returned class instances with the same policies. Unwrapped class instances are
-rejected with a `TypeError` — wrapping is always explicit.
+(eager attrs, lazy lookup results, method returns); the default passes values
+through unchanged, so unwrapped class instances are rejected with a
+`TypeError` — wrapping is always an explicit host decision, with policies
+chosen per value (deliberately nothing inherits another wrapper's policies).
 
 Two more options: `name` overrides the class name the sandbox sees (default
 `instance.constructor.name`), and `frozen: true` makes in-sandbox `setattr`

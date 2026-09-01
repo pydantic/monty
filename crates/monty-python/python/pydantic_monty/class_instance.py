@@ -92,24 +92,16 @@ class ClassInstance:
         """Hook to transform attribute values and method return values before
         they are sent to the sandbox.
 
-        The default wraps dataclass instances in a child `ClassInstance`
-        sharing this wrapper's policies — so methods (and attrs) yielding
-        dataclasses work without ceremony — and passes everything else
-        through unchanged. Override to customize.
+        The default passes values through unchanged, so a derived class
+        instance fails conversion with the usual "wrap it in ClassInstance"
+        error. Deliberately no automatic wrapping: each object's exposure
+        must be an explicit host decision — a wrapper inheriting this
+        wrapper's policies could silently widen access to an instance the
+        host had locked down elsewhere. Override to wrap derived values with
+        policies chosen per value, e.g.
+        `return ClassInstance(value, eager_attrs='all')`.
         """
-        if is_dataclass(value) and not isinstance(value, type):
-            return self.child_wrapper(value)
         return value
-
-    def child_wrapper(self, value: Any) -> ClassInstance:
-        """Wraps a derived value (nested attr / method return) with the same
-        exposure policies as this wrapper; `frozen` reverts to auto-detect."""
-        return type(self)(
-            value,
-            eager_attrs=self.eager_attrs,
-            lazy_attrs=self.lazy_attrs,
-            allowed_methods=self.allowed_methods,
-        )
 
     def _get_attr(self, name: str, policy: set[str] | Literal['all'] | None) -> Any:
         """Raw attribute access guarded by an exposure policy (no conversion)."""

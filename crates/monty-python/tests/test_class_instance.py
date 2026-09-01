@@ -232,16 +232,41 @@ def test_convert_value_override_eager_attr(monty_run: RunMonty):
     assert monty_run('g.greeting', inputs={'g': UpperClassInstance(g, eager_attrs='all')}) == snapshot('HELLO')
 
 
-def test_method_returning_dataclass_auto_wrapped(monty_run: RunMonty):
-    """The default convert_value wraps returned dataclasses in a child wrapper."""
+def test_method_returning_dataclass_not_auto_wrapped(monty_run: RunMonty):
+    """The default convert_value never wraps derived values: a returned bare
+    dataclass fails conversion instead of inheriting this wrapper's policies."""
     w = Wallet(balance=100)
-    result = monty_run('w.pay(30).balance', inputs={'w': ClassInstance(w, eager_attrs='all', allowed_methods='all')})
-    assert result == snapshot(70)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('w.pay(30)', inputs={'w': ClassInstance(w, eager_attrs='all', allowed_methods='all')})
+    assert str(exc_info.value) == snapshot(
+        "TypeError: cannot convert dataclass 'Wallet' to a Monty value — wrap it in pydantic_monty.ClassInstance(...)"
+    )
+
+
+class WalletClassInstance(ClassInstance):
+    """Wrapper exposing derived wallets read-only via an explicit override."""
+
+    def convert_value(self, /, name: str, value: Any) -> Any:
+        if isinstance(value, Wallet):
+            return WalletClassInstance(value, eager_attrs='all')
+        return value
+
+
+def test_method_returning_dataclass_wrapped_by_override(monty_run: RunMonty):
+    """An explicit convert_value override chooses the derived value's policy —
+    here read-only, so the child exposes attrs but no methods."""
+    w = Wallet(balance=100)
+    wrapper = WalletClassInstance(w, eager_attrs='all', allowed_methods='all')
+    assert monty_run('w.pay(30).balance', inputs={'w': wrapper}) == snapshot(70)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('w.pay(30).pay(5)', inputs={'w': wrapper})
+    assert str(exc_info.value) == snapshot("AttributeError: 'Wallet' object has no attribute 'pay'")
 
 
 def test_returned_child_dataclass_is_host_object(monty_run: RunMonty):
     w = Wallet(balance=100)
-    result = monty_run('w.pay(30)', inputs={'w': ClassInstance(w, eager_attrs='all', allowed_methods='all')})
+    wrapper = WalletClassInstance(w, eager_attrs='all', allowed_methods='all')
+    result = monty_run('w.pay(30)', inputs={'w': wrapper})
     assert isinstance(result, Wallet)
     assert result.balance == snapshot(70)
 
