@@ -1055,6 +1055,10 @@ fn a85_decode(data: &[u8], foldspaces: bool, ignore: &IgnoreChars<'_>, vm: &mut 
     let mut out: Vec<u8> = Vec::with_capacity(data.len().div_ceil(5) * 4);
     let mut acc: u64 = 0;
     let mut digits = 0u8;
+    // Counts only the bytes reaching `skips`, the one arm whose cost grows with
+    // a caller's `ignorechars`. Indexing by position instead would let input
+    // that lands those bytes off the poll's stride skip the clock entirely.
+    let mut ignored = 0usize;
 
     for byte in data.iter().copied().chain([A85_LAST_DIGIT; 4]) {
         if (A85_FIRST_DIGIT..=A85_LAST_DIGIT).contains(&byte) {
@@ -1079,11 +1083,18 @@ fn a85_decode(data: &[u8], foldspaces: bool, ignore: &IgnoreChars<'_>, vm: &mut 
                 return Err(codec_value_error("y inside Ascii85 5-tuple"));
             }
             out.extend_from_slice(b"    ");
-        } else if !ignore.skips(byte, vm)? {
-            return Err(codec_value_error(format!(
-                "Non-Ascii85 digit found: {}",
-                char::from(byte)
-            )));
+        } else {
+            // `ignorechars` is a Python container, so this is a `py_contains`
+            // per byte — linear for `bytes`. Nothing here returns to the VM's
+            // dispatch checkpoint, so the loop polls the clock itself.
+            vm.heap.tracker.check_time_every(ignored)?;
+            ignored += 1;
+            if !ignore.skips(byte, vm)? {
+                return Err(codec_value_error(format!(
+                    "Non-Ascii85 digit found: {}",
+                    char::from(byte)
+                )));
+            }
         }
     }
 

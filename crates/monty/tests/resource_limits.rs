@@ -1266,3 +1266,19 @@ fn timeout_in_itertools_adaptor_loops() {
         assert_timeout_in_builtin(&format!("import itertools\n{expr}"), expr);
     }
 }
+
+/// Test that `a85decode` respects the time limit when `ignorechars` is large.
+///
+/// Every byte that is no Ascii85 digit reaches `x in ignorechars`, a linear
+/// scan for `bytes`, so the decode is quadratic in the two lengths while
+/// allocating nothing — a deadline problem no allocation preflight would catch.
+/// The lengths are set so that running to completion takes far longer than the
+/// promptness bound: without a poll in the loop the builtin returns to the VM's
+/// checkpoint only after tens of seconds.
+#[test]
+fn timeout_in_a85decode_ignorechars() {
+    assert_timeout_in_builtin(
+        "import base64\ndata = b'\\0' * 1000000\nignore = b'\\xff' * 1000000 + b'\\0'\nbase64.a85decode(data, ignorechars=ignore)",
+        "a85decode with large ignorechars",
+    );
+}
