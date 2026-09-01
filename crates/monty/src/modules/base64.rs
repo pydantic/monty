@@ -410,10 +410,16 @@ fn call_a85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(pad, vm);
     defer_drop!(adobe, vm);
 
+    // CPython coerces the input before any flag and reaches `pad` only when the
+    // length needs padding. Which flag raises first is unobservable while
+    // `__bool__` goes undispatched (`limitations/classes.md`), but this order
+    // holds once it lands. Owned as `tobytes()` is: a dispatched `__bool__`
+    // re-enters the interpreter and could mutate a `bytearray`.
+    let data = memoryview_input(b, vm)?.into_owned();
     let fold = foldspaces.py_bool(vm)?;
-    let keep_padding = pad.py_bool(vm)?;
+    let keep_padding = data.len() % 4 != 0 && pad.py_bool(vm)?;
     let adobe = adobe.py_bool(vm)?;
-    let mut encoded = a85_encode(memoryview_input(b, vm)?.as_ref(), keep_padding, fold);
+    let mut encoded = a85_encode(&data, keep_padding, fold);
 
     if adobe {
         encoded.splice(0..0, *A85_ADOBE_START);
