@@ -556,7 +556,7 @@ impl Checkout {
     /// Answers a [`TurnEvent::NameLookup`]: `Some(value)` resolves the name,
     /// `None` makes the sandbox raise `NameError` for a plain lookup, or
     /// `AttributeError` when the lookup carried an `object_id` (a lazy
-    /// attribute on a host class instance).
+    /// attribute on a host-backed object — a class instance or class type).
     pub async fn resume_name_lookup(
         &mut self,
         value: Option<MontyObject>,

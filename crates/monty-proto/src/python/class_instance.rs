@@ -257,7 +257,8 @@ pub struct InstanceStore {
     /// and through it the wrapped object.
     objects: Py<PyDict>,
     /// `id(instance)` → uuid bytes; dedup so re-sending an object reuses its
-    /// uuid. Sound because `instances` pins the instance for the session.
+    /// uuid. Sound because `objects` pins the wrapper (and through it the
+    /// instance) for the session.
     instance_ids: Py<PyDict>,
     /// uuid bytes → `(class, ClassType wrapper | None)`; pins the class, and
     /// carries the wrapper whose policy gates instantiation.

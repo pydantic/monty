@@ -1866,6 +1866,19 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
         }
+        HeapData::HostClassType(t) => {
+            // Eager class attrs can hold containers the sandbox can reach
+            // (`Klass.data`) and mutate to close a cycle back to this type
+            // object, so they must be traced like `HostClass` attrs.
+            for (k, v) in t.attrs() {
+                if let Value::Ref(id) = k {
+                    on_child(*id);
+                }
+                if let Value::Ref(id) = v {
+                    on_child(*id);
+                }
+            }
+        }
         HeapData::Class(class) => {
             // The class namespace holds method/class-variable values.
             for (k, v) in class.namespace() {
@@ -2055,6 +2068,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         }
         HeapData::Cell(cell) => cell.0.py_dec_ref_ids(stack),
         HeapData::HostClass(dc) => dc.py_dec_ref_ids(stack),
+        HeapData::HostClassType(t) => t.py_dec_ref_ids(stack),
         HeapData::Class(class) => class.py_dec_ref_ids(stack),
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),

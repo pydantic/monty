@@ -56,8 +56,10 @@ pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, store: &InstanceStore) -> Resul
 /// Class instances cross the boundary only when explicitly wrapped in
 /// `pydantic_monty.ClassInstance` — the wrapper (including nested ones inside
 /// eager attrs) registers in `store` so method calls, lazy attribute lookups,
-/// and round-tripped returns resolve to the original object. A bare dataclass
-/// raises `TypeError` pointing at the wrapper.
+/// and round-tripped returns resolve to the original object. A bare
+/// non-callable class instance falls through to the "wrap class instances"
+/// `TypeError`; a callable one converts as a host function like any other
+/// callable input.
 ///
 /// Match order matters: `bool` before `int` (subclass), and the generic
 /// callable check is last since many types (classes, etc.) are callable.
@@ -172,8 +174,8 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore, mut depth: u8)
             None => Ok(callable_to_monty_function(obj)),
         }
     } else if obj.is_callable() {
-        // Callable check is last since many Python types (classes, etc.) are technically callable,
-        // and we want to match more specific types first (e.g. dataclasses).
+        // Callable check is last since many Python types (classes, wrappers,
+        // etc.) are technically callable and must match their specific branch.
         Ok(callable_to_monty_function(obj))
     } else if let Ok(name) = obj.get_type().qualname() {
         let msg = match obj.get_type().module() {

@@ -4,7 +4,7 @@
 //! and can be used in Python code execution.
 
 use monty::MontyRun;
-use monty_types::{ClassType, CompileOptions, DictPairs, ExcType, MontyObject, MontyUuid};
+use monty_types::{ClassType, CompileOptions, DictPairs, ExcType, MontyObject, MontyType, MontyUuid};
 
 // === Immediate Value Tests ===
 
@@ -610,6 +610,63 @@ fn invalid_input_repr_in_class_instance_attrs() {
         err.message(),
         Some("invalid input type: 'Repr' is not a valid input value")
     );
+}
+
+/// A host `Point` class-type input carrying one eager class attr (`data`, a
+/// mutable list) — the shape used by the host-class-type tests below.
+fn host_class_type_input() -> MontyObject {
+    MontyObject::Type(MontyType::Instance(Box::new(ClassType {
+        name: "Point".to_owned(),
+        id: MontyUuid::from_u128(1),
+        host_defined: true,
+        parents: vec![],
+        is_dataclass: false,
+        frozen: false,
+        attrs: vec![(
+            MontyObject::String("data".to_owned()),
+            MontyObject::List(vec![MontyObject::Int(1)]),
+        )]
+        .into(),
+    })))
+}
+
+#[test]
+fn type_object_missing_attr_uses_type_object_wording() {
+    // Non-iterative `run` has no host to answer the AttrLookup suspension, so
+    // it must raise the AttributeError locally — with CPython's type-object
+    // wording, since the receiver is a class type.
+    let ex = MontyRun::new(
+        "x.missing".to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let err = ex.run_no_limits(vec![host_class_type_input()]).unwrap_err();
+    assert_eq!(err.message(), Some("type object 'Point' has no attribute 'missing'"));
+}
+
+#[test]
+fn host_class_type_attr_cycle_is_collected() {
+    // Sandbox code can reach a container in a host class type's eager attrs
+    // and close a cycle back to the type object. The run must still complete
+    // and tear down cleanly — under `memory-model-checks` this verifies the
+    // GC traces and frees the HostClassType's attrs (a missed
+    // `for_each_child_id`/`py_dec_ref_ids` arm leaks or corrupts refcounts).
+    let code = "
+x.data.append(x)
+x = None
+1
+";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let result = ex.run_no_limits(vec![host_class_type_input()]).unwrap();
+    assert_eq!(result, MontyObject::Int(1));
 }
 
 // === Function Parameter Shadowing Tests ===

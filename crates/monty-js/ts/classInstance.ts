@@ -110,9 +110,13 @@ export class ClassInstance {
    * appended as a final options-bag argument — the way JS hosts typically
    * take named options. The return value passes through `convertValue`
    * (after settling, for a promise-returning method).
+   *
+   * `__call__` is always rejected on instances — only [`ClassType`] accepts
+   * it (as construction) — so even `allowedMethods: 'all'` cannot invoke the
+   * instance itself.
    */
   callMethod(name: string, args: unknown[], kwargs: Record<string, unknown>): unknown {
-    if (!policyAllows(this.options.allowedMethods, name) || !(name in this.instance)) {
+    if (name === '__call__' || !policyAllows(this.options.allowedMethods, name) || !(name in this.instance)) {
       throw this.attrError(name)
     }
     const method = (this.instance as Record<string, unknown>)[name]

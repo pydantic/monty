@@ -650,9 +650,11 @@ fn dispatch_method_call(
     registry: &mut FixtureRegistry,
 ) -> ExtFunctionResult {
     let Some(fixture) = registry.get(instance_id) else {
-        // A real host would answer RuntimeError here; the harness only ever
-        // sees ids it handed out, so an unknown id is a harness bug.
-        panic!("method call '{method_name}' on unregistered instance {instance_id}");
+        // Mirror a real host's store miss (e.g. a class-uuid receiver from
+        // `type(point).m()` — the harness registers no class types) so test
+        // cases see the documented RuntimeError instead of a harness panic.
+        let message = format!("no host object registered for method call '{method_name}' (id {instance_id})");
+        return MontyException::new(ExcType::RuntimeError, Some(message)).into();
     };
     let class_name = fixture.class_name;
 
@@ -1832,10 +1834,11 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
         match progress {
             RunProgress::Complete(result) => return Ok(result),
             RunProgress::FunctionCall(call) => {
-                // Method calls on host class instances are routed by the
-                // receiver uuid; unknown methods return AttributeError. The
-                // harness registers no class types, so a class-uuid receiver
-                // cannot occur.
+                // Method calls on host-backed objects are routed by the
+                // receiver uuid; unknown methods return AttributeError, and
+                // an unregistered id (e.g. a class-uuid receiver — the
+                // harness registers no class types) answers the documented
+                // store-miss RuntimeError like a real host.
                 if let Some(object_id) = call.object_id {
                     let result =
                         dispatch_method_call(&call.function_name, object_id, &call.args, &call.kwargs, &mut registry);

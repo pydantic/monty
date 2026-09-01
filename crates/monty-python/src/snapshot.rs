@@ -414,7 +414,9 @@ fn optional_uuid_to_py(py: Python<'_>, uuid: Option<&MontyUuid>) -> PyResult<Opt
 
 /// Resolves a name against the [`DriveContext`]'s captured `external_lookup=`,
 /// shared by the sync and async name-lookup `resume_auto`. `None` leaves the
-/// name undefined so the sandbox raises `NameError`, matching `feed_run`.
+/// lookup unanswered, matching `feed_run`: the sandbox raises `NameError` for
+/// a plain name, or `AttributeError` when `object_id` marks a lazy attribute
+/// on a host-backed object.
 fn resolve_captured_name(
     py: Python<'_>,
     ctx: &DriveContext,
@@ -829,8 +831,9 @@ impl<'a, 'py> FromPyObject<'a, 'py> for MaybeValue<'py> {
 
 impl NameLookupSnapshot {
     /// Converts the `resume` argument into the name's binding: an omitted value
-    /// (`Unset`) leaves the name undefined so the sandbox raises `NameError`,
-    /// while a supplied value — **including `None`** — binds the name to it.
+    /// (`Unset`) leaves the lookup unanswered — the sandbox raises `NameError`
+    /// for a plain name, or `AttributeError` when `object_id` marks a lazy host
+    /// attribute — while a supplied value (**including `None`**) binds it.
     fn resume_value(&self, py: Python<'_>, value: MaybeValue<'_>) -> PyResult<Option<MontyObject>> {
         match value {
             MaybeValue::Unset => Ok(None),
@@ -841,8 +844,10 @@ impl NameLookupSnapshot {
     }
 }
 
-/// A paused execution waiting for the value of an undefined name. Resume with a
-/// `value` to define it, or with nothing to let the sandbox raise `NameError`.
+/// A paused execution waiting for the value of an undefined name (or, when
+/// `object_id` is set, a lazy host attribute). Resume with a `value` to define
+/// it, or with nothing to let the sandbox raise `NameError` (`AttributeError`
+/// for a host attribute).
 #[pyclass(name = "NameLookupSnapshot", module = "pydantic_monty", frozen)]
 pub struct PyNameLookupSnapshot(NameLookupSnapshot);
 

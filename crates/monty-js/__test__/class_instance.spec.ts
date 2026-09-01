@@ -135,6 +135,15 @@ test('method call allowed by "all"', async () => {
   t.is(await run('c.add(10)', { inputs: { c: new ClassInstance(c, { allowedMethods: 'all' }) } }), 15)
 })
 
+test('instance callMethod rejects __call__ even under allowedMethods "all"', () => {
+  // `__call__` routes only to ClassType construction; on an instance wrapper
+  // a (necessarily forged) `__call__` frame must never invoke the instance.
+  const invocable = Object.assign(() => 'invoked', { add: (n: number) => n })
+  const wrapper = new ClassInstance(invocable, { allowedMethods: 'all' })
+  const error = t.throws(() => wrapper.callMethod('__call__', [], {}))
+  t.is(error.message, "'Function' object has no attribute '__call__'")
+})
+
 test('kwargs are delivered as a trailing options bag', async () => {
   const c = new Calculator(5)
   t.is(await run('c.scale(factor=3)', { inputs: { c: new ClassInstance(c, { allowedMethods: 'all' }) } }), 15)

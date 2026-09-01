@@ -19,8 +19,9 @@ to transform values crossing the boundary.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Coroutine, Iterable, Sequence
 from dataclasses import dataclass, fields, is_dataclass
+from inspect import iscoroutine
 from typing import Any, Literal
 
 __all__ = ('ClassInstance', 'ClassType')
@@ -85,10 +86,23 @@ class ClassInstance:
         """Calls a method on the wrapped instance for the sandbox.
 
         Raises `AttributeError` when `name` is not exposed by `allowed_methods`.
-        The return value passes through `convert_value` before crossing back.
+        `__call__` is always rejected on instances — only `ClassType` accepts it
+        (as construction) — so even `allowed_methods='all'` cannot invoke the
+        instance itself. The return value passes through `convert_value` before
+        crossing back; a coroutine result defers conversion until awaited.
         """
+        if name == '__call__':
+            raise self.attr_error(name)
         method = self.get_attr(name, self.allowed_methods)
-        return self.convert_value(name, method(*args, **kwargs))
+        result = method(*args, **kwargs)
+        if iscoroutine(result):
+            return self._convert_awaited(name, result)
+        return self.convert_value(name, result)
+
+    async def _convert_awaited(self, name: str, coro: Coroutine[Any, Any, Any]) -> Any:
+        """Awaits an async method's result, then applies `convert_value` — so
+        redaction hooks see the resolved value, never the coroutine object."""
+        return self.convert_value(name, await coro)
 
     def convert_value(self, /, name: str, value: Any) -> Any:
         """Hook to transform attribute values and method return values before
@@ -224,7 +238,12 @@ class ClassType(ClassInstance):
         return AttributeError(f'type object {self.value.__name__!r} has no attribute {name!r}')
 
 
-def _is_class_machinery(value: Any) -> bool:
+def _is_class_machinery(value: object) -> bool:
     """Whether a class `__dict__` entry is a method or descriptor rather than
-    a class constant — excluded from `eager_attrs='all'` on a `ClassType`."""
-    return callable(value) or isinstance(value, (classmethod, staticmethod, property))
+    a class constant — excluded from `eager_attrs='all'` on a `ClassType`.
+
+    The `__get__` check catches every descriptor (`classmethod`,
+    `staticmethod`, `property`, `functools.cached_property`, ...), so `'all'`
+    only ever sends plain class constants.
+    """
+    return callable(value) or hasattr(type(value), '__get__')

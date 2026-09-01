@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import FrozenInstanceError, dataclass
+from functools import cached_property
 from typing import Any, NoReturn
 
 import pytest
@@ -207,6 +208,21 @@ def test_private_method_not_dispatched(monty_run: RunMonty):
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         monty_run('c._secret()', inputs={'c': ClassInstance(c, allowed_methods='all')})
     assert str(exc_info.value) == snapshot("AttributeError: 'Calculator' object has no attribute '_secret'")
+
+
+def test_instance_call_method_dunder_call_rejected():
+    """`__call__` routes only to `ClassType` construction; on an instance
+    wrapper a (necessarily forged) `__call__` frame is denied even under
+    `allowed_methods='all'`, so the wrapped instance can never be invoked."""
+
+    class Invocable:
+        def __call__(self) -> str:
+            return 'invoked'
+
+    wrapper = ClassInstance(Invocable(), allowed_methods='all')
+    with pytest.raises(AttributeError) as exc_info:
+        wrapper.call_method('__call__', (), {})
+    assert str(exc_info.value) == snapshot("'Invocable' object has no attribute '__call__'")
 
 
 # === convert_value / child wrapper ===
@@ -527,6 +543,22 @@ async def test_async_method_call_coroutine():
     assert result == snapshot('hi sam')
 
 
+async def test_async_method_result_passes_convert_value():
+    """`convert_value` applies to the awaited result of an async method, not
+    the coroutine object — a redaction hook must see the resolved value."""
+
+    class AsyncGreeter:
+        async def greet(self, name: str) -> str:
+            return f'hi {name}'
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            result = await session.feed_run(
+                'await g.greet("sam")', inputs={'g': UpperClassInstance(AsyncGreeter(), allowed_methods='all')}
+            )
+    assert result == snapshot('HI SAM')
+
+
 # === Dump / load fallback ===
 
 
@@ -643,6 +675,25 @@ def test_class_type_eager_class_attrs(monty_run: RunMonty):
     """eager_attrs on a ClassType sends class constants with the type."""
     wrapper = pydantic_monty.ClassType(Shape, eager_attrs='all')
     assert monty_run('Shape.SIDES + len(Shape.KIND)', inputs={'Shape': wrapper}) == snapshot(11)
+
+
+def test_class_type_eager_all_skips_descriptors(monty_run: RunMonty):
+    """eager_attrs='all' sends only plain class constants: non-callable
+    descriptors like `functools.cached_property` are class machinery, not
+    values, and must not be serialized."""
+
+    class WithCached:
+        KIND = 'cached'
+
+        @cached_property
+        def expensive(self) -> int:
+            return 99
+
+    wrapper = pydantic_monty.ClassType(WithCached, eager_attrs='all')
+    assert monty_run('W.KIND', inputs={'W': wrapper}) == snapshot('cached')
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('W.expensive', inputs={'W': wrapper})
+    assert str(exc_info.value) == snapshot("AttributeError: type object 'WithCached' has no attribute 'expensive'")
 
 
 def test_class_type_lazy_class_attr(monty_run: RunMonty):

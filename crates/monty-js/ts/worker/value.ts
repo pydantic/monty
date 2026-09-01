@@ -225,14 +225,18 @@ function pushClassType(
       nodes.push(node)
     }
   }
+  // Require an array like the native binding does, so both transports
+  // enforce the same marker contract (a missing `attrs` is a forged or
+  // malformed marker, not an empty attribute list).
+  if (!Array.isArray(object.attrs)) {
+    throw new TypeError('ClassType attrs must be an array of [name, value] pairs')
+  }
   const attrPairs: [unknown, unknown][] = []
-  if (Array.isArray(object.attrs)) {
-    for (const pair of object.attrs as unknown[]) {
-      if (!Array.isArray(pair)) throw new TypeError('ClassType attrs entries must be [name, value] pairs')
-      if (typeof pair[0] !== 'string') throw new TypeError('ClassType attr name must be a string')
-      if (!(1 in pair)) throw new TypeError('ClassType attr value missing')
-      attrPairs.push([pair[0], pair[1]])
-    }
+  for (const pair of object.attrs as unknown[]) {
+    if (!Array.isArray(pair)) throw new TypeError('ClassType attrs entries must be [name, value] pairs')
+    if (typeof pair[0] !== 'string') throw new TypeError('ClassType attr name must be a string')
+    if (!(1 in pair)) throw new TypeError('ClassType attr value missing')
+    attrPairs.push([pair[0], pair[1]])
   }
   return {
     name: String(object.name),

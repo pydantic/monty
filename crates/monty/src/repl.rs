@@ -658,8 +658,8 @@ impl ReplOsCall {
 // ---------------------------------------------------------------------------
 
 /// REPL execution paused for an unresolved name lookup, or — when
-/// [`instance_id`](Self::instance_id) is set — a lazy attribute lookup on a
-/// host class instance.
+/// [`object_id`](Self::object_id) is set — a lazy attribute lookup on a
+/// host-backed object (a class instance or class type).
 ///
 /// The host should check if the name corresponds to a known external function,
 /// value, or instance attribute. Call `resume(result, print)` with the
@@ -669,7 +669,7 @@ impl ReplOsCall {
 pub struct ReplNameLookup {
     /// The name being looked up.
     pub name: String,
-    /// Where the resolved value lands (namespace slot or instance attribute).
+    /// Where the resolved value lands (namespace slot or host attribute).
     scope: LookupScope,
     /// Internal REPL execution snapshot.
     snapshot: ReplSnapshot,
@@ -694,8 +694,9 @@ impl ReplNameLookup {
     /// Resumes execution after name resolution.
     ///
     /// For a plain lookup, caches the resolved value in the namespace slot and
-    /// `Undefined` raises `NameError`; for an instance attribute lookup the
-    /// value is pushed uncached and `Undefined` raises `AttributeError`.
+    /// `Undefined` raises `NameError`; for a host attribute lookup (instance
+    /// or class type) the value is pushed uncached and `Undefined` raises
+    /// `AttributeError`.
     pub fn resume(self, result: NameLookupResult, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self { name, scope, snapshot } = self;
 

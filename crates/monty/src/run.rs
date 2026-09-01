@@ -465,9 +465,20 @@ impl Executor {
                 }
                 // No host to serve a lazy attribute lookup — raise the
                 // AttributeError an unanswered lookup would produce, through
-                // the VM so the traceback is captured.
-                Ok(FrameExit::AttrLookup { name, class_name, .. }) => {
-                    let err = ExcType::attribute_error(&class_name, name.as_str(&self.interns));
+                // the VM so the traceback is captured. `type_object` selects
+                // CPython's `type object '...'` wording for class types.
+                Ok(FrameExit::AttrLookup {
+                    name,
+                    class_name,
+                    type_object,
+                    ..
+                }) => {
+                    let name = name.as_str(&self.interns);
+                    let err = if type_object {
+                        ExcType::attribute_error_type(&class_name, name)
+                    } else {
+                        ExcType::attribute_error(&class_name, name)
+                    };
                     frame_exit_result = vm.resume_with_exception(err);
                 }
                 Ok(FrameExit::ExternalCall {
