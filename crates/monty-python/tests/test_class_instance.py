@@ -239,7 +239,7 @@ def test_method_returning_dataclass_not_auto_wrapped(monty_run: RunMonty):
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         monty_run('w.pay(30)', inputs={'w': ClassInstance(w, eager_attrs='all', allowed_methods='all')})
     assert str(exc_info.value) == snapshot(
-        "TypeError: cannot convert dataclass 'Wallet' to a Monty value — wrap it in pydantic_monty.ClassInstance(...)"
+        'TypeError: Cannot convert test_class_instance.Wallet to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
     )
 
 
@@ -297,7 +297,7 @@ def test_bare_dataclass_input_rejected(monty_run: RunMonty):
     with pytest.raises(MontyConversionError) as exc_info:
         monty_run('x', inputs={'x': Person(name='Alice', age=30)})
     assert str(exc_info.value) == snapshot(
-        "cannot convert dataclass 'Person' to a Monty value — wrap it in pydantic_monty.ClassInstance(...)"
+        'Cannot convert test_class_instance.Person to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
     )
 
 
@@ -317,7 +317,7 @@ def test_bare_dataclass_from_external_function_rejected(monty_run: RunMonty):
     inner = exc_info.value.exception()
     assert isinstance(inner, TypeError)
     assert inner.args[0] == snapshot(
-        "cannot convert dataclass 'Person' to a Monty value — wrap it in pydantic_monty.ClassInstance(...)"
+        'Cannot convert test_class_instance.Person to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
     )
 
 

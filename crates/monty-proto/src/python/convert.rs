@@ -22,7 +22,7 @@ use pyo3::{
 use super::{
     class_instance::{
         InstanceStore, class_instance_to_monty, class_instance_to_py, class_type_to_monty, class_type_to_py,
-        is_class_instance_wrapper, is_class_type_wrapper, is_dataclass,
+        is_class_instance_wrapper, is_class_type_wrapper,
     },
     exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_object},
 };
@@ -154,13 +154,6 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore, mut depth: u8)
         class_type_to_monty(obj, store, depth)
     } else if is_class_instance_wrapper(obj)? {
         class_instance_to_monty(obj, store, depth)
-    } else if is_dataclass(obj) {
-        // Bare dataclasses don't convert: the wrapper carries the exposure
-        // policy and the instance identity the sandbox routes by.
-        let name = obj.get_type().qualname()?;
-        Err(PyTypeError::new_err(format!(
-            "cannot convert dataclass '{name}' to a Monty value — wrap it in pydantic_monty.ClassInstance(...)"
-        )))
     } else if obj.is_instance(get_pure_posix_path(obj.py())?)? {
         // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects
         let path_str: String = obj.str()?.extract()?;

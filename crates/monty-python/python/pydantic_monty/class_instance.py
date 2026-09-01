@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, fields, is_dataclass
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 __all__ = ('ClassInstance', 'ClassType')
 
@@ -39,7 +39,7 @@ class ClassInstance:
     ```
     """
 
-    class_instance: Any
+    value: Any
     """The instance to send."""
 
     eager_attrs: Sequence[str] | Literal['all'] | None = None
@@ -63,13 +63,13 @@ class ClassInstance:
 
         eager_attrs: Iterable[tuple[str, Any]]
         if self.eager_attrs == 'all':
-            if is_dataclass(self.class_instance):
-                eager_attrs = [(f.name, getattr(self.class_instance, f.name)) for f in fields(self.class_instance)]
+            if self.is_dataclass():
+                eager_attrs = [(f.name, getattr(self.value, f.name)) for f in fields(self.value)]
             else:
-                eager_attrs = self.class_instance.__dict__.items()
+                eager_attrs = self.value.__dict__.items()
             eager_attrs = [(name, value) for name, value in eager_attrs if not name.startswith('_')]
         else:
-            eager_attrs = [(name, getattr(self.class_instance, name)) for name in self.eager_attrs]
+            eager_attrs = [(name, getattr(self.value, name)) for name in self.eager_attrs]
         return {name: self.convert_value(name, value) for name, value in eager_attrs}
 
     def lookup_lazy_attrs(self, name: str) -> Any:
@@ -109,19 +109,23 @@ class ClassInstance:
         """Raw attribute access guarded by an exposure policy (no conversion)."""
         if policy != 'all' and (policy is None or name not in policy):
             raise self.attr_error(name)
-        return getattr(self.class_instance, name)
+        return getattr(self.value, name)
 
     def attr_error(self, name: str) -> AttributeError:
         """The error a denied or missing attribute raises; `ClassType`
         overrides it with CPython's type-object wording."""
-        return AttributeError(f'{type(self.class_instance).__name__!r} object has no attribute {name!r}')
+        return AttributeError(f'{type(self.value).__name__!r} object has no attribute {name!r}')
+
+    def is_dataclass(self) -> bool:
+        """Whether the wrapped value is a dataclass."""
+        return is_dataclass(self.value)
 
     def get_frozen(self) -> bool:
         """Whether the sandbox copy is frozen; auto-detects frozen dataclasses."""
         if self.frozen is not None:
             return self.frozen
         # instance lookup falls through to the class, where dataclasses store it
-        params = getattr(self.class_instance, '__dataclass_params__', None)
+        params = getattr(self.value, '__dataclass_params__', None)
         return params.frozen if params is not None else False
 
 
@@ -149,10 +153,15 @@ class ClassType(ClassInstance):
     ```
     """
 
+    value: type[Any]
+    """The type/class to send."""
+
     init: bool = False
-    """Whether sandbox code may instantiate the class. Purely a host-side
-    policy: it never crosses the wire, and `construct` checks it on every
-    request."""
+    """Whether sandbox code may instantiate the class.
+
+    Purely a host-side policy: it never crosses the wire, and `construct`
+    checks it on every request.
+    """
 
     instance_eager_attrs: Sequence[str] | Literal['all'] | None = None
     """Policy applied to constructed instances (see `ClassInstance`)."""
@@ -162,15 +171,6 @@ class ClassType(ClassInstance):
 
     instance_allowed_methods: set[str] | Literal['all'] | None = None
     """Policy applied to constructed instances (see `ClassInstance`)."""
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.class_instance, type):
-            raise TypeError('ClassType expects a class')
-
-    @property
-    def class_type(self) -> type:
-        """The wrapped class (the inherited `class_instance` field)."""
-        return cast(type, self.class_instance)
 
     def get_eager_attrs(self) -> dict[str, Any]:
         """Class-object variant of eager attrs: `'all'` sends public
@@ -182,11 +182,11 @@ class ClassType(ClassInstance):
         if self.eager_attrs == 'all':
             eager_attrs = [
                 (name, value)
-                for name, value in vars(self.class_type).items()
+                for name, value in vars(self.value).items()
                 if not name.startswith('_') and not _is_class_machinery(value)
             ]
         else:
-            eager_attrs = [(name, getattr(self.class_type, name)) for name in self.eager_attrs]
+            eager_attrs = [(name, getattr(self.value, name)) for name in self.eager_attrs]
         return {name: self.convert_value(name, value) for name, value in eager_attrs}
 
     def call_method(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
@@ -194,7 +194,8 @@ class ClassType(ClassInstance):
         is a classmethod/staticmethod call gated by `allowed_methods`."""
         if name == '__call__':
             return self.construct(args, kwargs)
-        return super().call_method(name, args, kwargs)
+        else:
+            return super().call_method(name, args, kwargs)
 
     def construct(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> ClassInstance:
         """Constructs an instance for the sandbox, re-checking the `init` policy.
@@ -203,8 +204,8 @@ class ClassType(ClassInstance):
         registers and crosses back like any host-sent `ClassInstance`.
         """
         if not self.init:
-            raise TypeError(f'cannot instantiate host class {self.class_type.__name__!r}')
-        instance = self.class_type(*args, **kwargs)
+            raise TypeError(f'cannot instantiate host class {self.value.__name__!r}')
+        instance = self.value(*args, **kwargs)
         return self.instance_wrapper(instance)
 
     def instance_wrapper(self, instance: Any) -> ClassInstance:
@@ -220,7 +221,7 @@ class ClassType(ClassInstance):
         )
 
     def attr_error(self, name: str) -> AttributeError:
-        return AttributeError(f'type object {self.class_type.__name__!r} has no attribute {name!r}')
+        return AttributeError(f'type object {self.value.__name__!r} has no attribute {name!r}')
 
 
 def _is_class_machinery(value: Any) -> bool:

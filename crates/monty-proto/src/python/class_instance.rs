@@ -26,16 +26,6 @@ use pyo3::{
 
 use super::convert::{MAX_INPUT_DEPTH, monty_to_py_inner, py_to_monty, py_type_object_to_monty};
 
-/// Checks if a Python object is a dataclass instance (not a type).
-///
-/// Copied from pydantic's `is_dataclass` logic.
-pub fn is_dataclass(value: &Bound<'_, PyAny>) -> bool {
-    value
-        .hasattr(intern!(value.py(), "__dataclass_fields__"))
-        .unwrap_or(false)
-        && !value.is_instance_of::<PyType>()
-}
-
 /// Checks if a Python class has `@dataclass(frozen=True)` semantics.
 fn is_frozen_dataclass_class(class: &Bound<'_, PyAny>) -> bool {
     class
@@ -64,16 +54,14 @@ pub fn is_class_type_wrapper(value: &Bound<'_, PyAny>) -> PyResult<bool> {
 /// `py_to_monty`, so nested wrappers inside them register themselves too.
 pub fn class_instance_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, depth: u8) -> PyResult<MontyObject> {
     let py = wrapper.py();
-    let instance = wrapper.getattr(intern!(py, "class_instance"))?;
+    let instance = wrapper.getattr(intern!(py, "value"))?;
 
+    let is_dataclass: bool = wrapper.call_method0(intern!(py, "is_dataclass"))?.extract()?;
     let frozen: bool = wrapper.call_method0(intern!(py, "get_frozen"))?.extract()?;
     let class_type = class_type_for(
         &instance.get_type().into_any(),
         store,
-        WrapperPolicy {
-            is_dataclass: is_dataclass(&instance),
-            frozen,
-        },
+        WrapperPolicy { is_dataclass, frozen },
         depth,
     )?;
     let instance_id = store.instance_uuid(&instance)?;
@@ -104,9 +92,9 @@ pub fn class_instance_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore
 /// (`get_eager_attrs`) and cross inside the wire `Type`.
 pub fn class_type_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, depth: u8) -> PyResult<MontyObject> {
     let py = wrapper.py();
-    let class = wrapper.getattr(intern!(py, "class_type"))?;
+    let class = wrapper.getattr(intern!(py, "value"))?;
     if !class.is_instance_of::<PyType>() {
-        return Err(PyTypeError::new_err("ClassType.class_type must be a class"));
+        return Err(PyTypeError::new_err("ClassType.value must be a class"));
     }
     let frozen: bool = wrapper.call_method0(intern!(py, "get_frozen"))?.extract()?;
     let mut class_type = class_type_for(
@@ -207,10 +195,7 @@ pub fn class_instance_to_py(
     depth: u8,
 ) -> PyResult<Py<PyAny>> {
     if let Some(wrapper) = store.get(py, instance_id)? {
-        wrapper
-            .bind(py)
-            .getattr(intern!(py, "class_instance"))
-            .map(Bound::unbind)
+        wrapper.bind(py).getattr(intern!(py, "value")).map(Bound::unbind)
     } else {
         let attributes = PyDict::new(py);
         for (key, value) in attrs {
