@@ -303,8 +303,8 @@ pub struct StackFrame {
     pub hide_frame_name: bool,
 }
 /// Sandbox resource limits, enforced inside the child. Absent fields mean
-/// "unlimited" except recursion depth, which defaults to monty's standard
-/// limit (1000) when absent.
+/// "unlimited" except recursion depth and per-run suspensions, which default
+/// to monty's standard limits (1000 and 10,000) when absent.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResourceLimits {
     #[prost(uint64, optional, tag = "1")]
@@ -315,6 +315,10 @@ pub struct ResourceLimits {
     pub gc_interval: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "4")]
     pub max_recursion_depth: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    pub max_suspensions_per_run: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "6")]
+    pub max_total_suspensions: ::core::option::Option<u64>,
 }
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can

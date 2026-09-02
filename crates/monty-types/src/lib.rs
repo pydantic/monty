@@ -34,8 +34,8 @@ pub use crate::{
         RenameCallArgs, dir_stat, file_stat, stat_result, symlink_stat,
     },
     resource::{
-        BASELINE_MEMORY, DEFAULT_MAX_RECURSION_DEPTH, LARGE_RESULT_THRESHOLD, LIVE_MEMORY, OOM_EXIT_CODE,
-        ResourceError, ResourceLimits, ResourceTracker,
+        BASELINE_MEMORY, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MAX_SUSPENSIONS_PER_RUN, LARGE_RESULT_THRESHOLD,
+        LIVE_MEMORY, OOM_EXIT_CODE, ResourceError, ResourceLimits, ResourceTracker, SuspensionScope,
     },
     results::{ExtFunctionResult, NameLookupResult},
     run_options::{AssertMessageAnnotations, CompileOptions},

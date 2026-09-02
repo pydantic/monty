@@ -959,8 +959,8 @@ where they are. Change one and you must change all of them:
 
 - **The importable stdlib module list** — `limitations/modules.md` (authoritative),
   `docs/python-subset.md`, `docs/index.md`, `README.md`.
-- **Default resource limits** (1000 recursion frames, 100 MB per-mount memory, 10 MiB
-  print collectors, 1s duration grace) — `limitations/resource_limits.md`,
+- **Default resource limits** (1000 recursion frames, 10,000 suspensions per run,
+  100 MB per-mount memory, 10 MiB print collectors, 1s duration grace) — `limitations/resource_limits.md`,
   `docs/resource-limits.md`, and the binding docstrings.
 - **Mount modes and their defaults** — `limitations/filesystem.md`, `docs/filesystem.md`,
   the `MountDir` docstrings in `_monty.pyi` and `crates/monty-js/ts/mount.ts`.

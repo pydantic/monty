@@ -168,6 +168,8 @@ interface worker {
         max-memory-bytes: option<u64>,
         gc-interval: option<u64>,
         max-recursion-depth: option<u64>,
+        max-suspensions-per-run: option<u64>,
+        max-total-suspensions: option<u64>,
     }
 
     /// Available renderings for type-check diagnostics.

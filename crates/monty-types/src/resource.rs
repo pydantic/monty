@@ -54,6 +54,39 @@ pub enum ResourceError {
     Memory { limit: usize, used: usize },
     /// Maximum recursion depth exceeded.
     Recursion { limit: usize, depth: usize },
+    /// Maximum number of host suspensions exceeded.
+    ///
+    /// `scope` names which of the two budgets ran out, so the message can say
+    /// which limit the host should raise.
+    Suspensions {
+        limit: usize,
+        count: usize,
+        scope: SuspensionScope,
+    },
+}
+
+/// Which suspension budget a [`ResourceError::Suspensions`] refers to.
+///
+/// The two budgets are counted separately: one run's suspensions are also
+/// charged to the session total, so a session cap bites across feeds even
+/// when no single run comes near the per-run cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuspensionScope {
+    /// The per-run budget, reset at the start of every feed/run.
+    Run,
+    /// The cumulative per-session budget, never reset.
+    Session,
+}
+
+impl SuspensionScope {
+    /// The limit's configuration name, quoted in the error message so a host
+    /// knows which field to raise.
+    fn limit_name(self) -> &'static str {
+        match self {
+            Self::Run => "max_suspensions_per_run",
+            Self::Session => "max_total_suspensions",
+        }
+    }
 }
 
 impl fmt::Display for ResourceError {
@@ -68,6 +101,13 @@ impl fmt::Display for ResourceError {
             Self::Recursion { .. } => {
                 write!(f, "maximum recursion depth exceeded")
             }
+            Self::Suspensions { limit, count, scope } => {
+                write!(
+                    f,
+                    "suspension limit exceeded: {count} > {limit} ({})",
+                    scope.limit_name()
+                )
+            }
         }
     }
 }
@@ -77,11 +117,13 @@ impl Error for ResourceError {}
 /// Configuration for resource limits.
 ///
 /// The time/memory/GC limits are optional — set to `None` to disable — but
-/// recursion depth is always bounded (default
-/// [`DEFAULT_MAX_RECURSION_DEPTH`]): unbounded recursion would let sandboxed
-/// code overflow the native stack and abort the process. Use
-/// `ResourceLimits::default()` for the recursion-only defaults, or build
-/// custom limits with the builder pattern.
+/// recursion depth and per-run suspensions are always bounded (defaults
+/// [`DEFAULT_MAX_RECURSION_DEPTH`] and
+/// [`DEFAULT_MAX_SUSPENSIONS_PER_RUN`]): unbounded recursion would let
+/// sandboxed code overflow the native stack and abort the process, and
+/// unbounded suspensions would let it grow the *host's* memory without ever
+/// allocating in the sandbox. Use `ResourceLimits::default()` for those
+/// always-on defaults, or build custom limits with the builder pattern.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResourceLimits {
     /// Maximum execution time.
@@ -94,12 +136,31 @@ pub struct ResourceLimits {
     pub gc_interval: Option<usize>,
     /// Maximum recursion depth (function call stack depth).
     pub max_recursion_depth: usize,
+    /// Maximum host suspensions in a single run (one feed and every resume
+    /// that continues it).
+    ///
+    /// Each suspension is a host round trip the host retains state for, so
+    /// this bounds host-side growth that no sandbox-side limit can see.
+    pub max_suspensions_per_run: usize,
+    /// Optional cumulative cap on host suspensions across the whole session.
+    ///
+    /// `None` (the default) bounds only each run. Set it to stop a caller
+    /// sidestepping `max_suspensions_per_run` by feeding repeatedly.
+    pub max_total_suspensions: Option<usize>,
 }
 
 /// Recommended maximum recursion depth if not otherwise specified.
 pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 
-/// Creates a new ResourceLimits with all limits disabled, except max recursion which is set to 1000.
+/// Suspensions a single run may make if not otherwise specified.
+///
+/// Sized well above what host-call-heavy code legitimately does (tens to
+/// hundreds per run) while still bounding the host-side state a refusal loop
+/// can accumulate.
+pub const DEFAULT_MAX_SUSPENSIONS_PER_RUN: usize = 10_000;
+
+/// Creates a new ResourceLimits with all limits disabled, except the two that
+/// are always on: recursion depth (1000) and per-run suspensions (10,000).
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
@@ -107,6 +168,8 @@ impl Default for ResourceLimits {
             max_memory: None,
             gc_interval: None,
             max_recursion_depth: DEFAULT_MAX_RECURSION_DEPTH,
+            max_suspensions_per_run: DEFAULT_MAX_SUSPENSIONS_PER_RUN,
+            max_total_suspensions: None,
         }
     }
 }
@@ -140,6 +203,20 @@ impl ResourceLimits {
     #[must_use]
     pub fn max_recursion_depth(mut self, limit: usize) -> Self {
         self.max_recursion_depth = limit;
+        self
+    }
+
+    /// Sets the maximum host suspensions allowed in a single run.
+    #[must_use]
+    pub fn max_suspensions_per_run(mut self, limit: usize) -> Self {
+        self.max_suspensions_per_run = limit;
+        self
+    }
+
+    /// Sets a cumulative cap on host suspensions across the whole session.
+    #[must_use]
+    pub fn max_total_suspensions(mut self, limit: usize) -> Self {
+        self.max_total_suspensions = Some(limit);
         self
     }
 }
@@ -188,6 +265,17 @@ pub struct ResourceTracker {
     /// existed (`#[serde(default)]` gives back the `None` fallback case).
     #[serde(default)]
     recursion_limit_override: Cell<Option<usize>>,
+    /// Suspensions made by the run in progress, zeroed by
+    /// [`on_run_start`](Self::on_run_start).
+    ///
+    /// Serialized because a session can be dumped *while suspended*: skipping
+    /// it would hand a host that snapshots every suspension a free budget
+    /// reset.
+    #[serde(default)]
+    run_suspensions: Cell<usize>,
+    /// Suspensions made across the whole session, never reset.
+    #[serde(default)]
+    total_suspensions: Cell<usize>,
 }
 
 impl Default for ResourceTracker {
@@ -211,7 +299,61 @@ impl ResourceTracker {
             total_execution_time: Cell::new(Duration::ZERO),
             running_since: Cell::new(None),
             recursion_limit_override: Cell::new(None),
+            run_suspensions: Cell::new(0),
+            total_suspensions: Cell::new(0),
         }
+    }
+
+    /// Starts a fresh run, zeroing the per-run suspension budget.
+    ///
+    /// Called by the host-facing entry points that *begin* execution
+    /// (`MontyRepl::feed_start` / `feed_run` / `call_function`,
+    /// `MontyRun::start` / `run`) — never by a resume, which continues the
+    /// run it is resuming. The session total is deliberately untouched.
+    pub fn on_run_start(&self) {
+        self.run_suspensions.set(0);
+    }
+
+    /// Charges one host suspension against both budgets.
+    ///
+    /// Called once per suspension the VM is about to hand the host, so a
+    /// refused suspension never reaches the host at all — the host-side state
+    /// this bounds is allocated by the round trip, not by the sandbox.
+    pub fn record_suspension(&self) -> Result<(), ResourceError> {
+        let run = self.run_suspensions.get().saturating_add(1);
+        self.run_suspensions.set(run);
+        let total = self.total_suspensions.get().saturating_add(1);
+        self.total_suspensions.set(total);
+
+        let run_limit = self.limits.max_suspensions_per_run;
+        if run > run_limit {
+            Err(ResourceError::Suspensions {
+                limit: run_limit,
+                count: run,
+                scope: SuspensionScope::Run,
+            })
+        } else {
+            match self.limits.max_total_suspensions {
+                Some(limit) if total > limit => Err(ResourceError::Suspensions {
+                    limit,
+                    count: total,
+                    scope: SuspensionScope::Session,
+                }),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    /// Suspensions made by the run in progress.
+    #[must_use]
+    pub fn run_suspensions(&self) -> usize {
+        self.run_suspensions.get()
+    }
+
+    /// Suspensions made across the whole session.
+    #[must_use]
+    pub fn total_suspensions(&self) -> usize {
+        self.total_suspensions.get()
     }
 
     /// Returns the live recursion ceiling: the override if one is in effect,

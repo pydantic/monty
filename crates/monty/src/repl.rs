@@ -151,6 +151,7 @@ impl MontyRepl {
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
         let mut this = self;
+        this.heap.tracker.on_run_start();
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
                 repl: this,
@@ -226,6 +227,7 @@ impl MontyRepl {
         inputs: Vec<(String, MontyObject)>,
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
+        self.heap.tracker.on_run_start();
         if code.is_empty() {
             return Ok(MontyObject::None);
         }
@@ -301,6 +303,7 @@ impl MontyRepl {
         args: Vec<MontyObject>,
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
+        self.heap.tracker.on_run_start();
         let Some(name_id) = self.interns.get_string_id_by_name(name) else {
             return Err(RunError::from(ExcType::name_error(name))
                 .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));

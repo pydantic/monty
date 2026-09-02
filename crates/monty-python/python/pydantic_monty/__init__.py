@@ -104,8 +104,9 @@ class ResourceLimits(TypedDict, total=False):
     Configuration for resource limits during code execution.
 
     All limits are optional. Omit a key — or set it to `None` explicitly —
-    to disable that limit, with one exception: `max_recursion_depth` cannot
-    be disabled, and omitting it leaves the 1000-frame default in place.
+    to disable that limit, with two exceptions: `max_recursion_depth` and
+    `max_suspensions_per_run` cannot be disabled, and omitting them leaves
+    their defaults in place.
     """
 
     max_duration_secs: float | None
@@ -119,6 +120,23 @@ class ResourceLimits(TypedDict, total=False):
 
     max_recursion_depth: int | None
     """Maximum function call stack depth (default: 1000)."""
+
+    max_suspensions_per_run: int | None
+    """
+    Maximum host round trips in a single run (default: 10000).
+
+    Every host function call, name lookup and `os` callback suspends the
+    sandbox and costs the host retained state, which no sandbox-side limit
+    can see. A run is one `feed_run` and every resume that continues it.
+    """
+
+    max_total_suspensions: int | None
+    """
+    Maximum host round trips across the whole session.
+
+    Unset by default, so only each run is bounded. Set it to stop code
+    sidestepping `max_suspensions_per_run` by feeding repeatedly.
+    """
 
 
 class ExternalReturnValue(TypedDict):

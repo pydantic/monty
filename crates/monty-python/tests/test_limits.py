@@ -17,11 +17,15 @@ def test_resource_limits_typed_dict():
         max_memory=1024,
         gc_interval=10,
         max_recursion_depth=500,
+        max_suspensions_per_run=50,
+        max_total_suspensions=200,
     )
     assert limits.get('max_duration_secs') == snapshot(5.0)
     assert limits.get('max_memory') == snapshot(1024)
     assert limits.get('gc_interval') == snapshot(10)
     assert limits.get('max_recursion_depth') == snapshot(500)
+    assert limits.get('max_suspensions_per_run') == snapshot(50)
+    assert limits.get('max_total_suspensions') == snapshot(200)
 
 
 def test_resource_limits_repr():
@@ -114,7 +118,7 @@ def test_limits_unknown_key_raises_error(pool: Monty):
             pass
     assert exc_info.value.args[0] == snapshot(
         "unknown limits key 'max_memroy'; accepted keys are 'max_duration_secs', 'max_memory', "
-        "'gc_interval', 'max_recursion_depth'"
+        "'gc_interval', 'max_recursion_depth', 'max_suspensions_per_run', 'max_total_suspensions'"
     )
 
 
@@ -124,7 +128,7 @@ def test_limits_non_string_key_raises_error(pool: Monty):
             pass
     assert exc_info.value.args[0] == snapshot(
         "unknown limits key 1; accepted keys are 'max_duration_secs', 'max_memory', "
-        "'gc_interval', 'max_recursion_depth'"
+        "'gc_interval', 'max_recursion_depth', 'max_suspensions_per_run', 'max_total_suspensions'"
     )
 
 
@@ -138,7 +142,7 @@ def test_limits_unprintable_key_still_raises_value_error(pool: Monty):
             pass
     assert exc_info.value.args[0] == snapshot(
         "unknown limits key <unprintable key>; accepted keys are 'max_duration_secs', 'max_memory', "
-        "'gc_interval', 'max_recursion_depth'"
+        "'gc_interval', 'max_recursion_depth', 'max_suspensions_per_run', 'max_total_suspensions'"
     )
 
 
@@ -217,3 +221,38 @@ def test_timeout_enforced_in_builtin_loops(monty_run: RunMonty, code: str):
     assert isinstance(exc_info.value.exception(), TimeoutError)
     # Should terminate promptly - well under 2 seconds
     assert elapsed < 2.0
+
+
+def test_suspension_limit_stops_a_retry_loop(pool: Monty):
+    """A loop that swallows every refusal costs the host a round trip per turn and nothing else."""
+    code = """
+while True:
+    try:
+        open('/etc/passwd')
+    except Exception:
+        pass
+"""
+    with pool.checkout(limits={'max_suspensions_per_run': 5}) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run(code)
+    assert exc_info.value.display(format='type-msg') == snapshot(
+        'RuntimeError: suspension limit exceeded: 6 > 5 (max_suspensions_per_run)'
+    )
+
+
+def test_total_suspension_limit_spans_feeds(pool: Monty):
+    """The cumulative cap bites across feeds that each stay inside the per-run budget."""
+    code = """
+try:
+    open('/etc/passwd')
+except Exception:
+    pass
+"""
+    with pool.checkout(limits={'max_total_suspensions': 2}) as session:
+        session.feed_run(code)
+        session.feed_run(code)
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run(code)
+    assert exc_info.value.display(format='type-msg') == snapshot(
+        'RuntimeError: suspension limit exceeded: 3 > 2 (max_total_suspensions)'
+    )

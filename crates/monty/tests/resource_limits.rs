@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use monty::{MontyRepl, MontyRun, RunProgress};
+use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, ExcType, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceLimits,
     ResourceTracker,
@@ -1267,4 +1267,147 @@ fn timeout_in_itertools_adaptor_loops() {
     for expr in ITERTOOLS_INFINITE_LOOPS {
         assert_timeout_in_builtin(&format!("import itertools\n{expr}"), expr);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Suspension limits
+// ---------------------------------------------------------------------------
+//
+// A suspension costs the *host* — a round trip and whatever state it retains
+// per call — while costing the sandbox nothing it allocates and no execution
+// time (the clock is paused while suspended). These tests pin the budget that
+// bounds it, since no other limit can see the growth.
+
+/// Drives a REPL feed to completion, answering suspensions the cheapest way:
+/// unresolved names become external functions, calls return `None`. Yields the
+/// recovered session, the feed's outcome, and how many suspensions the host
+/// was asked to answer.
+fn drive_feed(repl: MontyRepl, code: &str) -> (MontyRepl, Result<MontyObject, MontyException>, usize) {
+    let mut answered = 0;
+    let mut progress = match repl.feed_start(code, vec![], PrintWriter::Stdout) {
+        Ok(progress) => progress,
+        Err(err) => return (err.repl, Err(err.error), answered),
+    };
+    loop {
+        let resumed = match progress {
+            ReplProgress::Complete { repl, value } => return (repl, Ok(value), answered),
+            ReplProgress::NameLookup(lookup) => {
+                answered += 1;
+                let name = lookup.name.clone();
+                lookup.resume(
+                    NameLookupResult::Value(MontyObject::Function { name, docstring: None }),
+                    PrintWriter::Stdout,
+                )
+            }
+            ReplProgress::FunctionCall(call) => {
+                answered += 1;
+                call.resume(MontyObject::None, PrintWriter::Stdout)
+            }
+            other => panic!("unexpected suspension variant: {other:?}"),
+        };
+        progress = match resumed {
+            Ok(progress) => progress,
+            Err(err) => return (err.repl, Err(err.error), answered),
+        };
+    }
+}
+
+/// A loop that suspends forever is stopped by the per-run budget, and the
+/// refusal happens *before* the host is asked, so the host answers exactly the
+/// budgeted number of suspensions and no more.
+#[test]
+fn per_run_suspension_limit_stops_an_endless_host_call_loop() {
+    let limits = ResourceLimits::default().max_suspensions_per_run(8);
+    let repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
+    let (repl, result, answered) = drive_feed(repl, "while True:\n    interrupt()");
+    let exc = result.expect_err("the endless loop must exhaust the suspension budget");
+    assert_eq!(exc.exc_type(), ExcType::RuntimeError);
+    assert_eq!(
+        exc.message(),
+        Some("suspension limit exceeded: 9 > 8 (max_suspensions_per_run)")
+    );
+    assert_eq!(answered, 8);
+    assert_eq!(repl.tracker().run_suspensions(), 9);
+}
+
+/// The budget is per *run*, so a session that suspends heavily but finishes
+/// each feed keeps working — the counter is zeroed by the next feed.
+#[test]
+fn per_run_suspension_budget_resets_between_feeds() {
+    let limits = ResourceLimits::default().max_suspensions_per_run(3);
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
+    // Each feed spends exactly the per-run budget, three times over.
+    let code = "interrupt()\ninterrupt()\ninterrupt()";
+    for _ in 0..3 {
+        let (next, result, answered) = drive_feed(repl, code);
+        result.expect("a feed within budget must complete");
+        assert_eq!(answered, 3);
+        repl = next;
+    }
+    assert_eq!(repl.tracker().total_suspensions(), 9);
+}
+
+/// `max_total_suspensions` is the opt-in cumulative cap: it bites across feeds
+/// that each stay under the per-run budget, which the per-run limit cannot.
+#[test]
+fn total_suspension_limit_spans_feeds() {
+    let limits = ResourceLimits::default().max_total_suspensions(3);
+    let repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
+    // Two calls per feed: each feed sits far inside the per-run default, but
+    // the pair crosses the cumulative cap the per-run budget cannot see.
+    let (repl, result, _) = drive_feed(repl, "interrupt()\ninterrupt()");
+    result.expect("first feed is within the cumulative cap");
+    let (repl, result, _) = drive_feed(repl, "interrupt()\ninterrupt()");
+    let exc = result.expect_err("the cumulative cap must fire on the second feed");
+    assert_eq!(exc.exc_type(), ExcType::RuntimeError);
+    assert_eq!(
+        exc.message(),
+        Some("suspension limit exceeded: 4 > 3 (max_total_suspensions)")
+    );
+    assert_eq!(repl.tracker().total_suspensions(), 4);
+}
+
+/// The refusal is uncatchable: the issue's shape wraps every call in
+/// `except Exception`, and a catchable error there would let the loop spin on.
+#[test]
+fn suspension_limit_is_not_catchable_by_sandboxed_code() {
+    let limits = ResourceLimits::default().max_suspensions_per_run(6);
+    let repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
+    let code = "while True:\n    try:\n        interrupt()\n    except Exception:\n        pass";
+    let (_, result, answered) = drive_feed(repl, code);
+    let exc = result.expect_err("a bare except must not swallow the budget refusal");
+    assert_eq!(exc.exc_type(), ExcType::RuntimeError);
+    assert_eq!(answered, 6);
+}
+
+/// A session can be dumped *while suspended*, so both counters travel in the
+/// dump. If they did not, a host that snapshots at every suspension would hand
+/// the sandbox a fresh budget on every resume — exactly the loop the limit
+/// exists to stop.
+#[test]
+fn suspension_counters_survive_a_dump_taken_while_suspended() {
+    let limits = ResourceLimits::default().max_suspensions_per_run(2);
+    let repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
+    let progress = repl
+        .feed_start("interrupt()\ninterrupt()\ninterrupt()", vec![], PrintWriter::Stdout)
+        .unwrap();
+    let call = progress.into_function_call().expect("first interrupt call");
+    let progress = call.resume(MontyObject::None, PrintWriter::Stdout).unwrap();
+
+    let bytes = dump("test.py", None, SessionRef::Suspended(&progress)).unwrap();
+    let Session::Suspended(loaded) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped a suspended session, loaded something else");
+    };
+
+    // Two suspensions are already spent, so resuming the second call must be
+    // refused rather than granted a third.
+    let call = loaded.into_function_call().expect("second interrupt call");
+    let err = call
+        .resume(MontyObject::None, PrintWriter::Stdout)
+        .expect_err("the restored session must resume with its budget already spent");
+    assert_eq!(err.error.exc_type(), ExcType::RuntimeError);
+    assert_eq!(
+        err.error.message(),
+        Some("suspension limit exceeded: 3 > 2 (max_suspensions_per_run)")
+    );
 }

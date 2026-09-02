@@ -510,6 +510,51 @@ fn child_enforces_time_limit() {
     child.shutdown();
 }
 
+/// The issue's shape: a loop that catches every refusal and retries costs the
+/// *parent* a round trip per iteration while allocating nothing in the sandbox
+/// and accruing no execution time. Only the suspension budget bounds it — and
+/// the refusal must arrive as a turn-ending error, not as one more OS call.
+#[test]
+fn child_enforces_suspension_limit() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: Some(pb::ResourceLimits {
+            max_suspensions_per_run: Some(3),
+            ..Default::default()
+        }),
+        type_check: false,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        assert_message_annotations: None,
+        ..Default::default()
+    });
+    let code = "while True:\n    try:\n        open('/etc/passwd')\n    except Exception:\n        pass";
+    let mut event = child.feed(code).1;
+    for _ in 0..3 {
+        let pb::child_event::Kind::OsCall(call) = event else {
+            panic!("expected OsCall while the budget lasts, got {event:?}");
+        };
+        let exc = pb::RaisedException {
+            exc_type: "FileNotFoundError".to_owned(),
+            message: Some("No such file or directory: '/etc/passwd'".to_owned()),
+            traceback: vec![],
+            data: None,
+        };
+        event = child
+            .resume_call(call.call_id, pb::ext_function_result::Kind::Error(exc))
+            .1;
+    }
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "RuntimeError");
+    assert_eq!(
+        error.message.as_deref(),
+        Some("suspension limit exceeded: 4 > 3 (max_suspensions_per_run)")
+    );
+    child.shutdown();
+}
+
 /// A session's `max_memory` must not disturb work that stays inside it. This
 /// small budget includes the real allocations needed to compile and run a feed.
 #[test]

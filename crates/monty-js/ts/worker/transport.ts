@@ -32,6 +32,8 @@ export interface ResourceLimits {
   maxMemory?: number
   gcInterval?: number
   maxRecursionDepth?: number
+  maxSuspensionsPerRun?: number
+  maxTotalSuspensions?: number
 }
 
 /** Session-creation options sent to the component worker. */
@@ -326,6 +328,8 @@ function encodeLimits(limits: ResourceLimits): ComponentResourceLimits {
     ...(limits.maxMemory === undefined ? {} : { maxMemoryBytes: BigInt(limits.maxMemory) }),
     ...(limits.gcInterval === undefined ? {} : { gcInterval: BigInt(limits.gcInterval) }),
     ...(limits.maxRecursionDepth === undefined ? {} : { maxRecursionDepth: BigInt(limits.maxRecursionDepth) }),
+    ...(limits.maxSuspensionsPerRun === undefined ? {} : { maxSuspensionsPerRun: BigInt(limits.maxSuspensionsPerRun) }),
+    ...(limits.maxTotalSuspensions === undefined ? {} : { maxTotalSuspensions: BigInt(limits.maxTotalSuspensions) }),
   }
 }
 

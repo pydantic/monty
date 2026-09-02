@@ -31,6 +31,8 @@ hello world
 | `--max-duration` | Maximum execution time in seconds, e.g. `0.5` |
 | `--max-memory` | Maximum heap memory, e.g. `1024`, `512KB`, `10MB`, `1GB` |
 | `--max-recursion-depth` | Maximum call-stack depth; defaults to 1000 when any limit is set |
+| `--max-suspensions-per-run` | Maximum host round trips in one run; defaults to 10,000 |
+| `--max-total-suspensions` | Maximum host round trips for the whole session |
 | `--gc-interval` | Run garbage collection every N allocations |
 | `--version` | Print the version |
 

@@ -152,6 +152,7 @@ impl MontyRun {
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
         let executor = self.executor;
+        resource_tracker.on_run_start();
 
         // Create heap and VM with empty globals, then populate inputs with VM alive
         let mut heap = Heap::new(executor.namespace_size(), resource_tracker);
@@ -415,6 +416,7 @@ impl Executor {
         resource_tracker: ResourceTracker,
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
+        resource_tracker.on_run_start();
         let heap_capacity = self.heap_capacity.load(Ordering::Relaxed);
         let mut heap = Heap::new(heap_capacity, resource_tracker);
         let globals = self.empty_globals();

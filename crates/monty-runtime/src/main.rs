@@ -72,6 +72,14 @@ pub(crate) struct Cli {
     #[arg(long)]
     max_recursion_depth: Option<usize>,
 
+    /// Maximum host round trips in one run (defaults to 10000).
+    #[arg(long)]
+    max_suspensions_per_run: Option<usize>,
+
+    /// Maximum host round trips across the whole session (unlimited by default).
+    #[arg(long)]
+    max_total_suspensions: Option<usize>,
+
     #[command(subcommand)]
     subcommand: Option<Command>,
 }
@@ -118,12 +126,14 @@ impl Cli {
             || self.max_memory.is_some()
             || self.gc_interval.is_some()
             || self.max_recursion_depth.is_some()
+            || self.max_suspensions_per_run.is_some()
+            || self.max_total_suspensions.is_some()
     }
 
     /// Builds `ResourceLimits` from the parsed CLI arguments.
     ///
-    /// When no resource flags were provided, returns the default
-    /// recursion-only limits (`ResourceLimits::default()`).
+    /// When no resource flags were provided, returns the always-on defaults
+    /// (`ResourceLimits::default()`).
     /// Returns `Err` if a supplied flag cannot be converted into a valid limit.
     #[cfg(feature = "standalone")]
     fn resource_limits(&self) -> Result<monty_types::ResourceLimits, String> {
@@ -142,6 +152,12 @@ impl Cli {
         }
         if let Some(depth) = self.max_recursion_depth {
             limits = limits.max_recursion_depth(depth);
+        }
+        if let Some(max) = self.max_suspensions_per_run {
+            limits = limits.max_suspensions_per_run(max);
+        }
+        if let Some(max) = self.max_total_suspensions {
+            limits = limits.max_total_suspensions(max);
         }
         Ok(limits)
     }

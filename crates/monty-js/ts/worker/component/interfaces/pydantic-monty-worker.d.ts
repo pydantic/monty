@@ -242,6 +242,8 @@ export interface ResourceLimits {
   maxMemoryBytes?: bigint
   gcInterval?: bigint
   maxRecursionDepth?: bigint
+  maxSuspensionsPerRun?: bigint
+  maxTotalSuspensions?: bigint
 }
 /**
  * # Variants

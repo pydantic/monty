@@ -1,9 +1,10 @@
 # Resource limits
 
-Monty enforces limits on memory, time, and recursion to keep untrusted code
-bounded. Memory limits surface to the host as `MemoryError`s and time limits as
-`TimeoutError`s; sandboxed code cannot catch either resource error.
-`RecursionError` is catchable, as in CPython.
+Monty enforces limits on memory, time, recursion, and host suspensions to keep
+untrusted code bounded. Memory limits surface to the host as `MemoryError`s,
+time limits as `TimeoutError`s, and suspension limits as `RuntimeError`s;
+sandboxed code cannot catch any of those three. `RecursionError` is catchable,
+as in CPython.
 
 ## Compilation
 
@@ -178,6 +179,25 @@ indistinguishable from a stack overflow.
   session resumes its budget where it left off rather than restarting
   from zero.
 - There is no in-sandbox way to observe the budget or remaining time.
+
+## Suspensions
+
+CPython has no equivalent: there is nothing to suspend to.
+
+- `max_suspensions_per_run` bounds how many times a run may suspend to the
+  host — external function calls, unresolved name lookups, and OS callbacks
+  all count. It defaults to 10,000 and cannot be disabled; a run is one feed
+  and every resume that continues it.
+- `max_total_suspensions` is an optional cumulative cap across the session,
+  unset by default.
+- Exhausting either raises an **uncatchable** `RuntimeError` reading
+  `suspension limit exceeded: {count} > {limit} ({limit name})`. Unlike
+  `RecursionError`, a bare `except Exception` cannot swallow it.
+- The over-budget suspension is refused before the host is told about it, so
+  the host answers exactly the budgeted number of suspensions.
+- Both counters are serialized into dumps, including dumps taken mid-run, so a
+  restored session does not resume with a fresh budget.
+- There is no in-sandbox way to observe either budget or what remains of it.
 
 ## JSON
 

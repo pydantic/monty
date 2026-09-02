@@ -21,23 +21,26 @@ with Monty() as pool:
             #> MemoryError
 ```
 
-## The four settings
+## The six settings
 
 | Key | Meaning |
 | --- | --- |
 | `max_memory` | Maximum heap memory in bytes |
 | `max_duration_secs` | Maximum cumulative execution time in seconds |
 | `max_recursion_depth` | Maximum function call stack depth (default 1000) |
+| `max_suspensions_per_run` | Maximum host round trips in one run (default 10,000) |
+| `max_total_suspensions` | Maximum host round trips for the whole session |
 | `gc_interval` | Run garbage collection every N allocations |
 
 Every key is optional.
-Omit `max_memory` or `max_duration_secs`, or set them to `None`, to disable that limit.
-`max_recursion_depth` cannot be disabled: omitting it, or passing `None`, leaves the 1000-frame default.
+Omit `max_memory`, `max_duration_secs` or `max_total_suspensions`, or set them to `None`, to disable that limit.
+`max_recursion_depth` and `max_suspensions_per_run` cannot be disabled: omitting either, or passing `None`, leaves its
+default.
 `gc_interval` omitted or `None` uses the built-in schedule of every 100,000 allocations; collection cannot be turned
 off.
 
-In JavaScript the same fields are `maxMemory`, `maxDurationSecs`, `maxRecursionDepth` and `gcInterval`, passed as
-`limits` to `pool.checkout()`.
+In JavaScript the same fields are `maxMemory`, `maxDurationSecs`, `maxRecursionDepth`, `maxSuspensionsPerRun`,
+`maxTotalSuspensions` and `gcInterval`, passed as `limits` to `pool.checkout()`.
 In Rust they are the fields of `monty_types::ResourceLimits`, where the duration is a `Duration` named `max_duration`.
 
 ## Memory
@@ -87,6 +90,25 @@ Two host-side backstops cover that:
 
 Set `max_duration_secs` for untrusted code that may suspend repeatedly; `request_timeout` alone does not bound the
 overall call.
+
+## Suspensions
+
+Every host function call, unresolved name lookup and `os` callback suspends the sandbox and hands the host a round
+trip, which the host retains state for.
+That growth is invisible to the other limits: the sandbox allocates nothing, and the execution clock is paused while
+suspended, so a loop that suspends and swallows the result makes no progress the memory or time budgets can see.
+
+`max_suspensions_per_run` bounds it, defaulting to **10,000** per run — one `feed_run` and every resume that continues
+it.
+Exceeding it ends the run with an uncatchable `RuntimeError` naming the limit; the over-budget suspension is refused
+before the host is asked, so it never costs the round trip.
+
+`max_total_suspensions` is the optional cumulative cap across the whole session.
+It is unset by default, so only each run is bounded.
+Set it to stop code sidestepping the per-run budget by feeding repeatedly.
+
+Both counters are serialized into [snapshots](snapshots.md), so restoring a session suspended mid-run does not hand it
+a fresh budget.
 
 ## Recursion
 

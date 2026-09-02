@@ -80,14 +80,22 @@ export interface CheckoutOptions {
 
 /**
  * Sandbox resource limits. An omitted field means "unlimited", except
- * `maxRecursionDepth`, which falls back to its 1000-frame default and cannot
- * be disabled.
+ * `maxRecursionDepth` and `maxSuspensionsPerRun`, which fall back to their
+ * defaults (1000 frames, 10000 suspensions) and cannot be disabled.
  */
 export interface ResourceLimits {
   maxDurationSecs?: number
   maxMemory?: number
   gcInterval?: number
   maxRecursionDepth?: number
+  /**
+   * Host round trips allowed in one run — one `feedRun` and every resume that
+   * continues it. Each host function call, name lookup and `os` callback costs
+   * the host retained state no sandbox-side limit can see.
+   */
+  maxSuspensionsPerRun?: number
+  /** Host round trips allowed across the whole session. Unset by default. */
+  maxTotalSuspensions?: number
 }
 
 /**

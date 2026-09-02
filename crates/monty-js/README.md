@@ -256,6 +256,14 @@ const limited = await pool.checkout({
 interpreter itself: the worker is killed and the session fails with
 `MontyCrashedError` (`timedOut: true`).
 
+`maxSuspensionsPerRun` (default 10,000) bounds how many times one run may
+suspend to the host — an external function call, a name lookup or an `os`
+callback. Each is a round trip the host retains state for, and none of it is
+visible to `maxMemory` or `maxDurationSecs`, so a loop that suspends and
+swallows the result is bounded by nothing else. `maxTotalSuspensions` is the
+optional cumulative cap across the session. Exceeding either ends the run with
+an uncatchable `RuntimeError` naming the limit.
+
 `maxDurationSecs` limits cumulative _execution_ time: the sandbox clock runs
 only while the interpreter executes, never while suspended waiting on an
 external function or between feeds. Sessions with the limit also get an

@@ -305,13 +305,15 @@ message StackFrame {
 // ============================================================================
 
 // Sandbox resource limits, enforced inside the child. Absent fields mean
-// "unlimited" except recursion depth, which defaults to monty's standard
-// limit (1000) when absent.
+// "unlimited" except recursion depth and per-run suspensions, which default
+// to monty's standard limits (1000 and 10,000) when absent.
 message ResourceLimits {
   optional uint64 max_duration_micros = 1;
   optional uint64 max_memory_bytes = 2;
   optional uint64 gc_interval = 3;
   optional uint64 max_recursion_depth = 4;
+  optional uint64 max_suspensions_per_run = 5;
+  optional uint64 max_total_suspensions = 6;
 }
 
 // ============================================================================
