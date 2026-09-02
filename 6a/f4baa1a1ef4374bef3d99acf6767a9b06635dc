@@ -1,0 +1,22 @@
+crates/monty-pool/src/telemetry_json.rs
+  s_0dddb5d39d9a85::t_158578bee1c41a 10-13,20,150-152,157-160,168,232-237,239-243,245-271,279,287-298,580-581,583,594,598,601,603,610
+  s_0dddb5d39d9a85::t_ec3d771cf267b0 9,16,153-156,345,351-353,355,418,592-593,595-597,599-600,602,604-609,611-612
+  s_0dddb5d39d9a85::t_106acf8d340cfb 161-167,172-174,223-231,272-278,280-286
+  s_0dddb5d39d9a85::t_a1ab2b6e40edac 170-171,238,244,299-302
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6af4baa1a1ef4374bef3d99acf6767a9b06635dc",
+  "prompts": {},
+  "sessions": {
+    "s_0dddb5d39d9a85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4ff5acd4-3351-4ad9-a7b8-0662afd66a41",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
