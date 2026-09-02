@@ -1,0 +1,96 @@
+crates/monty-pool/src/telemetry_json.rs
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 12,237,253,256,262,572-573,601
+  s_0dddb5d39d9a85::t_e4853ec8358b67 420-421
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 155,159,587,594,625,629
+  s_0dddb5d39d9a85::t_170b483d21ede0 20-22
+crates/monty-types/src/object.rs
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 758,764,778,799,858,865
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 252,485
+  s_0dddb5d39d9a85::t_5d941cba16d1ff 125-126,221,584,690,732-739,741-749,752
+  s_0dddb5d39d9a85::t_170b483d21ede0 546-548
+  s_0dddb5d39d9a85::t_8d90a0fca1706d 740,757,1327
+crates/monty-proto/tests/roundtrip.rs
+  s_0dddb5d39d9a85::t_170b483d21ede0 10-14,689-701
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 288,302,304,315
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 233,241,247,289,305,709,718
+crates/monty-wasm-runtime/src/value.rs
+  s_0dddb5d39d9a85::t_170b483d21ede0 11-12
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 225,280,496
+  s_0dddb5d39d9a85::t_27d3aa36862f6b 472-473,478-479
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 227,231
+crates/monty-proto/tests/differential.rs
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 172,180,186,214,226,369-370
+  s_0dddb5d39d9a85::t_170b483d21ede0 21-22
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 213,224-225,239,335,339
+crates/monty/tests/inputs.rs
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 594,619
+  s_0dddb5d39d9a85::t_170b483d21ede0 7-9
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 593,608
+crates/monty-proto/src/python/class_instance.rs
+  s_0dddb5d39d9a85::t_27d3aa36862f6b 164,166,175,179,183,191-192
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 117
+  s_0dddb5d39d9a85::t_a64b6912ee6694 42-45,49-53,79,86-90,92-93,95,114
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 120,123,152,433
+  s_0dddb5d39d9a85::t_170b483d21ede0 20,202-206
+crates/monty/tests/main.rs
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 38,53,364,375,382,386
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 39,365
+  s_0dddb5d39d9a85::t_170b483d21ede0 4
+crates/monty-js/src/convert.rs
+  s_0dddb5d39d9a85::t_170b483d21ede0 34-35
+  s_0dddb5d39d9a85::t_27d3aa36862f6b 86,428,431,433-434
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 338,348,760,783
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 739,743
+crates/monty/tests/type_names.rs
+  s_0dddb5d39d9a85::t_170b483d21ede0 1
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 43
+crates/monty/src/object_bridge.rs
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 768,802,809,814
+  s_0dddb5d39d9a85::t_170b483d21ede0 10-11
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 223,227,505,509,535,539
+crates/monty/src/types/host_class.rs
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 66,78,82-83,378,408,412-413
+  s_0dddb5d39d9a85::t_170b483d21ede0 6
+crates/monty/tests/py_object.rs
+  s_0dddb5d39d9a85::t_170b483d21ede0 7-8
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 189,200,318,329
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 190,319
+crates/monty/tests/repl.rs
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 698
+  s_0dddb5d39d9a85::t_170b483d21ede0 14-15
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 697,712
+crates/monty-datatest/src/main.rs
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 588
+  s_0dddb5d39d9a85::t_170b483d21ede0 33-35
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 587,603
+crates/monty-proto/src/wire.rs
+  s_0dddb5d39d9a85::t_170b483d21ede0 35-36
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 299,303,370,374,747,751
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 964-965,1128,1141,1216
+crates/monty-proto/src/convert/mod.rs
+  s_0dddb5d39d9a85::t_170b483d21ede0 26
+  s_0dddb5d39d9a85::t_e8ea999a8e3a89 127
+  s_0dddb5d39d9a85::t_afafbd4d3d62d1 156
+crates/monty-types/src/lib.rs
+  s_0dddb5d39d9a85::t_f9223ef7095949 31-32
+  s_0dddb5d39d9a85::t_170b483d21ede0 30
+crates/monty-proto/src/python/convert.rs
+  s_0dddb5d39d9a85::t_a64b6912ee6694 157,159
+  s_0dddb5d39d9a85::t_27d3aa36862f6b 415
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "beb884963accc21d19686390699d3088783a08d8",
+  "prompts": {},
+  "sessions": {
+    "s_0dddb5d39d9a85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4ff5acd4-3351-4ad9-a7b8-0662afd66a41",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
