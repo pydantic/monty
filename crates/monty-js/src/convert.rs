@@ -694,8 +694,8 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
         })),
         "Type" => {
             // A class type (ClassType wrapper, or a round-tripped host class)
-            // crosses structurally; builtin type objects can't be
-            // round-tripped from JS and degrade to Repr.
+            // crosses structurally; a builtin type marker carries only its
+            // name, resolved the same way the wasm worker path does.
             if obj.has_named_property("classType")? {
                 let class_type: Object = obj.get_named_property("classType")?;
                 Ok(MontyObject::Type(MontyType::Instance(Box::new(parse_js_class_type(
@@ -704,7 +704,9 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
                 )?))))
             } else {
                 let value: String = obj.get_named_property("value")?;
-                Ok(MontyObject::Repr(format!("<class '{value}'>")))
+                MontyType::from_type_name(&value)
+                    .map(MontyObject::Type)
+                    .ok_or_else(|| Error::from_reason(format!("unknown type name {value:?}")))
             }
         }
         "BuiltinFunction" => {

@@ -924,10 +924,7 @@ test('a forged host-class Type marker is rejected, builtin type markers still pa
   ) as unknown
   const error = await t.throwsAsync(() => run('x', { inputs: { x: [forged] } }), { instanceOf: TypeError })
   t.is(error.message, 'raw Type markers are not accepted — pass the class through ClassType(...)')
-  // a builtin type marker carries no identity: `prepare` passes it through and
-  // the native layer decides (it cannot be an input, but that is not a forgery)
-  const native = await t.throwsAsync(() => run('x', { inputs: { x: { __monty_type__: 'Type', value: 'int' } } }), {
-    instanceOf: MontyRuntimeError,
-  })
-  t.is(native.message, "RuntimeError: invalid input type: 'Repr' is not a valid input value")
+  // a builtin type marker carries no identity: `prepare` passes it through
+  // and it resolves to the builtin type by name on both transports
+  t.is(await run('x is int', { inputs: { x: { __monty_type__: 'Type', value: 'int' } } }), true)
 })
