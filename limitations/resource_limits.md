@@ -193,8 +193,13 @@ CPython has no equivalent: there is nothing to suspend to.
 - Exhausting either raises an **uncatchable** `RuntimeError` reading
   `suspension limit exceeded: {count} > {limit} ({limit name})`. Unlike
   `RecursionError`, a bare `except Exception` cannot swallow it.
+- Memory and time limits surface as `MemoryError` and `TimeoutError`, which a
+  host can branch on by type. Suspensions have no Python name to borrow, so
+  the message is the only thing that identifies them.
 - The over-budget suspension is refused before the host is told about it, so
-  the host answers exactly the budgeted number of suspensions.
+  the host answers exactly the budgeted number of suspensions. Suspensions a
+  caller resolves itself rather than announcing — `MontyRepl::call_function`
+  turns each into an in-sandbox error — cost nothing.
 - Both counters are serialized into dumps, including dumps taken mid-run, so a
   restored session does not resume with a fresh budget.
 - There is no in-sandbox way to observe either budget or what remains of it.
