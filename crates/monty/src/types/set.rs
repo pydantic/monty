@@ -1805,6 +1805,11 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Set> {
         // disturb the copy. Taking the same snapshot keeps that behaviour — and
         // keeps the walk off an index into a container Python can resize.
         let len = self.get(vm.heap).len();
+        // `clone_items` preflights the snapshot; the destination set holds the
+        // same number of slots again, and the walk works off the snapshot so
+        // that width is fixed here. Checked at 2× for the pair, as `py_iadd`
+        // checks a clone plus the growth it feeds.
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let members = clone_items(len, vm, |index, vm| {
             self.try_clone_item(index, vm).expect("index is in bounds")
         })?;
