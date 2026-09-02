@@ -665,13 +665,17 @@ impl<'h> HeapRead<'h, SetStorage> {
         // copies to a list first, so a user `__repr__` mutating the set
         // mid-format changes nothing (and can't invalidate indices here).
         vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
-        let mut items = Vec::with_capacity(len);
+        let items = Vec::with_capacity(len);
+        defer_drop_mut!(items, vm);
         for i in 0..len {
+            // The whole snapshot runs before `repr_items_fmt` reaches its first
+            // checkpoint, so it polls the deadline itself — otherwise a big set
+            // overshoots the time limit by the entire copy.
+            vm.heap.tracker.check_time_every(i)?;
             // No user code runs during the snapshot, so `len` is still current.
             let value = self.get(vm.heap).value_at(i).expect("index in range");
             items.push(value.clone_with_heap(vm.heap));
         }
-        defer_drop!(items, vm);
 
         f.write_char('{')?;
         repr_items_fmt(items, f, vm, heap_ids)?;
