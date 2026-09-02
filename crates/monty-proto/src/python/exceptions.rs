@@ -16,8 +16,6 @@ use pyo3::{
     types::{PyBytes, PyString},
 };
 
-use super::class_instance::get_frozen_instance_error;
-
 /// Converts Monty's `MontyException` to the matching Python exception value.
 /// Traceback info is folded into the message, since PyO3 doesn't expose direct
 /// traceback manipulation.
@@ -407,4 +405,11 @@ fn is_unsupported_operation(exc: &Bound<'_, exceptions::PyBaseException>) -> boo
     } else {
         false
     }
+}
+
+/// Cached import of `dataclasses.FrozenInstanceError` exception class.
+fn get_frozen_instance_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DC_FROZEN_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DC_FROZEN_ERROR.import(py, "dataclasses", "FrozenInstanceError")
 }

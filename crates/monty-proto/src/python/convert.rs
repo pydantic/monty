@@ -20,10 +20,7 @@ use pyo3::{
 };
 
 use super::{
-    class_instance::{
-        InstanceStore, class_instance_to_monty, class_instance_to_py, class_type_to_monty, class_type_to_py,
-        is_class_instance_wrapper, is_class_type_wrapper,
-    },
+    class_instance::{InstanceStore, is_class_instance_wrapper, is_class_type_wrapper},
     exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_object},
 };
 use crate::MAX_VALUE_DEPTH;
@@ -153,10 +150,13 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore, mut depth: u8)
         Ok(exc_to_monty_object(exc))
     } else if is_class_type_wrapper(obj)? {
         // ClassType subclasses ClassInstance, so it must be checked first.
-        class_type_to_monty(obj, store, depth)
+        store
+            .class_type_to_monty(obj, depth)
             .map(|class_type| MontyObject::Type(MontyType::Instance(Box::new(class_type))))
     } else if is_class_instance_wrapper(obj)? {
-        class_instance_to_monty(obj, store, depth).map(MontyObject::ClassInstance)
+        store
+            .class_instance_to_monty(obj, depth)
+            .map(MontyObject::ClassInstance)
     } else if obj.is_instance(get_pure_posix_path(obj.py())?)? {
         // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects
         let path_str: String = obj.str()?.extract()?;
@@ -399,7 +399,7 @@ pub(crate) fn monty_to_py_inner(
         // Return the host Python type object the sandbox type maps to; a
         // registered host class resolves to the original class object.
         MontyObject::Type(MontyType::Instance(class_type)) => {
-            if let Some(class) = class_type_to_py(py, class_type, store)? {
+            if let Some(class) = store.class_type_to_py(py, class_type)? {
                 Ok(class)
             } else {
                 Err(PyValueError::new_err(format!(
@@ -412,7 +412,7 @@ pub(crate) fn monty_to_py_inner(
         MontyObject::BuiltinFunction(f) => builtin_function_to_py(py, &f.to_string()),
         // Class instance — resolve the original object from the store when
         // host-backed, else build a read-only proxy.
-        MontyObject::ClassInstance(instance) => class_instance_to_py(py, instance, store, depth),
+        MontyObject::ClassInstance(instance) => store.class_instance_to_py(py, instance, depth),
         // Path - convert to Python pathlib.Path
         MontyObject::Path(p) => {
             let pure_posix_path = get_pure_posix_path(py)?;
