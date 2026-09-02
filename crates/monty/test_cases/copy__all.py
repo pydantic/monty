@@ -28,8 +28,10 @@ t = (1, [2])
 assert copy.copy(t) is t
 fs = frozenset({1, 2})
 assert copy.copy(fs) is fs
-assert copy.copy('abc') == 'abc'
-assert copy.copy(7) == 7
+atom_str = 'abc'
+assert copy.copy(atom_str) is atom_str
+atom_int = 7
+assert copy.copy(atom_int) is atom_int
 assert copy.copy(None) is None
 r = range(3)
 assert copy.copy(r) is r
@@ -251,10 +253,20 @@ except TypeError as exc:
     assert str(exc) == 'the first argument must be callable'
 
 # === sets and frozensets ===
-set_copy = copy.deepcopy({1, 2, 3})
-assert set_copy == {1, 2, 3}
-frozen_copy = copy.deepcopy(frozenset({1, 2}))
-assert frozen_copy == frozenset({1, 2})
+set_source = {1, 2, 3}
+set_copy = copy.deepcopy(set_source)
+assert set_copy == set_source
+assert set_copy is not set_source
+set_copy.add(4)
+assert set_source == {1, 2, 3}
+
+# A frozenset is shared by `copy.copy` and rebuilt by `deepcopy`, as CPython
+# does either way.
+frozen_source = frozenset({1, 2})
+assert copy.copy(frozen_source) is frozen_source
+frozen_set_copy = copy.deepcopy(frozen_source)
+assert frozen_set_copy == frozen_source
+assert frozen_set_copy is not frozen_source
 
 # === collections types ===
 dq = deque([[1]], maxlen=3)
@@ -372,9 +384,15 @@ class Frozen:
     items: list[str]
 
 
-frozen_copy = copy.deepcopy(Frozen(['a']))
-assert frozen_copy == Frozen(['a'])
-assert frozen_copy.items == ['a']
+frozen_source = Frozen(['a'])
+frozen_copy = copy.deepcopy(frozen_source)
+assert frozen_copy == frozen_source
+assert frozen_copy is not frozen_source
+# The point of copying a frozen dataclass: its field is rebuilt even though
+# `setattr` on one is refused, so mutating the copy leaves the source alone.
+assert frozen_copy.items is not frozen_source.items
+frozen_copy.items.append('b')
+assert frozen_source.items == ['a']
 
 # === __copy__ and __deepcopy__ hooks ===
 
