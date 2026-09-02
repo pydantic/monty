@@ -22,7 +22,7 @@
 //! - `MontyObject::Exception` → `{ __monty_type__: 'Exception', excType, message }`
 //! - `MontyObject::Type` → `{ __monty_type__: 'Type', value }`
 //! - `MontyObject::BuiltinFunction` → `{ __monty_type__: 'BuiltinFunction', value }`
-//! - `MontyObject::ClassInstance` → `{ __monty_type__: 'ClassInstance', name, instanceId, typeId, attrs, frozen, isDataclass }`
+//! - `MontyObject::ClassInstance` → `{ __monty_type__: 'ClassInstance', type, instanceId, attrs }`
 //! - `MontyObject::FileHandle` ↔ `{ __monty_type__: 'FileHandle', path, mode, position }`
 //! - `MontyObject::Repr` → plain `string`
 //! - `MontyObject::Cycle` → placeholder `string`

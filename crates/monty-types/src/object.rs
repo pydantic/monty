@@ -567,9 +567,10 @@ impl MontyObject {
 
     /// Returns the Python type name for this value (e.g., `"int"`, `"str"`, `"list"`).
     ///
-    /// These are the same names returned by Python's `type(x).__name__`.
+    /// These are the same names returned by Python's `type(x).__name__`; a
+    /// class instance reports its class name (`"Point"`).
     #[must_use]
-    pub fn type_name(&self) -> &'static str {
+    pub fn type_name(&self) -> &str {
         match self {
             Self::None => "NoneType",
             Self::Ellipsis => "ellipsis",
@@ -593,7 +594,7 @@ impl MontyObject {
             Self::Exception { .. } => "Exception",
             Self::Path(_) => "PosixPath",
             Self::FileHandle(handle) => handle.mode.type_name(),
-            Self::ClassInstance { .. } => "HostClass",
+            Self::ClassInstance { class_type, .. } => &class_type.name,
             Self::Type(_) => "type",
             Self::BuiltinFunction(_) => "builtin_function_or_method",
             Self::Function { .. } => "function",
@@ -871,12 +872,6 @@ pub enum MontyType {
     DictValues,
     Set,
     FrozenSet,
-    /// Internal placeholder type of a host-backed class instance
-    /// ([`MontyObject::ClassInstance`]). `type(x)` never shows it — the
-    /// interpreter builds the real class type object (`<class 'Point'>`)
-    /// instead; the placeholder only backs internal type dispatch.
-    #[strum(serialize = "HostClass")]
-    HostClass,
     /// A non-builtin class type object — a sandbox-defined or host-defined
     /// class, carrying the resolved [`ClassType`] (name, uuid, flags).
     /// Sandbox class types are output-only (rejected as inputs); host class
@@ -1224,15 +1219,19 @@ impl Hash for MontyTimeZone {
 pub struct ConversionError {
     /// The type name that was expected (e.g., "int", "str").
     pub expected: &'static str,
-    /// The actual type name of the `MontyObject` (e.g., "list", "NoneType").
-    pub actual: &'static str,
+    /// The actual type name of the `MontyObject` (e.g., "list", "NoneType",
+    /// or a class instance's class name).
+    pub actual: String,
 }
 
 impl ConversionError {
     /// Creates a new `ConversionError` with the expected and actual type names.
     #[must_use]
-    pub fn new(expected: &'static str, actual: &'static str) -> Self {
-        Self { expected, actual }
+    pub fn new(expected: &'static str, actual: impl Into<String>) -> Self {
+        Self {
+            expected,
+            actual: actual.into(),
+        }
     }
 }
 

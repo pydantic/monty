@@ -198,7 +198,7 @@ fn type_name() {
             attrs: DictPairs::from(vec![]),
         }
         .type_name(),
-        "HostClass"
+        "Foo"
     );
 }
 

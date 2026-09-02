@@ -94,9 +94,9 @@ pub enum Type {
     DictValues,
     Set,
     FrozenSet,
-    /// The type of a host-backed class instance ([`HeapData::HostClass`]).
-    /// A static placeholder — `type(x)` renders as `HostClass`; the real class
-    /// name still appears in error messages and reprs.
+    /// The type of a host-backed class instance ([`HeapData::HostClass`]),
+    /// for internal dispatch only: `type(x)` materializes a `HostClassType`
+    /// instead, so it never reaches Python code or the host boundary.
     ///
     /// [`HeapData::HostClass`]: crate::heap::HeapData::HostClass
     #[strum(serialize = "HostClass")]

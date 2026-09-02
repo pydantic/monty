@@ -279,8 +279,9 @@ export function notCallableMessage(value: unknown): string {
 
 /**
  * `__monty_type__` marker → the Python type its conversion produces. `Type`
- * and `BuiltinFunction` cannot round-trip and convert to reprs; an unknown
- * marker converts as a plain dict.
+ * and `BuiltinFunction` cannot round-trip and convert to reprs; a
+ * `ClassInstance` marker is named by its class (see [`pyTypeName`]); an
+ * unknown marker converts as a plain dict.
  */
 const MARKED_TYPE_NAMES: Readonly<Record<string, string>> = {
   Ellipsis: 'ellipsis',
@@ -292,7 +293,6 @@ const MARKED_TYPE_NAMES: Readonly<Record<string, string>> = {
   TimeZone: 'timezone',
   Type: 'repr',
   BuiltinFunction: 'repr',
-  ClassInstance: 'HostClass',
 }
 
 /** Python type name the JS value converts to (mirrors the Rust `js_to_monty`). */
@@ -319,6 +319,12 @@ function pyTypeName(value: unknown): string {
         return readMarker(value, '__tuple__') ? 'tuple' : 'list'
       }
       const marker = readMarker(value, '__monty_type__')
+      if (marker === 'ClassInstance') {
+        // named by its class, as `type(x).__name__` is for the converted instance
+        const classType = readMarker(value, 'type')
+        const name = typeof classType === 'object' && classType !== null ? readMarker(classType, 'name') : undefined
+        return typeof name === 'string' ? name : 'dict'
+      }
       return typeof marker === 'string' ? (MARKED_TYPE_NAMES[marker] ?? 'dict') : 'dict'
     }
     default:
@@ -335,7 +341,7 @@ function pyTypeName(value: unknown): string {
  * still degrade to a plain type rather than poison the turn — mirroring the Rust
  * `js_to_monty`, which falls back to `object`/`dict` on any conversion failure.
  */
-function readMarker(value: object, key: '__tuple__' | '__monty_type__'): unknown {
+function readMarker(value: object, key: string): unknown {
   try {
     return (value as Record<string, unknown>)[key]
   } catch {

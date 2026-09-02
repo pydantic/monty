@@ -507,6 +507,12 @@ test('stale proxy TypeError names tuple-marked and __monty_type__ values', async
       instanceOf: MontyRuntimeError,
     })
     t.is(markedError.message, "TypeError: 'datetime' object is not callable")
+    // a class instance marker is named by its class, like the converted value
+    const instance = { __monty_type__: 'ClassInstance', type: { name: 'Point' }, instanceId: '', attrs: [] }
+    const instanceError = await t.throwsAsync(() => session.feedRun('f()', { externalLookup: { fn: instance } }), {
+      instanceOf: MontyRuntimeError,
+    })
+    t.is(instanceError.message, "TypeError: 'Point' object is not callable")
   } finally {
     await session.close()
   }

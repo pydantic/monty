@@ -674,7 +674,6 @@ impl MontyTypeExt for MontyType {
             Self::DictValues => Some(Type::DictValues),
             Self::Set => Some(Type::Set),
             Self::FrozenSet => Some(Type::FrozenSet),
-            Self::HostClass => Some(Type::HostClass),
             Self::Instance(_) => None,
             Self::Exception(exc_type) => Some(Type::Exception(*exc_type)),
             Self::Function => Some(Type::Function),
@@ -762,8 +761,12 @@ impl MontyTypeExt for MontyType {
             Type::DictValues => Self::DictValues,
             Type::Set => Self::Set,
             Type::FrozenSet => Self::FrozenSet,
-            Type::HostClass => Self::HostClass,
             Type::Instance(_) => unreachable!("Type::Instance requires heap access — use MontyType::from_internal"),
+            // The interpreter-internal placeholder never becomes a value:
+            // `type(x)` on a host instance materializes a `HostClassType`.
+            Type::HostClass => {
+                unreachable!("Type::HostClass has no boundary mirror — host instances cross as ClassType")
+            }
             Type::Exception(exc_type) => Self::Exception(exc_type),
             Type::Function => Self::Function,
             Type::BuiltinFunction => Self::BuiltinFunction,
