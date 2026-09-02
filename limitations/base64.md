@@ -18,12 +18,14 @@ types and error messages match CPython 3.14 subject to the divergences below.
 
 ## `a85encode` / `a85decode`
 
-- `wrapcol` reaches CPython's `max()` and then a slice expression, so anything
-  other than a real `int` fails there. Monty raises the same `TypeError` for a
-  `float` (`'float' object cannot be interpreted as an integer`) and for a type
-  that cannot be ordered against an `int`, but a *class* defining `__gt__` and
-  `__index__` — which CPython carries as far as the slice — is rejected by the
-  comparison instead, since Monty does not dispatch ordering dunders at all
+- `wrapcol` reaches CPython's `max()` and then a slice expression. Every
+  non-`int` fails at one or the other, so what differs is which message you
+  get, not whether the call fails. Monty matches CPython for a `float`
+  (`'float' object cannot be interpreted as an integer`) and for a type that
+  cannot be ordered against an `int`. A class defining both `__gt__` and
+  `__index__` diverges: CPython gets past `max()` and `range()` to fail on
+  `i + wrapcol` (`unsupported operand type(s) for +`), while Monty rejects it
+  at the comparison, since it does not dispatch ordering dunders at all
   (see [classes.md](classes.md)).
 
 ## Input types
