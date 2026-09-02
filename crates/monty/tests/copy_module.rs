@@ -23,13 +23,18 @@ use monty_types::{CompileOptions, ExcType, MontyException, PrintWriter, Resource
 #[cfg(not(debug_assertions))]
 const WORKER_STACK: usize = 1024 * 1024;
 
-/// A debug build is what CI runs these on, and its frames are several times
-/// fatter than release's, so the debug budget is scaled rather than the depths
-/// reduced — the assertion worth keeping is the release one. Generous because
-/// the multiplier is not constant across targets, and a target whose frames are
-/// half again as fat must not abort the test binary.
+/// A debug build is what `cargo test -p monty` runs these on, and its frames
+/// are far fatter than release's, so the budget is scaled rather than the
+/// depths reduced — the assertion worth keeping is the release one.
+///
+/// Sized from measurement, not from a guess at the multiplier: the deepest
+/// case here (960 list levels) aborts a debug thread at 7 MiB and survives at
+/// 7.5 MiB, so debug costs roughly 8 KiB a level against release's ~770 bytes.
+/// 16 MiB leaves that better than 2x of room. It must: a stack overflow is not
+/// a test failure but an abort that takes the whole binary with it, so the
+/// margin has to absorb a target whose frames are fatter still.
 #[cfg(debug_assertions)]
-const WORKER_STACK: usize = 8 * 1024 * 1024;
+const WORKER_STACK: usize = 16 * 1024 * 1024;
 
 /// Nesting just inside the recursion limit, where the copy must still succeed.
 fn depth_within_the_limit() -> usize {
