@@ -1,0 +1,117 @@
+crates/monty-types/src/object.rs
+  s_0dddb5d39d9a85::t_161fd384bd5f3f 771-774
+crates/monty/src/types/host_class.rs
+  s_0dddb5d39d9a85::t_587bcc88c825ac 4,17-18,28-32,45,47,49-52,58-59,61,64,69-71,73-74,77,79-80,89-90,92-93,101,103-112,159-161,181,247,258-259,266,271-275,278-281,336-337,342-346,349-354,359,369-370,372,375-376,387-393,400-405,429-447,466-467
+crates/monty-python/tests/test_class_instance.py
+  s_0dddb5d39d9a85::t_35f818239471c3 460-461,735-773
+examples/classes/package.json
+  s_0dddb5d39d9a85::t_7ffde262655cd4 1-6,18-19
+  s_0dddb5d39d9a85::t_8c80545e2e46bb 7-10
+  s_0dddb5d39d9a85::t_c5598f97ab8f20 11-17
+examples/classes/class_instance.ts
+  s_0dddb5d39d9a85::t_c5598f97ab8f20 7-8,11-12,14-15,18,22-31,33,35-36
+  s_0dddb5d39d9a85::t_7ffde262655cd4 1-6,9-10,17,19-21,34
+  s_0dddb5d39d9a85::t_8c80545e2e46bb 13,16,32
+docs/quickstart/javascript.md
+  s_0dddb5d39d9a85::t_c9bc7b51cdeda0 101-102
+  s_0dddb5d39d9a85::t_dde8c3de695a09 77-100,103-108
+crates/monty/src/types/mod.rs
+  s_0dddb5d39d9a85::t_3be507738d2a48 49
+crates/monty-proto/src/python/convert.rs
+  s_0dddb5d39d9a85::t_161fd384bd5f3f 152-153
+docs/host-objects.md
+  s_0dddb5d39d9a85::t_67297878c77850 30-129
+crates/monty/tests/repl.rs
+  s_0dddb5d39d9a85::t_9efb8deded2961 791-796,798-799,804-1019
+examples/classes/sandbox_round_trip.ts
+  s_0dddb5d39d9a85::t_8c80545e2e46bb 16,19,21-23,28,30-32
+  s_0dddb5d39d9a85::t_c5598f97ab8f20 8-9,11-15,18,20,24,27,29,33,35-37,39,41-42,45
+  s_0dddb5d39d9a85::t_7ffde262655cd4 1-7,10,17,25-26,34,38,40,43-44
+crates/monty/src/builtins/isinstance.rs
+  s_0dddb5d39d9a85::t_65f905c3f9dd62 32-33,47-49,57-62,103-104
+crates/monty-js/ts/classInstance.ts
+  s_0dddb5d39d9a85::t_c0b38e9c1a2104 36-39,60-61,195-197,200,203-208,299-303,306,312,474,558,566-569,571,579,585-586,588-591,593
+crates/monty/tests/inputs.rs
+  s_0dddb5d39d9a85::t_9efb8deded2961 670-701
+crates/monty-js/__test__/class_instance.spec.ts
+  s_0dddb5d39d9a85::t_35f818239471c3 545-601
+examples/classes/README.md
+  s_bf68572fceb021::t_911e9c4fcd0f62 1-2,7-12
+  s_0dddb5d39d9a85::t_fd1227dd87cedb 13-17,19-21,23,41-46
+  s_0dddb5d39d9a85::t_8792e8531e9b5f 3-6,22,24-40,47
+  s_0dddb5d39d9a85::t_39f3dc2475d125 18
+crates/monty/src/value.rs
+  s_0dddb5d39d9a85::t_65f905c3f9dd62 1424
+  s_0dddb5d39d9a85::t_9efb8deded2961 29
+examples/classes/sandbox_classes.py
+  s_0dddb5d39d9a85::t_7ffde262655cd4 1-35
+crates/monty-proto/src/python/class_instance.rs
+  s_0dddb5d39d9a85::t_c0b38e9c1a2104 20
+  s_0dddb5d39d9a85::t_161fd384bd5f3f 104,135-138,140-149,157-163
+examples/classes/sandbox_round_trip.py
+  s_0dddb5d39d9a85::t_da99e3d9e0a23a 26-28
+  s_0dddb5d39d9a85::t_7ffde262655cd4 1-20,25,29-34
+  s_0dddb5d39d9a85::t_fd1227dd87cedb 21-24
+crates/monty/src/dump_format.rs
+  s_0dddb5d39d9a85::t_65f905c3f9dd62 29
+limitations/classes.md
+  s_0dddb5d39d9a85::t_252091709d107c 198-214,257-260,295-301
+packages/pydantic-monty/README.md
+  s_0dddb5d39d9a85::t_67297878c77850 153-155
+crates/monty/src/builtins/type_.rs
+  s_0dddb5d39d9a85::t_65f905c3f9dd62 57-58,80-82
+  s_0dddb5d39d9a85::t_f66ddfe49676df 11
+crates/monty/src/heap/mod.rs
+  s_0dddb5d39d9a85::t_9efb8deded2961 1327-1330
+  s_0dddb5d39d9a85::t_f66ddfe49676df 28
+  s_0dddb5d39d9a85::t_65f905c3f9dd62 950-954,987,999,1045-1047,1094,1102,1153,1262,1278-1281,1313-1326,1331-1333,1980-1982
+crates/monty/src/modules/dataclasses/mod.rs
+  s_0dddb5d39d9a85::t_0b58e7ffcfb58b 34
+  s_0dddb5d39d9a85::t_65f905c3f9dd62 898-901
+examples/classes/.gitignore
+  s_0dddb5d39d9a85::t_7ffde262655cd4 1-2
+examples/classes/class_type.ts
+  s_0dddb5d39d9a85::t_8c80545e2e46bb 13,16,25-26,37-38
+  s_0dddb5d39d9a85::t_7ffde262655cd4 1-6,9-10,17,19-21,23,33-34,36,40,43-44
+  s_0dddb5d39d9a85::t_c5598f97ab8f20 7-8,11-12,14-15,18,22,24,27-32,35,39,41-42
+examples/classes/sandbox_classes.ts
+  s_0dddb5d39d9a85::t_7ffde262655cd4 1-6,9-23
+  s_0dddb5d39d9a85::t_c5598f97ab8f20 7-8,24-34
+examples/classes/tsconfig.json
+  s_0dddb5d39d9a85::t_8c80545e2e46bb 1-12
+crates/monty-python/python/pydantic_monty/class_instance.py
+  s_0dddb5d39d9a85::t_161fd384bd5f3f 14-16,148-153,236-237,272-277,285
+crates/monty/src/object_bridge.rs
+  s_0dddb5d39d9a85::t_65f905c3f9dd62 237-243,258-261,266,514,833-841,844-858
+  s_0dddb5d39d9a85::t_f66ddfe49676df 19
+  s_0dddb5d39d9a85::t_9efb8deded2961 842-843
+examples/classes/lazy_attrs.ts
+  s_0dddb5d39d9a85::t_c5598f97ab8f20 7-8,11-12,15-18,21,23-24
+  s_0dddb5d39d9a85::t_7ffde262655cd4 1-6,9-10,13-14,19-20,22,25
+examples/classes/sandbox_copy.py
+  s_bf68572fceb021::t_911e9c4fcd0f62 1-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9fc2f2c402b96c206b536c956d955c3d18d83dee",
+  "prompts": {},
+  "sessions": {
+    "s_0dddb5d39d9a85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4ff5acd4-3351-4ad9-a7b8-0662afd66a41",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_bf68572fceb021": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8ff2ad2-c7e9-4cb1-9a42-b2f5d74a4d5e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
