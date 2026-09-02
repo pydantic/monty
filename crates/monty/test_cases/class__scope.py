@@ -232,3 +232,23 @@ def make_capturing_comprehension(comp_outer_value):
 
 
 assert make_capturing_comprehension(30).body_lookup == [30]
+
+
+# A class member may shadow an enclosing function local without changing what
+# the nested comprehension captures. Comprehensions skip the class namespace,
+# so all three reads resolve to the enclosing function's cell.
+def make_shadowing_comprehension(outer_value):
+    class Shadowing:
+        outer_value = 10
+        body_lookup = [outer_value for _ in range(1)]
+        filter_lookup = [outer_value for _ in range(1) if outer_value == 30]
+        later_iterable = [x for _ in range(1) for x in [outer_value]]
+
+    return Shadowing
+
+
+shadowing = make_shadowing_comprehension(30)
+assert shadowing.outer_value == 10
+assert shadowing.body_lookup == [30]
+assert shadowing.filter_lookup == [30]
+assert shadowing.later_iterable == [30]

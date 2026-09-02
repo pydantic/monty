@@ -2127,13 +2127,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Cell));
             }
             if fn_state.enclosing_locals.contains(&name_id) {
-                let name = self.interner.get_str(name_id);
-                return Err(ParseError::not_implemented(
-                    format!(
-                        "class member '{name}' that shadows a captured variable of the same name from an enclosing scope"
-                    ),
-                    position,
-                ));
+                let slot = fn_state.locals.push_aliased_slot(name_id, position)?;
+                fn_state.free_var_map.insert(name_id, slot);
+                return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Cell));
             }
             let slot = self.globals.ensure_slot(name_id, position)?;
             return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Global));
@@ -2178,6 +2174,16 @@ impl<'i, 'g> Prepare<'i, 'g> {
         if fn_state.global_names.contains(&name_id) {
             let slot = self.globals.ensure_slot(name_id, position)?;
             return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Global));
+        }
+
+        // A class member bound earlier in the body keeps class-namespace
+        // semantics even when the same name also has a comprehension capture.
+        if self.is_class_scope && !self.skip_class_scope && self.bound_class_members.contains(&name_id) {
+            let slot = fn_state
+                .locals
+                .get(name_id)
+                .expect("bound class member has a local slot");
+            return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Local));
         }
 
         // 2. Captured from enclosing scope (nonlocal declaration or implicit capture).
