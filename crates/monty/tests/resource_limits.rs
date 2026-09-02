@@ -978,10 +978,10 @@ fn timeout_in_str_format_grouped_padding() {
     );
 }
 
-/// A str field above the large-result threshold is walked and copied in polled
-/// steps, so a deadline armed before the call fires during the format itself.
+/// A str field above the large-result threshold is walked in polled steps, so a
+/// deadline armed before the call fires inside the format rather than after it.
 #[test]
-fn timeout_in_str_format_large_field_copy() {
+fn timeout_in_str_format_large_str_field() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run("s = 'x' * 20_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
@@ -990,13 +990,13 @@ fn timeout_in_str_format_large_field_copy() {
     let start = Instant::now();
     let exc = repl
         .feed_run("'{0:<1}'.format(s)", vec![], PrintWriter::Stdout)
-        .expect_err("copying a large field must observe the time limit");
+        .expect_err("a large str field must observe the time limit");
     let elapsed = start.elapsed();
 
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     assert!(
         elapsed < Duration::from_secs(2),
-        "str.format() should stop during the copy, took {elapsed:?}"
+        "str.format() should stop inside the format, took {elapsed:?}"
     );
 }
 

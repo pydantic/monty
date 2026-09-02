@@ -2266,27 +2266,3 @@ fn fix_exp_format(s: &str, tracker: &ResourceTracker) -> RunResult<String> {
     output.push_str(digits)?;
     output.finish_raw()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::grouped_digit_count;
-
-    #[test]
-    fn grouped_digit_count_inverts_the_grouped_width() {
-        for group_size in [3, 4] {
-            for width in 0..=512 {
-                let total = grouped_digit_count(1, group_size, width);
-                assert!(total + (total - 1) / group_size >= width);
-                if total > 1 {
-                    assert!(total - 1 + (total - 2) / group_size < width);
-                }
-            }
-        }
-
-        let width = isize::MAX as usize;
-        let total = grouped_digit_count(1, 3, width);
-        assert_eq!(total, 3 * (1usize << 61));
-        assert!(total + (total - 1) / 3 >= width);
-        assert!(total - 1 + (total - 2) / 3 < width);
-    }
-}

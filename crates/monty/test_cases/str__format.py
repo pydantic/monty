@@ -177,3 +177,9 @@ assert '{[0]}'.format(['a']) == 'a'
 assert '{.value}'.format(Record(1)) == '1'
 assert capture_error('{x=}', x=1) == ('KeyError', "'x='")
 assert '{:%H:%M}'.format(time(4, 5)) == '04:05'
+
+for width in range(130):
+    grouped = '{:0{},}'.format(7, width)
+    assert grouped.replace(',', '').lstrip('0') == '7'
+    assert len(grouped) in (width, width + 1), grouped
+    assert all(len(group) == 3 for group in grouped.split(',')[1:]), grouped
