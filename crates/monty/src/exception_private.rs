@@ -973,6 +973,14 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("the first argument must be callable")
     }
 
+    /// Creates the TypeError `collections.defaultdict()` raises for a
+    /// `default_factory` that is neither callable nor `None` — raised both when
+    /// constructing one and when `deepcopy` rebuilds the factory.
+    #[must_use]
+    fn defaultdict_factory_not_callable() -> RunError {
+        Self::type_error("first argument must be callable or None")
+    }
+
     /// Creates a TypeError for the right operand of `in` / `not in` supporting
     /// neither `__contains__` nor iteration.
     ///

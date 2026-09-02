@@ -288,6 +288,28 @@ assert copy.copy(dd_partial).default_factory is partial_factory
 # same path.
 assert copy.deepcopy(defaultdict(None)).default_factory is None
 
+# The rebuilt factory faces the check the constructor applies, since the
+# reconstructor is that constructor. The setter takes any value, so it is what
+# gets a non-callable as far as the copy.
+dd_bad = defaultdict(list)
+dd_bad.default_factory = 42
+try:
+    copy.deepcopy(dd_bad)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'first argument must be callable or None'
+
+# `None` is the factory-less form rather than a bad factory, so it is kept.
+dd_none = defaultdict(list)
+dd_none.default_factory = None
+dd_none_copy = copy.deepcopy(dd_none)
+assert dd_none_copy.default_factory is None
+try:
+    dd_none_copy['missing']
+    assert False, 'expected KeyError'
+except KeyError as exc:
+    assert str(exc) == "'missing'"
+
 counter_copy = copy.deepcopy(Counter(a=1, b=2))
 assert counter_copy == Counter(a=1, b=2)
 assert counter_copy.most_common(1) == [('b', 2)]
