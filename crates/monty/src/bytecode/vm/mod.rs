@@ -287,8 +287,8 @@ pub enum FrameExit {
 impl FrameExit {
     /// Whether this exit hands control to the host and waits to be resumed.
     ///
-    /// Every variant but `Return` is a host round trip, and each one is
-    /// charged against the session's suspension budget.
+    /// Every variant but `Return` suspends; `convert_frame_exit` charges each
+    /// one against the session's suspension budget.
     pub(crate) fn is_suspension(&self) -> bool {
         !matches!(self, Self::Return(_))
     }
@@ -971,30 +971,11 @@ impl<'h> VM<'h> {
     /// `run_external` call, and it must NEVER nest: VM-internal re-entry
     /// (task switches, `evaluate_function`) uses the raw private [`Self::run`]
     /// instead, whose time is already inside the enclosing window.
-    ///
-    /// This is also the single funnel every suspension leaves through, so it
-    /// is where the suspension budget is charged. Refusing here means the
-    /// over-budget suspension never reaches the host, and so never costs the
-    /// host the round trip the budget exists to bound.
     pub(crate) fn run_external(&mut self) -> Result<FrameExit, RunError> {
         self.heap.tracker.on_execution_start();
         let result = self.run();
         self.heap.tracker.on_execution_stop();
-        let exit = self.finish_host_turn(result)?;
-        let charged = if exit.is_suspension() {
-            self.heap.tracker.record_suspension()
-        } else {
-            Ok(())
-        };
-        match charged {
-            Ok(()) => Ok(exit),
-            Err(err) => {
-                // The exit owns heap references (call args, an armed OS
-                // effect); no host resume will consume them now.
-                exit.drop_with(self);
-                Err(err.into())
-            }
-        }
+        self.finish_host_turn(result)
     }
 
     /// Epilogue for every host-boundary execution window (here and

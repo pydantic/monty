@@ -15,6 +15,7 @@ use crate::{
     bytecode::{FrameExit, VM, VMSnapshot},
     exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{Heap, HeapReader},
+    heap_traits::DropWithContext,
     object_bridge::MontyObjectExt,
     os_dispatch::release_pending_effect,
     run::Executor,
@@ -655,6 +656,10 @@ impl ConvertedExit {
 ///
 /// All `Value` → `MontyObject` and `StringId` → `String` conversions happen here,
 /// while the VM (and its heap/interns) are still accessible.
+///
+/// This is also the only path that turns a suspension into something the host
+/// is told about, so it is where the suspension budget is charged — a caller
+/// that resolves suspensions itself (`MontyRepl::call_function`) spends none.
 pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) -> ConvertedExit {
     // An effect still armed on arrival belongs to an OS call that was answered
     // without consuming it — a host may reply `ExtFunctionResult::Future`,
@@ -663,6 +668,20 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
     // (or leak its file pin when the next OS call overwrites the slot).
     // Arming for *this* exit happens below, after the slot is clear.
     release_pending_effect(vm.pending_os_effect.take(), vm.heap);
+    // Charged before the exit becomes an announcement, so an over-budget
+    // suspension never costs the host the round trip the budget bounds.
+    let result = match result {
+        Ok(exit) if exit.is_suspension() => match vm.heap.tracker.record_suspension() {
+            Ok(()) => Ok(exit),
+            Err(err) => {
+                // The exit owns heap references (call args, an OS effect not
+                // yet armed); no host resume will consume them now.
+                exit.drop_with(vm);
+                Err(err.into())
+            }
+        },
+        result => result,
+    };
     match result {
         Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::new(value, vm)),
         Ok(FrameExit::ExternalCall {

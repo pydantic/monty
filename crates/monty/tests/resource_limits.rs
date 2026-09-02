@@ -1411,3 +1411,20 @@ fn suspension_counters_survive_a_dump_taken_while_suspended() {
         Some("suspension limit exceeded: 3 > 2 (max_suspensions_per_run)")
     );
 }
+
+/// `MontyRepl::call_function` resolves suspensions itself — it turns each one
+/// into an in-sandbox error rather than announcing it — so none of them cost
+/// the host a round trip and none may be charged to the budget.
+#[test]
+fn call_function_spends_no_suspension_budget() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("def attempt():\n    return missing()", vec![], PrintWriter::Stdout)
+        .unwrap();
+
+    let exc = repl
+        .call_function("attempt", vec![], PrintWriter::Stdout)
+        .expect_err("an unresolved name cannot be answered inside call_function");
+    assert_eq!(exc.exc_type(), ExcType::NotImplementedError);
+    assert_eq!(repl.tracker().run_suspensions(), 0);
+    assert_eq!(repl.tracker().total_suspensions(), 0);
+}
