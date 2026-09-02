@@ -31,7 +31,7 @@ use crate::{
             },
             defaultdict::defaultdict_missing,
         },
-        copy::{Memo, PyDeepCopy, clone_pair, deep_copy_pair},
+        copy::{Memo, PyDeepCopy, clone_pair, deep_copy, deep_copy_pair},
     },
     types::Type,
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
@@ -392,6 +392,27 @@ impl<'h> HeapRead<'h, Dict> {
         let mut dict = Dict::new();
         dict.set_kind(kind);
         vm.heap.allocate(HeapData::Dict(dict))
+    }
+
+    /// Allocates an empty dict carrying this one's flavour, with a
+    /// `defaultdict`'s factory deep-copied rather than shared.
+    ///
+    /// `defaultdict`'s reducer hands the factory to the reconstructor as its
+    /// argument, so CPython deep-copies it before the memo entry exists — the
+    /// same ordering `functools.partial` uses for its callable, and the reason
+    /// a factory reachable from the dict recurses to the limit in both. Only
+    /// `deepcopy` does this: `copy.copy` shares the factory, which is what
+    /// [`allocate_empty_like`](Self::allocate_empty_like) is for.
+    fn allocate_empty_deep_copy(&self, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<HeapId> {
+        let Some(factory) = self.get(vm.heap).default_factory() else {
+            return Ok(self.allocate_empty_like(vm));
+        };
+        let factory = factory.clone_with_heap(vm.heap);
+        let copied = deep_copy(&factory, memo, vm);
+        factory.drop_with(vm);
+        let mut dict = Dict::new();
+        dict.set_kind(DictKind::defaultdict(Some(copied?)));
+        Ok(vm.heap.allocate(HeapData::Dict(dict)))
     }
 
     /// Element-wise equality against another dict (matching keys and values).
@@ -2246,7 +2267,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Dict> {
     /// Copies a dict, keys included, keeping its `defaultdict` / `Counter` flavour.
     #[inline(never)]
     fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
-        let copy_id = self.allocate_empty_like(vm);
+        let copy_id = self.allocate_empty_deep_copy(memo, vm)?;
         let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
         let (copy, vm) = guard.as_parts_mut();
         memo.insert(source, copy, vm)?;

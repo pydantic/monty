@@ -274,6 +274,20 @@ dd_copy['b'].append(2)
 assert dd_copy['b'] == [2]
 assert 'b' not in dd
 
+# The factory is the reconstructor's argument in CPython, so `deepcopy`
+# rebuilds it while `copy.copy` shares it. `list` is a class either way; a
+# `partial` is the copyable factory that tells the two apart.
+partial_factory = partial(list)
+dd_partial = defaultdict(partial_factory)
+dd_partial_deep = copy.deepcopy(dd_partial)
+assert dd_partial_deep.default_factory is not partial_factory
+assert dd_partial_deep['x'] == []
+assert copy.copy(dd_partial).default_factory is partial_factory
+
+# A factory-less defaultdict and a Counter keep their flavour through the
+# same path.
+assert copy.deepcopy(defaultdict(None)).default_factory is None
+
 counter_copy = copy.deepcopy(Counter(a=1, b=2))
 assert counter_copy == Counter(a=1, b=2)
 assert counter_copy.most_common(1) == [('b', 2)]
