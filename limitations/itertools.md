@@ -75,15 +75,9 @@ raise `AttributeError` at runtime.
   `<itertools.repeat object>` rather than its in-sandbox `repr()`
   (`count(0)`, `repeat(7, 3)`). Monty represents all iterators this way rather
   than recursing into what they hold.
-- **`batched` accepts an `n` too large for CPython to allocate.** CPython builds
-  each batch by preallocating a tuple of `n` and shrinking it, so an `n` beyond
-  what the host can allocate raises `MemoryError` however short the source:
-  `next(batched(iter([1, 2, 3]), 10**18))` fails there but yields `(1, 2, 3)` in
-  Monty, which grows the batch with what the source actually returns. The
-  CPython threshold depends on the host's address space and overcommit, so the
-  same call can succeed or fail across machines; Monty's result does not vary.
-  Where the source really is long enough to fill the batch, both raise — see
-  [Resource limits](#resource-limits) for which limit Monty raises against.
+- **`batched`'s `n` is bounded by the worker's pointer width**, so the wasm
+  worker raises `OverflowError: Python int too large to convert to C ssize_t`
+  for `n` at or above `2**31`, where CPython accepts it.
 - **`batched`'s type cannot cross to a host below Python 3.12**, which is where
   `itertools.batched` was added. Returning `type(itertools.batched(...))` to
   such a host raises `TypeError: Cannot convert itertools.batched to a host
