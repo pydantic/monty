@@ -1,0 +1,19 @@
+crates/monty-js/ts/classInstance.ts
+  s_0dddb5d39d9a85::t_e16fabd87654b0 175-176,183-186,192,340-343,436,455,467,470,473,490,501-502,508,510,513,516,523,526,551-552,589,601,611,613-615,622-623,626-627,630-632,635,637,690,692-693
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cf44572f8b89a625e9ace3e5321a6a2b2ba59a08",
+  "prompts": {},
+  "sessions": {
+    "s_0dddb5d39d9a85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4ff5acd4-3351-4ad9-a7b8-0662afd66a41",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
