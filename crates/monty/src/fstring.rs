@@ -1904,8 +1904,7 @@ fn pad_signed_grouped(
         return pad_signed_ungrouped(sign, prefix, abs_str, align, spec, tracker);
     }
 
-    // An explicit `0=` fill groups like the `0` flag: CPython grows the digits,
-    // not the fill, so the zeros carry separators either way.
+    // CPython grows the digits, not the fill, for the `0` flag and an explicit `0=` alike.
     let grouped_zero_fill = spec.zero_pad || (spec.fill == '0' && spec.align == Some(Align::SignAware));
     let min_int_width = if grouped_zero_fill {
         // Grow the integer part with grouped leading zeros until the whole
@@ -1999,7 +1998,7 @@ fn push_format_str(output: &mut StringBuilder<'_>, value: &str, tracker: &Resour
 /// the right, optionally left-padding with `'0'` first so the grouped result
 /// is at least `min_width` characters wide.
 ///
-/// `min_width` drives the `0`-flag interaction: CPython grows the zero-padded
+/// `min_width` drives the zero-fill interaction: CPython grows the zero-padded
 /// integer one digit at a time until digits-plus-separators reach the field
 /// width, so the result can overshoot `min_width` by one when the final digit
 /// also introduces a separator (`format(1234, '08,')` → `'0,001,234'`, 9
