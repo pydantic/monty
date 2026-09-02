@@ -11,9 +11,13 @@ types and error messages match CPython 3.14 subject to the divergences below.
 ## Not implemented
 
 - `base64.encode(input, output)` and `base64.decode(input, output)`, which read
-  and write binary file objects. Monty's file objects have no read position, so
-  the chunked read these perform has nothing to implement against — see
-  [open.md](open.md).
+  and write binary file objects. These are pure Python in CPython, so they call
+  `read`/`readline`/`write` on whatever they are handed; a Monty builtin
+  reaching back into Python runs the call to completion and cannot pause, and
+  reading a real file is a suspension out to the host. They would therefore
+  work on a duck-typed object and fail on the file `open()` returns — the same
+  restriction `filter` and `sorted(key=)` carry. Accessing them raises
+  `AttributeError`.
 - The `python -m base64` command line interface.
 
 ## `a85encode` / `a85decode`
@@ -34,9 +38,18 @@ Encoders take `bytes`; decoders take `bytes` or an ASCII-only `str`. Monty has
 no `bytearray`, `memoryview` or `array`, so the "bytes-like object" the CPython
 docs describe is always `bytes` here.
 
+## Module attributes
+
+The attributes CPython leaks as a side effect of how `base64` is written —
+`bytes_types`, and the `binascii` and `re` modules it imports — are absent and
+raise `AttributeError`. They are not documented API.
+
 ## `binascii`
 
-`binascii.Error`, the hex pair (`hexlify`/`unhexlify` and their
-`b2a_hex`/`a2b_hex` aliases), the base64 pair (`b2a_base64`/`a2b_base64`) and
-`crc32` are implemented. The uuencode and quoted-printable conversions
-(`a2b_uu`, `b2a_uu`, `a2b_qp`, `b2a_qp`) are absent and raise `AttributeError`.
+Every name CPython's `binascii` exposes is implemented, so the divergence below
+is all that separates the two.
+
+`repr()` of a `binascii.Error` or `binascii.Incomplete` uses the qualified name:
+`binascii.Error('Non-hexadecimal digit found')` where CPython gives
+`Error('Non-hexadecimal digit found')`. `type(exc).__name__` and
+`str(type(exc))` both match CPython — see [exceptions.md](exceptions.md).

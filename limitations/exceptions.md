@@ -53,6 +53,10 @@ not supported; passing more than one argument raises an internal error.
   real 5-field constructor (`UnicodeDecodeError('ascii', b'\xff', 0, 1,
   'ordinal not in range(128)')`), which Monty doesn't track, so Monty's
   `repr()` uses the generic single-message form instead.
+- The dotted exception classes — `json.JSONDecodeError`, `re.PatternError`,
+  `binascii.Error`, `binascii.Incomplete` — repr under their qualified name:
+  `binascii.Error('bad')` where CPython gives `Error('bad')`.
+  `type(exc).__name__` and `str(type(exc))` match CPython.
 
 **Not implemented:** `__cause__`, `__context__`, `__suppress_context__`,
 `__traceback__`, `__notes__`, `add_note()`. The `raise X from Y` syntax
