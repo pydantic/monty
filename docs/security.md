@@ -52,7 +52,7 @@ Validate arguments in the host function as you would validate any untrusted inpu
 Every method call, lazy attribute read and `init=True` construction the wrapper allows runs **your** code on the host,
 with the same authority as a host function.
 Each policy (`eager_attrs`, `lazy_attrs`, `allowed_methods`, `init`) is an allow-list that defaults to nothing, and
-`'all'` still skips underscore-prefixed names.
+`'all'` still skips underscore-prefixed names; for `allowed_methods` it exposes only the functions the class defines.
 Nothing is wrapped for you: a method that returns another object fails conversion unless a `convert_value` hook wraps
 it with a policy you chose.
 See [host objects](host-objects.md).

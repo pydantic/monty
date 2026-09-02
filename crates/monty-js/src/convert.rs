@@ -726,11 +726,11 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
             let class_type = parse_js_class_type(&class_type, &env)?;
             let instance_id = get_uuid_string_property(obj, "instanceId", "ClassInstance")?;
             let attrs = parse_js_attr_pairs(obj.get_named_property("attrs")?, "ClassInstance", &env)?;
-            Ok(MontyObject::ClassInstance(MontyClassInstance {
+            Ok(MontyObject::ClassInstance(Box::new(MontyClassInstance {
                 class_type,
                 instance_id,
                 attrs,
-            }))
+            })))
         }
         _ => Err(Error::from_reason(format!("Unknown Monty marker type: {monty_type}"))),
     }

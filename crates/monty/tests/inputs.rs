@@ -590,7 +590,7 @@ fn invalid_input_namedtuple_length_mismatch() {
 
 #[test]
 fn invalid_input_repr_in_class_instance_attrs() {
-    let err = run_input(MontyObject::ClassInstance(MontyClassInstance {
+    let err = run_input(MontyObject::ClassInstance(Box::new(MontyClassInstance {
         class_type: MontyClassType {
             name: "Point".to_owned(),
             id: MontyUuid::from_u128(1),
@@ -604,7 +604,7 @@ fn invalid_input_repr_in_class_instance_attrs() {
             (MontyObject::String("b".to_owned()), MontyObject::Repr("bad".to_owned())),
         ]
         .into(),
-    }))
+    })))
     .unwrap_err();
     assert_eq!(
         err.message(),
@@ -687,14 +687,14 @@ x = p = None
     let MontyObject::Type(MontyType::Instance(class_type)) = host_class_type_input() else {
         unreachable!("host_class_type_input builds a type");
     };
-    let instance = MontyObject::ClassInstance(MontyClassInstance {
+    let instance = MontyObject::ClassInstance(Box::new(MontyClassInstance {
         class_type: MontyClassType {
             attrs: DictPairs::default(),
             ..*class_type
         },
         instance_id: MontyUuid::from_u128(2),
         attrs: DictPairs::default(),
-    });
+    }));
     let result = ex.run_no_limits(vec![host_class_type_input(), instance]).unwrap();
     assert_eq!(result, MontyObject::Int(1));
 }

@@ -55,9 +55,9 @@ def test_kwargs_surface(session: MontySession):
     assert snap.kwargs == snapshot({'name': 'ada', 'times': 2})
 
 
-def test_method_call_snapshot_has_instance_id(session: MontySession):
+def test_method_call_snapshot_has_object_id(session: MontySession):
     # a sandbox method call on a host instance surfaces as a FunctionSnapshot
-    # whose instance_id is the receiver's session uuid (not included in args)
+    # whose object_id is the receiver's session uuid (not included in args)
     counter = _Counter(value=5)
     snap = session.feed_start('c.add(3)', inputs={'c': ClassInstance(counter, allowed_methods='all')})
     assert isinstance(snap, FunctionSnapshot)
@@ -69,7 +69,7 @@ def test_method_call_snapshot_has_instance_id(session: MontySession):
     assert done.output == snapshot(8)
 
 
-def test_lazy_attr_name_lookup_snapshot_has_instance_id(session: MontySession):
+def test_lazy_attr_name_lookup_snapshot_has_object_id(session: MontySession):
     # a lazy attribute read surfaces as a NameLookupSnapshot scoped to the instance
     counter = _Counter(value=7)
     snap = session.feed_start('c.value', inputs={'c': ClassInstance(counter, lazy_attrs='all')})

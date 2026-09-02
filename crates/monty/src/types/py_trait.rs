@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, fmt::Write};
+use std::{borrow::Cow, cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
 /// Trait for heap-allocated Python values that need common operations.
@@ -167,6 +167,16 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Takes heap reference for cases where nested Value lookups are needed.
     fn py_type(&self, vm: &VM<'h>) -> Type;
 
+    /// The type name used in error messages (`'list'`, `'MutablePoint'`).
+    ///
+    /// Defaults to [`py_type`](Self::py_type)'s name; types whose [`Type`]
+    /// carries no class identity (host class instances, named tuples)
+    /// override it to name their real class rather than a placeholder.
+    /// Borrows only `vm.interns`, so it survives heap cleanup.
+    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
+        self.py_type(vm).name(vm.heap, vm.interns)
+    }
+
     /// Returns the number of elements in this container.
     ///
     /// For interns, returns the number of Unicode codepoints (characters), matching Python.
@@ -259,7 +269,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Custom `repr` implementations that apply only to some values can call
     /// this for their remaining variants.
     fn py_default_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>) -> RunResult<()> {
-        let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+        let type_name = self.py_type_name(vm);
         Ok(write!(
             f,
             "<{type_name} object at 0x{:x}>",
@@ -525,10 +535,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         // references on the error path (caught by `memory-model-checks`).
 
         args.drop_with(vm);
-        Err(ExcType::attribute_error(
-            self.py_type(vm).name(vm.heap, vm.interns),
-            attr.as_str(vm.interns),
-        ))
+        Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
     }
 
     /// Whether this type implements the context-manager protocol.
@@ -573,10 +580,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// [`py_is_context_manager`]: PyTrait::py_is_context_manager
     fn py_enter(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        Err(ExcType::attribute_error(
-            self.py_type(vm).name(vm.heap, vm.interns),
-            "__enter__",
-        ))
+        Err(ExcType::attribute_error(self.py_type_name(vm), "__enter__"))
     }
 
     /// Context-manager exit hook (`__exit__`).
@@ -599,10 +603,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// [`py_is_context_manager`]: PyTrait::py_is_context_manager
     fn py_exit(&mut self, vm: &mut VM<'h>, _exc: Option<HeapId>) -> RunResult<CallResult> {
-        Err(ExcType::attribute_error(
-            self.py_type(vm).name(vm.heap, vm.interns),
-            "__exit__",
-        ))
+        Err(ExcType::attribute_error(self.py_type_name(vm), "__exit__"))
     }
 
     /// Python subscript get operation (`__getitem__`), e.g., `d[key]`.
@@ -615,7 +616,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// Default implementation returns TypeError.
     fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-        Err(ExcType::type_error_not_sub(&self.py_type(vm).name(vm.heap, vm.interns)))
+        Err(ExcType::type_error_not_sub(&self.py_type_name(vm)))
     }
 
     /// Python subscript set operation (`__setitem__`), e.g., `d[key] = value`.
@@ -629,10 +630,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         value.drop_with(vm);
         Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!(
-                "'{}' object does not support item assignment",
-                self.py_type(vm).name(vm.heap, vm.interns)
-            ),
+            format!("'{}' object does not support item assignment", self.py_type_name(vm)),
         )
         .into())
     }
@@ -643,7 +641,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// this method and are responsible for releasing any replaced value.
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         value.drop_with(vm);
-        let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+        let type_name = self.py_type_name(vm);
         Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
     }
 
@@ -697,17 +695,13 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
 
     /// Returns a Python iterator for this object (`__iter__`).
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Err(ExcType::type_error_not_iterable(
-            &self.py_type(vm).name(vm.heap, vm.interns),
-        ))
+        Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
     }
 
     /// Advances this object using Python's iterator protocol (`__next__`).
     ///
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        Err(ExcType::type_error_not_iterator(
-            &self.py_type(vm).name(vm.heap, vm.interns),
-        ))
+        Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
     }
 }
 

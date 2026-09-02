@@ -43,7 +43,7 @@ build-js: install-js ## Build the JS package (napi debug build + TypeScript)
 	cd crates/monty-js && npm run build:debug
 
 .PHONY: lint-js
-lint-js: install-js ## Lint JS code with oxlint
+lint-js: install-js ## Lint JS code with oxlint and type-check the tests
 	cd crates/monty-js && npm run lint
 
 .PHONY: test-js

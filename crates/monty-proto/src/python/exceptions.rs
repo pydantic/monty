@@ -13,7 +13,7 @@ use pyo3::{
     exceptions::{self},
     prelude::*,
     sync::PyOnceLock,
-    types::{PyBytes, PyString},
+    types::{PyBytes, PyString, PyTuple},
 };
 
 /// Converts Monty's `MontyException` to the matching Python exception value.
@@ -158,7 +158,7 @@ fn json_decode_error_to_py(py: Python<'_>, exc_data: ExcData, msg: String) -> Py
 pub fn exc_py_to_monty(py: Python<'_>, py_err: &PyErr) -> MontyException {
     let exc = py_err.value(py);
     let exc_type = py_err_to_exc_type(exc);
-    let arg = exc.str().ok().map(|s| s.to_string_lossy().into_owned());
+    let arg = exception_arg(exc);
     let data = if exc_type == ExcType::JsonDecodeError {
         json_data_from_py(exc)
     } else {
@@ -166,6 +166,26 @@ pub fn exc_py_to_monty(py: Python<'_>, py_err: &PyErr) -> MontyException {
     };
 
     MontyException::new(exc_type, arg).with_data(data)
+}
+
+/// The single argument the sandbox exception is raised with.
+///
+/// A lone `str` argument is taken as-is so the sandbox's own `__str__` applies
+/// (`KeyError('k')` must read `'k'`, not `"'k'"`); anything else falls back to
+/// `str(exc)`, the only rendering Monty's single-string exceptions can carry.
+fn exception_arg(exc: &Bound<'_, exceptions::PyBaseException>) -> Option<String> {
+    let single_str = || -> PyResult<Option<String>> {
+        let args = exc.getattr("args")?.cast_into::<PyTuple>()?;
+        if args.len() == 1 {
+            Ok(args.get_item(0)?.extract::<String>().ok())
+        } else {
+            Ok(None)
+        }
+    };
+    single_str()
+        .ok()
+        .flatten()
+        .or_else(|| exc.str().ok().map(|s| s.to_string_lossy().into_owned()))
 }
 
 /// Reads the structured `msg`/`doc`/`pos`/`lineno`/`colno` attributes off a
@@ -191,7 +211,7 @@ fn json_data_from_py(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcData {
 #[must_use]
 pub fn exc_to_monty_object(exc: &Bound<'_, exceptions::PyBaseException>) -> MontyObject {
     let exc_type = py_err_to_exc_type(exc);
-    let arg = exc.str().ok().map(|s| s.to_string_lossy().into_owned());
+    let arg = exception_arg(exc);
 
     MontyObject::Exception { exc_type, arg }
 }

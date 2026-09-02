@@ -79,11 +79,14 @@ mod _monty {
     // `MontyFileHandle` is produced by the value-conversion layer (in
     // `monty_proto`) whenever a `MontyObject::FileHandle` crosses the
     // boundary; export it as part of the `pydantic_monty` surface.
-    // `MontyClassProxy` is the read-only proxy the conversion layer builds
-    // for class instances with no original host object (sandbox-defined, or
-    // returned after a session restore into a fresh session).
+    // `MontyClassProxy` / `MontyClassTypeProxy` are the read-only proxies the
+    // conversion layer builds for class instances and classes with no original
+    // host object (sandbox-defined, or returned after a session restore into a
+    // fresh session).
     #[pymodule_export]
     use monty_proto::python::PyMontyClassProxy as MontyClassProxy;
+    #[pymodule_export]
+    use monty_proto::python::PyMontyClassTypeProxy as MontyClassTypeProxy;
     #[pymodule_export]
     use monty_proto::python::PyMontyFileHandle as MontyFileHandle;
     use pyo3::prelude::*;

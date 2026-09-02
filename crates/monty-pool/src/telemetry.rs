@@ -533,16 +533,7 @@ fn render_call_arguments(call: &WireFunctionCall) -> (Option<String>, Option<Str
 fn render_ext_result(result: Option<&pb::ExtFunctionResult>) -> (OtelValue, bool) {
     match result.and_then(|r| r.kind.as_ref()) {
         Some(pb::ext_function_result::Kind::ReturnValue(v)) => attr_value(v),
-        Some(pb::ext_function_result::Kind::Error(e)) => {
-            let (text, cut) = capped_text(|writer| {
-                write!(writer, "raise {}", e.exc_type)?;
-                if let Some(message) = &e.message {
-                    write!(writer, ": {message}")?;
-                }
-                Ok(())
-            });
-            (text.into(), cut)
-        }
+        Some(pb::ext_function_result::Kind::Error(e)) => render_raised(e),
         Some(pb::ext_function_result::Kind::Future(id)) => (format!("future {id}").into(), false),
         Some(pb::ext_function_result::Kind::NotFound(name)) => {
             let (text, cut) = capped_text(|writer| write!(writer, "not found: {name}"));
@@ -559,8 +550,22 @@ fn render_name_lookup(kind: Option<&pb::resume_name_lookup::Kind>) -> (OtelValue
     match kind {
         Some(pb::resume_name_lookup::Kind::Value(v)) => attr_value(v),
         Some(pb::resume_name_lookup::Kind::Undefined(_)) => ("undefined".into(), false),
+        Some(pb::resume_name_lookup::Kind::Error(e)) => render_raised(e),
         None => (MISSING.into(), false),
     }
+}
+
+/// Renders a host-raised exception as `raise Type: message`; the bool
+/// reports a cut at [`ATTR_SIZE_LIMIT`].
+fn render_raised(e: &pb::RaisedException) -> (OtelValue, bool) {
+    let (text, cut) = capped_text(|writer| {
+        write!(writer, "raise {}", e.exc_type)?;
+        if let Some(message) = &e.message {
+            write!(writer, ": {message}")?;
+        }
+        Ok(())
+    });
+    (text.into(), cut)
 }
 
 /// Renders resolved futures as `call_id: result, ...`; the bool reports a cut

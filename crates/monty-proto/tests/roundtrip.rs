@@ -239,7 +239,7 @@ fn file_handle_values_round_trip() {
 
 #[test]
 fn class_instance_and_function_values_round_trip() {
-    assert_value_round_trip(&MontyObject::ClassInstance(MontyClassInstance {
+    assert_value_round_trip(&MontyObject::ClassInstance(Box::new(MontyClassInstance {
         class_type: MontyClassType {
             name: "Point".to_owned(),
             id: MontyUuid::from_u128(0xDEAD_BEEF),
@@ -252,9 +252,9 @@ fn class_instance_and_function_values_round_trip() {
             (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
             (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
         ]),
-    }));
+    })));
     // Sandbox-defined shape: worker-generated ids, non-dataclass, mutable.
-    assert_value_round_trip(&MontyObject::ClassInstance(MontyClassInstance {
+    assert_value_round_trip(&MontyObject::ClassInstance(Box::new(MontyClassInstance {
         class_type: MontyClassType {
             name: "Widget".to_owned(),
             id: MontyUuid::from_u128(3),
@@ -264,7 +264,25 @@ fn class_instance_and_function_values_round_trip() {
         },
         instance_id: MontyUuid::from_u128(4),
         attrs: DictPairs::from(vec![]),
-    }));
+    })));
+    // The class branch carries eager class attrs alongside the instance attrs.
+    assert_value_round_trip(&MontyObject::ClassInstance(Box::new(MontyClassInstance {
+        class_type: MontyClassType {
+            name: "Square".to_owned(),
+            id: MontyUuid::from_u128(5),
+            host_defined: true,
+            is_dataclass: false,
+            attrs: DictPairs::from(vec![
+                (MontyObject::String("SIDES".to_owned()), MontyObject::Int(4)),
+                (
+                    MontyObject::String("KIND".to_owned()),
+                    MontyObject::List(vec![MontyObject::String("polygon".to_owned())]),
+                ),
+            ]),
+        },
+        instance_id: MontyUuid::from_u128(6),
+        attrs: DictPairs::from(vec![(MontyObject::String("size".to_owned()), MontyObject::Int(3))]),
+    })));
     assert_value_round_trip(&MontyObject::Function {
         name: "fetch".to_owned(),
         docstring: Some("fetches a url".to_owned()),
@@ -608,6 +626,30 @@ fn name_lookup_results_convert() {
         NameLookupResult::try_from(undefined),
         Ok(NameLookupResult::Undefined)
     ));
+    let error = pb::ResumeNameLookup {
+        kind: Some(pb::resume_name_lookup::Kind::Error(
+            (&MontyException::new(ExcType::KeyError, Some("boom".to_owned()))).into(),
+        )),
+    };
+    let back = NameLookupResult::try_from(error).unwrap();
+    let NameLookupResult::Error(exc) = back else {
+        panic!("expected Error, got {back:?}");
+    };
+    assert_eq!(exc.exc_type(), ExcType::KeyError);
+    assert_eq!(exc.message(), Some("boom"));
+    // an error arm is validated like any exception crossing the wire
+    let bogus = pb::ResumeNameLookup {
+        kind: Some(pb::resume_name_lookup::Kind::Error(pb::RaisedException {
+            exc_type: "NotARealError".to_owned(),
+            message: None,
+            traceback: vec![],
+            data: None,
+        })),
+    };
+    assert!(matches!(
+        NameLookupResult::try_from(bogus),
+        Err(ProtoConvertError::UnknownExcType(_))
+    ));
 }
 
 /// Deeply nested values: encoding works at depths a sandbox can plausibly
@@ -639,7 +681,7 @@ fn nest_dict(depth: usize) -> MontyObject {
 /// levels per level: `MontyObject` + `ClassInstance` + `Dict` + `Pair`).
 fn nest_class_instance(depth: usize) -> MontyObject {
     (0..depth).fold(MontyObject::Int(1), |inner, _| {
-        MontyObject::ClassInstance(MontyClassInstance {
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
             class_type: MontyClassType {
                 name: "D".to_owned(),
                 id: MontyUuid::from_u128(1),
@@ -649,8 +691,42 @@ fn nest_class_instance(depth: usize) -> MontyObject {
             },
             instance_id: MontyUuid::from_u128(1),
             attrs: DictPairs::from(vec![(MontyObject::String("f".to_owned()), inner)]),
-        })
+        }))
     })
+}
+
+/// `Int(1)` nested in `depth` levels of class type whose single eager class
+/// attr holds the next level (4 proto levels per level: `MontyObject` +
+/// `Type` + `Dict` + `Pair` — `TYPE_COST` + `TYPE_ATTRS_COST`).
+fn nest_type_attrs(depth: usize) -> MontyObject {
+    (0..depth).fold(MontyObject::Int(1), |inner, _| {
+        MontyObject::Type(MontyType::Instance(Box::new(class_type_with_attr(inner))))
+    })
+}
+
+/// `Int(1)` nested in `depth` levels of attr-less class instance whose class
+/// branch holds the next level in an eager class attr (5 proto levels per
+/// level: `MontyObject` + `ClassInstance` + `Type` + `Dict` + `Pair` —
+/// `CLASS_INSTANCE_TYPE_COST` + `TYPE_ATTRS_COST`).
+fn nest_class_instance_type_attrs(depth: usize) -> MontyObject {
+    (0..depth).fold(MontyObject::Int(1), |inner, _| {
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
+            class_type: class_type_with_attr(inner),
+            instance_id: MontyUuid::from_u128(1),
+            attrs: DictPairs::default(),
+        }))
+    })
+}
+
+/// A host class `D` whose only eager class attr `k` is `value`.
+fn class_type_with_attr(value: MontyObject) -> MontyClassType {
+    MontyClassType {
+        name: "D".to_owned(),
+        id: MontyUuid::from_u128(1),
+        host_defined: true,
+        is_dataclass: false,
+        attrs: DictPairs::from(vec![(MontyObject::String("k".to_owned()), value)]),
+    }
 }
 
 /// Whether `value` decodes when shipped inside the deepest legitimate frame
@@ -679,10 +755,13 @@ fn decodes_in_frame(value: &MontyObject) -> bool {
 fn depth_check_matches_frame_decodability() {
     /// One container shape: name, nesting builder, deepest depth that must pass.
     type DepthCase = (&'static str, fn(usize) -> MontyObject, usize);
-    let cases: [DepthCase; 3] = [
+    let cases: [DepthCase; 5] = [
         ("list", nest_list, MAX_VALUE_DEPTH),        // 48: 2 proto levels each
         ("dict", nest_dict, 32),                     // 3 proto levels each
         ("class_instance", nest_class_instance, 24), // 4 proto levels each
+        ("type_attrs", nest_type_attrs, 24),         // 4 proto levels each
+        // 5 proto levels each: the type branch plus its attrs
+        ("class_instance_type_attrs", nest_class_instance_type_attrs, 19),
     ];
     for (shape, build, max_depth) in cases {
         let deepest = build(max_depth);

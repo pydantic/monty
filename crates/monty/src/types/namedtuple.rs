@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     cell::Cell,
     cmp::Ordering,
     collections::hash_map::DefaultHasher,
@@ -355,6 +356,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
 
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::NamedTuple
+    }
+
+    /// The class name (`'Point'`, `'sys.version_info'`), not `'namedtuple'`.
+    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
+        self.get(vm.heap).name_either().to_cow(vm.interns)
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {

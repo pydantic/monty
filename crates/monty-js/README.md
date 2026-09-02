@@ -126,8 +126,19 @@ await session.feedRun('w.pay(30).balance', { inputs: { w: wrapWallet(new Wallet(
 ```
 
 Methods may be sync or async (`await w.fetch()` in the sandbox). JS functions
-have no keyword arguments, so kwargs arrive as a trailing options-bag object.
-Names outside the policy raise `AttributeError` in the sandbox. A
+have no keyword arguments, so kwargs arrive as a trailing options-bag object
+(a `__proto__` keyword is dropped).
+Names outside the policy raise `AttributeError` in the sandbox.
+An error thrown while serving a lazy attribute (by a getter, `convertValue`,
+or an unconvertible value) is raised inside the sandbox where the lookup
+happened, so sandbox code can catch it; `hasattr` and `getattr` defaults only
+swallow `AttributeError`.
+`allowedMethods: 'all'` exposes the methods the class defines — functions on
+the prototype chain below `Object.prototype`, or own static functions of a
+`ClassType` — so callables stored on the instance, nested classes and
+built-ins such as `toString` or `hasOwnProperty` are not reachable.
+No policy, `'all'` or explicit, exposes `constructor`, `__proto__`,
+`prototype`, `arguments` or `caller`. A
 `convertValue` option hook transforms each value crossing to the sandbox
 (eager attrs, lazy lookup results, method returns); the default passes values
 through unchanged, so unwrapped class instances are rejected with a
@@ -146,7 +157,9 @@ mutations never touch the wrapped host object.
 
 Each wrapper owns its identity: `wrapper.id` (a uuid4 by default, or the `id`
 option) is the id the sandbox routes by, so reuse one wrapper to re-send an
-object under the same identity. Every `ClassInstance` also carries a
+object under the same identity. An explicit `id` must be a canonical
+8-4-4-4-12 uuid string and is lowercased, so `wrapper.id` is the form the
+sandbox reports back. Every `ClassInstance` also carries a
 `ClassType` wrapper for its class — a default one built from the
 constructor, or the `classType` option to grant class-level policies (or pin
 a class id) alongside the instance. The sandbox keeps one type object per
@@ -196,6 +209,13 @@ constructed instances are exposed, or `convertValue` to transform class
 attrs, static-method returns and (through `instanceWrapper`) every
 constructed instance's values.
 
+A host class the sandbox returns — the `ClassType` input itself, or
+`type(x)` of a wrapped instance — resolves to the class object when the
+session registered its id (any `ClassType` or `ClassInstance` crossing
+registers the class). Otherwise, such as after a dump restored into a fresh
+session, it stays a `{ __monty_type__: 'Type', classType: { name, id, ... } }`
+marker.
+
 ## Snapshots: pausing and resuming
 
 `feedStart` is the suspendable counterpart of `feedRun`: instead of driving a
@@ -232,6 +252,17 @@ while (!(snap instanceof MontyComplete)) {
 }
 console.log(snap.output) // 'hello Ada!'
 ```
+
+Calls and lookups routed to a wrapped host object carry the receiver's id:
+`FunctionSnapshot.objectId` is set for a method call on a `ClassInstance`
+(or a static method / `__call__` construction on a `ClassType`), and
+`NameLookupSnapshot.objectId` for a lazy attribute lookup; both are `null`
+for plain external calls and name lookups. `resumeAuto()` answers them
+from the session's wrappers. To answer a lazy lookup by hand, use
+`NameLookupSnapshot.resumeValue(value)`, which resolves the attribute to
+any convertible value (`resume()` resolves a name to an external function
+only, and with no argument leaves the lookup unresolved: `NameError` for a
+plain name, `AttributeError` when `objectId` is set).
 
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's
 `loadSnapshot` restores it and returns the snapshot to resume. Re-supply the

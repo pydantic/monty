@@ -28,6 +28,7 @@ __all__ = [
     'Frame',
     'Monty',
     'MontyClassProxy',
+    'MontyClassTypeProxy',
     'MontyConversionError',
     'MontyCrashedError',
     'MontyDisconnectError',
@@ -357,18 +358,12 @@ class MontyFileHandle:
 
 @final
 class MontyClassProxy:
-    """Read-only proxy for a class instance the host has no original object for.
-
-    Produced when the sandbox returns a sandbox-defined class instance, or a
-    host-sent instance after any session restore (the per-session instance
-    store is host-side and does not survive `load_session` / `load_snapshot`,
-    even in the same process). Plain data holder — there is no live object
-    behind it — but it keeps the instance's `id`, so passing it back into the
-    sandbox (as an input or an external-function result) hands the sandbox
-    its original object: a still-live sandbox instance resolves by identity
-    (`attributes` are not applied), and one the sandbox has since freed raises.
-    A proxy of a host-sent instance (after a restore) has no sandbox object to
-    resolve to and re-enters as a host-backed copy built from `attributes`.
+    """Read-only proxy for a class instance the host has no original object for:
+    a sandbox-defined instance, or a host-sent one after a session restore (the
+    instance store never survives `load_session` / `load_snapshot`). It keeps the
+    instance's `id`, so passed back in it resolves to the live sandbox object
+    (`attributes` not applied; a freed one raises) or, after a restore, re-enters
+    as a host-backed copy built from `attributes`.
     """
 
     @property
@@ -386,6 +381,33 @@ class MontyClassProxy:
     @property
     def attributes(self) -> dict[str, Any]:
         """The instance's attributes as a plain dict."""
+
+    def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+
+@final
+class MontyClassTypeProxy:
+    """Read-only proxy for a host class the session has no class object for: a
+    `ClassType`, or `type(x)` of a `ClassInstance`, returned after a session
+    restore. It keeps the class `id`, so passed back in it is the same sandbox
+    type object.
+    """
+
+    @property
+    def name(self) -> str:
+        """Name of the class (e.g. `'Point'`)."""
+
+    @property
+    def id(self) -> uuid.UUID:
+        """Identity of the class, the id the sandbox resolves it by when passed back."""
+
+    @property
+    def is_dataclass(self) -> bool:
+        """Whether the class is a dataclass on the side that produced it."""
+
+    @property
+    def attributes(self) -> dict[str, Any]:
+        """The eager class attrs that crossed with the class, as a plain dict."""
 
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
@@ -700,8 +722,9 @@ class MontySession:
         Valid only on a fresh session, before any feed or load; raises
         `RuntimeError` otherwise. The dump restores its own `script_name` /
         limits / type-check state (the `checkout()` config for those is not
-        applied). The class-instance store starts empty (host state is never
-        part of a dump). `mount`
+        applied). The class-instance store starts empty — it is host state and
+        never part of a dump, so restored `ClassInstance` values fall back to
+        `MontyClassProxy` stand-ins and method calls on them fail. `mount`
         re-establishes the suspended feed's mounts, which are never part of the
         dump — pass the same mounts the original feed used, or its filesystem
         calls degrade into unhandled OS calls. `'overlay'` writes made before
@@ -1129,7 +1152,8 @@ class NameLookupSnapshot:
         `external_lookup=` (an absent name raises `NameError` in the sandbox);
         an `object_id` lookup resolves through the sending wrapper's
         `lazy_attrs` policy (a denied or absent attribute raises
-        `AttributeError`)."""
+        `AttributeError`; any other exception raised while serving it, or a
+        value that cannot be converted, is raised inside the sandbox)."""
 
     def dump(self) -> bytes:
         """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
@@ -1167,7 +1191,9 @@ class AsyncFunctionSnapshot:
     @property
     def is_os_function(self) -> bool: ...
     @property
-    def object_id(self) -> uuid.UUID | None: ...
+    def object_id(self) -> uuid.UUID | None:
+        """As `FunctionSnapshot.object_id`: the routed receiver's session uuid."""
+
     @property
     def function_name(self) -> str | OsFunction: ...
     @property
@@ -1195,7 +1221,9 @@ class AsyncNameLookupSnapshot:
     @property
     def variable_name(self) -> str: ...
     @property
-    def object_id(self) -> uuid.UUID | None: ...
+    def object_id(self) -> uuid.UUID | None:
+        """As `NameLookupSnapshot.object_id`: the host object a lazy attribute is read from."""
+
     async def resume(self, *, value: Any = ...) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
         """Async sibling of `NameLookupSnapshot.resume_auto`."""

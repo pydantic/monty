@@ -219,35 +219,38 @@ impl MontyObjectExt for MontyObject {
             // A sandbox instance the host hands back resolves to the original
             // object by uuid (identity survives the round trip); anything else
             // is host-backed.
-            Self::ClassInstance(MontyClassInstance {
-                class_type,
-                instance_id,
-                attrs,
-            }) => match vm.heap.resolve_boundary_uuid(&instance_id) {
-                Some(id) if matches!(vm.heap.get(id), HeapData::Instance(_)) => {
-                    // TODO: apply `attrs` to the instance so host-side edits
-                    // are visible; for now the payload is ignored.
-                    vm.heap.inc_ref(id);
-                    Ok(Value::Ref(id))
+            Self::ClassInstance(instance) => {
+                let MontyClassInstance {
+                    class_type,
+                    instance_id,
+                    attrs,
+                } = *instance;
+                match vm.heap.resolve_boundary_uuid(&instance_id) {
+                    Some(id) if matches!(vm.heap.get(id), HeapData::Instance(_)) => {
+                        // TODO: apply `attrs` to the instance so host-side edits
+                        // are visible; for now the payload is ignored.
+                        vm.heap.inc_ref(id);
+                        Ok(Value::Ref(id))
+                    }
+                    _ if class_type.host_defined => {
+                        let pairs = convert_pairs(attrs, vm)?;
+                        let dict = Dict::from_pairs(pairs, vm)
+                            .map_err(|_| InvalidInputError::invalid_type("unhashable class instance attr keys"))?;
+                        // Guarded while the class type converts (its attrs can fail
+                        // too); `HostClass::new` then takes both.
+                        let mut dict_guard = DropGuard::new(dict, vm);
+                        let (_, vm) = dict_guard.as_parts_mut();
+                        let class_id = intern_host_class_type(class_type, vm)?;
+                        let (dict, vm) = dict_guard.into_parts();
+                        let hc = HostClass::new(instance_id, class_id, dict);
+                        Ok(Value::Ref(vm.heap.allocate(HeapData::HostClass(Box::new(hc)))))
+                    }
+                    _ => Err(InvalidInputError::invalid_type(format!(
+                        "sandbox instance of '{}' (id {instance_id}) no longer exists",
+                        class_type.name
+                    ))),
                 }
-                _ if class_type.host_defined => {
-                    let pairs = convert_pairs(attrs, vm)?;
-                    let dict = Dict::from_pairs(pairs, vm)
-                        .map_err(|_| InvalidInputError::invalid_type("unhashable class instance attr keys"))?;
-                    // Guarded while the class type converts (its attrs can fail
-                    // too); `HostClass::new` then takes both.
-                    let mut dict_guard = DropGuard::new(dict, vm);
-                    let (_, vm) = dict_guard.as_parts_mut();
-                    let class_id = intern_host_class_type(class_type, vm)?;
-                    let (dict, vm) = dict_guard.into_parts();
-                    let hc = HostClass::new(instance_id, class_id, dict);
-                    Ok(Value::Ref(vm.heap.allocate(HeapData::HostClass(Box::new(hc)))))
-                }
-                _ => Err(InvalidInputError::invalid_type(format!(
-                    "sandbox instance of '{}' (id {instance_id}) no longer exists",
-                    class_type.name
-                ))),
-            },
+            }
             Self::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s))))),
             Self::FileHandle(handle) => {
                 let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
@@ -516,11 +519,11 @@ impl MontyObjectExt for MontyObject {
                         // Snapshot before recursing: attrs are mutable via `setattr`.
                         let children = snapshot_dict_pairs(hc.get(vm.heap).attrs(), vm.heap);
                         defer_drop!(children, vm);
-                        Self::ClassInstance(MontyClassInstance {
+                        Self::ClassInstance(Box::new(MontyClassInstance {
                             class_type,
                             instance_id,
                             attrs: pairs_to_objects(children, vm, visited).into(),
-                        })
+                        }))
                     }
                     // The type object of a host class crosses out with its
                     // full class type (uuid included), so hosts can resolve
@@ -546,11 +549,11 @@ impl MontyObjectExt for MontyObject {
                         // Snapshot before recursing: attrs are mutable via `setattr`.
                         let children = snapshot_dict_pairs(inst.get(vm.heap).attrs(), vm.heap);
                         defer_drop!(children, vm);
-                        Self::ClassInstance(MontyClassInstance {
+                        Self::ClassInstance(Box::new(MontyClassInstance {
                             class_type,
                             instance_id,
                             attrs: pairs_to_objects(children, vm, visited).into(),
-                        })
+                        }))
                     }
                     // Iterators are internal objects — represent as a fixed type
                     // string rather than recursing.

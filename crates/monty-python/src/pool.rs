@@ -44,8 +44,8 @@ use monty_pool::{
 };
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use monty_types::{
-    AssertMessageAnnotations, ExtFunctionResult, MontyException, MontyObject, PrintStream, TypeCheckingConfig,
-    TypeCheckingFormat,
+    AssertMessageAnnotations, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, PrintStream,
+    TypeCheckingConfig, TypeCheckingFormat,
 };
 use pyo3::{
     Borrowed,
@@ -1338,8 +1338,8 @@ fn sync_turn_answer(
         TurnEvent::NameLookup {
             name,
             object_id: Some(object_id),
-        } => Ok(TurnAnswer::Name(resolve_object_attr(py, &name, &object_id, instances)?)),
-        TurnEvent::NameLookup { name, object_id: None } => Ok(TurnAnswer::Name(lookup.resolve_name(&name)?)),
+        } => Ok(TurnAnswer::Name(resolve_object_attr(py, &name, &object_id, instances))),
+        TurnEvent::NameLookup { name, object_id: None } => Ok(TurnAnswer::Name(lookup.resolve_name(&name)?.into())),
         TurnEvent::ResolveFutures { .. } => Err(PyRuntimeError::new_err("async external functions require AsyncMonty")),
         TurnEvent::Complete(_) | TurnEvent::OsCall { .. } => {
             unreachable!("Complete and OsCall are handled by the drive loop")
@@ -1543,14 +1543,14 @@ fn async_turn_answer(
             name,
             object_id: Some(object_id),
         } => {
-            let value = Python::attach(|py| resolve_object_attr(py, &name, &object_id, instances))?;
+            let value = Python::attach(|py| resolve_object_attr(py, &name, &object_id, instances));
             Ok(TurnAnswer::Name(value))
         }
         TurnEvent::NameLookup { name, object_id: None } => {
             let value = Python::attach(|py| {
                 ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), instances).resolve_name(&name)
             })?;
-            Ok(TurnAnswer::Name(value))
+            Ok(TurnAnswer::Name(value.into()))
         }
         TurnEvent::Complete(_) | TurnEvent::ResolveFutures { .. } | TurnEvent::OsCall { .. } => {
             unreachable!("Complete, ResolveFutures and OsCall are handled by the drive loop")
@@ -1559,10 +1559,12 @@ fn async_turn_answer(
 }
 
 /// The caller's answer to a suspension, paired with which resume call
-/// delivers it.
+/// delivers it. A lazy-attribute host error travels inside
+/// [`NameLookupResult::Error`] and is raised in the sandbox, so it never
+/// fails the turn.
 enum TurnAnswer {
     Call(ResumeValue),
-    Name(Option<MontyObject>),
+    Name(NameLookupResult),
 }
 
 /// What a turn helper may return, so one implementation serves both an

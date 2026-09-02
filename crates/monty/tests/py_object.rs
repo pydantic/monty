@@ -186,7 +186,7 @@ fn type_name() {
     );
     assert_eq!(MontyObject::Path("/tmp".to_string()).type_name(), "PosixPath");
     assert_eq!(
-        MontyObject::ClassInstance(MontyClassInstance {
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
             class_type: MontyClassType {
                 name: "Foo".to_string(),
                 id: MontyUuid::from_u128(1),
@@ -196,7 +196,7 @@ fn type_name() {
             },
             instance_id: MontyUuid::from_u128(2),
             attrs: DictPairs::from(vec![]),
-        })
+        }))
         .type_name(),
         "Foo"
     );
@@ -314,7 +314,7 @@ fn is_truthy_path() {
 #[test]
 fn is_truthy_class_instance() {
     assert!(
-        MontyObject::ClassInstance(MontyClassInstance {
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
             class_type: MontyClassType {
                 name: "Foo".to_string(),
                 id: MontyUuid::from_u128(1),
@@ -324,7 +324,7 @@ fn is_truthy_class_instance() {
             },
             instance_id: MontyUuid::from_u128(2),
             attrs: DictPairs::from(vec![]),
-        })
+        }))
         .is_truthy()
     );
 }

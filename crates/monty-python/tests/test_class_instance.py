@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import FrozenInstanceError, dataclass
+from decimal import Decimal
 from functools import cached_property
 from typing import Any, NoReturn
 from uuid import UUID, uuid4
@@ -15,11 +16,16 @@ from inline_snapshot import snapshot
 import pydantic_monty
 from pydantic_monty import (
     AsyncMonty,
+    AsyncNameLookupSnapshot,
     ClassInstance,
+    ClassType,
     Monty,
     MontyClassProxy,
+    MontyClassTypeProxy,
+    MontyComplete,
     MontyConversionError,
     MontySession,
+    NameLookupSnapshot,
 )
 
 
@@ -61,6 +67,32 @@ class Wallet:
 
     def pay(self, amount: int) -> 'Wallet':
         return Wallet(balance=self.balance - amount)
+
+
+class Vault:
+    """Lazy attributes whose host-side evaluation fails or cannot convert."""
+
+    @property
+    def secret(self) -> NoReturn:
+        raise KeyError('boom')
+
+    @property
+    def amount(self) -> Decimal:
+        return Decimal('1.5')
+
+    @property
+    def fine(self) -> int:
+        return 1
+
+
+class StrictClassInstance(ClassInstance):
+    """Wrapper whose `convert_value` refuses every value."""
+
+    def convert_value(self, /, name: str, value: Any) -> Any:
+        raise ValueError(f'refused {name}')
+
+
+LAZY_ERROR_CODE = 'try:\n    r = v.secret\nexcept KeyError as e:\n    r = str(e)\nr'
 
 
 class Greeter:
@@ -131,6 +163,14 @@ def test_repr_shows_eager_attrs(monty_run: RunMonty):
     )
 
 
+def test_repr_empty_dataclass(monty_run: RunMonty):
+    @dataclass
+    class Empty:
+        pass
+
+    assert monty_run('repr(x)', inputs={'x': ClassInstance(Empty(), eager_attrs='all')}) == snapshot('Empty()')
+
+
 def test_repr_includes_attr_set_in_sandbox(monty_run: RunMonty):
     p = Person(name='Alice', age=30)
     result = monty_run('x.extra = 5\nrepr(x)', inputs={'x': ClassInstance(p, eager_attrs='all')})
@@ -172,6 +212,61 @@ def test_private_attr_not_looked_up(monty_run: RunMonty):
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         monty_run('g._hidden', inputs={'g': ClassInstance(g, lazy_attrs='all')})
     assert str(exc_info.value) == snapshot("AttributeError: 'Greeter' object has no attribute '_hidden'")
+
+
+def test_lazy_attr_host_error_raised_in_sandbox(session: MontySession):
+    """A non-`AttributeError` from a property is raised inside the sandbox and
+    the session survives it."""
+    inputs = {'v': ClassInstance(Vault(), lazy_attrs='all')}
+    assert session.feed_run(LAZY_ERROR_CODE, inputs=inputs) == snapshot("'boom'")
+    assert session.feed_run('v.fine') == snapshot(1)
+
+
+def test_lazy_attr_host_error_uncaught(session: MontySession):
+    inputs = {'v': ClassInstance(Vault(), lazy_attrs='all')}
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        session.feed_run('v.secret', inputs=inputs)
+    assert str(exc_info.value) == snapshot('KeyError: boom')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, KeyError)
+    assert inner.args[0] == snapshot('boom')
+    assert session.feed_run('v.fine') == snapshot(1)
+
+
+@pytest.mark.parametrize('code', ["hasattr(v, 'secret')", "getattr(v, 'secret', 1)", "getattr(v, 'secret')"])
+def test_lazy_attr_host_error_bypasses_hasattr_getattr_defaults(session: MontySession, code: str):
+    """Only `AttributeError` is swallowed by `hasattr` / a `getattr` default."""
+    inputs = {'v': ClassInstance(Vault(), lazy_attrs='all')}
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        session.feed_run(code, inputs=inputs)
+    assert str(exc_info.value) == snapshot('KeyError: boom')
+    assert session.feed_run('v.fine') == snapshot(1)
+
+
+def test_lazy_attr_convert_value_error_raised_in_sandbox(session: MontySession):
+    inputs = {'v': StrictClassInstance(Vault(), lazy_attrs='all')}
+    code = 'try:\n    r = v.fine\nexcept ValueError as e:\n    r = str(e)\nr'
+    assert session.feed_run(code, inputs=inputs) == snapshot('refused fine')
+    assert session.feed_run('hasattr(v, "nope")') == snapshot(False)
+
+
+def test_lazy_attr_unconvertible_value_raised_in_sandbox(session: MontySession):
+    inputs = {'v': ClassInstance(Vault(), lazy_attrs='all')}
+    code = 'try:\n    r = v.amount\nexcept TypeError as e:\n    r = str(e)\nr'
+    assert session.feed_run(code, inputs=inputs) == snapshot(
+        'Cannot convert decimal.Decimal to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+    )
+    assert session.feed_run('v.fine') == snapshot(1)
+
+
+def test_lazy_attr_host_error_feed_start_resume_auto(session: MontySession):
+    snap = session.feed_start(LAZY_ERROR_CODE, inputs={'v': ClassInstance(Vault(), lazy_attrs='all')})
+    assert isinstance(snap, NameLookupSnapshot)
+    assert snap.variable_name == snapshot('secret')
+    done = snap.resume_auto()
+    assert isinstance(done, MontyComplete)
+    assert done.output == snapshot("'boom'")
+    assert session.feed_run('v.fine') == snapshot(1)
 
 
 # === Method calls ===
@@ -237,6 +332,104 @@ def test_instance_call_method_dunder_call_rejected():
     with pytest.raises(AttributeError) as exc_info:
         wrapper.call_method('__call__', (), {})
     assert str(exc_info.value) == snapshot("'Invocable' object has no attribute '__call__'")
+
+
+# === Policy validation and the scope of 'all' ===
+
+
+@pytest.mark.parametrize('field_name', ['eager_attrs', 'lazy_attrs', 'allowed_methods'])
+def test_instance_string_policy_rejected(field_name: str):
+    """A bare string other than 'all' would expose every one-character
+    substring as a name, so it is rejected at construction."""
+    policy: dict[str, Any] = {field_name: 'send_email'}
+    with pytest.raises(TypeError) as exc_info:
+        ClassInstance(Person(name='A', age=1), **policy)
+    assert str(exc_info.value) == f"{field_name} must be 'all', None or a set of names, got 'send_email'"
+
+
+@pytest.mark.parametrize(
+    'field_name',
+    [
+        'eager_attrs',
+        'lazy_attrs',
+        'allowed_methods',
+        'instance_eager_attrs',
+        'instance_lazy_attrs',
+        'instance_allowed_methods',
+    ],
+)
+def test_class_type_string_policy_rejected(field_name: str):
+    policy: dict[str, Any] = {field_name: 'greeting'}
+    with pytest.raises(TypeError) as exc_info:
+        ClassType(Person, **policy)
+    assert str(exc_info.value) == f"{field_name} must be 'all', None or a set of names, got 'greeting'"
+
+
+def test_policies_normalized_at_construction():
+    wrapper = ClassInstance(
+        Person(name='A', age=1), eager_attrs=['name', 'age'], lazy_attrs=['age'], allowed_methods=()
+    )
+    assert wrapper.eager_attrs == snapshot(('name', 'age'))
+    assert wrapper.lazy_attrs == snapshot(frozenset({'age'}))
+    assert wrapper.allowed_methods == snapshot(frozenset())
+
+
+class Toolbox:
+    """Class whose namespace holds a nested class and whose instances hold a callable."""
+
+    class Nested:
+        def __init__(self) -> None:
+            self.made = True
+
+    def __init__(self) -> None:
+        self.stored = lambda: 'stored'
+
+    def ok(self) -> str:
+        return 'ok'
+
+
+def test_allowed_methods_all_denies_nested_class_and_stored_callable(monty_run: RunMonty):
+    """'all' exposes functions defined on the class only."""
+    wrapper = ClassInstance(Toolbox(), allowed_methods='all')
+    assert monty_run('t.ok()', inputs={'t': wrapper}) == snapshot('ok')
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('t.Nested()', inputs={'t': wrapper})
+    assert str(exc_info.value) == snapshot("AttributeError: 'Toolbox' object has no attribute 'Nested'")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('t.stored()', inputs={'t': wrapper})
+    assert str(exc_info.value) == snapshot("AttributeError: 'Toolbox' object has no attribute 'stored'")
+
+
+def test_allowed_methods_explicit_serves_stored_callable(monty_run: RunMonty):
+    """An explicit set calls whatever the name resolves to — the host named it."""
+    wrapper = ClassInstance(Toolbox(), allowed_methods={'stored'})
+    assert monty_run('t.stored()', inputs={'t': wrapper}) == snapshot('stored')
+
+
+class Slotted:
+    __slots__ = ('x', 'y', '_hidden')
+
+    def __init__(self) -> None:
+        self.x = 1
+        self._hidden = 2
+
+
+class SlottedChild(Slotted):
+    __slots__ = 'z'
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.z = 3
+
+
+def test_eager_attrs_all_on_slots_object(monty_run: RunMonty):
+    """'all' on a `__slots__` object sends the set public slots (and any
+    `__dict__` entries); an unset slot is skipped rather than raising."""
+    code = '(s.x, hasattr(s, "y"), hasattr(s, "_hidden"))'
+    assert monty_run(code, inputs={'s': ClassInstance(Slotted(), eager_attrs='all')}) == snapshot((1, False, False))
+    assert monty_run('(c.x, c.z)', inputs={'c': ClassInstance(SlottedChild(), eager_attrs='all')}) == snapshot((1, 3))
+    with pytest.raises(AttributeError):
+        ClassInstance(Slotted(), eager_attrs=['y']).get_eager_attrs()
 
 
 # === convert_value / child wrapper ===
@@ -420,6 +613,12 @@ def test_equality_different_classes(monty_run: RunMonty):
     assert monty_run('a == b', inputs=inputs) is False
 
 
+def test_equality_with_other_types(monty_run: RunMonty):
+    p = ClassInstance(Person(name='Alice', age=30), eager_attrs='all')
+    code = '(x == {"name": "Alice", "age": 30}, x == ("Alice", 30), x == "Person(name=\'Alice\', age=30)", x != 1)'
+    assert monty_run(code, inputs={'x': p}) == snapshot((False, False, False, True))
+
+
 def test_frozen_dataclass_instances_unhashable(monty_run: RunMonty):
     """All host instances are unhashable (they define eq by attrs), frozen
     dataclasses included — matching CPython's eq-without-hash rule."""
@@ -452,6 +651,22 @@ def test_is_dataclass_in_sandbox(monty_run: RunMonty):
     assert monty_run(code, inputs=inputs) == snapshot((True, False))
 
 
+def test_dataclass_helpers_raise_on_host_instance(monty_run: RunMonty):
+    """`fields()` / `asdict()` are not importable in the sandbox, so neither
+    works on a host instance (see `limitations/dataclasses.md`)."""
+    p = ClassInstance(Person(name='Alice', age=30), eager_attrs='all')
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('from dataclasses import fields\nfields(p)', inputs={'p': p})
+    assert str(exc_info.value) == snapshot(
+        "ImportError: cannot import name 'fields' from 'dataclasses' (unknown location)"
+    )
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('from dataclasses import asdict\nasdict(p)', inputs={'p': p})
+    assert str(exc_info.value) == snapshot(
+        "ImportError: cannot import name 'asdict' from 'dataclasses' (unknown location)"
+    )
+
+
 def test_type_names_the_real_class(monty_run: RunMonty):
     p = Person(name='Alice', age=30)
     inputs = {'x': ClassInstance(p, eager_attrs='all')}
@@ -476,6 +691,37 @@ def test_nested_wrapper_identity_round_trip(monty_run: RunMonty):
     c = Calculator(value=5)
     result = monty_run('xs[0]', inputs={'xs': [ClassInstance(c)]})
     assert result is c
+
+
+@dataclass
+class Address:
+    city: str
+
+
+@dataclass
+class Resident:
+    name: str
+    address: Address
+
+
+class ResidentClassInstance(ClassInstance):
+    """Wrapper exposing the nested `Address` through a nested wrapper."""
+
+    def convert_value(self, /, name: str, value: Any) -> Any:
+        if isinstance(value, Address):
+            return ClassInstance(value, eager_attrs='all')
+        return value
+
+
+def test_wrapper_nested_in_eager_attrs(monty_run: RunMonty):
+    """A wrapper inside another wrapper's eager attrs registers too, so the
+    nested instance is readable and round-trips to the host object."""
+    addr = Address(city='NYC')
+    wrapper = ResidentClassInstance(Resident(name='Bob', address=addr), eager_attrs='all')
+    assert monty_run('(x.name, x.address.city, repr(x))', inputs={'x': wrapper}) == snapshot(
+        ('Bob', 'NYC', "Resident(name='Bob', address=Address(city='NYC'))")
+    )
+    assert monty_run('x.address', inputs={'x': wrapper}) is addr
 
 
 # === MontyClassProxy stand-ins for sandbox-defined classes ===
@@ -614,6 +860,32 @@ async def test_async_method_result_passes_convert_value():
     assert result == snapshot('HI SAM')
 
 
+async def test_async_lazy_attr_host_error_raised_in_sandbox():
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            inputs = {'v': ClassInstance(Vault(), lazy_attrs='all')}
+            assert await session.feed_run(LAZY_ERROR_CODE, inputs=inputs) == snapshot("'boom'")
+            with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+                await session.feed_run("hasattr(v, 'secret')")
+            assert str(exc_info.value) == snapshot('KeyError: boom')
+            code = 'try:\n    r = v.amount\nexcept TypeError as e:\n    r = str(e)\nr'
+            assert await session.feed_run(code) == snapshot(
+                'Cannot convert decimal.Decimal to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+            )
+            assert await session.feed_run('v.fine') == snapshot(1)
+
+
+async def test_async_lazy_attr_host_error_feed_start_resume_auto():
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap = await session.feed_start(LAZY_ERROR_CODE, inputs={'v': ClassInstance(Vault(), lazy_attrs='all')})
+            assert isinstance(snap, AsyncNameLookupSnapshot)
+            done = await snap.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot("'boom'")
+            assert await session.feed_run('v.fine') == snapshot(1)
+
+
 # === Dump / load fallback ===
 
 
@@ -649,6 +921,42 @@ def test_dump_load_into_new_session_falls_back_to_proxy(pool: Monty):
         with pytest.raises(pydantic_monty.MontyRuntimeError) as attr_exc_info:
             session.feed_run('x.age')
         assert str(attr_exc_info.value) == snapshot("AttributeError: 'Person' object has no attribute 'age'")
+
+
+def test_type_after_restore_is_class_type_proxy(pool: Monty):
+    """`type(x)` of a restored host instance has no class object to resolve
+    to; the host gets a `MontyClassTypeProxy` that re-enters as the same type."""
+    p = Person(name='Alice', age=30)
+    with pool.checkout() as session:
+        session.feed_run('x = obj', inputs={'obj': ClassInstance(p, eager_attrs='all')})
+        blob = session.dump()
+
+    with pool.checkout() as session:
+        assert session.load_session(blob) is None
+        proxy = session.feed_run('type(x)')
+        assert isinstance(proxy, MontyClassTypeProxy)
+        assert proxy.name == snapshot('Person')
+        assert proxy.is_dataclass is True
+        assert isinstance(proxy.id, UUID)
+        assert proxy.attributes == snapshot({})
+        assert repr(proxy) == snapshot("MontyClassTypeProxy(name='Person', attributes={})")
+        assert proxy == session.feed_run('type(x)')
+        assert proxy != session.feed_run('class Other:\n    pass\nOther')
+        code = '(t is type(x), isinstance(x, t), t.__name__)'
+        assert session.feed_run(code, inputs={'t': proxy}) == snapshot((True, True, 'Person'))
+
+
+def test_class_type_after_restore_keeps_eager_class_attrs(pool: Monty):
+    with pool.checkout() as session:
+        session.feed_run('S = Shape', inputs={'Shape': ClassType(Shape, eager_attrs='all')})
+        blob = session.dump()
+
+    with pool.checkout() as session:
+        assert session.load_session(blob) is None
+        proxy = session.feed_run('S')
+        assert isinstance(proxy, MontyClassTypeProxy)
+        assert proxy.attributes == snapshot({'SIDES': 4, 'KIND': 'polygon'})
+        assert session.feed_run('(t is S, t.SIDES)', inputs={'t': proxy}) == snapshot((True, 4))
 
 
 # === ClassType instantiation ===
@@ -822,6 +1130,25 @@ def test_class_type_denied_classmethod(monty_run: RunMonty):
     assert str(exc_info.value) == snapshot("AttributeError: type object 'Shape' has no attribute 'unit'")
 
 
+def test_class_type_all_serves_classmethod_and_staticmethod(monty_run: RunMonty):
+    wrapper = ClassType(Shape, allowed_methods='all')
+    assert monty_run('(Shape.unit(), Shape.double(21))', inputs={'Shape': wrapper}) == snapshot((4, 42))
+
+
+@pytest.mark.parametrize('allowed_methods', ['all', {'greeting'}])
+def test_class_type_denies_instance_method(monty_run: RunMonty, allowed_methods: Any):
+    """An instance method reached through the class would take an arbitrary
+    sandbox value as `self`, so only classmethods/staticmethods are served —
+    even when the host named the method explicitly."""
+    inputs = {
+        'Person': ClassType(Person, allowed_methods=allowed_methods),
+        'other': ClassInstance(Person(name='Bob', age=1)),
+    }
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('Person.greeting(other)', inputs=inputs)
+    assert str(exc_info.value) == snapshot("AttributeError: type object 'Person' has no attribute 'greeting'")
+
+
 def test_type_of_instance_call_denied_without_init(monty_run: RunMonty):
     """Every ClassInstance materializes a default ClassType for its class, so
     calling type(x) is denied by that wrapper's init=False policy — not a
@@ -895,7 +1222,7 @@ def test_unhashable_metaclass_class(monty_run: RunMonty):
 
     with pytest.raises(TypeError):
         hash(Odd)  # precondition: the metaclass made the class unhashable
-    assert monty_run('o.x', inputs={'o': ClassInstance(Odd(), eager_attrs='all')}) == 5
+    assert monty_run('o.x', inputs={'o': ClassInstance(Odd(), eager_attrs='all')}) == snapshot(5)
 
 
 def test_equal_comparing_metaclass_classes_stay_distinct(monty_run: RunMonty):

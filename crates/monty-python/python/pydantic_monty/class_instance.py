@@ -21,13 +21,19 @@ to transform values crossing the boundary.
 
 from __future__ import annotations
 
-from collections.abc import Coroutine, Iterable, Sequence
+from collections.abc import Coroutine, Iterable
 from dataclasses import KW_ONLY, dataclass, field, fields, is_dataclass
 from inspect import iscoroutine
-from typing import Any, Literal, cast
+from types import FunctionType
+from typing import Any, Literal, TypeAlias, cast
 from uuid import UUID, uuid4
 
 __all__ = 'ClassInstance', 'ClassType'
+
+Policy: TypeAlias = Iterable[str] | Literal['all'] | None
+"""An exposure policy as accepted by the wrappers: `None` exposes nothing,
+`'all'` everything the wrapper deems public, an iterable of names exactly
+those. Normalised at construction, see `BaseWrapper.__post_init__`."""
 
 
 @dataclass
@@ -38,15 +44,26 @@ class BaseWrapper:
     """The instance to send."""
     _: KW_ONLY
 
-    eager_attrs: Sequence[str] | Literal['all'] | None = None
+    eager_attrs: Policy = None
     """Attributes sent into the sandbox up front; `'all'` sends dataclass
-    fields (or `__dict__` entries) whose names don't start with `_`."""
+    fields (or `__dict__` entries and `__slots__`) whose names don't start
+    with `_`."""
 
-    lazy_attrs: set[str] | Literal['all'] | None = None
+    lazy_attrs: Policy = None
     """Attributes the sandbox may fetch on demand via name lookup."""
 
-    allowed_methods: set[str] | Literal['all'] | None = None
-    """Methods the sandbox may call on the instance."""
+    allowed_methods: Policy = None
+    """Methods the sandbox may call; `'all'` means functions defined on the
+    class only (no nested classes or callables stored as attributes)."""
+
+    def __post_init__(self) -> None:
+        """Normalises the policies: `None` and `'all'` stay, any other iterable
+        of names becomes a tuple (`eager_attrs`, order is the send order) or a
+        frozenset. A `str` other than `'all'` raises `TypeError` rather than
+        being treated as an iterable of characters."""
+        self.eager_attrs = _normalize_policy('eager_attrs', self.eager_attrs, tuple)
+        self.lazy_attrs = _normalize_policy('lazy_attrs', self.lazy_attrs, frozenset)
+        self.allowed_methods = _normalize_policy('allowed_methods', self.allowed_methods, frozenset)
 
     def get_eager_attrs(self) -> dict[str, Any]:
         """The attributes to send into the sandbox with the instance."""
@@ -58,7 +75,14 @@ class BaseWrapper:
             if self.is_dataclass():
                 eager_attrs = [(f.name, getattr(self.value, f.name)) for f in fields(self.value)]
             else:
-                eager_attrs = self.value.__dict__.items()
+                eager_attrs = [
+                    *getattr(self.value, '__dict__', {}).items(),
+                    *(
+                        (name, getattr(self.value, name))
+                        for name in _slot_names(self.value_type)
+                        if hasattr(self.value, name)
+                    ),
+                ]
             eager_attrs = [(name, value) for name, value in eager_attrs if not name.startswith('_')]
         else:
             eager_attrs = [(name, getattr(self.value, name)) for name in self.eager_attrs]
@@ -68,7 +92,9 @@ class BaseWrapper:
         """Resolves a lazy attribute lookup from the sandbox.
 
         Raises `AttributeError` when `name` is not exposed by `lazy_attrs`; the
-        sandbox then raises the same `AttributeError`.
+        sandbox then raises the same `AttributeError`. Any other exception (from
+        a property, `convert_value`, or a value that cannot be converted) is
+        raised inside the sandbox, bypassing `hasattr` / `getattr` defaults.
         """
         attr_value = self.get_attr(name, self.lazy_attrs)
         return self.convert_value(name, attr_value)
@@ -76,13 +102,14 @@ class BaseWrapper:
     def call_method(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
         """Calls a method on the wrapped instance for the sandbox.
 
-        Raises `AttributeError` when `name` is not exposed by `allowed_methods`.
-        `__call__` is always rejected on instances — only `ClassType` accepts it
-        (as construction) — so even `allowed_methods='all'` cannot invoke the
-        instance itself. The return value passes through `convert_value` before
-        crossing back; a coroutine result defers conversion until awaited.
+        Raises `AttributeError` when `name` is not exposed by `allowed_methods`
+        or fails `method_allowed`. `__call__` is always rejected on instances —
+        only `ClassType` accepts it (as construction) — so even
+        `allowed_methods='all'` cannot invoke the instance itself. The return
+        value passes through `convert_value` before crossing back; a coroutine
+        result defers conversion until awaited.
         """
-        if name == '__call__':
+        if name == '__call__' or not self.method_allowed(name):
             raise self.attr_error(name)
         method = self.get_attr(name, self.allowed_methods)
         result = method(*args, **kwargs)
@@ -95,23 +122,26 @@ class BaseWrapper:
         redaction hooks see the resolved value, never the coroutine object."""
         return self.convert_value(name, await coro)
 
+    def method_allowed(self, name: str) -> bool:
+        """Extra gate on `call_method` beyond the `allowed_methods` policy.
+
+        Under `'all'` only functions defined on the class qualify, so a nested
+        class or a callable stored as an attribute is not exposed; an explicit
+        set calls whatever `getattr` returns, since the host named it.
+        """
+        return self.allowed_methods != 'all' or _method_kind(self.value_type, name) is not None
+
     def convert_value(self, /, name: str, value: Any) -> Any:
         """Hook to transform attribute values and method return values before
-        they are sent to the sandbox.
-
-        The default passes values through unchanged, so a derived class
-        instance fails conversion with the usual "wrap it in ClassInstance"
-        error. Deliberately no automatic wrapping: each object's exposure
-        must be an explicit host decision — a wrapper inheriting this
-        wrapper's policies could silently widen access to an instance the
-        host had locked down elsewhere. Override to wrap derived values with
-        policies chosen per value, e.g.
-        `return ClassInstance(value, eager_attrs='all')`.
+        they cross into the sandbox; the default passes them through unchanged.
+        Derived class instances are deliberately not auto-wrapped (that would
+        silently widen exposure), so override this to wrap them with policies
+        chosen per value, e.g. `return ClassInstance(value, eager_attrs='all')`.
         """
         return value
 
-    def get_attr(self, name: str, policy: set[str] | Literal['all'] | None) -> Any:
-        """Raw attribute access guarded by an exposure policy (no conversion)."""
+    def get_attr(self, name: str, policy: Policy) -> Any:
+        """Raw attribute access guarded by a normalised exposure policy (no conversion)."""
         if policy != 'all' and (policy is None or name not in policy):
             raise self.attr_error(name)
         return getattr(self.value, name)
@@ -124,6 +154,11 @@ class BaseWrapper:
     def is_dataclass(self) -> bool:
         """Whether the wrapped value is a dataclass."""
         return is_dataclass(self.value)
+
+    @property
+    def value_type(self) -> type[Any]:
+        """The class of the wrapped value (the class itself for `ClassType`)."""
+        return cast(type[Any], type(self.value))
 
 
 @dataclass
@@ -153,8 +188,9 @@ class ClassInstance(BaseWrapper):
     """
 
     def __post_init__(self) -> None:
+        super().__post_init__()
         if self.class_type is None:
-            self.class_type = ClassType(cast(type[Any], type(self.value)))
+            self.class_type = ClassType(self.value_type)
         else:
             # validate
             if self.class_type.value is not type(self.value):
@@ -164,12 +200,11 @@ class ClassInstance(BaseWrapper):
 
 
 type_id_cache: dict[str, UUID] = {}
-"""Process-wide class ids, keyed by `module.qualname`: every `ClassType` of
-one class agrees on its default id, so instances keep a stable type identity
-across sessions. Pre-seed it (or pass `ClassType(..., id=...)`) to pin class
-ids when restoring a dump in a fresh process. Distinct class objects sharing
-a name (a redefined class, a factory-built class) share the default id, so
-sending both into one session is rejected — pass an explicit `id` to one."""
+"""Process-wide default class ids keyed by `module.qualname`, never evicted,
+so instances keep a stable type identity across sessions. Pre-seed it (or
+pass `ClassType(..., id=...)`) to pin ids when restoring a dump in a fresh
+process. Distinct classes sharing a name share the default id, so sending
+both into one session is rejected — pass an explicit `id` to one."""
 
 
 @dataclass
@@ -212,16 +247,22 @@ class ClassType(BaseWrapper):
     checks it on every request.
     """
 
-    instance_eager_attrs: Sequence[str] | Literal['all'] | None = None
+    instance_eager_attrs: Policy = None
     """Policy applied to constructed instances (see `ClassInstance`)."""
 
-    instance_lazy_attrs: set[str] | Literal['all'] | None = None
+    instance_lazy_attrs: Policy = None
     """Policy applied to constructed instances (see `ClassInstance`)."""
 
-    instance_allowed_methods: set[str] | Literal['all'] | None = None
+    instance_allowed_methods: Policy = None
     """Policy applied to constructed instances (see `ClassInstance`)."""
 
     def __post_init__(self) -> None:
+        super().__post_init__()
+        self.instance_eager_attrs = _normalize_policy('instance_eager_attrs', self.instance_eager_attrs, tuple)
+        self.instance_lazy_attrs = _normalize_policy('instance_lazy_attrs', self.instance_lazy_attrs, frozenset)
+        self.instance_allowed_methods = _normalize_policy(
+            'instance_allowed_methods', self.instance_allowed_methods, frozenset
+        )
         if self.id is None:
             name = f'{self.value.__module__}.{self.value.__qualname__}'
             if cached_id := type_id_cache.get(name):
@@ -255,6 +296,12 @@ class ClassType(BaseWrapper):
         else:
             return super().call_method(name, args, kwargs)
 
+    def method_allowed(self, name: str) -> bool:
+        """Only classmethods and staticmethods are callable on the class, under
+        every policy: an instance method reached through the class would take
+        an arbitrary sandbox value as `self`."""
+        return _method_kind(self.value_type, name) in ('classmethod', 'staticmethod')
+
     def construct(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> ClassInstance:
         """Constructs an instance for the sandbox, re-checking the `init` policy.
 
@@ -287,6 +334,53 @@ class ClassType(BaseWrapper):
 
     def attr_error(self, name: str) -> AttributeError:
         return AttributeError(f'type object {self.value.__name__!r} has no attribute {name!r}')
+
+    @property
+    def value_type(self) -> type[Any]:
+        return self.value
+
+
+def _normalize_policy(field_name: str, policy: Policy, collect: type[tuple[str, ...]] | type[frozenset[str]]) -> Policy:
+    """Validates a policy and collects an iterable of names with `collect`.
+
+    A bare `str` other than `'all'` is almost certainly a typo for a set of
+    names — and would otherwise expose every substring — so it is rejected.
+    """
+    if policy is None or policy == 'all':
+        return policy
+    elif isinstance(policy, str):
+        raise TypeError(f"{field_name} must be 'all', None or a set of names, got {policy!r}")
+    return collect(policy)
+
+
+def _method_kind(cls: type[Any], name: str) -> Literal['function', 'classmethod', 'staticmethod'] | None:
+    """Classifies how `cls` defines `name`, from the raw `__dict__` entry of
+    the first class in the MRO that has it; `None` for anything that is not a
+    function defined on the class (a nested class, a constant, a builtin
+    slot wrapper, an absent name)."""
+    for klass in cls.__mro__:
+        if name in vars(klass):
+            raw = vars(klass)[name]
+            if isinstance(raw, classmethod):
+                return 'classmethod'
+            elif isinstance(raw, staticmethod):
+                return 'staticmethod'
+            elif isinstance(raw, FunctionType):
+                return 'function'
+            else:
+                return None
+    return None
+
+
+def _slot_names(cls: type[Any]) -> list[str]:
+    """Names of the `__slots__` declared along `cls`'s MRO; `eager_attrs='all'`
+    reads those set on the instance alongside `__dict__`, which a slotted
+    class may not have at all."""
+    names: list[str] = []
+    for klass in cls.__mro__:
+        slots = vars(klass).get('__slots__', ())
+        names.extend([slots] if isinstance(slots, str) else slots)
+    return names
 
 
 def _is_class_machinery(value: object) -> bool:

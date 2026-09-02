@@ -35,7 +35,7 @@ fn test_get_interned_string() {
 /// This exercises the `FrameExit::MethodCall` path in `frame_exit_to_object`.
 #[test]
 fn class_instance_method_call_in_standard_mode_errors() {
-    let point = MontyObject::ClassInstance(MontyClassInstance {
+    let point = MontyObject::ClassInstance(Box::new(MontyClassInstance {
         class_type: MontyClassType {
             name: "Point".to_string(),
             id: MontyUuid::from_u128(1),
@@ -49,7 +49,7 @@ fn class_instance_method_call_in_standard_mode_errors() {
             (MontyObject::String("y".to_string()), MontyObject::Int(2)),
         ]
         .into(),
-    });
+    }));
 
     let ex = MontyRun::new(
         "point.sum()".to_owned(),
@@ -360,7 +360,7 @@ fn dynamic_type_with_non_string_key_raises_type_error() {
 
 /// Structured `ClassInstance` a sandbox `Evil()` instance converts to.
 fn evil_instance() -> MontyObject {
-    MontyObject::ClassInstance(MontyClassInstance {
+    MontyObject::ClassInstance(Box::new(MontyClassInstance {
         class_type: MontyClassType {
             name: "Evil".to_owned(),
             id: MontyUuid::from_u128(0xE0),
@@ -370,18 +370,19 @@ fn evil_instance() -> MontyObject {
         },
         instance_id: MontyUuid::from_u128(0xE1),
         attrs: vec![].into(),
-    })
+    }))
 }
 
 /// Replaces the worker-generated (random) class/instance uuids in `obj` with the
 /// deterministic ids [`evil_instance`] uses, so structural comparison works.
 fn normalize_instance_uuids(obj: &mut MontyObject) {
     match obj {
-        MontyObject::ClassInstance(MontyClassInstance {
-            class_type,
-            instance_id,
-            attrs,
-        }) => {
+        MontyObject::ClassInstance(instance) => {
+            let MontyClassInstance {
+                class_type,
+                instance_id,
+                attrs,
+            } = instance.as_mut();
             class_type.id = MontyUuid::from_u128(0xE0);
             *instance_id = MontyUuid::from_u128(0xE1);
             let pairs = mem::replace(attrs, DictPairs::from(vec![]))

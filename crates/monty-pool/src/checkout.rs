@@ -13,8 +13,8 @@ use std::{
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{FrameError, PROTOCOL_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 use monty_types::{
-    AssertMessageAnnotations, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid, OsFunctionCall,
-    PrintStream, ResourceLimits, TypeCheckingConfig,
+    AssertMessageAnnotations, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid, NameLookupResult,
+    OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig,
 };
 use tokio::{task::spawn_blocking, time::timeout};
 
@@ -172,8 +172,9 @@ pub enum TurnEvent {
     /// The sandbox read an undefined name, or — when `object_id` is set — a
     /// lazy attribute on the host-backed object with that uuid (a class
     /// instance, or a class type) — answer with
-    /// [`Checkout::resume_name_lookup`]. A `None` answer raises `NameError`
-    /// for plain lookups, `AttributeError` for attribute lookups.
+    /// [`Checkout::resume_name_lookup`]. An `Undefined` (or `None`) answer
+    /// raises `NameError` for plain lookups, `AttributeError` for attribute
+    /// lookups; an `Error` answer raises the host's exception in the sandbox.
     NameLookup { name: String, object_id: Option<MontyUuid> },
     /// Every sandbox task is blocked on external futures — answer with
     /// [`Checkout::resume_futures`].
@@ -553,25 +554,30 @@ impl Checkout {
         }
     }
 
-    /// Answers a [`TurnEvent::NameLookup`]: `Some(value)` resolves the name,
-    /// `None` makes the sandbox raise `NameError` for a plain lookup, or
+    /// Answers a [`TurnEvent::NameLookup`] with a [`NameLookupResult`] (or a
+    /// `MontyObject`, an `Option<MontyObject>` where `None` is `Undefined`, or
+    /// a `MontyException` for `Error`): a value resolves the name; `Undefined`
+    /// makes the sandbox raise `NameError` for a plain lookup, or
     /// `AttributeError` when the lookup carried an `object_id` (a lazy
-    /// attribute on a host-backed object — a class instance or class type).
+    /// attribute on a host-backed object — a class instance or class type);
+    /// `Error` raises the host's exception in the sandbox, bypassing
+    /// `hasattr()` / `getattr()` defaults the way a raising property does.
     pub async fn resume_name_lookup(
         &mut self,
-        value: Option<MontyObject>,
+        result: impl Into<NameLookupResult>,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         self.ensure_ready()?;
         if !matches!(self.pending, Some(Pending::NameLookup)) {
             return Err(PoolError::Protocol("no suspended name lookup to resume".into()));
         }
-        if let Some(obj) = &value {
-            ensure_sendable([obj])?;
-        }
-        let kind = match value {
-            Some(obj) => pb::resume_name_lookup::Kind::Value(obj.into()),
-            None => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
+        let kind = match result.into() {
+            NameLookupResult::Value(obj) => {
+                ensure_sendable([&obj])?;
+                pb::resume_name_lookup::Kind::Value(obj.into())
+            }
+            NameLookupResult::Undefined => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
+            NameLookupResult::Error(exc) => pb::resume_name_lookup::Kind::Error((&exc).into()),
         };
         let request = request(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
             kind: Some(kind),

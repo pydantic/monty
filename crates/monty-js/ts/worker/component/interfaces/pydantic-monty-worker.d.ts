@@ -326,13 +326,17 @@ export interface ResumeCallRequest {
   callId: number
   outcome: CallResult
 }
-export type NameLookupResult = NameLookupResultValue | NameLookupResultUndefined
+export type NameLookupResult = NameLookupResultValue | NameLookupResultUndefined | NameLookupResultError
 export interface NameLookupResultValue {
   tag: 'value'
   val: Value
 }
 export interface NameLookupResultUndefined {
   tag: 'undefined'
+}
+export interface NameLookupResultError {
+  tag: 'error'
+  val: RaisedError
 }
 export interface FutureResult {
   callId: number

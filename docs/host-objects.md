@@ -36,6 +36,8 @@ print(result is person)
 
 `eager_attrs` sends attribute values with the object, and `allowed_methods` lets the sandbox call back into the real
 instance.
+`allowed_methods='all'` exposes the functions the class defines, not callables stored as attributes or nested classes;
+an explicit set exposes exactly the names you list.
 Returning the object from sandbox code hands the host back the original object, not a copy.
 Sandbox code may set attributes, on its own copy only: the host object is never touched.
 
@@ -66,6 +68,8 @@ with Monty() as pool:
 `lazy_attrs` names cross only when sandbox code reads them.
 Each access suspends the sandbox and asks the host, so host-side changes stay visible.
 A name outside every policy raises the usual `AttributeError` inside the sandbox.
+An exception the host raises while serving the read (a property, or `convert_value`) is raised inside the sandbox,
+where sandbox code can catch it; only `AttributeError` reads as absent.
 
 ## Classes
 
@@ -94,7 +98,8 @@ print(result)
 'Person'` in the sandbox.
 The construction runs on the host, and the new instance crosses back governed by the `instance_*` policies.
 A constructed instance keeps the `ClassType` that built it, so `type(p)` is the class the sandbox was given.
-On a `ClassType` itself, `eager_attrs`, `lazy_attrs` and `allowed_methods` expose class constants and classmethods.
+On a `ClassType` itself, `eager_attrs`, `lazy_attrs` and `allowed_methods` expose class constants, classmethods and
+staticmethods.
 
 ## Values returned by methods
 
@@ -166,8 +171,10 @@ Passing the proxy back hands the sandbox its original object, and a proxy whose 
 
 `feed_start` suspends on a method call or a lazy attribute read as it does on a host function: `FunctionSnapshot` and
 `NameLookupSnapshot` carry `object_id`, the id of the host object involved.
-The instance store does not travel with a dump; see
-[what restoring carries](snapshots.md#what-restoring-does-and-does-not-carry).
+The instance store does not travel with a dump: a restored session returns a host instance as `MontyClassProxy` and a
+host class, `type(x)` included, as a read-only `MontyClassTypeProxy` (`name`, `id`, `is_dataclass`, `attributes`) that
+re-enters as the same class.
+See [what restoring carries](snapshots.md#what-restoring-does-and-does-not-carry).
 
 ## JavaScript
 
@@ -175,5 +182,6 @@ The JavaScript package mirrors this API: `ClassInstance` and `ClassType` take `e
 `allowedMethods`, `init`, the `instance*` policies, `convertValue` and `name`.
 See the [JavaScript quickstart](quickstart/javascript.md#host-objects).
 
-Divergences from CPython objects (`type(x)`, equality, hashing, frozen dataclasses, inheritance) are listed in
+Divergences from CPython objects (`type(x)`, equality, hashing, frozen dataclasses, inheritance, what `'all'` exposes,
+lazy attribute errors) are listed in
 [`limitations/classes.md`](https://github.com/pydantic/monty/blob/main/limitations/classes.md).

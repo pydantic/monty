@@ -11,7 +11,7 @@
 //! not `external_lookup`.
 
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty, py_to_monty_value};
-use monty_types::{ExtFunctionResult, MontyObject, MontyUuid};
+use monty_types::{ExtFunctionResult, MontyObject, MontyUuid, NameLookupResult};
 use pyo3::{
     exceptions::PyAttributeError,
     prelude::*,
@@ -70,7 +70,7 @@ fn call_object_method_raw<'py>(
 }
 
 /// Converts wire args/kwargs into the Python tuple/dict a host call needs.
-fn wire_call_arguments<'py>(
+pub(crate) fn wire_call_arguments<'py>(
     py: Python<'py>,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
@@ -89,26 +89,30 @@ fn wire_call_arguments<'py>(
 }
 
 /// Answers a lazy attribute lookup on a host-backed object (`NameLookup`
-/// with an `object_id` — an instance, or a class type for lazy class attrs):
-/// `Ok(None)` means "not exposed" — a store miss, an underscore name, or an
+/// with an `object_id` — an instance, or a class type for lazy class attrs).
+/// `Undefined` means "not exposed" — a store miss, an underscore name, or an
 /// `AttributeError` from the wrapper's policy — and the sandbox raises
-/// `AttributeError`. Any other exception fails the turn.
+/// `AttributeError`. Any other exception, or a value that cannot convert, is
+/// raised inside the sandbox exactly as a failing method call would be.
 pub fn resolve_object_attr(
     py: Python<'_>,
     name: &str,
     object_id: &MontyUuid,
     instances: &InstanceStore,
-) -> PyResult<Option<MontyObject>> {
+) -> NameLookupResult {
     if name.starts_with('_') {
         // Defensive re-check of the sandbox's underscore rule; wire frames
         // from a (possibly compromised) child are untrusted.
-        return Ok(None);
-    }
-    match instances.lookup_lazy_attr(py, object_id, name)? {
-        Some(value) => py_to_monty_value(value.bind(py), instances)
-            .map(Some)
-            .map_err(|exc| MontyConversionError::value_conversion_err(py, exc)),
-        None => Ok(None),
+        NameLookupResult::Undefined
+    } else {
+        match instances.lookup_lazy_attr(py, object_id, name) {
+            Ok(Some(value)) => match py_to_monty_value(value.bind(py), instances) {
+                Ok(obj) => NameLookupResult::Value(obj),
+                Err(exc) => NameLookupResult::Error(exc),
+            },
+            Ok(None) => NameLookupResult::Undefined,
+            Err(err) => NameLookupResult::Error(exc_py_to_monty(py, &err)),
+        }
     }
 }
 
@@ -197,26 +201,8 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         let Some(callable) = lookup.get_item(function_name)? else {
             return Ok(None);
         };
-
-        let py_args: PyResult<Vec<Py<PyAny>>> = args
-            .iter()
-            .map(|arg| monty_to_py(self.py, arg, self.instances))
-            .collect();
-        let py_args_tuple = PyTuple::new(self.py, py_args?)?;
-
-        let py_kwargs = PyDict::new(self.py);
-        for (key, value) in kwargs {
-            let py_key = monty_to_py(self.py, key, self.instances)?;
-            let py_value = monty_to_py(self.py, value, self.instances)?;
-            py_kwargs.set_item(py_key, py_value)?;
-        }
-
-        let result = if py_kwargs.is_empty() {
-            callable.call1(&py_args_tuple)?
-        } else {
-            callable.call(&py_args_tuple, Some(&py_kwargs))?
-        };
-
+        let (py_args_tuple, py_kwargs) = wire_call_arguments(self.py, args, kwargs, self.instances)?;
+        let result = callable.call(&py_args_tuple, Some(&py_kwargs))?;
         py_to_monty(&result, self.instances, 0).map(Some)
     }
 
@@ -252,27 +238,8 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         let Some(callable) = lookup.get_item(function_name)? else {
             return Ok(None);
         };
-
-        let py_args: PyResult<Vec<Py<PyAny>>> = args
-            .iter()
-            .map(|arg| monty_to_py(self.py, arg, self.instances))
-            .collect();
-        let py_args_tuple = PyTuple::new(self.py, py_args?)?;
-
-        let py_kwargs = PyDict::new(self.py);
-        for (key, value) in kwargs {
-            let py_key = monty_to_py(self.py, key, self.instances)?;
-            let py_value = monty_to_py(self.py, value, self.instances)?;
-            py_kwargs.set_item(py_key, py_value)?;
-        }
-
-        let result = if py_kwargs.is_empty() {
-            callable.call1(&py_args_tuple)?
-        } else {
-            callable.call(&py_args_tuple, Some(&py_kwargs))?
-        };
-
-        Ok(Some(result))
+        let (py_args_tuple, py_kwargs) = wire_call_arguments(self.py, args, kwargs, self.instances)?;
+        callable.call(&py_args_tuple, Some(&py_kwargs)).map(Some)
     }
 }
 

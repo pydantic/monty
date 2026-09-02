@@ -357,3 +357,65 @@ try:
     assert False, 'should have raised AttributeError for getattr of a lazy attr on User'
 except AttributeError as e:
     assert str(e) == "'User' object has no attribute 'dimensions'", f'wrong message: {e}'
+
+# === Default protocol errors name the real class, not 'HostClass' ===
+proto_point = make_mutable_point()
+try:
+    proto_point[0]
+    assert False, 'expected subscript to fail'
+except TypeError as e:
+    assert str(e) == "'MutablePoint' object is not subscriptable"
+try:
+    proto_point[0] = 1
+    assert False, 'expected item assignment to fail'
+except TypeError as e:
+    assert str(e) == "'MutablePoint' object does not support item assignment"
+try:
+    for _ in proto_point:
+        pass
+    assert False, 'expected iteration to fail'
+except TypeError as e:
+    assert str(e) == "'MutablePoint' object is not iterable"
+try:
+    next(proto_point)
+    assert False, 'expected next() to fail'
+except TypeError as e:
+    assert str(e) == "'MutablePoint' object is not an iterator"
+try:
+    proto_point()
+    assert False, 'expected call to fail'
+except TypeError as e:
+    assert str(e) == "'MutablePoint' object is not callable"
+
+# === A callable set on the sandbox copy is called as-is ===
+proto_point.f = lambda: 42
+assert proto_point.f() == 42
+proto_point.g = lambda a, b=1: a + b
+assert proto_point.g(2) == 3
+assert proto_point.g(2, b=5) == 7
+try:
+    proto_point.x()
+    assert False, 'expected calling a data attribute to fail'
+except TypeError as e:
+    assert str(e) == "'int' object is not callable"
+
+# === Lazy attribute errors propagate ===
+# `MutablePoint.boom` is a property that raises KeyError on the host. Only
+# AttributeError means "absent": anything else is raised in the sandbox as-is,
+# so hasattr() does not swallow it and getattr() does not fall back to its
+# default — exactly as CPython treats a raising property.
+try:
+    mut_point.boom
+    assert False, 'expected KeyError from the boom property'
+except KeyError as e:
+    assert str(e) == "'boom'"
+try:
+    hasattr(mut_point, 'boom')
+    assert False, 'expected hasattr() to propagate KeyError'
+except KeyError as e:
+    assert str(e) == "'boom'"
+try:
+    getattr(mut_point, 'boom', 1)
+    assert False, 'expected getattr() with a default to propagate KeyError'
+except KeyError as e:
+    assert str(e) == "'boom'"

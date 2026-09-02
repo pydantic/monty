@@ -160,6 +160,16 @@ export class WorkerTransport {
     return this.turn({ tag: 'resume-name-lookup', val: result }, onPrint)
   }
 
+  /** Answers a lazy attribute lookup; a value the arena cannot encode raises `TypeError` in the sandbox. */
+  resumeLazyAttr(value: unknown, onPrint: OnPrint): Promise<NativeTurn> {
+    return this.turn({ tag: 'resume-name-lookup', val: lazyAttrValue(value) }, onPrint)
+  }
+
+  /** Answers a name lookup with an exception raised where it suspended. */
+  resumeNameLookupError(excType: string, message: string, onPrint: OnPrint): Promise<NativeTurn> {
+    return this.turn({ tag: 'resume-name-lookup', val: { tag: 'error', val: { excType, message } } }, onPrint)
+  }
+
   /** Reports the sandbox worker's lack of dependency installation. */
   async installDependencies(requirements: string[], _onPrint: OnPrint): Promise<NativeTurn | { kind: 'ok' }> {
     return requirements.length === 0
@@ -342,6 +352,18 @@ function returnValue(value: unknown): CallResult {
 /** Creates a traceback-free host exception result. */
 function errorResult(excType: string, message: string): CallResult {
   return { tag: 'error', val: { excType, message } }
+}
+
+/** Converts a lazy attribute's value, turning conversion failures into Python `TypeError`. */
+function lazyAttrValue(value: unknown): NameLookupResult {
+  try {
+    return { tag: 'value', val: encodeValue(value) }
+  } catch (error) {
+    return {
+      tag: 'error',
+      val: { excType: 'TypeError', message: error instanceof Error ? error.message : String(error) },
+    }
+  }
 }
 
 /** Builds the external function value used to answer a name lookup. */

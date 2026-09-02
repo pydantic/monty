@@ -584,7 +584,7 @@ impl FixtureRegistry {
     fn register(&mut self, fixture: Fixture) -> MontyObject {
         let instance_id = MontyUuid::from_u128(0x1000 + self.next_id);
         self.next_id += 1;
-        let value = MontyObject::ClassInstance(MontyClassInstance {
+        let value = MontyObject::ClassInstance(Box::new(MontyClassInstance {
             class_type: MontyClassType {
                 name: fixture.class_name.to_string(),
                 id: MontyUuid::from_u128(u128::from(fixture.type_id)),
@@ -599,7 +599,7 @@ impl FixtureRegistry {
                 .map(|(k, v)| (MontyObject::String((*k).to_string()), v.clone()))
                 .collect::<Vec<_>>()
                 .into(),
-        });
+        }));
         self.instances.insert(instance_id, fixture);
         value
     }
@@ -700,8 +700,8 @@ fn dispatch_method_call(
 }
 
 /// Answers a lazy attribute lookup on a host class instance (`NameLookup`
-/// with an instance id): class attributes the eager attrs do not carry.
-/// Mirrors the class attributes in `test_fixtures.py`.
+/// with an instance id): class attributes and properties the eager attrs do
+/// not carry. Mirrors the class attributes in `test_fixtures.py`.
 fn dispatch_instance_attr(name: &str, instance_id: MontyUuid, registry: &FixtureRegistry) -> NameLookupResult {
     let Some(fixture) = registry.get(instance_id) else {
         return NameLookupResult::Undefined;
@@ -709,6 +709,9 @@ fn dispatch_instance_attr(name: &str, instance_id: MontyUuid, registry: &Fixture
     match (fixture.class_name, name) {
         // Class attribute mirrored by `dimensions = 2` on the Python fixtures
         ("Point" | "MutablePoint", "dimensions") => NameLookupResult::Value(MontyObject::Int(2)),
+        // The `MutablePoint.boom` property raises KeyError('boom') on the
+        // host; the sandbox raises it where the attribute was read
+        ("MutablePoint", "boom") => MontyException::new(ExcType::KeyError, Some("boom".to_owned())).into(),
         // Anything else is genuinely absent -> AttributeError in the sandbox
         _ => NameLookupResult::Undefined,
     }

@@ -132,8 +132,8 @@ with Monty() as pool:
 - **The dump carries its own configuration.** `script_name`, resource limits and type-check state come from the dump,
   not from the `checkout()` that restored it.
 - **The instance store does not travel.** Host objects sent before the dump are unknown to the restored session: they
-  come back as `MontyClassProxy`, method calls on them raise `RuntimeError`, lazy attributes raise `AttributeError`, and
-  `ClassType` construction raises `RuntimeError`.
+  come back as `MontyClassProxy` (a host class, `type(x)` included, as `MontyClassTypeProxy`), method calls on them
+  raise `RuntimeError`, lazy attributes raise `AttributeError`, and `ClassType` construction raises `RuntimeError`.
   See [`limitations/pool-architecture.md`](https://github.com/pydantic/monty/blob/main/limitations/pool-architecture.md#host-api-behaviour-notes).
 - **The accumulated time budget travels with the dump**, so a restored session resumes where it left off rather than
   getting a fresh budget.

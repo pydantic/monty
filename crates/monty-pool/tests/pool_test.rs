@@ -29,7 +29,9 @@ use monty_pool::{
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
-use monty_types::{MontyObject, PrintStream, ResourceLimits, TypeCheckingConfig, TypeCheckingFormat};
+use monty_types::{
+    ExcType, MontyException, MontyObject, PrintStream, ResourceLimits, TypeCheckingConfig, TypeCheckingFormat,
+};
 use tokio::time::sleep;
 
 /// Locates (building once if needed) the `monty` CLI binary for tests.
@@ -191,6 +193,54 @@ async fn feed_and_finish_reuses_the_worker() {
         panic!("expected Runtime, got {err:?}");
     };
     assert_eq!(exc.message(), Some("name 'x' is not defined"));
+    session.finish().await.unwrap();
+}
+
+/// An `Error` answer to a name lookup is raised inside the sandbox — so the
+/// snippet can catch it — and the session stays usable.
+#[tokio::test]
+async fn name_lookup_error_is_raised_in_the_sandbox() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let event = session
+        .feed(
+            "try:\n    secret\nexcept PermissionError as e:\n    caught = str(e)\ncaught",
+            vec![],
+            vec![],
+            false,
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::NameLookup { ref name, .. } if name == "secret"));
+    let error = MontyException::new(ExcType::PermissionError, Some("secret is off limits".to_owned()));
+    let event = session.resume_name_lookup(error, &mut no_print).await.unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::String("secret is off limits".to_owned())
+    );
+    // uncaught, the error ends the turn as a runtime error with a traceback
+    let event = session
+        .feed("secret", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::NameLookup { ref name, .. } if name == "secret"));
+    let error = MontyException::new(ExcType::PermissionError, Some("still off limits".to_owned()));
+    let err = session.resume_name_lookup(error, &mut no_print).await.unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type(), ExcType::PermissionError);
+    assert_eq!(exc.message(), Some("still off limits"));
+    assert!(
+        !exc.traceback().is_empty(),
+        "the sandbox frame must be on the traceback"
+    );
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
     session.finish().await.unwrap();
 }
 

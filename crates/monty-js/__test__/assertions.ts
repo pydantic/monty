@@ -1,17 +1,17 @@
 import { expect } from 'vitest'
 
-interface ThrowsOptions {
-  instanceOf?: new (...args: never[]) => Error
+interface ThrowsOptions<T extends Error> {
+  instanceOf?: new (...args: never[]) => T
   message?: string | RegExp
 }
 
 export const t = {
-  is: (actual: unknown, expected: unknown) => expect(actual).toBe(expected),
+  is: (actual: unknown, expected: unknown, message?: string) => expect(actual, message).toBe(expected),
   not: (actual: unknown, expected: unknown) => expect(actual).not.toBe(expected),
-  deepEqual: (actual: unknown, expected: unknown) => expect(actual).toEqual(expected),
-  true: (actual: unknown) => expect(actual).toBe(true),
+  deepEqual: (actual: unknown, expected: unknown, message?: string) => expect(actual, message).toEqual(expected),
+  true: (actual: unknown, message?: string) => expect(actual, message).toBe(true),
   false: (actual: unknown) => expect(actual).toBe(false),
-  truthy: (actual: unknown) => expect(actual).toBeTruthy(),
+  truthy: (actual: unknown, message?: string) => expect(actual, message).toBeTruthy(),
   regex: (actual: string, regex: RegExp) => expect(actual).toMatch(regex),
   throws,
   throwsAsync,
@@ -42,7 +42,7 @@ export function assertMemoryError(error: Error, expected: number, maxMemory: num
   }
 }
 
-export function throws<T extends Error = Error>(fn: () => unknown, options?: ThrowsOptions): T {
+export function throws<T extends Error = Error>(fn: () => unknown, options?: ThrowsOptions<T>): T {
   try {
     fn()
   } catch (error) {
@@ -54,7 +54,7 @@ export function throws<T extends Error = Error>(fn: () => unknown, options?: Thr
 
 export async function throwsAsync<T extends Error = Error>(
   value: (() => unknown | Promise<unknown>) | Promise<unknown>,
-  options?: ThrowsOptions,
+  options?: ThrowsOptions<T>,
 ): Promise<T> {
   try {
     await (typeof value === 'function' ? value() : value)
@@ -65,7 +65,7 @@ export async function throwsAsync<T extends Error = Error>(
   throw new Error('Function did not throw')
 }
 
-function checkError(error: unknown, options: ThrowsOptions | undefined): void {
+function checkError(error: unknown, options: ThrowsOptions<Error> | undefined): void {
   if (options?.instanceOf !== undefined) {
     expect(error).toBeInstanceOf(options.instanceOf)
   }

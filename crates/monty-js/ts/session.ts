@@ -585,25 +585,30 @@ class TurnAnswerer {
    * `objectId` (a class instance, or a class type for lazy class attrs). An
    * undefined answer (`resumeNameLookup(null, null, ...)`) makes the sandbox
    * raise `AttributeError` — used for underscore names, store misses, and
-   * names the wrapper's policy denies.
+   * names the wrapper's policy denies. Any other host error (a throwing
+   * getter, a `convertValue` failure, an unconvertible value) is raised in
+   * the sandbox where the lookup suspended, as `answerMethodCall` does for
+   * methods; the sandbox only swallows `AttributeError` for `hasattr` and
+   * `getattr` defaults, so the exception propagates through those too.
    */
   private answerObjectLookup(turn: NameLookupTurn, objectId: string, onPrint: PrintCallback): Promise<object> {
     const wrapper = this.instances.get(objectId)
     if (wrapper === undefined || turn.name.startsWith('_')) {
       return this.native.resumeNameLookup(null, null, onPrint)
     }
-    let value: unknown
+    let outbound: unknown
     try {
-      value = wrapper.lookupLazyAttr(turn.name)
+      outbound = prepare(wrapper.lookupLazyAttr(turn.name), this.instances)
     } catch (err) {
       if (err instanceof AttrNotExposed) {
         return this.native.resumeNameLookup(null, null, onPrint)
       }
-      // any other error (a throwing getter, a convertValue failure) fails the
-      // turn, matching the Python binding
-      throw err
+      const { excType, message } = jsErrorParts(err)
+      return this.native.resumeNameLookupError(excType, message, onPrint)
     }
-    return this.native.resumeNameLookup(null, { value: prepare(value, this.instances) }, onPrint)
+    // `resumeLazyAttr`, not `resumeNameLookup`: a native conversion failure
+    // must raise in the sandbox too, rather than reject the turn
+    return this.native.resumeLazyAttr(outbound, onPrint)
   }
 
   /**
@@ -1129,14 +1134,15 @@ function restoreKwargPairs(pairs: [unknown, unknown][], store: InstanceStore): [
 
 /**
  * Converts `[key, value]` kwarg pairs into a record (string keys only). The
- * record has a null prototype: keys are sandbox-controlled, and assigning a
- * key like `__proto__` to a normal object would replace its prototype
- * instead of creating a property.
+ * record has a null prototype and a `__proto__` key is dropped: keys are
+ * sandbox-controlled, and a host copying the record with `Object.assign`
+ * or `{...kwargs}` onto an ordinary object must not have its prototype
+ * replaced.
  */
 function kwargsToRecord(pairs: [unknown, unknown][]): Record<string, unknown> {
   const kwargs: Record<string, unknown> = Object.create(null)
   for (const [key, value] of pairs) {
-    if (typeof key === 'string') {
+    if (typeof key === 'string' && key !== '__proto__') {
       kwargs[key] = value
     }
   }

@@ -694,7 +694,7 @@ fn repl_start_runtime_error_during_external_call_preserves_repl_state() {
 fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
     // Create a REPL with a host class instance input and call a method on it.
     // This exercises the MethodCall path in repl.rs handle_repl_vm_result.
-    let point = MontyObject::ClassInstance(MontyClassInstance {
+    let point = MontyObject::ClassInstance(Box::new(MontyClassInstance {
         class_type: MontyClassType {
             name: "Point".to_string(),
             id: MontyUuid::from_u128(7),
@@ -708,7 +708,7 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
             (MontyObject::String("y".to_string()), MontyObject::Int(2)),
         ]
         .into(),
-    });
+    }));
 
     let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
 
@@ -786,6 +786,91 @@ fn repl_hasattr_getattr_lookup_effects_survive_dump() {
     );
 }
 
+/// A lazy lookup answered with a host exception raises it where the
+/// attribute was read: `hasattr()` / `getattr()` defaults only cover
+/// `Undefined` (CPython swallows only `AttributeError` there), so the error
+/// reaches the sandbox `try/except` — and the session stays usable.
+#[test]
+fn repl_lookup_error_raises_in_sandbox() {
+    let point = host_point();
+    let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let code = [
+        "caught = []",
+        "for read in (lambda: point.boom, lambda: hasattr(point, 'boom'), lambda: getattr(point, 'boom', 7)):",
+        "    try:",
+        "        read()",
+        "    except KeyError as e:",
+        "        caught.append(str(e))",
+        "caught",
+    ]
+    .join("\n");
+    let mut progress = repl
+        .feed_start(&code, vec![("point".to_string(), point)], PrintWriter::Stdout)
+        .unwrap();
+    for _ in 0..3 {
+        let lookup = progress.into_name_lookup().expect("expected a lazy attribute lookup");
+        assert_eq!(lookup.name, "boom");
+        assert_eq!(lookup.object_id(), Some(MontyUuid::from_u128(42)));
+        let error = MontyException::new(ExcType::KeyError, Some("boom".to_owned()));
+        progress = lookup
+            .resume(NameLookupResult::Error(error), PrintWriter::Stdout)
+            .unwrap();
+    }
+    let (mut repl, value) = progress.into_complete().expect("expected completion");
+    assert_eq!(
+        value,
+        MontyObject::List(vec![MontyObject::String("'boom'".to_owned()); 3])
+    );
+    assert_eq!(feed_run_print(&mut repl, "1 + 1").unwrap(), MontyObject::Int(2));
+}
+
+/// An uncaught lookup error ends the snippet with a traceback pointing at
+/// the read, and a namespace lookup answered with an error raises the same
+/// way (no `NameError`).
+#[test]
+fn repl_lookup_error_uncaught_has_traceback() {
+    let point = host_point();
+    let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let progress = repl
+        .feed_start(
+            "x = 1
+point.boom",
+            vec![("point".to_string(), point)],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let lookup = progress.into_name_lookup().unwrap();
+    let error = MontyException::new(ExcType::KeyError, Some("boom".to_owned()));
+    let err = lookup
+        .resume(NameLookupResult::Error(error), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_snapshot!(err.error.to_string(), @r#"
+    Traceback (most recent call last):
+      File "<python-input-0>", line 2, in <module>
+        point.boom
+        ~~~~~~~~~~
+    KeyError: boom
+    "#);
+    // the session keeps the globals the snippet set before raising
+    let mut repl = err.repl;
+    assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::Int(1));
+
+    let progress = repl.feed_start("missing", vec![], PrintWriter::Stdout).unwrap();
+    let lookup = progress.into_name_lookup().unwrap();
+    assert_eq!(lookup.name, "missing");
+    let error = MontyException::new(ExcType::PermissionError, Some("no lookups".to_owned()));
+    let err = lookup
+        .resume(NameLookupResult::Error(error), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_snapshot!(err.error.to_string(), @r#"
+    Traceback (most recent call last):
+      File "<python-input-2>", line 1, in <module>
+        missing
+        ~~~~~~~
+    PermissionError: no lookups
+    "#);
+}
+
 /// A host-defined `Point` instance with lazy attributes, for lookup tests.
 fn host_point() -> MontyObject {
     host_point_instance(42)
@@ -794,11 +879,11 @@ fn host_point() -> MontyObject {
 /// A host `Point` instance (class id 7) with the given instance id and an
 /// attr-less class branch, as the bindings send instances.
 fn host_point_instance(instance_id: u128) -> MontyObject {
-    MontyObject::ClassInstance(MontyClassInstance {
+    MontyObject::ClassInstance(Box::new(MontyClassInstance {
         class_type: host_point_class_type("Point", DictPairs::default()),
         instance_id: MontyUuid::from_u128(instance_id),
         attrs: DictPairs::default(),
-    })
+    }))
 }
 
 /// The host `Point` class (id 7) as a type input, with eager class attrs.
@@ -870,11 +955,11 @@ fn repl_host_class_attrs_visible_via_type_from_instance_branch() {
         MontyObject::String("pt".to_owned()),
     )]
     .into();
-    let instance = MontyObject::ClassInstance(MontyClassInstance {
+    let instance = MontyObject::ClassInstance(Box::new(MontyClassInstance {
         class_type: host_point_class_type("Point", attrs),
         instance_id: MontyUuid::from_u128(42),
         attrs: DictPairs::default(),
-    });
+    }));
     let value = repl
         .feed_run("type(x).KIND", vec![("x".to_owned(), instance)], PrintWriter::Stdout)
         .unwrap();
@@ -1056,14 +1141,14 @@ fn repl_abandoned_lookup_releases_in_flight_state() {
 fn repl_sandbox_objects_round_trip_by_identity() {
     let (mut repl, _) = init_repl("class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()");
     let instance = feed_run_print(&mut repl, "foo").unwrap();
-    let MontyObject::ClassInstance(MontyClassInstance {
+    let MontyObject::ClassInstance(boxed) = instance.clone() else {
+        panic!("expected a ClassInstance, got {instance:?}");
+    };
+    let MontyClassInstance {
         class_type,
         instance_id,
         ..
-    }) = instance.clone()
-    else {
-        panic!("expected a ClassInstance, got {instance:?}");
-    };
+    } = *boxed;
     assert!(!class_type.host_defined);
     // The class itself crosses out as repr text; its wire type (as carried by
     // the instance) is what a host can hand back.
@@ -1113,14 +1198,14 @@ fn repl_sandbox_object_resolution_edge_cases() {
     )
     .unwrap();
     let instance = feed_run_print(&mut repl, "foo").unwrap();
-    let MontyObject::ClassInstance(MontyClassInstance {
+    let MontyObject::ClassInstance(boxed) = instance.clone() else {
+        panic!("expected a ClassInstance, got {instance:?}");
+    };
+    let MontyClassInstance {
         class_type,
         instance_id,
         ..
-    }) = instance.clone()
-    else {
-        panic!("expected a ClassInstance, got {instance:?}");
-    };
+    } = *boxed;
     let complete = |repl: MontyRepl, code: &str, inputs: Vec<(String, MontyObject)>| {
         let progress = repl.feed_start(code, inputs, PrintWriter::Stdout).unwrap();
         progress.into_complete().expect("expected completion")
@@ -1134,11 +1219,11 @@ fn repl_sandbox_object_resolution_edge_cases() {
     };
 
     // Nested in containers, carrying a stale attrs payload that is ignored.
-    let edited = MontyObject::ClassInstance(MontyClassInstance {
+    let edited = MontyObject::ClassInstance(Box::new(MontyClassInstance {
         class_type: class_type.clone(),
         instance_id,
         attrs: vec![(MontyObject::String("x".to_owned()), MontyObject::Int(99))].into(),
-    });
+    }));
     let inputs = vec![
         ("items".to_owned(), MontyObject::List(vec![edited.clone()])),
         (
@@ -1163,14 +1248,14 @@ fn repl_sandbox_object_resolution_edge_cases() {
         ..class_type.clone()
     };
     let class_as_instance = |host_defined: bool| {
-        MontyObject::ClassInstance(MontyClassInstance {
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
             class_type: MontyClassType {
                 host_defined,
                 ..class_type.clone()
             },
             instance_id: class_type.id,
             attrs: DictPairs::default(),
-        })
+        }))
     };
     let instance_as_type = |host_defined: bool| {
         MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {

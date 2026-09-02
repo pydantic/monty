@@ -93,8 +93,9 @@ interface worker {
         id: string,
         host-defined: bool,
         is-dataclass: bool,
-        /// Eagerly-sent class attributes (class constants); empty for the
-        /// class-type of an instance and for parent entries.
+        /// Eagerly-sent class attributes (class constants), as a class value
+        /// or as the class-type of an instance; a non-empty set refreshes the
+        /// sandbox's type object. Empty when the worker sends an instance.
         attrs: list<node-pair>,
     }
 
@@ -235,10 +236,14 @@ interface worker {
         outcome: call-result,
     }
 
-    /// The host's answer to an undefined-name suspension.
+    /// The host's answer to an undefined-name suspension: a value, absence
+    /// (NameError / AttributeError in the sandbox), or an exception the host
+    /// raised while resolving it (raised in the sandbox, bypassing
+    /// hasattr()/getattr() defaults).
     variant name-lookup-result {
         value(value),
         undefined,
+        error(raised-error),
     }
 
     /// One settled external future.

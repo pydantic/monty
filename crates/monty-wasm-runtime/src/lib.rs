@@ -26,7 +26,7 @@ mod value;
 
 use bindings::exports::pydantic::monty::worker::{
     CallResult, ConfigureRequest, DispatchResult, Event, FunctionCallEvent, Guest, NameLookupEvent, NameLookupResult,
-    OsCallEvent, PrintEvent, RaisedException, Request, StackFrame, Status, TypeCheckFormat, ValuePair,
+    OsCallEvent, PrintEvent, RaisedError, RaisedException, Request, StackFrame, Status, TypeCheckFormat, ValuePair,
 };
 
 thread_local! {
@@ -260,6 +260,9 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
                     pb::resume_name_lookup::Kind::Value(value::from_component(value, &mut budget)?.into())
                 }
                 NameLookupResult::Undefined => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
+                NameLookupResult::Error(error) => {
+                    pb::resume_name_lookup::Kind::Error(raised_exception_from_component(error))
+                }
             };
             pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup { kind: Some(kind) })
         }
@@ -328,17 +331,23 @@ fn call_result_from_component(
         CallResult::ReturnValue(value) => {
             pb::ext_function_result::Kind::ReturnValue(value::from_component(value, budget)?.into())
         }
-        CallResult::Error(error) => pb::ext_function_result::Kind::Error(pb::RaisedException {
-            exc_type: error.exc_type,
-            message: Some(error.message),
-            traceback: vec![],
-            data: None,
-        }),
+        CallResult::Error(error) => pb::ext_function_result::Kind::Error(raised_exception_from_component(error)),
         CallResult::PendingFuture(call_id) => pb::ext_function_result::Kind::Future(call_id),
         CallResult::NotFound(name) => pb::ext_function_result::Kind::NotFound(name),
         CallResult::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
     };
     Ok(pb::ExtFunctionResult { kind: Some(kind) })
+}
+
+/// Converts a host-raised error into the protocol's exception message; the
+/// host supplies no traceback or structured data.
+fn raised_exception_from_component(error: RaisedError) -> pb::RaisedException {
+    pb::RaisedException {
+        exc_type: error.exc_type,
+        message: Some(error.message),
+        traceback: vec![],
+        data: None,
+    }
 }
 
 /// Converts one child event into its semantic component representation.

@@ -198,7 +198,7 @@ fn corpus() -> Vec<MontyObject> {
             mode: "rb".parse().unwrap(),
             position: 0,
         }),
-        MontyObject::ClassInstance(MontyClassInstance {
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
             class_type: MontyClassType {
                 name: String::new(),
                 id: MontyUuid::from_u128(0),
@@ -208,8 +208,8 @@ fn corpus() -> Vec<MontyObject> {
             },
             instance_id: MontyUuid::from_u128(0),
             attrs: DictPairs::from(Vec::new()),
-        }),
-        MontyObject::ClassInstance(MontyClassInstance {
+        })),
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
             class_type: MontyClassType {
                 name: "Point".to_owned(),
                 id: MontyUuid::from_u128(0xDEAD_BEEF),
@@ -222,7 +222,23 @@ fn corpus() -> Vec<MontyObject> {
                 (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
                 (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
             ]),
-        }),
+        })),
+        // an instance whose class branch carries eager class attrs
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
+            class_type: MontyClassType {
+                name: "Square".to_owned(),
+                id: MontyUuid::from_u128(0xF02),
+                host_defined: true,
+                is_dataclass: false,
+                attrs: vec![
+                    (MontyObject::String("SIDES".to_owned()), MontyObject::Int(4)),
+                    (MontyObject::String(String::new()), MontyObject::None),
+                ]
+                .into(),
+            },
+            instance_id: MontyUuid::from_u128(0xF03),
+            attrs: DictPairs::from(vec![(MontyObject::String("size".to_owned()), MontyObject::Int(3))]),
+        })),
         MontyObject::Function {
             name: "f".to_owned(),
             docstring: None,
@@ -318,14 +334,10 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             mode: fh.mode.as_str().to_owned(),
             position: fh.position,
         }),
-        MontyObject::ClassInstance(MontyClassInstance {
-            class_type,
-            instance_id,
-            attrs,
-        }) => Kind::ClassInstance(oracle::ClassInstance {
-            r#type: Some(oracle_class_type(class_type)),
-            instance_id: Some(oracle_uuid(instance_id)),
-            attrs: Some(oracle_dict(attrs)),
+        MontyObject::ClassInstance(instance) => Kind::ClassInstance(oracle::ClassInstance {
+            r#type: Some(oracle_class_type(&instance.class_type)),
+            instance_id: Some(oracle_uuid(&instance.instance_id)),
+            attrs: Some(oracle_dict(&instance.attrs)),
         }),
         MontyObject::Function { name, docstring } => Kind::Function(oracle::Function {
             name: name.clone(),
@@ -659,6 +671,32 @@ fn invalid_values_are_rejected_during_decode() {
         })),
         "failed to decode Protobuf message: missing required field ClassInstance.instance_id"
     );
+    // attrs is required, even when empty
+    assert_eq!(
+        rejected(Kind::ClassInstance(oracle::ClassInstance {
+            r#type: Some(class_type("Foo")),
+            instance_id: Some(oracle::Uuid { data: vec![7; 16] }),
+            attrs: None,
+        })),
+        "failed to decode Protobuf message: missing required field ClassInstance.attrs"
+    );
+    // the instance uuid must be exactly 16 bytes
+    assert_eq!(
+        rejected(Kind::ClassInstance(oracle::ClassInstance {
+            r#type: Some(class_type("Foo")),
+            instance_id: Some(oracle::Uuid { data: vec![7; 17] }),
+            attrs: Some(oracle::Dict::default()),
+        })),
+        "failed to decode Protobuf message: invalid value for ClassInstance.instance_id: uuid must be 16 bytes, got 17"
+    );
+    // an origin outside the enum is rejected rather than defaulted
+    assert_eq!(
+        rejected(Kind::Type(oracle::Type {
+            origin: 99,
+            ..class_type("Foo")
+        })),
+        "failed to decode Protobuf message: invalid value for Type.origin: unknown origin 99"
+    );
     assert_eq!(
         rejected(Kind::BuiltinFunction("not_a_builtin".to_owned())),
         "failed to decode Protobuf message: unknown builtin function \"not_a_builtin\""
@@ -699,6 +737,57 @@ fn invalid_values_are_rejected_during_decode() {
     assert_eq!(
         decode_wire(&empty).expect_err("empty kind must be rejected"),
         "missing required field MontyObject.kind"
+    );
+}
+
+/// A sandbox-origin `Foo` class type with a fixed id and no attrs.
+fn class_type(name: &str) -> oracle::Type {
+    oracle::Type {
+        name: name.to_owned(),
+        origin: oracle::TypeOrigin::Sandbox as i32,
+        id: Some(oracle::Uuid { data: vec![7; 16] }),
+        ..oracle::Type::default()
+    }
+}
+
+/// The hand encoder emits eager class attrs only when non-empty, but a peer
+/// may send the field present and empty: that decodes to the same value.
+#[test]
+fn present_but_empty_class_attrs_decode_as_absent() {
+    let expected = MontyClassType {
+        name: "Foo".to_owned(),
+        id: MontyUuid::from_u128(0x0707_0707_0707_0707_0707_0707_0707_0707),
+        host_defined: false,
+        is_dataclass: false,
+        attrs: DictPairs::default(),
+    };
+    let with_empty_attrs = oracle::Type {
+        attrs: Some(oracle::Dict::default()),
+        ..class_type("Foo")
+    };
+    let bytes = oracle::MontyObject {
+        kind: Some(Kind::Type(with_empty_attrs.clone())),
+    }
+    .encode_to_vec();
+    assert_eq!(
+        decode_wire(&bytes).unwrap(),
+        MontyObject::Type(MontyType::Instance(Box::new(expected.clone())))
+    );
+    let bytes = oracle::MontyObject {
+        kind: Some(Kind::ClassInstance(oracle::ClassInstance {
+            r#type: Some(with_empty_attrs),
+            instance_id: Some(oracle::Uuid { data: vec![7; 16] }),
+            attrs: Some(oracle::Dict::default()),
+        })),
+    }
+    .encode_to_vec();
+    assert_eq!(
+        decode_wire(&bytes).unwrap(),
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
+            class_type: expected,
+            instance_id: MontyUuid::from_u128(0x0707_0707_0707_0707_0707_0707_0707_0707),
+            attrs: DictPairs::default(),
+        }))
     );
 }
 

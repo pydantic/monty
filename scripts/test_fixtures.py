@@ -87,6 +87,11 @@ class MutablePoint:
         self.x += dx
         self.y += dy
 
+    @property
+    def boom(self) -> int:
+        """Lazy attribute whose host-side read raises (not AttributeError)."""
+        raise KeyError('boom')
+
 
 def make_mutable_point() -> MutablePoint:
     return MutablePoint(x=1, y=2)

@@ -342,6 +342,50 @@ fn name_lookup_round_trip() {
     child.shutdown();
 }
 
+/// An `error` answer to a name lookup is raised inside the sandbox where the
+/// name was read — catchable there, and reported with a sandbox traceback
+/// when it is not — and the session survives it.
+#[test]
+fn name_lookup_error_raises_in_sandbox() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let (_, event) = child.feed("try:\n    secret\nexcept PermissionError as e:\n    caught = str(e)\ncaught");
+    let pb::child_event::Kind::NameLookup(lookup) = event else {
+        panic!("expected NameLookup, got {event:?}");
+    };
+    assert_eq!(lookup.name, "secret");
+    let exc = pb::RaisedException {
+        exc_type: "PermissionError".to_owned(),
+        message: Some("secret is off limits".to_owned()),
+        traceback: vec![],
+        data: None,
+    };
+    child.send(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+        kind: Some(pb::resume_name_lookup::Kind::Error(exc.clone())),
+    }));
+    let (_, event) = child.recv_turn();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::String("secret is off limits".to_owned())
+    );
+
+    let (_, event) = child.feed("secret");
+    assert!(matches!(event, pb::child_event::Kind::NameLookup(_)));
+    child.send(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+        kind: Some(pb::resume_name_lookup::Kind::Error(exc)),
+    }));
+    let (_, event) = child.recv_turn();
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "PermissionError");
+    assert_eq!(error.message.as_deref(), Some("secret is off limits"));
+    assert!(
+        !error.traceback.is_empty(),
+        "the sandbox frame must be on the traceback"
+    );
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
 #[test]
 fn external_function_not_found_raises_name_error() {
     let mut child = ChildProc::spawn();

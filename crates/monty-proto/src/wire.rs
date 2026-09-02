@@ -296,11 +296,12 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
             encode_str(2, fh.mode.as_str(), buf);
             encode_uint64(3, fh.position, buf);
         }
-        MontyObject::ClassInstance(MontyClassInstance {
-            class_type,
-            instance_id,
-            attrs,
-        }) => {
+        MontyObject::ClassInstance(instance) => {
+            let MontyClassInstance {
+                class_type,
+                instance_id,
+                attrs,
+            } = instance.as_ref();
             let ty = class_type_to_pb(class_type);
             let id = uuid_to_pb(instance_id);
             encode_message_key(tag::CLASS_INSTANCE, class_instance_len(&ty, &id, attrs), buf);
@@ -367,13 +368,13 @@ fn object_len(obj: &MontyObject) -> usize {
         MontyObject::BuiltinFunction(bf) => encoding::string::encoded_len(tag::BUILTIN_FUNCTION, &bf.to_string()),
         MontyObject::Path(p) => encoding::string::encoded_len(tag::PATH, p),
         MontyObject::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
-        MontyObject::ClassInstance(MontyClassInstance {
-            class_type,
-            instance_id,
-            attrs,
-        }) => submessage_len(
+        MontyObject::ClassInstance(instance) => submessage_len(
             tag::CLASS_INSTANCE,
-            class_instance_len(&class_type_to_pb(class_type), &uuid_to_pb(instance_id), attrs),
+            class_instance_len(
+                &class_type_to_pb(&instance.class_type),
+                &uuid_to_pb(&instance.instance_id),
+                &instance.attrs,
+            ),
         ),
         MontyObject::Function { name, docstring } => {
             submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
@@ -744,11 +745,11 @@ fn decode_field(
             let attrs = ci
                 .attrs
                 .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.attrs")))?;
-            MontyObject::ClassInstance(MontyClassInstance {
+            MontyObject::ClassInstance(Box::new(MontyClassInstance {
                 class_type: *class_type,
                 instance_id: pb_uuid_to_monty(&instance_id, "ClassInstance.instance_id")?,
                 attrs: DictPairs::from(attrs.0),
-            })
+            }))
         }
         tag::FUNCTION => {
             let func: pb::Function = merge_message(wire_type, buf, ctx)?;
@@ -1129,9 +1130,9 @@ fn class_type_to_pb(class_type: &MontyClassType) -> pb::Type {
     } else {
         pb::TypeOrigin::Sandbox
     };
-    // Eager class attrs clone into the generated message; fine off the hot
-    // path — type values with attrs cross only when a host sends a class or
-    // the sandbox returns one, never per instance.
+    // Eager class attrs clone into the generated message. Hosts may send them
+    // with every instance crossing (the sandbox's single type object refreshes
+    // from them); the worker sends them only when a class object crosses out.
     let attrs = if class_type.attrs.is_empty() {
         None
     } else {

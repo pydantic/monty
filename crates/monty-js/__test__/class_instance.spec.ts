@@ -66,6 +66,25 @@ class Calculator {
   }
 }
 
+/** A host object whose lazy attributes fail on the host side. */
+class Flaky {
+  value = 1
+
+  get boom(): never {
+    const error = new Error('boom')
+    error.name = 'KeyError'
+    throw error
+  }
+
+  get raw(): Greeter {
+    return new Greeter('hi')
+  }
+
+  get sym(): symbol {
+    return Symbol('nope')
+  }
+}
+
 class Wallet {
   balance: number
 
@@ -244,13 +263,82 @@ test('underscore attrs never reach the host', async () => {
   t.deepEqual(convertCalls, [])
 })
 
+const CATCH_BOOM = "try:\n    f.boom\n    r = 'unexpected'\nexcept KeyError as e:\n    r = str(e)\nr"
+
+test('a throwing lazy getter raises its error in the sandbox', async () => {
+  t.is(await run(CATCH_BOOM, { inputs: { f: new ClassInstance(new Flaky(), { lazyAttrs: 'all' }) } }), "'boom'")
+})
+
+test('hasattr and getattr defaults do not swallow a lazy attribute host error', async () => {
+  // only AttributeError is swallowed, as in CPython
+  const inputs = { f: new ClassInstance(new Flaky(), { lazyAttrs: 'all' }) }
+  for (const code of ["hasattr(f, 'boom')", "getattr(f, 'boom', 7)"]) {
+    const error = await t.throwsAsync(() => run(code, { inputs }), { instanceOf: MontyRuntimeError })
+    t.is(error.message, 'KeyError: boom')
+  }
+})
+
+test('a convertValue throw on a lazy attr raises in the sandbox', async () => {
+  const wrapper = new ClassInstance(new Greeter('hi'), {
+    lazyAttrs: 'all',
+    convertValue: (name) => {
+      const error = new Error(`cannot convert ${name}`)
+      error.name = 'ValueError'
+      throw error
+    },
+  })
+  const code = "try:\n    g.greeting\n    r = 'unexpected'\nexcept ValueError as e:\n    r = str(e)\nr"
+  t.is(await run(code, { inputs: { g: wrapper } }), 'cannot convert greeting')
+})
+
+test('an unconvertible lazy value raises TypeError in the sandbox', async () => {
+  // `raw` fails in `prepare` (an unwrapped instance), `sym` in the native
+  // conversion; both reach sandbox code, unlike a plain externalLookup value
+  const inputs = { f: new ClassInstance(new Flaky(), { lazyAttrs: 'all' }) }
+  const catching = (attr: string) =>
+    `try:\n    f.${attr}\n    r = 'unexpected'\nexcept TypeError as e:\n    r = str(e)\nr`
+  t.is(
+    await run(catching('raw'), { inputs }),
+    'Cannot convert Greeter instance to a Monty value — wrap it in ClassInstance(...)',
+  )
+  t.is(await run(catching('sym'), { inputs }), 'Cannot convert JS Symbol to Monty value')
+})
+
+test('the session stays usable after a lazy attribute host error', async () => {
+  const session = await pool().checkout()
+  try {
+    const inputs = { f: new ClassInstance(new Flaky(), { lazyAttrs: 'all' }) }
+    const error = await t.throwsAsync(() => session.feedRun('f.boom', { inputs }), { instanceOf: MontyRuntimeError })
+    t.is(error.message, 'KeyError: boom')
+    t.is(await session.feedRun('f.value + 1', { inputs }), 2)
+  } finally {
+    await session.close()
+  }
+})
+
+test('NameLookupSnapshot.resumeAuto raises a lazy attribute host error in the sandbox', async () => {
+  const session = await pool().checkout()
+  try {
+    const snap = await session.feedStart(CATCH_BOOM, {
+      inputs: { f: new ClassInstance(new Flaky(), { lazyAttrs: 'all' }) },
+    })
+    t.true(snap instanceof NameLookupSnapshot)
+    t.is((snap as NameLookupSnapshot).variableName, 'boom')
+    const done = await (snap as NameLookupSnapshot).resumeAuto()
+    t.true(done instanceof MontyComplete)
+    t.is((done as MontyComplete).output, "'boom'")
+  } finally {
+    await session.close()
+  }
+})
+
 // =============================================================================
 // convertValue and child wrappers
 // =============================================================================
 
 test('convertValue transforms eager attrs and method returns', async () => {
   const g = new Greeter('hello')
-  const upper = (name: string, value: unknown) => (typeof value === 'string' ? value.toUpperCase() : value)
+  const upper = (_name: string, value: unknown) => (typeof value === 'string' ? value.toUpperCase() : value)
   t.is(
     await run('g.greeting', { inputs: { g: new ClassInstance(g, { eagerAttrs: 'all', convertValue: upper }) } }),
     'HELLO',
@@ -275,7 +363,7 @@ test('a method returning a class instance is not auto-wrapped', async () => {
 })
 
 /** Explicit convertValue wrapping derived wallets read-only (no methods). */
-const wrapDerivedWallet = (name: string, value: unknown) =>
+const wrapDerivedWallet = (_name: string, value: unknown) =>
   value instanceof Wallet ? new ClassInstance(value, { eagerAttrs: 'all', convertValue: wrapDerivedWallet }) : value
 
 test('a convertValue override chooses the derived instance policy', async () => {
@@ -475,7 +563,7 @@ test('NameLookupSnapshot.resumeValue answers a lazy attribute lookup by hand', a
     t.true(snap instanceof NameLookupSnapshot)
     const lookup = snap as NameLookupSnapshot
     t.is(lookup.variableName, 'greeting')
-    t.not(lookup.instanceId, null)
+    t.not(lookup.objectId, null)
     const done = await lookup.resumeValue('manual')
     t.true(done instanceof MontyComplete)
     t.is((done as MontyComplete).output, 'manual!')
@@ -634,4 +722,197 @@ test('instantiate turns carry the class uuid as objectId', async () => {
   } finally {
     await session.close()
   }
+})
+
+// =============================================================================
+// Policy hardening: prototype built-ins, 'all' scope, id normalisation
+// =============================================================================
+
+/** The `AttributeError` message `f()` raises in the sandbox, for probing denied names. */
+const PROBE =
+  'def probe(f):\n    try:\n        f()\n    except AttributeError as e:\n        return str(e)\n    return None\n'
+
+test('JS object machinery is denied on an instance under "all", and the host object is untouched', async () => {
+  const c = new Calculator(5)
+  const inputs = { c: new ClassInstance(c, { allowedMethods: 'all', lazyAttrs: 'all' }) }
+  const code = [
+    'probe(lambda: c.constructor(99))',
+    'probe(lambda: c.toString())',
+    'probe(lambda: c.call(None, 1))',
+    "probe(lambda: c.hasOwnProperty('value'))",
+    'probe(lambda: c.arguments)',
+    "hasattr(c, 'constructor')",
+    'c.add(1)',
+  ]
+  t.deepEqual(await run(`${PROBE}[${code.join(', ')}]`, { inputs }), [
+    "'Calculator' object has no attribute 'constructor'",
+    "'Calculator' object has no attribute 'toString'",
+    "'Calculator' object has no attribute 'call'",
+    "'Calculator' object has no attribute 'hasOwnProperty'",
+    "'Calculator' object has no attribute 'arguments'",
+    false,
+    6,
+  ])
+  t.is(c.value, 5)
+  t.is(Object.getPrototypeOf(c), Calculator.prototype)
+})
+
+test('JS function machinery is denied on a class under "all"', async () => {
+  const inputs = { Shape: new ClassType(Shape, { allowedMethods: 'all', lazyAttrs: 'all' }) }
+  const code = [
+    'probe(lambda: Shape.constructor("return 1"))',
+    'probe(lambda: Shape.call(None, 1))',
+    'probe(lambda: Shape.toString())',
+    'probe(lambda: Shape.prototype)',
+    'probe(lambda: Shape.arguments)',
+    'Shape.double(21)',
+    'Shape.SIDES',
+  ]
+  t.deepEqual(await run(`${PROBE}[${code.join(', ')}]`, { inputs }), [
+    "type object 'Shape' has no attribute 'constructor'",
+    "type object 'Shape' has no attribute 'call'",
+    "type object 'Shape' has no attribute 'toString'",
+    "type object 'Shape' has no attribute 'prototype'",
+    "type object 'Shape' has no attribute 'arguments'",
+    42,
+    4,
+  ])
+  t.is(Shape.SIDES, 4)
+})
+
+test('an explicit policy cannot name JS object machinery either', () => {
+  const wrapper = new ClassInstance(new Calculator(5), {
+    allowedMethods: ['constructor', 'add'],
+    lazyAttrs: ['__proto__', 'prototype', 'caller', 'value'],
+  })
+  t.is(wrapper.callMethod('add', [1], {}), 6)
+  t.is(wrapper.lookupLazyAttr('value'), 5)
+  for (const name of ['constructor', '__proto__', 'prototype', 'caller']) {
+    t.is(t.throws(() => wrapper.callMethod(name, [], {})).message, `'Calculator' object has no attribute '${name}'`)
+    t.is(t.throws(() => wrapper.lookupLazyAttr(name)).message, `'Calculator' object has no attribute '${name}'`)
+  }
+})
+
+test('a wrapped function cannot be invoked through Function.prototype', () => {
+  const tool = Object.assign((x: number) => x * 2, { double: (x: number) => x * 2 })
+  const wrapper = new ClassInstance(tool, { allowedMethods: 'all', lazyAttrs: 'all' })
+  for (const name of ['call', 'apply', 'bind']) {
+    t.is(
+      t.throws(() => wrapper.callMethod(name, [null, 21], {})).message,
+      `'Function' object has no attribute '${name}'`,
+    )
+  }
+  // own function props are ordinary host data
+  t.is(wrapper.lookupLazyAttr('length'), 1)
+})
+
+test('"all" exposes methods the class defines, not callables stored on the instance', async () => {
+  class Bag {
+    run = () => 'ran'
+    static Inner = class {}
+    helper(): string {
+      return 'helped'
+    }
+    static make(): string {
+      return 'made'
+    }
+  }
+  const bag = new Bag()
+  const all = {
+    b: new ClassInstance(bag, { allowedMethods: 'all' }),
+    Bag: new ClassType(Bag, { allowedMethods: 'all' }),
+  }
+  const code = ['b.helper()', 'probe(lambda: b.run())', 'Bag.make()', 'probe(lambda: Bag.Inner())']
+  t.deepEqual(await run(`${PROBE}[${code.join(', ')}]`, { inputs: all }), [
+    'helped',
+    "'Bag' object has no attribute 'run'",
+    'made',
+    "type object 'Bag' has no attribute 'Inner'",
+  ])
+  // an explicit list names whatever the host chose, stored callables included
+  t.is(await run('b.run()', { inputs: { b: new ClassInstance(bag, { allowedMethods: ['run'] }) } }), 'ran')
+})
+
+test('a string policy other than "all" is rejected at construction', () => {
+  const g = new Greeter('hi')
+  t.throws(() => new ClassInstance(g, { allowedMethods: 'greet' as never }), {
+    instanceOf: TypeError,
+    message: "allowedMethods must be 'all', undefined or a list/Set of names, got 'greet'",
+  })
+  t.throws(() => new ClassInstance(g, { eagerAttrs: 'greeting' as never }), {
+    instanceOf: TypeError,
+    message: "eagerAttrs must be 'all', undefined or a list/Set of names, got 'greeting'",
+  })
+  t.throws(() => new ClassType(Greeter, { instanceLazyAttrs: 'greeting' as never }), {
+    instanceOf: TypeError,
+    message: "instanceLazyAttrs must be 'all', undefined or a list/Set of names, got 'greeting'",
+  })
+})
+
+test('a __proto__ keyword argument never reaches the host', async () => {
+  const c = new Calculator(5)
+  const inputs = { c: new ClassInstance(c, { allowedMethods: 'all' }) }
+  // the only kwarg is dropped, so no options bag is appended and `sep` keeps its default
+  t.is(await run("c.combine(1, 2, __proto__={'sep': '-'})", { inputs }), '1,2')
+  t.is(Object.getPrototypeOf(c), Calculator.prototype)
+})
+
+test('an explicit id is validated and lowercased, and still round-trips to the original', async () => {
+  const g = new Greeter('hi')
+  const wrapper = new ClassInstance(g, { id: 'ABCDEF01-2345-4678-89AB-CDEF01234567' })
+  t.is(wrapper.id, 'abcdef01-2345-4678-89ab-cdef01234567')
+  t.is(await run('x', { inputs: { x: wrapper } }), g)
+  const classType = new ClassType(Shape, { id: '12345678-1234-4123-8123-123456789ABC' })
+  t.is(classType.id, '12345678-1234-4123-8123-123456789abc')
+  t.is(await run('Shape', { inputs: { Shape: classType } }), Shape)
+  t.throws(() => new ClassInstance(g, { id: 'not-a-uuid' }), {
+    instanceOf: TypeError,
+    message: 'ClassInstance id must be a canonical uuid string, got "not-a-uuid"',
+  })
+  t.throws(() => new ClassType(Shape, { id: '12345678123441238123123456789abc' }), {
+    instanceOf: TypeError,
+    message: 'ClassType id must be a canonical uuid string, got "12345678123441238123123456789abc"',
+  })
+})
+
+test('a returned host class resolves to the class object when registered', async () => {
+  t.is(await run('Shape', { inputs: { Shape: new ClassType(Shape) } }), Shape)
+  t.is(await run('type(x)', { inputs: { x: new ClassInstance(new Shape(1)) } }), Shape)
+  t.deepEqual(await run('[type(x), [x.__class__]]', { inputs: { x: new ClassInstance(new Shape(1)) } }), [
+    Shape,
+    [Shape],
+  ])
+})
+
+test('a returned host class stays a Type marker when the session never registered it', async () => {
+  let blob: Buffer
+  {
+    const session = await pool().checkout()
+    await session.feedRun('x = obj', { inputs: { obj: new ClassInstance(new Greeter('hello')) } })
+    blob = await session.dump()
+    await session.close()
+  }
+  const session = await pool().checkout()
+  try {
+    await session.loadSession(blob)
+    const marker = (await session.feedRun('type(x)')) as { __monty_type__: string; classType: { name: string } }
+    t.is(marker.__monty_type__, 'Type')
+    t.is(marker.classType.name, 'Greeter')
+  } finally {
+    await session.close()
+  }
+})
+
+test('a forged host-class Type marker is rejected, builtin type markers still pass prepare', async () => {
+  const forged = JSON.parse(
+    '{"__monty_type__": "Type", "classType": {"name": "Shape", "id": "12345678-1234-4123-8123-123456789abc"}}',
+  ) as unknown
+  const error = await t.throwsAsync(() => run('x', { inputs: { x: [forged] } }), { instanceOf: TypeError })
+  t.is(error.message, 'raw Type markers are not accepted — pass the class through ClassType(...)')
+  // a builtin type marker carries no identity: `prepare` passes it through and
+  // the native layer decides (it cannot be an input, but that is not a forgery)
+  const native = await t.throwsAsync(() => run('x', { inputs: { x: { __monty_type__: 'Type', value: 'int' } } }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(native.message, "RuntimeError: invalid input type: 'Repr' is not a valid input value")
 })

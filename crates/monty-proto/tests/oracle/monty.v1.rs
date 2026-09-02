@@ -269,8 +269,10 @@ pub struct Type {
     #[prost(bool, tag = "4")]
     pub is_dataclass: bool,
     /// Class attributes sent eagerly with the type object (class constants, per
-    /// the sending wrapper's policy). Empty for the `type` field inside a
-    /// ClassInstance.
+    /// the sending wrapper's policy), as a class value or as the `type` field of
+    /// a ClassInstance. The sandbox keeps one type object per class id: a
+    /// non-empty set replaces its attrs, an empty set leaves them unchanged. The
+    /// worker sends an empty set for the `type` field of an instance.
     #[prost(message, optional, tag = "5")]
     pub attrs: ::core::option::Option<Dict>,
 }
@@ -607,7 +609,7 @@ pub struct ResumeCall {
 /// Answers a `NameLookup` suspension.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResumeNameLookup {
-    #[prost(oneof = "resume_name_lookup::Kind", tags = "1, 2")]
+    #[prost(oneof = "resume_name_lookup::Kind", tags = "1, 2, 3")]
     pub kind: ::core::option::Option<resume_name_lookup::Kind>,
 }
 /// Nested message and enum types in `ResumeNameLookup`.
@@ -617,9 +619,15 @@ pub mod resume_name_lookup {
         /// The name resolves to this value.
         #[prost(message, tag = "1")]
         Value(super::MontyObject),
-        /// The name is undefined — the child raises NameError.
+        /// The name is undefined — the child raises NameError (AttributeError for
+        /// a lazy attribute lookup).
         #[prost(message, tag = "2")]
         Undefined(super::Unit),
+        /// Resolving the name raised on the parent — the child raises this
+        /// exception where the lookup suspended, bypassing hasattr()/getattr()
+        /// defaults.
+        #[prost(message, tag = "3")]
+        Error(super::RaisedException),
     }
 }
 /// Answers a `ResolveFutures` suspension with results for some or all pending

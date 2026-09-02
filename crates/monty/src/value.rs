@@ -236,6 +236,12 @@ impl From<bool> for Value {
 }
 
 impl<'h> PyTrait<'h> for Value {
+    /// Forwards to the inherent [`Value::py_type_name`], so generic `PyTrait`
+    /// callers also see the real class name of a named tuple or host instance.
+    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
+        Self::py_type_name(self, vm)
+    }
+
     fn py_type(&self, vm: &VM<'_>) -> Type {
         match self {
             Self::Undefined => panic!("Cannot get type of undefined value"),
@@ -1424,10 +1430,7 @@ impl Value {
             HeapData::HostClass(hc) => host_class_type(heap, hc.class_id()).name_either(),
             _ => return None,
         };
-        Some(match name {
-            EitherStr::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
-            EitherStr::Heap(s) => Cow::Owned(s.clone()),
-        })
+        Some(name.to_cow(interns))
     }
 
     /// Returns the Python `Type` for immediate (non-heap) values without VM access.
@@ -2378,6 +2381,15 @@ impl EitherStr {
         match self {
             Self::Interned(id) => interns.get_str(*id),
             Self::Heap(s) => s.as_str(),
+        }
+    }
+
+    /// The text as a `Cow` borrowing only `interns`, so it outlives heap
+    /// borrows — error messages format the name after `drop_with` cleanup.
+    pub fn to_cow<'i>(&self, interns: &'i Interns) -> Cow<'i, str> {
+        match self {
+            Self::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
+            Self::Heap(s) => Cow::Owned(s.clone()),
         }
     }
 

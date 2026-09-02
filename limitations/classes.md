@@ -202,13 +202,17 @@ value). Divergences from real CPython objects:
   class id alone. It names the real class (`type(x).__name__` is `'Point'`,
   repr is `<class 'Point'>` — without CPython's module qualification like
   `<class 'mymod.Point'>`), and error messages name the real class too
-  (`unhashable type: 'Point'`). But it is not the class: calling it suspends
+  (`unhashable type: 'Point'`, `'Point' object is not subscriptable`) — always
+  bare, so where CPython's message is module-qualified (`'mymod.Point' object
+  does not support the context manager protocol (missed __exit__ method)`)
+  Monty says `'Point'`. But it is not the class: calling it suspends
   a `__call__` request to the host, which only succeeds when the host granted
   `init` on a `ClassType` wrapper (see below); and — like Monty class objects
   generally — it exposes `__name__` plus any eager class attrs the host sent
   (`__module__`, `__qualname__`, `__doc__`, `__mro__`, `__bases__`, ... raise
-  `AttributeError`). Returned to the host, it resolves back to the real class
-  object when the class is registered in the session.
+  `AttributeError`, and so does `__class__`, which CPython answers with
+  `type`). Returned to the host, it resolves back to the real class object
+  when the class is registered in the session.
 - **`isinstance(x, Point)` matches by exact class id only**: the host never
   sends bases, so an instance of a subclass is not an instance of `Point` in
   the sandbox, and `issubclass` does not exist.
@@ -221,10 +225,32 @@ value). Divergences from real CPython objects:
   Rust): there the lookup cannot suspend, so the attribute reads as absent
   (`hasattr` → `False`, `getattr` raises/returns the default). Underscore-
   prefixed names never consult the host (dunder probes stay local).
+- **Lazy attribute reads run host code** (a `@property`, a JS getter, the
+  wrapper's `convert_value`), and only a host `AttributeError` reads as
+  "absent". Any other host exception is raised inside the sandbox where the
+  read happened, and `hasattr()` / `getattr(obj, name, default)` do not
+  swallow it (CPython treats a raising property the same way). A value the
+  wire cannot carry raises `TypeError: Cannot convert X to Monty value ...`
+  in the sandbox, where CPython would return it.
 - **Lazy lookups are not cached**: every access is a fresh host round trip,
   and host-side mutations between accesses are visible. Eager attrs are a
   snapshot — host-side mutations after send are NOT visible, and sandbox
   `setattr` does not affect the host object.
+- **`allowed_methods='all'` exposes only functions defined on the class**
+  (its MRO is searched): a nested class, a callable stored as an attribute,
+  or any other non-function class attribute raises `AttributeError` when
+  called, where CPython would call it. An explicit set of names calls
+  whatever `getattr` returns. In JS, `'all'` requires a function found on a
+  prototype below `Object.prototype` / `Function.prototype`, so `toString()`,
+  `hasOwnProperty()`, `call()`, `bind()` and the like are absent; and
+  `constructor`, `__proto__`, `prototype`, `arguments` and `caller` are
+  refused under every policy, an explicit list included.
+- **A method read as a value is not a bound method**: with the name only in
+  `allowed_methods`, `m = x.greeting` raises `AttributeError` and
+  `hasattr(x, 'greeting')` is `False` — only the call `x.greeting(...)`
+  reaches the host. If the name is also in `lazy_attrs`, the read crosses as
+  a host function proxy that is resolved by name through `external_lookup`
+  when called, not bound to the instance.
 - **Equality uses the eager attrs only** (same class + equal attrs);
   methods like a custom `__eq__` are not consulted. **Host instances are
   always unhashable** — matching CPython's rule for a class defining
@@ -249,8 +275,10 @@ value). Divergences from real CPython objects:
   class objects sharing a `module.qualname` (a class redefined in a notebook
   cell, or built by a factory function) get the same default id, and sending
   both into one session raises `ValueError` rather than silently aliasing
-  them — give one an explicit `id`. Sandbox-defined uuids live in the heap
-  and survive dump/restore.
+  them — give one an explicit `id`. JS validates an explicit `id` as a
+  canonical uuid and stores it lowercased, so `wrapper.id` may differ in case
+  from the value passed. Sandbox-defined uuids live in the heap and survive
+  dump/restore.
 - **Inheritance is not modelled**: a host class's bases are not sent, so
   base-class attributes and methods are not consulted, and `__bases__`
   raises `AttributeError`.
@@ -279,18 +307,30 @@ every construction request. Divergences:
   (`AttributeError: type object 'Point' has no attribute 'x'`). Like
   instance attrs, only `Type.attr` syntax consults the host, underscore
   names stay local, and lazy class lookups are not cached.
+- **`allowed_methods` on a `ClassType` exposes classmethods and
+  staticmethods only**, under `'all'` and an explicit set alike: calling an
+  instance method through the class (`Person.greet(other)`) raises
+  `AttributeError: type object 'Person' has no attribute 'greet'`, where
+  CPython would pass `other` as `self`. In JS, `'all'` exposes the class's
+  own static functions, none inherited from a base class.
 - With `init` absent or false, calling the class raises
   `TypeError: cannot instantiate host class 'Point'` (CPython would
-  construct); calling a class the host never registered with a `ClassType`
-  wrapper — e.g. `type(x)` of a plain `ClassInstance` — raises
-  `RuntimeError` ("no host class registered for '__call__' on 'Point'...").
+  construct). That includes `type(x)()` on a plain `ClassInstance`: sending
+  an instance registers a default `ClassType` for its class, with `init`
+  false.
 - Constructor exceptions propagate into the sandbox like external-function
   errors.
 - After a session restore the class registration is gone: construction and
   classmethod calls raise `RuntimeError`, lazy class attrs raise
-  `AttributeError`.
+  `AttributeError`, and a host class crossing back to the host (as a value,
+  or as `type(x)`) is a read-only `MontyClassTypeProxy` (`name`, `id`,
+  `is_dataclass`, `attributes`) rather than the original class; passing the
+  proxy back in re-enters as the same sandbox type object. In JS an
+  unregistered class comes back as a plain `{__monty_type__: 'Type', ...}`
+  marker; a registered one resolves to the class object.
 - JS constructors have no keyword arguments; kwargs arrive as a trailing
-  options-bag argument, as with wrapped method calls.
+  options-bag argument, as with wrapped method calls, and a `__proto__`
+  keyword is dropped from that bag.
 - Eager class attrs are a snapshot at send time, and (like eager instance
   attrs) host-side mutations after send are not visible. They are re-sent on
   every crossing of the class and of each of its instances (the cost scales

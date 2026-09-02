@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -533,6 +534,15 @@ pub(crate) fn heap_subscript<'h>(value: HeapReadOutput<'h>, key: &Value, vm: &mu
 }
 
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
+    /// Forwards so host class instances and named tuples name their real class.
+    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
+        heap_read_output_py_trait_forward!(
+            self,
+            |value| value.py_type_name(vm),
+            else self.py_type(vm).name(vm.heap, vm.interns)
+        )
+    }
+
     /// Delegates to the types defining their own `in`; the rest keep the trait
     /// default (`None`), leaving `Value::py_contains` to iterate or raise.
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
@@ -661,7 +671,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 |value| Ok(value.py_call_attr(vm, attr, args)?),
                 else {
                     args.drop_with(vm);
-                    let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+                    let type_name = self.py_type_name(vm);
                     Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
                 }
             )
@@ -698,7 +708,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_enter(vm),
-            else { Err(ExcType::attribute_error(self.py_type(vm).name(vm.heap, vm.interns), "__enter__")) }
+            else { Err(ExcType::attribute_error(self.py_type_name(vm), "__enter__")) }
         )
     }
 
@@ -706,7 +716,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_exit(vm, exc),
-            else { Err(ExcType::attribute_error(self.py_type(vm).name(vm.heap, vm.interns), "__exit__")) }
+            else { Err(ExcType::attribute_error(self.py_type_name(vm), "__exit__")) }
         )
     }
 
@@ -890,7 +900,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_getitem(key, vm),
-            else { Err(ExcType::type_error_not_sub(&self.py_type(vm).name(vm.heap, vm.interns))) }
+            else { Err(ExcType::type_error_not_sub(&self.py_type_name(vm))) }
         )
     }
 
@@ -902,7 +912,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 key.drop_with(vm);
                 value.drop_with(vm);
                 Err(ExcType::type_error_not_sub_assignment(
-                    &self.py_type(vm).name(vm.heap, vm.interns),
+                    &self.py_type_name(vm),
                 ))
             }
         )
@@ -914,7 +924,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             |item| item.py_set_attr(name, value, vm),
             else {
                 value.drop_with(vm);
-                let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+                let type_name = self.py_type_name(vm);
                 Err(ExcType::attribute_error_no_setattr(
                     &type_name,
                     name.as_str(vm.interns),
@@ -992,9 +1002,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::Module(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
-            | Self::ExternalFuture(_) => Err(ExcType::type_error_not_iterable(
-                &self.py_type(vm).name(vm.heap, vm.interns),
-            )),
+            | Self::ExternalFuture(_) => Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))),
         }
     }
 
@@ -1041,9 +1049,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Time(value) => value.py_next(vm),
             Self::TimeDelta(value) => value.py_next(vm),
             Self::TimeZone(value) => value.py_next(vm),
-            other => Err(ExcType::type_error_not_iterator(
-                &other.py_type(vm).name(vm.heap, vm.interns),
-            )),
+            other => Err(ExcType::type_error_not_iterator(&other.py_type_name(vm))),
         }
     }
 }

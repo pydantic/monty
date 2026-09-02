@@ -668,7 +668,7 @@ impl VM<'_> {
                     "HeapData::is_callable accepts a heap value call_heap_callable rejects — the two drifted"
                 );
                 args.drop_with(self);
-                let type_name = self.heap.get(heap_id).py_type().name(self.heap, self.interns);
+                let type_name = self.heap.read(heap_id).py_type_name(self);
                 return Err(ExcType::type_error_not_callable_object(&type_name));
             }
         };

@@ -123,7 +123,9 @@ pub enum MontyObject {
     /// An open file object (the result of `open()`).
     FileHandle(MontyFileHandle),
     /// A class instance crossing the sandbox boundary (see [`MontyClassInstance`]).
-    ClassInstance(MontyClassInstance),
+    /// Boxed: the payload is larger than every other variant and would grow
+    /// `MontyObject` (and so every container element) otherwise.
+    ClassInstance(Box<MontyClassInstance>),
     /// An external function provided by the host.
     ///
     /// Returned by the host in response to a `NameLookup` to provide a callable
@@ -197,9 +199,11 @@ impl MontyObject {
     /// Shallow host footprint of a freshly decoded `obj`: the fixed [`MontyObject`]
     /// size plus any leaf payload it owns *directly* (string/bytes/bigint bytes, and
     /// the `Vec<String>` field names of structured values, which aren't themselves
-    /// `MontyObject`s and would otherwise be uncharged). Container elements are
-    /// excluded — each charges its own size via `monty-proto`'s `decode_field`, so a list charges
-    /// 88 bytes here.
+    /// `MontyObject`s and would otherwise be uncharged). Boxed payloads
+    /// (`ClassInstance`, `Type(Instance)`) charge their heap allocation plus the
+    /// class name; their eager attrs are charged like container elements.
+    /// Container elements are excluded — each charges its own size via
+    /// `monty-proto`'s `decode_field`, so a list charges `size_of::<MontyObject>()` here.
     pub fn host_size(&self) -> usize {
         let names_len =
             |names: &[String]| -> usize { names.iter().map(|value| Self::host_metadata_string_size(value)).sum() };
@@ -218,11 +222,11 @@ impl MontyObject {
             Self::NamedTuple {
                 type_name, field_names, ..
             } => type_name.len() + names_len(field_names),
-            Self::ClassInstance(instance) => instance.class_type.name.len(),
-            // A `Type::Instance` carries the resolved class type with owned name
-            // strings (the other `MontyType`s are payload-free), so charge it
-            // here like the `String`/`Function`/... names above.
-            Self::Type(MontyType::Instance(class_type)) => class_type.name.len(),
+            // The boxed payloads live outside `size_of::<Self>()`, so charge the
+            // box itself plus the owned class name; the other `MontyType`s are
+            // payload-free.
+            Self::ClassInstance(instance) => size_of::<MontyClassInstance>() + instance.class_type.name.len(),
+            Self::Type(MontyType::Instance(class_type)) => size_of::<MontyClassType>() + class_type.name.len(),
             // The temporal values each carry an owned timezone name, which is
             // caller-supplied and unbounded — the rest of their fields are scalars.
             Self::DateTime(dt) => name_len(&dt.timezone_name),
@@ -249,23 +253,27 @@ impl MontyObject {
                     size = size.saturating_add(item.deep_host_size());
                 }
             }
-            Self::Dict(pairs) | Self::ClassInstance(MontyClassInstance { attrs: pairs, .. }) => {
-                for (key, value) in pairs {
-                    size = size
-                        .saturating_add(key.deep_host_size())
-                        .saturating_add(value.deep_host_size());
-                }
+            Self::Dict(pairs) => size = size.saturating_add(Self::pairs_deep_host_size(pairs)),
+            // An instance carries its eager attrs and its class's eager attrs.
+            Self::ClassInstance(instance) => {
+                size = size
+                    .saturating_add(Self::pairs_deep_host_size(&instance.attrs))
+                    .saturating_add(Self::pairs_deep_host_size(&instance.class_type.attrs));
             }
             Self::Type(MontyType::Instance(class_type)) => {
-                for (key, value) in &class_type.attrs {
-                    size = size
-                        .saturating_add(key.deep_host_size())
-                        .saturating_add(value.deep_host_size());
-                }
+                size = size.saturating_add(Self::pairs_deep_host_size(&class_type.attrs));
             }
             _ => {}
         }
         size
+    }
+
+    /// Sum of [`Self::deep_host_size`] over every key and value of `pairs`.
+    fn pairs_deep_host_size(pairs: &DictPairs) -> usize {
+        pairs.iter().fold(0usize, |size, (key, value)| {
+            size.saturating_add(key.deep_host_size())
+                .saturating_add(value.deep_host_size())
+        })
     }
 
     /// Returns the Python `repr()` string for this value.
@@ -482,13 +490,13 @@ impl MontyObject {
                 }
                 f.write_char(')')
             }
-            Self::ClassInstance(MontyClassInstance { class_type, attrs, .. }) => {
+            Self::ClassInstance(instance) => {
                 // Format: ClassName(attr1=value1, attr2=value2, ...) over the
                 // eager attrs in order. Non-string keys are defensive: inputs
                 // are host-built, so render them via repr rather than panic.
-                f.write_str(&class_type.name)?;
+                f.write_str(&instance.class_type.name)?;
                 f.write_char('(')?;
-                for (i, (key, value)) in attrs.iter().enumerate() {
+                for (i, (key, value)) in instance.attrs.iter().enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
                     }
@@ -752,8 +760,10 @@ pub struct MontyClassInstance {
 /// [`MontyClassInstance`].
 ///
 /// `id` is generated by whichever side defined the class (host uuid4, or a
-/// worker uuid for sandbox classes) and is the identity used for equality
-/// and for routing instantiation requests; it never encodes an address.
+/// worker uuid for sandbox classes); the sandbox keys its single type object
+/// per class on it and routes instantiation and classmethod calls by it. It
+/// never encodes an address. `PartialEq` compares every field, `attrs`
+/// included, not just `id`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyClassType {
     /// The Python-visible class name (e.g. `"Point"`).

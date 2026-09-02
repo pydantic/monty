@@ -20,7 +20,9 @@ use pyo3::{
 };
 
 use super::{
-    class_instance::{InstanceStore, PyMontyClassProxy, is_class_instance_wrapper, is_class_type_wrapper},
+    class_instance::{
+        InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy, is_class_instance_wrapper, is_class_type_wrapper,
+    },
     exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_object},
 };
 use crate::MAX_VALUE_DEPTH;
@@ -157,14 +159,19 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore, mut depth: u8)
     } else if is_class_instance_wrapper(obj)? {
         store
             .class_instance_to_monty(obj, depth)
-            .map(MontyObject::ClassInstance)
+            .map(|instance| MontyObject::ClassInstance(Box::new(instance)))
     } else if let Ok(proxy) = obj.cast::<PyMontyClassProxy>() {
         // A proxy crosses back with the ids it arrived with, so the sandbox
         // hands over its original object.
         proxy
             .get()
             .to_monty(obj.py(), store, depth)
-            .map(MontyObject::ClassInstance)
+            .map(|instance| MontyObject::ClassInstance(Box::new(instance)))
+    } else if let Ok(proxy) = obj.cast::<PyMontyClassTypeProxy>() {
+        proxy
+            .get()
+            .to_monty(obj.py(), store, depth)
+            .map(|class_type| MontyObject::Type(MontyType::Instance(Box::new(class_type))))
     } else if obj.is_instance(get_pure_posix_path(obj.py())?)? {
         // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects
         let path_str: String = obj.str()?.extract()?;
@@ -404,18 +411,9 @@ pub(crate) fn monty_to_py_inner(
             .map(Bound::into_any)
             .map(Bound::unbind),
         MontyObject::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
-        // Return the host Python type object the sandbox type maps to; a
-        // registered host class resolves to the original class object.
-        MontyObject::Type(MontyType::Instance(class_type)) => {
-            if let Some(class) = store.class_type_to_py(py, class_type)? {
-                Ok(class)
-            } else {
-                Err(PyValueError::new_err(format!(
-                    "cannot convert class '{}' to a host type object",
-                    class_type.name
-                )))
-            }
-        }
+        // A registered host class resolves to the original class object,
+        // anything else to a read-only `MontyClassTypeProxy`.
+        MontyObject::Type(MontyType::Instance(class_type)) => store.class_type_to_py(py, class_type, depth),
         MontyObject::Type(t) => type_object_to_py(py, t.clone()),
         MontyObject::BuiltinFunction(f) => builtin_function_to_py(py, &f.to_string()),
         // Class instance — resolve the original object from the store when

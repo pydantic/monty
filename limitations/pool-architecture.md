@@ -381,10 +381,12 @@ properties that real CPython does not provide, per the caveat above.
   for those is not applied). The session's class-instance store is host-side
   and NOT part of the dump: restoring into a fresh session/process starts with
   an empty store, so a returned host instance becomes a `MontyClassProxy`
-  stand-in, a method call on it raises `RuntimeError` ("no host object
-  registered..."), a lazy attribute lookup raises `AttributeError`, and a
-  construction or classmethod call on a `ClassType`-granted class raises
-  `RuntimeError` ("no host class registered...").
+  stand-in (a returned host class, `type(x)` included, a
+  `MontyClassTypeProxy`), a lazy attribute lookup raises `AttributeError`,
+  and a method call on it — as well as a construction or classmethod call on a
+  `ClassType`-granted class — raises `RuntimeError` ("no host object
+  registered for method call '...' (id ...) — the instance store is empty
+  after loading a dump into a fresh session").
 - **The class-instance store retains every wrapper sent into the sandbox until
   the session ends** — that retention is what makes method routing and
   original-object return work, and it is not covered by the sandbox's
@@ -451,5 +453,17 @@ same protocol in TypeScript over a WASM worker. Everything above applies, plus:
   `resumeNotHandled`) rather than a result dict; and the sandbox-future
   mechanism is fully caller-driven (`resumeFuture()` then
   `FutureSnapshot.resume([{callId, value}|{callId, error}])`).
+- **Wrapper policies never reach JS object machinery.** `constructor`,
+  `__proto__`, `prototype`, `arguments` and `caller` are refused under every
+  `ClassInstance` / `ClassType` policy, explicit lists included, and members
+  found on `Object.prototype` / `Function.prototype` (`toString`,
+  `hasOwnProperty`, `call`, `bind`, ...) count as absent. A string policy
+  other than `'all'` throws `TypeError` at construction. Keyword arguments
+  reach a host method or constructor as a null-prototype options bag with
+  any `__proto__` key dropped. An explicit `id` option must be a canonical
+  uuid and is stored lowercased. A host class returned from the sandbox
+  resolves to the class object when the session registered it (a `ClassType`
+  input, or the class of a `ClassInstance`), and is otherwise a
+  `{__monty_type__: 'Type', ...}` marker — after `loadSession`, for example.
 - Sessions and pools support `await using` (async disposal) in addition to
   explicit `close()`.

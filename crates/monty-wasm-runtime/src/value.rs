@@ -81,8 +81,12 @@ fn node_host_size(node: &ValueNode) -> usize {
         ValueNode::Timezone(value) => value.name.as_ref().map_or(0, String::len),
         ValueNode::Exception(value) => value.message.as_ref().map_or(0, String::len),
         ValueNode::FileHandle(value) => value.path.len(),
-        ValueNode::ClassInstance(value) => value.instance_id.len(),
-        ValueNode::ClassType(value) => value.name.len().saturating_add(value.id.len()),
+        // The boxed payloads charge their allocation like `host_size` does;
+        // the class name is charged by the class-type node, which an instance
+        // always carries as a separate node (an over-estimate for instances,
+        // which embed the class type in their own allocation).
+        ValueNode::ClassInstance(_) => size_of::<MontyClassInstance>(),
+        ValueNode::ClassType(value) => size_of::<MontyClassType>().saturating_add(value.name.len()),
         ValueNode::Function(value) => value
             .name
             .len()
@@ -224,11 +228,11 @@ fn read_node(index: u32, nodes: &mut [Option<ValueNode>], depth: usize) -> Resul
             let MontyType::Instance(class_type) = read_class_type(class_node, nodes, depth)? else {
                 unreachable!("read_class_type on a MontyClassType node always yields Instance");
             };
-            MontyObject::ClassInstance(MontyClassInstance {
+            MontyObject::ClassInstance(Box::new(MontyClassInstance {
                 class_type: *class_type,
                 instance_id: parse_uuid(&value.instance_id)?,
                 attrs: read_pairs(value.attrs, nodes, depth)?.into(),
-            })
+            }))
         }
         ValueNode::Function(value) => MontyObject::Function {
             name: value.name,

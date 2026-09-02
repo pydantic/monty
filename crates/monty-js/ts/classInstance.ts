@@ -31,7 +31,10 @@ export interface BaseWrapperOptions {
   /** Attributes the sandbox may fetch on demand (prototype getters/fields
    *  included); `'all'` never exposes `_`-prefixed names. */
   lazyAttrs?: AttrPolicy
-  /** Methods the sandbox may call; `'all'` never exposes `_`-prefixed names. */
+  /** Methods the sandbox may call; `'all'` exposes the functions the class
+   *  defines (prototype methods, or own static functions on a `ClassType`), never
+   *  `_`-prefixed names. No policy exposes `constructor`, `__proto__`,
+   *  `prototype`, `arguments` or `caller`. */
   allowedMethods?: AttrPolicy
   /** Class name shown to the sandbox; defaults to the constructor name. A
    *  class-level property: on a `ClassInstance` it names the default
@@ -51,8 +54,8 @@ export interface BaseWrapperOptions {
 
 /** Options for [`ClassInstance`]. */
 export interface ClassInstanceOptions extends BaseWrapperOptions {
-  /** The wrapper's identity uuid (canonical lowercase uuid4); defaults to a
-   *  fresh one per wrapper. See [`ClassInstance.id`]. */
+  /** The wrapper's identity uuid (canonical 8-4-4-4-12 form, lowercased on
+   *  the wrapper); defaults to a fresh uuid4 per wrapper. See [`ClassInstance.id`]. */
   id?: string
   /** A [`ClassType`] wrapper for the instance's class, overriding the default
    *  one materialized from the constructor — pass one to grant class-level
@@ -74,6 +77,9 @@ export abstract class BaseWrapper {
     if ((typeof instance !== 'object' && typeof instance !== 'function') || instance === null) {
       throw new TypeError('ClassInstance expects an object instance')
     }
+    validatePolicy('eagerAttrs', options.eagerAttrs)
+    validatePolicy('lazyAttrs', options.lazyAttrs)
+    validatePolicy('allowedMethods', options.allowedMethods)
   }
 
   /** Class name shown to the sandbox: `options.name`, else the constructor name. */
@@ -100,10 +106,11 @@ export abstract class BaseWrapper {
   /**
    * Resolves a lazy attribute lookup from the sandbox. Throws the internal
    * [`AttrNotExposed`] sentinel when `name` is outside `lazyAttrs` or the
-   * property is absent; the sandbox then raises `AttributeError`.
+   * property is absent; the sandbox then raises `AttributeError`. Properties
+   * inherited from `Object.prototype` / `Function.prototype` count as absent.
    */
   lookupLazyAttr(name: string): unknown {
-    if (!policyAllows(this.options.lazyAttrs, name) || !(name in this.instance)) {
+    if (!policyAllows(this.options.lazyAttrs, name) || !hasMember(this.instance, name)) {
       throw this.attrError(name)
     }
     return this.convertValue(name, (this.instance as Record<string, unknown>)[name])
@@ -112,6 +119,9 @@ export abstract class BaseWrapper {
   /**
    * Calls a method on the wrapped instance for the sandbox. Throws
    * [`AttrNotExposed`] when `name` is outside `allowedMethods` or absent.
+   * Under `'all'` the name must also resolve to a method the class defines
+   * (see [`isMethodUnderAll`](BaseWrapper.isMethodUnderAll)); an explicit
+   * list calls whatever the named property holds.
    *
    * JS functions have no keyword arguments, so a non-empty `kwargs` is
    * appended as a final options-bag argument — the way JS hosts typically
@@ -123,10 +133,18 @@ export abstract class BaseWrapper {
    * instance itself.
    */
   callMethod(name: string, args: unknown[], kwargs: Record<string, unknown>): unknown {
-    if (name === '__call__' || !policyAllows(this.options.allowedMethods, name) || !(name in this.instance)) {
+    const policy = this.options.allowedMethods
+    if (name === '__call__' || !policyAllows(policy, name)) {
+      throw this.attrError(name)
+    }
+    const owner = findMemberOwner(this.instance, name)
+    if (owner === undefined) {
       throw this.attrError(name)
     }
     const method = (this.instance as Record<string, unknown>)[name]
+    if (policy === 'all' && !this.isMethodUnderAll(owner, method)) {
+      throw this.attrError(name)
+    }
     if (typeof method !== 'function') {
       throw new TypeError(notCallableMessage(method))
     }
@@ -150,6 +168,17 @@ export abstract class BaseWrapper {
       return this.options.convertValue(name, value)
     }
     return value
+  }
+
+  /**
+   * Whether `method` (owned by `owner`, an object on the wrapped value's
+   * prototype chain) is a method the class defines, the only kind
+   * `allowedMethods: 'all'` exposes: on an instance, a function on a
+   * prototype rather than a callable stored on the instance itself. Class
+   * constructors never count, so nested classes stay unreachable.
+   */
+  protected isMethodUnderAll(owner: object, method: unknown): boolean {
+    return owner !== this.instance && isPlainFunction(method)
   }
 
   /** The sentinel a denied or missing attribute raises; [`ClassType`]
@@ -183,7 +212,7 @@ export class ClassInstance extends BaseWrapper {
 
   constructor(instance: object, options: ClassInstanceOptions = {}) {
     super(instance, options)
-    this.id = options.id ?? generateUuid()
+    this.id = options.id === undefined ? generateUuid() : normalizeId('ClassInstance', options.id)
     const ctor = (instance as { constructor?: unknown }).constructor
     if (typeof ctor !== 'function') {
       throw new TypeError('ClassInstance expects an instance of a class, not a null-prototype object')
@@ -212,8 +241,9 @@ export class ClassInstance extends BaseWrapper {
  *  object itself (class constants, static methods), the `init` gate, and the
  *  `instance*` policies applied to every constructed instance. */
 export interface ClassTypeOptions extends BaseWrapperOptions {
-  /** The class's identity uuid; defaults to a process-wide id per class, so
-   *  every wrapper of one class shares it. See [`ClassType.id`]. */
+  /** The class's identity uuid (canonical form, lowercased on the wrapper);
+   *  defaults to a process-wide id per class, so every wrapper of one class
+   *  shares it. See [`ClassType.id`]. */
   id?: string
   /** Whether sandbox code may instantiate the class (default false). Purely
    *  a host-side policy: it never crosses the wire, and `construct` checks
@@ -256,7 +286,10 @@ export class ClassType extends BaseWrapper {
       throw new TypeError('ClassType expects a class (constructor function)')
     }
     super(classType, options)
-    this.id = options.id ?? classIdFor(classType)
+    validatePolicy('instanceEagerAttrs', options.instanceEagerAttrs)
+    validatePolicy('instanceLazyAttrs', options.instanceLazyAttrs)
+    validatePolicy('instanceAllowedMethods', options.instanceAllowedMethods)
+    this.id = options.id === undefined ? classIdFor(classType) : normalizeId('ClassType', options.id)
   }
 
   /** The wrapped host class (the inherited `instance` field). */
@@ -311,6 +344,12 @@ export class ClassType extends BaseWrapper {
       convertValue,
       classType: ownClass ? this : undefined,
     })
+  }
+
+  /** `'all'` on a class exposes its own static functions only: nothing
+   *  inherited from a base class or `Function.prototype`. */
+  protected override isMethodUnderAll(owner: object, method: unknown): boolean {
+    return owner === this.instance && isPlainFunction(method)
   }
 
   protected override attrError(name: string): AttrNotExposed {
@@ -501,6 +540,11 @@ function prepareInner(value: unknown, store: InstanceStore, depth: number): unkn
     // in attacker-controlled JSON to impersonate a registered instance.
     throw new TypeError('raw ClassInstance markers are not accepted — wrap the object in ClassInstance(...)')
   }
+  if (marker === 'Type' && (value as { classType?: unknown }).classType !== undefined) {
+    // Same reasoning for a host-class marker; builtin `Type` markers
+    // (`{ value: 'int' }`) carry no identity and pass through.
+    throw new TypeError('raw Type markers are not accepted — pass the class through ClassType(...)')
+  }
   if (marker !== undefined) {
     return value
   }
@@ -516,8 +560,10 @@ function prepareInner(value: unknown, store: InstanceStore, depth: number): unkn
  * Inbound walk over a sandbox value reaching the host: maps `ClassInstance`
  * markers to the original wrapped object when the id is in `store` (identity
  * preserved), else to a [`MontyClassProxy`] proxy with recursively
- * restored attrs; recurses into containers. Wire values are already depth-
- * bounded by the native layer, so no guard is needed here.
+ * restored attrs; maps a host-class `Type` marker to the registered class
+ * object the same way (an unregistered class stays a marker); recurses into
+ * containers. Wire values are already depth-bounded by the native layer, so
+ * no guard is needed here.
  */
 export function restore(value: unknown, store: InstanceStore): unknown {
   if (typeof value !== 'object' || value === null) {
@@ -539,6 +585,9 @@ export function restore(value: unknown, store: InstanceStore): unknown {
   const marker = readTypeMarker(value)
   if (marker === 'ClassInstance') {
     return markerToInstance(value as Record<string, unknown>, store)
+  }
+  if (marker === 'Type') {
+    return markerToClass(value as Record<string, unknown>, store)
   }
   if (marker === undefined && isPlainObject(value)) {
     return walkPlainObject(value as Record<string, unknown>, walk)
@@ -620,6 +669,14 @@ function markerToInstance(marker: Record<string, unknown>, store: InstanceStore)
   return new MontyClassProxy(classType, marker.instanceId, attrs)
 }
 
+/** Maps an inbound `Type` marker to the registered host class, else leaves
+ *  the marker as is (a builtin type, or a class this session never sent). */
+function markerToClass(marker: Record<string, unknown>, store: InstanceStore): unknown {
+  const id = (marker.classType as { id?: unknown } | undefined)?.id
+  const wrapper = typeof id === 'string' ? store.get(id) : undefined
+  return wrapper instanceof ClassType ? wrapper.instance : marker
+}
+
 // === shared container walks (used by both prepare and restore) ===
 
 type Walk = (value: unknown) => unknown
@@ -680,9 +737,34 @@ function generateUuid(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-/** Whether `policy` exposes `name`; `'all'` never exposes underscore names. */
+/** Canonical 8-4-4-4-12 hex uuid; case-insensitive since `normalizeId` lowercases. */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Validates a caller-supplied wrapper id and lowercases it, so the id the
+ *  sandbox reports back (always lowercase) is the key the store holds. */
+function normalizeId(wrapperKind: string, id: string): string {
+  if (typeof id !== 'string' || !UUID_PATTERN.test(id)) {
+    throw new TypeError(`${wrapperKind} id must be a canonical uuid string, got ${JSON.stringify(id)}`)
+  }
+  return id.toLowerCase()
+}
+
+/** Rejects a string policy other than `'all'`: a bare `'greet'` would
+ *  otherwise be treated as a character array (`'g'`, `'r'`, ...). */
+function validatePolicy(field: string, policy: AttrPolicy | undefined): void {
+  if (typeof policy === 'string' && policy !== 'all') {
+    throw new TypeError(`${field} must be 'all', undefined or a list/Set of names, got '${policy}'`)
+  }
+}
+
+/** Names no policy may expose, `'all'` or explicit: JS object machinery
+ *  that would hand the sandbox the class, its prototype, or a call stack. */
+const DENIED_NAMES: ReadonlySet<string> = new Set(['constructor', '__proto__', 'prototype', 'arguments', 'caller'])
+
+/** Whether `policy` exposes `name`; `'all'` never exposes underscore names,
+ *  and [`DENIED_NAMES`] are refused whichever form the policy takes. */
 function policyAllows(policy: AttrPolicy | undefined, name: string): boolean {
-  if (policy === undefined) {
+  if (policy === undefined || DENIED_NAMES.has(name)) {
     return false
   }
   if (policy === 'all') {
@@ -693,6 +775,38 @@ function policyAllows(policy: AttrPolicy | undefined, name: string): boolean {
   return typeof (policy as { has?: unknown }).has === 'function'
     ? (policy as ReadonlySet<string>).has(name)
     : (policy as readonly string[]).includes(name)
+}
+
+/** Prototypes every object or function ends in: members found there
+ *  (`toString`, `hasOwnProperty`, `call`, `bind`, ...) are never exposed. */
+const PROTOTYPE_ROOTS: ReadonlySet<object> = new Set([Object.prototype, Function.prototype])
+
+/** The object on `target`'s prototype chain (stopping before the shared
+ *  roots) that owns property `name`, or `undefined` when none does. */
+function findMemberOwner(target: object, name: string): object | undefined {
+  for (let obj: object | null = target; obj !== null && !PROTOTYPE_ROOTS.has(obj); obj = Object.getPrototypeOf(obj)) {
+    if (Object.prototype.hasOwnProperty.call(obj, name)) {
+      return obj
+    }
+  }
+  return undefined
+}
+
+/** Whether `target` has `name` below the shared prototype roots; the
+ *  replacement for `name in target`, which reaches `Object.prototype`. */
+function hasMember(target: object, name: string): boolean {
+  return findMemberOwner(target, name) !== undefined
+}
+
+/** A callable that is not a class constructor. Class constructors carry a
+ *  non-writable `prototype` (ordinary functions a writable one; arrows and
+ *  methods none), which is how the spec distinguishes them. */
+function isPlainFunction(value: unknown): boolean {
+  if (typeof value !== 'function') {
+    return false
+  }
+  const prototype = Object.getOwnPropertyDescriptor(value, 'prototype')
+  return prototype === undefined || prototype.writable === true
 }
 
 /** True when the object's prototype is `Object.prototype` or `null`. */

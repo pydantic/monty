@@ -23,7 +23,7 @@ mod type_checking;
 
 use std::{error, fmt};
 
-use monty_types::{DictPairs, MontyClassInstance, MontyClassType, MontyObject, MontyType};
+use monty_types::{DictPairs, MontyClassType, MontyObject, MontyType};
 pub use resume::future_results_from_proto;
 
 /// Why a wire value could not be converted into its monty equivalent.
@@ -93,6 +93,9 @@ const TYPE_COST: usize = 2;
 /// Proto message levels for a class instance's type branch (`MontyObject` +
 /// `ClassInstance` + `Type`).
 const CLASS_INSTANCE_TYPE_COST: usize = 3;
+/// Proto message levels the eager class attrs consume under their enclosing
+/// `Type` message (`Dict` + `Pair`; the values then count as usual).
+const TYPE_ATTRS_COST: usize = 2;
 
 /// Maximum nesting depth of a *list-like* value that can safely cross the
 /// wire (the cheapest container shape, and so the deepest possible nesting).
@@ -124,14 +127,14 @@ fn depth_exceeds(value: &MontyObject, budget: usize) -> bool {
         | MontyObject::FrozenSet(items) => seq_exceeds(items, budget, LIST_COST),
         MontyObject::NamedTuple { values, .. } => seq_exceeds(values, budget, LIST_COST),
         MontyObject::Dict(pairs) => pairs_exceed(pairs, budget, DICT_COST),
-        MontyObject::ClassInstance(MontyClassInstance { class_type, attrs, .. }) => {
+        MontyObject::ClassInstance(instance) => {
             // The class type is a sibling branch of the attrs chain; its
             // eager class attrs nest inside the `Type` message.
             let type_branch_exceeds = match budget.checked_sub(CLASS_INSTANCE_TYPE_COST) {
                 None => true,
-                Some(rest) => class_type_exceeds(class_type, rest),
+                Some(rest) => class_type_exceeds(&instance.class_type, rest),
             };
-            type_branch_exceeds || pairs_exceed(attrs, budget, CLASS_INSTANCE_COST)
+            type_branch_exceeds || pairs_exceed(&instance.attrs, budget, CLASS_INSTANCE_COST)
         }
         MontyObject::Type(MontyType::Instance(class_type)) => match budget.checked_sub(TYPE_COST) {
             None => true,
@@ -142,10 +145,6 @@ fn depth_exceeds(value: &MontyObject, budget: usize) -> bool {
         _ => budget == 0,
     }
 }
-
-/// Proto message levels the eager class attrs consume under their enclosing
-/// `Type` message (`Dict` + `Pair`; the values then count as usual).
-const TYPE_ATTRS_COST: usize = 2;
 
 /// Whether a class type's eager class `attrs` exceed `budget` further message
 /// levels nested under the `Type` message itself (the levels above it are

@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fmt::Write,
     hash::{DefaultHasher, Hash, Hasher},
     mem,
@@ -67,8 +68,9 @@ impl HostClass {
     }
 
     /// Rebuilds the wire [`MontyClassType`] this instance's class crosses out
-    /// as. The `type` branch of an instance carries no eager class attrs (the
-    /// host resolves the class by id), so `attrs` is always empty here.
+    /// as. The worker sends the `type` branch of an instance with empty
+    /// `attrs` (the host resolves the class by id); on the way in a host may
+    /// fill them, and the class's type object refreshes from them.
     #[must_use]
     pub fn class_type(&self, heap: &Heap, interns: &Interns) -> MontyClassType {
         host_class_type(heap, self.class_id).class_type(interns)
@@ -136,6 +138,13 @@ impl<'h> HeapRead<'h, HostClass> {
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::HostClass
+    }
+
+    /// The real class name (`'Point'`), not the `Type::HostClass` placeholder.
+    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
+        host_class_type(vm.heap, self.get(vm.heap).class_id())
+            .name_either()
+            .to_cow(vm.interns)
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -213,7 +222,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
     /// If the attribute is a public name (no leading underscore) not found in
     /// the eager attrs, returns `MethodCall` (routed by `instance_id`) so the
     /// VM yields to the host. Otherwise handles the call directly:
-    /// - Attributes that exist in attrs but aren't callable produce `TypeError`
+    /// - Attributes that exist in attrs are called as-is (unbound, like an
+    ///   instance attribute on a user class); a non-callable one raises `TypeError`
     /// - Private/dunder attributes that aren't in attrs produce `AttributeError`
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
@@ -235,13 +245,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         } else {
             // Not a method call — handle directly
             let method_name = attr.as_str(vm.interns);
-            defer_drop!(args, vm);
 
-            // If the attribute exists in attrs, it's a data value (not callable)
-            if let Some(value) = self.get(vm.heap).attrs.get_by_str(method_name, vm.heap, vm.interns) {
-                let type_name = value.py_type_name(vm);
-                Err(ExcType::type_error_not_callable_object(&type_name))
+            // An eager attr (e.g. a sandbox-set lambda) is called as-is;
+            // `call_function` raises `TypeError` if it is not callable.
+            if let Some(callable) = self
+                .get(vm.heap)
+                .attrs
+                .get_by_str(method_name, vm.heap, vm.interns)
+                .map(|v| v.clone_with_heap(vm.heap))
+            {
+                defer_drop!(callable, vm);
+                vm.call_function(callable, args)
             } else {
+                args.drop_with(vm);
                 // Attribute doesn't exist — use the class name (e.g., "Point") not "HostClass"
                 Err(ExcType::attribute_error(
                     self.get(vm.heap).name(vm.heap, vm.interns),
@@ -506,7 +522,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
 
     /// Mirrors [`HostClass`]'s lazy method detection for classmethods: a
     /// public name missing from the eager class attrs suspends to the host
-    /// (routed by the class uuid).
+    /// (routed by the class uuid); an eager class attr is called as-is.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
         if !attr_str.starts_with('_')
@@ -522,17 +538,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
                 args,
                 object_id,
             })
+        } else if let Some(callable) = self
+            .get(vm.heap)
+            .attrs
+            .get_by_str(attr_str, vm.heap, vm.interns)
+            .map(|v| v.clone_with_heap(vm.heap))
+        {
+            // An eager class attr is called as-is; `call_function` raises
+            // `TypeError` if it is not callable.
+            defer_drop!(callable, vm);
+            vm.call_function(callable, args)
         } else {
-            defer_drop!(args, vm);
-            if let Some(value) = self.get(vm.heap).attrs.get_by_str(attr_str, vm.heap, vm.interns) {
-                let type_name = value.py_type_name(vm);
-                Err(ExcType::type_error_not_callable_object(&type_name))
-            } else {
-                Err(ExcType::attribute_error_type(
-                    self.get(vm.heap).name(vm.interns),
-                    attr_str,
-                ))
-            }
+            args.drop_with(vm);
+            Err(ExcType::attribute_error_type(
+                self.get(vm.heap).name(vm.interns),
+                attr_str,
+            ))
         }
     }
 }

@@ -34,7 +34,7 @@ use std::{
 
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value, uuid_to_py};
-use monty_types::{ExtFunctionResult, MontyException, MontyObject, MontyUuid};
+use monty_types::{ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult};
 use pyo3::{
     Borrowed,
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
@@ -48,7 +48,7 @@ use tokio::{sync::Mutex, task::JoinSet};
 use crate::{
     async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
     exceptions::MontyError,
-    external::{CallResult, ExternalLookup, resolve_object_attr},
+    external::{CallResult, ExternalLookup, resolve_object_attr, wire_call_arguments},
     pool::{
         FeedArgs, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
         dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync, turn_fn,
@@ -413,20 +413,22 @@ fn optional_uuid_to_py(py: Python<'_>, uuid: Option<&MontyUuid>) -> PyResult<Opt
 }
 
 /// Resolves a name against the [`DriveContext`]'s captured `external_lookup=`,
-/// shared by the sync and async name-lookup `resume_auto`. `None` leaves the
-/// lookup unanswered, matching `feed_run`: the sandbox raises `NameError` for
-/// a plain name, or `AttributeError` when `object_id` marks a lazy attribute
-/// on a host-backed object.
+/// shared by the sync and async name-lookup `resume_auto`, matching `feed_run`:
+/// `Undefined` makes the sandbox raise `NameError` for a plain name, or
+/// `AttributeError` when `object_id` marks a lazy attribute on a host-backed
+/// object; a host error serving a lazy attribute is raised in the sandbox.
 fn resolve_captured_name(
     py: Python<'_>,
     ctx: &DriveContext,
     name: &str,
     object_id: Option<MontyUuid>,
-) -> PyResult<Option<MontyObject>> {
+) -> PyResult<NameLookupResult> {
     if let Some(object_id) = object_id {
-        resolve_object_attr(py, name, &object_id, &ctx.instances)
+        Ok(resolve_object_attr(py, name, &object_id, &ctx.instances))
     } else {
-        ExternalLookup::new(py, ctx.external_lookup.as_ref().map(|d| d.bind(py)), &ctx.instances).resolve_name(name)
+        ExternalLookup::new(py, ctx.external_lookup.as_ref().map(|d| d.bind(py)), &ctx.instances)
+            .resolve_name(name)
+            .map(NameLookupResult::from)
     }
 }
 
@@ -487,24 +489,18 @@ fn parse_external_result(
     }
 }
 
+/// The pending call's positional args as a Python tuple.
 fn args_to_py<'py>(py: Python<'py>, args: &[MontyObject], instances: &InstanceStore) -> PyResult<Bound<'py, PyTuple>> {
-    let items = args
-        .iter()
-        .map(|arg| monty_to_py(py, arg, instances))
-        .collect::<PyResult<Vec<_>>>()?;
-    PyTuple::new(py, items)
+    wire_call_arguments(py, args, &[], instances).map(|(args, _)| args)
 }
 
+/// The pending call's keyword args as a Python dict.
 fn kwargs_to_py<'py>(
     py: Python<'py>,
     kwargs: &[(MontyObject, MontyObject)],
     instances: &InstanceStore,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    for (key, value) in kwargs {
-        dict.set_item(monty_to_py(py, key, instances)?, monty_to_py(py, value, instances)?)?;
-    }
-    Ok(dict)
+    wire_call_arguments(py, &[], kwargs, instances).map(|(_, kwargs)| kwargs)
 }
 
 // =============================================================================
@@ -879,7 +875,8 @@ impl PyNameLookupSnapshot {
 
     /// Answers this name lookup automatically from the captured
     /// `external_lookup=`, then drives to the next snapshot. A name absent from
-    /// the lookup leaves it undefined, so the sandbox raises `NameError`.
+    /// the lookup leaves it undefined, so the sandbox raises `NameError`; a
+    /// host error serving a lazy attribute is raised in the sandbox instead.
     /// Consumes the snapshot.
     fn resume_auto(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let ctx = self.0.snapshot.claim(py)?;

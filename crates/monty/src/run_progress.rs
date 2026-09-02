@@ -8,12 +8,14 @@
 
 use std::mem;
 
-use monty_types::{ExcType, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker};
+use monty_types::{
+    ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
+};
 
 use crate::{
     asyncio::CallId,
-    bytecode::{FrameExit, VM, VMSnapshot},
-    exception_private::{ExcTypeExt, RunError, RunResult},
+    bytecode::{FrameExit, PendingLookupEffect, VM, VMSnapshot},
+    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
     object_bridge::MontyObjectExt,
     os_dispatch::release_pending_effect,
@@ -310,8 +312,9 @@ impl LookupScope {
 ///
 /// The host should check if the name corresponds to a known external function,
 /// value, or instance attribute. Call `resume(result, print)` with
-/// `NameLookupResult::Value(obj)` to continue, or `NameLookupResult::Undefined`
-/// to raise `NameError` (plain lookups) / `AttributeError` (instance lookups).
+/// `NameLookupResult::Value(obj)` to continue, `NameLookupResult::Undefined`
+/// to raise `NameError` (plain lookups) / `AttributeError` (instance lookups),
+/// or `NameLookupResult::Error(exc)` to raise a host exception in the sandbox.
 ///
 /// The namespace slot and scope are managed internally — the host only needs to
 /// provide the name resolution result.
@@ -350,10 +353,11 @@ impl NameLookup {
     /// (globals or stack) before pushing it, and `Undefined` raises
     /// `NameError`. For an instance attribute lookup, the value is pushed as
     /// the attribute expression's result (never cached), and `Undefined`
-    /// raises `AttributeError`.
+    /// raises `AttributeError`. `Error` raises the host's exception in the
+    /// sandbox, bypassing any `hasattr()` / `getattr()` default.
     ///
     /// # Arguments
-    /// * `result` — The resolved value or `Undefined`.
+    /// * `result` — The resolved value, `Undefined`, or a host exception.
     /// * `print` — Writer for print output.
     pub fn resume(
         self,
@@ -383,41 +387,80 @@ impl NameLookup {
                 );
 
                 // Resolve the name lookup result with the VM alive
-                let answer = match result {
-                    NameLookupResult::Value(obj) => Some(
-                        obj.to_value(&mut vm)
-                            .map_err(|e| MontyException::runtime_error(format!("invalid name lookup result: {e}")))?,
-                    ),
-                    NameLookupResult::Undefined => None,
-                };
-                let vm_result = resume_lookup(&mut vm, answer, &scope, &name);
+                let answer = LookupAnswer::new(result, &mut vm);
+                let effect = vm.pending_lookup_effect.take();
+                let vm_result = resume_lookup(&mut vm, answer, effect, &scope, &name);
 
                 // Three-phase: convert while VM alive, snapshot, build progress
                 let converted = convert_frame_exit(vm_result, &mut vm);
                 let vm_state = check_snapshot_from_converted(&converted, vm);
-                Ok((converted, vm_state))
-            })?;
+                (converted, vm_state)
+            });
         build_run_progress(converted, vm_state, executor, heap)
     }
 }
 
-/// Resumes a suspended lookup with the host's answer — `Some(value)` for a
-/// served name / attribute, `None` for `Undefined` — and runs on.
+/// A host's [`NameLookupResult`] in interpreter terms, ready for
+/// [`resume_lookup`].
+pub(crate) enum LookupAnswer {
+    /// The host served this value.
+    Value(Value),
+    /// The name / attribute does not exist.
+    Undefined,
+    /// Resolving it failed — a host exception, or a value the heap could not
+    /// take — to be raised in the sandbox where the lookup suspended.
+    Error(RunError),
+}
+
+impl LookupAnswer {
+    /// Converts the host's answer while the VM is alive.
+    ///
+    /// A value the heap cannot take becomes an in-sandbox error with the
+    /// mapping [`VM::resume`] applies to external call results: a resource
+    /// limit raises `MemoryError`, an unconvertible object `RuntimeError`.
+    pub(crate) fn new(result: NameLookupResult, vm: &mut VM<'_>) -> Self {
+        match result {
+            NameLookupResult::Value(obj) => match obj.to_value(vm) {
+                Ok(value) => Self::Value(value),
+                Err(InvalidInputError::Resource(err)) => Self::Error(err.into()),
+                Err(other @ InvalidInputError::InvalidType(_)) => Self::Error(
+                    SimpleException::new(
+                        ExcType::RuntimeError,
+                        Some(format!("invalid name lookup result: {other}")),
+                    )
+                    .into(),
+                ),
+            },
+            NameLookupResult::Undefined => Self::Undefined,
+            NameLookupResult::Error(exc) => Self::Error(exc.into()),
+        }
+    }
+}
+
+/// Resumes a suspended lookup with the host's answer and runs on.
 ///
-/// A namespace lookup caches the value in its slot. An attribute lookup
-/// applies the pending [`PendingLookupEffect`](crate::bytecode::PendingLookupEffect)
-/// (`hasattr()` / `getattr()`
-/// default) if one is armed; otherwise the value is pushed, or `Undefined`
-/// raises the `NameError` / `AttributeError` an unanswered lookup gets.
+/// `effect` is the `hasattr()` / `getattr()` default armed for the lookup, if
+/// any. An error is raised as-is, dropping the effect — CPython only swallows
+/// `AttributeError` there, and the host reported something else. A served
+/// value or `Undefined` goes through the effect when one is armed; otherwise
+/// the value is pushed (a namespace lookup also caches it in its slot), or
+/// `Undefined` raises the `NameError` / `AttributeError` an unanswered
+/// lookup gets.
 pub(crate) fn resume_lookup(
     vm: &mut VM<'_>,
-    answer: Option<Value>,
+    answer: LookupAnswer,
+    effect: Option<PendingLookupEffect>,
     scope: &LookupScope,
     name: &str,
 ) -> RunResult<FrameExit> {
-    let value = match (answer, vm.pending_lookup_effect.take()) {
-        (answer, Some(effect)) => effect.apply(answer, vm),
-        (Some(value), None) => {
+    let value = match (answer, effect) {
+        (LookupAnswer::Error(err), effect) => {
+            effect.drop_with(vm);
+            return vm.resume_with_exception(err);
+        }
+        (LookupAnswer::Value(value), Some(effect)) => effect.apply(Some(value), vm),
+        (LookupAnswer::Undefined, Some(effect)) => effect.apply(None, vm),
+        (LookupAnswer::Value(value), None) => {
             if let LookupScope::Namespace {
                 namespace_slot,
                 is_global,
@@ -437,15 +480,55 @@ pub(crate) fn resume_lookup(
             }
             value
         }
-        (None, None) => return vm.resume_with_exception(undefined_lookup_error(scope, name)),
+        (LookupAnswer::Undefined, None) => return vm.resume_with_exception(undefined_lookup_error(scope, name)),
     };
     vm.push(value);
     vm.run_external()
 }
 
+/// Answers every lookup exit no host will serve — the non-iterative paths —
+/// as `Undefined`, running on until execution reaches some other exit.
+///
+/// An armed `hasattr()` / `getattr()` effect yields `False` / its default; a
+/// bare name or attribute read raises `NameError` / `AttributeError` through
+/// the VM so the traceback is captured. Any other exit passes through.
+pub(crate) fn answer_unserved_lookups(mut result: RunResult<FrameExit>, vm: &mut VM<'_>) -> RunResult<FrameExit> {
+    loop {
+        let (scope, name, effect) = match result? {
+            FrameExit::NameLookup {
+                name_id,
+                namespace_slot,
+                is_global,
+            } => {
+                let scope = LookupScope::Namespace {
+                    namespace_slot,
+                    is_global,
+                };
+                (scope, vm.interns.get_str(name_id).to_owned(), None)
+            }
+            FrameExit::AttrLookup {
+                name,
+                class_name,
+                object_id,
+                type_object,
+                effect,
+            } => {
+                let scope = LookupScope::Attr {
+                    object_id,
+                    class_name,
+                    type_object,
+                };
+                (scope, name.into_string(vm.interns), effect)
+            }
+            other => return Ok(other),
+        };
+        result = resume_lookup(vm, LookupAnswer::Undefined, effect, &scope, &name);
+    }
+}
+
 /// The exception an `Undefined` answer raises: `NameError` for a plain name
 /// lookup, `AttributeError` naming the real class for an instance attribute.
-pub(crate) fn undefined_lookup_error(scope: &LookupScope, name: &str) -> RunError {
+fn undefined_lookup_error(scope: &LookupScope, name: &str) -> RunError {
     match scope {
         LookupScope::Namespace { .. } => ExcType::name_error(name).into(),
         LookupScope::Attr {

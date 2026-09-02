@@ -24,8 +24,8 @@ use crate::{
     object_bridge::MontyObjectExt,
     run::{CompileOptions, Executor},
     run_progress::{
-        ConvertedExit, ExtFunctionResult, ExtFunctionResultExt, LookupScope, NameLookupResult, convert_frame_exit,
-        resume_lookup,
+        ConvertedExit, ExtFunctionResult, ExtFunctionResultExt, LookupAnswer, LookupScope, NameLookupResult,
+        convert_frame_exit, resume_lookup,
     },
     types::tuple::allocate_tuple,
     value::Value,
@@ -715,7 +715,8 @@ impl ReplNameLookup {
     /// For a plain lookup, caches the resolved value in the namespace slot and
     /// `Undefined` raises `NameError`; for a host attribute lookup (instance
     /// or class type) the value is pushed uncached and `Undefined` raises
-    /// `AttributeError`.
+    /// `AttributeError`. `Error` raises the host's exception in the sandbox,
+    /// bypassing any `hasattr()` / `getattr()` default.
     pub fn resume(self, result: NameLookupResult, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self { name, scope, snapshot } = self;
 
@@ -725,45 +726,34 @@ impl ReplNameLookup {
             vm_state,
         } = snapshot;
 
-        match HeapReader::with(&mut repl.heap, &mut (&executor, print), |reader, (executor, print)| {
-            // Restore the VM first, then convert inside its lifetime
-            let mut vm = VM::restore(
-                vm_state,
-                &executor.module_code,
-                reader,
-                &executor.interns,
-                print.reborrow(),
-                executor.assert_repr_max_bytes,
-            );
+        let (converted, vm_state) =
+            HeapReader::with(&mut repl.heap, &mut (&executor, print), |reader, (executor, print)| {
+                // Restore the VM first, then convert inside its lifetime
+                let mut vm = VM::restore(
+                    vm_state,
+                    &executor.module_code,
+                    reader,
+                    &executor.interns,
+                    print.reborrow(),
+                    executor.assert_repr_max_bytes,
+                );
 
-            // Resolve the name lookup result with the VM alive
-            let answer = match result {
-                NameLookupResult::Value(obj) => match obj.to_value(&mut vm) {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        repl.globals = vm.take_globals();
-                        return Err(MontyException::runtime_error(format!(
-                            "invalid name lookup result: {e}"
-                        )));
-                    }
-                },
-                NameLookupResult::Undefined => None,
-            };
-            let vm_result = resume_lookup(&mut vm, answer, &scope, &name);
+                // Resolve the name lookup result with the VM alive
+                let answer = LookupAnswer::new(result, &mut vm);
+                let effect = vm.pending_lookup_effect.take();
+                let vm_result = resume_lookup(&mut vm, answer, effect, &scope, &name);
 
-            // Convert while VM alive, then snapshot or reclaim globals
-            let converted = convert_frame_exit(vm_result, &mut vm);
-            let vm_state = if converted.needs_snapshot() {
-                Some(vm.snapshot())
-            } else {
-                repl.globals = vm.take_globals();
-                None
-            };
-            Ok((converted, vm_state))
-        }) {
-            Ok((converted, vm_state)) => build_repl_progress(converted, vm_state, executor, repl),
-            Err(error) => Err(Box::new(ReplStartError { repl, error })),
-        }
+                // Convert while VM alive, then snapshot or reclaim globals
+                let converted = convert_frame_exit(vm_result, &mut vm);
+                let vm_state = if converted.needs_snapshot() {
+                    Some(vm.snapshot())
+                } else {
+                    repl.globals = vm.take_globals();
+                    None
+                };
+                (converted, vm_state)
+            });
+        build_repl_progress(converted, vm_state, executor, repl)
     }
 }
 

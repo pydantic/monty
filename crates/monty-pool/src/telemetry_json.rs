@@ -152,11 +152,12 @@ impl Serialize for JsonEncoded<'_> {
             // mirrors the variant: the class, the instance id, then the eager
             // attrs in order (there are no declared field names — attrs ARE
             // the surface)
-            MontyObject::ClassInstance(MontyClassInstance {
-                class_type,
-                instance_id,
-                attrs,
-            }) => {
+            MontyObject::ClassInstance(instance) => {
+                let MontyClassInstance {
+                    class_type,
+                    instance_id,
+                    attrs,
+                } = instance.as_ref();
                 let mut map = s.serialize_map(Some(3))?;
                 map.serialize_entry("type", &JsonClassType::new(class_type, self.limit))?;
                 map.serialize_entry("id", &Displayed(instance_id))?;
@@ -561,14 +562,14 @@ mod tests {
     /// the eager attrs.
     #[test]
     fn class_instance_mirrors_its_shape() {
-        let ci = MontyObject::ClassInstance(MontyClassInstance {
+        let ci = MontyObject::ClassInstance(Box::new(MontyClassInstance {
             class_type: test_class_type("Point", true),
             instance_id: MontyUuid::from_u128(7),
             attrs: DictPairs::from(vec![
                 (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
                 (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
             ]),
-        });
+        }));
         assert_eq!(
             json(&ci),
             r#"{"type":{"name":"Point","id":"00000000-0000-0000-0000-000000000001","host_defined":true,"is_dataclass":true,"attrs":{}},"id":"00000000-0000-0000-0000-000000000007","attrs":{"x":1,"y":2}}"#
@@ -597,11 +598,11 @@ mod tests {
         let attrs = (0..2_000)
             .map(|index| (MontyObject::String(format!("extra_{index}")), MontyObject::None))
             .collect::<Vec<_>>();
-        let value = MontyObject::ClassInstance(MontyClassInstance {
+        let value = MontyObject::ClassInstance(Box::new(MontyClassInstance {
             class_type: test_class_type("Large", false),
             instance_id: MontyUuid::from_u128(7),
             attrs: DictPairs::from(attrs),
-        });
+        }));
         assert!(serialize_capped(&value, 64).1);
     }
 
