@@ -369,6 +369,18 @@ assert copy.copy(Hooked()) == 'shallow hook'
 assert copy.deepcopy(Hooked()) == 'deep hook'
 
 
+# A hook's result is memoized like any other copy, so an object reached twice
+# stays one object even though the hook, not the copier, built it.
+class HookedList:
+    def __deepcopy__(self, memo):
+        return ['from hook']
+
+
+hooked_twice = HookedList()
+hooked_pair = copy.deepcopy([hooked_twice, hooked_twice])
+assert hooked_pair[0] is hooked_pair[1]
+
+
 # `copy` calls its hook only `if copier is not None`, so setting one to `None`
 # opts the class out and leaves the ordinary attribute copy.
 class OptedOut:
