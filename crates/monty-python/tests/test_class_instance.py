@@ -760,3 +760,59 @@ def test_unhashable_metaclass_class(monty_run: RunMonty):
     with pytest.raises(TypeError):
         hash(Odd)  # precondition: the metaclass made the class unhashable
     assert monty_run('o.x', inputs={'o': ClassInstance(Odd(), eager_attrs='all')}) == 5
+
+
+def test_equal_comparing_metaclass_classes_stay_distinct(monty_run: RunMonty):
+    """Two distinct classes whose metaclass `__eq__` says they are equal must
+    not share an id: the store keys by wrapper uuid and compares by `is`."""
+
+    class Meta(type):
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        def __hash__(self) -> int:
+            return 0
+
+    class A(metaclass=Meta):
+        def __init__(self) -> None:
+            self.x = 1
+
+    class B(metaclass=Meta):
+        def __init__(self) -> None:
+            self.x = 1
+
+    assert A == B  # precondition: the metaclass makes the classes compare equal
+    inputs = {'a': ClassInstance(A(), eager_attrs='all'), 'b': ClassInstance(B(), eager_attrs='all')}
+    assert monty_run('(type(a) == type(b), a == b, type(a).__name__, type(b).__name__)', inputs=inputs) == snapshot(
+        (False, False, 'A', 'B')
+    )
+
+
+def test_same_qualname_distinct_classes(monty_run: RunMonty):
+    """Class ids default from `module.qualname`, so two class objects sharing a
+    name get one id; one session rejects the second rather than aliasing, and
+    an explicit `id` on either wrapper separates them."""
+
+    def make_class() -> type[Any]:
+        class Shadow:
+            def __init__(self) -> None:
+                self.x = 1
+
+        return Shadow
+
+    first, second = make_class(), make_class()
+    assert first is not second and first.__qualname__ == second.__qualname__
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run(
+            '1',
+            inputs={'a': ClassInstance(first(), eager_attrs='all'), 'b': ClassInstance(second(), eager_attrs='all')},
+        )
+    assert re.fullmatch(
+        r'ValueError: wrapper id [0-9a-f-]{36} already identifies a different object in this session',
+        str(exc_info.value),
+    )
+    inputs = {
+        'a': ClassInstance(first(), eager_attrs='all'),
+        'b': ClassInstance(second(), eager_attrs='all', class_type=pydantic_monty.ClassType(second, id=uuid4())),
+    }
+    assert monty_run('(type(a) == type(b), a == b)', inputs=inputs) == snapshot((False, False))

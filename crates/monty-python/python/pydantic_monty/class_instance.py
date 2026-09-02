@@ -160,7 +160,9 @@ type_id_cache: dict[str, UUID] = {}
 """Process-wide class ids, keyed by `module.qualname`: every `ClassType` of
 one class agrees on its default id, so instances keep a stable type identity
 across sessions. Pre-seed it (or pass `ClassType(..., id=...)`) to pin class
-ids when restoring a dump in a fresh process."""
+ids when restoring a dump in a fresh process. Distinct class objects sharing
+a name (a redefined class, a factory-built class) share the default id, so
+sending both into one session is rejected — pass an explicit `id` to one."""
 
 
 @dataclass

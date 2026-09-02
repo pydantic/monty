@@ -234,11 +234,10 @@ pub struct InstanceStore {
     /// and through it the wrapped object.
     objects: Py<PyDict>,
     /// uuid bytes → `(class, ClassType wrapper | None)`; pins the class, and
-    /// carries the wrapper whose policy gates instantiation. Doubles as the
-    /// class-id table: [`Self::type_uuid`] scans it comparing classes by
-    /// identity (`is`), so a metaclass overriding `__eq__`/`__hash__` (which
-    /// can make a class unhashable, or make distinct classes compare equal)
-    /// is never consulted.
+    /// carries the wrapper whose policy gates instantiation. Keys are wrapper
+    /// uuids and alias checks compare class objects by identity (`is`), so a
+    /// metaclass overriding `__eq__`/`__hash__` (which can make a class
+    /// unhashable, or make distinct classes compare equal) is never consulted.
     classes: Py<PyDict>,
 }
 

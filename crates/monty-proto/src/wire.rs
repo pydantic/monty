@@ -958,10 +958,11 @@ impl Message for TypeBody {
             2 => encoding::message::merge(wire_type, self.id.get_or_insert_with(pb::Uuid::default), buf, ctx),
             3 => encoding::int32::merge(wire_type, &mut self.origin, buf, ctx),
             4 => {
-                // Charge the entry up front: decoding it allocates this body
-                // and conversion adds a `ClassType`, so per-entry charging is
-                // what bounds `parents` fanout within the budget.
-                charge_decode(size_of::<Self>() + size_of::<ClassType>())?;
+                // Charge the entry up front for everything resident at the
+                // conversion peak: this body (the source vec lives until
+                // `type_body_to_monty` finishes collecting), the boxed
+                // `ClassType` and its `MontyType` slot in the converted vec.
+                charge_decode(size_of::<Self>() + size_of::<ClassType>() + size_of::<MontyType>())?;
                 let parent = merge_message::<Self>(wire_type, buf, ctx)?;
                 self.parents.push(parent);
                 Ok(())

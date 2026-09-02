@@ -25,8 +25,8 @@ See `test_cases/class__basic.py` and `test_cases/class__repr.py`.
 The host can also send its own class instances in (wrapped in a
 `ClassInstance` policy wrapper) and namedtuple values; those are a separate
 mechanism whose method calls and lazy attribute lookups dispatch back to the
-host, routed by the instance's host `id()` (see
-`test_cases/dataclass__basic.py` and "Host class instances" below).
+host, routed by the wrapper's uuid (see `test_cases/dataclass__basic.py`
+and "Host class instances" below).
 
 ## Supported surface
 
@@ -211,8 +211,8 @@ value). Divergences from real CPython objects:
   `setattr` does not affect the host object.
 - **Equality uses the eager attrs only** (same class + equal attrs);
   methods like a custom `__eq__` are not consulted. **Host instances are
-  always unhashable** - matching CPython's rule for a class defining
-  `__eq__` without `__hash__` - so a frozen dataclass that hashes in
+  always unhashable** — matching CPython's rule for a class defining
+  `__eq__` without `__hash__` — so a frozen dataclass that hashes in
   CPython raises `TypeError: unhashable type: '...'` in the sandbox.
 - **Frozen dataclasses are not frozen in the sandbox**: there is no frozen
   policy on the wire, so in-sandbox `setattr` succeeds on the sandbox copy
@@ -224,13 +224,17 @@ value). Divergences from real CPython objects:
   the same object twice yields equal (same class uuid + attrs) sandbox
   values, but each send allocates its own proxy, so `a is b` is `False`.
 - **Instance ids are per wrapper; class ids are per process** (host
-  classes) - Python keys class ids by `module.qualname` in
-  `pydantic_monty.class_instance.type_id_cache`, JS by class object - so
+  classes) — Python keys class ids by `module.qualname` in
+  `pydantic_monty.class_instance.type_id_cache`, JS by class object — so
   instances of the same host class compare equal by type across sessions in
   one process. In a fresh process the ids differ unless pinned explicitly
-  (`ClassType(..., id=...)`, or pre-seeding the cache) - required when
-  restoring a dump there. Sandbox-defined uuids live in the heap and survive
-  dump/restore.
+  (`ClassType(..., id=...)`, or pre-seeding the cache) — required when
+  restoring a dump there. Because the Python key is the name, two distinct
+  class objects sharing a `module.qualname` (a class redefined in a notebook
+  cell, or built by a factory function) get the same default id, and sending
+  both into one session raises `ValueError` rather than silently aliasing
+  them — give one an explicit `id`. Sandbox-defined uuids live in the heap
+  and survive dump/restore.
 - The wire carries each class's direct bases (`parents`), but **inheritance
   is not functional in the sandbox**: base-class attributes and methods are
   not consulted, and `__bases__` still raises `AttributeError`.
@@ -238,7 +242,7 @@ value). Divergences from real CPython objects:
 ## Host classes (`ClassType` wrapper)
 
 A host may pass a bare *class* into the sandbox with the `ClassType` policy
-wrapper - `ClassInstance`'s sibling, applied to the class object itself:
+wrapper — `ClassInstance`'s sibling, applied to the class object itself:
 `eager_attrs` sends class constants with the type, `lazy_attrs` serves them
 on demand, and `allowed_methods` exposes classmethods/staticmethods (calls
 and lazy lookups route to the host by the class uuid, exactly like instance
@@ -248,7 +252,7 @@ class; the construction crosses as a `__call__` method call, runs
 **host-side**, and the constructed instance crosses back wrapped with the
 wrapper's `instance_*` policies (`instance_eager_attrs`, `instance_lazy_attrs`,
 `instance_allowed_methods`; JS `instanceEagerAttrs`, ...). `init` is purely
-host-side policy - it never crosses the wire, and the wrapper checks it on
+host-side policy — it never crosses the wire, and the wrapper checks it on
 every construction request. Divergences:
 
 - Missing/denied class attributes raise CPython's type-object wording
