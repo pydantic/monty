@@ -147,7 +147,7 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
             value.drop_with(vm);
             pos.drop_with(vm);
             kwargs.drop_with(vm);
-            return Err(ExcType::type_error("first argument must be callable or None"));
+            return Err(ExcType::defaultdict_factory_not_callable());
         }
     };
 
