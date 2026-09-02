@@ -18,8 +18,8 @@
 use monty::MontyRun;
 use monty_proto::{WireFunctionCall, WireObject, pb};
 use monty_types::{
-    ClassType, CompileOptions, DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    CompileOptions, DictPairs, ExcType, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle,
+    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
 };
 use num_bigint::{BigInt, Sign};
 use prost::Message;
@@ -169,7 +169,7 @@ fn corpus() -> Vec<MontyObject> {
         },
         MontyObject::Type(MontyType::Int),
         MontyObject::Type(MontyType::Exception(ExcType::KeyError)),
-        MontyObject::Type(MontyType::Instance(Box::new(ClassType {
+        MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
             name: "Foo".to_owned(),
             id: MontyUuid::from_u128(0xF00),
             host_defined: false,
@@ -177,13 +177,13 @@ fn corpus() -> Vec<MontyObject> {
             is_dataclass: false,
             attrs: DictPairs::default(),
         }))),
-        MontyObject::Type(MontyType::Instance(Box::new(ClassType {
+        MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
             name: "Child".to_owned(),
             id: MontyUuid::from_u128(0xF01),
             host_defined: true,
             parents: vec![
                 MontyType::Str,
-                MontyType::Instance(Box::new(ClassType {
+                MontyType::Instance(Box::new(MontyClassType {
                     name: "Base".to_owned(),
                     id: MontyUuid::from_u128(0xF02),
                     host_defined: true,
@@ -210,8 +210,8 @@ fn corpus() -> Vec<MontyObject> {
             mode: "rb".parse().unwrap(),
             position: 0,
         }),
-        MontyObject::ClassInstance {
-            class_type: ClassType {
+        MontyObject::ClassInstance(MontyClassInstance {
+            class_type: MontyClassType {
                 name: String::new(),
                 id: MontyUuid::from_u128(0),
                 host_defined: false,
@@ -221,9 +221,9 @@ fn corpus() -> Vec<MontyObject> {
             },
             instance_id: MontyUuid::from_u128(0),
             attrs: DictPairs::from(Vec::new()),
-        },
-        MontyObject::ClassInstance {
-            class_type: ClassType {
+        }),
+        MontyObject::ClassInstance(MontyClassInstance {
+            class_type: MontyClassType {
                 name: "Point".to_owned(),
                 id: MontyUuid::from_u128(0xDEAD_BEEF),
                 host_defined: true,
@@ -236,7 +236,7 @@ fn corpus() -> Vec<MontyObject> {
                 (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
                 (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
             ]),
-        },
+        }),
         MontyObject::Function {
             name: "f".to_owned(),
             docstring: None,
@@ -332,11 +332,11 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             mode: fh.mode.as_str().to_owned(),
             position: fh.position,
         }),
-        MontyObject::ClassInstance {
+        MontyObject::ClassInstance(MontyClassInstance {
             class_type,
             instance_id,
             attrs,
-        } => Kind::ClassInstance(oracle::ClassInstance {
+        }) => Kind::ClassInstance(oracle::ClassInstance {
             r#type: Some(oracle_class_type(class_type)),
             instance_id: Some(oracle_uuid(instance_id)),
             attrs: Some(oracle_dict(attrs)),
@@ -366,8 +366,8 @@ fn oracle_type(t: &MontyType) -> oracle::Type {
     }
 }
 
-/// Oracle mirror of a `ClassType`, recursing over parents.
-fn oracle_class_type(class_type: &ClassType) -> oracle::Type {
+/// Oracle mirror of a `MontyClassType`, recursing over parents.
+fn oracle_class_type(class_type: &MontyClassType) -> oracle::Type {
     let origin = if class_type.host_defined {
         oracle::TypeOrigin::Host
     } else {

@@ -11,8 +11,8 @@ use monty::{
     detect_repl_continuation_mode, dump,
 };
 use monty_types::{
-    ClassType, CompileOptions, DictPairs, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid,
-    PrintWriter, ResourceTracker,
+    CompileOptions, DictPairs, ExcType, ExtFunctionResult, MontyClassInstance, MontyClassType, MontyException,
+    MontyObject, MontyUuid, PrintWriter, ResourceTracker,
 };
 
 #[test]
@@ -694,8 +694,8 @@ fn repl_start_runtime_error_during_external_call_preserves_repl_state() {
 fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
     // Create a REPL with a host class instance input and call a method on it.
     // This exercises the MethodCall path in repl.rs handle_repl_vm_result.
-    let point = MontyObject::ClassInstance {
-        class_type: ClassType {
+    let point = MontyObject::ClassInstance(MontyClassInstance {
+        class_type: MontyClassType {
             name: "Point".to_string(),
             id: MontyUuid::from_u128(7),
             host_defined: true,
@@ -709,7 +709,7 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
             (MontyObject::String("y".to_string()), MontyObject::Int(2)),
         ]
         .into(),
-    };
+    });
 
     let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
 

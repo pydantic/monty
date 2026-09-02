@@ -32,8 +32,8 @@
 use std::{cell::Cell, fmt::Display, ops::RangeInclusive};
 
 use monty_types::{
-    ClassType, DictPairs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyDate, MontyDateTime,
-    MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    DictPairs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyClassInstance, MontyClassType, MontyDate,
+    MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -296,11 +296,11 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
             encode_str(2, fh.mode.as_str(), buf);
             encode_uint64(3, fh.position, buf);
         }
-        MontyObject::ClassInstance {
+        MontyObject::ClassInstance(MontyClassInstance {
             class_type,
             instance_id,
             attrs,
-        } => {
+        }) => {
             let ty = class_type_to_pb(class_type);
             let id = uuid_to_pb(instance_id);
             encode_message_key(tag::CLASS_INSTANCE, class_instance_len(&ty, &id, attrs), buf);
@@ -367,11 +367,11 @@ fn object_len(obj: &MontyObject) -> usize {
         MontyObject::BuiltinFunction(bf) => encoding::string::encoded_len(tag::BUILTIN_FUNCTION, &bf.to_string()),
         MontyObject::Path(p) => encoding::string::encoded_len(tag::PATH, p),
         MontyObject::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
-        MontyObject::ClassInstance {
+        MontyObject::ClassInstance(MontyClassInstance {
             class_type,
             instance_id,
             attrs,
-        } => submessage_len(
+        }) => submessage_len(
             tag::CLASS_INSTANCE,
             class_instance_len(&class_type_to_pb(class_type), &uuid_to_pb(instance_id), attrs),
         ),
@@ -744,11 +744,11 @@ fn decode_field(
             let attrs = ci
                 .attrs
                 .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.attrs")))?;
-            MontyObject::ClassInstance {
+            MontyObject::ClassInstance(MontyClassInstance {
                 class_type: *class_type,
                 instance_id: pb_uuid_to_monty(&instance_id, "ClassInstance.instance_id")?,
                 attrs: DictPairs::from(attrs.0),
-            }
+            })
         }
         tag::FUNCTION => {
             let func: pb::Function = merge_message(wire_type, buf, ctx)?;
@@ -961,8 +961,8 @@ impl Message for TypeBody {
                 // Charge the entry up front for everything resident at the
                 // conversion peak: this body (the source vec lives until
                 // `type_body_to_monty` finishes collecting), the boxed
-                // `ClassType` and its `MontyType` slot in the converted vec.
-                charge_decode(size_of::<Self>() + size_of::<ClassType>() + size_of::<MontyType>())?;
+                // `MontyClassType` and its `MontyType` slot in the converted vec.
+                charge_decode(size_of::<Self>() + size_of::<MontyClassType>() + size_of::<MontyType>())?;
                 let parent = merge_message::<Self>(wire_type, buf, ctx)?;
                 self.parents.push(parent);
                 Ok(())
@@ -1125,7 +1125,7 @@ fn pb_uuid_to_monty(uuid: &pb::Uuid, field: &'static str) -> Result<MontyUuid, D
 
 /// Encodes a [`MontyType`] as the wire `Type` message: builtins carry only
 /// their Display name (origin BUILTIN, no id), class types their full
-/// [`ClassType`], recursing over `parents`.
+/// [`MontyClassType`], recursing over `parents`.
 fn monty_type_to_pb(t: &MontyType) -> pb::Type {
     match t {
         MontyType::Instance(class_type) => class_type_to_pb(class_type),
@@ -1138,7 +1138,7 @@ fn monty_type_to_pb(t: &MontyType) -> pb::Type {
 }
 
 /// The class-type half of [`monty_type_to_pb`].
-fn class_type_to_pb(class_type: &ClassType) -> pb::Type {
+fn class_type_to_pb(class_type: &MontyClassType) -> pb::Type {
     let origin = if class_type.host_defined {
         pb::TypeOrigin::Host
     } else {
@@ -1213,7 +1213,7 @@ fn type_body_to_monty(ty: TypeBody) -> Result<MontyType, DecodeError> {
             // `PairList` already validated each pair (key and value present)
             // and charged their values against the budget while decoding.
             let attrs = ty.attrs.map(|pairs| DictPairs::from(pairs.0)).unwrap_or_default();
-            Ok(MontyType::Instance(Box::new(ClassType {
+            Ok(MontyType::Instance(Box::new(MontyClassType {
                 name: ty.name,
                 id: pb_uuid_to_monty(&id, "Type.id")?,
                 host_defined: origin == pb::TypeOrigin::Host,

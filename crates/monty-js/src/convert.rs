@@ -31,8 +31,8 @@
 use std::{borrow::Cow, ptr};
 
 use monty_types::{
-    ClassType, DictPairs, ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    DictPairs, ExcType, FileMode, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle,
+    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
 };
 use napi::{bindgen_prelude::*, sys::Status};
 use num_bigint::BigInt as NumBigInt;
@@ -83,11 +83,7 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
         MontyObject::Type(MontyType::Instance(class_type)) => create_js_class_type_marker(class_type, env)?,
         MontyObject::Type(t) => create_js_type_marker(&t.to_string(), env)?,
         MontyObject::BuiltinFunction(f) => create_js_builtin_function_marker(&f.to_string(), env)?,
-        MontyObject::ClassInstance {
-            class_type,
-            instance_id,
-            attrs,
-        } => create_js_class_instance(class_type, instance_id, attrs, env)?,
+        MontyObject::ClassInstance(instance) => create_js_class_instance(instance, env)?,
         MontyObject::Path(p) => env.create_string(p)?.into_unknown(env)?,
         MontyObject::FileHandle(handle) => create_js_file_handle(handle, env)?,
         MontyObject::Repr(s) | MontyObject::Cycle(_, s) => env.create_string(s)?.into_unknown(env)?,
@@ -339,7 +335,7 @@ fn create_js_type_marker<'e>(type_str: &str, env: &'e Env) -> Result<Unknown<'e>
 
 /// Creates a JS object representing a class type object:
 /// `{ __monty_type__: 'Type', classType: { name, id, hostDefined, ... } }`.
-fn create_js_class_type_marker<'e>(class_type: &ClassType, env: &'e Env) -> Result<Unknown<'e>> {
+fn create_js_class_type_marker<'e>(class_type: &MontyClassType, env: &'e Env) -> Result<Unknown<'e>> {
     let mut obj = Object::new(env)?;
     obj.set_named_property("__monty_type__", "Type")?;
     obj.set_named_property("classType", create_js_class_type(class_type, env)?)?;
@@ -349,7 +345,7 @@ fn create_js_class_type_marker<'e>(class_type: &ClassType, env: &'e Env) -> Resu
 /// Builds the plain `classType` object shared by Type and ClassInstance
 /// markers. `parents` entries are Type markers (builtin `{ value }` or class
 /// `{ classType }`), so the shape is recursive the same way the wire is.
-fn create_js_class_type<'e>(class_type: &ClassType, env: &'e Env) -> Result<Object<'e>> {
+fn create_js_class_type<'e>(class_type: &MontyClassType, env: &'e Env) -> Result<Object<'e>> {
     let mut obj = Object::new(env)?;
     obj.set_named_property("name", class_type.name.as_str())?;
     // uuids as canonical lowercase strings — JS has no 128-bit integer type
@@ -429,18 +425,13 @@ fn create_js_file_handle<'e>(handle: &MontyFileHandle, env: &'e Env) -> Result<U
 /// sandbox-controlled, and pair entries cannot clobber a prototype the way
 /// `obj[k] = v` on a plain object could. The TS layer converts the marker to
 /// the original wrapped instance or a `MontyClassProxy` proxy.
-fn create_js_class_instance<'e>(
-    class_type: &ClassType,
-    instance_id: &MontyUuid,
-    attrs: &DictPairs,
-    env: &'e Env,
-) -> Result<Unknown<'e>> {
+fn create_js_class_instance<'e>(instance: &MontyClassInstance, env: &'e Env) -> Result<Unknown<'e>> {
     let mut obj = Object::new(env)?;
     obj.set_named_property("__monty_type__", "ClassInstance")?;
-    obj.set_named_property("type", create_js_class_type(class_type, env)?)?;
+    obj.set_named_property("type", create_js_class_type(&instance.class_type, env)?)?;
     // uuids as canonical lowercase strings — JS has no 128-bit integer type
-    obj.set_named_property("instanceId", instance_id.to_string())?;
-    obj.set_named_property("attrs", create_js_attr_pairs(attrs, env)?)?;
+    obj.set_named_property("instanceId", instance.instance_id.to_string())?;
+    obj.set_named_property("attrs", create_js_attr_pairs(&instance.attrs, env)?)?;
     obj.into_unknown(env)
 }
 
@@ -745,11 +736,11 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
             let class_type = parse_js_class_type(&class_type, &env)?;
             let instance_id = get_uuid_string_property(obj, "instanceId", "ClassInstance")?;
             let attrs = parse_js_attr_pairs(obj.get_named_property("attrs")?, "ClassInstance", &env)?;
-            Ok(MontyObject::ClassInstance {
+            Ok(MontyObject::ClassInstance(MontyClassInstance {
                 class_type,
                 instance_id,
                 attrs,
-            })
+            }))
         }
         _ => Err(Error::from_reason(format!("Unknown Monty marker type: {monty_type}"))),
     }
@@ -766,7 +757,7 @@ fn get_uuid_string_property(obj: &Object, key: &str, type_name: &str) -> Result<
 }
 
 /// Parses the plain `classType` object of a Type / ClassInstance marker.
-fn parse_js_class_type(obj: &Object, env: &Env) -> Result<ClassType> {
+fn parse_js_class_type(obj: &Object, env: &Env) -> Result<MontyClassType> {
     let name: String = obj.get_named_property("name")?;
     let id = get_uuid_string_property(obj, "id", "ClassType")?;
     let host_defined: bool = obj.get_named_property("hostDefined")?;
@@ -789,7 +780,7 @@ fn parse_js_class_type(obj: &Object, env: &Env) -> Result<ClassType> {
     // Absent on markers built before attrs existed is not a case we keep —
     // the TS layer always emits the field, empty when there are no attrs.
     let attrs = parse_js_attr_pairs(obj.get_named_property("attrs")?, "ClassType", env)?;
-    Ok(ClassType {
+    Ok(MontyClassType {
         name,
         id,
         host_defined,

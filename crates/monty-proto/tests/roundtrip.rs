@@ -7,10 +7,11 @@ use monty_proto::{
     reset_decode_budget,
 };
 use monty_types::{
-    ClassType, CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData,
-    MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, OpenCallArgs, OsFunctionCall,
-    PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData,
+    CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
+    MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
+    MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, OpenCallArgs,
+    OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
+    UnicodeErrorData,
 };
 use num_bigint::BigInt;
 use prost::{
@@ -229,7 +230,7 @@ fn exception_and_type_values_round_trip() {
     assert_value_round_trip(&MontyObject::Type(MontyType::Deque));
     assert_value_round_trip(&MontyObject::Type(MontyType::Exception(ExcType::KeyError)));
     // Class types round-trip with their uuid, origin, flags and parents.
-    assert_value_round_trip(&MontyObject::Type(MontyType::Instance(Box::new(ClassType {
+    assert_value_round_trip(&MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
         name: "Foo".to_owned(),
         id: MontyUuid::from_u128(0xFEED),
         host_defined: false,
@@ -237,13 +238,13 @@ fn exception_and_type_values_round_trip() {
         is_dataclass: false,
         attrs: DictPairs::default(),
     }))));
-    assert_value_round_trip(&MontyObject::Type(MontyType::Instance(Box::new(ClassType {
+    assert_value_round_trip(&MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
         name: "Child".to_owned(),
         id: MontyUuid::from_u128(0xBEEF),
         host_defined: true,
         parents: vec![
             MontyType::Int,
-            MontyType::Instance(Box::new(ClassType {
+            MontyType::Instance(Box::new(MontyClassType {
                 name: "Base".to_owned(),
                 id: MontyUuid::from_u128(0xCAFE),
                 host_defined: true,
@@ -284,8 +285,8 @@ fn file_handle_values_round_trip() {
 
 #[test]
 fn class_instance_and_function_values_round_trip() {
-    assert_value_round_trip(&MontyObject::ClassInstance {
-        class_type: ClassType {
+    assert_value_round_trip(&MontyObject::ClassInstance(MontyClassInstance {
+        class_type: MontyClassType {
             name: "Point".to_owned(),
             id: MontyUuid::from_u128(0xDEAD_BEEF),
             host_defined: true,
@@ -298,10 +299,10 @@ fn class_instance_and_function_values_round_trip() {
             (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
             (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
         ]),
-    });
+    }));
     // Sandbox-defined shape: worker-generated ids, non-dataclass, mutable.
-    assert_value_round_trip(&MontyObject::ClassInstance {
-        class_type: ClassType {
+    assert_value_round_trip(&MontyObject::ClassInstance(MontyClassInstance {
+        class_type: MontyClassType {
             name: "Widget".to_owned(),
             id: MontyUuid::from_u128(3),
             host_defined: false,
@@ -311,7 +312,7 @@ fn class_instance_and_function_values_round_trip() {
         },
         instance_id: MontyUuid::from_u128(4),
         attrs: DictPairs::from(vec![]),
-    });
+    }));
     assert_value_round_trip(&MontyObject::Function {
         name: "fetch".to_owned(),
         docstring: Some("fetches a url".to_owned()),
@@ -685,17 +686,19 @@ fn nest_dict(depth: usize) -> MontyObject {
 /// `Int(1)` nested in `depth` levels of single-attr class instance (4 proto
 /// levels per level: `MontyObject` + `ClassInstance` + `Dict` + `Pair`).
 fn nest_class_instance(depth: usize) -> MontyObject {
-    (0..depth).fold(MontyObject::Int(1), |inner, _| MontyObject::ClassInstance {
-        class_type: ClassType {
-            name: "D".to_owned(),
-            id: MontyUuid::from_u128(1),
-            host_defined: true,
-            parents: vec![],
-            is_dataclass: false,
-            attrs: DictPairs::default(),
-        },
-        instance_id: MontyUuid::from_u128(1),
-        attrs: DictPairs::from(vec![(MontyObject::String("f".to_owned()), inner)]),
+    (0..depth).fold(MontyObject::Int(1), |inner, _| {
+        MontyObject::ClassInstance(MontyClassInstance {
+            class_type: MontyClassType {
+                name: "D".to_owned(),
+                id: MontyUuid::from_u128(1),
+                host_defined: true,
+                parents: vec![],
+                is_dataclass: false,
+                attrs: DictPairs::default(),
+            },
+            instance_id: MontyUuid::from_u128(1),
+            attrs: DictPairs::from(vec![(MontyObject::String("f".to_owned()), inner)]),
+        })
     })
 }
 
@@ -703,7 +706,7 @@ fn nest_class_instance(depth: usize) -> MontyObject {
 /// messages deep in total (1 proto level for `MontyObject`, then one per
 /// nested `Type`).
 fn nest_type_parents(depth: usize) -> MontyObject {
-    let mut ty = MontyType::Instance(Box::new(ClassType {
+    let mut ty = MontyType::Instance(Box::new(MontyClassType {
         name: "P".to_owned(),
         id: MontyUuid::from_u128(1),
         host_defined: true,
@@ -712,7 +715,7 @@ fn nest_type_parents(depth: usize) -> MontyObject {
         attrs: DictPairs::default(),
     }));
     for i in 1..depth {
-        ty = MontyType::Instance(Box::new(ClassType {
+        ty = MontyType::Instance(Box::new(MontyClassType {
             name: "P".to_owned(),
             id: MontyUuid::from_u128(1 + i as u128),
             host_defined: true,

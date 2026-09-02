@@ -17,7 +17,7 @@
 //! wrappers built on demand). Never `id()`, which leaks heap addresses to
 //! the worker and is reused by CPython.
 
-use monty_types::{ClassType, DictPairs, MontyObject, MontyType, MontyUuid};
+use monty_types::{DictPairs, MontyClassInstance, MontyClassType, MontyObject, MontyType, MontyUuid};
 use pyo3::{
     Bound,
     exceptions::{PyAttributeError, PyRuntimeError, PyTypeError, PyValueError},
@@ -39,14 +39,18 @@ pub fn is_class_type_wrapper(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     value.is_instance(get_class_type_class(value.py())?)
 }
 
-/// Converts a `pydantic_monty.ClassInstance` wrapper to
-/// `MontyObject::ClassInstance`, registering the wrapper in `store` under the
-/// instance's uuid so later method calls / lazy lookups / round-tripped
-/// returns resolve to the original object.
+/// Converts a `pydantic_monty.ClassInstance` wrapper to a [`MontyClassInstance`],
+/// registering the wrapper in `store` under the instance's uuid so later
+/// method calls / lazy lookups / round-tripped returns resolve to the
+/// original object.
 ///
 /// Eager attrs come from `wrapper.get_eager_attrs()` and are converted with
 /// `py_to_monty`, so nested wrappers inside them register themselves too.
-pub fn class_instance_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, depth: u8) -> PyResult<MontyObject> {
+pub fn class_instance_to_monty(
+    wrapper: &Bound<'_, PyAny>,
+    store: &InstanceStore,
+    depth: u8,
+) -> PyResult<MontyClassInstance> {
     let py = wrapper.py();
 
     // `ClassInstance.__post_init__` always materializes a `ClassType` wrapper
@@ -72,21 +76,23 @@ pub fn class_instance_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore
 
     store.register_instance(&instance_id, wrapper)?;
 
-    Ok(MontyObject::ClassInstance {
+    Ok(MontyClassInstance {
         class_type,
         instance_id,
         attrs: attrs.into(),
     })
 }
 
-/// Converts a `pydantic_monty.ClassType` wrapper to `MontyObject::Type`,
-/// registering the class and wrapper in `store` under the class uuid so
-/// sandbox method calls (`__call__` construction included) and lazy class
-/// attr lookups route back to it.
+/// Converts a `pydantic_monty.ClassType` wrapper to the [`MontyClassType`] it
+/// crosses as (the caller wraps it in `MontyObject::Type`), registering the
+/// class and wrapper in `store` under the class uuid so sandbox method calls
+/// (`__call__` construction included) and lazy class attr lookups route back
+/// to it.
 ///
-/// Eager class attrs come from the wrapper's class-object policy
+/// Unlike [`class_type_from_wrapper`], this is the class crossing as a value:
+/// eager class attrs come from the wrapper's class-object policy
 /// (`get_eager_attrs`) and cross inside the wire `Type`.
-pub fn class_type_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, depth: u8) -> PyResult<MontyObject> {
+pub fn class_type_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, depth: u8) -> PyResult<MontyClassType> {
     let py = wrapper.py();
     let class = wrapper.getattr(intern!(py, "value"))?;
     if !class.is_instance_of::<PyType>() {
@@ -105,16 +111,16 @@ pub fn class_type_to_monty(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, de
     class_type.attrs = attrs.into();
 
     store.register_class_wrapper(&class_type.id, &class, wrapper)?;
-    Ok(MontyObject::Type(MontyType::Instance(Box::new(class_type))))
+    Ok(class_type)
 }
 
-/// Builds the wire [`ClassType`] from a `pydantic_monty.ClassType` wrapper:
+/// Builds the wire [`MontyClassType`] from a `pydantic_monty.ClassType` wrapper:
 /// name from the class, `id` from the wrapper (the name-keyed cache makes it
 /// stable per class), and `parents` from `__bases__` — builtin bases map
-/// through the round-trip type table, class bases get their own `ClassType`
+/// through the round-trip type table, class bases get their own `MontyClassType`
 /// wrappers built here so their ids come from the same cache. Every class
 /// seen is pinned in the store so round-tripped type objects resolve.
-fn class_type_from_wrapper(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, depth: u8) -> PyResult<ClassType> {
+fn class_type_from_wrapper(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, depth: u8) -> PyResult<MontyClassType> {
     let py = wrapper.py();
     if depth >= MAX_INPUT_DEPTH {
         return Err(PyRuntimeError::new_err("Max input depth exceeded"));
@@ -143,7 +149,7 @@ fn class_type_from_wrapper(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, de
             depth + 1,
         )?)));
     }
-    Ok(ClassType {
+    Ok(MontyClassType {
         name,
         id,
         host_defined: true,
@@ -155,9 +161,9 @@ fn class_type_from_wrapper(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, de
     })
 }
 
-/// Converts a `MontyObject::ClassInstance` to a Python object.
+/// Converts a [`MontyClassInstance`] to a Python object.
 ///
-/// When `instance_id` is found in `store`, returns the ORIGINAL wrapped object
+/// When its `instance_id` is found in `store`, returns the ORIGINAL wrapped object
 /// (identity preserved — `result is obj` holds). Otherwise — a sandbox-defined
 /// instance, or an id from a session restored into a fresh session — builds a
 /// read-only [`PyMontyClassProxy`] proxy.
@@ -166,17 +172,15 @@ fn class_type_from_wrapper(wrapper: &Bound<'_, PyAny>, store: &InstanceStore, de
 /// `monty_to_py_inner` so nested attr values respect the output-depth limit.
 pub fn class_instance_to_py(
     py: Python<'_>,
-    class_type: &ClassType,
-    instance_id: &MontyUuid,
-    attrs: &DictPairs,
+    instance: &MontyClassInstance,
     store: &InstanceStore,
     depth: u8,
 ) -> PyResult<Py<PyAny>> {
-    if let Some(wrapper) = store.get(py, instance_id)? {
+    if let Some(wrapper) = store.get(py, &instance.instance_id)? {
         wrapper.bind(py).getattr(intern!(py, "value")).map(Bound::unbind)
     } else {
         let attributes = PyDict::new(py);
-        for (key, value) in attrs {
+        for (key, value) in &instance.attrs {
             // Skip non-string keys — hosts and the sandbox only produce
             // string attr names, so anything else is not representable.
             if let MontyObject::String(key) = key {
@@ -184,8 +188,8 @@ pub fn class_instance_to_py(
             }
         }
         let proxy = PyMontyClassProxy {
-            name: class_type.name.clone(),
-            is_dataclass: class_type.is_dataclass,
+            name: instance.class_type.name.clone(),
+            is_dataclass: instance.class_type.is_dataclass,
             attributes: attributes.unbind(),
         };
         Ok(Py::new(py, proxy)?.into_any())
@@ -195,7 +199,11 @@ pub fn class_instance_to_py(
 /// Resolves a class type object crossing back out of the sandbox: the
 /// original class when its uuid is registered, else `None` (a sandbox class,
 /// or a host class from a session restored into a fresh session).
-pub fn class_type_to_py(py: Python<'_>, class_type: &ClassType, store: &InstanceStore) -> PyResult<Option<Py<PyAny>>> {
+pub fn class_type_to_py(
+    py: Python<'_>,
+    class_type: &MontyClassType,
+    store: &InstanceStore,
+) -> PyResult<Option<Py<PyAny>>> {
     if class_type.host_defined {
         store.get_class(py, &class_type.id)
     } else {
@@ -422,7 +430,7 @@ impl InstanceStore {
             let class_name: String = entry.get_item(0)?.getattr(intern!(py, "__name__"))?.extract()?;
             PyRuntimeError::new_err(format!(
                 "no host class registered for '{name}' on '{class_name}' (id {uuid}) — \
-                 pass the class as a pydantic_monty.ClassType(...)"
+                 pass the class as a pydantic_monty.MontyClassType(...)"
             ))
         } else {
             PyRuntimeError::new_err(format!(

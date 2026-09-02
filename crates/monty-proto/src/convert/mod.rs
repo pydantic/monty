@@ -23,7 +23,7 @@ mod type_checking;
 
 use std::{error, fmt};
 
-use monty_types::{ClassType, DictPairs, MontyObject, MontyType};
+use monty_types::{DictPairs, MontyClassInstance, MontyClassType, MontyObject, MontyType};
 pub use resume::future_results_from_proto;
 
 /// Why a wire value could not be converted into its monty equivalent.
@@ -124,7 +124,7 @@ fn depth_exceeds(value: &MontyObject, budget: usize) -> bool {
         | MontyObject::FrozenSet(items) => seq_exceeds(items, budget, LIST_COST),
         MontyObject::NamedTuple { values, .. } => seq_exceeds(values, budget, LIST_COST),
         MontyObject::Dict(pairs) => pairs_exceed(pairs, budget, DICT_COST),
-        MontyObject::ClassInstance { class_type, attrs, .. } => {
+        MontyObject::ClassInstance(MontyClassInstance { class_type, attrs, .. }) => {
             // The class type is a sibling branch of the attrs chain; its
             // parents and eager class attrs nest inside the `Type` message.
             let type_branch_exceeds = match budget.checked_sub(CLASS_INSTANCE_TYPE_COST) {
@@ -153,7 +153,7 @@ const TYPE_ATTRS_COST: usize = 2;
 /// level — a builtin parent is still a nested `Type` message. Bails as soon
 /// as the budget is exhausted, so recursion stays bounded for adversarially
 /// deep parent chains.
-fn class_type_exceeds(class_type: &ClassType, budget: usize) -> bool {
+fn class_type_exceeds(class_type: &MontyClassType, budget: usize) -> bool {
     let parents_exceed = class_type.parents.iter().any(|parent| match budget.checked_sub(1) {
         None => true,
         Some(rest) => match parent {

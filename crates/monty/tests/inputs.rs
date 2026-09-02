@@ -4,7 +4,9 @@
 //! and can be used in Python code execution.
 
 use monty::MontyRun;
-use monty_types::{ClassType, CompileOptions, DictPairs, ExcType, MontyObject, MontyType, MontyUuid};
+use monty_types::{
+    CompileOptions, DictPairs, ExcType, MontyClassInstance, MontyClassType, MontyObject, MontyType, MontyUuid,
+};
 
 // === Immediate Value Tests ===
 
@@ -588,8 +590,8 @@ fn invalid_input_namedtuple_length_mismatch() {
 
 #[test]
 fn invalid_input_repr_in_class_instance_attrs() {
-    let err = run_input(MontyObject::ClassInstance {
-        class_type: ClassType {
+    let err = run_input(MontyObject::ClassInstance(MontyClassInstance {
+        class_type: MontyClassType {
             name: "Point".to_owned(),
             id: MontyUuid::from_u128(1),
             host_defined: true,
@@ -603,7 +605,7 @@ fn invalid_input_repr_in_class_instance_attrs() {
             (MontyObject::String("b".to_owned()), MontyObject::Repr("bad".to_owned())),
         ]
         .into(),
-    })
+    }))
     .unwrap_err();
     assert_eq!(
         err.message(),
@@ -614,7 +616,7 @@ fn invalid_input_repr_in_class_instance_attrs() {
 /// A host `Point` class-type input carrying one eager class attr (`data`, a
 /// mutable list) — the shape used by the host-class-type tests below.
 fn host_class_type_input() -> MontyObject {
-    MontyObject::Type(MontyType::Instance(Box::new(ClassType {
+    MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
         name: "Point".to_owned(),
         id: MontyUuid::from_u128(1),
         host_defined: true,

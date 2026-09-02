@@ -7,8 +7,8 @@ use std::mem;
 
 use ahash::AHashSet;
 use monty_types::{
-    ClassType, DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType,
+    DictPairs, InvalidInputError, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle,
+    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
 };
 
 use crate::{
@@ -220,11 +220,11 @@ impl MontyObjectExt for MontyObject {
             // binding, so method calls / lazy lookups on such an instance
             // suspend with its uuid and the host's guaranteed store miss
             // produces the usual errors.
-            Self::ClassInstance {
+            Self::ClassInstance(MontyClassInstance {
                 class_type,
                 instance_id,
                 attrs,
-            } => {
+            }) => {
                 let pairs = convert_pairs(attrs, vm)?;
                 let dict = Dict::from_pairs(pairs, vm)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable class instance attr keys"))?;
@@ -502,11 +502,11 @@ impl MontyObjectExt for MontyObject {
                         // Snapshot before recursing: attrs are mutable via `setattr`.
                         let children = snapshot_dict_pairs(hc.get(vm.heap).attrs(), vm.heap);
                         defer_drop!(children, vm);
-                        Self::ClassInstance {
+                        Self::ClassInstance(MontyClassInstance {
                             class_type,
                             instance_id,
                             attrs: pairs_to_objects(children, vm, visited).into(),
-                        }
+                        })
                     }
                     // The type object of a host class crosses out with its
                     // full class type (uuid included), so hosts can resolve
@@ -532,11 +532,11 @@ impl MontyObjectExt for MontyObject {
                         // Snapshot before recursing: attrs are mutable via `setattr`.
                         let children = snapshot_dict_pairs(inst.get(vm.heap).attrs(), vm.heap);
                         defer_drop!(children, vm);
-                        Self::ClassInstance {
+                        Self::ClassInstance(MontyClassInstance {
                             class_type,
                             instance_id,
                             attrs: pairs_to_objects(children, vm, visited).into(),
-                        }
+                        })
                     }
                     // Iterators are internal objects — represent as a fixed type
                     // string rather than recursing.
@@ -765,7 +765,7 @@ impl MontyTypeExt for MontyType {
             // The interpreter-internal placeholder never becomes a value:
             // `type(x)` on a host instance materializes a `HostClassType`.
             Type::HostClass => {
-                unreachable!("Type::HostClass has no boundary mirror — host instances cross as ClassType")
+                unreachable!("Type::HostClass has no boundary mirror — host instances cross as MontyClassType")
             }
             Type::Exception(exc_type) => Self::Exception(exc_type),
             Type::Function => Self::Function,
@@ -799,19 +799,19 @@ impl MontyTypeExt for MontyType {
     }
 }
 
-/// Builds the wire [`ClassType`] for a sandbox-defined class, generating and
+/// Builds the wire [`MontyClassType`] for a sandbox-defined class, generating and
 /// storing its boundary uuid on first crossing so repeated crossings (and
 /// dump/restore) observe the same id.
 ///
 /// # Panics
 /// If `class_id` does not refer to a `Class` heap entry — every producer of a
 /// class id guarantees it does, so this is a programmer-error tripwire.
-fn sandbox_class_type(class_id: HeapId, vm: &mut VM<'_>) -> ClassType {
+fn sandbox_class_type(class_id: HeapId, vm: &mut VM<'_>) -> MontyClassType {
     let is_dataclass = dataclasses::is_dataclass_class(class_id, vm);
     let HeapReadOutput::Class(mut class) = vm.heap.read(class_id) else {
         unreachable!("sandbox_class_type called with a non-class heap id");
     };
-    ClassType {
+    MontyClassType {
         name: class_name(class_id, vm.heap, vm.interns).into_owned(),
         id: class.get_mut(vm.heap).boundary_uuid(),
         host_defined: false,

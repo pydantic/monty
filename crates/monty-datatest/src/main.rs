@@ -30,9 +30,9 @@ use monty::{Dump, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    ClassType, CompileOptions, DictPairs, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime,
-    MontyException, MontyFileHandle, MontyObject, MontyTimeZone, MontyUuid, NameLookupResult, OsFunctionCall,
-    PrintWriter, ResourceLimits, ResourceTracker, dir_stat, file_stat,
+    CompileOptions, DictPairs, ExcType, ExtFunctionResult, FileMode, MontyClassInstance, MontyClassType, MontyDate,
+    MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyTimeZone, MontyUuid, NameLookupResult,
+    OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -584,8 +584,8 @@ impl FixtureRegistry {
     fn register(&mut self, fixture: Fixture) -> MontyObject {
         let instance_id = MontyUuid::from_u128(0x1000 + self.next_id);
         self.next_id += 1;
-        let value = MontyObject::ClassInstance {
-            class_type: ClassType {
+        let value = MontyObject::ClassInstance(MontyClassInstance {
+            class_type: MontyClassType {
                 name: fixture.class_name.to_string(),
                 id: MontyUuid::from_u128(u128::from(fixture.type_id)),
                 host_defined: true,
@@ -600,7 +600,7 @@ impl FixtureRegistry {
                 .map(|(k, v)| (MontyObject::String((*k).to_string()), v.clone()))
                 .collect::<Vec<_>>()
                 .into(),
-        };
+        });
         self.instances.insert(instance_id, fixture);
         value
     }

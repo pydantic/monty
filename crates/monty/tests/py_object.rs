@@ -4,7 +4,8 @@ use std::{
 };
 
 use monty_types::{
-    ClassType, DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone, MontyUuid,
+    DictPairs, ExcType, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta,
+    MontyTimeZone, MontyUuid,
 };
 
 /// Helper to compute a hash for a value.
@@ -185,8 +186,8 @@ fn type_name() {
     );
     assert_eq!(MontyObject::Path("/tmp".to_string()).type_name(), "PosixPath");
     assert_eq!(
-        MontyObject::ClassInstance {
-            class_type: ClassType {
+        MontyObject::ClassInstance(MontyClassInstance {
+            class_type: MontyClassType {
                 name: "Foo".to_string(),
                 id: MontyUuid::from_u128(1),
                 host_defined: false,
@@ -196,7 +197,7 @@ fn type_name() {
             },
             instance_id: MontyUuid::from_u128(2),
             attrs: DictPairs::from(vec![]),
-        }
+        })
         .type_name(),
         "Foo"
     );
@@ -314,8 +315,8 @@ fn is_truthy_path() {
 #[test]
 fn is_truthy_class_instance() {
     assert!(
-        MontyObject::ClassInstance {
-            class_type: ClassType {
+        MontyObject::ClassInstance(MontyClassInstance {
+            class_type: MontyClassType {
                 name: "Foo".to_string(),
                 id: MontyUuid::from_u128(1),
                 host_defined: false,
@@ -325,7 +326,7 @@ fn is_truthy_class_instance() {
             },
             instance_id: MontyUuid::from_u128(2),
             attrs: DictPairs::from(vec![]),
-        }
+        })
         .is_truthy()
     );
 }

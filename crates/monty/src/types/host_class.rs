@@ -3,7 +3,7 @@ use std::{
     hash::{DefaultHasher, Hash, Hasher},
 };
 
-use monty_types::{ClassType, DictPairs, MontyType, MontyUuid};
+use monty_types::{DictPairs, MontyClassType, MontyType, MontyUuid};
 use serde::ser::SerializeStruct;
 
 use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value, str::allocate_string};
@@ -63,7 +63,7 @@ impl HostClass {
     /// Creates a new host class instance from its wire class type and
     /// instance id; ownership of `attrs` transfers.
     #[must_use]
-    pub fn new(class_type: ClassType, instance_id: MontyUuid, attrs: Dict) -> Self {
+    pub fn new(class_type: MontyClassType, instance_id: MontyUuid, attrs: Dict) -> Self {
         Self {
             name: class_type.name.into(),
             instance_id,
@@ -75,12 +75,12 @@ impl HostClass {
         }
     }
 
-    /// Rebuilds the wire [`ClassType`] this instance's class crossed in as.
+    /// Rebuilds the wire [`MontyClassType`] this instance's class crossed in as.
     /// The `type` branch of an instance never carries eager class attrs, so
     /// `attrs` is always empty here.
     #[must_use]
-    pub fn class_type(&self, interns: &Interns) -> ClassType {
-        ClassType {
+    pub fn class_type(&self, interns: &Interns) -> MontyClassType {
+        MontyClassType {
             name: self.name.as_str(interns).to_owned(),
             id: self.type_id,
             host_defined: self.host_defined,
@@ -375,7 +375,7 @@ impl HostClassType {
     /// Creates the type object for a host class from its wire class type and
     /// the already-converted eager class attrs (empty for `type(x)` results).
     #[must_use]
-    pub fn new(name: EitherStr, class_type: ClassType, attrs: Dict) -> Self {
+    pub fn new(name: EitherStr, class_type: MontyClassType, attrs: Dict) -> Self {
         Self {
             name,
             type_id: class_type.id,
@@ -405,12 +405,12 @@ impl HostClassType {
         self.type_id
     }
 
-    /// Rebuilds the wire [`ClassType`] this type object crosses out as —
+    /// Rebuilds the wire [`MontyClassType`] this type object crosses out as —
     /// minus `attrs`, which hold heap `Value`s: the object bridge converts
     /// and appends them when the type crosses out as a value.
     #[must_use]
-    pub fn class_type(&self, interns: &Interns) -> ClassType {
-        ClassType {
+    pub fn class_type(&self, interns: &Interns) -> MontyClassType {
+        MontyClassType {
             name: self.name.as_str(interns).to_owned(),
             id: self.type_id,
             host_defined: self.host_defined,
