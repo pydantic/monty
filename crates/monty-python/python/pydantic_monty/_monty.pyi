@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Literal, NoReturn, final
 
@@ -858,6 +859,7 @@ class AsyncMontyWebsocket:
         max_processes: int | None = None,
         checkout_timeout: float | None = None,
         request_timeout: float | None = 10.0,
+        connect_headers: Callable[[], Mapping[str, str]] | None = None,
     ) -> Self:
         """
         Configure a remote worker pool; connections are made by `async with` and
@@ -882,6 +884,15 @@ class AsyncMontyWebsocket:
                 10.0 is often too low for it — a real `uv pip install` can exceed
                 it. Raise `request_timeout` (or pass `None`) when installing
                 dependencies over the WebSocket transport.
+            connect_headers: Called once per session, as it is entered and before
+                any wait for pool capacity, to produce extra `str` to `str`
+                headers for that connection's WebSocket upgrade request — e.g. a
+                `traceparent` so server-side spans join the caller's trace, or a
+                token for infrastructure in front of the worker. It runs
+                synchronously on the checking-out task, so it sees that task's
+                contextvars and must not block. Monty never interprets the
+                values; duplicate names are last-wins, and a malformed name or
+                value raises `RuntimeError` as the session is entered.
         """
 
     async def __aenter__(self) -> Self: ...
