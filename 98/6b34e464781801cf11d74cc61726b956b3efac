@@ -1,0 +1,21 @@
+.devcontainer/devcontainer.json
+  s_5dfd437de4aec6::t_0bef5e7e9033c0 28-30,33
+.devcontainer/setup.sh
+  s_5dfd437de4aec6::t_380ea9b4fd95fc 40,44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "986b34e464781801cf11d74cc61726b956b3efac",
+  "prompts": {},
+  "sessions": {
+    "s_5dfd437de4aec6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b703fee5-1ace-4c28-8775-6c1e81f43c1a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

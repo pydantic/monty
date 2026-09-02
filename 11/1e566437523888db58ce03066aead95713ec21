@@ -1,0 +1,19 @@
+.devcontainer/setup.sh
+  s_5dfd437de4aec6::t_380ea9b4fd95fc 30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "111e566437523888db58ce03066aead95713ec21",
+  "prompts": {},
+  "sessions": {
+    "s_5dfd437de4aec6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b703fee5-1ace-4c28-8775-6c1e81f43c1a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
