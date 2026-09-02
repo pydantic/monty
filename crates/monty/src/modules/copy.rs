@@ -373,6 +373,11 @@ pub(crate) fn deep_copy_attrs(
     let (copy, vm) = guard.as_parts_mut();
     memo.insert(source, copy, vm)?;
     let expected_len = attrs(source_id, vm).len();
+    // Preflighted whole, for the reason the dict copy is: the loop below
+    // rejects a resize rather than following it, so this is the final width.
+    vm.heap
+        .tracker
+        .check_allocation(expected_len.saturating_mul(2 * VALUE_SIZE))?;
     for index in 0.. {
         let (_, vm) = guard.as_parts_mut();
         vm.heap.tracker.check_time_every(index)?;
