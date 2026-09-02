@@ -978,6 +978,28 @@ fn timeout_in_str_format_grouped_padding() {
     );
 }
 
+/// A str field above the large-result threshold is walked and copied in polled
+/// steps, so a deadline armed before the call fires during the format itself.
+#[test]
+fn timeout_in_str_format_large_field_copy() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("s = 'x' * 20_000_000", vec![], PrintWriter::Stdout)
+        .unwrap();
+
+    repl.tracker_mut().set_max_duration(Duration::from_millis(5));
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("'{0:<1}'.format(s)", vec![], PrintWriter::Stdout)
+        .expect_err("copying a large field must observe the time limit");
+    let elapsed = start.elapsed();
+
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "str.format() should stop during the copy, took {elapsed:?}"
+    );
+}
+
 /// Test that `bytes.splitlines()` on large bytes respects the time limit.
 ///
 /// `bytes_splitlines()` scans bytes for line endings and now checks the time limit.

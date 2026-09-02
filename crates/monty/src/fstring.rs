@@ -2270,12 +2270,7 @@ fn fix_exp_format(s: &str, tracker: &ResourceTracker) -> RunResult<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use monty_types::{LARGE_RESULT_THRESHOLD, ResourceLimits, ResourceTracker};
-
-    use super::{grouped_digit_count, insert_grouping, push_format_str};
-    use crate::{exception_private::RunError, string_builder::StringBuilder};
+    use super::grouped_digit_count;
 
     #[test]
     fn grouped_digit_count_inverts_the_grouped_width() {
@@ -2294,31 +2289,5 @@ mod tests {
         assert_eq!(total, 3 * (1usize << 61));
         assert!(total + (total - 1) / 3 >= width);
         assert!(total - 1 + (total - 2) / 3 < width);
-    }
-
-    #[test]
-    fn grouped_padding_checks_time_before_allocating() {
-        let tracker = ResourceTracker::new(ResourceLimits::default().max_duration(Duration::ZERO));
-        tracker.on_execution_start();
-        let error = insert_grouping("1", 3, ',', isize::MAX as usize, &tracker).unwrap_err();
-        tracker.on_execution_stop();
-        let RunError::UncatchableExc(error) = error else {
-            panic!("expected uncatchable timeout, got {error:?}");
-        };
-        assert!(error.exc.to_string().contains("time limit exceeded"));
-    }
-
-    #[test]
-    fn large_format_fragment_checks_time_during_copy() {
-        let value = "x".repeat(LARGE_RESULT_THRESHOLD + 1);
-        let tracker = ResourceTracker::new(ResourceLimits::default().max_duration(Duration::ZERO));
-        let mut output = StringBuilder::new(&tracker);
-        tracker.on_execution_start();
-        let error = push_format_str(&mut output, &value, &tracker).unwrap_err();
-        tracker.on_execution_stop();
-        let RunError::UncatchableExc(error) = error else {
-            panic!("expected uncatchable timeout, got {error:?}");
-        };
-        assert!(error.exc.to_string().contains("time limit exceeded"));
     }
 }
