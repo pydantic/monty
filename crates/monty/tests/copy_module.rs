@@ -11,6 +11,10 @@
 //!
 //! These tests pin what is true today: the limit fires before the stack for the
 //! shape that fits, and each shape's cost per level stays where it is.
+//!
+//! Only a release build runs them on that 1 MiB, so CI has a `stack-budget`
+//! job that runs this file with `--release`; a debug run exercises the shapes
+//! but proves nothing about the worker's budget.
 
 use std::thread;
 
