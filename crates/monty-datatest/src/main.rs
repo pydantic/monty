@@ -589,7 +589,6 @@ impl FixtureRegistry {
                 name: fixture.class_name.to_string(),
                 id: MontyUuid::from_u128(u128::from(fixture.type_id)),
                 host_defined: true,
-                parents: vec![],
                 is_dataclass: true,
                 attrs: DictPairs::default(),
             },

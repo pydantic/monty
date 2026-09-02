@@ -126,7 +126,7 @@ fn depth_exceeds(value: &MontyObject, budget: usize) -> bool {
         MontyObject::Dict(pairs) => pairs_exceed(pairs, budget, DICT_COST),
         MontyObject::ClassInstance(MontyClassInstance { class_type, attrs, .. }) => {
             // The class type is a sibling branch of the attrs chain; its
-            // parents and eager class attrs nest inside the `Type` message.
+            // eager class attrs nest inside the `Type` message.
             let type_branch_exceeds = match budget.checked_sub(CLASS_INSTANCE_TYPE_COST) {
                 None => true,
                 Some(rest) => class_type_exceeds(class_type, rest),
@@ -147,22 +147,12 @@ fn depth_exceeds(value: &MontyObject, budget: usize) -> bool {
 /// `Type` message (`Dict` + `Pair`; the values then count as usual).
 const TYPE_ATTRS_COST: usize = 2;
 
-/// Whether a class type's `parents` chain or eager class `attrs` exceed
-/// `budget` further message levels nested under the `Type` message itself
-/// (the levels above it are charged by the caller). Every parent costs one
-/// level — a builtin parent is still a nested `Type` message. Bails as soon
-/// as the budget is exhausted, so recursion stays bounded for adversarially
-/// deep parent chains.
+/// Whether a class type's eager class `attrs` exceed `budget` further message
+/// levels nested under the `Type` message itself (the levels above it are
+/// charged by the caller). Empty attrs encode as an absent field, consuming
+/// no message levels.
 fn class_type_exceeds(class_type: &MontyClassType, budget: usize) -> bool {
-    let parents_exceed = class_type.parents.iter().any(|parent| match budget.checked_sub(1) {
-        None => true,
-        Some(rest) => match parent {
-            MontyType::Instance(parent_class) => class_type_exceeds(parent_class, rest),
-            _ => false,
-        },
-    });
-    // Empty attrs encode as an absent field, consuming no message levels.
-    parents_exceed || (!class_type.attrs.is_empty() && pairs_exceed(&class_type.attrs, budget, TYPE_ATTRS_COST))
+    !class_type.attrs.is_empty() && pairs_exceed(&class_type.attrs, budget, TYPE_ATTRS_COST)
 }
 
 fn seq_exceeds(items: &[MontyObject], budget: usize, cost: usize) -> bool {

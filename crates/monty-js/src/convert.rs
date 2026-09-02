@@ -343,23 +343,13 @@ fn create_js_class_type_marker<'e>(class_type: &MontyClassType, env: &'e Env) ->
 }
 
 /// Builds the plain `classType` object shared by Type and ClassInstance
-/// markers. `parents` entries are Type markers (builtin `{ value }` or class
-/// `{ classType }`), so the shape is recursive the same way the wire is.
+/// markers.
 fn create_js_class_type<'e>(class_type: &MontyClassType, env: &'e Env) -> Result<Object<'e>> {
     let mut obj = Object::new(env)?;
     obj.set_named_property("name", class_type.name.as_str())?;
     // uuids as canonical lowercase strings — JS has no 128-bit integer type
     obj.set_named_property("id", class_type.id.to_string())?;
     obj.set_named_property("hostDefined", class_type.host_defined)?;
-    let mut parents = env.create_array(class_type.parents.len().try_into().expect("parents size overflows u32"))?;
-    for (i, parent) in class_type.parents.iter().enumerate() {
-        let marker = match parent {
-            MontyType::Instance(parent_class) => create_js_class_type_marker(parent_class, env)?,
-            builtin => create_js_type_marker(&builtin.to_string(), env)?,
-        };
-        parents.set(i.try_into().expect("overflow on parents index"), marker)?;
-    }
-    obj.set_named_property("parents", parents)?;
     obj.set_named_property("isDataclass", class_type.is_dataclass)?;
     obj.set_named_property("attrs", create_js_attr_pairs(&class_type.attrs, env)?)?;
     Ok(obj)
@@ -761,22 +751,6 @@ fn parse_js_class_type(obj: &Object, env: &Env) -> Result<MontyClassType> {
     let name: String = obj.get_named_property("name")?;
     let id = get_uuid_string_property(obj, "id", "ClassType")?;
     let host_defined: bool = obj.get_named_property("hostDefined")?;
-    let parents_arr: Array = obj.get_named_property("parents")?;
-    let mut parents = Vec::with_capacity(parents_arr.len() as usize);
-    for i in 0..parents_arr.len() {
-        let marker = parents_arr
-            .get::<Object>(i)?
-            .ok_or_else(|| Error::from_reason("ClassType parents entries must be Type markers"))?;
-        if marker.has_named_property("classType")? {
-            let class_type: Object = marker.get_named_property("classType")?;
-            parents.push(MontyType::Instance(Box::new(parse_js_class_type(&class_type, env)?)));
-        } else {
-            let value: String = marker.get_named_property("value")?;
-            let builtin = MontyType::from_type_name(&value)
-                .ok_or_else(|| Error::from_reason(format!("unknown builtin type name {value:?}")))?;
-            parents.push(builtin);
-        }
-    }
     // Absent on markers built before attrs existed is not a case we keep —
     // the TS layer always emits the field, empty when there are no attrs.
     let attrs = parse_js_attr_pairs(obj.get_named_property("attrs")?, "ClassType", env)?;
@@ -784,7 +758,6 @@ fn parse_js_class_type(obj: &Object, env: &Env) -> Result<MontyClassType> {
         name,
         id,
         host_defined,
-        parents,
         is_dataclass: obj.get_named_property("isDataclass")?,
         attrs,
     })

@@ -173,7 +173,6 @@ fn corpus() -> Vec<MontyObject> {
             name: "Foo".to_owned(),
             id: MontyUuid::from_u128(0xF00),
             host_defined: false,
-            parents: vec![],
             is_dataclass: false,
             attrs: DictPairs::default(),
         }))),
@@ -181,17 +180,6 @@ fn corpus() -> Vec<MontyObject> {
             name: "Child".to_owned(),
             id: MontyUuid::from_u128(0xF01),
             host_defined: true,
-            parents: vec![
-                MontyType::Str,
-                MontyType::Instance(Box::new(MontyClassType {
-                    name: "Base".to_owned(),
-                    id: MontyUuid::from_u128(0xF02),
-                    host_defined: true,
-                    parents: vec![],
-                    is_dataclass: true,
-                    attrs: DictPairs::default(),
-                })),
-            ],
             is_dataclass: true,
             attrs: vec![
                 (MontyObject::String("SIDES".to_owned()), MontyObject::Int(4)),
@@ -215,7 +203,6 @@ fn corpus() -> Vec<MontyObject> {
                 name: String::new(),
                 id: MontyUuid::from_u128(0),
                 host_defined: false,
-                parents: vec![],
                 is_dataclass: false,
                 attrs: DictPairs::default(),
             },
@@ -227,7 +214,6 @@ fn corpus() -> Vec<MontyObject> {
                 name: "Point".to_owned(),
                 id: MontyUuid::from_u128(0xDEAD_BEEF),
                 host_defined: true,
-                parents: vec![],
                 is_dataclass: true,
                 attrs: DictPairs::default(),
             },
@@ -366,7 +352,7 @@ fn oracle_type(t: &MontyType) -> oracle::Type {
     }
 }
 
-/// Oracle mirror of a `MontyClassType`, recursing over parents.
+/// Oracle mirror of a `MontyClassType`.
 fn oracle_class_type(class_type: &MontyClassType) -> oracle::Type {
     let origin = if class_type.host_defined {
         oracle::TypeOrigin::Host
@@ -382,7 +368,6 @@ fn oracle_class_type(class_type: &MontyClassType) -> oracle::Type {
         name: class_type.name.clone(),
         id: Some(oracle_uuid(&class_type.id)),
         origin: origin as i32,
-        parents: class_type.parents.iter().map(oracle_type).collect(),
         is_dataclass: class_type.is_dataclass,
         attrs,
     }

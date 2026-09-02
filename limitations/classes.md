@@ -235,9 +235,9 @@ value). Divergences from real CPython objects:
   both into one session raises `ValueError` rather than silently aliasing
   them — give one an explicit `id`. Sandbox-defined uuids live in the heap
   and survive dump/restore.
-- The wire carries each class's direct bases (`parents`), but **inheritance
-  is not functional in the sandbox**: base-class attributes and methods are
-  not consulted, and `__bases__` still raises `AttributeError`.
+- **Inheritance is not modelled**: a host class's bases are not sent, so
+  base-class attributes and methods are not consulted, and `__bases__`
+  raises `AttributeError`.
 
 ## Host classes (`ClassType` wrapper)
 

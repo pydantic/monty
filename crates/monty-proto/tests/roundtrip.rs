@@ -2,10 +2,7 @@ use std::time::Duration;
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_proto::{
-    DEFAULT_MAX_DECODE_BYTES, MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb,
-    reset_decode_budget,
-};
+use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use monty_types::{
     CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
     MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
@@ -14,10 +11,7 @@ use monty_types::{
     UnicodeErrorData,
 };
 use num_bigint::BigInt;
-use prost::{
-    Message,
-    encoding::{WireType, encode_key, encode_varint},
-};
+use prost::Message;
 
 /// Asserts `obj` survives `MontyObject -> wire bytes -> MontyObject` through
 /// the hand-written `WireObject` codec (both directions).
@@ -186,34 +180,6 @@ fn timezone_names_are_charged_to_the_decode_budget() {
     }
 }
 
-/// A compromised worker must not amplify a cheap frame into unbounded host
-/// memory through `Type.parents`: an empty entry costs 2 wire bytes but ~200
-/// bytes resident, so `TypeBody` charges the budget per entry *during*
-/// decode. These bytes must fail the budget mid-decode — a decoder that
-/// materializes the whole tree first would build ~2 GiB of `Type`s from this
-/// 32 MiB buffer and only fail origin validation afterwards.
-#[test]
-fn type_parents_fanout_is_charged_during_decode() {
-    reset_decode_budget();
-    // Each entry charges well over 64 bytes, so budget/64 empty entries are
-    // guaranteed to overrun the budget partway through the buffer.
-    let entries = DEFAULT_MAX_DECODE_BYTES / 64;
-    let mut type_payload = Vec::with_capacity(entries * 2);
-    for _ in 0..entries {
-        type_payload.extend_from_slice(&[0x22, 0x00]); // field 4 (parents), len 0
-    }
-    // MontyObject { Type type = 23 }: length-delimited key, then the payload.
-    let mut bytes = Vec::with_capacity(type_payload.len() + 8);
-    encode_key(23, WireType::LengthDelimited, &mut bytes);
-    encode_varint(type_payload.len() as u64, &mut bytes);
-    bytes.extend_from_slice(&type_payload);
-
-    let err = WireObject::decode(bytes.as_slice()).expect_err("over-fanout Type must be rejected");
-    assert_snapshot!(err, @"failed to decode Protobuf message: frame exceeds decode memory budget");
-    // Leave the shared thread-local budget full for other decodes.
-    reset_decode_budget();
-}
-
 #[test]
 fn exception_and_type_values_round_trip() {
     assert_value_round_trip(&MontyObject::Exception {
@@ -229,12 +195,11 @@ fn exception_and_type_values_round_trip() {
     // Qualified name (`collections.deque`) must survive the wire round-trip.
     assert_value_round_trip(&MontyObject::Type(MontyType::Deque));
     assert_value_round_trip(&MontyObject::Type(MontyType::Exception(ExcType::KeyError)));
-    // Class types round-trip with their uuid, origin, flags and parents.
+    // Class types round-trip with their uuid, origin and flags.
     assert_value_round_trip(&MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
         name: "Foo".to_owned(),
         id: MontyUuid::from_u128(0xFEED),
         host_defined: false,
-        parents: vec![],
         is_dataclass: false,
         attrs: DictPairs::default(),
     }))));
@@ -242,17 +207,6 @@ fn exception_and_type_values_round_trip() {
         name: "Child".to_owned(),
         id: MontyUuid::from_u128(0xBEEF),
         host_defined: true,
-        parents: vec![
-            MontyType::Int,
-            MontyType::Instance(Box::new(MontyClassType {
-                name: "Base".to_owned(),
-                id: MontyUuid::from_u128(0xCAFE),
-                host_defined: true,
-                parents: vec![],
-                is_dataclass: true,
-                attrs: DictPairs::default(),
-            })),
-        ],
         is_dataclass: true,
         attrs: DictPairs::default(),
     }))));
@@ -290,7 +244,6 @@ fn class_instance_and_function_values_round_trip() {
             name: "Point".to_owned(),
             id: MontyUuid::from_u128(0xDEAD_BEEF),
             host_defined: true,
-            parents: vec![],
             is_dataclass: true,
             attrs: DictPairs::default(),
         },
@@ -306,7 +259,6 @@ fn class_instance_and_function_values_round_trip() {
             name: "Widget".to_owned(),
             id: MontyUuid::from_u128(3),
             host_defined: false,
-            parents: vec![],
             is_dataclass: false,
             attrs: DictPairs::default(),
         },
@@ -692,7 +644,6 @@ fn nest_class_instance(depth: usize) -> MontyObject {
                 name: "D".to_owned(),
                 id: MontyUuid::from_u128(1),
                 host_defined: true,
-                parents: vec![],
                 is_dataclass: false,
                 attrs: DictPairs::default(),
             },
@@ -700,31 +651,6 @@ fn nest_class_instance(depth: usize) -> MontyObject {
             attrs: DictPairs::from(vec![(MontyObject::String("f".to_owned()), inner)]),
         })
     })
-}
-
-/// A type-object value whose class has a parents chain `depth` `Type`
-/// messages deep in total (1 proto level for `MontyObject`, then one per
-/// nested `Type`).
-fn nest_type_parents(depth: usize) -> MontyObject {
-    let mut ty = MontyType::Instance(Box::new(MontyClassType {
-        name: "P".to_owned(),
-        id: MontyUuid::from_u128(1),
-        host_defined: true,
-        parents: vec![],
-        is_dataclass: false,
-        attrs: DictPairs::default(),
-    }));
-    for i in 1..depth {
-        ty = MontyType::Instance(Box::new(MontyClassType {
-            name: "P".to_owned(),
-            id: MontyUuid::from_u128(1 + i as u128),
-            host_defined: true,
-            parents: vec![ty],
-            is_dataclass: false,
-            attrs: DictPairs::default(),
-        }));
-    }
-    MontyObject::Type(ty)
 }
 
 /// Whether `value` decodes when shipped inside the deepest legitimate frame
@@ -753,11 +679,10 @@ fn decodes_in_frame(value: &MontyObject) -> bool {
 fn depth_check_matches_frame_decodability() {
     /// One container shape: name, nesting builder, deepest depth that must pass.
     type DepthCase = (&'static str, fn(usize) -> MontyObject, usize);
-    let cases: [DepthCase; 4] = [
+    let cases: [DepthCase; 3] = [
         ("list", nest_list, MAX_VALUE_DEPTH),        // 48: 2 proto levels each
         ("dict", nest_dict, 32),                     // 3 proto levels each
         ("class_instance", nest_class_instance, 24), // 4 proto levels each
-        ("type_parents", nest_type_parents, 96),     // 1 proto level per parent
     ];
     for (shape, build, max_depth) in cases {
         let deepest = build(max_depth);

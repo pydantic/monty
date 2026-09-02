@@ -79,7 +79,7 @@ fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
     {
         // Freshly allocated per call: equal (by class identity) but not
         // identical across calls — see `limitations/classes.md`.
-        let ty = HostClassType::new(hc.name_either().clone(), hc.class_type(vm.interns), Dict::default());
+        let ty = HostClassType::new(hc.name_either().clone(), &hc.class_type(vm.interns), Dict::default());
         Value::Ref(vm.heap.allocate(HeapData::HostClassType(Box::new(ty))))
     } else {
         Value::Builtin(Builtins::Type(value.py_type(vm)))

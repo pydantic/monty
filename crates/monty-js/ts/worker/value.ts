@@ -205,26 +205,11 @@ function pushClassInstance(object: Record<string, unknown>, nodes: ValueNode[]):
 }
 
 /** Builds a class-type node from the plain `classType` marker object,
- *  appending parent nodes (Type markers) to the arena. */
+ *  appending its eager attr nodes to the arena. */
 function pushClassType(
   object: Record<string, unknown>,
   nodes: ValueNode[],
 ): Extract<ValueNode, { tag: 'class-type' }>['val'] {
-  const parents: number[] = []
-  if (Array.isArray(object.parents)) {
-    for (const parent of object.parents as unknown[]) {
-      if (typeof parent !== 'object' || parent === null) {
-        throw new TypeError('ClassType parents entries must be Type markers')
-      }
-      const marker = parent as Record<string, unknown>
-      const node: ValueNode =
-        typeof marker.classType === 'object' && marker.classType !== null
-          ? { tag: 'class-type', val: pushClassType(marker.classType as Record<string, unknown>, nodes) }
-          : { tag: 'type-name', val: String(marker.value) }
-      parents.push(nodes.length)
-      nodes.push(node)
-    }
-  }
   // Require an array like the native binding does, so both transports
   // enforce the same marker contract (a missing `attrs` is a forged or
   // malformed marker, not an empty attribute list).
@@ -242,7 +227,6 @@ function pushClassType(
     name: String(object.name),
     id: uuidString(object.id, 'ClassType id'),
     hostDefined: object.hostDefined === true,
-    parents: new Uint32Array(parents),
     isDataclass: object.isDataclass === true,
     attrs: pushPairs(attrPairs, nodes),
   }
@@ -425,23 +409,12 @@ function readClassInstance(
 }
 
 /** Rebuilds the plain `classType` marker object from a class-type node,
- *  resolving parent node indexes (class-type / type-name) recursively. */
+ *  resolving its eager attr nodes recursively. */
 function readClassType(
   classType: Extract<ValueNode, { tag: 'class-type' }>['val'],
   nodes: ValueNode[],
   visiting: Set<number>,
 ): Record<string, unknown> {
-  const parents: unknown[] = []
-  for (const parentIndex of classType.parents) {
-    const parent = readValueNode(parentIndex, nodes, visiting)
-    if (parent.tag === 'class-type') {
-      parents.push({ [TYPE_MARKER]: 'Type', classType: readClassType(parent.val, nodes, visiting) })
-    } else if (parent.tag === 'type-name') {
-      parents.push({ [TYPE_MARKER]: 'Type', value: parent.val })
-    } else {
-      throw new Error('class-type parent index is not a class-type or type-name node')
-    }
-  }
   const attrs: Array<[string, unknown]> = []
   for (const pair of classType.attrs) {
     const [key, value] = readPair(pair, nodes, visiting)
@@ -452,7 +425,6 @@ function readClassType(
     name: classType.name,
     id: classType.id,
     hostDefined: classType.hostDefined,
-    parents,
     isDataclass: classType.isDataclass,
     attrs,
   }

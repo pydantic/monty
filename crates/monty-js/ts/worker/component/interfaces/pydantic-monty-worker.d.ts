@@ -66,7 +66,6 @@ export interface ClassTypeNode {
   name: string
   id: string
   hostDefined: boolean
-  parents: Uint32Array
   isDataclass: boolean
   attrs: Array<NodePair>
 }

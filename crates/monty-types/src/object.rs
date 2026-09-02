@@ -218,11 +218,11 @@ impl MontyObject {
             Self::NamedTuple {
                 type_name, field_names, ..
             } => type_name.len() + names_len(field_names),
-            Self::ClassInstance(instance) => instance.class_type.names_len(),
+            Self::ClassInstance(instance) => instance.class_type.name.len(),
             // A `Type::Instance` carries the resolved class type with owned name
             // strings (the other `MontyType`s are payload-free), so charge it
             // here like the `String`/`Function`/... names above.
-            Self::Type(MontyType::Instance(class_type)) => class_type.names_len(),
+            Self::Type(MontyType::Instance(class_type)) => class_type.name.len(),
             // The temporal values each carry an owned timezone name, which is
             // caller-supplied and unbounded — the rest of their fields are scalars.
             Self::DateTime(dt) => name_len(&dt.timezone_name),
@@ -763,33 +763,12 @@ pub struct MontyClassType {
     /// True for a host-defined class (wire origin `HOST`); false for a
     /// sandbox-defined class (`SANDBOX`). Builtins never use `MontyClassType`.
     pub host_defined: bool,
-    /// Direct base classes: builtin bases are plain [`MontyType`] variants,
-    /// class bases are [`MontyType::Instance`]. Carried on the wire but
-    /// inheritance is not functional in the sandbox yet.
-    pub parents: Vec<MontyType>,
     /// Whether `dataclasses.is_dataclass` is true for the class.
     pub is_dataclass: bool,
     /// Class attributes sent eagerly with the type object (class constants,
     /// per the sending wrapper's policy). Empty for the `type` branch inside
-    /// a `ClassInstance` and for `parents` entries.
+    /// a `ClassInstance`.
     pub attrs: DictPairs,
-}
-
-impl MontyClassType {
-    /// Total owned name bytes, recursively over `parents` — the class type's
-    /// contribution to host-size accounting.
-    #[must_use]
-    pub fn names_len(&self) -> usize {
-        self.name.len()
-            + self
-                .parents
-                .iter()
-                .map(|p| match p {
-                    MontyType::Instance(class_type) => class_type.names_len(),
-                    _ => 0,
-                })
-                .sum::<usize>()
-    }
 }
 
 /// The Python type of a value at the host boundary — the public mirror of the

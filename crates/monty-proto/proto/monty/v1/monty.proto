@@ -218,15 +218,12 @@ message Type {
   Uuid id = 2;
   // Where the type was defined (builtin, sandbox, or host).
   TypeOrigin origin = 3;
-  // Direct base classes (multiple inheritance); carried on the wire but not
-  // functional in the sandbox yet.
-  repeated Type parents = 4;
   // Whether `dataclasses.is_dataclass` is true for the class.
-  bool is_dataclass = 5;
+  bool is_dataclass = 4;
   // Class attributes sent eagerly with the type object (class constants, per
   // the sending wrapper's policy). Empty for the `type` field inside a
-  // ClassInstance and for `parents` entries.
-  Dict attrs = 6;
+  // ClassInstance.
+  Dict attrs = 5;
 }
 
 // A class instance crossing the sandbox boundary. Host-backed instances route

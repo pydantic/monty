@@ -86,16 +86,12 @@ interface worker {
     }
 
     /// A class type object (`type` is a WIT keyword, hence the name). The
-    /// real class lives on whichever side generated `id`; parents index other
-    /// nodes in the same arena, each of which must be a class-type or
-    /// type-name node (validated on read).
+    /// real class lives on whichever side generated `id`.
     record class-type-node {
         name: string,
         /// Canonical lowercase uuid string.
         id: string,
         host-defined: bool,
-        /// Indexes of class-type / type-name parent nodes.
-        parents: list<u32>,
         is-dataclass: bool,
         /// Eagerly-sent class attributes (class constants); empty for the
         /// class-type of an instance and for parent entries.

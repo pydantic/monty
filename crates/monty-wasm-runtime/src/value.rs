@@ -259,29 +259,17 @@ fn parse_uuid(value: &str) -> Result<MontyUuid, String> {
     MontyUuid::parse(value).ok_or_else(|| format!("invalid uuid {value:?}"))
 }
 
-/// Reads a class-type node into `MontyType::Instance`, resolving `parents`
-/// (each must be a class-type or type-name node) and the eager class attrs
-/// recursively.
+/// Reads a class-type node into `MontyType::Instance`, resolving the eager
+/// class attrs recursively.
 fn read_class_type(node: ClassTypeNode, nodes: &mut [Option<ValueNode>], depth: usize) -> Result<MontyType, String> {
     if depth > MAX_VALUE_DEPTH {
         return Err("value exceeds the maximum nesting depth".to_owned());
-    }
-    let mut parents = Vec::with_capacity(node.parents.len());
-    for parent_index in node.parents {
-        match take_node(parent_index, nodes)? {
-            ValueNode::ClassType(parent) => parents.push(read_class_type(parent, nodes, depth + 1)?),
-            ValueNode::TypeName(name) => {
-                parents.push(MontyType::from_type_name(&name).ok_or_else(|| format!("unknown type name {name:?}"))?);
-            }
-            _ => return Err("class-type parent index is not a class-type or type-name node".to_owned()),
-        }
     }
     let attrs = read_pairs(node.attrs, nodes, depth)?;
     Ok(MontyType::Instance(Box::new(MontyClassType {
         name: node.name,
         id: parse_uuid(&node.id)?,
         host_defined: node.host_defined,
-        parents,
         is_dataclass: node.is_dataclass,
         attrs: attrs.into(),
     })))
@@ -491,28 +479,13 @@ fn push_node(object: MontyObject, nodes: &mut Vec<ValueNode>) -> u32 {
     index
 }
 
-/// Builds a class-type node, appending its class-type / type-name parent
-/// nodes to the arena and referencing them by index.
+/// Builds a class-type node, appending its eager attr nodes to the arena.
 fn push_class_type(class_type: MontyClassType, nodes: &mut Vec<ValueNode>) -> ClassTypeNode {
-    let parents = class_type
-        .parents
-        .into_iter()
-        .map(|parent| {
-            let node = match parent {
-                MontyType::Instance(parent_class) => ValueNode::ClassType(push_class_type(*parent_class, nodes)),
-                builtin => ValueNode::TypeName(builtin.to_string()),
-            };
-            let index = u32::try_from(nodes.len()).expect("component value arena exceeds u32::MAX nodes");
-            nodes.push(node);
-            index
-        })
-        .collect();
     let attrs = push_pairs(class_type.attrs, nodes);
     ClassTypeNode {
         name: class_type.name,
         id: class_type.id.to_string(),
         host_defined: class_type.host_defined,
-        parents,
         is_dataclass: class_type.is_dataclass,
         attrs,
     }

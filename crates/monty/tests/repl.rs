@@ -699,7 +699,6 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
             name: "Point".to_string(),
             id: MontyUuid::from_u128(7),
             host_defined: true,
-            parents: vec![],
             is_dataclass: true,
             attrs: DictPairs::default(),
         },

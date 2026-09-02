@@ -555,15 +555,10 @@ class TurnAnswerer {
       )
     }
     if (wrapper === undefined) {
-      // A session restored into a process that never sent the object, or a
-      // class that crossed (e.g. via `type(x)`) without a ClassType wrapper.
-      const known = this.instances.knownClassName(objectId)
+      // A session restored into a process that never sent the object.
       const message =
-        known === undefined
-          ? `no host object registered for method call '${call.functionName}' (id ${objectId}) — ` +
-            'the instance store is empty after loading a dump into a fresh session'
-          : `no host class registered for '${call.functionName}' on '${known}' (id ${objectId}) — ` +
-            'pass the class as a ClassType(...)'
+        `no host object registered for method call '${call.functionName}' (id ${objectId}) — ` +
+        'the instance store is empty after loading a dump into a fresh session'
       return this.native.resumeError('RuntimeError', message, onPrint)
     }
     let returned: unknown

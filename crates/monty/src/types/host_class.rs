@@ -3,7 +3,7 @@ use std::{
     hash::{DefaultHasher, Hash, Hasher},
 };
 
-use monty_types::{DictPairs, MontyClassType, MontyType, MontyUuid};
+use monty_types::{DictPairs, MontyClassType, MontyUuid};
 use serde::ser::SerializeStruct;
 
 use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value, str::allocate_string};
@@ -50,9 +50,6 @@ pub(crate) struct HostClass {
     /// Whether the class is host-defined (routing target) rather than a
     /// round-tripped sandbox class.
     host_defined: bool,
-    /// Direct base classes, carried for the wire `Type`; inheritance is not
-    /// functional in the sandbox.
-    parents: Vec<MontyType>,
     /// Eagerly-sent attributes, in order (both fields and dynamically added)
     attrs: Dict,
     /// Whether `dataclasses.is_dataclass(obj)` is true on the host side.
@@ -69,7 +66,6 @@ impl HostClass {
             instance_id,
             type_id: class_type.id,
             host_defined: class_type.host_defined,
-            parents: class_type.parents,
             attrs,
             is_dataclass: class_type.is_dataclass,
         }
@@ -84,7 +80,6 @@ impl HostClass {
             name: self.name.as_str(interns).to_owned(),
             id: self.type_id,
             host_defined: self.host_defined,
-            parents: self.parents.clone(),
             is_dataclass: self.is_dataclass,
             attrs: DictPairs::default(),
         }
@@ -362,8 +357,6 @@ pub(crate) struct HostClassType {
     type_id: MontyUuid,
     /// Whether the class is host-defined (a host routing target).
     host_defined: bool,
-    /// Direct base classes, carried for the wire `Type`.
-    parents: Vec<MontyType>,
     /// Whether `dataclasses.is_dataclass` is true for the class.
     is_dataclass: bool,
     /// Eagerly-sent class attributes (class constants). Excluded from
@@ -375,12 +368,11 @@ impl HostClassType {
     /// Creates the type object for a host class from its wire class type and
     /// the already-converted eager class attrs (empty for `type(x)` results).
     #[must_use]
-    pub fn new(name: EitherStr, class_type: MontyClassType, attrs: Dict) -> Self {
+    pub fn new(name: EitherStr, class_type: &MontyClassType, attrs: Dict) -> Self {
         Self {
             name,
             type_id: class_type.id,
             host_defined: class_type.host_defined,
-            parents: class_type.parents,
             is_dataclass: class_type.is_dataclass,
             attrs,
         }
@@ -414,7 +406,6 @@ impl HostClassType {
             name: self.name.as_str(interns).to_owned(),
             id: self.type_id,
             host_defined: self.host_defined,
-            parents: self.parents.clone(),
             is_dataclass: self.is_dataclass,
             attrs: DictPairs::default(),
         }
@@ -532,16 +523,15 @@ impl HeapItem for HostClassType {
     }
 }
 
-// Custom serde implementation for HostClass; serializes all seven fields so
+// Custom serde implementation for HostClass; serializes all six fields so
 // suspended state (dumps) round-trips exactly.
 impl serde::Serialize for HostClass {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("HostClass", 7)?;
+        let mut state = serializer.serialize_struct("HostClass", 6)?;
         state.serialize_field("name", &self.name)?;
         state.serialize_field("instance_id", &self.instance_id)?;
         state.serialize_field("type_id", &self.type_id)?;
         state.serialize_field("host_defined", &self.host_defined)?;
-        state.serialize_field("parents", &self.parents)?;
         state.serialize_field("attrs", &self.attrs)?;
         state.serialize_field("is_dataclass", &self.is_dataclass)?;
         state.end()
@@ -556,7 +546,6 @@ impl<'de> serde::Deserialize<'de> for HostClass {
             instance_id: MontyUuid,
             type_id: MontyUuid,
             host_defined: bool,
-            parents: Vec<MontyType>,
             attrs: Dict,
             is_dataclass: bool,
         }
@@ -566,7 +555,6 @@ impl<'de> serde::Deserialize<'de> for HostClass {
             instance_id: hc.instance_id,
             type_id: hc.type_id,
             host_defined: hc.host_defined,
-            parents: hc.parents,
             attrs: hc.attrs,
             is_dataclass: hc.is_dataclass,
         })

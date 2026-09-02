@@ -167,17 +167,13 @@ pub struct Type {
     /// Where the type was defined (builtin, sandbox, or host).
     #[prost(enumeration = "TypeOrigin", tag = "3")]
     pub origin: i32,
-    /// Direct base classes (multiple inheritance); carried on the wire but not
-    /// functional in the sandbox yet.
-    #[prost(message, repeated, tag = "4")]
-    pub parents: ::prost::alloc::vec::Vec<Type>,
     /// Whether `dataclasses.is_dataclass` is true for the class.
-    #[prost(bool, tag = "5")]
+    #[prost(bool, tag = "4")]
     pub is_dataclass: bool,
     /// Class attributes sent eagerly with the type object (class constants, per
     /// the sending wrapper's policy). Empty for the `type` field inside a
-    /// ClassInstance and for `parents` entries.
-    #[prost(message, optional, tag = "6")]
+    /// ClassInstance.
+    #[prost(message, optional, tag = "5")]
     pub attrs: ::core::option::Option<Dict>,
 }
 /// A class instance crossing the sandbox boundary. Host-backed instances route

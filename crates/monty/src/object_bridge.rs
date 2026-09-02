@@ -246,7 +246,7 @@ impl MontyObjectExt for MontyObject {
                     let attr_pairs = convert_pairs(mem::take(&mut class_type.attrs), vm)?;
                     let attrs = Dict::from_pairs(attr_pairs, vm)
                         .map_err(|_| InvalidInputError::invalid_type("unhashable class attr keys"))?;
-                    let ty = HostClassType::new(name, *class_type, attrs);
+                    let ty = HostClassType::new(name, &class_type, attrs);
                     Ok(Value::Ref(vm.heap.allocate(HeapData::HostClassType(Box::new(ty)))))
                 }
                 // A sandbox class binding cannot be reconstructed from its
@@ -815,8 +815,6 @@ fn sandbox_class_type(class_id: HeapId, vm: &mut VM<'_>) -> MontyClassType {
         name: class_name(class_id, vm.heap, vm.interns).into_owned(),
         id: class.get_mut(vm.heap).boundary_uuid(),
         host_defined: false,
-        // The sandbox does not support inheritance, so a class has no bases.
-        parents: vec![],
         is_dataclass,
         attrs: DictPairs::default(),
     }

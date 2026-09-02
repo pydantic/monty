@@ -337,9 +337,6 @@ export class InstanceStore {
    *  since `callMethod` / `lookupLazyAttr` are the shared wrapper surface);
    *  re-sending the same wrapper overwrites its entry. */
   readonly map = new Map<string, BaseWrapper>()
-  /** class uuid → the class plus the `ClassType` wrapper gating
-   *  instantiation (undefined until one crosses). Pins the class. */
-  readonly classes = new Map<string, { classObject: object; wrapper?: ClassType }>()
   /** Registers a wrapper under its own `id` (the wrapper owns its identity).
    *  Re-sending the same wrapper (or another wrapper of the same object)
    *  overwrites the entry; an id already routing to a different object is
@@ -350,49 +347,34 @@ export class InstanceStore {
     return wrapper.id
   }
 
-  /** Pins a class in the class map under `id` (with no routing wrapper)
-   *  unless already present, so round-tripped type objects resolve back to
-   *  the class. Throws if the id already identifies a different object. */
-  pinClass(id: string, classObject: object): void {
-    this.checkNoAlias(id, classObject)
-    if (!this.classes.has(id)) {
-      this.classes.set(id, { classObject })
-    }
-  }
-
-  /** Registers a `ClassType` wrapper under its class uuid, in both the
-   *  class map (identity round-trips) and the routing map (method calls,
-   *  `__call__` construction, lazy class attrs). Re-granting the same class
-   *  with a new wrapper overwrites (last policy wins). */
+  /** Registers a `ClassType` wrapper under its class uuid for routing
+   *  (method calls, `__call__` construction, lazy class attrs). Re-granting
+   *  the same class with a new wrapper overwrites (last policy wins). */
   registerClass(wrapper: ClassType): string {
     this.checkNoAlias(wrapper.id, wrapper.classType)
-    this.classes.set(wrapper.id, { classObject: wrapper.classType, wrapper })
     this.map.set(wrapper.id, wrapper)
     return wrapper.id
   }
 
   /** [`registerClass`](InstanceStore.registerClass), but only when the class
-   *  has no routing wrapper yet — used for the `ClassType` a `ClassInstance`
+   *  is not yet registered — used for the `ClassType` a `ClassInstance`
    *  materializes, so an auto-built default policy never clobbers an
-   *  explicitly granted one. */
+   *  explicitly granted one. Still rejects an id aliasing a different object. */
   registerClassIfAbsent(wrapper: ClassType): string {
-    if (this.classes.get(wrapper.id)?.wrapper !== undefined) {
-      return wrapper.id
+    this.checkNoAlias(wrapper.id, wrapper.classType)
+    if (!this.map.has(wrapper.id)) {
+      this.map.set(wrapper.id, wrapper)
     }
-    return this.registerClass(wrapper)
+    return wrapper.id
   }
 
   /** Throws if `id` is already registered for an object other than `value`
-   *  (compared by identity) in either routing map. Two wrappers sharing an id
-   *  but wrapping different objects would silently re-route method calls and
-   *  round-trips from one host object to the other. */
+   *  (compared by identity). Two wrappers sharing an id but wrapping
+   *  different objects would silently re-route method calls and round-trips
+   *  from one host object to the other. */
   private checkNoAlias(id: string, value: object): void {
     const existing = this.map.get(id)
-    const entry = this.classes.get(id)
-    if (
-      (existing !== undefined && existing.instance !== value) ||
-      (entry !== undefined && entry.classObject !== value)
-    ) {
+    if (existing !== undefined && existing.instance !== value) {
       throw new TypeError(`wrapper id '${id}' already identifies a different object in this session`)
     }
   }
@@ -400,18 +382,6 @@ export class InstanceStore {
   /** Looks up the wrapper registered for `id` (instance or class type). */
   get(id: string): BaseWrapper | undefined {
     return this.map.get(id)
-  }
-
-  /** The name of a class known under `id` but never granted via a
-   *  `ClassType` wrapper (e.g. it crossed inside `type(x)`) — used to give
-   *  routed-call store misses a "pass a ClassType" hint. */
-  knownClassName(id: string): string | undefined {
-    const entry = this.classes.get(id)
-    if (entry === undefined || entry.wrapper !== undefined) {
-      return undefined
-    }
-    const name = (entry.classObject as { name?: unknown }).name
-    return typeof name === 'string' && name !== '' ? name : 'object'
   }
 }
 
@@ -561,13 +531,13 @@ function instanceTypeObject(wrapper: ClassInstance, store: InstanceStore): Recor
   const ct = wrapper.classType
   if (ct === undefined) {
     // A null-prototype object has no constructor: key its class identity on
-    // `Object.prototype` so repeats stay stable within the process.
+    // `Object.prototype` so repeats stay stable within the process. Nothing
+    // is registered — there is no class to route to.
     const id = classIdFor(Object.prototype)
-    store.pinClass(id, Object.prototype)
-    return { name: wrapper.getName(), id, hostDefined: true, parents: [], isDataclass: false, attrs: [] }
+    return { name: wrapper.getName(), id, hostDefined: true, isDataclass: false, attrs: [] }
   }
   store.registerClassIfAbsent(ct)
-  return classTypeObject(wrapper.getName(), ct, store)
+  return classTypeObject(wrapper.getName(), ct)
 }
 
 /** Registers a `ClassType` wrapper and builds its `Type` wire marker. */
@@ -580,58 +550,27 @@ function classTypeToMarker(wrapper: ClassType, store: InstanceStore, depth: numb
     .map(([name, value]): [string, unknown] => [name, prepareInner(value, store, depth + 1)])
   return {
     __monty_type__: 'Type',
-    classType: classTypeObject(wrapper.getName(), wrapper, store, attrs),
+    classType: classTypeObject(wrapper.getName(), wrapper, attrs),
   }
 }
 
 /**
  * The plain `classType` object shared by ClassInstance and Type markers:
- * name, the wrapper's uuid, and `parents` from the constructor prototype
- * chain (each ancestor a `Type` marker whose id comes from the same
- * process-wide class-id table). Pins the class in the store.
+ * name, the wrapper's uuid, and the eager class attrs.
  */
 function classTypeObject(
   name: string,
   wrapper: ClassType,
-  store: InstanceStore,
   attrs: Array<[string, unknown]> = [],
 ): Record<string, unknown> {
-  store.pinClass(wrapper.id, wrapper.classType)
   return {
     name,
     id: wrapper.id,
     hostDefined: true,
-    parents: parentMarkers(wrapper.classType, store),
     // JS has no dataclasses; host-wrapped objects always cross as plain classes
     isDataclass: false,
     attrs,
   }
-}
-
-/** `Type` markers for the constructor prototype chain (single inheritance). */
-function parentMarkers(classObject: object, store: InstanceStore): Array<Record<string, unknown>> {
-  const parents: Array<Record<string, unknown>> = []
-  let parent: unknown = Object.getPrototypeOf(classObject)
-  while (typeof parent === 'function' && parent !== Function.prototype) {
-    const parentName = typeof parent.name === 'string' && parent.name !== '' ? parent.name : 'object'
-    const id = classIdFor(parent as object)
-    store.pinClass(id, parent as object)
-    parents.push({
-      name: parentName,
-      id,
-      hostDefined: true,
-      parents: [],
-      isDataclass: false,
-      attrs: [],
-    })
-    parent = Object.getPrototypeOf(parent)
-  }
-  // The chain is single inheritance, so each ancestor is a parent of the
-  // previous one; the wire carries only direct bases, so nest them.
-  for (let i = parents.length - 1; i > 0; i--) {
-    parents[i - 1].parents = [{ __monty_type__: 'Type', classType: parents[i] }]
-  }
-  return parents.length > 0 ? [{ __monty_type__: 'Type', classType: parents[0] }] : []
 }
 
 /** The instance's class (its constructor), if it has one. */

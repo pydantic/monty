@@ -44,7 +44,6 @@ fn instance_type_is_not_nameable() {
         name: "Foo".to_owned(),
         id: MontyUuid::from_u128(1),
         host_defined: false,
-        parents: vec![],
         is_dataclass: false,
         attrs: DictPairs::default(),
     }));

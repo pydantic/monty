@@ -250,8 +250,8 @@ impl Serialize for JsonType<'_> {
     }
 }
 
-/// A [`MontyClassType`] as a JSON object mirroring its fields, `parents` recursing
-/// through [`JsonType`] and `attrs` through the capped dict encoding.
+/// A [`MontyClassType`] as a JSON object mirroring its fields, `attrs` through
+/// the capped dict encoding.
 struct JsonClassType<'a> {
     class_type: &'a MontyClassType,
     limit: usize,
@@ -267,17 +267,10 @@ impl<'a> JsonClassType<'a> {
 impl Serialize for JsonClassType<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         let ct = self.class_type;
-        let mut map = s.serialize_map(Some(6))?;
+        let mut map = s.serialize_map(Some(5))?;
         map.serialize_entry("name", &ct.name)?;
         map.serialize_entry("id", &Displayed(&ct.id))?;
         map.serialize_entry("host_defined", &ct.host_defined)?;
-        map.serialize_entry(
-            "parents",
-            &JsonTypeSeq {
-                types: &ct.parents,
-                limit: self.limit,
-            },
-        )?;
         map.serialize_entry("is_dataclass", &ct.is_dataclass)?;
         map.serialize_entry(
             "attrs",
@@ -287,21 +280,6 @@ impl Serialize for JsonClassType<'_> {
             },
         )?;
         map.end()
-    }
-}
-
-/// [`JsonType`] over a class's `parents`: a JSON array.
-struct JsonTypeSeq<'a> {
-    types: &'a [MontyType],
-    limit: usize,
-}
-
-impl Serialize for JsonTypeSeq<'_> {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_seq(self.types.iter().map(|monty_type| JsonType {
-            monty_type,
-            limit: self.limit,
-        }))
     }
 }
 
@@ -574,7 +552,6 @@ mod tests {
             name: name.to_owned(),
             id: MontyUuid::from_u128(1),
             host_defined: true,
-            parents: vec![],
             is_dataclass,
             attrs: DictPairs::default(),
         }
@@ -594,23 +571,21 @@ mod tests {
         });
         assert_eq!(
             json(&ci),
-            r#"{"type":{"name":"Point","id":"00000000-0000-0000-0000-000000000001","host_defined":true,"parents":[],"is_dataclass":true,"attrs":{}},"id":"00000000-0000-0000-0000-000000000007","attrs":{"x":1,"y":2}}"#
+            r#"{"type":{"name":"Point","id":"00000000-0000-0000-0000-000000000001","host_defined":true,"is_dataclass":true,"attrs":{}},"id":"00000000-0000-0000-0000-000000000007","attrs":{"x":1,"y":2}}"#
         );
     }
 
-    /// A class object mirrors `MontyClassType`, recursing through `parents`;
-    /// builtin types keep their repr.
+    /// A class object mirrors `MontyClassType`; builtin types keep their repr.
     #[test]
     fn class_type_mirrors_its_fields() {
         let mut class_type = test_class_type("Point", false);
-        class_type.parents = vec![MontyType::Instance(Box::new(test_class_type("Base", false)))];
         class_type.attrs = DictPairs::from(vec![(
             MontyObject::String("ORIGIN".to_owned()),
             MontyObject::Tuple(vec![MontyObject::Int(0), MontyObject::Int(0)]),
         )]);
         assert_eq!(
             json(&MontyObject::Type(MontyType::Instance(Box::new(class_type)))),
-            r#"{"name":"Point","id":"00000000-0000-0000-0000-000000000001","host_defined":true,"parents":[{"name":"Base","id":"00000000-0000-0000-0000-000000000001","host_defined":true,"parents":[],"is_dataclass":false,"attrs":{}}],"is_dataclass":false,"attrs":{"ORIGIN":[0,0]}}"#
+            r#"{"name":"Point","id":"00000000-0000-0000-0000-000000000001","host_defined":true,"is_dataclass":false,"attrs":{"ORIGIN":[0,0]}}"#
         );
         assert_eq!(json(&MontyObject::Type(MontyType::Int)), r#""<class 'int'>""#);
     }
