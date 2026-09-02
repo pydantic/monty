@@ -306,10 +306,11 @@ impl ResourceTracker {
 
     /// Starts a fresh run, zeroing the per-run suspension budget.
     ///
-    /// Called by the host-facing entry points that *begin* execution
-    /// (`MontyRepl::feed_start` / `feed_run` / `call_function`,
-    /// `MontyRun::start` / `run`) — never by a resume, which continues the
-    /// run it is resuming. The session total is deliberately untouched.
+    /// Called by the repl entry points that *begin* execution
+    /// (`MontyRepl::feed_start` / `feed_run` / `call_function`) — never by a
+    /// resume, which continues the run it is resuming. `MontyRun` needs no
+    /// call: it takes its tracker by value and runs once. The session total
+    /// is deliberately untouched.
     pub fn on_run_start(&self) {
         self.run_suspensions.set(0);
     }
