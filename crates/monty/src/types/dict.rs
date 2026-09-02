@@ -2251,6 +2251,13 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Dict> {
         let (copy, vm) = guard.as_parts_mut();
         memo.insert(source, copy, vm)?;
         let expected_len = self.get(vm.heap).len();
+        // The copy ends up the same width as the source — the guard below
+        // rejects a mid-walk resize rather than following it — so the whole
+        // destination table is preflighted here, as `py_iadd` preflights the
+        // growth it is about to cause.
+        vm.heap
+            .tracker
+            .check_allocation(expected_len.saturating_mul(2 * VALUE_SIZE))?;
         for index in 0.. {
             let (_, vm) = guard.as_parts_mut();
             vm.heap.tracker.check_time_every(index)?;
