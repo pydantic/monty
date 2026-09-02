@@ -1866,11 +1866,11 @@ fn pad_signed_ungrouped(
 /// first split into its leading digit run and any trailing part (fraction,
 /// exponent, `%`). Binary/octal/hex presentations group in fours and never
 /// carry a suffix; decimal/float presentations group in threes. `prefix` (the
-/// `#` base marker or `""`) sits after the sign and is never grouped. The `0`
-/// flag is special: its leading zeros become part of the number and are
-/// themselves grouped to fill the field width (`format(1234, '08,')` →
-/// `'0,001,234'`), whereas `=` fill and outside padding wrap an already-grouped
-/// value.
+/// `#` base marker or `""`) sits after the sign and is never grouped. Zero fill
+/// (the `0` flag or an explicit `0=`) is special: its leading zeros become part
+/// of the number and are themselves grouped to fill the field width
+/// (`format(1234, '08,')` → `'0,001,234'`), whereas any other `=` fill and
+/// outside padding wrap an already-grouped value.
 fn pad_signed_grouped(
     sign: &str,
     prefix: &str,
