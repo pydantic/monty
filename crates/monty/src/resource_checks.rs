@@ -4,7 +4,8 @@ use crate::exception_private::{RunError, SimpleException};
 
 const MAX_NATIVE_ALLOCATION: usize = isize::MAX as usize;
 
-/// Rejects capacities that Rust's native string types cannot represent.
+/// Rejects capacities above `isize::MAX`: `String::with_capacity` panics on them
+/// before the allocator can refuse, so `StringBuilder` fences them.
 pub(crate) fn check_native_allocation_size(size: usize) -> Result<(), ResourceError> {
     if size > MAX_NATIVE_ALLOCATION {
         Err(ResourceError::Memory {
@@ -110,7 +111,6 @@ pub fn check_replace_size(
 /// Only calls the tracker when the estimate exceeds `LARGE_RESULT_THRESHOLD`
 /// to avoid overhead on small operations.
 pub(crate) fn check_estimated_size(estimated_bytes: usize, tracker: &ResourceTracker) -> Result<(), ResourceError> {
-    check_native_allocation_size(estimated_bytes)?;
     if estimated_bytes > LARGE_RESULT_THRESHOLD {
         tracker.check_large_result(estimated_bytes)?;
     }
