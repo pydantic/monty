@@ -403,6 +403,10 @@ impl<'h> HeapRead<'h, Dict> {
     /// a factory reachable from the dict recurses to the limit in both. Only
     /// `deepcopy` does this: `copy.copy` shares the factory, which is what
     /// [`allocate_empty_like`](Self::allocate_empty_like) is for.
+    ///
+    /// The rebuilt factory is checked exactly as the constructor checks the one
+    /// it is handed, because the reconstructor *is* that constructor in
+    /// CPython: a `__deepcopy__` returning a non-callable fails there too.
     fn allocate_empty_deep_copy(&self, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<HeapId> {
         let Some(factory) = self.get(vm.heap).default_factory() else {
             return Ok(self.allocate_empty_like(vm));
@@ -410,8 +414,18 @@ impl<'h> HeapRead<'h, Dict> {
         let factory = factory.clone_with_heap(vm.heap);
         let copied = deep_copy(&factory, memo, vm);
         factory.drop_with(vm);
+        let copied = match copied? {
+            // `defaultdict(None)` is the factory-less form, so a hook returning
+            // `None` lands there rather than raising.
+            Value::None => None,
+            copied if copied.is_callable(vm.heap) => Some(copied),
+            copied => {
+                copied.drop_with(vm);
+                return Err(ExcType::defaultdict_factory_not_callable());
+            }
+        };
         let mut dict = Dict::new();
-        dict.set_kind(DictKind::defaultdict(Some(copied?)));
+        dict.set_kind(DictKind::defaultdict(copied));
         Ok(vm.heap.allocate(HeapData::Dict(dict)))
     }
 
