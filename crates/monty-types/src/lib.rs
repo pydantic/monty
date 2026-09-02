@@ -35,7 +35,7 @@ pub use crate::{
     },
     resource::{
         BASELINE_MEMORY, DEFAULT_MAX_RECURSION_DEPTH, LARGE_RESULT_THRESHOLD, LIVE_MEMORY, OOM_EXIT_CODE,
-        ResourceError, ResourceLimits, ResourceTracker,
+        ResourceError, ResourceLimits, ResourceTracker, set_memory_probe,
     },
     results::{ExtFunctionResult, NameLookupResult},
     run_options::{AssertMessageAnnotations, CompileOptions},

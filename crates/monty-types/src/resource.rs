@@ -7,7 +7,10 @@ use std::{
     cell::Cell,
     error::Error,
     fmt,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -30,6 +33,24 @@ pub static LIVE_MEMORY: AtomicUsize = AtomicUsize::new(0);
 /// The leanest the process has ever been at an arming point: what the worker
 /// costs to exist, before any session ran.
 pub static BASELINE_MEMORY: AtomicUsize = AtomicUsize::new(usize::MAX);
+static MEMORY_PROBE: OnceLock<fn() -> usize> = OnceLock::new();
+
+/// Replaces the default `LIVE_MEMORY` minus `BASELINE_MEMORY` read behind
+/// the tracker's memory checks.
+///
+/// The default counters are process-wide, which fits one interpreter per
+/// worker process fed by `monty-alloc`. A host embedding interpreters
+/// in-process can run several at once, and one shared baseline cannot tell
+/// their allocations apart. A probe over the host's own accounting (say a
+/// thread-local live count fed by its global allocator) gives each run its
+/// own numbers, and the tracker keeps raising `MemoryError` against
+/// `max_memory` at the same checkpoints.
+///
+/// Install once at startup, like a global allocator; a later install is
+/// refused and the first probe stays.
+pub fn set_memory_probe(probe: fn() -> usize) -> Result<(), &'static str> {
+    MEMORY_PROBE.set(probe).map_err(|_| "memory probe already installed")
+}
 
 /// Threshold in bytes above which `check_large_result` is called.
 ///
@@ -88,7 +109,8 @@ pub struct ResourceLimits {
     pub max_duration: Option<Duration>,
     /// Maximum allocator-backed memory in bytes.
     ///
-    /// Requires the executable to install and arm `monty-alloc`.
+    /// Requires the executable to install and arm `monty-alloc`, or to
+    /// install a [`set_memory_probe`].
     pub max_memory: Option<usize>,
     /// Run garbage collection every N GC-tracked allocations.
     pub gc_interval: Option<usize>,
@@ -121,8 +143,8 @@ impl ResourceLimits {
 
     /// Sets allocator-backed maximum memory usage in bytes.
     ///
-    /// Requires the executable to install and arm `monty-alloc`; otherwise
-    /// the limit is silently not enforced.
+    /// Requires the executable to install and arm `monty-alloc` or install a
+    /// [`set_memory_probe`]; otherwise the limit is silently not enforced.
     #[must_use]
     pub fn max_memory(mut self, limit: usize) -> Self {
         self.max_memory = Some(limit);
@@ -203,7 +225,8 @@ impl ResourceTracker {
     /// executes, so the tracker can be created any amount of time before
     /// the first run without consuming the duration budget. A configured
     /// `max_memory` requires `monty-alloc` installed as the global allocator
-    /// and armed via its `set_limit`; otherwise it is silently not enforced.
+    /// and armed via its `set_limit`, or a [`set_memory_probe`] installed;
+    /// otherwise it is silently not enforced.
     #[must_use]
     pub fn new(limits: ResourceLimits) -> Self {
         Self {
@@ -438,7 +461,10 @@ impl ResourceTracker {
 
 /// Returns memory used in bytes
 fn probe_memory() -> usize {
-    LIVE_MEMORY
-        .load(Ordering::Relaxed)
-        .saturating_sub(BASELINE_MEMORY.load(Ordering::Relaxed))
+    match MEMORY_PROBE.get() {
+        Some(probe) => probe(),
+        None => LIVE_MEMORY
+            .load(Ordering::Relaxed)
+            .saturating_sub(BASELINE_MEMORY.load(Ordering::Relaxed)),
+    }
 }
