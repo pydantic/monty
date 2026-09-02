@@ -6,15 +6,18 @@
 //! at a byte limit so a huge value cannot blow up the telemetry pipeline.
 //!
 //! Divergences from the Python encoder: sets are encoded in storage order
-//! (Python sorts them when comparable), and integers beyond `i128` become their
-//! digit string rather than a raw JSON number.
+//! (Python sorts them when comparable), integers beyond `i128` become their
+//! digit string rather than a raw JSON number, and class instances and class
+//! objects mirror their `MontyObject` shape (`{type, id, attrs}` and the
+//! `ClassType` fields) so telemetry records *which* object crossed the
+//! boundary, not just its attribute snapshot.
 
 use std::{
-    fmt::Write as _,
+    fmt::{self, Write as _},
     io::{self, Write},
 };
 
-use monty_types::{MontyDateTime, MontyObject, MontyTime, bytes_repr};
+use monty_types::{ClassType, DictPairs, MontyDateTime, MontyObject, MontyTime, MontyType, bytes_repr};
 use num_traits::ToPrimitive;
 use serde::ser::{Serialize, SerializeMap, Serializer};
 
@@ -144,11 +147,31 @@ impl Serialize for JsonEncoded<'_> {
             MontyObject::Dict(pairs) => {
                 serialize_pairs(pairs.into_iter().map(|(k, v)| (k, v)), pairs.len(), self.limit, s)
             }
-            // like logfire dataclasses: an object of the eager attrs, in order
-            // (there are no declared field names — attrs ARE the surface)
-            MontyObject::ClassInstance { attrs, .. } => {
-                serialize_pairs(attrs.into_iter().map(|(k, v)| (k, v)), attrs.len(), self.limit, s)
+            // mirrors the variant: the class, the instance id, then the eager
+            // attrs in order (there are no declared field names — attrs ARE
+            // the surface)
+            MontyObject::ClassInstance {
+                class_type,
+                instance_id,
+                attrs,
+            } => {
+                let mut map = s.serialize_map(Some(3))?;
+                map.serialize_entry("type", &JsonClassType::new(class_type, self.limit))?;
+                map.serialize_entry("id", &Displayed(instance_id))?;
+                map.serialize_entry(
+                    "attrs",
+                    &JsonAttrs {
+                        attrs,
+                        limit: self.limit,
+                    },
+                )?;
+                map.end()
             }
+            MontyObject::Type(monty_type) => JsonType {
+                monty_type,
+                limit: self.limit,
+            }
+            .serialize(s),
             MontyObject::Date(d) => s.collect_str(&format_args!("{:04}-{:02}-{:02}", d.year, d.month, d.day)),
             MontyObject::DateTime(dt) => s.serialize_str(&datetime_isoformat(dt)),
             MontyObject::Time(t) => s.serialize_str(&time_isoformat(t)),
@@ -197,6 +220,89 @@ impl Serialize for JsonDict<'_> {
     }
 }
 
+/// [`JsonDict`] for a value's attrs, which live in a [`DictPairs`].
+struct JsonAttrs<'a> {
+    attrs: &'a DictPairs,
+    limit: usize,
+}
+
+impl Serialize for JsonAttrs<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        serialize_pairs(self.attrs.iter().map(|(k, v)| (k, v)), self.attrs.len(), self.limit, s)
+    }
+}
+
+/// A [`MontyType`]: a class mirrors its [`ClassType`] fields, a builtin keeps
+/// the `<class 'int'>` repr the value would have had.
+struct JsonType<'a> {
+    monty_type: &'a MontyType,
+    limit: usize,
+}
+
+impl Serialize for JsonType<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.monty_type {
+            MontyType::Instance(class_type) => JsonClassType::new(class_type, self.limit).serialize(s),
+            builtin => s.collect_str(&format_args!("<class '{builtin}'>")),
+        }
+    }
+}
+
+/// A [`ClassType`] as a JSON object mirroring its fields, `parents` recursing
+/// through [`JsonType`] and `attrs` through the capped dict encoding.
+struct JsonClassType<'a> {
+    class_type: &'a ClassType,
+    limit: usize,
+}
+
+impl<'a> JsonClassType<'a> {
+    /// An encoder for a value's class, carrying `limit` down the tree.
+    const fn new(class_type: &'a ClassType, limit: usize) -> Self {
+        Self { class_type, limit }
+    }
+}
+
+impl Serialize for JsonClassType<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let ct = self.class_type;
+        let mut map = s.serialize_map(Some(6))?;
+        map.serialize_entry("name", &ct.name)?;
+        map.serialize_entry("id", &Displayed(&ct.id))?;
+        map.serialize_entry("host_defined", &ct.host_defined)?;
+        map.serialize_entry(
+            "parents",
+            &JsonTypeSeq {
+                types: &ct.parents,
+                limit: self.limit,
+            },
+        )?;
+        map.serialize_entry("is_dataclass", &ct.is_dataclass)?;
+        map.serialize_entry(
+            "attrs",
+            &JsonAttrs {
+                attrs: &ct.attrs,
+                limit: self.limit,
+            },
+        )?;
+        map.end()
+    }
+}
+
+/// [`JsonType`] over a class's `parents`: a JSON array.
+struct JsonTypeSeq<'a> {
+    types: &'a [MontyType],
+    limit: usize,
+}
+
+impl Serialize for JsonTypeSeq<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(self.types.iter().map(|monty_type| JsonType {
+            monty_type,
+            limit: self.limit,
+        }))
+    }
+}
+
 /// [`JsonSeq`] for named values: a JSON object of `name` → encoded value.
 struct JsonNamed<I> {
     pairs: I,
@@ -236,16 +342,17 @@ fn serialize_pairs<'a, S: Serializer>(
         let value = JsonEncoded { value, limit };
         match key {
             MontyObject::String(k) => map.serialize_entry(k, &value)?,
-            other => map.serialize_entry(&ReprKey(other), &value)?,
+            other => map.serialize_entry(&Displayed(other), &value)?,
         }
     }
     map.end()
 }
 
-/// Streams a non-string dictionary key's repr through serde's capped writer.
-struct ReprKey<'a>(&'a MontyObject);
+/// Streams a `Display` rendering (a non-string dictionary key's repr, a uuid)
+/// through serde's capped writer rather than materializing it first.
+struct Displayed<'a>(&'a dyn fmt::Display);
 
-impl Serialize for ReprKey<'_> {
+impl Serialize for Displayed<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(self.0)
     }
@@ -308,7 +415,7 @@ fn write_utc_offset(iso: &mut String, offset: i32) {
 #[cfg(test)]
 mod tests {
     use monty_types::{
-        ClassType, DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyUuid,
+        ClassType, DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyType, MontyUuid,
     };
 
     use super::{serialize_capped, serialize_dict_capped, serialize_named_capped, serialize_seq_capped};
@@ -470,8 +577,10 @@ mod tests {
         }
     }
 
+    /// A class instance mirrors its variant: the class, the instance id and
+    /// the eager attrs.
     #[test]
-    fn class_instance_is_an_object_of_its_attrs() {
+    fn class_instance_mirrors_its_shape() {
         let ci = MontyObject::ClassInstance {
             class_type: test_class_type("Point", true),
             instance_id: MontyUuid::from_u128(7),
@@ -480,7 +589,27 @@ mod tests {
                 (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
             ]),
         };
-        assert_eq!(json(&ci), r#"{"x":1,"y":2}"#);
+        assert_eq!(
+            json(&ci),
+            r#"{"type":{"name":"Point","id":"00000000-0000-0000-0000-000000000001","host_defined":true,"parents":[],"is_dataclass":true,"attrs":{}},"id":"00000000-0000-0000-0000-000000000007","attrs":{"x":1,"y":2}}"#
+        );
+    }
+
+    /// A class object mirrors `ClassType`, recursing through `parents`;
+    /// builtin types keep their repr.
+    #[test]
+    fn class_type_mirrors_its_fields() {
+        let mut class_type = test_class_type("Point", false);
+        class_type.parents = vec![MontyType::Instance(Box::new(test_class_type("Base", false)))];
+        class_type.attrs = DictPairs::from(vec![(
+            MontyObject::String("ORIGIN".to_owned()),
+            MontyObject::Tuple(vec![MontyObject::Int(0), MontyObject::Int(0)]),
+        )]);
+        assert_eq!(
+            json(&MontyObject::Type(MontyType::Instance(Box::new(class_type)))),
+            r#"{"name":"Point","id":"00000000-0000-0000-0000-000000000001","host_defined":true,"parents":[{"name":"Base","id":"00000000-0000-0000-0000-000000000001","host_defined":true,"parents":[],"is_dataclass":false,"attrs":{}}],"is_dataclass":false,"attrs":{"ORIGIN":[0,0]}}"#
+        );
+        assert_eq!(json(&MontyObject::Type(MontyType::Int)), r#""<class 'int'>""#);
     }
 
     /// A wide attacker-controlled attrs mapping is cut by the byte cap rather
