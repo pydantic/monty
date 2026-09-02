@@ -172,21 +172,24 @@ export class ClassInstance extends BaseWrapper {
   readonly id: string
   /** The [`ClassType`] wrapper carrying the class's identity and policies:
    *  `options.classType` if given, else a default one materialized from the
-   *  constructor (`undefined` only for a null-prototype object). */
-  readonly classType?: ClassType
+   *  constructor. */
+  readonly classType: ClassType
 
   declare readonly options: ClassInstanceOptions
 
   constructor(instance: object, options: ClassInstanceOptions = {}) {
     super(instance, options)
     this.id = options.id ?? generateUuid()
-    const ctor = instanceClass(instance)
+    const ctor = (instance as { constructor?: unknown }).constructor
+    if (typeof ctor !== 'function') {
+      throw new TypeError('ClassInstance expects an instance of a class, not a null-prototype object')
+    }
     if (options.classType !== undefined) {
       if (options.classType.classType !== ctor) {
         throw new TypeError("classType does not match the instance's class")
       }
       this.classType = options.classType
-    } else if (ctor !== undefined) {
+    } else {
       this.classType = new ClassType(ctor as new (...args: never[]) => object)
     }
   }
@@ -334,10 +337,10 @@ export class MontyClassProxy {
   /** @internal — the wire marker `prepare` sends when the proxy is passed back
    *  into the sandbox, which hands over the original object by `id`. */
   toMarker(store: InstanceStore, depth: number): Record<string, unknown> {
-    const attrs: Array<[string, unknown]> = []
-    for (const key of Object.keys(this.attributes)) {
-      attrs.push([key, prepareInner(this.attributes[key], store, depth + 1)])
-    }
+    const attrs = Object.keys(this.attributes).map((key): [string, unknown] => [
+      key,
+      prepareInner(this.attributes[key], store, depth + 1),
+    ])
     return {
       __monty_type__: 'ClassInstance',
       type: { ...this.classType, attrs: [] },
@@ -430,8 +433,7 @@ export function attributeErrorMessage(typeName: string, attrName: string): strin
  * [`ClassInstance`] wrappers with their wire marker (registering them in
  * `store`, eager attrs prepared recursively), recurses into arrays / Maps /
  * Sets / plain objects, and rejects any other non-plain object with a
- * `TypeError` telling the caller to wrap it. Untouched values return the
- * identical reference — nothing is copied when there is nothing to do.
+ * `TypeError` telling the caller to wrap it.
  */
 export function prepare(value: unknown, store: InstanceStore): unknown {
   return prepareInner(value, store, 0)
@@ -442,8 +444,6 @@ export function prepare(value: unknown, store: InstanceStore): unknown {
  *  authoritative wire budget: the native layer re-checks every value with
  *  exact per-shape accounting (`exceeds_max_value_depth`) before encoding. */
 const MAX_INPUT_DEPTH = 48
-/** Backstop for inbound walks; wire values are already bounded well below. */
-const MAX_OUTPUT_DEPTH = 200
 
 function prepareInner(value: unknown, store: InstanceStore, depth: number): unknown {
   if (depth > MAX_INPUT_DEPTH) {
@@ -452,6 +452,7 @@ function prepareInner(value: unknown, store: InstanceStore, depth: number): unkn
   if (typeof value !== 'object' || value === null) {
     return value
   }
+  const walk = (item: unknown) => prepareInner(item, store, depth + 1)
   // ClassType extends ClassInstance, so it must be matched first.
   if (value instanceof ClassType) {
     return classTypeToMarker(value, store, depth)
@@ -463,13 +464,13 @@ function prepareInner(value: unknown, store: InstanceStore, depth: number): unkn
     return value.toMarker(store, depth)
   }
   if (Array.isArray(value)) {
-    return walkArray(value, store, depth, prepareInner)
+    return walkArray(value, walk)
   }
   if (value instanceof Map) {
-    return walkMap(value, store, depth, prepareInner)
+    return walkMap(value, walk)
   }
   if (value instanceof Set) {
-    return walkSet(value, store, depth, prepareInner)
+    return walkSet(value, walk)
   }
   if (value instanceof Uint8Array) {
     return value
@@ -486,7 +487,7 @@ function prepareInner(value: unknown, store: InstanceStore, depth: number): unkn
     return value
   }
   if (isPlainObject(value)) {
-    return walkPlainObject(value as Record<string, unknown>, store, depth, prepareInner)
+    return walkPlainObject(value as Record<string, unknown>, walk)
   }
   throw new TypeError(
     `Cannot convert ${constructorName(value)} instance to a Monty value — wrap it in ClassInstance(...)`,
@@ -497,38 +498,32 @@ function prepareInner(value: unknown, store: InstanceStore, depth: number): unkn
  * Inbound walk over a sandbox value reaching the host: maps `ClassInstance`
  * markers to the original wrapped object when the id is in `store` (identity
  * preserved), else to a [`MontyClassProxy`] proxy with recursively
- * restored attrs; recurses into containers with the same no-copy-when-
- * unchanged behaviour as [`prepare`].
+ * restored attrs; recurses into containers. Wire values are already depth-
+ * bounded by the native layer, so no guard is needed here.
  */
 export function restore(value: unknown, store: InstanceStore): unknown {
-  return restoreInner(value, store, 0)
-}
-
-function restoreInner(value: unknown, store: InstanceStore, depth: number): unknown {
-  if (depth > MAX_OUTPUT_DEPTH) {
-    throw new TypeError('Max output depth exceeded')
-  }
   if (typeof value !== 'object' || value === null) {
     return value
   }
+  const walk = (item: unknown) => restore(item, store)
   if (Array.isArray(value)) {
-    return walkArray(value, store, depth, restoreInner)
+    return walkArray(value, walk)
   }
   if (value instanceof Map) {
-    return walkMap(value, store, depth, restoreInner)
+    return walkMap(value, walk)
   }
   if (value instanceof Set) {
-    return walkSet(value, store, depth, restoreInner)
+    return walkSet(value, walk)
   }
   if (value instanceof Uint8Array) {
     return value
   }
   const marker = readTypeMarker(value)
   if (marker === 'ClassInstance') {
-    return markerToInstance(value as Record<string, unknown>, store, depth)
+    return markerToInstance(value as Record<string, unknown>, store)
   }
   if (marker === undefined && isPlainObject(value)) {
-    return walkPlainObject(value as Record<string, unknown>, store, depth, restoreInner)
+    return walkPlainObject(value as Record<string, unknown>, walk)
   }
   return value
 }
@@ -553,16 +548,8 @@ function wrapperToMarker(wrapper: ClassInstance, store: InstanceStore, depth: nu
  *  auto-materialized default never clobbers an explicit grant. The name comes
  *  from the instance wrapper, preserving its `name` override. */
 function instanceTypeObject(wrapper: ClassInstance, store: InstanceStore): Record<string, unknown> {
-  const ct = wrapper.classType
-  if (ct === undefined) {
-    // A null-prototype object has no constructor: key its class identity on
-    // `Object.prototype` so repeats stay stable within the process. Nothing
-    // is registered — there is no class to route to.
-    const id = classIdFor(Object.prototype)
-    return { name: wrapper.getName(), id, hostDefined: true, isDataclass: false, attrs: [] }
-  }
-  store.registerClassIfAbsent(ct)
-  return classTypeObject(wrapper.getName(), ct)
+  store.registerClassIfAbsent(wrapper.classType)
+  return classTypeObject(wrapper.getName(), wrapper.classType)
 }
 
 /** Registers a `ClassType` wrapper and builds its `Type` wire marker. */
@@ -598,14 +585,8 @@ function classTypeObject(
   }
 }
 
-/** The instance's class (its constructor), if it has one. */
-function instanceClass(instance: object): object | undefined {
-  const ctor = (instance as { constructor?: unknown }).constructor
-  return typeof ctor === 'function' ? (ctor as object) : undefined
-}
-
 /** Maps an inbound `ClassInstance` marker to the original instance or a proxy. */
-function markerToInstance(marker: Record<string, unknown>, store: InstanceStore, depth: number): unknown {
+function markerToInstance(marker: Record<string, unknown>, store: InstanceStore): unknown {
   if (typeof marker.instanceId !== 'string') {
     throw new TypeError('ClassInstance marker instanceId must be a uuid string')
   }
@@ -617,7 +598,7 @@ function markerToInstance(marker: Record<string, unknown>, store: InstanceStore,
   if (Array.isArray(marker.attrs)) {
     for (const pair of marker.attrs as unknown[]) {
       if (Array.isArray(pair) && typeof pair[0] === 'string') {
-        attrs.push([pair[0], restoreInner(pair[1], store, depth + 1)])
+        attrs.push([pair[0], restore(pair[1], store)])
       }
     }
   }
@@ -627,64 +608,33 @@ function markerToInstance(marker: Record<string, unknown>, store: InstanceStore,
 
 // === shared container walks (used by both prepare and restore) ===
 
-type Walk = (value: unknown, store: InstanceStore, depth: number) => unknown
+type Walk = (value: unknown) => unknown
 
-/** Walks array items, preserving the `__tuple__` marker on a rebuilt array. */
-function walkArray(array: unknown[], store: InstanceStore, depth: number, walk: Walk): unknown[] {
-  let changed = false
-  const items = array.map((item) => {
-    const out = walk(item, store, depth + 1)
-    changed ||= out !== item
-    return out
-  })
-  if (!changed) {
-    return array
-  }
+/** Walks array items, preserving the `__tuple__` marker on the rebuilt array. */
+function walkArray(array: unknown[], walk: Walk): unknown[] {
+  const items = array.map(walk)
   if ((array as { __tuple__?: unknown }).__tuple__ === true) {
     Object.defineProperty(items, '__tuple__', { value: true, enumerable: false })
   }
   return items
 }
 
-function walkMap(map: Map<unknown, unknown>, store: InstanceStore, depth: number, walk: Walk): Map<unknown, unknown> {
-  let changed = false
-  const out = new Map<unknown, unknown>()
-  for (const [key, value] of map) {
-    const outKey = walk(key, store, depth + 1)
-    const outValue = walk(value, store, depth + 1)
-    changed ||= outKey !== key || outValue !== value
-    out.set(outKey, outValue)
-  }
-  return changed ? out : map
+function walkMap(map: Map<unknown, unknown>, walk: Walk): Map<unknown, unknown> {
+  return new Map([...map].map(([key, value]) => [walk(key), walk(value)]))
 }
 
-function walkSet(set: Set<unknown>, store: InstanceStore, depth: number, walk: Walk): Set<unknown> {
-  let changed = false
-  const out = new Set<unknown>()
-  for (const item of set) {
-    const outItem = walk(item, store, depth + 1)
-    changed ||= outItem !== item
-    out.add(outItem)
-  }
-  return changed ? out : set
+function walkSet(set: Set<unknown>, walk: Walk): Set<unknown> {
+  return new Set([...set].map(walk))
 }
 
-/** Walks a plain object's own enumerable entries; a rebuilt object has a null
- *  prototype so no key can land on `Object.prototype`. */
-function walkPlainObject(
-  obj: Record<string, unknown>,
-  store: InstanceStore,
-  depth: number,
-  walk: Walk,
-): Record<string, unknown> {
-  let changed = false
+/** Walks a plain object's own enumerable entries; the rebuilt object has a
+ *  null prototype so no key can land on `Object.prototype`. */
+function walkPlainObject(obj: Record<string, unknown>, walk: Walk): Record<string, unknown> {
   const out: Record<string, unknown> = Object.create(null)
   for (const [key, value] of Object.entries(obj)) {
-    const outValue = walk(value, store, depth + 1)
-    changed ||= outValue !== value
-    out[key] = outValue
+    out[key] = walk(value)
   }
-  return changed ? out : obj
+  return out
 }
 
 // === identity / classification helpers ===
@@ -737,15 +687,10 @@ function isPlainObject(value: object): boolean {
   return proto === Object.prototype || proto === null
 }
 
-/** Reads `__monty_type__` without letting a throwing getter escape (mirrors
- *  `readMarker` in errors.ts — an exotic host value must degrade, not throw). */
+/** Reads a value's `__monty_type__` marker, if it has one. */
 function readTypeMarker(value: object): string | undefined {
-  try {
-    const marker = (value as { __monty_type__?: unknown }).__monty_type__
-    return typeof marker === 'string' ? marker : undefined
-  } catch {
-    return undefined
-  }
+  const marker = (value as { __monty_type__?: unknown }).__monty_type__
+  return typeof marker === 'string' ? marker : undefined
 }
 
 function constructorName(value: object): string {
