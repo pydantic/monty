@@ -141,7 +141,9 @@ a class id) alongside the instance.
 
 Instances the host has no original for — defined inside the sandbox, or
 returned after a dump was restored into a fresh session — cross to the host as read-only
-`MontyClassProxy` stand-ins (`name`, `attributes`, `isDataclass`).
+`MontyClassProxy` stand-ins (`name`, `attributes`, `isDataclass`, `id`). Passing a
+proxy back into the sandbox hands over the original object: a still-live
+sandbox instance resolves by identity (its `attributes` are not applied).
 
 ### Host classes (`ClassType`)
 

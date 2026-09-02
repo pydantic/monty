@@ -154,14 +154,22 @@ order and error wording, but with these divergences:
 ## Crossing the host boundary (`pydantic_monty` / `@pydantic/monty`)
 
 A sandbox-defined class **instance** crosses out structurally: the host
-receives a read-only `MontyClassProxy` with `.name`, `.is_dataclass`,
+receives a read-only `MontyClassProxy` with `.name`, `.is_dataclass`, `.id`
 and `.attributes` (the instance `__dict__`, converted; the JS package spells
-these `.name` / `.isDataclass` / `.attributes`). The host cannot call
+these `.name` / `.isDataclass` / `.id` / `.attributes`). The host cannot call
 methods on it — the methods are defined only inside the sandbox, and the proxy holds
 no live object. The instance and its class carry worker-generated uuids (stored
-on the heap objects, so stable across crossings and dump/restore); a method
-call or lazy lookup on such an instance still suspends, and the host's
-guaranteed store miss produces the usual errors.
+on the heap objects, so stable across crossings and dump/restore). Passing the
+proxy back into the sandbox (as an input or an external-function result) hands
+over the **original object** — `back is foo` and `isinstance(back, Foo)` hold —
+with these divergences:
+
+- The proxy's `attributes` are not applied on the way back: editing them
+  host-side does not change the sandbox object (only a still-live sandbox
+  object is resolved, and it keeps its own state).
+- A proxy whose sandbox object has since been freed raises
+  `RuntimeError: invalid input type: sandbox instance of 'Foo' (id ...) no
+  longer exists` rather than materializing a host-backed copy.
 
 ```python
 result = session.feed_run('class A:\n    def __init__(self):\n        self.x = 1\nA()')
@@ -266,8 +274,6 @@ every construction request. Divergences:
   construct); calling a class the host never registered with a `ClassType`
   wrapper — e.g. `type(x)` of a plain `ClassInstance` — raises
   `RuntimeError` ("no host class registered for '__call__' on 'Point'...").
-  A sandbox-origin class type raises the `TypeError` locally, since the
-  host could never construct it.
 - Constructor exceptions propagate into the sandbox like external-function
   errors.
 - After a session restore the class registration is gone: construction and

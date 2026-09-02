@@ -312,6 +312,95 @@ test('a sandbox-defined class instance surfaces as a MontyClassProxy', async () 
   t.deepEqual({ ...proxy.attributes }, { a: 1 })
 })
 
+test('a MontyClassProxy passed back hands the sandbox its original object', async () => {
+  const session = await pool().checkout()
+  try {
+    await session.feedRun('class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()')
+    const proxy = await session.feedRun('foo')
+    t.true(proxy instanceof MontyClassProxy)
+    t.is(typeof (proxy as MontyClassProxy).id, 'string')
+    t.true(await session.feedRun('back is foo and isinstance(back, Foo) and back.x == 1', { inputs: { back: proxy } }))
+    t.true(await session.feedRun('echo(foo) is foo', { externalLookup: { echo: (value: unknown) => value } }))
+  } finally {
+    await session.close()
+  }
+})
+
+test('a MontyClassProxy of a freed sandbox object is rejected', async () => {
+  const session = await pool().checkout()
+  try {
+    const proxy = (await session.feedRun('class Foo:\n    pass\nFoo()')) as MontyClassProxy
+    t.true(proxy instanceof MontyClassProxy)
+    const error = await t.throwsAsync(() => session.feedRun('x', { inputs: { x: proxy } }), {
+      instanceOf: MontyRuntimeError,
+    })
+    t.is(
+      error.message.replace(proxy.id, '<id>'),
+      "RuntimeError: invalid input type: sandbox instance of 'Foo' (id <id>) no longer exists",
+    )
+  } finally {
+    await session.close()
+  }
+})
+
+test('a MontyClassProxy round-trips nested in containers and its edited attributes are ignored', async () => {
+  const session = await pool().checkout()
+  try {
+    await session.feedRun('class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()')
+    const proxy = (await session.feedRun('foo')) as MontyClassProxy
+    proxy.attributes.x = 99
+    const inputs = { items: [proxy], mapping: new Map([['k', proxy]]) }
+    t.true(await session.feedRun("items[0] is foo and mapping['k'] is foo and foo.x == 1", { inputs }))
+  } finally {
+    await session.close()
+  }
+})
+
+test('a MontyClassProxy still resolves after dump and loadSession', async () => {
+  let blob: Buffer
+  let proxy: MontyClassProxy
+  {
+    const session = await pool().checkout()
+    await session.feedRun('class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()')
+    proxy = (await session.feedRun('foo')) as MontyClassProxy
+    blob = await session.dump()
+    await session.close()
+  }
+  const session = await pool().checkout()
+  try {
+    await session.loadSession(blob)
+    t.true(await session.feedRun('back is foo and isinstance(back, Foo)', { inputs: { back: proxy } }))
+  } finally {
+    await session.close()
+  }
+})
+
+test('a host-origin proxy from a restored session re-enters as a host-backed copy', async () => {
+  let blob: Buffer
+  {
+    const session = await pool().checkout()
+    await session.feedRun('x = obj', {
+      inputs: { obj: new ClassInstance(new Greeter('hello'), { eagerAttrs: 'all' }) },
+    })
+    blob = await session.dump()
+    await session.close()
+  }
+  const session = await pool().checkout()
+  try {
+    await session.loadSession(blob)
+    const proxy = await session.feedRun('x')
+    t.true(proxy instanceof MontyClassProxy)
+    t.deepEqual(await session.feedRun('[type(y).__name__, y.greeting, y is x, y == x]', { inputs: { y: proxy } }), [
+      'Greeter',
+      'hello',
+      false,
+      true,
+    ])
+  } finally {
+    await session.close()
+  }
+})
+
 test('a sandbox-defined dataclass instance reports isDataclass', async () => {
   const code = 'from dataclasses import dataclass\n@dataclass\nclass P:\n    x: int\n    y: int\nP(1, 2)'
   const result = await run(code)

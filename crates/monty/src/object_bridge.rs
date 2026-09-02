@@ -215,51 +215,66 @@ impl MontyObjectExt for MontyObject {
                 let exc = SimpleException::new(exc_type, arg);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(exc))))
             }
-            // Always allocated host-backed, even for a round-tripped sandbox
-            // instance: the interpreter cannot rebuild the original class
-            // binding, so method calls / lazy lookups on such an instance
-            // suspend with its uuid and the host's guaranteed store miss
-            // produces the usual errors.
+            // A sandbox instance the host hands back resolves to the original
+            // object by uuid (identity survives the round trip); anything else
+            // is host-backed.
             Self::ClassInstance(MontyClassInstance {
                 class_type,
                 instance_id,
                 attrs,
-            }) => {
-                let pairs = convert_pairs(attrs, vm)?;
-                let dict = Dict::from_pairs(pairs, vm)
-                    .map_err(|_| InvalidInputError::invalid_type("unhashable class instance attr keys"))?;
-                let hc = HostClass::new(class_type, instance_id, dict);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::HostClass(Box::new(hc)))))
-            }
+            }) => match vm.heap.resolve_boundary_uuid(&instance_id) {
+                Some(id) if matches!(vm.heap.get(id), HeapData::Instance(_)) => {
+                    // TODO: apply `attrs` to the instance so host-side edits
+                    // are visible; for now the payload is ignored.
+                    vm.heap.inc_ref(id);
+                    Ok(Value::Ref(id))
+                }
+                _ if class_type.host_defined => {
+                    let pairs = convert_pairs(attrs, vm)?;
+                    let dict = Dict::from_pairs(pairs, vm)
+                        .map_err(|_| InvalidInputError::invalid_type("unhashable class instance attr keys"))?;
+                    let hc = HostClass::new(class_type, instance_id, dict);
+                    Ok(Value::Ref(vm.heap.allocate(HeapData::HostClass(Box::new(hc)))))
+                }
+                _ => Err(InvalidInputError::invalid_type(format!(
+                    "sandbox instance of '{}' (id {instance_id}) no longer exists",
+                    class_type.name
+                ))),
+            },
             Self::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s))))),
             Self::FileHandle(handle) => {
                 let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(Box::new(file)))))
             }
             Self::Type(t) => match t {
-                // A host class type object is a valid input: it materializes
-                // as a `HostClassType`; calling it (or a classmethod on it)
+                // A sandbox class the host hands back resolves to the class
+                // object itself; a host class materializes as a
+                // `HostClassType`, and calling it (or a classmethod on it)
                 // suspends to the host, whose own policy decides.
-                MontyType::Instance(mut class_type) if class_type.host_defined => {
-                    let name = EitherStr::Heap(class_type.name.clone());
-                    // Eager class attrs convert like instance attrs do.
-                    let attr_pairs = convert_pairs(mem::take(&mut class_type.attrs), vm)?;
-                    let attrs = Dict::from_pairs(attr_pairs, vm)
-                        .map_err(|_| InvalidInputError::invalid_type("unhashable class attr keys"))?;
-                    let ty = HostClassType::new(name, &class_type, attrs);
-                    Ok(Value::Ref(vm.heap.allocate(HeapData::HostClassType(Box::new(ty)))))
-                }
-                // A sandbox class binding cannot be reconstructed from its
-                // wire shape (see the invariant on the runtime
-                // `Type::Instance` variant).
-                MontyType::Instance(_) => Err(InvalidInputError::invalid_type(
-                    "a sandbox class type object is not a valid input value",
-                )),
+                MontyType::Instance(mut class_type) => match vm.heap.resolve_boundary_uuid(&class_type.id) {
+                    Some(class_id) if matches!(vm.heap.get(class_id), HeapData::Class(_)) => {
+                        vm.heap.inc_ref(class_id);
+                        Ok(Value::Ref(class_id))
+                    }
+                    _ if class_type.host_defined => {
+                        let name = EitherStr::Heap(class_type.name.clone());
+                        // Eager class attrs convert like instance attrs do.
+                        let attr_pairs = convert_pairs(mem::take(&mut class_type.attrs), vm)?;
+                        let attrs = Dict::from_pairs(attr_pairs, vm)
+                            .map_err(|_| InvalidInputError::invalid_type("unhashable class attr keys"))?;
+                        let ty = HostClassType::new(name, &class_type, attrs);
+                        Ok(Value::Ref(vm.heap.allocate(HeapData::HostClassType(Box::new(ty)))))
+                    }
+                    _ => Err(InvalidInputError::invalid_type(format!(
+                        "sandbox class '{}' (id {}) no longer exists",
+                        class_type.name, class_type.id
+                    ))),
+                },
                 t => match t.to_internal() {
                     Some(ty) => Ok(Value::Builtin(Builtins::Type(ty))),
-                    None => Err(InvalidInputError::invalid_type(
-                        "a sandbox class type object is not a valid input value",
-                    )),
+                    None => Err(InvalidInputError::invalid_type(format!(
+                        "type object '{t}' is not a valid input value"
+                    ))),
                 },
             },
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
@@ -525,9 +540,9 @@ impl MontyObjectExt for MontyObject {
                     // the heap objects, so stable across crossings and
                     // dump/restore). Class *objects* keep their type
                     // representation.
-                    HeapReadOutput::Instance(mut inst) => {
+                    HeapReadOutput::Instance(inst) => {
                         let class_id = inst.get(vm.heap).class();
-                        let instance_id = inst.get_mut(vm.heap).boundary_uuid();
+                        let instance_id = vm.heap.boundary_uuid(*id);
                         let class_type = sandbox_class_type(class_id, vm);
                         // Snapshot before recursing: attrs are mutable via `setattr`.
                         let children = snapshot_dict_pairs(inst.get(vm.heap).attrs(), vm.heap);
@@ -807,15 +822,11 @@ impl MontyTypeExt for MontyType {
 /// If `class_id` does not refer to a `Class` heap entry — every producer of a
 /// class id guarantees it does, so this is a programmer-error tripwire.
 fn sandbox_class_type(class_id: HeapId, vm: &mut VM<'_>) -> MontyClassType {
-    let is_dataclass = dataclasses::is_dataclass_class(class_id, vm);
-    let HeapReadOutput::Class(mut class) = vm.heap.read(class_id) else {
-        unreachable!("sandbox_class_type called with a non-class heap id");
-    };
     MontyClassType {
         name: class_name(class_id, vm.heap, vm.interns).into_owned(),
-        id: class.get_mut(vm.heap).boundary_uuid(),
+        id: vm.heap.boundary_uuid(class_id),
         host_defined: false,
-        is_dataclass,
+        is_dataclass: dataclasses::is_dataclass_class(class_id, vm),
         attrs: DictPairs::default(),
     }
 }

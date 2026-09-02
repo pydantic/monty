@@ -90,9 +90,16 @@ impl Class {
     }
 
     /// Boundary identity of the class, generated and stored on first use so
-    /// repeated crossings (and dump/restore) observe the same id.
-    pub fn boundary_uuid(&mut self) -> MontyUuid {
+    /// repeated crossings (and dump/restore) observe the same id. Only
+    /// `Heap::boundary_uuid` may call this: it also indexes the new id.
+    pub(crate) fn boundary_uuid(&mut self) -> MontyUuid {
         *self.uuid.get_or_insert_with(create_uuid)
+    }
+
+    /// The boundary identity, if the class (or an instance) has crossed to the host.
+    #[must_use]
+    pub fn uuid(&self) -> Option<MontyUuid> {
+        self.uuid
     }
 
     /// The `@dataclass(...)` options in force for this class.

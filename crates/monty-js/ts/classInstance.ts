@@ -307,14 +307,21 @@ export class MontyClassProxy {
   readonly name: string
   /** Whether the instance was a dataclass on the side that produced it. */
   readonly isDataclass: boolean
+  /** Identity of the instance (canonical uuid string): the id the sandbox
+   *  resolves the original object by when the proxy is passed back. */
+  readonly id: string
   /** The instance's attributes. Null-prototype record: attr names are
    *  sandbox-controlled, so they must never become prototype properties. */
   readonly attributes: Record<string, unknown>
+  /** The class as it crossed the wire, kept so the proxy can cross back. */
+  private readonly classType: Record<string, unknown>
 
   /** @internal — built by `restore` from the wire marker. */
-  constructor(name: string, isDataclass: boolean, attrs: Array<[string, unknown]>) {
-    this.name = name
-    this.isDataclass = isDataclass
+  constructor(classType: Record<string, unknown>, id: string, attrs: Array<[string, unknown]>) {
+    this.name = typeof classType.name === 'string' ? classType.name : 'object'
+    this.isDataclass = classType.isDataclass === true
+    this.id = id
+    this.classType = classType
     const attributes: Record<string, unknown> = Object.create(null)
     for (const [key, value] of attrs) {
       if (typeof key === 'string') {
@@ -322,6 +329,21 @@ export class MontyClassProxy {
       }
     }
     this.attributes = attributes
+  }
+
+  /** @internal — the wire marker `prepare` sends when the proxy is passed back
+   *  into the sandbox, which hands over the original object by `id`. */
+  toMarker(store: InstanceStore, depth: number): Record<string, unknown> {
+    const attrs: Array<[string, unknown]> = []
+    for (const key of Object.keys(this.attributes)) {
+      attrs.push([key, prepareInner(this.attributes[key], store, depth + 1)])
+    }
+    return {
+      __monty_type__: 'ClassInstance',
+      type: { ...this.classType, attrs: [] },
+      instanceId: this.id,
+      attrs,
+    }
   }
 }
 
@@ -436,6 +458,9 @@ function prepareInner(value: unknown, store: InstanceStore, depth: number): unkn
   }
   if (value instanceof ClassInstance) {
     return wrapperToMarker(value, store, depth)
+  }
+  if (value instanceof MontyClassProxy) {
+    return value.toMarker(store, depth)
   }
   if (Array.isArray(value)) {
     return walkArray(value, store, depth, prepareInner)
@@ -581,11 +606,12 @@ function instanceClass(instance: object): object | undefined {
 
 /** Maps an inbound `ClassInstance` marker to the original instance or a proxy. */
 function markerToInstance(marker: Record<string, unknown>, store: InstanceStore, depth: number): unknown {
-  if (typeof marker.instanceId === 'string') {
-    const wrapper = store.get(marker.instanceId)
-    if (wrapper !== undefined) {
-      return wrapper.instance
-    }
+  if (typeof marker.instanceId !== 'string') {
+    throw new TypeError('ClassInstance marker instanceId must be a uuid string')
+  }
+  const wrapper = store.get(marker.instanceId)
+  if (wrapper !== undefined) {
+    return wrapper.instance
   }
   const attrs: Array<[string, unknown]> = []
   if (Array.isArray(marker.attrs)) {
@@ -596,11 +622,7 @@ function markerToInstance(marker: Record<string, unknown>, store: InstanceStore,
     }
   }
   const classType = (marker.type ?? {}) as Record<string, unknown>
-  return new MontyClassProxy(
-    typeof classType.name === 'string' ? classType.name : 'object',
-    classType.isDataclass === true,
-    attrs,
-  )
+  return new MontyClassProxy(classType, marker.instanceId, attrs)
 }
 
 // === shared container walks (used by both prepare and restore) ===

@@ -17,7 +17,7 @@ use std::{
     sync::Arc,
 };
 
-use monty_types::ResourceTracker;
+use monty_types::{MontyUuid, ResourceTracker};
 use serde::{de::Error as _, ser::SerializeStruct};
 
 #[cfg(feature = "ref-count-return")]
@@ -943,6 +943,10 @@ pub(crate) struct Heap {
     ///
     /// Uses `BTreeMap` to avoid large residual capacity from spikes of `ExtFunction` allocations.
     ext_function_cache: BTreeMap<Arc<str>, HeapId>,
+    /// Live sandbox classes and instances by boundary uuid, so a value the host
+    /// hands back resolves to the original object. Weak like
+    /// `ext_function_cache`: cleared when the object is freed, rebuilt on restore.
+    boundary_index: BTreeMap<MontyUuid, HeapId>,
 }
 
 impl serde::Serialize for Heap {
@@ -972,7 +976,10 @@ impl<'de> serde::Deserialize<'de> for Heap {
         }
         let fields = HeapFields::deserialize(deserializer)?;
         let mut entries = fields.entries;
-        let ext_function_cache = restore_entries(&mut entries, fields.timezone_utc).map_err(D::Error::custom)?;
+        let WeakIndexes {
+            ext_function_cache,
+            boundary_index,
+        } = restore_entries(&mut entries, fields.timezone_utc).map_err(D::Error::custom)?;
         Ok(Self {
             entries,
             tracker: fields.tracker,
@@ -982,6 +989,7 @@ impl<'de> serde::Deserialize<'de> for Heap {
             gc_disabled: false,
             timezone_utc: fields.timezone_utc,
             ext_function_cache,
+            boundary_index,
         })
     }
 }
@@ -994,8 +1002,8 @@ impl<'de> serde::Deserialize<'de> for Heap {
 /// forged dump becomes a panic or a self-contradictory value later: `time`
 /// components are read back by `naive_time` as already validated, and the `tzinfo`
 /// references on `time` and `datetime`, along with the `timezone_utc` cache, are
-/// dereferenced without checking what they land on. Returns the rebuilt
-/// external-function cache, which is derived rather than serialized.
+/// dereferenced without checking what they land on. Returns the rebuilt weak
+/// indexes, which are derived rather than serialized.
 ///
 /// A `time` needs no agreement check: it stores only the reference, so there is
 /// no second copy to contradict. A `datetime` keeps an inline offset and name —
@@ -1004,8 +1012,8 @@ impl<'de> serde::Deserialize<'de> for Heap {
 fn restore_entries(
     entries: &mut StableHeap<HeapEntry>,
     timezone_utc: Option<HeapId>,
-) -> Result<BTreeMap<Arc<str>, HeapId>, &'static str> {
-    let mut ext_function_cache = BTreeMap::new();
+) -> Result<WeakIndexes, &'static str> {
+    let mut indexes = WeakIndexes::default();
     // Both sides of every timezone check, as owned copies: only one entry can be
     // borrowed at a time, and whether a reference is sound is not knowable until
     // every entry has been visited. Each copy mirrors one already in the heap.
@@ -1019,7 +1027,13 @@ fn restore_entries(
         };
         match entry.get_mut().data.0.get_mut() {
             HeapData::ExtFunction(function) => {
-                ext_function_cache.insert(function.cache_key(), id);
+                indexes.ext_function_cache.insert(function.cache_key(), id);
+            }
+            HeapData::Instance(instance) => {
+                indexes.index_boundary_uuid(instance.uuid(), id);
+            }
+            HeapData::Class(class) => {
+                indexes.index_boundary_uuid(class.uuid(), id);
             }
             HeapData::TimeZone(tz) => {
                 // Checked here rather than at each referrer: this is the only copy
@@ -1059,7 +1073,29 @@ fn restore_entries(
     } else if timezone_utc.is_some_and(|id| !holds(id, &TimeZone::utc())) {
         Err("timezone.utc cache does not point to the utc timezone")
     } else {
-        Ok(ext_function_cache)
+        Ok(indexes)
+    }
+}
+
+/// A freed object's key in one of the heap's weak indexes.
+enum WeakIndexKey {
+    ExtFunction(Arc<str>),
+    Boundary(MontyUuid),
+}
+
+/// The heap's weak (non-owning) indexes, rebuilt from the entries on restore.
+#[derive(Default)]
+struct WeakIndexes {
+    ext_function_cache: BTreeMap<Arc<str>, HeapId>,
+    boundary_index: BTreeMap<MontyUuid, HeapId>,
+}
+
+impl WeakIndexes {
+    /// Indexes `id` under `uuid` when the object has one (it has crossed to the host).
+    fn index_boundary_uuid(&mut self, uuid: Option<MontyUuid>, id: HeapId) {
+        if let Some(uuid) = uuid {
+            self.boundary_index.insert(uuid, id);
+        }
     }
 }
 
@@ -1101,6 +1137,7 @@ impl Heap {
             gc_disabled: false,
             timezone_utc: None,
             ext_function_cache: BTreeMap::new(),
+            boundary_index: BTreeMap::new(),
         };
 
         // The empty-tuple singleton starts with refcount = 1 — that single ref *is* the
@@ -1202,6 +1239,60 @@ impl Heap {
         }
     }
 
+    /// The key `data` holds in a weak index, read before its slot is freed so
+    /// the index entry can be cleared (see [`Heap::remove_weak_index_entry`]).
+    fn weak_index_key(data: &HeapData) -> Option<WeakIndexKey> {
+        match data {
+            HeapData::ExtFunction(function) => Some(WeakIndexKey::ExtFunction(function.cache_key())),
+            HeapData::Instance(instance) => instance.uuid().map(WeakIndexKey::Boundary),
+            HeapData::Class(class) => class.uuid().map(WeakIndexKey::Boundary),
+            _ => None,
+        }
+    }
+
+    /// Clears the weak index entry for the object at `id` before its slot can
+    /// be reused, only if the entry still points at this exact object (a
+    /// restored dump may hold duplicates).
+    fn remove_weak_index_entry(&mut self, key: Option<WeakIndexKey>, id: HeapId) {
+        match key {
+            Some(WeakIndexKey::ExtFunction(name)) => {
+                Self::remove_ext_function_cache_entry(&mut self.ext_function_cache, &name, id);
+            }
+            Some(WeakIndexKey::Boundary(uuid)) if self.boundary_index.get(&uuid) == Some(&id) => {
+                self.boundary_index.remove(&uuid);
+            }
+            Some(WeakIndexKey::Boundary(_)) | None => {}
+        }
+    }
+
+    /// Boundary uuid of the sandbox class or instance at `id`, generated and
+    /// indexed on its first crossing to the host so the host can hand the
+    /// object back by id (see [`Heap::resolve_boundary_uuid`]).
+    ///
+    /// # Panics
+    /// If `id` is not a live `Instance` or `Class` entry.
+    pub(crate) fn boundary_uuid(&mut self, id: HeapId) -> MontyUuid {
+        let mut entry = self
+            .entries
+            .entry(id)
+            .expect("Heap::boundary_uuid: entry already freed");
+        let uuid = match entry.get_mut().data.0.get_mut() {
+            HeapData::Instance(instance) => instance.boundary_uuid(),
+            HeapData::Class(class) => class.boundary_uuid(),
+            _ => unreachable!("Heap::boundary_uuid: only classes and instances carry a boundary uuid"),
+        };
+        self.boundary_index.insert(uuid, id);
+        uuid
+    }
+
+    /// The live sandbox class or instance that crossed to the host as `uuid`,
+    /// if it still exists; the index holds no reference, so the returned id is
+    /// borrowed.
+    #[must_use]
+    pub(crate) fn resolve_boundary_uuid(&self, uuid: &MontyUuid) -> Option<HeapId> {
+        self.boundary_index.get(uuid).copied()
+    }
+
     /// Returns the cached `datetime.timezone.utc` singleton, lazily creating it on first access.
     ///
     /// The returned `Value::Ref` has its refcount incremented so the caller can drop
@@ -1291,16 +1382,9 @@ impl Heap {
                     if heap_entry.color.get() == CcColor::Purple {
                         reader.heap.purple_count -= 1;
                     }
-                    // Remove weak-cache entries before the slot becomes available for reuse.
-                    let ext_function_name = match ptr.data(reader) {
-                        HeapData::ExtFunction(function) => Some(function.cache_key()),
-                        _ => None,
-                    };
-                    // Clear the cache (only if it points to this exact function, it's possible for
-                    // snapshot deserialization to create duplicate functions with the same name)
-                    if let Some(name) = ext_function_name {
-                        Self::remove_ext_function_cache_entry(&mut reader.heap.ext_function_cache, &name, current_id);
-                    }
+                    // Remove weak-index entries before the slot becomes available for reuse.
+                    let weak_key = Self::weak_index_key(ptr.data(reader));
+                    reader.heap.remove_weak_index_entry(weak_key, current_id);
 
                     // It is not possible to free from `HeapPtr` because it is created through
                     // a &self borrow on `StableHeap`. At least this repeated lookup is already
@@ -1469,9 +1553,8 @@ impl Heap {
             );
             let mut value = entry.free();
             // Clear weak entries before freeing their slots, just as `dec_ref`.
-            if let HeapData::ExtFunction(function) = value.data.0.get_mut() {
-                Self::remove_ext_function_cache_entry(&mut self.ext_function_cache, &function.cache_key(), id);
-            }
+            let weak_key = Self::weak_index_key(value.data.0.get_mut());
+            self.remove_weak_index_entry(weak_key, id);
             freed += 1;
             // Walk children, marking child `Value::Ref`s as `Dereferenced`
             // under `memory-model-checks` so dropping the freed entry's data

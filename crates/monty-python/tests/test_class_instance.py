@@ -6,7 +6,7 @@ import re
 from dataclasses import FrozenInstanceError, dataclass
 from functools import cached_property
 from typing import Any, NoReturn
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from conftest import RunMonty
@@ -489,6 +489,79 @@ def test_sandbox_class_returns_proxy(monty_run: RunMonty):
     assert result.is_dataclass is False
     assert result.attributes == snapshot({'a': 1})
     assert repr(result) == snapshot("MontyClassProxy(name='Foo', attributes={'a': 1})")
+
+
+def test_proxy_round_trips_to_the_sandbox_object(session: MontySession):
+    """Passing a proxy back hands the sandbox its original object, not a host copy."""
+    session.feed_run('class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()')
+    proxy = session.feed_run('foo')
+    assert isinstance(proxy, MontyClassProxy)
+    assert isinstance(proxy.id, UUID)
+    assert session.feed_run('(back is foo, isinstance(back, Foo), back.x)', inputs={'back': proxy}) == snapshot(
+        (True, True, 1)
+    )
+
+    def echo(value: object) -> object:
+        return value
+
+    assert session.feed_run('echo(foo) is foo', external_lookup={'echo': echo}) is True
+
+
+def test_proxy_of_freed_sandbox_object_is_rejected(session: MontySession):
+    proxy = session.feed_run('class Foo:\n    pass\nFoo()')
+    assert isinstance(proxy, MontyClassProxy)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        session.feed_run('x', inputs={'x': proxy})
+    assert str(exc_info.value).replace(str(proxy.id), '<id>') == snapshot(
+        "RuntimeError: invalid input type: sandbox instance of 'Foo' (id <id>) no longer exists"
+    )
+
+
+def test_proxy_round_trips_nested_and_ignores_edited_attributes(session: MontySession):
+    session.feed_run('class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()')
+    proxy = session.feed_run('foo')
+    assert isinstance(proxy, MontyClassProxy)
+    proxy.attributes['x'] = 99
+    code = "(items[0] is foo, mapping['k'] is foo, foo.x)"
+    assert session.feed_run(code, inputs={'items': [proxy], 'mapping': {'k': proxy}}) == snapshot((True, True, 1))
+
+
+def test_dataclass_proxy_round_trips(session: MontySession):
+    session.feed_run('from dataclasses import dataclass\n@dataclass\nclass P:\n    x: int\n    y: int\np = P(1, 2)')
+    proxy = session.feed_run('p')
+    assert isinstance(proxy, MontyClassProxy)
+    assert proxy.is_dataclass is True
+    assert session.feed_run('(back is p, back == P(1, 2))', inputs={'back': proxy}) == snapshot((True, True))
+
+
+def test_proxy_resolves_after_dump_load(pool: Monty):
+    """The uuid index is rebuilt from the dump, so a proxy still names its object."""
+    with pool.checkout() as session:
+        session.feed_run('class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()')
+        proxy = session.feed_run('foo')
+        blob = session.dump()
+
+    with pool.checkout() as session:
+        assert session.load_session(blob) is None
+        assert session.feed_run('(back is foo, isinstance(back, Foo))', inputs={'back': proxy}) == snapshot(
+            (True, True)
+        )
+
+
+def test_host_instance_proxy_after_restore_re_enters_as_host_copy(pool: Monty):
+    """A proxy for a host object the fresh session never saw is host-origin, so
+    passing it back makes a host-backed copy rather than raising."""
+    p = Person(name='Alice', age=30)
+    with pool.checkout() as session:
+        session.feed_run('x = obj', inputs={'obj': ClassInstance(p, eager_attrs='all')})
+        blob = session.dump()
+
+    with pool.checkout() as session:
+        assert session.load_session(blob) is None
+        proxy = session.feed_run('x')
+        assert isinstance(proxy, MontyClassProxy)
+        code = '(type(y).__name__, y.name, y is x, y == x)'
+        assert session.feed_run(code, inputs={'y': proxy}) == snapshot(('Person', 'Alice', False, True))
 
 
 def test_sandbox_dataclass_returns_proxy(monty_run: RunMonty):

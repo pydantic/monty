@@ -594,21 +594,13 @@ impl VM<'_> {
             HeapData::Class(_) => return self.instantiate_class(heap_id, args),
             // Calling a host class type suspends to the host as a `__call__`
             // method call on the class's uuid; the host's own policy decides
-            // whether construction is allowed. A sandbox-origin class type can
-            // never be constructed host-side, so it fails locally without the
-            // round trip.
+            // whether construction is allowed.
             HeapData::HostClassType(ty) => {
-                return if ty.host_defined() {
-                    Ok(CallResult::MethodCall {
-                        name: EitherStr::Heap("__call__".to_owned()),
-                        args,
-                        object_id: ty.type_id(),
-                    })
-                } else {
-                    let name = ty.name(self.interns).to_owned();
-                    args.drop_with(self);
-                    Err(ExcType::type_error(format!("cannot instantiate host class '{name}'")))
-                };
+                return Ok(CallResult::MethodCall {
+                    name: EitherStr::Heap("__call__".to_owned()),
+                    args,
+                    object_id: ty.type_id(),
+                });
             }
             // Calling a namedtuple class constructs a `NamedTuple` instance.
             HeapData::NamedTupleClass(_) => {

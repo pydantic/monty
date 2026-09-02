@@ -12,7 +12,7 @@ use monty::{
 };
 use monty_types::{
     CompileOptions, DictPairs, ExcType, ExtFunctionResult, MontyClassInstance, MontyClassType, MontyException,
-    MontyObject, MontyUuid, NameLookupResult, PrintWriter, ResourceTracker,
+    MontyObject, MontyType, MontyUuid, NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
 };
 
 #[test]
@@ -797,6 +797,195 @@ fn repl_hasattr_getattr_lookup_effects_survive_dump() {
             MontyObject::List(vec![MontyObject::Int(1)]),
             MontyObject::Int(2),
         ])
+    );
+}
+
+/// A sandbox class or instance the host hands back (by the uuid it crossed
+/// out with) resolves to the original object rather than a host-backed copy,
+/// including after a dump/restore rebuilds the uuid index; one the sandbox has
+/// since freed is rejected instead.
+#[test]
+fn repl_sandbox_objects_round_trip_by_identity() {
+    let (mut repl, _) = init_repl("class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()");
+    let instance = feed_run_print(&mut repl, "foo").unwrap();
+    let MontyObject::ClassInstance(MontyClassInstance {
+        class_type,
+        instance_id,
+        ..
+    }) = instance.clone()
+    else {
+        panic!("expected a ClassInstance, got {instance:?}");
+    };
+    assert!(!class_type.host_defined);
+    // The class itself crosses out as repr text; its wire type (as carried by
+    // the instance) is what a host can hand back.
+    let class_object = MontyObject::Type(MontyType::Instance(Box::new(class_type)));
+
+    let checks = "(back is foo, cls is Foo, isinstance(back, cls), back.x)";
+    let inputs = vec![("back".to_owned(), instance.clone()), ("cls".to_owned(), class_object)];
+    let expected = MontyObject::Tuple(vec![
+        MontyObject::Bool(true),
+        MontyObject::Bool(true),
+        MontyObject::Bool(true),
+        MontyObject::Int(1),
+    ]);
+    let progress = repl.feed_start(checks, inputs.clone(), PrintWriter::Stdout).unwrap();
+    let (repl, value) = progress.into_complete().expect("expected completion");
+    assert_eq!(value, expected);
+
+    // The index is derived state: a restored heap must resolve the same ids.
+    let restored = round_trip_repl(&repl);
+    let progress = restored.feed_start(checks, inputs, PrintWriter::Stdout).unwrap();
+    let (mut restored, value) = progress.into_complete().expect("expected completion");
+    assert_eq!(value, expected);
+
+    // Once the instance is freed its id is unknown; a host copy would be wrong.
+    feed_run_print(&mut restored, "foo = back = None").unwrap();
+    let err = restored
+        .feed_start("back", vec![("back".to_owned(), instance)], PrintWriter::Stdout)
+        .expect_err("expected ReplStartError");
+    assert_eq!(
+        err.error.to_string(),
+        format!("RuntimeError: invalid input type: sandbox instance of 'Foo' (id {instance_id}) no longer exists")
+    );
+}
+
+/// Edge cases of resolving host-supplied ids against live sandbox objects:
+/// values nested in containers, the (ignored) attrs payload, ids of the wrong
+/// kind, an instance kept alive by a cycle until the collector runs, and a
+/// class freed after its instances.
+#[test]
+fn repl_sandbox_object_resolution_edge_cases() {
+    // Collect cycles at every checkpoint so the collector path is exercised.
+    let tracker = ResourceTracker::new(ResourceLimits::default().gc_interval(1));
+    let mut repl = MontyRepl::new("repl.py", tracker, CompileOptions::default());
+    feed_run_print(
+        &mut repl,
+        "class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()",
+    )
+    .unwrap();
+    let instance = feed_run_print(&mut repl, "foo").unwrap();
+    let MontyObject::ClassInstance(MontyClassInstance {
+        class_type,
+        instance_id,
+        ..
+    }) = instance.clone()
+    else {
+        panic!("expected a ClassInstance, got {instance:?}");
+    };
+    let complete = |repl: MontyRepl, code: &str, inputs: Vec<(String, MontyObject)>| {
+        let progress = repl.feed_start(code, inputs, PrintWriter::Stdout).unwrap();
+        progress.into_complete().expect("expected completion")
+    };
+    let start_error = |repl: MontyRepl, input: MontyObject| {
+        let err = repl
+            .feed_start("value", vec![("value".to_owned(), input)], PrintWriter::Stdout)
+            .expect_err("expected ReplStartError");
+        let ReplStartError { repl, error } = *err;
+        (repl, error.to_string())
+    };
+
+    // Nested in containers, carrying a stale attrs payload that is ignored.
+    let edited = MontyObject::ClassInstance(MontyClassInstance {
+        class_type: class_type.clone(),
+        instance_id,
+        attrs: vec![(MontyObject::String("x".to_owned()), MontyObject::Int(99))].into(),
+    });
+    let inputs = vec![
+        ("items".to_owned(), MontyObject::List(vec![edited.clone()])),
+        (
+            "mapping".to_owned(),
+            MontyObject::dict(vec![(MontyObject::String("k".to_owned()), edited)]),
+        ),
+    ];
+    let (repl, value) = complete(repl, "(items[0] is foo, mapping['k'] is foo, foo.x)", inputs);
+    assert_eq!(
+        value,
+        MontyObject::Tuple(vec![
+            MontyObject::Bool(true),
+            MontyObject::Bool(true),
+            MontyObject::Int(1)
+        ])
+    );
+
+    // An id of the wrong kind never resolves: with a host origin it becomes a
+    // host-backed copy, with a sandbox origin it is rejected.
+    let host_class_type = MontyClassType {
+        host_defined: true,
+        ..class_type.clone()
+    };
+    let class_as_instance = |host_defined: bool| {
+        MontyObject::ClassInstance(MontyClassInstance {
+            class_type: MontyClassType {
+                host_defined,
+                ..class_type.clone()
+            },
+            instance_id: class_type.id,
+            attrs: DictPairs::default(),
+        })
+    };
+    let instance_as_type = |host_defined: bool| {
+        MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
+            id: instance_id,
+            host_defined,
+            ..class_type.clone()
+        })))
+    };
+    let inputs = vec![
+        ("a".to_owned(), class_as_instance(true)),
+        ("b".to_owned(), instance_as_type(true)),
+    ];
+    let code = "(a is foo, isinstance(a, Foo), type(a).__name__, b is Foo, b == Foo, b.__name__)";
+    let (repl, value) = complete(repl, code, inputs);
+    assert_eq!(
+        value,
+        MontyObject::Tuple(vec![
+            MontyObject::Bool(false),
+            MontyObject::Bool(false),
+            MontyObject::String("Foo".to_owned()),
+            MontyObject::Bool(false),
+            MontyObject::Bool(false),
+            MontyObject::String("Foo".to_owned()),
+        ])
+    );
+    let (repl, error) = start_error(repl, class_as_instance(false));
+    assert_eq!(
+        error,
+        format!(
+            "RuntimeError: invalid input type: sandbox instance of 'Foo' (id {}) no longer exists",
+            class_type.id
+        )
+    );
+    let (mut repl, error) = start_error(repl, instance_as_type(false));
+    assert_eq!(
+        error,
+        format!("RuntimeError: invalid input type: sandbox class 'Foo' (id {instance_id}) no longer exists")
+    );
+
+    // A cycle keeps the instance alive past its last binding, so its id still
+    // resolves; the collector frees it and the id is forgotten.
+    feed_run_print(&mut repl, "foo.me = foo\nfoo = None").unwrap();
+    let (mut repl, value) = complete(repl, "back.x", vec![("back".to_owned(), instance.clone())]);
+    assert_eq!(value, MontyObject::Int(1));
+    feed_run_print(&mut repl, "back = items = mapping = None\n[i for i in range(300)]").unwrap();
+    let (repl, error) = start_error(repl, instance);
+    assert_eq!(
+        error,
+        format!("RuntimeError: invalid input type: sandbox instance of 'Foo' (id {instance_id}) no longer exists")
+    );
+
+    // The class resolves while alive and is forgotten once freed.
+    let class_object = MontyObject::Type(MontyType::Instance(Box::new(class_type.clone())));
+    let (mut repl, value) = complete(repl, "cls is Foo", vec![("cls".to_owned(), class_object.clone())]);
+    assert_eq!(value, MontyObject::Bool(true));
+    feed_run_print(&mut repl, "cls = Foo = None").unwrap();
+    let (_repl, error) = start_error(repl, class_object);
+    assert_eq!(
+        error,
+        format!(
+            "RuntimeError: invalid input type: sandbox class 'Foo' (id {}) no longer exists",
+            host_class_type.id
+        )
     );
 }
 

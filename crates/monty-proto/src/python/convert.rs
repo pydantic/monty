@@ -20,7 +20,7 @@ use pyo3::{
 };
 
 use super::{
-    class_instance::{InstanceStore, is_class_instance_wrapper, is_class_type_wrapper},
+    class_instance::{InstanceStore, PyMontyClassProxy, is_class_instance_wrapper, is_class_type_wrapper},
     exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_object},
 };
 use crate::MAX_VALUE_DEPTH;
@@ -156,6 +156,13 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore, mut depth: u8)
     } else if is_class_instance_wrapper(obj)? {
         store
             .class_instance_to_monty(obj, depth)
+            .map(MontyObject::ClassInstance)
+    } else if let Ok(proxy) = obj.cast::<PyMontyClassProxy>() {
+        // A proxy crosses back with the ids it arrived with, so the sandbox
+        // hands over its original object.
+        proxy
+            .get()
+            .to_monty(obj.py(), store, depth)
             .map(MontyObject::ClassInstance)
     } else if obj.is_instance(get_pure_posix_path(obj.py())?)? {
         // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects

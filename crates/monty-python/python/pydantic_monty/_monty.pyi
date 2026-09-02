@@ -363,12 +363,19 @@ class MontyClassProxy:
     host-sent instance after any session restore (the per-session instance
     store is host-side and does not survive `load_session` / `load_snapshot`,
     even in the same process). Plain data holder — there is no live object
-    behind it.
+    behind it — but it keeps the instance's `id`, so passing it back into the
+    sandbox (as an input or an external-function result) hands the sandbox
+    its original object: a still-live sandbox instance resolves by identity
+    (`attributes` are not applied), and one the sandbox has since freed raises.
     """
 
     @property
     def name(self) -> str:
         """Class name of the instance (e.g. `'Point'`)."""
+
+    @property
+    def id(self) -> uuid.UUID:
+        """Identity of the instance, the id the sandbox resolves it by when passed back."""
 
     @property
     def is_dataclass(self) -> bool:
