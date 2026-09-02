@@ -1,0 +1,63 @@
+crates/monty-wasm-runtime/wit/runtime.wit
+  s_0dddb5d39d9a85::t_5f23b187630968 89
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_0dddb5d39d9a85::t_9eadb0e678e8de 269,273-274
+crates/monty-js/ts/classInstance.ts
+  s_0dddb5d39d9a85::t_4e6bd773dc49cf 350-352,360,362,364-366,368,372-374,377,534-535,537,540,553,559
+crates/monty/src/builtins/type_.rs
+  s_0dddb5d39d9a85::t_e35fe36c72f1a4 82
+crates/monty-proto/tests/differential.rs
+  s_0dddb5d39d9a85::t_5f23b187630968 355
+crates/monty-types/src/object.rs
+  s_0dddb5d39d9a85::t_5f23b187630968 221,225,770
+crates/monty-proto/src/python/class_instance.rs
+  ai_agent 292-295,297
+  s_0dddb5d39d9a85::t_9c5f4ac5d5dc91 299
+  s_0dddb5d39d9a85::t_e635a70b374df6 20
+  s_0dddb5d39d9a85::t_734c56a78aae7e 30,60,102,119-120,124-125,194-195,205-206,211-214,229,249-253,267-270,278-279,287-289,311-312,314,317,327,337,358,360-366
+crates/monty-pool/src/telemetry_json.rs
+  s_0dddb5d39d9a85::t_5f23b187630968 253-254,270,574,578,588
+crates/monty-js/ts/worker/value.ts
+  s_0dddb5d39d9a85::t_4e6bd773dc49cf 208,412
+crates/monty-proto/tests/roundtrip.rs
+  s_0dddb5d39d9a85::t_5f23b187630968 198
+  s_0dddb5d39d9a85::t_ad4edec912dd77 5,14,682
+limitations/classes.md
+  s_0dddb5d39d9a85::t_5f23b187630968 238-240
+crates/monty-proto/src/wire.rs
+  s_0dddb5d39d9a85::t_5f23b187630968 930-933,956-957,1113,1160
+crates/monty-wasm-runtime/src/value.rs
+  s_0dddb5d39d9a85::t_5f23b187630968 262-263,482
+crates/monty-js/src/convert.rs
+  s_0dddb5d39d9a85::t_5f23b187630968 346
+crates/monty/src/types/host_class.rs
+  s_0dddb5d39d9a85::t_4f6e8ae64fc703 371
+  s_0dddb5d39d9a85::t_e635a70b374df6 6
+  s_0dddb5d39d9a85::t_eb840283a9384c 526,530
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_0dddb5d39d9a85::t_5f23b187630968 222,225-226
+crates/monty-proto/src/convert/mod.rs
+  s_0dddb5d39d9a85::t_5f23b187630968 129,150-153,155
+crates/monty-proto/src/generated/monty.v1.rs
+  s_0dddb5d39d9a85::t_9eadb0e678e8de 171,175-176
+crates/monty-js/ts/session.ts
+  s_0dddb5d39d9a85::t_4e6bd773dc49cf 558,560-561
+crates/monty/src/object_bridge.rs
+  s_0dddb5d39d9a85::t_b12682646bb363 249
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c9d01490c8180607dcc524fad0e9af88972f9b29",
+  "prompts": {},
+  "sessions": {
+    "s_0dddb5d39d9a85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4ff5acd4-3351-4ad9-a7b8-0662afd66a41",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
