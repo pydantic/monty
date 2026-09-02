@@ -457,8 +457,8 @@ def test_type_names_the_real_class(monty_run: RunMonty):
     inputs = {'x': ClassInstance(p, eager_attrs='all')}
     assert monty_run('repr(type(x))', inputs=inputs) == snapshot("<class 'Person'>")
     assert monty_run('type(x).__name__', inputs=inputs) == snapshot('Person')
-    # equal by class identity, though each type(x) call makes a fresh object
-    assert monty_run('type(x) == type(x)', inputs=inputs) == snapshot(True)
+    # one type object per class id, so identity holds as well as equality
+    assert monty_run('(type(x) == type(x), type(x) is type(x))', inputs=inputs) == snapshot((True, True))
 
 
 # === Nesting in containers ===
@@ -730,6 +730,47 @@ def test_class_type_eager_class_attrs(monty_run: RunMonty):
     """eager_attrs on a ClassType sends class constants with the type."""
     wrapper = pydantic_monty.ClassType(Shape, eager_attrs='all')
     assert monty_run('Shape.SIDES + len(Shape.KIND)', inputs={'Shape': wrapper}) == snapshot(11)
+
+
+def test_constructed_instance_keeps_explicit_class_id(monty_run: RunMonty):
+    """`instance_wrapper` passes the ClassType itself, so a pinned `id` reaches
+    the constructed instance's class branch and `type(p)` is the input class."""
+    wrapper = pydantic_monty.ClassType(Person, id=uuid4(), init=True, instance_eager_attrs='all')
+    code = 'p = Person("Sam", 4)\n(type(p) == Person, type(p) is Person, {type(p): 1}[Person], isinstance(p, Person))'
+    assert monty_run(code, inputs={'Person': wrapper}) == snapshot((True, True, 1, True))
+
+
+def test_constructed_instance_of_other_class_gets_default_class_type():
+    """A constructor returning another class's instance (a `__new__` override)
+    is wrapped with that class's default ClassType rather than raising."""
+
+    class Base:
+        def __new__(cls, *args: Any) -> Any:
+            return object.__new__(Derived)
+
+    class Derived(Base):
+        pass
+
+    wrapper = pydantic_monty.ClassType(Base, init=True)
+    wrapped = wrapper.instance_wrapper(wrapper.value())
+    assert wrapped.class_type is not wrapper
+    assert wrapped.class_type is not None
+    assert wrapped.class_type.value is Derived
+
+
+def test_instance_class_branch_carries_eager_class_attrs(monty_run: RunMonty):
+    """A ClassType's eager class attrs travel with each of its instances, so
+    `type(x)` sees them without the class crossing as a value."""
+    class_type = pydantic_monty.ClassType(Shape, eager_attrs=['SIDES'])
+    inputs = {'x': ClassInstance(Shape(1), class_type=class_type)}
+    assert monty_run('(type(x).SIDES, x.__class__.SIDES)', inputs=inputs) == snapshot((4, 4))
+
+
+def test_type_of_two_instances_is_one_object(monty_run: RunMonty):
+    inputs = {'a': ClassInstance(Person('A', 1)), 'b': ClassInstance(Person('B', 2))}
+    assert monty_run('(type(a) is type(b), {type(a): 1}[type(b)], isinstance(a, type(b)))', inputs=inputs) == snapshot(
+        (True, 1, True)
+    )
 
 
 def test_class_type_eager_all_skips_descriptors(monty_run: RunMonty):

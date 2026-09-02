@@ -788,17 +788,235 @@ fn repl_hasattr_getattr_lookup_effects_survive_dump() {
 
 /// A host-defined `Point` instance with lazy attributes, for lookup tests.
 fn host_point() -> MontyObject {
+    host_point_instance(42)
+}
+
+/// A host `Point` instance (class id 7) with the given instance id and an
+/// attr-less class branch, as the bindings send instances.
+fn host_point_instance(instance_id: u128) -> MontyObject {
     MontyObject::ClassInstance(MontyClassInstance {
-        class_type: MontyClassType {
-            name: "Point".to_string(),
-            id: MontyUuid::from_u128(7),
-            host_defined: true,
-            is_dataclass: true,
-            attrs: DictPairs::default(),
-        },
-        instance_id: MontyUuid::from_u128(42),
+        class_type: host_point_class_type("Point", DictPairs::default()),
+        instance_id: MontyUuid::from_u128(instance_id),
         attrs: DictPairs::default(),
     })
+}
+
+/// The host `Point` class (id 7) as a type input, with eager class attrs.
+fn host_point_type(attrs: DictPairs) -> MontyObject {
+    MontyObject::Type(MontyType::Instance(Box::new(host_point_class_type("Point", attrs))))
+}
+
+/// The wire class type for host class id 7 under `name`.
+fn host_point_class_type(name: &str, attrs: DictPairs) -> MontyClassType {
+    MontyClassType {
+        name: name.to_owned(),
+        id: MontyUuid::from_u128(7),
+        host_defined: true,
+        is_dataclass: true,
+        attrs,
+    }
+}
+
+/// `{name: int}` eager attrs.
+fn int_attrs(pairs: &[(&str, i64)]) -> DictPairs {
+    pairs
+        .iter()
+        .map(|(k, v)| (MontyObject::String((*k).to_owned()), MontyObject::Int(*v)))
+        .collect::<Vec<_>>()
+        .into()
+}
+
+/// The sandbox keeps one type object per host class uuid: instances share it,
+/// `type(x)` / `__class__` return it, a `ClassType` input with the same id
+/// resolves to it (its eager attrs land on the shared entry), and
+/// `isinstance` / `dataclasses.is_dataclass` see through it.
+#[test]
+fn repl_host_class_type_is_one_object_per_class() {
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    feed_run_print(&mut repl, "from dataclasses import is_dataclass").unwrap();
+    let inputs = vec![
+        ("a".to_owned(), host_point_instance(42)),
+        ("b".to_owned(), host_point_instance(43)),
+        ("Point".to_owned(), host_point_type(int_attrs(&[("SIDES", 4)]))),
+    ];
+    let code = "(type(a) is type(b), type(a) is Point, type(a) == Point, type(a).SIDES, a.__class__ is Point, \
+                isinstance(a, Point), isinstance(a, (int, Point)), isinstance(1, Point), isinstance(a, int), \
+                is_dataclass(Point), is_dataclass(a), repr(type(a)))";
+    assert_eq!(
+        repl.feed_run(code, inputs, PrintWriter::Stdout).unwrap(),
+        MontyObject::Tuple(vec![
+            MontyObject::Bool(true),
+            MontyObject::Bool(true),
+            MontyObject::Bool(true),
+            MontyObject::Int(4),
+            MontyObject::Bool(true),
+            MontyObject::Bool(true),
+            MontyObject::Bool(true),
+            MontyObject::Bool(false),
+            MontyObject::Bool(false),
+            MontyObject::Bool(true),
+            MontyObject::Bool(true),
+            MontyObject::String("<class 'Point'>".to_owned()),
+        ])
+    );
+}
+
+/// Eager class attrs carried on an instance's class branch reach `type(x)`.
+#[test]
+fn repl_host_class_attrs_visible_via_type_from_instance_branch() {
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let attrs: DictPairs = vec![(
+        MontyObject::String("KIND".to_owned()),
+        MontyObject::String("pt".to_owned()),
+    )]
+    .into();
+    let instance = MontyObject::ClassInstance(MontyClassInstance {
+        class_type: host_point_class_type("Point", attrs),
+        instance_id: MontyUuid::from_u128(42),
+        attrs: DictPairs::default(),
+    });
+    let value = repl
+        .feed_run("type(x).KIND", vec![("x".to_owned(), instance)], PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(value, MontyObject::String("pt".to_owned()));
+}
+
+/// A re-sent class type refreshes the shared entry: non-empty eager attrs
+/// replace the old set, an empty set (an instance's class branch) leaves it
+/// alone, and the name follows the host.
+#[test]
+fn repl_host_class_type_attrs_refresh_on_resend() {
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let point = |attrs| vec![("Point".to_owned(), host_point_type(attrs))];
+    assert_eq!(
+        repl.feed_run("Point.SIDES", point(int_attrs(&[("SIDES", 4)])), PrintWriter::Stdout)
+            .unwrap(),
+        MontyObject::Int(4)
+    );
+    let a = vec![("a".to_owned(), host_point_instance(42))];
+    assert_eq!(
+        repl.feed_run("(type(a) is Point, Point.SIDES)", a, PrintWriter::Stdout)
+            .unwrap(),
+        MontyObject::Tuple(vec![MontyObject::Bool(true), MontyObject::Int(4)])
+    );
+    let again = vec![("Point2".to_owned(), host_point_type(int_attrs(&[("SIDES", 5)])))];
+    assert_eq!(
+        repl.feed_run(
+            "(Point2 is Point, Point.SIDES, type(a).SIDES)",
+            again,
+            PrintWriter::Stdout
+        )
+        .unwrap(),
+        MontyObject::Tuple(vec![MontyObject::Bool(true), MontyObject::Int(5), MontyObject::Int(5)])
+    );
+    let renamed = MontyObject::Type(MontyType::Instance(Box::new(host_point_class_type(
+        "Renamed",
+        DictPairs::default(),
+    ))));
+    assert_eq!(
+        repl.feed_run(
+            "(r is Point, type(a).__name__, Point.SIDES)",
+            vec![("r".to_owned(), renamed)],
+            PrintWriter::Stdout
+        )
+        .unwrap(),
+        MontyObject::Tuple(vec![
+            MontyObject::Bool(true),
+            MontyObject::String("Renamed".to_owned()),
+            MontyObject::Int(5),
+        ])
+    );
+}
+
+/// Host type objects hash and compare by class id alone, so they work as
+/// dict keys and set members across `type(x)` and `ClassType` inputs.
+#[test]
+fn repl_host_class_types_hash_and_eq_by_id() {
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let other = MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
+        name: "Other".to_owned(),
+        id: MontyUuid::from_u128(8),
+        host_defined: true,
+        is_dataclass: false,
+        attrs: DictPairs::default(),
+    })));
+    let inputs = vec![
+        ("a".to_owned(), host_point_instance(42)),
+        ("Point".to_owned(), host_point_type(DictPairs::default())),
+        ("Other".to_owned(), other),
+    ];
+    let code = "d = {type(a): 1}\nd[Point] = 2\n\
+                (len(d), d[type(a)], hash(type(a)) == hash(Point), type(a) in {Point}, type(a) == Other, Point != Other)";
+    assert_eq!(
+        repl.feed_run(code, inputs, PrintWriter::Stdout).unwrap(),
+        MontyObject::Tuple(vec![
+            MontyObject::Int(1),
+            MontyObject::Int(2),
+            MontyObject::Bool(true),
+            MontyObject::Bool(true),
+            MontyObject::Bool(false),
+            MontyObject::Bool(true),
+        ])
+    );
+}
+
+/// The host type index is derived state: after a dump/restore the shared
+/// entry still resolves, and re-sending the class reuses it.
+#[test]
+fn repl_host_class_type_survives_dump_restore() {
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let inputs = vec![
+        ("a".to_owned(), host_point_instance(42)),
+        ("b".to_owned(), host_point_instance(43)),
+        ("Point".to_owned(), host_point_type(int_attrs(&[("SIDES", 4)]))),
+    ];
+    feed_run_print(&mut repl, "x = 1").unwrap();
+    repl.feed_run("x = 2", inputs, PrintWriter::Stdout).unwrap();
+    let mut restored = round_trip_repl(&repl);
+    assert_eq!(
+        feed_run_print(&mut restored, "(type(a) is type(b), type(a) is Point, type(a).SIDES)").unwrap(),
+        MontyObject::Tuple(vec![
+            MontyObject::Bool(true),
+            MontyObject::Bool(true),
+            MontyObject::Int(4)
+        ])
+    );
+    let again = vec![("P".to_owned(), host_point_type(DictPairs::default()))];
+    assert_eq!(
+        restored
+            .feed_run("(P is Point, P.SIDES)", again, PrintWriter::Stdout)
+            .unwrap(),
+        MontyObject::Tuple(vec![MontyObject::Bool(true), MontyObject::Int(4)])
+    );
+}
+
+/// The shared type entry is owned by its instances and by whoever holds
+/// `type(x)`: it is freed with the last holder, and no sooner.
+#[cfg(feature = "ref-count-return")]
+#[test]
+fn repl_host_class_type_freed_with_last_holder() {
+    let control = {
+        let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+        feed_run_print(&mut repl, "x = 1").unwrap();
+        repl.__heap_entry_count_for_tests()
+    };
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let inputs = vec![
+        ("a".to_owned(), host_point_instance(42)),
+        ("b".to_owned(), host_point_instance(43)),
+        ("Point".to_owned(), host_point_type(DictPairs::default())),
+    ];
+    repl.feed_run("x = 1\nt = type(a)", inputs, PrintWriter::Stdout)
+        .unwrap();
+    feed_run_print(&mut repl, "a = b = Point = None").unwrap();
+    // Only the type entry remains, kept alive by `t` and still usable.
+    assert_eq!(repl.__heap_entry_count_for_tests(), control + 1);
+    assert_eq!(
+        feed_run_print(&mut repl, "t.__name__").unwrap(),
+        MontyObject::String("Point".to_owned())
+    );
+    feed_run_print(&mut repl, "t = None").unwrap();
+    assert_eq!(repl.__heap_entry_count_for_tests(), control);
 }
 
 /// Abandoning a suspended snippet via `into_repl` keeps its globals but

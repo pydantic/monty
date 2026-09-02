@@ -69,8 +69,11 @@ A name present in both is served by the eager `inputs` binding.
 
 `None`, `bool`, `int` (arbitrary precision), `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`,
 `Ellipsis`, `NotImplemented`, `datetime.date`, `datetime.datetime`, `datetime.timedelta`, `datetime.timezone`, named
-tuples, dataclass instances, exception instances, and the type objects Monty models (`int`, `str`, `datetime.date`, ...)
-all convert in both directions.
+tuples, exception instances, and the type objects Monty models (`int`, `str`, `datetime.date`, ...) all convert in both
+directions.
+Class instances differ in each direction: a host instance enters only wrapped in `ClassInstance`, and a sandbox-defined
+instance comes out as a read-only `MontyClassProxy`.
+See [host objects](../host-objects.md).
 Put callables in `external_lookup`, where they become [host functions](../host-functions.md); a callable in `inputs`
 binds only a reference the sandbox still resolves through `external_lookup` when it is called.
 
@@ -303,7 +306,8 @@ A loop of quick host calls resets it each turn; set [`max_duration_secs`](../res
 
 ## Where next
 
-- [Host functions](../host-functions.md) — the only way code in the sandbox reaches anything outside it.
+- [Host functions](../host-functions.md) — how code in the sandbox calls functions on the host.
+- [Host objects](../host-objects.md) — exposing objects and classes with per-attribute and per-method policies.
 - [Filesystem access](../filesystem.md) — mounts and the `os` callback.
 - [Snapshots](../snapshots.md) — `feed_start`, `dump()` and resuming later.
 - [The Python subset](../python-subset.md) — what the sandbox can actually run.

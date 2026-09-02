@@ -1,7 +1,8 @@
 # Host Functions
 
-Host functions are how sandboxed code reaches anything outside the sandbox.
-There is no other mechanism except [filesystem mounts](filesystem.md), which are a specialised form of the same idea.
+Host functions are one of three ways sandboxed code reaches anything outside the sandbox.
+The others, [host objects](host-objects.md) and [filesystem mounts](filesystem.md), are specialised forms of the same
+idea.
 
 When sandboxed code reads a name it never defined, execution **suspends**.
 The host resolves the name — usually by running a real function — and execution **resumes** with the result.
@@ -97,8 +98,10 @@ with Monty() as pool:
 Return values must be types Monty can represent — the same set `inputs` and `external_lookup` accept, listed under
 [which values cross the boundary](quickstart/python.md#which-values-cross-the-boundary).
 Arguments come the other way, out of the sandbox.
-A sandbox value with no host equivalent (a class, an instance, a function, a compiled `re` pattern) arrives silently as
-its repr *string* rather than raising, so a host function cannot tell it from a sandbox `str` of the same text.
+A sandbox-defined class instance arrives as a read-only `MontyClassProxy`; see
+[host objects](host-objects.md#sandbox-instances).
+A sandbox value with no host equivalent (a class object, a function, a compiled `re` pattern) arrives silently as its
+repr *string* rather than raising, so a host function cannot tell it from a sandbox `str` of the same text.
 
 A return value Monty cannot represent does not raise `MontyConversionError`.
 It is delivered into the sandbox as `TypeError: Cannot convert X to Monty value`, which sandboxed code can catch;

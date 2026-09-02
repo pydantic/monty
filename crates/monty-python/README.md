@@ -40,6 +40,9 @@ if __name__ == '__main__':
 
 ## Usage with a local monty worker
 
+Host objects and classes cross the boundary through the `ClassInstance` / `ClassType` wrappers; see the
+`pydantic-monty` README.
+
 This requires the `pydantic-monty-runtime` package, which is generally
 installed as part of the `pydantic-monty` meta-package.
 

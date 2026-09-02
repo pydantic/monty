@@ -32,7 +32,8 @@ use crate::{
 ///
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum RunProgress {
-    /// Execution paused at an external function call or dataclass method call.
+    /// Execution paused at an external function call, or a method call on a
+    /// host object (`object_id` set).
     FunctionCall(FunctionCall),
     /// Execution paused for an OS-level operation (filesystem, network, etc.).
     OsCall(OsCall),

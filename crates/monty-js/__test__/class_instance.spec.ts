@@ -542,6 +542,63 @@ test('eagerAttrs on a ClassType sends static class constants', async () => {
   t.is(await run('Shape.SIDES + len(Shape.KIND)', { inputs: { Shape: wrapper } }), 11)
 })
 
+test('a constructed instance keeps the ClassType id and name', async () => {
+  const wrapper = new ClassType(Wallet, {
+    id: '12345678-1234-4123-8123-123456789abc',
+    name: 'Purse',
+    init: true,
+    instanceEagerAttrs: 'all',
+  })
+  const code = 'w = Wallet(1)\n[type(w) == Wallet, type(w) is Wallet, type(w).__name__, isinstance(w, Wallet)]'
+  t.deepEqual(await run(code, { inputs: { Wallet: wrapper } }), [true, true, 'Purse', true])
+})
+
+test('a constructed instance of another class gets a default ClassType', () => {
+  class Other {
+    v = 1
+  }
+  class Factory {
+    constructor() {
+      return new Other()
+    }
+  }
+  const wrapper = new ClassType(Factory, { init: true })
+  const wrapped = wrapper.construct([], {})
+  t.true(wrapped.classType !== wrapper)
+  t.is(wrapped.classType.classType, Other as never)
+})
+
+test("an instance's type branch carries the ClassType's eager attrs", async () => {
+  const classType = new ClassType(Shape, { eagerAttrs: ['SIDES'] })
+  const inputs = { x: new ClassInstance(new Shape(1), { classType }) }
+  t.deepEqual(await run('[type(x).SIDES, x.__class__.SIDES]', { inputs }), [4, 4])
+})
+
+test('type objects of two instances are one object', async () => {
+  const inputs = { a: new ClassInstance(new Shape(1)), b: new ClassInstance(new Shape(2)) }
+  t.deepEqual(await run('[type(a) is type(b), {type(a): 1}[type(b)], isinstance(a, type(b))]', { inputs }), [
+    true,
+    1,
+    true,
+  ])
+})
+
+test('a ClassType name override reaches the instance and its error message', async () => {
+  const classType = new ClassType(Shape, { name: 'Polygon' })
+  const inputs = { x: new ClassInstance(new Shape(1), { classType }) }
+  t.is(await run('type(x).__name__', { inputs }), 'Polygon')
+  const error = await t.throwsAsync(() => run('x.missing', { inputs }), { instanceOf: MontyRuntimeError })
+  t.is(error.message, "AttributeError: 'Polygon' object has no attribute 'missing'")
+})
+
+test('name on a ClassInstance names its default ClassType, and clashes with classType', async () => {
+  t.is(await run('type(x).__name__', { inputs: { x: new ClassInstance(new Shape(1), { name: 'Poly' }) } }), 'Poly')
+  t.throws(() => new ClassInstance(new Shape(1), { name: 'Poly', classType: new ClassType(Shape) }), {
+    instanceOf: TypeError,
+    message: 'pass name on the ClassType wrapper, not alongside classType',
+  })
+})
+
 test('lazyAttrs on a ClassType serves class constants on demand', async () => {
   const wrapper = new ClassType(Shape, { lazyAttrs: ['SIDES'] })
   t.is(await run('Shape.SIDES', { inputs: { Shape: wrapper } }), 4)

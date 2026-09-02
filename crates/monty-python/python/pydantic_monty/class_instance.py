@@ -11,7 +11,9 @@ sandbox code returns the instance, the host receives the original object back.
 sandbox. Its shared policies expose the class object itself (class
 constants via `eager_attrs`/`lazy_attrs`, classmethods via
 `allowed_methods`), `init=True` lets sandbox code instantiate it, and the
-`instance_*` policies are applied to each constructed instance.
+`instance_*` policies are applied to each constructed instance. An instance's
+class branch carries its `ClassType`'s id and eager class attrs, so `type(x)`
+inside the sandbox is the same object as a `ClassType` passed as a value.
 
 Subclass and override `convert_value` (or `call_method` / `lookup_lazy_attrs`)
 to transform values crossing the boundary.
@@ -143,7 +145,12 @@ class ClassInstance(BaseWrapper):
     """Unique id for the value."""
 
     class_type: ClassType | None = None
-    """The ClassType wrapper for the value's type."""
+    """The `ClassType` wrapper for the value's type.
+
+    Defaults to `ClassType(type(value))`; pass one to carry a pinned `id` or
+    eager class attrs with the instance. Its eager class attrs are sent on
+    every crossing of the instance, so `type(x)` in the sandbox sees them.
+    """
 
     def __post_init__(self) -> None:
         if self.class_type is None:
@@ -226,7 +233,8 @@ class ClassType(BaseWrapper):
         """Class-object variant of eager attrs: `'all'` sends public
         non-callable entries of the class `__dict__` (class constants),
         skipping methods and descriptors; an explicit list reads exactly
-        those names."""
+        those names. Called when the class crosses as a value and for every
+        crossing of one of its instances."""
         if self.eager_attrs is None:
             return {}
         if self.eager_attrs == 'all':
@@ -261,6 +269,12 @@ class ClassType(BaseWrapper):
     def instance_wrapper(self, instance: Any) -> ClassInstance:
         """Wraps a constructed instance with the `instance_*` policies.
 
+        The instance carries this wrapper as its `class_type`, so its class
+        keeps this wrapper's `id` (an explicit one included) and eager class
+        attrs. A constructor returning an instance of another class (a
+        `__new__` override) gets that class's default `ClassType` instead,
+        since `ClassInstance` rejects a mismatched `class_type`.
+
         Override to customize how constructed instances are exposed.
         """
         return ClassInstance(
@@ -268,6 +282,7 @@ class ClassType(BaseWrapper):
             eager_attrs=self.instance_eager_attrs,
             lazy_attrs=self.instance_lazy_attrs,
             allowed_methods=self.instance_allowed_methods,
+            class_type=self if type(instance) is self.value else None,
         )
 
     def attr_error(self, name: str) -> AttributeError:

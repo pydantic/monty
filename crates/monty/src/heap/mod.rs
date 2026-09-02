@@ -25,7 +25,7 @@ use crate::types::Type;
 use crate::{
     asyncio::{Awaiter, ExternalFutureState, GatherState},
     types::{
-        ExtFunction, TimeZone, Tuple, datetime,
+        ExtFunction, HostClassType, TimeZone, Tuple, datetime,
         timezone::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS},
     },
     value::Value,
@@ -947,6 +947,11 @@ pub(crate) struct Heap {
     /// hands back resolves to the original object. Weak like
     /// `ext_function_cache`: cleared when the object is freed, rebuilt on restore.
     boundary_index: BTreeMap<MontyUuid, HeapId>,
+    /// Live host class type objects by class uuid — one `HostClassType` entry
+    /// per host class, shared by its instances and `type(x)`. Separate from
+    /// `boundary_index` because host and sandbox uuids are distinct namespaces.
+    /// Weak like the others: cleared on free, rebuilt on restore.
+    host_type_index: BTreeMap<MontyUuid, HeapId>,
 }
 
 impl serde::Serialize for Heap {
@@ -979,6 +984,7 @@ impl<'de> serde::Deserialize<'de> for Heap {
         let WeakIndexes {
             ext_function_cache,
             boundary_index,
+            host_type_index,
         } = restore_entries(&mut entries, fields.timezone_utc).map_err(D::Error::custom)?;
         Ok(Self {
             entries,
@@ -990,6 +996,7 @@ impl<'de> serde::Deserialize<'de> for Heap {
             timezone_utc: fields.timezone_utc,
             ext_function_cache,
             boundary_index,
+            host_type_index,
         })
     }
 }
@@ -1034,6 +1041,9 @@ fn restore_entries(
             }
             HeapData::Class(class) => {
                 indexes.index_boundary_uuid(class.uuid(), id);
+            }
+            HeapData::HostClassType(ty) => {
+                indexes.host_type_index.insert(ty.type_id(), id);
             }
             HeapData::TimeZone(tz) => {
                 // Checked here rather than at each referrer: this is the only copy
@@ -1081,6 +1091,7 @@ fn restore_entries(
 enum WeakIndexKey {
     ExtFunction(Arc<str>),
     Boundary(MontyUuid),
+    HostType(MontyUuid),
 }
 
 /// The heap's weak (non-owning) indexes, rebuilt from the entries on restore.
@@ -1088,6 +1099,7 @@ enum WeakIndexKey {
 struct WeakIndexes {
     ext_function_cache: BTreeMap<Arc<str>, HeapId>,
     boundary_index: BTreeMap<MontyUuid, HeapId>,
+    host_type_index: BTreeMap<MontyUuid, HeapId>,
 }
 
 impl WeakIndexes {
@@ -1138,6 +1150,7 @@ impl Heap {
             timezone_utc: None,
             ext_function_cache: BTreeMap::new(),
             boundary_index: BTreeMap::new(),
+            host_type_index: BTreeMap::new(),
         };
 
         // The empty-tuple singleton starts with refcount = 1 — that single ref *is* the
@@ -1246,6 +1259,7 @@ impl Heap {
             HeapData::ExtFunction(function) => Some(WeakIndexKey::ExtFunction(function.cache_key())),
             HeapData::Instance(instance) => instance.uuid().map(WeakIndexKey::Boundary),
             HeapData::Class(class) => class.uuid().map(WeakIndexKey::Boundary),
+            HeapData::HostClassType(ty) => Some(WeakIndexKey::HostType(ty.type_id())),
             _ => None,
         }
     }
@@ -1261,7 +1275,10 @@ impl Heap {
             Some(WeakIndexKey::Boundary(uuid)) if self.boundary_index.get(&uuid) == Some(&id) => {
                 self.boundary_index.remove(&uuid);
             }
-            Some(WeakIndexKey::Boundary(_)) | None => {}
+            Some(WeakIndexKey::HostType(uuid)) if self.host_type_index.get(&uuid) == Some(&id) => {
+                self.host_type_index.remove(&uuid);
+            }
+            Some(WeakIndexKey::Boundary(_) | WeakIndexKey::HostType(_)) | None => {}
         }
     }
 
@@ -1291,6 +1308,27 @@ impl Heap {
     #[must_use]
     pub(crate) fn resolve_boundary_uuid(&self, uuid: &MontyUuid) -> Option<HeapId> {
         self.boundary_index.get(uuid).copied()
+    }
+
+    /// The live type object for the host class `uuid`, if the sandbox holds
+    /// one; the index owns no reference, so the returned id is borrowed.
+    #[must_use]
+    pub(crate) fn resolve_host_type(&self, uuid: &MontyUuid) -> Option<HeapId> {
+        self.host_type_index.get(uuid).copied()
+    }
+
+    /// Allocates and indexes the type object for a host class the sandbox has
+    /// not seen yet; callers must check [`Heap::resolve_host_type`] first so
+    /// the one-entry-per-class invariant holds.
+    pub(crate) fn allocate_host_type(&mut self, ty: HostClassType) -> HeapId {
+        let uuid = ty.type_id();
+        let id = self.allocate(HeapData::HostClassType(Box::new(ty)));
+        let previous = self.host_type_index.insert(uuid, id);
+        debug_assert!(
+            previous.is_none(),
+            "Heap::allocate_host_type: class {uuid} already has a type object"
+        );
+        id
     }
 
     /// Returns the cached `datetime.timezone.utc` singleton, lazily creating it on first access.
@@ -1939,7 +1977,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::HostClass(dc) => {
-            // HostClass attrs are stored in a Dict - iterate through entries
+            // The owned class entry, then the attrs Dict — MUST report exactly
+            // the same ids as `HostClass::py_dec_ref_ids`.
+            on_child(dc.class_id());
             for (k, v) in dc.attrs() {
                 if let Value::Ref(id) = k {
                     on_child(*id);

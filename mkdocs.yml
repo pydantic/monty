@@ -31,6 +31,7 @@ nav:
   - Concepts:
       - Security Model: 'security.md'
       - Host Functions: 'host-functions.md'
+      - Host Objects: 'host-objects.md'
       - Resource Limits: 'resource-limits.md'
       - Filesystem Access: 'filesystem.md'
       - Snapshots: 'snapshots.md'

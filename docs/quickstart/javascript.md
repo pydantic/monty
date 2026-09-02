@@ -74,6 +74,38 @@ matches a Python exception type and `RuntimeError` otherwise.
 
 Plain objects with string keys are accepted as `dict` inputs.
 
+## Host objects
+
+Wrap a host object in `ClassInstance`, or a class in `ClassType`, to expose it under an explicit policy.
+Nothing is wrapped automatically, so a method that returns another object needs a `convertValue` hook:
+
+```ts
+import { ClassInstance, ClassType } from '@pydantic/monty'
+
+class Wallet {
+  constructor(public balance: number) {}
+  pay(amount: number) {
+    return new Wallet(this.balance - amount)
+  }
+}
+
+function wrapWallet(wallet: Wallet): ClassInstance {
+  return new ClassInstance(wallet, {
+    eagerAttrs: 'all',
+    allowedMethods: 'all',
+    convertValue: (_name, value) => (value instanceof Wallet ? wrapWallet(value) : value),
+  })
+}
+
+await session.feedRun('w.pay(30).balance', { inputs: { w: wrapWallet(new Wallet(100)) } }) // 70
+const WalletClass = new ClassType(Wallet, { init: true, instanceEagerAttrs: 'all' })
+await session.feedRun('Wallet(5).balance', { inputs: { Wallet: WalletClass } }) // 5
+```
+
+Instances defined inside the sandbox arrive as read-only `MontyClassProxy` stand-ins.
+See [host objects](../host-objects.md) and the
+[package README](https://github.com/pydantic/monty/blob/main/crates/monty-js/README.md#class-instances).
+
 ## Capturing printed output
 
 ```ts

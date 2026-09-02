@@ -26,6 +26,7 @@ use crate::{
     types::{
         Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
         bytes::{bytes_contains, bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
+        host_class_type,
         instance::{instance_dataclass_eq, instance_getattr, instance_str, instance_user_eq},
         long_int::{
             bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
@@ -1420,7 +1421,7 @@ impl Value {
         };
         let name = match heap.get(*heap_id) {
             HeapData::NamedTuple(nt) => nt.name_either(),
-            HeapData::HostClass(hc) => hc.name_either(),
+            HeapData::HostClass(hc) => host_class_type(heap, hc.class_id()).name_either(),
             _ => return None,
         };
         Some(match name {

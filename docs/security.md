@@ -29,9 +29,9 @@ Concretely:
 - **`eval`, `exec`, `compile`, `globals`, `locals` and `__import__` do not exist.**
 - **No FFI, no C dependencies.** Nothing in the sandbox can call into native code.
 
-## The two host-access mechanisms
+## The three host-access mechanisms
 
-Everything the sandbox can reach outside itself goes through one of two mechanisms, and both are opt-in per feed.
+Everything the sandbox can reach outside itself goes through one of three mechanisms, and all are opt-in per feed.
 
 ### Host functions
 
@@ -45,6 +45,17 @@ It cannot guarantee that what you handed it is safe.
 A host function that takes a path and reads it, or takes a URL and fetches it, is an unconstrained filesystem or network
 primitive that you wrote.
 Validate arguments in the host function as you would validate any untrusted input.
+
+### Host objects and classes
+
+`ClassInstance` and `ClassType` wrappers put a host object, or a host class, in front of the sandbox.
+Every method call, lazy attribute read and `init=True` construction the wrapper allows runs **your** code on the host,
+with the same authority as a host function.
+Each policy (`eager_attrs`, `lazy_attrs`, `allowed_methods`, `init`) is an allow-list that defaults to nothing, and
+`'all'` still skips underscore-prefixed names.
+Nothing is wrapped for you: a method that returns another object fails conversion unless a `convert_value` hook wraps
+it with a policy you chose.
+See [host objects](host-objects.md).
 
 ### Mounts and the `os` callback
 
@@ -124,7 +135,8 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
 
 ### Your own callbacks
 
-Host functions, the `os=` callback, and `CallbackFile` in the Python `OSAccess` helper all execute in the host process.
+Host functions, the methods, lazy attributes and constructors exposed through `ClassInstance`/`ClassType`, the `os=`
+callback, and `CallbackFile` in the Python `OSAccess` helper all execute in the host process.
 `OSAccess` backed by `MemoryFile` objects is fully sandboxed; `OSAccess` backed by `CallbackFile` is exactly as
 sandboxed as the callback you wrote.
 

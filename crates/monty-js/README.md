@@ -113,10 +113,16 @@ class Wallet {
   }
 }
 
-const wallet = new Wallet(100)
-await session.feedRun('w.pay(30).balance', {
-  inputs: { w: new ClassInstance(wallet, { eagerAttrs: 'all', allowedMethods: 'all' }) },
-}) // 70
+// nothing is wrapped automatically: `pay()` returns a Wallet, so the hook wraps it
+function wrapWallet(wallet: Wallet): ClassInstance {
+  return new ClassInstance(wallet, {
+    eagerAttrs: 'all',
+    allowedMethods: 'all',
+    convertValue: (_name, value) => (value instanceof Wallet ? wrapWallet(value) : value),
+  })
+}
+
+await session.feedRun('w.pay(30).balance', { inputs: { w: wrapWallet(new Wallet(100)) } }) // 70
 ```
 
 Methods may be sync or async (`await w.fetch()` in the sandbox). JS functions
@@ -127,17 +133,25 @@ Names outside the policy raise `AttributeError` in the sandbox. A
 through unchanged, so unwrapped class instances are rejected with a
 `TypeError` — wrapping is always an explicit host decision, with policies
 chosen per value (deliberately nothing inherits another wrapper's policies).
+Each wrapper the hook creates is held by the session's instance store until
+the session closes, so a method returning a fresh object per call grows host
+memory by one entry per call; see
+[`limitations/pool-architecture.md`](https://github.com/pydantic/monty/blob/main/limitations/pool-architecture.md#host-api-behaviour-notes).
 
 One more option: `name` overrides the class name the sandbox sees (default
-`instance.constructor.name`). Sandbox code may set attributes — on its own
-copy only: sandbox mutations never touch the wrapped host object.
+the class name). It is a class-level property: on a `ClassInstance` it names
+the default `ClassType` built for the instance and cannot be combined with
+`classType`. Sandbox code may set attributes — on its own copy only: sandbox
+mutations never touch the wrapped host object.
 
 Each wrapper owns its identity: `wrapper.id` (a uuid4 by default, or the `id`
 option) is the id the sandbox routes by, so reuse one wrapper to re-send an
 object under the same identity. Every `ClassInstance` also carries a
 `ClassType` wrapper for its class — a default one built from the
 constructor, or the `classType` option to grant class-level policies (or pin
-a class id) alongside the instance.
+a class id) alongside the instance. The sandbox keeps one type object per
+class id, so `type(a) is type(b)` holds and the class wrapper's eager attrs
+(sent with every instance) are visible through `type(x)`.
 
 Instances the host has no original for — defined inside the sandbox, or
 returned after a dump was restored into a fresh session — cross to the host as read-only
@@ -163,15 +177,24 @@ import { ClassType } from '@pydantic/monty'
 
 await session.feedRun('w = Wallet(100)\nw.pay(30).balance', {
   inputs: {
-    Wallet: new ClassType(Wallet, { init: true, instanceEagerAttrs: 'all', instanceAllowedMethods: 'all' }),
+    Wallet: new ClassType(Wallet, {
+      init: true,
+      instanceEagerAttrs: 'all',
+      instanceAllowedMethods: 'all',
+      // forwarded to every constructed instance, so `pay()`'s Wallet crosses too
+      convertValue: (_name, value) => (value instanceof Wallet ? wrapWallet(value) : value),
+    }),
   },
 }) // 70
 ```
 
 Without `init`, calling the class raises
-`TypeError: cannot instantiate host class 'Wallet'` in the sandbox. Override
-`instanceWrapper` to customize how constructed instances are exposed, or
-`convertValue` to transform class attrs and static-method returns.
+`TypeError: cannot instantiate host class 'Wallet'` in the sandbox. A
+constructed instance carries the `ClassType` that built it, so its `id` and
+`name` apply to `type(x)`. Override `instanceWrapper` to customize how
+constructed instances are exposed, or `convertValue` to transform class
+attrs, static-method returns and (through `instanceWrapper`) every
+constructed instance's values.
 
 ## Snapshots: pausing and resuming
 

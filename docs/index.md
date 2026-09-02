@@ -43,6 +43,9 @@ Monty is that place, without a container or a sandboxing service in the loop.
   with the result.
   Sync or async.
   See [host functions](host-functions.md).
+- **Expose objects and classes you choose** — per-attribute and per-method allow-lists, with method calls and
+  construction routed back to the host.
+  See [host objects](host-objects.md).
 - **Type check before running** — Monty bundles [ty](https://docs.astral.sh/ty/) and a trimmed typeshed of Monty's
   runtime surface, so unsupported APIs generally fail up front rather than halfway through.
   See [type checking](type-checking.md).

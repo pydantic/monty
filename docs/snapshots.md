@@ -41,8 +41,8 @@ with Monty() as pool:
 
 | Kind | Why execution stopped | Resume with |
 | --- | --- | --- |
-| `FunctionSnapshot` | A host function or OS call | `resume(result)`, `resume_not_handled()`, `resume_auto()` |
-| `NameLookupSnapshot` | An undefined name was read | `resume(value=...)`, or `resume()` to raise `NameError` |
+| `FunctionSnapshot` | A host function or OS call, or with `object_id` set a method call on a [host object](host-objects.md) (construction arrives as `__call__`) | `resume(result)`, `resume_not_handled()`, `resume_auto()` |
+| `NameLookupSnapshot` | An undefined name was read, or with `object_id` set a lazy attribute of a host object | `resume(value=...)`, or `resume()` to raise `NameError` |
 | `FutureSnapshot` | Every sandbox task is blocked on host futures | `resume({call_id: result})` |
 | `MontyComplete` | Nothing — the snippet finished | nothing; read `.output` |
 
@@ -131,7 +131,10 @@ with Monty() as pool:
 
 - **The dump carries its own configuration.** `script_name`, resource limits and type-check state come from the dump,
   not from the `checkout()` that restored it.
-  The dataclass registry from `checkout()` is reused.
+- **The instance store does not travel.** Host objects sent before the dump are unknown to the restored session: they
+  come back as `MontyClassProxy`, method calls on them raise `RuntimeError`, lazy attributes raise `AttributeError`, and
+  `ClassType` construction raises `RuntimeError`.
+  See [`limitations/pool-architecture.md`](https://github.com/pydantic/monty/blob/main/limitations/pool-architecture.md#host-api-behaviour-notes).
 - **The accumulated time budget travels with the dump**, so a restored session resumes where it left off rather than
   getting a fresh budget.
 - **Mounts do not travel.** Host paths are never part of a dump.

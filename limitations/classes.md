@@ -195,20 +195,23 @@ host by the wrapper's `id` uuid (never `id()` or any other address-derived
 value). Divergences from real CPython objects:
 
 - **`type(x)` returns a lightweight stand-in for the real class**, since the
-  class itself stays on the host. It names the real class (`type(x).__name__`
-  is `'Point'`, repr is `<class 'Point'>` — without CPython's module
-  qualification like `<class 'mymod.Point'>`), and error messages name the
-  real class too (`unhashable type: 'Point'`). But it is not the class:
-  each `type(x)` call allocates a fresh object, so `type(a) is type(b)` is
-  `False` even for the same class (`==` compares class identity and works);
-  calling it suspends a `__call__` request to the host, which only succeeds
-  when the host granted `init` on a `ClassType` wrapper (see below); it
-  cannot be used as the second argument of `isinstance()`; and — like Monty
-  class objects generally — it exposes `__name__` plus any eager class
-  attrs the host sent (`__module__`, `__qualname__`, `__doc__`, `__mro__`,
-  `__bases__`, ... raise `AttributeError`). Returned to the host, it
-  resolves back to the real class object when the class is registered in
-  the session.
+  class itself stays on the host. The sandbox keeps one such object per host
+  class id: `type(a) is type(b)` holds for instances of one class,
+  `x.__class__` returns it, and a `ClassType` passed as a value with the same
+  id resolves to it too (`type(p) is Point`); equality and hashing go by
+  class id alone. It names the real class (`type(x).__name__` is `'Point'`,
+  repr is `<class 'Point'>` — without CPython's module qualification like
+  `<class 'mymod.Point'>`), and error messages name the real class too
+  (`unhashable type: 'Point'`). But it is not the class: calling it suspends
+  a `__call__` request to the host, which only succeeds when the host granted
+  `init` on a `ClassType` wrapper (see below); and — like Monty class objects
+  generally — it exposes `__name__` plus any eager class attrs the host sent
+  (`__module__`, `__qualname__`, `__doc__`, `__mro__`, `__bases__`, ... raise
+  `AttributeError`). Returned to the host, it resolves back to the real class
+  object when the class is registered in the session.
+- **`isinstance(x, Point)` matches by exact class id only**: the host never
+  sends bases, so an instance of a subclass is not an instance of `Point` in
+  the sandbox, and `issubclass` does not exist.
 - **`repr()` shows all eager attrs in order** (`Point(x=1, y=2)`). After
   sandbox code sets a new attribute, that attribute appears in the repr too —
   CPython's dataclass repr shows declared fields only.
@@ -251,6 +254,10 @@ value). Divergences from real CPython objects:
 - **Inheritance is not modelled**: a host class's bases are not sent, so
   base-class attributes and methods are not consulted, and `__bases__`
   raises `AttributeError`.
+- **The host keeps every wrapper it sends until the session ends**: each
+  `init=True` construction and each `convert_value` wrap adds an entry to the
+  host-side instance store that `max_memory` does not count; see the
+  class-instance store note in [pool-architecture.md](./pool-architecture.md).
 
 ## Host classes (`ClassType` wrapper)
 
@@ -285,7 +292,13 @@ every construction request. Divergences:
 - JS constructors have no keyword arguments; kwargs arrive as a trailing
   options-bag argument, as with wrapped method calls.
 - Eager class attrs are a snapshot at send time, and (like eager instance
-  attrs) host-side mutations after send are not visible.
+  attrs) host-side mutations after send are not visible. They are re-sent on
+  every crossing of the class and of each of its instances (the cost scales
+  with the number of eager class attrs): a non-empty set replaces the
+  sandbox copy, an empty set leaves it alone, so re-sending cannot clear it;
+  a re-send also overwrites the class name and `is_dataclass` flag.
+- Dumps written before the shared-type-object layout (dump format version 8)
+  are rejected on load.
 
 ## What does NOT exist for user code
 

@@ -33,7 +33,10 @@ export interface BaseWrapperOptions {
   lazyAttrs?: AttrPolicy
   /** Methods the sandbox may call; `'all'` never exposes `_`-prefixed names. */
   allowedMethods?: AttrPolicy
-  /** Class name shown to the sandbox; defaults to the constructor name. */
+  /** Class name shown to the sandbox; defaults to the constructor name. A
+   *  class-level property: on a `ClassInstance` it names the default
+   *  `ClassType` materialized for the instance, so it cannot be combined
+   *  with `classType` (set `name` on that wrapper instead). */
   name?: string
   /**
    * Transforms each value crossing to the sandbox — applied exactly once per
@@ -54,7 +57,8 @@ export interface ClassInstanceOptions extends BaseWrapperOptions {
   /** A [`ClassType`] wrapper for the instance's class, overriding the default
    *  one materialized from the constructor — pass one to grant class-level
    *  policies (or a pinned class id) alongside the instance. Must wrap the
-   *  instance's own constructor. */
+   *  instance's own constructor. Its eager class attrs are sent with every
+   *  crossing of the instance, so `type(x)` in the sandbox sees them. */
   classType?: ClassType
 }
 
@@ -188,10 +192,19 @@ export class ClassInstance extends BaseWrapper {
       if (options.classType.classType !== ctor) {
         throw new TypeError("classType does not match the instance's class")
       }
+      if (options.name !== undefined) {
+        throw new TypeError('pass name on the ClassType wrapper, not alongside classType')
+      }
       this.classType = options.classType
     } else {
-      this.classType = new ClassType(ctor as new (...args: never[]) => object)
+      this.classType = new ClassType(ctor as new (...args: never[]) => object, { name: options.name })
     }
+  }
+
+  /** Class name shown to the sandbox: the class wrapper's, so the instance,
+   *  its type object and error messages all agree. */
+  override getName(): string {
+    return this.classType.getName()
   }
 }
 
@@ -283,15 +296,20 @@ export class ClassType extends BaseWrapper {
     return this.instanceWrapper(new this.classType(...(callArgs as never[])))
   }
 
-  /** Wraps a constructed instance with the `instance*` policies. Override to
-   *  customize how constructed instances are exposed. */
+  /** Wraps a constructed instance with the `instance*` policies. The instance
+   *  carries this wrapper as its `classType`, so its class keeps this
+   *  wrapper's `id`, `name` and eager class attrs; a constructor that returns
+   *  an object of another class gets that class's default wrapper instead.
+   *  Override to customize how constructed instances are exposed. */
   instanceWrapper(instance: object): ClassInstance {
     const { instanceEagerAttrs, instanceLazyAttrs, instanceAllowedMethods, convertValue } = this.options
+    const ownClass = (instance as { constructor?: unknown }).constructor === this.classType
     return new ClassInstance(instance, {
       eagerAttrs: instanceEagerAttrs,
       lazyAttrs: instanceLazyAttrs,
       allowedMethods: instanceAllowedMethods,
       convertValue,
+      classType: ownClass ? this : undefined,
     })
   }
 
@@ -453,7 +471,7 @@ function prepareInner(value: unknown, store: InstanceStore, depth: number): unkn
     return value
   }
   const walk = (item: unknown) => prepareInner(item, store, depth + 1)
-  // ClassType extends ClassInstance, so it must be matched first.
+  // `ClassType` and `ClassInstance` are sibling `BaseWrapper`s; the class check simply comes first.
   if (value instanceof ClassType) {
     return classTypeToMarker(value, store, depth)
   }
@@ -537,7 +555,7 @@ function wrapperToMarker(wrapper: ClassInstance, store: InstanceStore, depth: nu
     .map(([name, value]): [string, unknown] => [name, prepareInner(value, store, depth + 1)])
   return {
     __monty_type__: 'ClassInstance',
-    type: instanceTypeObject(wrapper, store),
+    type: instanceTypeObject(wrapper, store, depth),
     instanceId,
     attrs,
   }
@@ -545,38 +563,34 @@ function wrapperToMarker(wrapper: ClassInstance, store: InstanceStore, depth: nu
 
 /** The `type` object for an instance marker, from the wrapper's [`ClassType`].
  *  Registered for routing only when the class has no wrapper yet, so an
- *  auto-materialized default never clobbers an explicit grant. The name comes
- *  from the instance wrapper, preserving its `name` override. */
-function instanceTypeObject(wrapper: ClassInstance, store: InstanceStore): Record<string, unknown> {
+ *  auto-materialized default never clobbers an explicit grant. The class's
+ *  eager attrs cross with every instance, so the sandbox's one type object
+ *  per class sees them whichever crossing arrives first. */
+function instanceTypeObject(wrapper: ClassInstance, store: InstanceStore, depth: number): Record<string, unknown> {
   store.registerClassIfAbsent(wrapper.classType)
-  return classTypeObject(wrapper.getName(), wrapper.classType)
+  return classTypeObject(wrapper.classType, store, depth)
 }
 
 /** Registers a `ClassType` wrapper and builds its `Type` wire marker. */
 function classTypeToMarker(wrapper: ClassType, store: InstanceStore, depth: number): Record<string, unknown> {
   store.registerClass(wrapper)
-  // Eager class attrs (static class constants) cross inside the type, each
-  // prepared recursively so nested wrappers register themselves too.
-  const attrs = wrapper
-    .getEagerAttrs()
-    .map(([name, value]): [string, unknown] => [name, prepareInner(value, store, depth + 1)])
   return {
     __monty_type__: 'Type',
-    classType: classTypeObject(wrapper.getName(), wrapper, attrs),
+    classType: classTypeObject(wrapper, store, depth),
   }
 }
 
 /**
  * The plain `classType` object shared by ClassInstance and Type markers:
- * name, the wrapper's uuid, and the eager class attrs.
+ * name, the wrapper's uuid, and the eager class attrs (static class
+ * constants), each prepared recursively so nested wrappers register too.
  */
-function classTypeObject(
-  name: string,
-  wrapper: ClassType,
-  attrs: Array<[string, unknown]> = [],
-): Record<string, unknown> {
+function classTypeObject(wrapper: ClassType, store: InstanceStore, depth: number): Record<string, unknown> {
+  const attrs = wrapper
+    .getEagerAttrs()
+    .map(([name, value]): [string, unknown] => [name, prepareInner(value, store, depth + 1)])
   return {
-    name,
+    name: wrapper.getName(),
     id: wrapper.id,
     hostDefined: true,
     // JS has no dataclasses; host-wrapped objects always cross as plain classes

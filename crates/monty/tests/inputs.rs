@@ -667,6 +667,38 @@ x = None
     assert_eq!(result, MontyObject::Int(1));
 }
 
+#[test]
+fn host_class_instance_type_cycle_is_collected() {
+    // An instance owns its class entry, whose eager attrs can hold a container
+    // the sandbox reaches: instance -> type -> attrs -> instance is a cycle
+    // the collector must trace through the new `HostClass` -> class edge.
+    let code = "
+x.data.append(p)
+x = p = None
+1
+";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["x".to_owned(), "p".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let MontyObject::Type(MontyType::Instance(class_type)) = host_class_type_input() else {
+        unreachable!("host_class_type_input builds a type");
+    };
+    let instance = MontyObject::ClassInstance(MontyClassInstance {
+        class_type: MontyClassType {
+            attrs: DictPairs::default(),
+            ..*class_type
+        },
+        instance_id: MontyUuid::from_u128(2),
+        attrs: DictPairs::default(),
+    });
+    let result = ex.run_no_limits(vec![host_class_type_input(), instance]).unwrap();
+    assert_eq!(result, MontyObject::Int(1));
+}
+
 // === Function Parameter Shadowing Tests ===
 // These tests verify that function parameters properly shadow script inputs with the same name.
 

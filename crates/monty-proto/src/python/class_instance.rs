@@ -17,7 +17,7 @@
 //! wrappers built on demand). Never `id()`, which leaks heap addresses to
 //! the worker and is reused by CPython.
 
-use monty_types::{DictPairs, MontyClassInstance, MontyClassType, MontyObject, MontyUuid};
+use monty_types::{MontyClassInstance, MontyClassType, MontyObject, MontyUuid};
 use pyo3::{
     Bound,
     exceptions::{PyAttributeError, PyRuntimeError, PyTypeError, PyValueError},
@@ -101,7 +101,7 @@ impl InstanceStore {
         // for the value's class; its `id` (from the name-keyed cache) is the
         // class identity every crossing of this class shares.
         let ct_wrapper = wrapper.getattr(intern!(py, "class_type"))?;
-        let class_type = class_type_from_wrapper(&ct_wrapper)?;
+        let class_type = self.class_type_from_wrapper(&ct_wrapper, depth)?;
         // Register the `ClassType` wrapper for routing (lazy class attrs,
         // classmethod calls) unless the class already has one: an auto-materialized
         // default must not clobber an explicitly granted policy.
@@ -131,15 +131,22 @@ impl InstanceStore {
     /// wrapper under the class uuid so sandbox method calls
     /// (`__call__` construction included) and lazy class attr lookups route back
     /// to it.
-    ///
-    /// Unlike [`class_type_from_wrapper`], this is the class crossing as a value:
-    /// eager class attrs come from the wrapper's class-object policy
-    /// (`get_eager_attrs`) and cross inside the wire `Type`.
     pub(crate) fn class_type_to_monty(&self, wrapper: &Bound<'_, PyAny>, depth: u8) -> PyResult<MontyClassType> {
+        let class_type = self.class_type_from_wrapper(wrapper, depth)?;
+        self.register_class_type(&class_type.id, wrapper)?;
+        Ok(class_type)
+    }
+
+    /// Builds the wire [`MontyClassType`] from a `pydantic_monty.ClassType`
+    /// wrapper: name from the class, `id` from the wrapper (the name-keyed
+    /// cache makes it stable per class), and the wrapper's eager class attrs
+    /// (`get_eager_attrs`) converted with `py_to_monty`. Sent both when the
+    /// class crosses as a value and as the type branch of every instance
+    /// crossing, so the sandbox's one type object per class sees the attrs
+    /// whichever arrives first. Registration in the store is the caller's job.
+    fn class_type_from_wrapper(&self, wrapper: &Bound<'_, PyAny>, depth: u8) -> PyResult<MontyClassType> {
         let py = wrapper.py();
-
-        let mut class_type = class_type_from_wrapper(wrapper)?;
-
+        let class = wrapper.getattr(intern!(py, "value"))?;
         let eager = wrapper
             .call_method0(intern!(py, "get_eager_attrs"))?
             .cast_into::<PyDict>()?;
@@ -147,10 +154,13 @@ impl InstanceStore {
         for (key, value) in eager.iter() {
             attrs.push((py_to_monty(&key, self, depth)?, py_to_monty(&value, self, depth)?));
         }
-        class_type.attrs = attrs.into();
-
-        self.register_class_type(&class_type.id, wrapper)?;
-        Ok(class_type)
+        Ok(MontyClassType {
+            name: class.getattr(intern!(py, "__name__"))?.extract()?,
+            id: wrapper_uuid(wrapper)?,
+            host_defined: true,
+            is_dataclass: wrapper.call_method0(intern!(py, "is_dataclass"))?.extract()?,
+            attrs: attrs.into(),
+        })
     }
 
     /// Converts a [`MontyClassInstance`] to a Python object.
@@ -402,23 +412,6 @@ impl PyMontyClassProxy {
             Ok(false)
         }
     }
-}
-
-/// Builds the wire [`MontyClassType`] from a `pydantic_monty.ClassType` wrapper:
-/// name from the class, `id` from the wrapper (the name-keyed cache makes it
-/// stable per class). Registration in the store is the caller's job.
-fn class_type_from_wrapper(wrapper: &Bound<'_, PyAny>) -> PyResult<MontyClassType> {
-    let py = wrapper.py();
-    let class = wrapper.getattr(intern!(py, "value"))?;
-    Ok(MontyClassType {
-        name: class.getattr(intern!(py, "__name__"))?.extract()?,
-        id: wrapper_uuid(wrapper)?,
-        host_defined: true,
-        is_dataclass: wrapper.call_method0(intern!(py, "is_dataclass"))?.extract()?,
-        // Eager class attrs are set only when a `ClassType` wrapper crosses
-        // as a value; the type branch of an instance stays attr-less.
-        attrs: DictPairs::default(),
-    })
 }
 
 /// The error a routed call on an unregistered uuid raises: the store is

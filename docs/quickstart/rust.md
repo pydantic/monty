@@ -62,9 +62,9 @@ It returns a `TurnEvent`:
 | `TurnEvent` | Meaning | Answer with |
 | --- | --- | --- |
 | `Complete(value)` | The snippet finished | nothing; feed again |
-| `FunctionCall { .. }` | The sandbox called a host function | `Checkout::resume` |
+| `FunctionCall { object_id, .. }` | The sandbox called a host function, or a method on a host object when `object_id` is `Some` | `Checkout::resume` |
 | `OsCall { .. }` | The sandbox performed an OS operation | `Checkout::resume_from_mounts` or `resume` |
-| `NameLookup { name }` | The sandbox read an undefined name | `Checkout::resume_name_lookup` |
+| `NameLookup { name, object_id }` | The sandbox read an undefined name, or a lazy attribute of a host object when `object_id` is `Some` | `Checkout::resume_name_lookup` |
 | `ResolveFutures { .. }` | Every sandbox task is blocked on host futures | `Checkout::resume_futures` |
 
 A `Checkout` dropped without `finish()` kills its worker rather than returning it — mid-execution state cannot be
@@ -214,6 +214,8 @@ assert_eq!(result, MontyObject::Int(42));
   See [filesystem access](../filesystem.md).
 - `RunProgress::OsCall` and `RunProgress::NameLookup` — the filesystem/`os` operations and undefined-name reads the host
   intercepts.
+- `FunctionCall::object_id` and `NameLookup::object_id` — set for method calls and lazy attribute lookups routed to a
+  host object sent as `MontyObject::ClassInstance` or `MontyObject::Type`; the receiver is not in `args`.
 
 ## Which crate depends on what
 

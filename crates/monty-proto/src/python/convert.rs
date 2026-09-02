@@ -149,7 +149,8 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore, mut depth: u8)
     } else if let Ok(exc) = obj.cast::<PyBaseException>() {
         Ok(exc_to_monty_object(exc))
     } else if is_class_type_wrapper(obj)? {
-        // ClassType subclasses ClassInstance, so it must be checked first.
+        // `ClassType` and `ClassInstance` are sibling `BaseWrapper`s; the
+        // class check simply comes first.
         store
             .class_type_to_monty(obj, depth)
             .map(|class_type| MontyObject::Type(MontyType::Instance(Box::new(class_type))))

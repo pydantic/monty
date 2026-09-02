@@ -768,8 +768,10 @@ pub struct MontyClassType {
     /// Whether `dataclasses.is_dataclass` is true for the class.
     pub is_dataclass: bool,
     /// Class attributes sent eagerly with the type object (class constants,
-    /// per the sending wrapper's policy). Empty for the `type` branch inside
-    /// a `ClassInstance`.
+    /// per the sending wrapper's policy), on every crossing of the class as a
+    /// value or as the type branch of an instance. The sandbox keeps one type
+    /// object per class id: a non-empty set replaces its attrs, an empty set
+    /// (no policy, or a type crossing out) leaves them unchanged.
     pub attrs: DictPairs,
 }
 

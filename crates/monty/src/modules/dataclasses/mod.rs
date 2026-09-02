@@ -31,7 +31,7 @@ use crate::{
     modules::ModuleFunctions,
     types::{
         Class, DataclassOptions, Dict, Instance, LazyHeapSet, Module, PyTrait,
-        host_class::write_dataclass_repr,
+        host_class::{host_class_type, write_dataclass_repr},
         instance::{class_defines, class_dunder, class_name, instance_attr},
     },
     value::Value,
@@ -895,9 +895,10 @@ fn is_dataclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Class(_) => is_dataclass_class(*id, vm),
             HeapData::Instance(instance) => is_dataclass_class(instance.class(), vm),
-            // Host-backed instances carry dataclass-ness as a flag set by the
-            // host when the value crossed the wire.
-            HeapData::HostClass(hc) => hc.is_dataclass(),
+            // Host-backed instances and classes carry dataclass-ness as a flag
+            // set by the host when the class crossed the wire.
+            HeapData::HostClass(hc) => host_class_type(vm.heap, hc.class_id()).is_dataclass(),
+            HeapData::HostClassType(ty) => ty.is_dataclass(),
             _ => false,
         },
         _ => false,

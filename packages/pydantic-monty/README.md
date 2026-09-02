@@ -126,6 +126,44 @@ with Monty() as pool:
     #> 11
 ```
 
+### Host objects and classes
+
+Wrap a host object in `ClassInstance` to let the sandbox read chosen attributes and call chosen methods on it, or a
+class in `ClassType` to let sandbox code construct it; every policy is an allow-list, and the sandbox returning the
+object hands you the original back.
+
+```python
+from dataclasses import dataclass
+
+from pydantic_monty import ClassInstance, ClassType, Monty
+
+
+@dataclass
+class Person:
+    name: str
+    age: int
+
+    def greeting(self) -> str:
+        return f'hi {self.name}'
+
+
+person = Person(name='Samuel', age=4)
+with Monty() as pool:
+    with pool.checkout() as session:
+        wrapper = ClassInstance(person, eager_attrs='all', allowed_methods={'greeting'})
+        code = 'assert user.greeting() == "hi Samuel"\nuser'
+        result = session.feed_run(code, inputs={'user': wrapper})
+        print(result is person)
+        #> True
+        wrapper = ClassType(Person, init=True, instance_eager_attrs='all')
+        print(session.feed_run('Person("Ada", 36).name', inputs={'Person': wrapper}))
+        #> Ada
+```
+
+Method return values are not wrapped automatically: override `convert_value` to wrap derived objects with policies you
+choose (each wrapper is kept by the session until it closes). Instances defined inside the sandbox arrive as read-only
+`MontyClassProxy` stand-ins. See the [host objects docs](https://github.com/pydantic/monty/blob/main/docs/host-objects.md).
+
 ### Snapshots: pausing and resuming execution
 
 `feed_start` is the suspendable counterpart of `feed_run`: instead of driving a
