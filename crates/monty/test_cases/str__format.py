@@ -1,6 +1,6 @@
 import re
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 
 def capture_error(template, *args, **kwargs):
@@ -172,3 +172,8 @@ assert capture_error('{0:{{}}<9}', 5) == (
     'ValueError',
     "Invalid format specifier '{}<9' for object of type 'int'",
 )
+
+assert '{[0]}'.format(['a']) == 'a'
+assert '{.value}'.format(Record(1)) == '1'
+assert capture_error('{x=}', x=1) == ('KeyError', "'x='")
+assert '{:%H:%M}'.format(time(4, 5)) == '04:05'
