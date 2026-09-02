@@ -905,7 +905,7 @@ fn reading_partial_args_cannot_kill_the_worker() {
 /// — refused above the soft limit, well short of the hard ceiling — rather than
 /// a byte figure a single reallocation would move by ~1 MiB.
 #[test]
-fn a_hint_less_batched_is_stopped_by_the_fill_loop_poll() {
+fn batched_without_a_size_hint_is_refused_before_the_hard_limit() {
     const SOFT_LIMIT: u64 = 1024 * 1024;
     // `monty-alloc`'s headroom above the soft limit, without type checking
     const HARD_CEILING: u64 = SOFT_LIMIT + 4 * 1024 * 1024;
