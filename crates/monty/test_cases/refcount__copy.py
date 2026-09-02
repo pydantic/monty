@@ -82,11 +82,16 @@ armed[0] = False
 # copies the table, a divergence `copy` inherits rather than introduces.
 boom_dict = {Boom(): 'first', 'kept': inner}
 armed[0] = True
+boom_dict_copy = None
 try:
-    copy.copy(boom_dict)
+    boom_dict_copy = copy.copy(boom_dict)
 except ValueError as exc:
     assert str(exc) == 'boom'
 armed[0] = False
+# Exactly two outcomes are correct here, and a bare `except` would accept a
+# third: CPython copies the hash table and returns an equal dict, Monty
+# re-hashes and raises. A copy that came back unequal would otherwise pass.
+assert boom_dict_copy is None or boom_dict_copy == boom_dict
 
 # `inner` is held by itself, `holder`, `source` and `boom_dict`.
 # The module itself is held by its name and by `holder`.
