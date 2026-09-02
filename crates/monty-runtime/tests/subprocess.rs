@@ -743,7 +743,7 @@ fn deep_copy_of_a_near_limit_dict_raises_rather_than_dying() {
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
     let (_, event) = child.feed("import copy\nd = {i: i for i in range(100_000)}");
     assert!(
-        !format!("{event:?}").starts_with("Error"),
+        !matches!(event, pb::child_event::Kind::Error(_)),
         "the source must fit for this to test the copy, got {event:?}"
     );
     let (_, event) = child.feed("copy.deepcopy(d)");
