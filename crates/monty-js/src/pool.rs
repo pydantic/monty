@@ -32,8 +32,8 @@ use std::{
 use monty_pool::{
     exceeds_max_value_depth,
     telemetry::{TelemetryAdapterHandle, TelemetryContext},
-    Checkout, MountSpec, MountSpecMode, OnPrint, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue,
-    TurnEvent,
+    Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
+    ResumeValue, TurnEvent,
 };
 use monty_types::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, NameLookupResult, PrintStream, StackFrame,
@@ -328,12 +328,13 @@ impl NativeSession {
                 .as_ref()
                 .map(Arc::clone)
                 .ok_or_else(|| invalid("the pool is not started — create it with Monty.create()"))?;
-            let checkout = if let Some(context) = telemetry_context {
-                pool.checkout_with_telemetry(&repl_config, context).await
-            } else {
-                pool.checkout(&repl_config).await
-            }
-            .map_err(pool_error)?;
+            let checkout = pool
+                .checkout_with(
+                    &repl_config,
+                    CheckoutOptions::default().with_telemetry(telemetry_context),
+                )
+                .await
+                .map_err(pool_error)?;
             *slot.lock().await = Some(checkout);
             Ok(())
         })

@@ -9,9 +9,7 @@ pub mod telemetry;
 pub use telemetry as telemetry_adapter;
 mod worker;
 
-use std::{
-    borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, sync::Arc, thread, time::Duration,
-};
+use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
 
 pub use monty_proto::{MAX_VALUE_DEPTH, exceeds_max_value_depth};
 use monty_types::MontyException;
@@ -20,8 +18,8 @@ use monty_types::MontyException;
 use crate::telemetry::Metrics;
 pub use crate::{
     checkout::{
-        Checkout, MountSpec, MountSpecMode, OnPrint, OnRawEvent, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
-        on_print_sync,
+        Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, PrintFuture, ReplConfig, ResumeValue,
+        TurnEvent, on_print_sync,
     },
     pool::Pool,
 };
@@ -47,42 +45,6 @@ impl MontyTransport {
     /// single-use (dialed per checkout, never pooled idle or reused).
     pub(crate) fn is_websocket(&self) -> bool {
         matches!(self, Self::Websocket(_))
-    }
-}
-
-/// Extra headers for the WebSocket upgrade request, computed per dial.
-///
-/// A callback rather than a static list because the interesting headers are
-/// per-*session*: each dial runs inline on the checking-out caller's task, so
-/// the callback can render that caller's ambient context — e.g. the current
-/// OTel span as a `traceparent` for the server to parent its session spans
-/// into. The pool never interprets the values, it just sends them.
-#[derive(Clone)]
-pub struct ConnectHeaders(Arc<dyn Fn() -> Vec<(String, String)> + Send + Sync>);
-
-impl ConnectHeaders {
-    /// Wraps a callback producing `(name, value)` pairs for one dial.
-    /// Duplicate names are last-wins, and a pair naming a handshake-generated
-    /// header (`host`, `sec-websocket-key`, ...) replaces it. The callback
-    /// runs synchronously on the dialing task, outside the dial timeout, so
-    /// keep it cheap and non-blocking.
-    pub fn new(f: impl Fn() -> Vec<(String, String)> + Send + Sync + 'static) -> Self {
-        Self(Arc::new(f))
-    }
-
-    /// Computes the headers for one dial.
-    #[must_use]
-    pub fn get(&self) -> Vec<(String, String)> {
-        (self.0)()
-    }
-}
-
-impl fmt::Debug for ConnectHeaders {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // The callback is opaque and its output may be sensitive: monty never
-        // interprets the values, but a caller may send e.g. a token for a
-        // proxy/relay in front of the child. Name the type, never a value.
-        f.write_str("ConnectHeaders(..)")
     }
 }
 
@@ -125,9 +87,6 @@ pub struct PoolConfig {
     /// pools that record into the same host meter.
     #[cfg(feature = "telemetry")]
     pub metrics: Option<Metrics>,
-    /// Extra headers for the WebSocket upgrade request, computed per dial.
-    /// Ignored by the subprocess transport (it makes no requests).
-    pub connect_headers: Option<ConnectHeaders>,
 }
 
 impl PoolConfig {
@@ -158,7 +117,6 @@ impl PoolConfig {
             max_checkouts_per_worker: None,
             #[cfg(feature = "telemetry")]
             metrics: None,
-            connect_headers: None,
         }
     }
 }

@@ -4,6 +4,7 @@
 use std::time::Instant;
 use std::{
     borrow::Cow,
+    fmt,
     future::{Future, ready},
     mem,
     path::Path,
@@ -22,7 +23,7 @@ use monty_types::{
 use tokio::{task::spawn_blocking, time::timeout};
 
 #[cfg(feature = "telemetry")]
-use crate::telemetry::metrics::outcome;
+use crate::telemetry::{TelemetryContext, metrics::outcome};
 use crate::{
     CrashCause, PoolError,
     pool::{CapacityGuard, PoolInner},
@@ -62,6 +63,51 @@ impl Default for ReplConfig {
             type_check_config: TypeCheckingConfig::default(),
             assert_message_annotations: AssertMessageAnnotations::default(),
         }
+    }
+}
+
+/// Host-side context for one checkout, as opposed to the [`ReplConfig`] the
+/// worker is sent.
+// non_exhaustive: options may be added without breaking callers
+#[derive(Default)]
+#[non_exhaustive]
+pub struct CheckoutOptions {
+    /// Distributed trace context captured by a host adapter.
+    #[cfg(feature = "telemetry")]
+    pub telemetry: Option<TelemetryContext>,
+    /// Extra headers for this checkout's WebSocket upgrade request; the
+    /// subprocess transport makes no request and ignores them. Duplicate
+    /// names are last-wins, even against `host` and the other handshake
+    /// headers, and a malformed name or value fails the dial.
+    pub connect_headers: Vec<(String, String)>,
+}
+
+impl CheckoutOptions {
+    /// Sets the distributed trace context, if the host captured one.
+    #[cfg(feature = "telemetry")]
+    #[must_use]
+    pub fn with_telemetry(mut self, telemetry: Option<TelemetryContext>) -> Self {
+        self.telemetry = telemetry;
+        self
+    }
+
+    /// Sets the headers for this checkout's WebSocket upgrade request.
+    #[must_use]
+    pub fn with_connect_headers(mut self, connect_headers: Vec<(String, String)>) -> Self {
+        self.connect_headers = connect_headers;
+        self
+    }
+}
+
+/// Names each connect header, never its value: monty never interprets the
+/// values, but a caller may send e.g. a token for a proxy/relay in front of
+/// the worker, and options get logged.
+impl fmt::Debug for CheckoutOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let header_names: Vec<&str> = self.connect_headers.iter().map(|(name, _)| name.as_str()).collect();
+        f.debug_struct("CheckoutOptions")
+            .field("connect_headers", &header_names)
+            .finish_non_exhaustive()
     }
 }
 

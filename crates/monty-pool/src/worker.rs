@@ -53,7 +53,7 @@ use tokio_tungstenite::{
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::TurnMetrics, tracing::Recorder};
-use crate::{ConnectHeaders, MontyTransport, PoolConfig, PoolError};
+use crate::{MontyTransport, PoolConfig, PoolError};
 
 /// The async WebSocket stream type for a remote worker.
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -147,8 +147,9 @@ async fn send_close(sink: &mut SplitSink<WsStream, Message>) {
 }
 
 impl Worker {
-    /// Creates a worker for `config`'s transport.
-    pub(crate) async fn new(config: &PoolConfig) -> Result<Self, PoolError> {
+    /// Creates a worker for `config`'s transport. `connect_headers` go on the
+    /// WebSocket upgrade request; a subprocess makes no request and ignores them.
+    pub(crate) async fn new(config: &PoolConfig, connect_headers: &[(String, String)]) -> Result<Self, PoolError> {
         let worker = match &config.transport {
             MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path),
             // Bound the dial by `request_timeout` (see `websocket`); a missing
@@ -157,7 +158,7 @@ impl Worker {
                 Self::websocket(
                     url,
                     config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT),
-                    config.connect_headers.as_ref(),
+                    connect_headers,
                 )
                 .await
             }
@@ -219,7 +220,8 @@ impl Worker {
     }
 
     /// Connects to a remote child over a WebSocket, dialing `url` verbatim. Any
-    /// session/rendezvous routing the URL needs is the caller's responsibility.
+    /// session/rendezvous routing the URL needs is the caller's responsibility;
+    /// `connect_headers` go on the upgrade request (see [`crate::CheckoutOptions`]).
     ///
     /// `dial_timeout` bounds the whole dial (DNS + TCP connect + TLS/WS
     /// handshake): `checkout_timeout` only covers waiting for capacity, so a
@@ -229,26 +231,22 @@ impl Worker {
     async fn websocket(
         url: &str,
         dial_timeout: Duration,
-        connect_headers: Option<&ConnectHeaders>,
+        connect_headers: &[(String, String)],
     ) -> Result<Self, PoolError> {
         install_crypto_provider();
         let ws_config = WebSocketConfig::default()
             .max_frame_size(Some(MAX_FRAME_LEN as usize))
             .max_message_size(Some(MAX_FRAME_LEN as usize));
-        // The dial runs inline on the checking-out caller's task (see
-        // `acquire_worker`), as [`ConnectHeaders`] promises. A malformed
-        // name/value is a caller bug that fails the dial loudly.
         let mut request = url
             .into_client_request()
             .map_err(|err| PoolError::Spawn(format!("{url}: {err}")))?;
-        if let Some(headers) = connect_headers {
-            for (name, value) in headers.get() {
-                let name = HeaderName::from_bytes(name.as_bytes())
-                    .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?}: {err}")))?;
-                let value = HeaderValue::from_str(&value)
-                    .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?} value: {err}")))?;
-                request.headers_mut().insert(name, value);
-            }
+        // a malformed name/value is a caller bug: fail the dial
+        for (name, value) in connect_headers {
+            let name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?}: {err}")))?;
+            let value = HeaderValue::from_str(value)
+                .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?} value: {err}")))?;
+            request.headers_mut().insert(name, value);
         }
         let dial = connect_async_tls_with_config(request, Some(ws_config), true, None);
         let (stream, _response) = timeout(dial_timeout, dial)
@@ -328,13 +326,17 @@ impl Worker {
         result.map(drop)
     }
 
-    /// Assigns propagated host context before this worker starts a checkout.
+    /// Attaches the host's trace context, if it captured one, before this
+    /// worker starts a checkout.
     #[cfg(feature = "telemetry")]
-    pub(crate) fn set_adapter_context(&mut self, context: TelemetryContext) {
-        let worker_pid = self.pid();
-        self.recorder
-            .get_or_insert_with(|| Box::new(Recorder::new(worker_pid)))
-            .set_adapter_context(context);
+    pub(crate) fn with_adapter_context(mut self, context: Option<TelemetryContext>) -> Self {
+        if let Some(context) = context {
+            let worker_pid = self.pid();
+            self.recorder
+                .get_or_insert_with(|| Box::new(Recorder::new(worker_pid)))
+                .set_adapter_context(context);
+        }
+        self
     }
 
     /// Receives one event. EOF/close is an error here because within a
