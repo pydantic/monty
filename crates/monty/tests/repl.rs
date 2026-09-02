@@ -738,25 +738,11 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
 
 /// `hasattr()` / `getattr(obj, name, default)` suspend a lazy lookup carrying
 /// a pending effect that shapes the answer on resume, and the effect must
-/// survive a dump/restore of the suspended session.
-///
-/// A discarded suspended progress never releases its operand stack, so the
-/// original is disposed of via `into_repl` (which hands its globals to the
-/// `MontyRepl` drop) only while nothing on the stack holds a heap ref; the
-/// heap-owning default is exercised without a dump.
+/// survive a dump/restore of the suspended session (including a heap-owning
+/// `getattr()` default).
 #[test]
 fn repl_hasattr_getattr_lookup_effects_survive_dump() {
-    let point = MontyObject::ClassInstance(MontyClassInstance {
-        class_type: MontyClassType {
-            name: "Point".to_string(),
-            id: MontyUuid::from_u128(7),
-            host_defined: true,
-            is_dataclass: true,
-            attrs: DictPairs::default(),
-        },
-        instance_id: MontyUuid::from_u128(42),
-        attrs: DictPairs::default(),
-    });
+    let point = host_point();
     let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
     let code = "(hasattr(point, 'dims'), hasattr(point, 'nope'), getattr(point, 'nope', 7), \
                 getattr(point, 'nope', [1]), getattr(point, 'dims', 0))";
@@ -769,7 +755,7 @@ fn repl_hasattr_getattr_lookup_effects_survive_dump() {
         ("dims", NameLookupResult::Value(MontyObject::Int(2)), true),
         ("nope", NameLookupResult::Undefined, true),
         ("nope", NameLookupResult::Undefined, true),
-        ("nope", NameLookupResult::Undefined, false),
+        ("nope", NameLookupResult::Undefined, true),
         ("dims", NameLookupResult::Value(MontyObject::Int(2)), false),
     ];
     for (name, answer, round_trip) in steps {
@@ -798,6 +784,50 @@ fn repl_hasattr_getattr_lookup_effects_survive_dump() {
             MontyObject::Int(2),
         ])
     );
+}
+
+/// A host-defined `Point` instance with lazy attributes, for lookup tests.
+fn host_point() -> MontyObject {
+    MontyObject::ClassInstance(MontyClassInstance {
+        class_type: MontyClassType {
+            name: "Point".to_string(),
+            id: MontyUuid::from_u128(7),
+            host_defined: true,
+            is_dataclass: true,
+            attrs: DictPairs::default(),
+        },
+        instance_id: MontyUuid::from_u128(42),
+        attrs: DictPairs::default(),
+    })
+}
+
+/// Abandoning a suspended snippet via `into_repl` keeps its globals but
+/// releases everything else in flight — the operand stack and the heap-owning
+/// `getattr()` default here — so the session heap ends up exactly as if the
+/// snippet had stopped before suspending.
+#[cfg(feature = "ref-count-return")]
+#[test]
+fn repl_abandoned_lookup_releases_in_flight_state() {
+    let inputs = || vec![("point".to_string(), host_point())];
+    let control = {
+        let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run("x = [0]", inputs(), PrintWriter::Stdout).unwrap();
+        repl.__heap_entry_count_for_tests()
+    };
+
+    let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let progress = repl
+        .feed_start(
+            "x = [0]\n[[1], getattr(point, 'nope', [2, [3]])]",
+            inputs(),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let repl = progress
+        .into_name_lookup()
+        .expect("expected a lazy attribute lookup")
+        .into_repl();
+    assert_eq!(repl.__heap_entry_count_for_tests(), control);
 }
 
 /// A sandbox class or instance the host hands back (by the uuid it crossed

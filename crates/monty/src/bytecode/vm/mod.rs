@@ -650,6 +650,30 @@ pub struct VMSnapshot {
 }
 
 impl VMSnapshot {
+    /// Discards the in-flight execution state of a snapshot that will never be
+    /// restored, releasing every heap reference it holds (operand and exception
+    /// stacks, scheduler tasks, pending resume effects), and returns the globals
+    /// so an abandoned REPL snippet keeps its namespace. Mirrors `VM::drop`.
+    pub(crate) fn abandon(self, heap: &mut Heap) -> Vec<Value> {
+        let Self {
+            stack,
+            globals,
+            exception_stack,
+            mut scheduler,
+            pending_os_effect,
+            pending_lookup_effect,
+            ..
+        } = self;
+        HeapReader::with(heap, &mut (), |heap, ()| {
+            release_pending_effect(pending_os_effect, heap);
+            pending_lookup_effect.drop_with(heap);
+            exception_stack.drop_with(heap);
+            stack.drop_with(heap);
+            scheduler.cleanup(heap);
+        });
+        globals
+    }
+
     /// Number of tasks the scheduler held when this snapshot was taken.
     ///
     /// Test-only bridge for [`crate::ResolveFutures::__live_task_count_for_tests`];

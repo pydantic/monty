@@ -170,6 +170,9 @@ with these divergences:
 - A proxy whose sandbox object has since been freed raises
   `RuntimeError: invalid input type: sandbox instance of 'Foo' (id ...) no
   longer exists` rather than materializing a host-backed copy.
+- A proxy of a **host-sent** instance (produced after a restore) has no
+  sandbox object to resolve to: passing it back re-enters as a host-backed
+  copy built from its `attributes`, not the host's original object.
 
 ```python
 result = session.feed_run('class A:\n    def __init__(self):\n        self.x = 1\nA()')

@@ -367,6 +367,8 @@ class MontyClassProxy:
     sandbox (as an input or an external-function result) hands the sandbox
     its original object: a still-live sandbox instance resolves by identity
     (`attributes` are not applied), and one the sandbox has since freed raises.
+    A proxy of a host-sent instance (after a restore) has no sandbox object to
+    resolve to and re-enters as a host-backed copy built from `attributes`.
     """
 
     @property

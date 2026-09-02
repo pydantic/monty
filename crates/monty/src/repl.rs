@@ -106,6 +106,15 @@ impl MontyRepl {
         self.interns.corrupt_function_metadata_for_tests(name, fault);
     }
 
+    /// Number of live heap entries; lets tests prove an abandoned snippet
+    /// released its in-flight state.
+    #[cfg(feature = "ref-count-return")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __heap_entry_count_for_tests(&self) -> usize {
+        self.heap.entry_count()
+    }
+
     /// Returns the resource tracker that will be used for the next snippet.
     ///
     /// This is primarily intended for host integrations that need to attach
@@ -783,11 +792,12 @@ impl ReplResolveFutures {
     /// As with the other REPL snapshot types, globals live inside the VM
     /// snapshot while execution is suspended. Recovering the REPL for a
     /// cancelled or abandoned async snippet must put those globals back so
-    /// previously defined REPL bindings remain available.
+    /// previously defined REPL bindings remain available, and releases the
+    /// suspended tasks and stack so nothing leaks into the session heap.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl {
         let Self { mut repl, vm_state, .. } = self;
-        repl.globals = vm_state.globals;
+        repl.globals = vm_state.abandon(&mut repl.heap);
         repl
     }
 
@@ -961,12 +971,12 @@ pub(crate) struct ReplSnapshot {
 impl ReplSnapshot {
     /// Extracts the REPL session, restoring globals from the VM snapshot.
     ///
-    /// When a snapshot is taken, globals live inside the `VMSnapshot`.
-    /// This method creates an empty snapshot from just the globals so the REPL
-    /// can be used for further snippets.
+    /// When a snapshot is taken, globals live inside the `VMSnapshot`; the rest
+    /// of the in-flight state is released so the abandoned snippet leaks nothing
+    /// into the session heap.
     fn into_repl(self) -> MontyRepl {
         let Self { mut repl, vm_state, .. } = self;
-        repl.globals = vm_state.globals;
+        repl.globals = vm_state.abandon(&mut repl.heap);
         repl
     }
 

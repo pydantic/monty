@@ -404,7 +404,8 @@ impl NameLookup {
 /// served name / attribute, `None` for `Undefined` — and runs on.
 ///
 /// A namespace lookup caches the value in its slot. An attribute lookup
-/// applies the pending [`PendingLookupEffect`] (`hasattr()` / `getattr()`
+/// applies the pending [`PendingLookupEffect`](crate::bytecode::PendingLookupEffect)
+/// (`hasattr()` / `getattr()`
 /// default) if one is armed; otherwise the value is pushed, or `Undefined`
 /// raises the `NameError` / `AttributeError` an unanswered lookup gets.
 pub(crate) fn resume_lookup(

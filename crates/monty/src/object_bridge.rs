@@ -44,8 +44,9 @@ pub(crate) trait MontyObjectExt: Sized {
 
     /// Converts this `MontyObject` into a `Value`, allocating on the heap if
     /// needed. Fails with `InvalidInputError` on output-only variants
-    /// (`Repr`, `Cycle`, sandbox class `Type`s) and malformed input; memory
-    /// overshoot surfaces at the next soft-limit checkpoint, not here.
+    /// (`Repr`, `Cycle`), on a sandbox class `Type` or instance whose sandbox
+    /// object no longer exists, and on malformed input; memory overshoot
+    /// surfaces at the next soft-limit checkpoint, not here.
     fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError>;
 
     /// Top-level entry into [`from_value_inner`](Self::from_value_inner),
