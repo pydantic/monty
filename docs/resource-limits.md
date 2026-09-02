@@ -110,6 +110,9 @@ Set it to stop code sidestepping the per-run budget by feeding repeatedly.
 Both counters are serialized into [snapshots](snapshots.md), so restoring a session suspended mid-run does not hand it
 a fresh budget.
 
+Exhausting the per-run budget does not end the session: the next `feed_run` starts a fresh one.
+Exhausting `max_total_suspensions` does, since nothing resets it.
+
 ## Recursion
 
 Python-level call depth defaults to **1000 frames**; the 1001st nested call raises `RecursionError`.

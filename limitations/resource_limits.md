@@ -216,3 +216,9 @@ can receive another feed, but execution is not transactional and no guarantees
 are made about heap state or reference counts. Hosts should discard the session;
 the worker itself remains reusable. A caught `RecursionError` may continue
 normally inside the sandbox.
+
+A suspension refusal lands at a turn boundary rather than mid-operation, so
+heap state and reference counts are sound and the session need not be
+discarded. `max_suspensions_per_run` is spent only for the run that hit it —
+the next feed starts a fresh budget — while `max_total_suspensions` stays
+exhausted for the life of the session.
