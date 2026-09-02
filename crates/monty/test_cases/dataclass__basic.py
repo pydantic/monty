@@ -345,3 +345,15 @@ try:
     assert False, 'should have raised AttributeError for lazy attr on User'
 except AttributeError as e:
     assert str(e) == "'User' object has no attribute 'dimensions'", f'wrong message: {e}'
+
+# === getattr()/hasattr() consult the host like obj.attr ===
+assert hasattr(point, 'dimensions') is True
+assert getattr(point, 'dimensions') == 2
+assert getattr(point, 'dimensions', 99) == 2
+assert hasattr(alice2, 'dimensions') is False
+assert getattr(alice2, 'dimensions', 99) == 99
+try:
+    getattr(alice2, 'dimensions')
+    assert False, 'should have raised AttributeError for getattr of a lazy attr on User'
+except AttributeError as e:
+    assert str(e) == "'User' object has no attribute 'dimensions'", f'wrong message: {e}'

@@ -153,6 +153,19 @@ def test_lazy_attrs_denied(monty_run: RunMonty):
     assert str(exc_info.value) == snapshot("AttributeError: 'Person' object has no attribute 'name'")
 
 
+def test_getattr_hasattr_consult_lazy_attrs(monty_run: RunMonty):
+    """`getattr()` / `hasattr()` suspend to the host exactly like `x.attr`."""
+    p = Person(name='Alice', age=30)
+    inputs = {'x': ClassInstance(p, lazy_attrs={'age'})}
+    served = monty_run("(hasattr(x, 'age'), getattr(x, 'age'), getattr(x, 'age', 0))", inputs=inputs)
+    assert served == snapshot((True, 30, 30))
+    denied = monty_run("(hasattr(x, 'name'), getattr(x, 'name', 'n/a'))", inputs=inputs)
+    assert denied == snapshot((False, 'n/a'))
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run("getattr(x, 'name')", inputs=inputs)
+    assert str(exc_info.value) == snapshot("AttributeError: 'Person' object has no attribute 'name'")
+
+
 def test_private_attr_not_looked_up(monty_run: RunMonty):
     """Underscore-prefixed names never leave the sandbox, even with lazy_attrs='all'."""
     g = Greeter('hello')
@@ -671,6 +684,15 @@ def test_class_type_lazy_class_attr(monty_run: RunMonty):
     assert monty_run('Shape.SIDES', inputs={'Shape': wrapper}) == snapshot(4)
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         monty_run('Shape.KIND', inputs={'Shape': wrapper})
+    assert str(exc_info.value) == snapshot("AttributeError: type object 'Shape' has no attribute 'KIND'")
+
+
+def test_class_type_getattr_hasattr_lazy_class_attr(monty_run: RunMonty):
+    wrapper = pydantic_monty.ClassType(Shape, lazy_attrs={'SIDES'})
+    code = "(hasattr(Shape, 'SIDES'), getattr(Shape, 'SIDES'), hasattr(Shape, 'KIND'), getattr(Shape, 'KIND', None))"
+    assert monty_run(code, inputs={'Shape': wrapper}) == snapshot((True, 4, False, None))
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run("getattr(Shape, 'KIND')", inputs={'Shape': wrapper})
     assert str(exc_info.value) == snapshot("AttributeError: type object 'Shape' has no attribute 'KIND'")
 
 

@@ -471,15 +471,24 @@ impl Executor {
                     name,
                     class_name,
                     type_object,
+                    effect,
                     ..
                 }) => {
-                    let name = name.as_str(&self.interns);
-                    let err = if type_object {
-                        ExcType::attribute_error_type(&class_name, name)
+                    frame_exit_result = if let Some(effect) = effect {
+                        // Unanswered is `Undefined`: `hasattr()` is False,
+                        // `getattr()` yields its default.
+                        let value = effect.apply(None, vm);
+                        vm.push(value);
+                        vm.run_external()
                     } else {
-                        ExcType::attribute_error(&class_name, name)
+                        let name = name.as_str(&self.interns);
+                        let err = if type_object {
+                            ExcType::attribute_error_type(&class_name, name)
+                        } else {
+                            ExcType::attribute_error(&class_name, name)
+                        };
+                        vm.resume_with_exception(err)
                     };
-                    frame_exit_result = vm.resume_with_exception(err);
                 }
                 Ok(FrameExit::ExternalCall {
                     function_name,

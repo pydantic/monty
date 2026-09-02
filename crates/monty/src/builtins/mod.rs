@@ -140,8 +140,9 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Divmod => divmod::builtin_divmod(vm, args),
             Self::Enumerate => enumerate::builtin_enumerate(vm, args),
             Self::Filter => filter::builtin_filter(vm, args),
-            Self::Getattr => getattr::builtin_getattr(vm, args),
-            Self::Hasattr => hasattr::builtin_hasattr(vm, args),
+            // `getattr()` / `hasattr()` may suspend a lazy host attribute lookup.
+            Self::Getattr => return getattr::builtin_getattr(vm, args),
+            Self::Hasattr => return hasattr::builtin_hasattr(vm, args),
             Self::Hash => hash::builtin_hash(vm, args),
             Self::Hex => hex::builtin_hex(vm, args),
             Self::Id => id::builtin_id(vm, args),

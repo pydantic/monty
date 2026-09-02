@@ -12,7 +12,7 @@ use monty::{
 };
 use monty_types::{
     CompileOptions, DictPairs, ExcType, ExtFunctionResult, MontyClassInstance, MontyClassType, MontyException,
-    MontyObject, MontyUuid, PrintWriter, ResourceTracker,
+    MontyObject, MontyUuid, NameLookupResult, PrintWriter, ResourceTracker,
 };
 
 #[test]
@@ -734,6 +734,70 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
 
     // Verify REPL state is preserved after method call
     assert_eq!(feed_run_print(&mut repl, "1 + 1").unwrap(), MontyObject::Int(2));
+}
+
+/// `hasattr()` / `getattr(obj, name, default)` suspend a lazy lookup carrying
+/// a pending effect that shapes the answer on resume, and the effect must
+/// survive a dump/restore of the suspended session.
+///
+/// A discarded suspended progress never releases its operand stack, so the
+/// original is disposed of via `into_repl` (which hands its globals to the
+/// `MontyRepl` drop) only while nothing on the stack holds a heap ref; the
+/// heap-owning default is exercised without a dump.
+#[test]
+fn repl_hasattr_getattr_lookup_effects_survive_dump() {
+    let point = MontyObject::ClassInstance(MontyClassInstance {
+        class_type: MontyClassType {
+            name: "Point".to_string(),
+            id: MontyUuid::from_u128(7),
+            host_defined: true,
+            is_dataclass: true,
+            attrs: DictPairs::default(),
+        },
+        instance_id: MontyUuid::from_u128(42),
+        attrs: DictPairs::default(),
+    });
+    let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let code = "(hasattr(point, 'dims'), hasattr(point, 'nope'), getattr(point, 'nope', 7), \
+                getattr(point, 'nope', [1]), getattr(point, 'dims', 0))";
+    let mut progress = repl
+        .feed_start(code, vec![("point".to_string(), point)], PrintWriter::Stdout)
+        .unwrap();
+
+    // (name, answer, round-trip through the dump format first)
+    let steps = [
+        ("dims", NameLookupResult::Value(MontyObject::Int(2)), true),
+        ("nope", NameLookupResult::Undefined, true),
+        ("nope", NameLookupResult::Undefined, true),
+        ("nope", NameLookupResult::Undefined, false),
+        ("dims", NameLookupResult::Value(MontyObject::Int(2)), false),
+    ];
+    for (name, answer, round_trip) in steps {
+        let progress_in = if round_trip {
+            let restored = round_trip_progress(&progress);
+            drop(progress.into_name_lookup().unwrap().into_repl());
+            restored
+        } else {
+            progress
+        };
+        let lookup = progress_in
+            .into_name_lookup()
+            .expect("expected a lazy attribute lookup");
+        assert_eq!(lookup.name, name);
+        assert_eq!(lookup.object_id(), Some(MontyUuid::from_u128(42)));
+        progress = lookup.resume(answer, PrintWriter::Stdout).unwrap();
+    }
+    let (_repl, value) = progress.into_complete().expect("expected completion");
+    assert_eq!(
+        value,
+        MontyObject::Tuple(vec![
+            MontyObject::Bool(true),
+            MontyObject::Bool(false),
+            MontyObject::Int(7),
+            MontyObject::List(vec![MontyObject::Int(1)]),
+            MontyObject::Int(2),
+        ])
+    );
 }
 
 #[test]

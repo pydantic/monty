@@ -201,8 +201,10 @@ value). Divergences from real CPython objects:
 - **`repr()` shows all eager attrs in order** (`Point(x=1, y=2)`). After
   sandbox code sets a new attribute, that attribute appears in the repr too —
   CPython's dataclass repr shows declared fields only.
-- **Lazy attribute lookups suspend only for `obj.attr` syntax.** `getattr()`
-  and `hasattr()` resolve locally: a lazily-served attribute reads as absent
+- **Lazy attribute lookups consult the host for `obj.attr`, `getattr()` and
+  `hasattr()`** — but not from inside a synchronous nested call the
+  interpreter makes itself (a `__repr__`, `__eq__` or sort key invoked from
+  Rust): there the lookup cannot suspend, so the attribute reads as absent
   (`hasattr` → `False`, `getattr` raises/returns the default). Underscore-
   prefixed names never consult the host (dunder probes stay local).
 - **Lazy lookups are not cached**: every access is a fresh host round trip,

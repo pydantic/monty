@@ -4,7 +4,7 @@ use monty_types::ExcType;
 
 use crate::{
     args::ArgValues,
-    bytecode::{CallResult, VM},
+    bytecode::{CallResult, PendingLookupEffect, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::DropWithContext,
@@ -19,7 +19,9 @@ use crate::{
 /// Signature: `hasattr(object, name)`
 ///
 /// Note: This is implemented by calling getattr(object, name) and returning
-/// True if it succeeds, False if it raises an exception.
+/// True if it succeeds, False if it raises an exception. A lazy attribute on a
+/// host-backed object suspends to the host like `obj.attr` does, with a
+/// [`PendingLookupEffect::HasAttr`] turning the answer into the bool.
 ///
 /// Examples:
 /// ```python
@@ -27,7 +29,7 @@ use crate::{
 /// hasattr(slice(1, 10), 'start') # True - slice has start attribute
 /// hasattr(42, 'nonexistent')    # False - int has no such attribute
 /// ```
-pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let positional = args.into_pos_only("hasattr", vm.heap)?;
     defer_drop!(positional, vm);
 
@@ -50,11 +52,21 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             value.drop_with(vm);
             true
         }
-        // hasattr() cannot suspend (unlike e.g. `open`, which
-        // suspends via `OsFunctionCall`), so a lazy host attribute lookup
-        // reads as absent (documented divergence — only `obj.attr` syntax
-        // consults the host).
-        Ok(CallResult::AttrLookup { .. }) => false,
+        Ok(CallResult::AttrLookup {
+            name,
+            class_name,
+            object_id,
+            type_object,
+            effect: _,
+        }) => {
+            return Ok(CallResult::AttrLookup {
+                name,
+                class_name,
+                object_id,
+                type_object,
+                effect: Some(PendingLookupEffect::HasAttr),
+            });
+        }
         Ok(other) => {
             other.drop_with(vm);
             // hasattr() only tests attribute values — OS calls, external calls,
@@ -69,5 +81,5 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Err(e) => return Err(e),
     };
 
-    Ok(Value::Bool(has_attr))
+    Ok(CallResult::Value(Value::Bool(has_attr)))
 }

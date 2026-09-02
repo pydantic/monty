@@ -14,10 +14,11 @@ use crate::{
     asyncio::CallId,
     bytecode::{FrameExit, VM, VMSnapshot},
     exception_private::{ExcTypeExt, RunError, RunResult},
-    heap::{Heap, HeapReader},
+    heap::{DropWithContext, Heap, HeapReader},
     object_bridge::MontyObjectExt,
     os_dispatch::release_pending_effect,
     run::Executor,
+    value::Value,
 };
 
 // ---------------------------------------------------------------------------
@@ -381,35 +382,14 @@ impl NameLookup {
                 );
 
                 // Resolve the name lookup result with the VM alive
-                let vm_result = match result {
-                    NameLookupResult::Value(obj) => {
-                        let value = obj
-                            .to_value(&mut vm)
-                            .map_err(|e| MontyException::runtime_error(format!("invalid name lookup result: {e}")))?;
-
-                        if let LookupScope::Namespace {
-                            namespace_slot,
-                            is_global,
-                        } = &scope
-                        {
-                            // Cache the resolved value in the appropriate slot
-                            let slot_idx = *namespace_slot as usize;
-                            let cloned = value.clone_with_heap(&vm);
-                            let slot = if *is_global {
-                                &mut vm.globals[slot_idx]
-                            } else {
-                                let stack_base = vm.current_stack_base();
-                                &mut vm.stack[stack_base + slot_idx]
-                            };
-                            let old = mem::replace(slot, cloned);
-                            old.drop_with(&mut vm);
-                        }
-
-                        vm.push(value);
-                        vm.run_external()
-                    }
-                    NameLookupResult::Undefined => vm.resume_with_exception(undefined_lookup_error(&scope, &name)),
+                let answer = match result {
+                    NameLookupResult::Value(obj) => Some(
+                        obj.to_value(&mut vm)
+                            .map_err(|e| MontyException::runtime_error(format!("invalid name lookup result: {e}")))?,
+                    ),
+                    NameLookupResult::Undefined => None,
                 };
+                let vm_result = resume_lookup(&mut vm, answer, &scope, &name);
 
                 // Three-phase: convert while VM alive, snapshot, build progress
                 let converted = convert_frame_exit(vm_result, &mut vm);
@@ -418,6 +398,47 @@ impl NameLookup {
             })?;
         build_run_progress(converted, vm_state, executor, heap)
     }
+}
+
+/// Resumes a suspended lookup with the host's answer — `Some(value)` for a
+/// served name / attribute, `None` for `Undefined` — and runs on.
+///
+/// A namespace lookup caches the value in its slot. An attribute lookup
+/// applies the pending [`PendingLookupEffect`] (`hasattr()` / `getattr()`
+/// default) if one is armed; otherwise the value is pushed, or `Undefined`
+/// raises the `NameError` / `AttributeError` an unanswered lookup gets.
+pub(crate) fn resume_lookup(
+    vm: &mut VM<'_>,
+    answer: Option<Value>,
+    scope: &LookupScope,
+    name: &str,
+) -> RunResult<FrameExit> {
+    let value = match (answer, vm.pending_lookup_effect.take()) {
+        (answer, Some(effect)) => effect.apply(answer, vm),
+        (Some(value), None) => {
+            if let LookupScope::Namespace {
+                namespace_slot,
+                is_global,
+            } = scope
+            {
+                // Cache the resolved value in the appropriate slot
+                let slot_idx = *namespace_slot as usize;
+                let cloned = value.clone_with_heap(vm);
+                let slot = if *is_global {
+                    &mut vm.globals[slot_idx]
+                } else {
+                    let stack_base = vm.current_stack_base();
+                    &mut vm.stack[stack_base + slot_idx]
+                };
+                let old = mem::replace(slot, cloned);
+                old.drop_with(vm);
+            }
+            value
+        }
+        (None, None) => return vm.resume_with_exception(undefined_lookup_error(scope, name)),
+    };
+    vm.push(value);
+    vm.run_external()
 }
 
 /// The exception an `Undefined` answer raises: `NameError` for a plain name
@@ -727,6 +748,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
     // (or leak its file pin when the next OS call overwrites the slot).
     // Arming for *this* exit happens below, after the slot is clear.
     release_pending_effect(vm.pending_os_effect.take(), vm.heap);
+    vm.pending_lookup_effect.take().drop_with(vm.heap);
     match result {
         Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::new(value, vm)),
         Ok(FrameExit::ExternalCall {
@@ -796,14 +818,20 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             class_name,
             object_id,
             type_object,
-        }) => ConvertedExit::NameLookup {
-            name: name.into_string(vm.interns),
-            scope: LookupScope::Attr {
-                object_id,
-                class_name,
-                type_object,
-            },
-        },
+            effect,
+        }) => {
+            // The lookup is the host's now, so a `resume` is guaranteed to
+            // consume the effect (or the next `convert_frame_exit` releases it).
+            vm.pending_lookup_effect = effect;
+            ConvertedExit::NameLookup {
+                name: name.into_string(vm.interns),
+                scope: LookupScope::Attr {
+                    object_id,
+                    class_name,
+                    type_object,
+                },
+            }
+        }
         Err(err) => ConvertedExit::Error(err),
     }
 }

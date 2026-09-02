@@ -275,6 +275,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
                 class_name: self.get(vm.heap).name(vm.interns).to_owned(),
                 object_id: self.get(vm.heap).instance_id(),
                 type_object: false,
+                effect: None,
             })),
             // underscore-prefixed: raise locally with the host class's real
             // name (not the static `HostClass` py_type placeholder)
@@ -473,6 +474,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
                 class_name: self.get(vm.heap).name(vm.interns).to_owned(),
                 object_id: self.get(vm.heap).type_id(),
                 type_object: true,
+                effect: None,
             })),
             // CPython wording for missing attrs on a type object.
             None => Err(ExcType::attribute_error_type(

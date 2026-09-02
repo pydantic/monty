@@ -217,6 +217,15 @@ test('lazy attr outside the policy raises AttributeError', async () => {
   t.is(error.message, "AttributeError: 'Greeter' object has no attribute 'greeting'")
 })
 
+test('getattr/hasattr consult lazy attrs like g.attr', async () => {
+  const g = new Greeter('hello')
+  const inputs = { g: new ClassInstance(g, { lazyAttrs: new Set(['greeting']) }) }
+  const code = "[hasattr(g, 'greeting'), getattr(g, 'greeting'), hasattr(g, 'other'), getattr(g, 'other', 7)]"
+  t.deepEqual(await run(code, { inputs }), [true, 'hello', false, 7])
+  const error = await t.throwsAsync(() => run("getattr(g, 'other')", { inputs }), { instanceOf: MontyRuntimeError })
+  t.is(error.message, "AttributeError: 'Greeter' object has no attribute 'other'")
+})
+
 test('underscore attrs never reach the host', async () => {
   const g = new Greeter('hello')
   const convertCalls: string[] = []

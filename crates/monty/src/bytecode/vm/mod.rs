@@ -17,6 +17,7 @@ mod scheduler;
 
 use std::mem;
 
+pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
 pub(crate) use recursion::{ContainsVM, RecursionToken};
@@ -189,12 +190,14 @@ macro_rules! handle_call_result {
                 class_name,
                 object_id,
                 type_object,
+                effect,
             }) => {
                 return Ok(FrameExit::AttrLookup {
                     name,
                     class_name,
                     object_id,
                     type_object,
+                    effect,
                 });
             }
             Ok(CallResult::AwaitValue(value)) => {
@@ -279,10 +282,10 @@ pub enum FrameExit {
     /// Execution paused for a lazy attribute lookup on a host-backed object
     /// (a class instance, or a class type when `type_object` is true).
     ///
-    /// Produced by `obj.attr` / `Type.attr` when `attr` is public and
-    /// missing from the eager attrs. Resumed by value like `NameLookup` (no
-    /// call_id); an "undefined" answer raises `AttributeError` naming
-    /// `class_name`. Carries no heap refs.
+    /// Produced by `obj.attr` / `Type.attr` (and `getattr()` / `hasattr()`)
+    /// when `attr` is public and missing from the eager attrs. Resumed by
+    /// value like `NameLookup` (no call_id); an "undefined" answer raises
+    /// `AttributeError` naming `class_name` unless `effect` says otherwise.
     AttrLookup {
         /// The attribute name being looked up.
         name: EitherStr,
@@ -293,6 +296,9 @@ pub enum FrameExit {
         /// True for a lookup on a class type object — selects CPython's
         /// `type object '...' has no attribute ...` message on failure.
         type_object: bool,
+        /// How `getattr()` / `hasattr()` consume the answer; `None` for
+        /// `obj.attr`. The only heap reference this exit can carry.
+        effect: Option<PendingLookupEffect>,
     },
 
     /// All tasks are blocked waiting for external futures to resolve.
@@ -335,7 +341,8 @@ impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
                 // Never reached the host, so no `resume` will consume it.
                 release_pending_effect(effect, heap);
             }
-            Self::ResolveFutures(_) | Self::NameLookup { .. } | Self::AttrLookup { .. } => {}
+            Self::AttrLookup { effect, .. } => effect.drop_with(heap),
+            Self::ResolveFutures(_) | Self::NameLookup { .. } => {}
         }
     }
 }
@@ -636,6 +643,10 @@ pub struct VMSnapshot {
     /// [`VM::pending_os_effect`].
     #[serde(default)]
     pending_os_effect: Option<PendingOsEffect>,
+    /// In-flight resume effect for the paused lazy attribute lookup, if any.
+    /// See [`VM::pending_lookup_effect`].
+    #[serde(default)]
+    pending_lookup_effect: Option<PendingLookupEffect>,
 }
 
 impl VMSnapshot {
@@ -743,6 +754,12 @@ pub struct VM<'h> {
     /// between OS calls, not within one).
     pub(crate) pending_os_effect: Option<PendingOsEffect>,
 
+    /// How the paused lazy attribute lookup's answer is consumed on `resume`
+    /// (`hasattr()` / `getattr()` default), armed like
+    /// [`pending_os_effect`](Self::pending_os_effect) once the lookup reaches
+    /// the host; `None` for `obj.attr` and when nothing is in flight.
+    pub(crate) pending_lookup_effect: Option<PendingLookupEffect>,
+
     /// Current recursion depth — charged by function-call frames and by nested
     /// data-structure traversals (`repr`/`eq`/`cmp`/`hash`, json, ...).
     ///
@@ -821,6 +838,7 @@ impl<'h> VM<'h> {
             module_code: None,
             json_string_cache: JsonStringCache::default(),
             pending_os_effect: None,
+            pending_lookup_effect: None,
             recursion_depth: 0,
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
@@ -896,6 +914,7 @@ impl<'h> VM<'h> {
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
             pending_os_effect: snapshot.pending_os_effect,
+            pending_lookup_effect: snapshot.pending_lookup_effect,
             recursion_depth: current_frame_depth,
             namespace_scratch: Vec::new(),
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
@@ -948,6 +967,7 @@ impl<'h> VM<'h> {
             instruction_ip: self.instruction_ip,
             scheduler: mem::take(&mut self.scheduler),
             pending_os_effect: self.pending_os_effect.take(),
+            pending_lookup_effect: self.pending_lookup_effect.take(),
         }
     }
 
@@ -2483,6 +2503,7 @@ impl ContainsHeap for VM<'_> {
 impl Drop for VM<'_> {
     fn drop(&mut self) {
         release_pending_effect(self.pending_os_effect.take(), self.heap);
+        self.pending_lookup_effect.take().drop_with(self.heap);
         self.exception_stack.drain(..).drop_with(self.heap);
         self.cleanup_current_task();
         self.scheduler.cleanup(self.heap);

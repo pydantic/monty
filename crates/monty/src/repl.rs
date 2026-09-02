@@ -25,7 +25,7 @@ use crate::{
     run::{CompileOptions, Executor},
     run_progress::{
         ConvertedExit, ExtFunctionResult, ExtFunctionResultExt, LookupScope, NameLookupResult, convert_frame_exit,
-        undefined_lookup_error,
+        resume_lookup,
     },
     types::tuple::allocate_tuple,
     value::Value,
@@ -356,6 +356,16 @@ impl MontyRepl {
                     loop {
                         run_result = match run_result {
                             Ok(FrameExit::Return(value)) => break Ok(MontyObject::new(value, vm)),
+                            // No host answers inside a host-driven call, so the
+                            // lookup is `Undefined`: `hasattr()` is False,
+                            // `getattr()` yields its default.
+                            Ok(FrameExit::AttrLookup {
+                                effect: Some(effect), ..
+                            }) => {
+                                let value = effect.apply(None, vm);
+                                vm.push(value);
+                                vm.run_external()
+                            }
                             Ok(exit) => {
                                 let error = vm.unsupported_frame_exit("MontyRepl::call_function", exit);
                                 vm.resume_with_exception(error)
@@ -718,41 +728,19 @@ impl ReplNameLookup {
             );
 
             // Resolve the name lookup result with the VM alive
-            let vm_result = match result {
-                NameLookupResult::Value(obj) => {
-                    let value = match obj.to_value(&mut vm) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            repl.globals = vm.take_globals();
-                            return Err(MontyException::runtime_error(format!(
-                                "invalid name lookup result: {e}"
-                            )));
-                        }
-                    };
-
-                    if let LookupScope::Namespace {
-                        namespace_slot,
-                        is_global,
-                    } = &scope
-                    {
-                        // Cache the resolved value in the appropriate slot
-                        let slot_idx = *namespace_slot as usize;
-                        let cloned = value.clone_with_heap(&vm);
-                        let slot = if *is_global {
-                            &mut vm.globals[slot_idx]
-                        } else {
-                            let stack_base = vm.current_stack_base();
-                            &mut vm.stack[stack_base + slot_idx]
-                        };
-                        let old = mem::replace(slot, cloned);
-                        old.drop_with(&mut vm);
+            let answer = match result {
+                NameLookupResult::Value(obj) => match obj.to_value(&mut vm) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        repl.globals = vm.take_globals();
+                        return Err(MontyException::runtime_error(format!(
+                            "invalid name lookup result: {e}"
+                        )));
                     }
-
-                    vm.push(value);
-                    vm.run_external()
-                }
-                NameLookupResult::Undefined => vm.resume_with_exception(undefined_lookup_error(&scope, &name)),
+                },
+                NameLookupResult::Undefined => None,
             };
+            let vm_result = resume_lookup(&mut vm, answer, &scope, &name);
 
             // Convert while VM alive, then snapshot or reclaim globals
             let converted = convert_frame_exit(vm_result, &mut vm);

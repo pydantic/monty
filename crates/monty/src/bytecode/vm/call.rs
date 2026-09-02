@@ -8,7 +8,7 @@ use std::mem;
 
 use monty_types::{MontyUuid, OsFunctionCall};
 
-use super::{CallFrame, VM, recursion::RunReentryGuard};
+use super::{CallFrame, VM, attr::PendingLookupEffect, recursion::RunReentryGuard};
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
@@ -71,10 +71,10 @@ pub(crate) enum CallResult {
     /// `FrameExit::AttrLookup` to host.
     ///
     /// Produced by `obj.attr` (or `Type.attr` when `type_object` is true)
-    /// when `attr` is public and missing from the eager attrs. `class_name`
-    /// is captured at suspension so the resume-undefined AttributeError names
-    /// the real class without touching the heap. Carries no heap refs, so
-    /// dropping it is trivial.
+    /// and by `getattr()` / `hasattr()` when `attr` is public and missing
+    /// from the eager attrs. `class_name` is captured at suspension so the
+    /// resume-undefined AttributeError names the real class without touching
+    /// the heap.
     AttrLookup {
         name: EitherStr,
         class_name: String,
@@ -82,6 +82,9 @@ pub(crate) enum CallResult {
         /// True for a lookup on a class type object — selects CPython's
         /// `type object '...' has no attribute ...` message on failure.
         type_object: bool,
+        /// How `getattr()` / `hasattr()` consume the answer; `None` for
+        /// `obj.attr`. The only heap reference this variant can carry.
+        effect: Option<PendingLookupEffect>,
     },
     /// The call returned a value that should be implicitly awaited.
     ///
@@ -109,7 +112,8 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
                 args.drop_with(heap);
             }
             Self::OsCall(call) => call.drop_with(heap),
-            Self::FramePushed | Self::AttrLookup { .. } => {}
+            Self::AttrLookup { effect, .. } => effect.drop_with(heap),
+            Self::FramePushed => {}
             Self::OsCallWithEffect { call, effect } => {
                 call.drop_with(heap);
                 // Discarded before it ever became a `FrameExit`.
@@ -420,6 +424,11 @@ impl VM<'_> {
 
         match this.call_function(callable, args)? {
             CallResult::Value(v) => Ok(v),
+            // No host can answer inside a synchronous call, so the lookup is
+            // `Undefined`: `hasattr()` is False, `getattr()` yields its default.
+            CallResult::AttrLookup {
+                effect: Some(effect), ..
+            } => Ok(effect.apply(None, this)),
             CallResult::FramePushed => {
                 // A new frame was pushed for a defined function call - we need to run it
                 // to completion.
@@ -428,6 +437,14 @@ impl VM<'_> {
                 loop {
                     match this.run()? {
                         FrameExit::Return(v) => return Ok(v),
+                        // As above: the callee's `hasattr()` / `getattr()`
+                        // sees `Undefined` and continues.
+                        FrameExit::AttrLookup {
+                            effect: Some(effect), ..
+                        } => {
+                            let value = effect.apply(None, this);
+                            this.push(value);
+                        }
                         exit => {
                             // Raise unsupported suspensions inside the callee so its
                             // exception handlers can observe them.
@@ -467,19 +484,21 @@ impl VM<'_> {
             )),
             // A lazy attribute lookup cannot suspend in a synchronous nested
             // context; report the attribute as missing rather than a
-            // NotImplementedError, matching what an unanswered lookup raises.
-            // Carries no heap refs, so returning without drop_with is safe.
+            // NotImplementedError, matching what an unanswered lookup raises
+            // (an `effect` was consumed by the caller before reaching here).
             CallResult::AttrLookup {
                 name,
                 class_name,
                 type_object,
                 ..
             } => {
-                return if *type_object {
+                let error = if *type_object {
                     ExcType::attribute_error_type(class_name, name.as_str(self.interns))
                 } else {
                     ExcType::attribute_error(class_name, name.as_str(self.interns))
                 };
+                result.drop_with(self);
+                return error;
             }
             CallResult::AwaitValue(_) => {
                 ExcType::not_implemented(format!("{ctx}: awaiting a value is not yet supported in this context"))
@@ -507,18 +526,20 @@ impl VM<'_> {
                 "{ctx}: method call '{}' is not yet supported in this context",
                 method_name.as_str(self.interns)
             )),
-            // Same as the `CallResult::AttrLookup` arm above: no heap refs.
+            // Same as the `CallResult::AttrLookup` arm above.
             FrameExit::AttrLookup {
                 name,
                 class_name,
                 type_object,
                 ..
             } => {
-                return if *type_object {
+                let error = if *type_object {
                     ExcType::attribute_error_type(class_name, name.as_str(self.interns))
                 } else {
                     ExcType::attribute_error(class_name, name.as_str(self.interns))
                 };
+                exit.drop_with(self);
+                return error;
             }
             FrameExit::ResolveFutures(_) => ExcType::not_implemented(format!(
                 "{ctx}: resolving async futures is not yet supported in this context"
