@@ -1,0 +1,21 @@
+crates/monty-js/src/convert.rs
+  s_c169c47bf9622b::t_01d632265349b6 697-698,707-709
+crates/monty-js/__test__/class_instance.spec.ts
+  s_c169c47bf9622b::t_01d632265349b6 927-929
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "591d2ee570177930b7dcf82b20d442688ef29840",
+  "prompts": {},
+  "sessions": {
+    "s_c169c47bf9622b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "43c83ad4-3a5f-4c72-ab6b-c32cf33cc6a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
