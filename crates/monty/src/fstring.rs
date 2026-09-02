@@ -1904,7 +1904,10 @@ fn pad_signed_grouped(
         return pad_signed_ungrouped(sign, prefix, abs_str, align, spec, tracker);
     }
 
-    let min_int_width = if spec.zero_pad {
+    // An explicit `0=` fill groups like the `0` flag: CPython grows the digits,
+    // not the fill, so the zeros carry separators either way.
+    let grouped_zero_fill = spec.zero_pad || (spec.fill == '0' && spec.align == Some(Align::SignAware));
+    let min_int_width = if grouped_zero_fill {
         // Grow the integer part with grouped leading zeros until the whole
         // field (sign + prefix + grouped digits + suffix) reaches the width.
         let reserved = sign.len() + prefix.len() + suffix.len();

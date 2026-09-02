@@ -522,6 +522,8 @@ assert f'{1234:07,}' == '001,234'
 assert f'{1234:05,}' == '1,234'
 assert f'{1234567.891:020,.2f}' == '0,000,001,234,567.89'
 assert f'{255:010_b}' == '0_1111_1111'
+assert f'{1234:0=10,}' == '00,001,234'
+assert f'{1:0=+9_g}' == '+0_000_001'
 
 # === Grouping with explicit alignment (fill is not grouped) ===
 assert f'{1234:=10,}' == '     1,234'
