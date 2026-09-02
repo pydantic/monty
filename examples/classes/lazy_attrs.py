@@ -24,3 +24,5 @@ with Monty() as pool:
             session.feed_run('cfg.api_key', inputs={'cfg': ClassInstance(Config(), lazy_attrs={'retries'})})
         except MontyRuntimeError as exc:
             print(f'denied as expected: {exc}')
+        else:
+            raise AssertionError('expected api_key to be denied')

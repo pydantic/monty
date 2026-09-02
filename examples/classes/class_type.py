@@ -31,3 +31,5 @@ with Monty() as pool:
             session.feed_run('Person("Samuel", 4)', inputs={'Person': ClassType(Person)})  # init defaults to False
         except MontyRuntimeError as exc:
             print(f'construction denied: {exc}')
+        else:
+            raise AssertionError('expected construction to be denied')

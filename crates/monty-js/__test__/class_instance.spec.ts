@@ -656,6 +656,21 @@ test('a constructed instance of another class gets a default ClassType', () => {
   t.is(wrapped.classType.classType, Other as never)
 })
 
+test('an own constructor property does not change class identity', async () => {
+  class Other {}
+  class Shadowing {
+    n = 1
+  }
+  const instance = new Shadowing()
+  Object.defineProperty(instance, 'constructor', { value: Other })
+  const wrapper = new ClassType(Shadowing, { init: true, instanceEagerAttrs: 'all' })
+  t.is(wrapper.instanceWrapper(instance).classType, wrapper)
+  t.is(new ClassInstance(instance).getName(), 'Shadowing')
+  t.is(new ClassInstance(instance, { classType: wrapper }).classType, wrapper)
+  const inputs = { x: wrapper.instanceWrapper(instance), Shadowing: wrapper }
+  t.deepEqual(await run('[type(x).__name__, isinstance(x, Shadowing), x.n]', { inputs }), ['Shadowing', true, 1])
+})
+
 test("an instance's type branch carries the ClassType's eager attrs", async () => {
   const classType = new ClassType(Shape, { eagerAttrs: ['SIDES'] })
   const inputs = { x: new ClassInstance(new Shape(1), { classType }) }

@@ -87,8 +87,7 @@ export abstract class BaseWrapper {
     if (this.options.name !== undefined) {
       return this.options.name
     }
-    const ctor = (this.instance as { constructor?: { name?: unknown } }).constructor
-    return typeof ctor?.name === 'string' && ctor.name !== '' ? ctor.name : 'object'
+    return constructorName(this.instance)
   }
 
   /** The `[name, value]` attr pairs sent into the sandbox with the instance,
@@ -213,8 +212,8 @@ export class ClassInstance extends BaseWrapper {
   constructor(instance: object, options: ClassInstanceOptions = {}) {
     super(instance, options)
     this.id = options.id === undefined ? generateUuid() : normalizeId('ClassInstance', options.id)
-    const ctor = (instance as { constructor?: unknown }).constructor
-    if (typeof ctor !== 'function') {
+    const ctor = classOf(instance)
+    if (ctor === undefined) {
       throw new TypeError('ClassInstance expects an instance of a class, not a null-prototype object')
     }
     if (options.classType !== undefined) {
@@ -336,7 +335,7 @@ export class ClassType extends BaseWrapper {
    *  Override to customize how constructed instances are exposed. */
   instanceWrapper(instance: object): ClassInstance {
     const { instanceEagerAttrs, instanceLazyAttrs, instanceAllowedMethods, convertValue } = this.options
-    const ownClass = (instance as { constructor?: unknown }).constructor === this.classType
+    const ownClass = classOf(instance) === this.classType
     return new ClassInstance(instance, {
       eagerAttrs: instanceEagerAttrs,
       lazyAttrs: instanceLazyAttrs,
@@ -821,9 +820,19 @@ function readTypeMarker(value: object): string | undefined {
   return typeof marker === 'string' ? marker : undefined
 }
 
+/** The class an object is an instance of, read from its prototype so an own
+ *  `constructor` property cannot spoof it; `undefined` for a null-prototype
+ *  object. */
+function classOf(value: object): Function | undefined {
+  const proto = Object.getPrototypeOf(value) as { constructor?: unknown } | null
+  const ctor = proto?.constructor
+  return typeof ctor === 'function' ? ctor : undefined
+}
+
+/** The class name of an object (see [`classOf`]), `'object'` when it has none. */
 function constructorName(value: object): string {
-  const ctor = (value as { constructor?: { name?: unknown } }).constructor
-  return typeof ctor?.name === 'string' && ctor.name !== '' ? ctor.name : 'object'
+  const name = classOf(value)?.name
+  return typeof name === 'string' && name !== '' ? name : 'object'
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {

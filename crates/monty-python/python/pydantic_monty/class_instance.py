@@ -198,6 +198,12 @@ class ClassInstance(BaseWrapper):
                     f'class_type {self.class_type.value.__name__} does not match value {type(self.value).__name__}'
                 )
 
+    def convert_value(self, /, name: str, value: Any) -> Any:
+        """Defers to the class wrapper's hook, so a `ClassType` subclass that
+        redacts or wraps values covers the instances it constructs and any
+        instance sent with it as `class_type`; override here to differ."""
+        return cast(ClassType, self.class_type).convert_value(name, value)
+
 
 type_id_cache: dict[str, UUID] = {}
 """Process-wide default class ids keyed by `module.qualname`, never evicted,
@@ -305,8 +311,9 @@ class ClassType(BaseWrapper):
     def construct(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> ClassInstance:
         """Constructs an instance for the sandbox, re-checking the `init` policy.
 
-        Returns the instance wrapped with the `instance_*` policies, so it
-        registers and crosses back like any host-sent `ClassInstance`.
+        Returns the instance wrapped with the `instance_*` policies and this
+        wrapper's `convert_value`, so it registers and crosses back like any
+        host-sent `ClassInstance`.
         """
         if not self.init:
             raise TypeError(f'cannot instantiate host class {self.value.__name__!r}')

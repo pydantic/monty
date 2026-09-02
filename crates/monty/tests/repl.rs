@@ -1075,6 +1075,26 @@ fn repl_host_class_type_survives_dump_restore() {
     );
 }
 
+/// A `__class__` entry in the instance's attrs — sent by the host or assigned
+/// by sandbox code — never shadows the shared type object.
+#[test]
+fn repl_host_class_dunder_class_ignores_attrs() {
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let inputs = vec![(
+        "a".to_owned(),
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
+            class_type: host_point_class_type("Point", DictPairs::default()),
+            instance_id: MontyUuid::from_u128(42),
+            attrs: int_attrs(&[("__class__", 5)]),
+        })),
+    )];
+    let code = "before = a.__class__ is type(a)\na.__class__ = 6\n(before, a.__class__ is type(a))";
+    assert_eq!(
+        repl.feed_run(code, inputs, PrintWriter::Stdout).unwrap(),
+        MontyObject::Tuple(vec![MontyObject::Bool(true), MontyObject::Bool(true)])
+    );
+}
+
 /// The shared type entry is owned by its instances and by whoever holds
 /// `type(x)`: it is freed with the last holder, and no sooner.
 #[cfg(feature = "ref-count-return")]
@@ -1083,7 +1103,7 @@ fn repl_host_class_type_freed_with_last_holder() {
     let control = {
         let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
         feed_run_print(&mut repl, "x = 1").unwrap();
-        repl.__heap_entry_count_for_tests()
+        repl.heap_entry_count()
     };
     let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
     let inputs = vec![
@@ -1095,13 +1115,13 @@ fn repl_host_class_type_freed_with_last_holder() {
         .unwrap();
     feed_run_print(&mut repl, "a = b = Point = None").unwrap();
     // Only the type entry remains, kept alive by `t` and still usable.
-    assert_eq!(repl.__heap_entry_count_for_tests(), control + 1);
+    assert_eq!(repl.heap_entry_count(), control + 1);
     assert_eq!(
         feed_run_print(&mut repl, "t.__name__").unwrap(),
         MontyObject::String("Point".to_owned())
     );
     feed_run_print(&mut repl, "t = None").unwrap();
-    assert_eq!(repl.__heap_entry_count_for_tests(), control);
+    assert_eq!(repl.heap_entry_count(), control);
 }
 
 /// Abandoning a suspended snippet via `into_repl` keeps its globals but
@@ -1115,7 +1135,7 @@ fn repl_abandoned_lookup_releases_in_flight_state() {
     let control = {
         let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
         repl.feed_run("x = [0]", inputs(), PrintWriter::Stdout).unwrap();
-        repl.__heap_entry_count_for_tests()
+        repl.heap_entry_count()
     };
 
     let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
@@ -1130,7 +1150,7 @@ fn repl_abandoned_lookup_releases_in_flight_state() {
         .into_name_lookup()
         .expect("expected a lazy attribute lookup")
         .into_repl();
-    assert_eq!(repl.__heap_entry_count_for_tests(), control);
+    assert_eq!(repl.heap_entry_count(), control);
 }
 
 /// A sandbox class or instance the host hands back (by the uuid it crossed

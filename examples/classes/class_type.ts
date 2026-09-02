@@ -33,12 +33,13 @@ await using pool = await Monty.create()
 }
 {
   await using session = await pool.checkout()
-  try {
-    await session.feedRun('Person("Samuel", 4)', {
-      inputs: { Person: new ClassType(Person) },
-    }) // init defaults to false
-  } catch (error) {
-    assert.ok(error instanceof MontyRuntimeError)
-    console.log('construction denied:', error.message)
-  }
+  // init defaults to false
+  await assert.rejects(
+    session.feedRun('Person("Samuel", 4)', { inputs: { Person: new ClassType(Person) } }),
+    (error: unknown) => {
+      assert.ok(error instanceof MontyRuntimeError)
+      console.log('construction denied:', error.message)
+      return true
+    },
+  )
 }

@@ -283,9 +283,11 @@ value). Divergences from real CPython objects:
   base-class attributes and methods are not consulted, and `__bases__`
   raises `AttributeError`.
 - **The host keeps every wrapper it sends until the session ends**: each
-  `init=True` construction and each `convert_value` wrap adds an entry to the
-  host-side instance store that `max_memory` does not count; see the
-  class-instance store note in [pool-architecture.md](./pool-architecture.md).
+  wrapper sent (nested ones included), each `init=True` construction and each
+  `convert_value` wrap adds an entry to the host-side instance store that
+  `max_memory` does not count; re-sending a wrapper with the same id
+  overwrites its entry rather than adding one. See the class-instance store
+  note in ./pool-architecture.md.
 
 ## Host classes (`ClassType` wrapper)
 

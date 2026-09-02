@@ -113,8 +113,9 @@ could abort the process.
 - **Mount memory.** Each [mount](filesystem.md) has its own `memory_usage_limit`, defaulting to 100 MB, shared between
   retained overlay data and transient results.
 - **`json.loads` nesting**, capped at 200 levels independently of the recursion limit.
-- **The host instance store.** Every `ClassInstance`/`ClassType` wrapper sent into a session is retained in the host
-  process until the session ends, one entry per `init=True` construction or `convert_value` wrap; see
+- **The host instance store.** Every `ClassInstance`/`ClassType` wrapper sent into a session (nested wrappers,
+  `init=True` constructions and `convert_value` wraps included) is retained in the host process until the session
+  ends; re-sending a wrapper with the same id reuses its entry, distinct wrappers accumulate; see
   [host objects](host-objects.md#values-returned-by-methods).
 
 ## After a limit fires

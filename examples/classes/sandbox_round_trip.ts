@@ -35,11 +35,10 @@ assert.equal(
 // Once the sandbox drops its last reference (inputs persist as session
 // globals, so `back` must go too), the proxy no longer resolves.
 await session.feedRun('counter = back = None')
-try {
-  await session.feedRun('back', { inputs: { back: proxy } })
-} catch (error) {
+await assert.rejects(session.feedRun('back', { inputs: { back: proxy } }), (error: unknown) => {
   assert.ok(error instanceof MontyRuntimeError)
   console.log('freed object rejected:', error.message)
-}
+  return true
+})
 
 console.log(`proxy id ${proxy.id} resolved to the original sandbox object`)

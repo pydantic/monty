@@ -42,7 +42,7 @@ with Monty() as pool:
 | Kind | Why execution stopped | Resume with |
 | --- | --- | --- |
 | `FunctionSnapshot` | A host function or OS call, or with `object_id` set a method call on a [host object](host-objects.md) (construction arrives as `__call__`) | `resume(result)`, `resume_not_handled()`, `resume_auto()` |
-| `NameLookupSnapshot` | An undefined name was read, or with `object_id` set a lazy attribute of a host object | `resume(value=...)`, or `resume()` to raise `NameError` |
+| `NameLookupSnapshot` | An undefined name was read, or with `object_id` set a lazy attribute of a host object | `resume(value=...)`, `resume()` to raise `NameError` (`AttributeError` when `object_id` is set), `resume_auto()` |
 | `FutureSnapshot` | Every sandbox task is blocked on host futures | `resume({call_id: result})` |
 | `MontyComplete` | Nothing — the snippet finished | nothing; read `.output` |
 

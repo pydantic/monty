@@ -25,13 +25,14 @@ uv run python examples/classes/class_instance.py
 ## TypeScript
 
 The examples import `@pydantic/monty` from this repo's JS crate, so build it
-(`make build-js`), install the local link, and point the workers at the
-matching debug worker binary. They run directly under Node 24+ (native type
-stripping and `await using`):
+(`make build-js`), install the local link, build the worker binary
+(`cargo build -p monty-runtime`, which `make build-js` does not) and point the
+workers at it. They run directly under Node 24+ (native type stripping and
+`await using`):
 
 ```bash
 cd examples/classes && npm install && cd -
-MONTY_BIN=$PWD/target/debug/monty node examples/classes/class_instance.ts
+cargo build -p monty-runtime && MONTY_BIN=$PWD/target/debug/monty node examples/classes/class_instance.ts
 ```
 
 `MONTY_BIN` matters when another `monty` is on `PATH`: a worker from a

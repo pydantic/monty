@@ -271,10 +271,18 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
     ///
     /// A public name missing from attrs suspends as [`CallResult::AttrLookup`]
     /// so the host can serve it; underscore-prefixed names raise
-    /// `AttributeError` locally (dunder probes must never suspend), except
-    /// `__class__`, which is the shared type object (`x.__class__ is type(x)`).
+    /// `AttributeError` locally (dunder probes must never suspend). `__class__`
+    /// is always the shared type object (`x.__class__ is type(x)`), whatever
+    /// the attrs hold under that name.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let attr_name = attr.as_str(vm.interns);
+        // Checked before attrs so a host-sent or sandbox-assigned `__class__`
+        // entry cannot shadow the type object.
+        if attr_name == "__class__" {
+            let class_id = self.get(vm.heap).class_id();
+            vm.heap.inc_ref(class_id);
+            return Ok(Some(CallResult::Value(Value::Ref(class_id))));
+        }
         match self.get(vm.heap).attrs.get_by_str(attr_name, vm.heap, vm.interns) {
             Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
             None if !attr_name.starts_with('_') => Ok(Some(CallResult::AttrLookup {
@@ -284,11 +292,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
                 type_object: false,
                 effect: None,
             })),
-            None if attr_name == "__class__" => {
-                let class_id = self.get(vm.heap).class_id();
-                vm.heap.inc_ref(class_id);
-                Ok(Some(CallResult::Value(Value::Ref(class_id))))
-            }
             // underscore-prefixed: raise locally with the host class's real
             // name (not the static `HostClass` py_type placeholder)
             None => Err(ExcType::attribute_error(

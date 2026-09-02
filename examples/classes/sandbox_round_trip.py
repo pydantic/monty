@@ -30,5 +30,7 @@ with Monty() as pool:
             session.feed_run('back', inputs={'back': proxy})
         except MontyRuntimeError as exc:
             print(f'freed object rejected: {exc}')
+        else:
+            raise AssertionError('expected the freed proxy to be rejected')
 
 print(f'proxy id {proxy.id} resolved to the original sandbox object')

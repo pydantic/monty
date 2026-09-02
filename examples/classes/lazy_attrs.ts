@@ -17,9 +17,8 @@ await using session = await pool.checkout()
 const wrapper = new ClassInstance(new Config(), { lazyAttrs: ['retries'] })
 assert.equal(await session.feedRun('cfg.retries', { inputs: { cfg: wrapper } }), 3)
 
-try {
-  await session.feedRun('cfg.apiKey', { inputs: { cfg: wrapper } })
-} catch (error) {
+await assert.rejects(session.feedRun('cfg.apiKey', { inputs: { cfg: wrapper } }), (error: unknown) => {
   assert.ok(error instanceof MontyRuntimeError)
   console.log('denied as expected:', error.message)
-}
+  return true
+})

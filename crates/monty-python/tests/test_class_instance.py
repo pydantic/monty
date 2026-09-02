@@ -1016,6 +1016,26 @@ def test_class_type_denied_method_on_constructed_instance(monty_run: RunMonty):
     assert str(exc_info.value) == snapshot("AttributeError: 'Calculator' object has no attribute 'boom'")
 
 
+class RedactingClassType(pydantic_monty.ClassType):
+    """Class wrapper whose `convert_value` redacts one method's result."""
+
+    def convert_value(self, /, name: str, value: Any) -> Any:
+        return 'redacted' if name == 'add' else value
+
+
+def test_class_type_convert_value_covers_constructed_instances(monty_run: RunMonty):
+    wrapper = RedactingClassType(Calculator, init=True, instance_allowed_methods={'add', 'scale'})
+    result = monty_run('c = Calculator(value=10)\n[c.add(5), c.scale()]', inputs={'Calculator': wrapper})
+    assert result == snapshot(['redacted', 20])
+
+
+def test_class_type_convert_value_covers_instances_sent_with_it(monty_run: RunMonty):
+    wrapper = pydantic_monty.ClassInstance(
+        Calculator(3), allowed_methods={'add'}, class_type=RedactingClassType(Calculator)
+    )
+    assert monty_run('c.add(1)', inputs={'c': wrapper}) == snapshot('redacted')
+
+
 class Shape:
     """Plain class with a class constant, a classmethod, and a staticmethod."""
 

@@ -129,7 +129,7 @@ with Monty() as pool:
 ### Host objects and classes
 
 Wrap a host object in `ClassInstance` to let the sandbox read chosen attributes and call chosen methods on it, or a
-class in `ClassType` to let sandbox code construct it; every policy is an allow-list, and the sandbox returning the
+class in `ClassType` with `init=True` to let sandbox code construct it; every policy is an allow-list, and the sandbox returning the
 object hands you the original back.
 
 ```python

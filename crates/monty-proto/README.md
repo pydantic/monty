@@ -27,10 +27,11 @@ for the schema and the protocol rules documented alongside it.
   framing, with a hard cap on frame length.
 - Fallible conversions between `pb` types and Monty's public types
   (`MontyObject`, `MontyException`, mounts, resource limits, ...).
-- Host-object routing on the wire: `MontyObject::ClassInstance` / `MontyClassType`
-  carry host-generated uuids, and `FunctionCall.object_id` / `NameLookup.object_id`
-  route method calls and lazy attribute lookups back to the parent's per-session
-  instance store.
+- Host-object routing on the wire: host-backed `MontyObject::ClassInstance` /
+  `MontyClassType` carry host-generated uuids, and `FunctionCall.object_id` /
+  `NameLookup.object_id` route their method calls and lazy attribute lookups
+  back to the parent's per-session instance store; sandbox-defined classes and
+  instances carry worker-generated uuids that never reach that store.
 - `PROTOCOL_VERSION` / `MIN_SUPPORTED_PROTOCOL_VERSION` — the wire schema
   version a parent declares in `Configure`, and the range a child serves.
   Versioned independently of the monty package: peers on different releases

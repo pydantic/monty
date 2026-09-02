@@ -62,7 +62,7 @@ It returns a `TurnEvent`:
 | `TurnEvent` | Meaning | Answer with |
 | --- | --- | --- |
 | `Complete(value)` | The snippet finished | nothing; feed again |
-| `FunctionCall { object_id, .. }` | The sandbox called a host function, or a method on a host object when `object_id` is `Some` | `Checkout::resume` |
+| `FunctionCall { object_id, .. }` | The sandbox called a host function, or with `object_id` (the wrapper's uuid) `Some`, a method on a host object or a host class's construction (arriving as `__call__`) | `Checkout::resume` |
 | `OsCall { .. }` | The sandbox performed an OS operation | `Checkout::resume_from_mounts` or `resume` |
 | `NameLookup { name, object_id }` | The sandbox read an undefined name, or a lazy attribute of a host object when `object_id` is `Some` | `Checkout::resume_name_lookup` |
 | `ResolveFutures { .. }` | Every sandbox task is blocked on host futures | `Checkout::resume_futures` |

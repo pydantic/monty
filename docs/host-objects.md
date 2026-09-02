@@ -170,10 +170,13 @@ Passing the proxy back hands the sandbox its original object, and a proxy whose 
 ## Snapshots
 
 `feed_start` suspends on a method call or a lazy attribute read as it does on a host function: `FunctionSnapshot` and
-`NameLookupSnapshot` carry `object_id`, the id of the host object involved.
+`NameLookupSnapshot` carry `object_id`, the uuid of the wrapper involved (`ClassInstance.id` or `ClassType.id`), not
+the host object's `id()`; it is `None` for plain host functions and name lookups.
 The instance store does not travel with a dump: a restored session returns a host instance as `MontyClassProxy` and a
 host class, `type(x)` included, as a read-only `MontyClassTypeProxy` (`name`, `id`, `is_dataclass`, `attributes`) that
 re-enters as the same class.
+On those objects, method calls and `init=True` construction raise `RuntimeError` inside the sandbox and lazy attribute
+reads raise `AttributeError`.
 See [what restoring carries](snapshots.md#what-restoring-does-and-does-not-carry).
 
 ## JavaScript

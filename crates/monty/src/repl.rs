@@ -106,15 +106,6 @@ impl MontyRepl {
         self.interns.corrupt_function_metadata_for_tests(name, fault);
     }
 
-    /// Number of live heap entries; lets tests prove an abandoned snippet
-    /// released its in-flight state.
-    #[cfg(feature = "ref-count-return")]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn __heap_entry_count_for_tests(&self) -> usize {
-        self.heap.entry_count()
-    }
-
     /// Returns the resource tracker that will be used for the next snippet.
     ///
     /// This is primarily intended for host integrations that need to attach
