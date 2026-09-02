@@ -100,9 +100,6 @@ fn render(
                     if index + 1 == bytes.len() {
                         return Err(value_error("Single '{' encountered in format string"));
                     }
-                    if recursion_remaining == 0 {
-                        return Err(value_error("Max string recursion exceeded"));
-                    }
                     let (formatted, next) =
                         render_field(template, index + 1, arguments, numbering, recursion_remaining, vm)?;
                     output = push_tracked(output, &formatted, vm)?;
@@ -189,13 +186,17 @@ fn render_field(
         .transpose()?;
 
     if let Some((spec_start, spec_end)) = spec_range {
-        let spec = render(
-            &template[spec_start..spec_end],
-            arguments,
-            numbering,
-            recursion_remaining - 1,
-            vm,
-        )?;
+        let raw_spec = &template[spec_start..spec_end];
+        // Only a spec containing `{` is expanded, and the expansion itself costs a
+        // recursion level, escaped braces included, matching CPython's `build_string`.
+        let spec = if raw_spec.contains('{') {
+            if recursion_remaining <= 1 {
+                return Err(value_error("Max string recursion exceeded"));
+            }
+            render(raw_spec, arguments, numbering, recursion_remaining - 1, vm)?
+        } else {
+            raw_spec.to_owned()
+        };
         let formatted = if let Some(converted) = &converted {
             vm.format_runtime_string(converted, &spec)?
         } else {

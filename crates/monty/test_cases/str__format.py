@@ -166,3 +166,9 @@ assert '{:0=15,.2f}'.format(1234.5) == '0,000,001,234.50'
 assert '{:0=+9_g}'.format(1) == '+0_000_001'
 assert '{:>010,}'.format(1234) == '000001,234'
 assert '{:x=10,}'.format(1234) == 'xxxxx1,234'
+
+assert capture_error('{0:{1:{{}}}}', 'x', 'y') == ('ValueError', 'Max string recursion exceeded')
+assert capture_error('{0:{{}}<9}', 5) == (
+    'ValueError',
+    "Invalid format specifier '{}<9' for object of type 'int'",
+)
