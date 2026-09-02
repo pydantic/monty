@@ -349,7 +349,7 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
     if same_object(source, &copy) {
         Ok(copy)
     } else {
-        match memo.insert(source, &copy, vm) {
+        match memo.insert_if_absent(source, &copy, vm) {
             Ok(()) => Ok(copy),
             Err(e) => {
                 copy.drop_with(vm);
@@ -496,6 +496,26 @@ impl Memo {
             unreachable!("memo is a dict")
         };
         dict.dict_get(key, vm)
+    }
+
+    /// Records `copy` unless this pass already has an entry for `source`.
+    ///
+    /// Most rebuilt types memoize their own shell before filling it — they have
+    /// to, or a cycle through a child would not terminate — so by the time
+    /// [`deep_copy`] finishes, the entry usually exists. Whether it does is a
+    /// per-call fact rather than a per-type one: an instance memoizes on the
+    /// attribute-copy path but not when a `__deepcopy__` hook answered, and the
+    /// hook's result still has to be recorded. Asking the memo covers both,
+    /// where re-inserting would re-hash the key, drop the copy it displaced and
+    /// pin the source a second time.
+    fn insert_if_absent(&mut self, source: &Value, copy: &Value, vm: &mut VM<'_>) -> RunResult<()> {
+        match self.get(source, vm)? {
+            Some(existing) => {
+                existing.drop_with(vm);
+                Ok(())
+            }
+            None => self.insert(source, copy, vm),
+        }
     }
 
     /// Records `copy` as the copy of `source`, and pins `source` for the pass.
