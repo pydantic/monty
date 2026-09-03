@@ -331,3 +331,31 @@ with Monty() as pool:
         except MontyError:
             ...  # the worker died; the pool already replaced it
 ```
+
+### Observability
+
+The Python Logfire integration instruments the pool through a private adapter
+hook. It propagates the active Python OTel context into each checkout, which
+becomes one session span with nested feed and suspension spans recording code,
+inputs, external calls, exceptions, and `print` output. Session dumps and
+restores are recorded by size only.
+
+The same adapter also receives pool metrics — live, immediately available and
+host-blocked worker counts, checkout waits, worker deaths by reason, run
+durations and the sandbox execution time of each feed. Unlike the spans these
+cover every checkout, and they record no sandbox-supplied values: metric
+attributes are closed sets, so nothing a script chooses (a called function's
+name, an exception class, or a path) can become a dimension.
+Rust's statically linked Logfire pipeline aggregates these instruments and
+passes standard OTLP protobuf batches to the Python adapter, rather than
+replaying individual measurements through Python instruments.
+
+Logfire's Python SDK owns sampling, export credentials, resources, and final
+export. Its flush path first collects the Rust metric pipeline. Workers receive
+no credentials. Instrumentation is disabled unless an adapter
+is explicitly installed. Enabled instrumentation captures content, truncating
+large values at the telemetry attribute size limit.
+
+See `limitations/pool-architecture.md` in the repository for the behavioural
+details of subprocess execution (host-side mounts, buffered print callbacks,
+session dumps).

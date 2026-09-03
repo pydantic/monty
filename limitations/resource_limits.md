@@ -194,6 +194,10 @@ indistinguishable from a stack overflow.
   **not** polled and run to completion however large the input: `in` with an
   integer probe (a single-byte scan) and `split()`/`rsplit()` left to their
   default `sep=None` (whitespace splitting).
+- `base64.a85decode()` polls the clock every 64th byte that matches no
+  Ascii85 digit and so reaches `ignorechars`. Each of those bytes is one
+  `in` test against the container, so a large explicit `ignorechars`
+  overshoots `max_duration` in proportion to its length.
 - The budget covers cumulative **execution time**, not wall-clock time:
   the clock runs only while the interpreter executes bytecode, and is
   paused while execution is suspended waiting on the host (external

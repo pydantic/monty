@@ -103,10 +103,10 @@ a worker that has already exited.
 
 ## Observability
 
-The optional `telemetry-adapter` feature records semantic execution for language bindings
-and other hosts. `monty-pool` never selects an exporter, reads credentials or environment
-variables, or shuts an exporter down; the host SDK owns those choices and its final
-flush/shutdown.
+The optional `telemetry` feature records semantic execution for language bindings and other hosts.
+The former `telemetry-adapter` feature and `telemetry_adapter` module remain compatibility aliases.
+`monty-pool` never selects or shuts down a network exporter or reads exporter credentials; the host SDK owns those
+choices and its final flush/shutdown.
 
 Recording happens in the host process, which builds every request and decodes every event
 anyway, so both transports are covered and the workers stay uninstrumented. Each instrumented checkout
@@ -117,11 +117,46 @@ the way the Python logfire SDK encodes attributes, capped at 64KB per value — 
 `Load`/`Dump` snapshot blobs are recorded by size only. Supplying an SDK is therefore an
 explicit opt-in to recording potentially sensitive values.
 
-The adapter configures an exporter-free process-global Rust pipeline and returns a handle
-that creates each checkout's serialized parent context. Records are emitted through
-`TelemetryAdapter`; Python, Node, and third-party bindings retain ownership of their native
-SDK and exporter. Without the feature, workers contain no telemetry recorder or telemetry
-hot path.
+The adapter configures a process-global Rust pipeline and returns a handle that creates each
+checkout's serialized parent context. Span and log records are emitted through
+`TelemetryAdapter`; metrics are aggregated by that pipeline and exported through the adapter
+as standard OTLP protobuf batches. Python, Node, and third-party bindings retain ownership of
+their native SDK and exporter. Without the feature, workers contain no telemetry recorder or
+telemetry hot path.
+
+### Metrics
+
+The same handle yields a `Metrics` for `PoolConfig::metrics` — as does
+`Metrics::for_logfire` for a Rust host. Both record into real Logfire instruments, with
+exponential histogram buckets; the adapter pipeline differs only in exporting its resulting
+aggregate over the language boundary. Either turns on the aggregate side: pool health
+(`monty.pool.workers.live`, `monty.pool.workers.idle`,
+`monty.pool.workers.suspended`, `monty.pool.checkout.wait`, `monty.pool.worker.terminated`,
+`monty.pool.session.duration`) and per-turn cost (`monty.run.duration`,
+`monty.run.execution_time`, `monty.turn.duration`, `monty.run.suspensions`,
+`monty.ext.call.duration`, `monty.snapshot.bytes`, `monty.print.bytes`,
+`monty.wire.frame.bytes`).
+`monty.pool.session.duration` uses `ok` for a clean finish, `error` when the worker is lost, and `abandoned` when a
+live checkout is dropped.
+
+Two differences from the spans above. Metrics cover **every** checkout, not only the ones a
+host gave a parent context — an aggregate over traced sessions alone would be misleading —
+and they record no sandbox-supplied values at all: every attribute is a closed set, so a
+called function's name (under any outcome — a host lookup that is a callable resolves
+anything), an exception class and any path are all left out rather than becoming a time
+series each. The one name recorded is an os call's, which comes from the protocol's own
+fixed set. The subtraction worth knowing: `monty.run.duration` minus
+`monty.run.execution_time` is host and transport overhead, primarily time spent answering
+suspensions.
+
+Metric attributes deliberately never identify a pool. The worker up/down counters therefore
+total over all pools recording into the same host meter, and a dropped pool subtracts its
+remaining contribution.
+
+A foreign SDK receives aggregated `ExportMetricsServiceRequest` protobufs through
+`TelemetryAdapter::export_metrics`, which defaults to dropping them so a span-only adapter
+continues to work. Its flush path should call `TelemetryAdapterHandle::force_flush` before
+flushing the host exporter.
 
 ## Transports
 

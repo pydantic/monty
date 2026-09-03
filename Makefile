@@ -162,7 +162,7 @@ test-type-checking: ## Run rust tests on monty-type-checking
 .PHONY: test-subprocess
 test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
 	cargo build -p monty-runtime
-	cargo test -p monty-proto -p monty-runtime -p monty-pool
+	cargo test -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
 
 .PHONY: pytest
 pytest: ## Run Python tests with pytest

@@ -1,20 +1,32 @@
 # `base64` module
 
-The base64, base32, base16 and base85 codecs plus the MIME helpers
+The base64, base32, base16, base85 and ascii85 codecs plus the MIME helpers
 `encodebytes`/`decodebytes` are implemented: `b64encode`, `b64decode`,
 `standard_b64encode`, `standard_b64decode`, `urlsafe_b64encode`,
 `urlsafe_b64decode`, `b32encode`, `b32decode`, `b32hexencode`, `b32hexdecode`,
 `b16encode`, `b16decode`, `b85encode`, `b85decode`, `z85encode`, `z85decode`,
-`encodebytes`, `decodebytes`. Output bytes, error types and error messages
-match CPython 3.14 subject to the divergences below.
+`a85encode`, `a85decode`, `encodebytes`, `decodebytes`. Output bytes, error
+types and error messages match CPython 3.14 subject to the divergences below.
 
 ## Not implemented
 
-- The ascii85 pair `a85encode` and `a85decode`, with their `foldspaces`,
-  `wrapcol`, `pad` and `adobe` options. Accessing them raises `AttributeError`.
 - `base64.encode(input, output)` and `base64.decode(input, output)`, which read
-  and write binary file objects.
+  and write binary file objects. Monty's file objects have no read position, so
+  the chunked read these perform has nothing to implement against — see
+  [open.md](open.md).
 - The `python -m base64` command line interface.
+
+## `a85encode` / `a85decode`
+
+- `wrapcol` reaches CPython's `max()` and then a slice expression. Every
+  non-`int` fails at one or the other, so what differs is which message you
+  get, not whether the call fails. Monty matches CPython for a `float`
+  (`'float' object cannot be interpreted as an integer`) and for a type that
+  cannot be ordered against an `int`. A class defining both `__gt__` and
+  `__index__` diverges: CPython gets past `max()` and `range()` to fail on
+  `i + wrapcol` (`unsupported operand type(s) for +`), while Monty rejects it
+  at the comparison, since it does not dispatch ordering dunders at all
+  (see [classes.md](classes.md)).
 
 ## Input types
 

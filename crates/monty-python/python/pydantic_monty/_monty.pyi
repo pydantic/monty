@@ -18,6 +18,7 @@ from .os_access import AbstractOS, OsFunction
 
 __all__ = [
     '__version__',
+    '_flush_telemetry',
     '_install_telemetry_adapter',
     'NOT_HANDLED',
     'AsyncMonty',
@@ -50,7 +51,8 @@ __all__ = [
 ]
 __version__: str
 
-# Private versioned hook used by the Python Logfire integration.
+# Private hooks used by the Python Logfire integration.
+def _flush_telemetry() -> None: ...
 def _install_telemetry_adapter(version: int, adapter: Any) -> None: ...
 
 NOT_HANDLED = object()
@@ -518,7 +520,7 @@ class Monty:
                 before raising `TimeoutError`. `None` waits forever.
             request_timeout: Per-turn parent-side deadline in seconds — a worker
                 that exceeds it is killed and the call raises `MontyCrashedError`
-                with `timed_out=True`. Trusted synchronous telemetry callbacks
+                with `timed_out=True`. Trusted synchronous span and log callbacks
                 delay enforcement while they run. Backstops sandbox `limits`.
             max_checkouts_per_worker: Recycle a worker after this many sessions.
         """

@@ -1,8 +1,8 @@
 //! Implementation of Python's `base64` module.
 //!
-//! Covers the base64/base32/base16 codecs and the MIME helpers
-//! `encodebytes`/`decodebytes`; the ascii85/base85 family and the file-object
-//! `encode`/`decode` pair are not — see `limitations/base64.md`.
+//! Covers the base64/base32/base16/base85 codecs, the ascii85 pair and the
+//! MIME helpers `encodebytes`/`decodebytes`; the file-object `encode`/`decode`
+//! pair is not — see `limitations/base64.md`.
 //!
 //! CPython's `base64` is pure Python delegating to `binascii`, so every
 //! function here uses `#[from_args(style = def)]` and coerces in the body,
@@ -13,7 +13,7 @@
 //! Encoders take bytes only; decoders also take ASCII `str` (CPython's
 //! `_bytes_from_decode_data`).
 
-use std::borrow::Cow;
+use std::{borrow::Cow, cmp::Ordering};
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -23,7 +23,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Module, PyTrait, bytes::bytes_repr},
+    types::{CmpOrder, Module, PyTrait, bytes::bytes_repr},
     value::Value,
 };
 
@@ -38,6 +38,17 @@ const B85_ALPHABET: &[u8; 85] =
 const Z85_ALPHABET: &[u8; 85] =
     b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-:+=^!/*?&<>()[]{}@%$#";
 
+/// Lowest Ascii85 digit: value `v` encodes as `A85_FIRST_DIGIT + v`, so the
+/// alphabet is the 85 characters `!` through `u`.
+const A85_FIRST_DIGIT: u8 = b'!';
+/// Highest Ascii85 digit, and the character CPython pads a trailing partial
+/// group with.
+const A85_LAST_DIGIT: u8 = b'u';
+/// Opening marker of the Adobe framing, optional on decode.
+const A85_ADOBE_START: &[u8; 2] = b"<~";
+/// Closing marker of the Adobe framing, required on decode when `adobe` is set.
+const A85_ADOBE_END: &[u8; 2] = b"~>";
+
 /// Extended-hex base32 alphabet (RFC 4648 §7), used by `b32hexencode`.
 const B32HEX_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHIJKLMNOPQRSTUV";
 
@@ -49,6 +60,9 @@ const MAX_BIN_SIZE: u8 = 57;
 const MAX_LINE_SIZE: u8 = 76;
 
 /// `base64` module functions, one variant per Python-visible function.
+///
+/// Serialized into dumps by discriminant, so new functions are appended here
+/// rather than slotted in beside the codec they belong with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Base64Functions {
     #[strum(serialize = "b64encode")]
@@ -87,6 +101,10 @@ pub(crate) enum Base64Functions {
     Z85Encode,
     #[strum(serialize = "z85decode")]
     Z85Decode,
+    #[strum(serialize = "a85encode")]
+    A85Encode,
+    #[strum(serialize = "a85decode")]
+    A85Decode,
 }
 
 /// Static mapping of attribute names to functions for module creation.
@@ -109,6 +127,8 @@ const BASE64_FUNCTIONS: &[(StaticStrings, Base64Functions)] = &[
     (StaticStrings::B85Decode, Base64Functions::B85Decode),
     (StaticStrings::Z85Encode, Base64Functions::Z85Encode),
     (StaticStrings::Z85Decode, Base64Functions::Z85Decode),
+    (StaticStrings::A85Encode, Base64Functions::A85Encode),
+    (StaticStrings::A85Decode, Base64Functions::A85Decode),
 ];
 
 /// Creates the `base64` module on the heap.
@@ -151,6 +171,8 @@ pub(super) fn call(vm: &mut VM<'_>, function: Base64Functions, args: ArgValues) 
         Base64Functions::B85Decode => call_b85decode(vm, args),
         Base64Functions::Z85Encode => call_z85encode(vm, args),
         Base64Functions::Z85Decode => call_z85decode(vm, args),
+        Base64Functions::A85Encode => call_a85encode(vm, args),
+        Base64Functions::A85Decode => call_a85decode(vm, args),
     }
 }
 
@@ -369,6 +391,82 @@ fn call_z85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
+/// `base64.a85encode(b, *, foldspaces=False, wrapcol=0, pad=False, adobe=False)`
+/// — Ascii85, the btoa/PostScript dialect of base85.
+///
+/// Zero folding to `z` is always on and `foldspaces` adds `y` for four spaces;
+/// `adobe` frames the result in `<~`/`~>`, and `wrapcol` breaks it into lines.
+fn call_a85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let A85EncodeArgs {
+        b,
+        foldspaces,
+        wrapcol,
+        pad,
+        adobe,
+    } = A85EncodeArgs::from_args(args, vm)?;
+    defer_drop!(b, vm);
+    defer_drop!(foldspaces, vm);
+    defer_drop!(wrapcol, vm);
+    defer_drop!(pad, vm);
+    defer_drop!(adobe, vm);
+
+    // CPython coerces the input before any flag and reaches `pad` only when the
+    // length needs padding. Which flag raises first is unobservable while
+    // `__bool__` goes undispatched (`limitations/classes.md`), but this order
+    // holds once it lands. Owned as `tobytes()` is: a dispatched `__bool__`
+    // re-enters the interpreter and could mutate a `bytearray`.
+    let data = memoryview_input(b, vm)?.into_owned();
+    let fold = foldspaces.py_bool(vm)?;
+    let keep_padding = data.len() % 4 != 0 && pad.py_bool(vm)?;
+    let adobe = adobe.py_bool(vm)?;
+    let mut encoded = a85_encode(&data, keep_padding, fold);
+
+    if adobe {
+        encoded.splice(0..0, *A85_ADOBE_START);
+    }
+    // CPython only consults the width when it is truthy, and wraps the framed
+    // result — so the opening marker counts towards the first line.
+    if wrapcol.py_bool(vm)? {
+        let width = a85_wrapcol(wrapcol, if adobe { 2 } else { 1 }, vm)?;
+        encoded = a85_wrap(&encoded, width, adobe);
+    }
+    if adobe {
+        encoded.extend_from_slice(A85_ADOBE_END);
+    }
+    Ok(allocate_bytes(encoded, vm.heap))
+}
+
+/// `base64.a85decode(b, *, foldspaces=False, adobe=False, ignorechars=b' \t\n\r\v')`
+/// — the inverse of [`call_a85encode`].
+///
+/// `foldspaces` must be set to the same value the encoder used, since `y` is
+/// otherwise not a digit at all.
+fn call_a85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let A85DecodeArgs {
+        b,
+        foldspaces,
+        adobe,
+        ignorechars,
+    } = A85DecodeArgs::from_args(args, vm)?;
+    defer_drop!(b, vm);
+    defer_drop!(foldspaces, vm);
+    defer_drop!(adobe, vm);
+    defer_drop!(ignorechars, vm);
+
+    // Owned so the decode loop can re-enter the interpreter for a caller-given
+    // `ignorechars`, which the borrowed input would rule out.
+    let data = decode_input(b, vm)?.into_owned();
+    let framed = a85_strip_adobe(&data, adobe.py_bool(vm)?)?;
+    let fold = foldspaces.py_bool(vm)?;
+    let ignore = match ignorechars.as_ref() {
+        Some(value) => IgnoreChars::Given(value),
+        None => IgnoreChars::Default,
+    };
+
+    let decoded = a85_decode(framed, fold, &ignore, vm)?;
+    Ok(allocate_bytes(decoded, vm.heap))
+}
+
 /// Argument shape for `b64encode(s, altchars=None)`.
 ///
 /// Fields stay raw `Value` throughout this module: CPython's `def` binding
@@ -441,6 +539,40 @@ struct B85EncodeArgs {
 #[from_args(name = "b85decode", style = def)]
 struct B85DecodeArgs {
     b: Value,
+}
+
+/// Argument shape for
+/// `a85encode(b, *, foldspaces=False, wrapcol=0, pad=False, adobe=False)`.
+#[derive(FromArgs)]
+#[from_args(name = "a85encode", style = def)]
+struct A85EncodeArgs {
+    b: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    foldspaces: Value,
+    #[from_args(kw_only, default = Value::Int(0))]
+    wrapcol: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    pad: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    adobe: Value,
+}
+
+/// Argument shape for
+/// `a85decode(b, *, foldspaces=False, adobe=False, ignorechars=b' \t\n\r\v')`.
+///
+/// `ignorechars` is absent rather than defaulted: CPython tests membership in
+/// whatever object was passed, so an explicit argument takes a different path
+/// from the built-in set — see [`IgnoreChars`].
+#[derive(FromArgs)]
+#[from_args(name = "a85decode", style = def)]
+struct A85DecodeArgs {
+    b: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    foldspaces: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    adobe: Value,
+    #[from_args(kw_only, default)]
+    ignorechars: Option<Value>,
 }
 
 /// Declares the argument struct for one of the module's `f(s)` functions.
@@ -770,14 +902,15 @@ fn b85_decode(data: &[u8], alphabet: &[u8; 85], codec: &str) -> RunResult<Vec<u8
         for offset in 0..5 {
             // Positions past the end are the virtual padding: the top digit.
             let value = match chunk.get(offset) {
-                Some(byte) => table[usize::from(*byte)]
-                    .ok_or_else(|| base85_error(format!("bad {codec} character at position {}", start + offset)))?,
+                Some(byte) => table[usize::from(*byte)].ok_or_else(|| {
+                    codec_value_error(format!("bad {codec} character at position {}", start + offset))
+                })?,
                 None => 84,
             };
             acc = acc * 85 + u64::from(value);
         }
         let word = u32::try_from(acc)
-            .map_err(|_| base85_error(format!("{codec} overflow in hunk starting at byte {start}")))?;
+            .map_err(|_| codec_value_error(format!("{codec} overflow in hunk starting at byte {start}")))?;
         out.extend_from_slice(&word.to_be_bytes());
     }
 
@@ -794,10 +927,215 @@ fn base85_table(alphabet: &[u8; 85]) -> [Option<u8>; 256] {
     table
 }
 
-/// Builds the `ValueError` the base85 decoders raise — not `binascii.Error`,
-/// since these two never reach `binascii`.
-fn base85_error(message: String) -> RunError {
-    SimpleException::new_msg(ExcType::ValueError, message).into()
+/// Encodes bytes as Ascii85, five digits per four-byte word.
+///
+/// An all-zero word folds to `z` and, with `foldspaces`, four spaces fold to
+/// `y`. A short final group is zero-padded to a full word and the digits that
+/// padding produced are dropped again unless `pad` is set.
+fn a85_encode(data: &[u8], pad: bool, foldspaces: bool) -> Vec<u8> {
+    let padding = (4 - data.len() % 4) % 4;
+    let mut out: Vec<u8> = Vec::with_capacity(data.len().div_ceil(4) * 5);
+    // Where the final word's digits start, so the padding trim below can
+    // rewrite them the way CPython rewrites `chunks[-1]`.
+    let mut last_start = 0;
+
+    for chunk in data.chunks(4) {
+        last_start = out.len();
+        let mut word: u32 = 0;
+        for i in 0..4 {
+            word = (word << 8) | u32::from(chunk.get(i).copied().unwrap_or(0));
+        }
+        if word == 0 {
+            out.push(b'z');
+        } else if foldspaces && word == 0x2020_2020 {
+            out.push(b'y');
+        } else {
+            // Five base-85 digits, most significant first.
+            let mut digits = [0u8; 5];
+            for slot in digits.iter_mut().rev() {
+                *slot = A85_FIRST_DIGIT + u8::try_from(word % 85).expect("remainder below 85");
+                word /= 85;
+            }
+            out.extend_from_slice(&digits);
+        }
+    }
+
+    if padding != 0 && !pad {
+        // Padding cannot make a word four spaces, but it can make one zero —
+        // and a folded `z` has no digits to trim, so it is expanded first.
+        if out[last_start..] == *b"z" {
+            out.truncate(last_start);
+            out.extend_from_slice(&[A85_FIRST_DIGIT; 5]);
+        }
+        out.truncate(out.len() - padding);
+    }
+    out
+}
+
+/// Breaks encoded output into lines of at most `width` characters.
+///
+/// With the Adobe framing an extra newline is added when `~>` would not fit on
+/// the last line, so no line ever exceeds `width`.
+fn a85_wrap(result: &[u8], width: usize, adobe: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(result.len() + result.len() / width + 1);
+    let mut last_len = 0;
+    for (index, line) in result.chunks(width).enumerate() {
+        if index > 0 {
+            out.push(b'\n');
+        }
+        out.extend_from_slice(line);
+        last_len = line.len();
+    }
+    if adobe && last_len + A85_ADOBE_END.len() > width {
+        out.push(b'\n');
+    }
+    out
+}
+
+/// Resolves `max(2 if adobe else 1, wrapcol)` and the index `range` then needs.
+///
+/// Both of CPython's failure modes live here: a `wrapcol` that cannot be
+/// ordered against an `int` fails in `max`, and one that wins the comparison
+/// but is no index — a `float` of one or more — fails in `range`.
+fn a85_wrapcol(wrapcol: &Value, floor: u8, vm: &mut VM<'_>) -> RunResult<usize> {
+    let wider = match wrapcol.py_cmp(&Value::Int(i64::from(floor)), vm)? {
+        CmpOrder::Ordered(Ordering::Greater) => true,
+        // `NaN` is neither larger nor smaller, so the floor stands, as in `max`.
+        CmpOrder::Ordered(_) | CmpOrder::Unordered => false,
+        CmpOrder::Incomparable => {
+            return Err(ExcType::type_error_ordering(">", &wrapcol.py_type_name(vm), "int"));
+        }
+    };
+    if wider {
+        a85_width(wrapcol, vm)
+    } else {
+        Ok(usize::from(floor))
+    }
+}
+
+/// Converts a `wrapcol` that won the `max` into a line length.
+///
+/// CPython feeds it to `range`, which takes an arbitrary `int`, so a width
+/// past the address space is not an error — everything lands on one line.
+/// Having beaten a floor of 1, such a width can only be large and positive.
+fn a85_width(wrapcol: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+    let long = match wrapcol {
+        Value::InternLongInt(_) => true,
+        Value::Ref(heap_id) => matches!(vm.heap.get(*heap_id), HeapData::LongInt(_)),
+        _ => false,
+    };
+    if long {
+        Ok(usize::MAX)
+    } else {
+        Ok(usize::try_from(wrapcol.as_int(vm)?).unwrap_or(usize::MAX))
+    }
+}
+
+/// Strips the `<~` / `~>` framing when `adobe` is set, leaving the digits.
+///
+/// Only the terminator is required — PDF streams carry it without the opening
+/// marker — and the two overlap in `b'<~>'`, where Python's slicing yields an
+/// empty body rather than failing.
+fn a85_strip_adobe(data: &[u8], adobe: bool) -> RunResult<&[u8]> {
+    if !adobe {
+        Ok(data)
+    } else if data.ends_with(A85_ADOBE_END) {
+        let end = data.len() - A85_ADOBE_END.len();
+        let start = if data.starts_with(A85_ADOBE_START) {
+            A85_ADOBE_START.len()
+        } else {
+            0
+        };
+        Ok(data.get(start..end).unwrap_or_default())
+    } else {
+        Err(codec_value_error("Ascii85 encoded byte sequences must end with b'~>'"))
+    }
+}
+
+/// Decodes Ascii85, transcribing CPython's byte-at-a-time loop.
+///
+/// The four `u`s appended to the input flush a trailing partial group, exactly
+/// as CPython's `b + b'u' * 4` does; the bytes they contributed are trimmed
+/// off again at the end, so a group left one digit short decodes to nothing.
+fn a85_decode(data: &[u8], foldspaces: bool, ignore: &IgnoreChars<'_>, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
+    let mut out: Vec<u8> = Vec::with_capacity(data.len().div_ceil(5) * 4);
+    let mut acc: u64 = 0;
+    let mut digits = 0u8;
+    // Counts only the bytes reaching `skips`, the one arm whose cost grows with
+    // a caller's `ignorechars`. Indexing by position instead would let input
+    // that lands those bytes off the poll's stride skip the clock entirely.
+    let mut ignored = 0usize;
+
+    for byte in data.iter().copied().chain([A85_LAST_DIGIT; 4]) {
+        if (A85_FIRST_DIGIT..=A85_LAST_DIGIT).contains(&byte) {
+            acc = acc * 85 + u64::from(byte - A85_FIRST_DIGIT);
+            digits += 1;
+            if digits == 5 {
+                // Five digits reach 85**5 - 1, half again as much as a word holds.
+                let word = u32::try_from(acc).map_err(|_| codec_value_error("Ascii85 overflow"))?;
+                out.extend_from_slice(&word.to_be_bytes());
+                acc = 0;
+                digits = 0;
+            }
+        } else if byte == b'z' {
+            // The short forms stand for a whole word, so they cannot appear
+            // part-way through one.
+            if digits != 0 {
+                return Err(codec_value_error("z inside Ascii85 5-tuple"));
+            }
+            out.extend_from_slice(&[0; 4]);
+        } else if foldspaces && byte == b'y' {
+            if digits != 0 {
+                return Err(codec_value_error("y inside Ascii85 5-tuple"));
+            }
+            out.extend_from_slice(b"    ");
+        } else {
+            // `ignorechars` is a Python container, so this is a `py_contains`
+            // per byte — linear for `bytes`. Nothing here returns to the VM's
+            // dispatch checkpoint, so the loop polls the clock itself.
+            vm.heap.tracker.check_time_every(ignored)?;
+            ignored += 1;
+            if !ignore.skips(byte, vm)? {
+                return Err(codec_value_error(format!(
+                    "Non-Ascii85 digit found: {}",
+                    char::from(byte)
+                )));
+            }
+        }
+    }
+
+    // Each digit still held stood for a byte the input never carried. The flush
+    // guarantees a whole word was written, so there is always that much to trim.
+    out.truncate(out.len() - usize::from(4 - digits));
+    Ok(out)
+}
+
+/// Which bytes `a85decode` skips rather than decoding.
+///
+/// Splitting the default out keeps the common case a byte comparison: an
+/// explicit argument is tested with Python's `in`, which re-enters the
+/// interpreter and is where a `str` argument raises the way CPython's does.
+enum IgnoreChars<'a> {
+    /// `ignorechars` left at its `b' \t\n\r\v'` default.
+    Default,
+    /// The object the caller passed, whatever its type.
+    Given(&'a Value),
+}
+
+impl IgnoreChars<'_> {
+    /// Answers CPython's `x in ignorechars` for a byte no digit rule matched.
+    fn skips(&self, byte: u8, vm: &mut VM<'_>) -> RunResult<bool> {
+        match self {
+            Self::Default => Ok(matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b)),
+            Self::Given(value) => value.py_contains(&Value::Int(i64::from(byte)), vm),
+        }
+    }
+}
+
+/// Builds the plain `ValueError` the ascii85 and base85 codecs raise — not
+/// `binascii.Error`, since none of them reaches `binascii`.
+fn codec_value_error(message: impl Into<String>) -> RunError {
+    SimpleException::new_msg(ExcType::ValueError, message.into()).into()
 }
 
 /// Rewrites `data` in place, mapping each byte of `from` to the byte at the

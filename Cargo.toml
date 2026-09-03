@@ -157,8 +157,11 @@ rustls = { version = "0.23", features = ["aws_lc_rs"] }
 # Async runtime. Only the version is pinned here — tokio has no default
 # features and each consumer needs a very different slice of it.
 tokio = { version = "1" }
-# Feature-free: monty-pool builds spans only, while monty-runtime adds its exporter.
+# Feature-free: monty-pool builds telemetry only, while monty-runtime adds its network exporter.
 logfire = { version = "0.12", default-features = false }
+# Canonical OTLP batches cross the Python and Node extension boundaries after
+# Rust's metrics SDK has aggregated them.
+opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "metrics"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

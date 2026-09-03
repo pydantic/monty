@@ -3,11 +3,12 @@ import { test } from 'vitest'
 import { t } from './assertions.js'
 import { skipIfBrowser } from './env.js'
 
-import { _installTelemetryAdapter, Monty, type TelemetryEvent } from '@pydantic/monty/node'
+import { _flushTelemetry, _installTelemetryAdapter, Monty, type TelemetryEvent } from '@pydantic/monty/node'
 
 test('installed telemetry adapter receives the session tree', async (ctx) => {
   skipIfBrowser(ctx)
   const events: TelemetryEvent[] = []
+  const metricBatches: Uint8Array[] = []
   const adapter = {
     captureContext() {
       return {
@@ -18,6 +19,10 @@ test('installed telemetry adapter receives the session tree', async (ctx) => {
     },
     event(event: TelemetryEvent) {
       events.push(event)
+    },
+    exportMetrics(payload: Uint8Array) {
+      metricBatches.push(payload)
+      return Promise.reject(new Error('telemetry export failed'))
     },
   }
   t.throws(() => _installTelemetryAdapter(2, adapter), {
@@ -54,4 +59,9 @@ test('installed telemetry adapter receives the session tree', async (ctx) => {
     events.map((event) => event.kind),
     ['start', 'start', 'end', 'end'],
   )
+
+  // metrics are aggregated in Rust and cross as a canonical OTLP protobuf
+  await _flushTelemetry()
+  t.is(metricBatches.length, 1)
+  t.true((metricBatches[0]?.byteLength ?? 0) > 0)
 })

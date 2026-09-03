@@ -70,7 +70,7 @@ use crate::{
     mount::PyMountDir,
     print_target::PrintTarget,
     snapshot::{DriveContext, build_snapshot, feed_start_async, feed_start_sync},
-    telemetry::capture_telemetry_context,
+    telemetry::{capture_telemetry_context, pool_metrics},
 };
 
 /// The pool handle shared between a pool object and its sessions. `None`
@@ -969,6 +969,7 @@ fn parse_pool_config(
     config.checkout_timeout = checkout_timeout.map(duration_from_secs).transpose()?;
     config.request_timeout = request_timeout.map(duration_from_secs).transpose()?;
     config.max_checkouts_per_worker = max_checkouts_per_worker;
+    config.metrics = pool_metrics();
     Ok(config)
 }
 
@@ -1083,6 +1084,7 @@ fn parse_websocket_config(
     }
     config.checkout_timeout = checkout_timeout.map(duration_from_secs).transpose()?;
     config.request_timeout = request_timeout.map(duration_from_secs).transpose()?;
+    config.metrics = pool_metrics();
     Ok(config)
 }
 
