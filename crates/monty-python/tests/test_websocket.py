@@ -253,6 +253,12 @@ def raise_no_token() -> dict[str, str]:
             ),
         ),
         (raise_no_token, ValueError, snapshot('no token available')),
+        # a `str` that is not encodable — a lone surrogate — cannot become a header
+        (
+            lambda: {'x-token': '\udc80'},
+            UnicodeEncodeError,
+            snapshot("'utf-8' codec can't encode character '\\udc80' in position 0: surrogates not allowed"),
+        ),
     ],
 )
 async def test_connect_headers_errors_raise_on_entry(
@@ -264,4 +270,14 @@ async def test_connect_headers_errors_raise_on_entry(
         with pytest.raises(exc_type) as exc_info:
             async with pool.checkout():
                 pass
-    assert exc_info.value.args[0] == message
+    assert str(exc_info.value) == message
+
+
+async def test_checkout_rejects_unknown_limits():
+    """`checkout()` validates its arguments up front, before any dial, like `Monty.checkout`."""
+    async with AsyncMontyWebsocket('ws://127.0.0.1:9') as pool:
+        with pytest.raises(ValueError) as exc_info:
+            pool.checkout(limits={'max_memroy': 10_000_000})  # pyright: ignore[reportArgumentType]
+    assert exc_info.value.args[0] == snapshot(
+        "unknown limits key 'max_memroy'; accepted keys are 'max_duration_secs', 'max_memory', 'gc_interval', 'max_recursion_depth', 'max_suspensions'"
+    )
