@@ -982,7 +982,7 @@ fn abort_restored(
             print.reborrow(),
             executor.assert_repr_max_bytes,
         );
-        let vm_result = vm.resume_with_exception(RunError::uncatchable(exc));
+        let vm_result = vm.abort(exc);
         let converted = convert_frame_exit(vm_result, &mut vm);
         // Uncatchable exceptions cannot suspend, so no snapshot is needed.
         repl.globals = vm.take_globals();

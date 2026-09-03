@@ -1,7 +1,7 @@
 //! Tests that hosts can abort suspended feeds uncatchably to enforce limits.
 
 use insta::assert_snapshot;
-use monty::{MontyRepl, MontyRun, RunProgress};
+use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, PrintWriter,
     ResourceTracker,
@@ -145,6 +145,106 @@ await main()
         .expect("still waiting on bar");
     let exc = state.abort(limit_exceeded(), PrintWriter::Stdout).unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::RuntimeError);
+    assert_snapshot!(exc.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 10, in <module>
+        await main()
+        ~~~~~~~~~~~~
+      File "test.py", line 5, in main
+        a, b = await asyncio.gather(foo(), bar())
+               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    RuntimeError: suspension limit 3 exceeded
+    "#);
+}
+
+/// The last runnable task finishing parks the VM with every real frame held
+/// by the scheduler; the abort still reports the main task's `await`.
+#[test]
+fn abort_resolve_futures_while_parked() {
+    let code = "\
+import asyncio
+
+async def slow():
+    return await foo()
+
+async def quick():
+    return 2
+
+async def main():
+    a, b = await asyncio.gather(slow(), quick())
+    return a + b
+
+await main()
+";
+    let call = start(code).into_function_call().expect("foo call");
+    let state = call
+        .resume_pending(PrintWriter::Stdout)
+        .unwrap()
+        .into_resolve_futures()
+        .expect("waiting on foo");
+    let exc = state.abort(limit_exceeded(), PrintWriter::Stdout).unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::RuntimeError);
+    assert_snapshot!(exc.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 13, in <module>
+        await main()
+        ~~~~~~~~~~~~
+      File "test.py", line 10, in main
+        a, b = await asyncio.gather(slow(), quick())
+               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    RuntimeError: suspension limit 3 exceeded
+    "#);
+}
+
+/// The REPL abort path reloads the parked main task the same way.
+#[test]
+fn repl_abort_resolve_futures_while_parked() {
+    let code = "\
+import asyncio
+
+async def quick():
+    return 2
+
+async def main():
+    return await asyncio.gather(foo(), quick())
+
+await main()
+";
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("x = 41", vec![], PrintWriter::Stdout).unwrap();
+    let mut progress = repl.feed_start(code, vec![], PrintWriter::Stdout).unwrap();
+    let state = loop {
+        progress = match progress {
+            ReplProgress::NameLookup(lookup) => {
+                let name = lookup.name.clone();
+                lookup
+                    .resume(
+                        NameLookupResult::Value(MontyObject::Function { name, docstring: None }),
+                        PrintWriter::Stdout,
+                    )
+                    .unwrap()
+            }
+            ReplProgress::FunctionCall(call) => call.resume_pending(PrintWriter::Stdout).unwrap(),
+            ReplProgress::ResolveFutures(state) => break state,
+            other => panic!("unexpected progress {other:?}"),
+        };
+    };
+    let err = state.abort(limit_exceeded(), PrintWriter::Stdout).unwrap_err();
+    assert_snapshot!(err.error.to_string(), @r#"
+    Traceback (most recent call last):
+      File "<python-input-1>", line 9, in <module>
+        await main()
+        ~~~~~~~~~~~~
+      File "<python-input-1>", line 7, in main
+        return await asyncio.gather(foo(), quick())
+               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    RuntimeError: suspension limit 3 exceeded
+    "#);
+    let mut repl = err.repl;
+    assert_eq!(
+        repl.feed_run("x + 1", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::Int(42)
+    );
 }
 
 /// A REPL abort preserves earlier globals and skips code after the suspension.

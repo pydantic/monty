@@ -821,7 +821,7 @@ fn abort_restored(
             print.reborrow(),
             executor.assert_repr_max_bytes,
         );
-        let vm_result = vm.resume_with_exception(RunError::uncatchable(exc));
+        let vm_result = vm.abort(exc);
         let converted = convert_frame_exit(vm_result, &mut vm);
         let vm_state = check_snapshot_from_converted(&converted, vm);
         (converted, vm_state)
