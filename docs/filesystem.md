@@ -169,8 +169,9 @@ to real files, and `os.getenv` sees only the `environ` mapping you passed.
 That is the point of it, but it means an `OSAccess` containing a `CallbackFile` is exactly as sandboxed as the callback
 you wrote.
 
-For anything more specific, subclass `AbstractOS` and implement the methods you want; anything you leave raising
-`NotImplementedError` is reported to Monty as `NOT_HANDLED`.
+For anything more specific, subclass `OSAccess` and override the methods you want to change, or implement every
+abstract method of `AbstractOS` yourself; the optional hooks (`path_open`, the append methods, `date_today`,
+`datetime_now`) report `NOT_HANDLED` to Monty if you make them raise `NotImplementedError`.
 
 ## In other languages
 

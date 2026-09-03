@@ -929,8 +929,8 @@ the project describing behaviour it no longer has.
 
 | Surface | Reader | Contains |
 | --- | --- | --- |
-| `README.md` | GitHub, PyPI, npm landing page | The pitch, the can/cannot lists, install, one quickstart per binding, the alternatives table |
-| `docs/` | the docs site (`pydantic.dev/docs/monty`), nav in `mkdocs.yml` | Conceptual and how-to: install, per-language quickstarts, security model, host functions, resource limits, filesystem, snapshots, type checking, the subset, CLI |
+| `README.md` | GitHub, PyPI, npm landing page | A short pitch with the latency numbers, install commands, one example, links into `docs/` — nothing else |
+| `docs/` | the docs site (`pydantic.dev/docs/monty`), nav in `mkdocs.yml` | The landing page (`index.md`: numbers, why, example), comparison to alternatives, install per target (Python, JavaScript, Rust, Docker for `monty-server`), per-language quickstarts, examples, security model, host functions, resource limits, filesystem, snapshots, type checking, the subset, CLI, `monty-server` |
 | `limitations/` | users and contributors chasing a specific behaviour | The exhaustive per-feature record of CPython divergences (see the section below) |
 | `crates/*/README.md` | crates.io, and PyPI/npm for the binding crates | Per-crate API documentation; `monty-python/README.md` and `monty-js/README.md` are the binding references |
 
@@ -943,7 +943,7 @@ a `docs/` page instead of `limitations/` is a defect — move it and link.
 - **A CPython divergence** — `limitations/<file>.md`, per the mandatory rule below.
 - **The subset changes shape** (a stdlib module becomes importable, a parse-time
   rejection lands or is lifted, a language feature ships) — also `docs/python-subset.md`
-  and the `README.md` can/cannot bullets.
+  and the "What Monty is not for" section of `docs/index.md`.
 - **Python binding API** (`crates/monty-python/`) — the `_monty.pyi` docstrings,
   `crates/monty-python/README.md`, and the `docs/` page that covers the feature.
 - **JavaScript binding API** (`crates/monty-js/`) — `crates/monty-js/README.md` and
@@ -960,7 +960,10 @@ These facts are stated in more than one place on purpose, because a reader needs
 where they are. Change one and you must change all of them:
 
 - **The importable stdlib module list** — `limitations/modules.md` (authoritative),
-  `docs/python-subset.md`, `docs/index.md`, `README.md`.
+  `docs/python-subset.md`.
+- **The start-latency numbers** — `ROWS` in `scripts/startup_latency_chart.py` (which renders
+  `docs/img/startup-latency.svg`), `docs/index.md`, `docs/alternatives.md`, `README.md`.
+  Re-measure with `scripts/startup_performance.py`, then update all four.
 - **Default resource limits** (1000 recursion frames, 1000 suspensions, 100 MB per-mount memory, 10 MiB
   print collectors, 1s duration grace) — `limitations/resource_limits.md`,
   `docs/resource-limits.md`, and the binding docstrings.

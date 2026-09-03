@@ -9,7 +9,8 @@ subprocess-only today and cannot dial a remote server.
 The server adds capacity limits, timeouts, per-caller quotas, health probes, graceful drain and tracing to [Pydantic
 Logfire](https://pydantic.dev/logfire). The `monty` worker provides the sandboxing.
 
-The server is closed-source and distributed as a container image.
+The server is closed-source and distributed as a container image; [install with Docker](install/docker.md) is the
+short version of the quickstart below.
 For access and licensing, [contact us](https://pydantic.dev/contact).
 
 ## Why Monty over WebSocket

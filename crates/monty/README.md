@@ -4,9 +4,7 @@
 [![crates.io](https://img.shields.io/crates/v/monty.svg)](https://crates.io/crates/monty)
 [![license](https://img.shields.io/github/license/pydantic/monty.svg?v=2)](https://github.com/pydantic/monty/blob/main/LICENSE)
 
-The core interpreter crate of [Monty](https://github.com/pydantic/monty) — a minimal, secure Python interpreter written in Rust for use by AI.
-
-**Experimental** — this project is still in development, and not ready for prime time.
+The core interpreter crate of [Monty](https://github.com/pydantic/monty) — a sandboxed Python interpreter written in Rust for code written by AI.
 
 Monty lets you safely run Python code written by an LLM inside your own process, without the cost, latency and complexity of a container based sandbox. It parses Python with [Ruff](https://github.com/astral-sh/ruff)'s parser and executes it on its own bytecode VM — no CPython, no FFI, no C dependencies. Startup takes microseconds, not hundreds of milliseconds.
 
@@ -18,7 +16,7 @@ This crate is the pure-Rust core. Most users want one of the bindings built on t
 - **JavaScript/TypeScript**: [`@pydantic/monty`](https://www.npmjs.com/package/@pydantic/monty)
 - **CLI**: the `monty` binary from the [`monty-runtime`](https://crates.io/crates/monty-runtime) crate
 
-See the [project README](https://github.com/pydantic/monty) for the full feature matrix, motivation, and supported Python subset.
+See the [documentation](https://pydantic.dev/docs/monty/) for the motivation, latency measurements, comparison to alternatives and the supported Python subset.
 
 ## Basic usage
 

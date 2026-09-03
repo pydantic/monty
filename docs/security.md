@@ -3,10 +3,9 @@
 Monty is designed to run code that a language model wrote and nobody reviewed.
 This page describes what that buys you and what it does not.
 
-!!! warning "Experimental"
-    Monty is still in development and has not been independently audited.
-    Treat these guarantees as design intent backed by tests, not as a certification.
-    If you find a way out of the sandbox, please [open an issue](https://github.com/pydantic/monty/issues).
+The sandbox has been run through three rounds of the [Hack Monty](https://pydantic.dev/articles/hack-monty-3) bounty
+program.
+If you find a way out of it, please [open an issue](https://github.com/pydantic/monty/issues) or claim the bounty.
 
 ## What "secure" means here
 
@@ -14,6 +13,9 @@ Monty is a **language-level sandbox**, not an OS-level one.
 There is no container, no seccomp filter and no VM.
 The isolation comes from the interpreter itself: sandboxed code cannot express an operation that touches the host,
 because the interpreter implements no such operation.
+
+!!! note
+    If you want Monty combined with OS-level isolation, see [monty-server](server.md), the commercial version of Monty.
 
 Concretely:
 
@@ -23,10 +25,9 @@ Concretely:
 - **The interpreter performs no filesystem I/O at all.** It suspends with a description of the operation it wants, and a
   host component decides what to do about it.
   All filesystem code lives in a separate crate (`monty-fs`) that worker artifacts do not even link in some builds.
-- **The dangerous modules are absent, not stubbed.** `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes`
+- **The dangerous modules are absent.** `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes`
   are not importable, and are also missing from the bundled typeshed, so [type checking](type-checking.md) rejects code
   that uses them before it runs.
-- **`eval`, `exec`, `compile`, `globals`, `locals` and `__import__` do not exist.**
 - **No FFI, no C dependencies.** Nothing in the sandbox can call into native code.
 
 ## The three host-access mechanisms
@@ -38,6 +39,24 @@ Everything the sandbox can reach outside itself goes through one of three mechan
 Names the sandbox does not define are resolved against the `external_lookup` you supply.
 A callable entry becomes a function the sandbox can call: execution suspends, **your** code runs on the host with your
 process's full authority, and execution resumes with the result.
+
+```python
+from pydantic_monty import Monty
+
+
+def get_price(sku: str) -> float:
+    return {'A1': 3.5, 'B2': 12.0}[sku]
+
+
+with Monty() as pool:
+    with pool.checkout() as session:
+        result = session.feed_run(
+            "get_price('B2') * 2", external_lookup={'get_price': get_price}
+        )
+        print(result)
+        #> 24.0
+```
+
 See [host functions](host-functions.md).
 
 Monty guarantees that the sandbox reaches nothing you did not hand it.
@@ -56,13 +75,92 @@ boolean gate that defaults to `False`; `'all'` still skips underscore-prefixed n
 exposes only the functions the class defines.
 Nothing is wrapped for you: a method that returns another object fails conversion unless a `convert_value` hook wraps
 it with a policy you chose.
+
+```python
+from dataclasses import dataclass
+
+from pydantic_monty import ClassInstance, Monty
+
+
+@dataclass
+class Account:
+    owner: str
+    balance: float
+
+    def withdraw(self, amount: float) -> float:
+        self.balance -= amount
+        return self.balance
+
+    def close(self) -> None: ...
+
+
+account = Account(owner='ada', balance=100.0)
+# the sandbox sees `owner` and `balance`, may call `withdraw`, and cannot call `close`
+wrapper = ClassInstance(
+    account, eager_attrs={'owner', 'balance'}, allowed_methods={'withdraw'}
+)
+
+with Monty() as pool:
+    with pool.checkout() as session:
+        print(session.feed_run('account.withdraw(30)', inputs={'account': wrapper}))
+        #> 70.0
+```
+
 See [host objects](host-objects.md).
 
 ### Mounts and the `os` callback
 
 Host directories are mounted into the sandbox at virtual paths, and only inside a mount can `open()` and `pathlib` do
 anything.
-A separate `os=` callback handles operations no mount covers.
+
+```python
+import tempfile
+from pathlib import Path
+
+from pydantic_monty import Monty, MountDir
+
+with tempfile.TemporaryDirectory() as tmp:
+    Path(tmp, 'notes.txt').write_text('mounted from the host')
+    mount = MountDir(host_path=tmp, virtual_path='/data', mode='read-only')
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            print(session.feed_run("open('/data/notes.txt').read()", mount=mount))
+            #> mounted from the host
+```
+
+A separate `os=` callback handles operations no mount covers: the remaining `pathlib` operations, `os.getenv`,
+`os.environ`, `date.today()` and `datetime.now()`.
+`AbstractOS` is the typed form of that callback; `OSAccess` implements it over in-memory files and an `environ` mapping
+you supply, and overriding one of its methods replaces one operation:
+
+```python
+from datetime import datetime
+
+from pydantic_monty import MemoryFile, Monty, OSAccess
+
+
+class FrozenClock(OSAccess):
+    def datetime_now(self, tz=None) -> datetime:
+        return datetime(2026, 1, 1, 9, 30, tzinfo=tz)
+
+
+fs = FrozenClock(
+    [MemoryFile('/config.json', content='{"stage": "test"}')], environ={'STAGE': 'test'}
+)
+code = """
+import json, os
+from datetime import datetime
+from pathlib import Path
+f'{os.getenv("STAGE")} {json.loads(Path("/config.json").read_text())["stage"]} {datetime.now():%H:%M}'
+"""
+
+with Monty() as pool:
+    with pool.checkout() as session:
+        print(session.feed_run(code, os=fs))
+        #> test test 09:30
+```
+
 See [filesystem access](filesystem.md).
 
 Confinement is structural rather than checked:
@@ -81,10 +179,10 @@ Confinement is structural rather than checked:
 
 ## Crash isolation
 
-A Monty process can never be made fully crash-proof against memory errors — a stack-overflow abort or an allocator abort
-takes down the process it happens in.
-The Python package and the native `@pydantic/monty` binding therefore never run the interpreter in your process: every
-session runs in a `monty` worker subprocess.
+Monty runs in a subprocess, so an unexpected memory error or panic in the interpreter cannot kill the main process;
+the same design makes it easy to run many Monty interpreters in parallel.
+The Python package and the native `@pydantic/monty` binding never run the interpreter in your process: every session
+runs in a `monty` worker subprocess.
 
 The WebAssembly build has no subprocess to use.
 In a browser it runs off-thread in a `Worker`; under Node, which has no global `Worker`, `@pydantic/monty/wasm` runs

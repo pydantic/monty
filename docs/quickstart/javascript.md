@@ -11,11 +11,19 @@ Execution happens in `monty` worker subprocesses, so a crash triggered by advers
 import { Monty } from '@pydantic/monty'
 
 await using pool = await Monty.create()
-await using session = await pool.checkout()
+await using session = await pool.checkout({ limits: { maxMemory: 10_000_000, maxDurationSecs: 1 } })
 
-console.log(await session.feedRun('1 + 2')) // 3
+const result = await session.feedRun('double(x) + y', {
+  inputs: { x: 5, y: 1 },
+  externalLookup: { double: (x: number) => x * 2 },
+})
+console.log(result) // 11
 ```
 
+`Monty.create()` spawns the pool and `pool.checkout()` dedicates one worker to one REPL session, with its resource
+limits.
+`feedRun` executes a snippet and returns the value of its trailing expression; `inputs` are values it can read and
+`externalLookup` holds the host functions it can call.
 `await using` closes the session and the pool at the end of scope.
 Without it, call `session.close()` and `pool.close()` yourself.
 
@@ -34,14 +42,6 @@ console.log(await session.feedRun('x * 2')) // 42
 `externalLookup` resolves names lazily when the sandbox reads them: a function entry becomes a [host
 function](../host-functions.md) (sync or async), any other value is converted and returned on read, and a name absent
 from the lookup raises `NameError` inside the sandbox.
-
-```ts
-const result = await session.feedRun('double(x) + y', {
-  inputs: { x: 5, y: 1 },
-  externalLookup: { double: (x: number) => x * 2 },
-})
-console.log(result) // 11
-```
 
 Host functions may be async; the drive loop awaits them:
 

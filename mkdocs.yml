@@ -1,5 +1,5 @@
 site_name: Monty
-site_description: A minimal, secure Python interpreter written in Rust for use by AI.
+site_description: A sandboxed Python interpreter, written in Rust, for code written by AI.
 
 theme:
   name: 'material'
@@ -23,11 +23,17 @@ edit_uri: ''
 
 nav:
   - Introduction: 'index.md'
-  - Installation: 'install.md'
+  - Comparison to Alternatives: 'alternatives.md'
+  - Install:
+      - Python: 'install/python.md'
+      - JavaScript: 'install/javascript.md'
+      - Rust: 'install/rust.md'
+      - Docker: 'install/docker.md'
   - QuickStart:
       - Python: 'quickstart/python.md'
       - JavaScript: 'quickstart/javascript.md'
       - Rust: 'quickstart/rust.md'
+  - Examples: 'examples.md'
   - Concepts:
       - Security Model: 'security.md'
       - Host Functions: 'host-functions.md'
@@ -56,11 +62,14 @@ nav:
 
 markdown_extensions:
   - admonition
+  - attr_list
   - tables
   - pymdownx.highlight:
       use_pygments: true
       pygments_lang_class: true
   - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
 
 # The `::: pydantic_monty` block in docs/api/python.md is expanded by
 # mkdocstrings here and by the pydantic.dev docs pipeline, which reads the
