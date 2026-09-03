@@ -1,0 +1,34 @@
+README.md
+  s_3809493f4184d8::t_5f77404bf5778a 39,70,72
+docs/quickstart/rust.md
+  s_3809493f4184d8::t_9bb87250dcad53 1,3-37
+docs/index.md
+  s_3809493f4184d8::t_c5a54c6496cc20 107-124,131
+  s_3809493f4184d8::t_5f77404bf5778a 58,144-146
+CLAUDE.md
+  s_3809493f4184d8::t_5f77404bf5778a 933
+docs/server.md
+  s_3809493f4184d8::t_5f77404bf5778a 12
+docs/quickstart/javascript.md
+  s_3809493f4184d8::t_9bb87250dcad53 1-3,10-11,14-17
+mkdocs.yml
+  s_3809493f4184d8::t_9af096c05ba51f 26-27,39-44
+docs/quickstart/python.md
+  s_3809493f4184d8::t_9bb87250dcad53 1-3,9-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8b68e4b51ed885d7f98f0bc771ff629966260b28",
+  "prompts": {},
+  "sessions": {
+    "s_3809493f4184d8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97d3703e-3617-4a65-841d-a4bcb2298d8b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
