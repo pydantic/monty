@@ -1,0 +1,35 @@
+crates/monty-apidoc/src/sig.rs
+  s_4b040862e1810d::t_8f5cc4f5a81102 35,40-53
+  s_4b040862e1810d::t_2f0440de50e8d8 12-14
+docs/install.md
+  s_4b040862e1810d::t_827e8fba79ae14 107-108
+docs/api/rust/monty-proto.md
+  s_4b040862e1810d::t_23b9ae32b7cf2a 1-1936
+crates/monty-apidoc/src/render.rs
+  s_4b040862e1810d::t_b34cd4551028ec 51-53,60-64,66-67
+crates/monty-apidoc/src/main.rs
+  s_4b040862e1810d::t_2103c68a2c983c 75
+  s_4b040862e1810d::t_e2fe3639b6ed61 40-46,60-72
+mkdocs.yml
+  s_4b040862e1810d::t_4c26dfefc647db 48,51-52
+docs/api/rust/monty-pool.md
+  s_4b040862e1810d::t_23b9ae32b7cf2a 150,680-681
+docs/api/rust/monty-type-checking.md
+  s_4b040862e1810d::t_23b9ae32b7cf2a 1-88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a409acce656cd9eacee25c97d768c2b740bba527",
+  "prompts": {},
+  "sessions": {
+    "s_4b040862e1810d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a9524baf-ade1-427c-b08f-5a5595b03325",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
