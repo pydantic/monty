@@ -1,13 +1,14 @@
 //! Public interface for running Monty code.
 use std::{
     mem,
+    ops::ControlFlow,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
 };
 
-pub use monty_types::CompileOptions;
+pub use monty_types::{CompileOptions, HostClock};
 use monty_types::{ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker};
 use ruff_python_stdlib::identifiers::is_identifier;
 
@@ -84,6 +85,44 @@ impl MontyRun {
     #[must_use]
     pub fn code(&self) -> &str {
         &self.executor.code
+    }
+
+    /// Chooses what `date.today()` and `datetime.now()` read, replacing the
+    /// [`System`](HostClock::System) clock a runner starts with.
+    ///
+    /// Only [`run`](Self::run) and [`run_no_limits`](Self::run_no_limits)
+    /// consult it: they have no host to suspend to. Under
+    /// [`start`](Self::start) the host answers both calls itself, so a clock
+    /// set here is ignored.
+    ///
+    /// Reading the wall clock is a capability, weak but real — it is what makes
+    /// elapsed time measurable from inside the sandbox, and it discloses the
+    /// host's UTC offset. [`Denied`](HostClock::Denied) takes it away;
+    /// [`Fixed`](HostClock::Fixed) freezes an instant, for runs that have to be
+    /// reproducible.
+    ///
+    /// ```
+    /// use monty::MontyRun;
+    /// use monty_types::{CompileOptions, HostClock, MontyObject};
+    ///
+    /// let runner = MontyRun::new(
+    ///     "from datetime import date\ndate.today().year".to_owned(),
+    ///     "today.py",
+    ///     vec![],
+    ///     CompileOptions::default(),
+    /// )
+    /// .unwrap()
+    /// .with_host_clock(HostClock::Fixed {
+    ///     unix_seconds: 1_700_000_000,
+    ///     microsecond: 0,
+    ///     local_offset_seconds: 0,
+    /// });
+    /// assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::Int(2023));
+    /// ```
+    #[must_use]
+    pub fn with_host_clock(mut self, clock: HostClock) -> Self {
+        self.executor = self.executor.with_clock(clock);
+        self
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
@@ -211,6 +250,14 @@ pub(crate) struct Executor {
     /// UTF-8 byte cap for each operand repr in introspected assert messages.
     /// Stored with the compiled program and passed to every VM.
     pub(crate) assert_repr_max_bytes: u32,
+    /// Clock serving `date.today()` / `datetime.now()` on the non-suspending
+    /// path; `System` unless the embedder chose otherwise. The serde default
+    /// matches the constructors, so a host serializing this in a
+    /// self-describing format that omits the field gets the same clock a fresh
+    /// runner has; dumps are postcard, so adding this field bumped
+    /// `DUMP_VERSION`.
+    #[serde(default = "default_clock")]
+    pub(crate) clock: HostClock,
     /// Estimated heap capacity for pre-allocation on subsequent runs.
     /// Uses AtomicUsize for thread-safety (required by PyO3's Sync bound).
     heap_capacity: AtomicUsize,
@@ -225,6 +272,7 @@ impl Clone for Executor {
             code: self.code.clone(),
             input_slots: self.input_slots.clone(),
             assert_repr_max_bytes: self.assert_repr_max_bytes,
+            clock: self.clock,
             heap_capacity: AtomicUsize::new(self.heap_capacity.load(Ordering::Relaxed)),
         }
     }
@@ -263,6 +311,7 @@ impl Executor {
             code,
             input_slots: Vec::new(),
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            clock: default_clock(),
             heap_capacity: AtomicUsize::new(namespace_size),
         })
     }
@@ -271,6 +320,13 @@ impl Executor {
     #[inline]
     pub(crate) fn namespace_size(&self) -> usize {
         self.globals.len()
+    }
+
+    /// Replaces the clock serving `date.today()` / `datetime.now()`, so a
+    /// REPL snippet runs under its session's clock rather than the default.
+    pub(crate) fn with_clock(mut self, clock: HostClock) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Compiles one REPL snippet against the session's compiler tables.
@@ -327,6 +383,8 @@ impl Executor {
             code,
             input_slots,
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            // overwritten by `with_clock` from the owning `MontyRepl`
+            clock: HostClock::Denied,
             heap_capacity: AtomicUsize::new(0),
         })
     }
@@ -392,6 +450,8 @@ impl Executor {
             code,
             input_slots: vec![args_slot],
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            // overwritten by `with_clock` from the owning `MontyRepl`
+            clock: HostClock::Denied,
             heap_capacity: AtomicUsize::new(0),
         })
     }
@@ -443,8 +503,9 @@ impl Executor {
     ///
     /// Executes [`VM::run_module`], then answers the lookup and `ExternalCall`
     /// exits no host will serve by raising `NameError` / `AttributeError`
-    /// through the VM so tracebacks are properly captured. Finally converts
-    /// the result via [`frame_exit_to_object`].
+    /// through the VM so tracebacks are properly captured, and answers the
+    /// clock OS calls from [`Executor::clock`]. Finally converts the result via
+    /// [`frame_exit_to_object`].
     ///
     /// This is the shared non-iterative execution core used by both the standard
     /// `run` path and the REPL's `feed_run` path.
@@ -474,8 +535,48 @@ impl Executor {
                     let err = ExcType::name_error(name);
                     frame_exit_result = vm.resume_with_exception(err.into());
                 }
-                other => return frame_exit_to_object(other, vm),
+                // `date.today()` / `datetime.now()` with a clock granted are
+                // answered in-process; every other exit converts as before.
+                Ok(exit) => match self.resolve_clock_call(vm, exit) {
+                    ControlFlow::Continue(resumed) => frame_exit_result = resumed,
+                    ControlFlow::Break(exit) => return frame_exit_to_object(Ok(exit), vm),
+                },
+                err => return frame_exit_to_object(err, vm),
             }
+        }
+    }
+
+    /// Answers `date.today()` / `datetime.now()` from [`Executor::clock`], for
+    /// the execution paths that have no host loop to suspend to.
+    ///
+    /// `Continue` carries the exit the VM reached after the time was resumed
+    /// into it; `Break` hands the exit straight back, which is every OS call
+    /// the clock does not serve — including a clock call carrying a
+    /// `PendingOsEffect`, which these two never do. Callers keep their own
+    /// handling of the exits they get back, which differs between `run` and
+    /// `MontyRepl::call_function`.
+    pub(crate) fn resolve_clock_call(
+        &self,
+        vm: &mut VM<'_>,
+        exit: FrameExit,
+    ) -> ControlFlow<FrameExit, RunResult<FrameExit>> {
+        match exit {
+            FrameExit::OsCall {
+                function_call,
+                call_id,
+                effect: None,
+            } => match self.clock.resolve(&function_call) {
+                Some(result) => {
+                    function_call.drop_with(vm);
+                    ControlFlow::Continue(vm.resume(result))
+                }
+                None => ControlFlow::Break(FrameExit::OsCall {
+                    function_call,
+                    call_id,
+                    effect: None,
+                }),
+            },
+            other => ControlFlow::Break(other),
         }
     }
 
@@ -607,6 +708,17 @@ impl Executor {
         }
         Ok(())
     }
+}
+
+/// The clock a runner or REPL session starts with: the host's own.
+///
+/// Standard execution has no host loop to ask, so denying it by default would
+/// make ordinary date-handling scripts raise — which is the whole of
+/// [#330](https://github.com/pydantic/monty/issues/330). Embedders that do not
+/// want sandboxed code reading their wall clock pass
+/// [`HostClock::Denied`](monty_types::HostClock::Denied) explicitly.
+pub(crate) fn default_clock() -> HostClock {
+    HostClock::System
 }
 
 /// Converts module/frame exit results into plain `MontyObject` outputs.
