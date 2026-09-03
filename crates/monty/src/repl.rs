@@ -33,8 +33,8 @@ use crate::{
 
 /// Stateful REPL session that executes snippets incrementally without replay.
 ///
-/// `MontyRepl` preserves heap and global variable state between snippets.
-/// Each `feed()` compiles and executes only the new snippet against the current
+/// [`MontyRepl`] preserves heap and global variable state between snippets.
+/// Each [`feed_run`](Self::feed_run) or [`feed_start`](Self::feed_start) call compiles and executes only the new snippet against the current
 /// state, avoiding the cost and semantic risks of replaying prior code.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct MontyRepl {
@@ -76,8 +76,8 @@ pub struct MontyRepl {
 impl MontyRepl {
     /// Creates an empty REPL session with no code parsed or executed.
     ///
-    /// All code execution is driven through `feed_run()` or `feed_start()`. This separates
-    /// construction from execution, matching the pattern used by `MontyRun::new()`.
+    /// All code execution is driven through [`feed_run`](Self::feed_run) or [`feed_start`](Self::feed_start). This separates
+    /// construction from execution, matching the pattern used by [`MontyRun::new`](crate::MontyRun::new).
     /// The [`CompileOptions`] apply to every snippet fed to the session.
     #[must_use]
     pub fn new(script_name: &str, resource_tracker: ResourceTracker, options: CompileOptions) -> Self {
@@ -117,7 +117,7 @@ impl MontyRepl {
     /// Returns mutable access to the resource tracker for the next snippet.
     ///
     /// REPL hosts use this to install ephemeral execution controls, such as
-    /// async cancellation flags, before calling `feed_start()`.
+    /// async cancellation flags, before calling [`feed_start`](Self::feed_start).
     pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
         &mut self.heap.tracker
     }
@@ -132,20 +132,20 @@ impl MontyRepl {
 
     /// Starts executing a new snippet and returns suspendable REPL progress.
     ///
-    /// This is the REPL equivalent of `MontyRun::start`: execution may complete,
+    /// This is the REPL equivalent of [`MontyRun::start`](crate::MontyRun::start): execution may complete,
     /// suspend at external calls / OS calls / unresolved futures, or raise a Python
     /// exception. Resume with the returned state object and eventually recover the
-    /// updated REPL from `ReplProgress::into_complete`.
+    /// updated REPL from [`ReplProgress::into_complete`].
     ///
-    /// Unlike `MontyRepl::feed`, this method consumes `self` so runtime state can be
+    /// Unlike [`MontyRepl::feed_run`], this method consumes `self` so runtime state can be
     /// safely moved into snapshot objects for serialization and cross-process resume.
     ///
     /// On a Python-level runtime exception the REPL is **not** destroyed: it is
-    /// returned inside `ReplStartError` so the caller can continue feeding
+    /// returned inside [`ReplStartError`] so the caller can continue feeding
     /// subsequent snippets against the same heap and namespace state.
     ///
     /// # Errors
-    /// Returns `Err(Box<ReplStartError>)` for syntax, compile-time, or runtime
+    /// Returns a boxed [`ReplStartError`] for syntax, compile-time, or runtime
     /// failures — the REPL session is always preserved inside the error.
     pub fn feed_start(
         self,
@@ -222,7 +222,7 @@ impl MontyRepl {
     /// matching Python REPL semantics.
     ///
     /// # Errors
-    /// Returns `MontyException` for syntax/compile/runtime failures.
+    /// Returns [`MontyException`] for syntax/compile/runtime failures.
     pub fn feed_run(
         &mut self,
         code: &str,
@@ -296,7 +296,7 @@ impl MontyRepl {
     /// call expression so failures include a visible host call site.
     ///
     /// # Errors
-    /// Returns `MontyException` if the function is not found, not callable,
+    /// Returns [`MontyException`] if the function is not found, not callable,
     /// raises an exception, or encounters an external function call.
     pub fn call_function(
         &mut self,
@@ -455,9 +455,9 @@ impl Drop for MontyRepl {
 
 /// Result of a single suspendable REPL snippet execution.
 ///
-/// This mirrors `RunProgress` but returns the updated `MontyRepl` on completion
+/// This mirrors [`RunProgress`](crate::RunProgress) but returns the updated [`MontyRepl`] on completion
 /// so callers can continue feeding additional snippets without replaying prior code.
-/// Each variant (except `Complete`) wraps a dedicated struct with only the relevant
+/// Each variant (except [`Complete`](Self::Complete)) wraps a dedicated struct with only the relevant
 /// resume methods.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum ReplProgress {
@@ -478,7 +478,7 @@ pub enum ReplProgress {
     },
 }
 
-/// Error returned when a REPL snippet raises a Python exception during `start()` or `resume()`.
+/// Error returned when a REPL snippet raises a Python exception during [`feed_start`](MontyRepl::feed_start) or a `resume()`.
 ///
 /// Unlike syntax/compile errors which consume the REPL, runtime errors preserve
 /// the full session state so the caller can inspect the error and continue feeding
@@ -493,7 +493,7 @@ pub struct ReplStartError {
 }
 
 impl ReplProgress {
-    /// Consumes the progress and returns the `ReplFunctionCall` struct.
+    /// Consumes the progress and returns the [`ReplFunctionCall`] struct.
     #[must_use]
     pub fn into_function_call(self) -> Option<ReplFunctionCall> {
         match self {
@@ -502,7 +502,7 @@ impl ReplProgress {
         }
     }
 
-    /// Consumes the progress and returns the `ReplResolveFutures` struct.
+    /// Consumes the progress and returns the [`ReplResolveFutures`] struct.
     #[must_use]
     pub fn into_resolve_futures(self) -> Option<ReplResolveFutures> {
         match self {
@@ -511,7 +511,7 @@ impl ReplProgress {
         }
     }
 
-    /// Consumes the progress and returns the `ReplNameLookup` struct.
+    /// Consumes the progress and returns the [`ReplNameLookup`] struct.
     #[must_use]
     pub fn into_name_lookup(self) -> Option<ReplNameLookup> {
         match self {
@@ -533,7 +533,7 @@ impl ReplProgress {
     /// the in-flight execution state.
     ///
     /// Use this to recover the REPL when you need to abandon the current
-    /// snippet (e.g. because `feed_run` doesn't support async futures).
+    /// snippet (e.g. because [`feed_run`](MontyRepl::feed_run) doesn't support async futures).
     /// The REPL state reflects any mutations that occurred before the
     /// snapshot was taken.
     #[must_use]
@@ -569,8 +569,8 @@ impl ReplProgress {
 
 /// REPL execution paused at an external function call or host-class method call.
 ///
-/// Resume with `resume(result, print)` to provide the return value and continue,
-/// or `resume_pending(print)` to push an `ExternalFuture` for async resolution.
+/// Resume with [`resume`](Self::resume) to provide the return value and continue,
+/// or [`resume_pending`](Self::resume_pending) to push an `ExternalFuture` for async resolution.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ReplFunctionCall {
     /// The name of the function or method being called.
@@ -672,8 +672,8 @@ impl ReplOsCall {
 /// host-backed object (a class instance or class type).
 ///
 /// The host should check if the name corresponds to a known external function,
-/// value, or instance attribute. Call `resume(result, print)` with the
-/// appropriate `NameLookupResult`. The namespace slot and scope are managed
+/// value, or instance attribute. Call [`resume`](Self::resume) with the
+/// appropriate [`NameLookupResult`]. The namespace slot and scope are managed
 /// internally.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ReplNameLookup {
@@ -754,7 +754,7 @@ impl ReplNameLookup {
 
 /// REPL execution state blocked on unresolved external futures.
 ///
-/// This is the REPL-aware counterpart to `ResolveFutures`.
+/// This is the REPL-aware counterpart to [`ResolveFutures`](crate::ResolveFutures).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ReplResolveFutures {
     /// Persistent REPL session state while this snippet is suspended.
@@ -794,7 +794,7 @@ impl ReplResolveFutures {
     /// pending call IDs and continue resolving over multiple resumes.
     ///
     /// All errors — including API misuse (unknown `call_id`) and Python-level
-    /// runtime failures — are returned as `Err(Box<ReplStartError>)` so the REPL
+    /// runtime failures — are returned as a boxed [`ReplStartError`] so the REPL
     /// session is always preserved.
     pub fn resume(
         self,

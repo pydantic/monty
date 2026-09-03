@@ -86,6 +86,8 @@ Implements: `Debug`, `Display`, `Error`.
 pub fn exceeds_max_value_depth(value: &monty_types::MontyObject) -> bool;
 ```
 
+<div class="rust-decl-links" data-links="monty_types::MontyObject ../monty-types/#montyobject" hidden></div>
+
 Whether `value` nests too deeply to decode inside a wire frame.
 
 Charges each node's exact proto-level cost (scalars one, list-likes two,
@@ -97,8 +99,12 @@ iteratively).
 ## future_results_from_proto
 
 ```rust
-pub fn future_results_from_proto(results: Vec<pb::FutureResult>) -> Result<Vec<(u32, monty_types::ExtFunctionResult)>, ProtoConvertError>;
+pub fn future_results_from_proto(
+    results: Vec<pb::FutureResult>,
+) -> Result<Vec<(u32, monty_types::ExtFunctionResult)>, ProtoConvertError>;
 ```
+
+<div class="rust-decl-links" data-links="pb::FutureResult #futureresult;monty_types::ExtFunctionResult ../monty-types/#extfunctionresult;ProtoConvertError #protoconverterror" hidden></div>
 
 Converts wire future results into `(call_id, result)` pairs for
 `ResolveFutures::resume`.
@@ -176,6 +182,8 @@ Wraps a byte stream with a custom maximum frame length.
 pub fn read<M: Message + Default>(&mut self) -> Result<Option<M>, FrameError>
 ```
 
+<div class="rust-decl-links" data-links="FrameError #frameerror" hidden></div>
+
 Reads one frame and decodes it as `M`.
 
 Returns `Ok(None)` on a clean EOF at a frame boundary (the peer closed
@@ -201,6 +209,8 @@ prefix cannot trigger a multi-gigabyte allocation in the receiver.
 pub fn decode_frame<M: Message + Default>(bytes: &[u8]) -> Result<M, FrameError>;
 ```
 
+<div class="rust-decl-links" data-links="FrameError #frameerror" hidden></div>
+
 Decodes one already-deframed message from `bytes`.
 
 The message-oriented counterpart to one [`FrameReader::read`](#framereader): a transport
@@ -214,6 +224,8 @@ host-memory bound as the length-prefixed reader, and rejects payloads over
 ```rust
 pub fn encode_framed_into(msg: &impl Message, buf: &mut Vec<u8>) -> Result<(), FrameError>;
 ```
+
+<div class="rust-decl-links" data-links="FrameError #frameerror" hidden></div>
 
 Encodes `msg` as one length-prefixed frame — prefix and body in a single
 buffer — into `buf` (cleared first), enforcing [`MAX_FRAME_LEN`](#max_frame_len) *before*
@@ -229,6 +241,8 @@ one allocation across frames.
 ```rust
 pub fn encode_to_capped_vec(msg: &impl Message) -> Result<Vec<u8>, FrameError>;
 ```
+
+<div class="rust-decl-links" data-links="FrameError #frameerror" hidden></div>
 
 Encodes `msg` to a `Vec<u8>`, enforcing [`MAX_FRAME_LEN`](#max_frame_len) *before* encoding
 (so a >256 MiB message is rejected without allocating it).
@@ -257,6 +271,8 @@ a child about to enter one — check it with this first.
 ```rust
 pub fn write_frame(writer: &mut impl Write, msg: &impl Message) -> Result<(), FrameError>;
 ```
+
+<div class="rust-decl-links" data-links="FrameError #frameerror" hidden></div>
 
 Encodes `msg` and writes it to `writer` as one length-prefixed frame, then
 flushes (see the module docs for why flushing every frame is required).
@@ -288,6 +304,8 @@ pub enum Kind {
 }
 ```
 
+<div class="rust-decl-links" data-links="super::UnicodeErrorData #unicodeerrordata;super::JsonErrorData #jsonerrordata" hidden></div>
+
 ##### encode
 
 ```rust
@@ -299,7 +317,13 @@ Encodes the message to a buffer.
 ##### merge
 
 ```rust
-pub fn merge(field: &mut ::core::option::Option<Kind>, tag: u32, wire_type: ::prost::encoding::wire_type::WireType, buf: &mut impl ::prost::bytes::Buf, ctx: ::prost::encoding::DecodeContext) -> ::core::result::Result<(), ::prost::DecodeError>
+pub fn merge(
+    field: &mut ::core::option::Option<Kind>,
+    tag: u32,
+    wire_type: ::prost::encoding::wire_type::WireType,
+    buf: &mut impl ::prost::bytes::Buf,
+    ctx: ::prost::encoding::DecodeContext,
+) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
 
 Decodes an instance of the message from a buffer, and merges it into self.
@@ -344,7 +368,13 @@ Encodes the message to a buffer.
 ##### merge
 
 ```rust
-pub fn merge(field: &mut ::core::option::Option<Object>, tag: u32, wire_type: ::prost::encoding::wire_type::WireType, buf: &mut impl ::prost::bytes::Buf, ctx: ::prost::encoding::DecodeContext) -> ::core::result::Result<(), ::prost::DecodeError>
+pub fn merge(
+    field: &mut ::core::option::Option<Object>,
+    tag: u32,
+    wire_type: ::prost::encoding::wire_type::WireType,
+    buf: &mut impl ::prost::bytes::Buf,
+    ctx: ::prost::encoding::DecodeContext,
+) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
 
 Decodes an instance of the message from a buffer, and merges it into self.
@@ -388,6 +418,8 @@ pub enum Kind {
 }
 ```
 
+<div class="rust-decl-links" data-links="WireObject #wireobject;super::RaisedException #raisedexception;super::Unit #unit" hidden></div>
+
 ##### encode
 
 ```rust
@@ -399,7 +431,13 @@ Encodes the message to a buffer.
 ##### merge
 
 ```rust
-pub fn merge(field: &mut ::core::option::Option<Kind>, tag: u32, wire_type: ::prost::encoding::wire_type::WireType, buf: &mut impl ::prost::bytes::Buf, ctx: ::prost::encoding::DecodeContext) -> ::core::result::Result<(), ::prost::DecodeError>
+pub fn merge(
+    field: &mut ::core::option::Option<Kind>,
+    tag: u32,
+    wire_type: ::prost::encoding::wire_type::WireType,
+    buf: &mut impl ::prost::bytes::Buf,
+    ctx: ::prost::encoding::DecodeContext,
+) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
 
 Decodes an instance of the message from a buffer, and merges it into self.
@@ -439,6 +477,8 @@ pub enum Kind {
 }
 ```
 
+<div class="rust-decl-links" data-links="super::Configure #configure;super::InstallDependencies #installdependencies;super::Feed #feed;super::ResumeCall #resumecall;super::ResumeNameLookup #resumenamelookup;super::ResumeFutures #resumefutures;super::Dump #dump;super::Load #load;super::Reset #reset;super::Shutdown #shutdown" hidden></div>
+
 ##### encode
 
 ```rust
@@ -450,7 +490,13 @@ Encodes the message to a buffer.
 ##### merge
 
 ```rust
-pub fn merge(field: &mut ::core::option::Option<Kind>, tag: u32, wire_type: ::prost::encoding::wire_type::WireType, buf: &mut impl ::prost::bytes::Buf, ctx: ::prost::encoding::DecodeContext) -> ::core::result::Result<(), ::prost::DecodeError>
+pub fn merge(
+    field: &mut ::core::option::Option<Kind>,
+    tag: u32,
+    wire_type: ::prost::encoding::wire_type::WireType,
+    buf: &mut impl ::prost::bytes::Buf,
+    ctx: ::prost::encoding::DecodeContext,
+) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
 
 Decodes an instance of the message from a buffer, and merges it into self.
@@ -484,6 +530,8 @@ pub enum Kind {
 }
 ```
 
+<div class="rust-decl-links" data-links="WireObject #wireobject;super::Unit #unit" hidden></div>
+
 ##### encode
 
 ```rust
@@ -495,7 +543,13 @@ Encodes the message to a buffer.
 ##### merge
 
 ```rust
-pub fn merge(field: &mut ::core::option::Option<Kind>, tag: u32, wire_type: ::prost::encoding::wire_type::WireType, buf: &mut impl ::prost::bytes::Buf, ctx: ::prost::encoding::DecodeContext) -> ::core::result::Result<(), ::prost::DecodeError>
+pub fn merge(
+    field: &mut ::core::option::Option<Kind>,
+    tag: u32,
+    wire_type: ::prost::encoding::wire_type::WireType,
+    buf: &mut impl ::prost::bytes::Buf,
+    ctx: ::prost::encoding::DecodeContext,
+) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
 
 Decodes an instance of the message from a buffer, and merges it into self.
@@ -537,6 +591,8 @@ pub enum Kind {
 }
 ```
 
+<div class="rust-decl-links" data-links="super::Print #print;WireFunctionCall #wirefunctioncall;super::OsCall #oscall;super::NameLookup #namelookup;super::ResolveFutures #resolvefutures;super::Complete #complete;super::Error #error;super::TypingError #typingerror;super::DumpResult #dumpresult;super::Ok #ok;super::FatalError #fatalerror;super::ShutdownDump #shutdowndump" hidden></div>
+
 ##### encode
 
 ```rust
@@ -548,7 +604,13 @@ Encodes the message to a buffer.
 ##### merge
 
 ```rust
-pub fn merge(field: &mut ::core::option::Option<Kind>, tag: u32, wire_type: ::prost::encoding::wire_type::WireType, buf: &mut impl ::prost::bytes::Buf, ctx: ::prost::encoding::DecodeContext) -> ::core::result::Result<(), ::prost::DecodeError>
+pub fn merge(
+    field: &mut ::core::option::Option<Kind>,
+    tag: u32,
+    wire_type: ::prost::encoding::wire_type::WireType,
+    buf: &mut impl ::prost::bytes::Buf,
+    ctx: ::prost::encoding::DecodeContext,
+) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
 
 Decodes an instance of the message from a buffer, and merges it into self.
@@ -637,6 +699,8 @@ pub struct Getenv {
 }
 ```
 
+<div class="rust-decl-links" data-links="WireObject #wireobject" hidden></div>
+
 os.getenv(key, default) — `default` may be any Python value.
 
 Implements: `Clone`, `Debug`, `Default`, `Message`, `PartialEq`, `StructuralPartialEq`.
@@ -649,6 +713,8 @@ pub struct DateTimeNow {
     pub tz: ::core::option::Option<super::TimeZone>,
 }
 ```
+
+<div class="rust-decl-links" data-links="super::TimeZone #timezone" hidden></div>
 
 datetime.now(tz) — the VM validates the argument to None-or-timezone
 before suspending, so the wire carries a typed TimeZone rather than an
@@ -712,6 +778,8 @@ pub enum Call {
 }
 ```
 
+<div class="rust-decl-links" data-links="super::Unit #unit" hidden></div>
+
 ##### encode
 
 ```rust
@@ -723,7 +791,13 @@ Encodes the message to a buffer.
 ##### merge
 
 ```rust
-pub fn merge(field: &mut ::core::option::Option<Call>, tag: u32, wire_type: ::prost::encoding::wire_type::WireType, buf: &mut impl ::prost::bytes::Buf, ctx: ::prost::encoding::DecodeContext) -> ::core::result::Result<(), ::prost::DecodeError>
+pub fn merge(
+    field: &mut ::core::option::Option<Call>,
+    tag: u32,
+    wire_type: ::prost::encoding::wire_type::WireType,
+    buf: &mut impl ::prost::bytes::Buf,
+    ctx: ::prost::encoding::DecodeContext,
+) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
 
 Decodes an instance of the message from a buffer, and merges it into self.
@@ -758,6 +832,8 @@ pub struct ObjectList {
 }
 ```
 
+<div class="rust-decl-links" data-links="WireObject #wireobject" hidden></div>
+
 Implements: `Clone`, `Debug`, `Default`, `Message`, `PartialEq`, `StructuralPartialEq`.
 
 ### Pair
@@ -768,6 +844,8 @@ pub struct Pair {
     pub value: ::core::option::Option<WireObject>,
 }
 ```
+
+<div class="rust-decl-links" data-links="WireObject #wireobject" hidden></div>
 
 One key/value entry. Used for dicts and kwargs: proto maps cannot have
 message keys and do not preserve order, while Python dicts allow arbitrary
@@ -782,6 +860,8 @@ pub struct Dict {
     pub pairs: ::prost::alloc::vec::Vec<Pair>,
 }
 ```
+
+<div class="rust-decl-links" data-links="Pair #pair" hidden></div>
 
 Implements: `Clone`, `Debug`, `Default`, `Message`, `PartialEq`, `StructuralPartialEq`.
 
@@ -810,6 +890,8 @@ pub struct NamedTuple {
     pub values: ::prost::alloc::vec::Vec<WireObject>,
 }
 ```
+
+<div class="rust-decl-links" data-links="WireObject #wireobject" hidden></div>
 
 Implements: `Clone`, `Debug`, `Default`, `Message`, `PartialEq`, `StructuralPartialEq`.
 
@@ -991,6 +1073,8 @@ pub struct Dataclass {
 }
 ```
 
+<div class="rust-decl-links" data-links="Dict #dict" hidden></div>
+
 Implements: `Clone`, `Debug`, `Default`, `Message`, `PartialEq`, `StructuralPartialEq`.
 
 ### Function
@@ -1044,6 +1128,8 @@ pub struct RaisedException {
     pub data: ::core::option::Option<ExcData>,
 }
 ```
+
+<div class="rust-decl-links" data-links="StackFrame #stackframe;ExcData #excdata" hidden></div>
 
 A raised Python exception with its traceback. Mirrors monty's
 `MontyException`.
@@ -1159,6 +1245,8 @@ pub struct StackFrame {
 }
 ```
 
+<div class="rust-decl-links" data-links="CodeLoc #codeloc" hidden></div>
+
 #### frame_name
 
 ```rust
@@ -1249,6 +1337,8 @@ pub struct FutureResult {
 }
 ```
 
+<div class="rust-decl-links" data-links="ExtFunctionResult #extfunctionresult" hidden></div>
+
 Implements: `Clone`, `Debug`, `Default`, `Message`, `PartialEq`, `StructuralPartialEq`.
 
 ### NamedValue
@@ -1259,6 +1349,8 @@ pub struct NamedValue {
     pub value: ::core::option::Option<WireObject>,
 }
 ```
+
+<div class="rust-decl-links" data-links="WireObject #wireobject" hidden></div>
 
 Implements: `Clone`, `Debug`, `Default`, `Message`, `PartialEq`, `StructuralPartialEq`.
 
@@ -1332,6 +1424,8 @@ pub struct Configure {
 }
 ```
 
+<div class="rust-decl-links" data-links="ResourceLimits #resourcelimits" hidden></div>
+
 Configures the REPL session this child will serve until `Reset`, sent once
 when the worker is checked out. The session's repl is materialized lazily on
 the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
@@ -1360,6 +1454,8 @@ Returns the value of `assert_message_annotations`, or the default value if `asse
 pub fn type_check_format(&self) -> TypeCheckFormat
 ```
 
+<div class="rust-decl-links" data-links="TypeCheckFormat #typecheckformat" hidden></div>
+
 Returns the enum value of `type_check_format`, or the default if the field is set to an invalid enum value.
 
 #### set_type_check_format
@@ -1367,6 +1463,8 @@ Returns the enum value of `type_check_format`, or the default if the field is se
 ```rust
 pub fn set_type_check_format(&mut self, value: TypeCheckFormat)
 ```
+
+<div class="rust-decl-links" data-links="TypeCheckFormat #typecheckformat" hidden></div>
 
 Sets `type_check_format` to the provided enum value.
 
@@ -1383,6 +1481,8 @@ pub struct Feed {
 }
 ```
 
+<div class="rust-decl-links" data-links="NamedValue #namedvalue" hidden></div>
+
 Executes one snippet against the session. Turn ends with `Complete`,
 `Error`, `TypingError`, or a suspension event.
 
@@ -1396,6 +1496,8 @@ pub struct ResumeCall {
     pub result: ::core::option::Option<ExtFunctionResult>,
 }
 ```
+
+<div class="rust-decl-links" data-links="ExtFunctionResult #extfunctionresult" hidden></div>
 
 Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the
 suspension event.
@@ -1421,6 +1523,8 @@ pub struct ResumeFutures {
     pub results: ::prost::alloc::vec::Vec<FutureResult>,
 }
 ```
+
+<div class="rust-decl-links" data-links="FutureResult #futureresult" hidden></div>
 
 Answers a `ResolveFutures` suspension with results for some or all pending
 call ids.
@@ -1566,6 +1670,8 @@ turn-ending event; text is flushed at line granularity.
 pub fn stream(&self) -> PrintStream
 ```
 
+<div class="rust-decl-links" data-links="PrintStream #printstream" hidden></div>
+
 Returns the enum value of `stream`, or the default if the field is set to an invalid enum value.
 
 #### set_stream
@@ -1573,6 +1679,8 @@ Returns the enum value of `stream`, or the default if the field is set to an inv
 ```rust
 pub fn set_stream(&mut self, value: PrintStream)
 ```
+
+<div class="rust-decl-links" data-links="PrintStream #printstream" hidden></div>
 
 Sets `stream` to the provided enum value.
 
@@ -1635,6 +1743,8 @@ pub struct Complete {
 }
 ```
 
+<div class="rust-decl-links" data-links="WireObject #wireobject" hidden></div>
+
 Turn end: the snippet completed with this value. The session is ready for
 the next `Feed`.
 
@@ -1647,6 +1757,8 @@ pub struct Error {
     pub exception: ::core::option::Option<RaisedException>,
 }
 ```
+
+<div class="rust-decl-links" data-links="RaisedException #raisedexception" hidden></div>
 
 Turn end: the snippet (or request) failed with a Python exception. The
 session survives — prior globals remain available to later feeds.
@@ -1769,6 +1881,8 @@ Returns `true` if `value` is a variant of `TypeCheckFormat`.
 pub fn from_i32(value: i32) -> ::core::option::Option<TypeCheckFormat>
 ```
 
+<div class="rust-decl-links" data-links="TypeCheckFormat #typecheckformat" hidden></div>
+
 **Deprecated.** Use the TryFrom<i32> implementation instead
 
 Converts an `i32` to a `TypeCheckFormat`, or `None` if `value` is not a valid variant.
@@ -1817,6 +1931,8 @@ Returns `true` if `value` is a variant of `PrintStream`.
 ```rust
 pub fn from_i32(value: i32) -> ::core::option::Option<PrintStream>
 ```
+
+<div class="rust-decl-links" data-links="PrintStream #printstream" hidden></div>
 
 **Deprecated.** Use the TryFrom<i32> implementation instead
 
@@ -1874,6 +1990,8 @@ pub struct WireFunctionCall {
 }
 ```
 
+<div class="rust-decl-links" data-links="monty_types::MontyObject ../monty-types/#montyobject" hidden></div>
+
 Wire form of `monty.v1.FunctionCall` that decodes arguments directly into
 `MontyObject`s.
 
@@ -1891,6 +2009,8 @@ Implements: `Clone`, `Debug`, `Default`, `Message`, `PartialEq`, `StructuralPart
 pub struct WireObject(pub Option<monty_types::MontyObject>);
 ```
 
+<div class="rust-decl-links" data-links="monty_types::MontyObject ../monty-types/#montyobject" hidden></div>
+
 The wire form of a [`MontyObject`](monty-types.md#montyobject): what the `monty.v1.MontyObject` proto
 message decodes into and encodes from.
 
@@ -1904,6 +2024,8 @@ receivers reject it via [`Self::into_object`](#wireobject), exactly like prost's
 pub fn new(obj: MontyObject) -> Self
 ```
 
+<div class="rust-decl-links" data-links="MontyObject ../monty-types/#montyobject" hidden></div>
+
 Wraps a value for sending. Equivalent to `From`, named for call sites
 where `.into()` would be unclear.
 
@@ -1912,6 +2034,8 @@ where `.into()` would be unclear.
 ```rust
 pub fn into_object(self) -> Result<MontyObject, ProtoConvertError>
 ```
+
+<div class="rust-decl-links" data-links="MontyObject ../monty-types/#montyobject;ProtoConvertError #protoconverterror" hidden></div>
 
 Unwraps the decoded value, rejecting an absent `kind` oneof.
 

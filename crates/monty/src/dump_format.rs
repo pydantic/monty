@@ -25,7 +25,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// Bump this whenever a serialized discriminant can shift, so older dumps are
 /// rejected instead of decoding as their neighbour. That covers the
 /// interpreter's own types *and* everything reachable from [`Dump`] — notably
-/// `TypeCheckingConfig` in `monty-types`.
+/// [`TypeCheckingConfig`](monty_types::TypeCheckingConfig) in `monty-types`.
 pub const DUMP_VERSION: u16 = 8;
 
 /// Number of bytes before the postcard payload.

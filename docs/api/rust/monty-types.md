@@ -26,10 +26,12 @@ pub trait ToArgs {
 }
 ```
 
-Projects a typed args struct into the `(positional, keyword)` `MontyObject`
+<div class="rust-decl-links" data-links="MontyObject #montyobject" hidden></div>
+
+Projects a typed args struct into the `(positional, keyword)` [`MontyObject`](#montyobject)
 pair host callbacks expect. Consumes `self` to avoid cloning owned fields.
 
-Inverse of `monty`'s internal `FromArgs` (`ArgValues` → struct); `ToArgs`
+Inverse of `monty`'s internal `FromArgs` (`ArgValues` → struct); [`ToArgs`](#toargs)
 is struct → host-facing `(args, kwargs)`. Driven by
 [`os::OsFunctionCall::to_args`](#osfunctioncall) for the monty-python / monty-js bindings.
 
@@ -41,11 +43,13 @@ pub trait ToMontyObject {
 }
 ```
 
+<div class="rust-decl-links" data-links="MontyObject #montyobject" hidden></div>
+
 Consume `self` into a [`MontyObject`](#montyobject).
 
-`MontyObject` is the host-facing, heap-free representation. Implementers
-just shape themselves into the most natural `MontyObject` variant —
-`String` → `MontyObject::String`, `Vec<u8>` → `MontyObject::Bytes`, etc.
+[`MontyObject`](#montyobject) is the host-facing, heap-free representation. Implementers
+just shape themselves into the most natural [`MontyObject`](#montyobject) variant —
+`String` → [`MontyObject::String`](#montyobject), `Vec<u8>` → [`MontyObject::Bytes`](#montyobject), etc.
 
 ## format
 
@@ -236,6 +240,8 @@ All variants serialize to lowercase (e.g., `Print` -> "print").
 pub const fn from_repr(discriminant: u8) -> Option<BuiltinsFunctions>
 ```
 
+<div class="rust-decl-links" data-links="BuiltinsFunctions #builtinsfunctions" hidden></div>
+
 Try to create [Self](#builtinsfunctions) from the raw representation
 
 Implements: `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Display`, `Eq`, `From<&'_derivative_strum BuiltinsFunctions>`, `From<BuiltinsFunctions>`, `FromStr`, `Hash`, `PartialEq`, `Serialize`, `StructuralPartialEq`, `TryFrom<&str>`.
@@ -290,6 +296,8 @@ pub enum ExcData {
 }
 ```
 
+<div class="rust-decl-links" data-links="UnicodeErrorData #unicodeerrordata;JsonErrorData #jsonerrordata" hidden></div>
+
 Structured payload attached to exception types whose CPython counterparts
 carry more than a message. Currently unicode and json decode errors have
 one; the enum leaves room for future variants (e.g. `OSError`'s
@@ -301,6 +309,8 @@ one; the enum leaves room for future variants (e.g. `OSError`'s
 pub fn unicode(&self) -> Option<&UnicodeErrorData>
 ```
 
+<div class="rust-decl-links" data-links="UnicodeErrorData #unicodeerrordata" hidden></div>
+
 The unicode-error fields, if this is [`ExcData::Unicode`](#excdata).
 
 ### json
@@ -308,6 +318,8 @@ The unicode-error fields, if this is [`ExcData::Unicode`](#excdata).
 ```rust
 pub fn json(&self) -> Option<&JsonErrorData>
 ```
+
+<div class="rust-decl-links" data-links="JsonErrorData #jsonerrordata" hidden></div>
 
 The json-error fields, if this is [`ExcData::Json`](#excdata).
 
@@ -485,6 +497,8 @@ document would misplace `pos`) for larger inputs.
 pub fn build(msg: &str, doc: &[u8], pos: usize, lineno: usize, colno: usize) -> ExcData
 ```
 
+<div class="rust-decl-links" data-links="ExcData #excdata" hidden></div>
+
 Builds the payload for a decode error on `doc`, omitting the document
 when it exceeds [`Self::MAX_DOC_LEN`](#jsonerrordata) or is not valid UTF-8.
 
@@ -504,6 +518,8 @@ Public representation of a Monty exception.
 pub fn new(exc_type: ExcType, message: Option<String>) -> Self
 ```
 
+<div class="rust-decl-links" data-links="ExcType #exctype" hidden></div>
+
 Create a new MontyException with the given exception type and message.
 
 You can't provide a traceback here, it's send when raising the exception.
@@ -511,8 +527,14 @@ You can't provide a traceback here, it's send when raising the exception.
 ### with_traceback
 
 ```rust
-pub fn with_traceback(exc_type: ExcType, message: Option<String>, traceback: Vec<StackFrame>) -> Self
+pub fn with_traceback(
+    exc_type: ExcType,
+    message: Option<String>,
+    traceback: Vec<StackFrame>,
+) -> Self
 ```
+
+<div class="rust-decl-links" data-links="ExcType #exctype;StackFrame #stackframe" hidden></div>
 
 Creates an exception with an explicit traceback.
 
@@ -528,6 +550,8 @@ worker) and must preserve its original frames.
 pub fn with_data(self, data: ExcData) -> Self
 ```
 
+<div class="rust-decl-links" data-links="ExcData #excdata" hidden></div>
+
 Attaches a structured payload — see [`ExcData`](#excdata). Public for
 boundaries that reconstruct an exception raised elsewhere (like
 [`MontyException::with_traceback`](#montyexception)); in-process raises attach the
@@ -539,6 +563,8 @@ payload at the raise site instead.
 pub fn data(&self) -> &ExcData
 ```
 
+<div class="rust-decl-links" data-links="ExcData #excdata" hidden></div>
+
 The structured payload, [`ExcData::None`](#excdata) for most exceptions.
 
 ### unicode_data
@@ -546,6 +572,8 @@ The structured payload, [`ExcData::None`](#excdata) for most exceptions.
 ```rust
 pub fn unicode_data(&self) -> Option<&UnicodeErrorData>
 ```
+
+<div class="rust-decl-links" data-links="UnicodeErrorData #unicodeerrordata" hidden></div>
 
 Structured `UnicodeDecodeError`/`UnicodeEncodeError` fields, present
 only for unicode errors raised by codec operations on objects no
@@ -557,6 +585,8 @@ larger than [`UnicodeErrorData::MAX_OBJECT_LEN`](#unicodeerrordata).
 pub fn json_data(&self) -> Option<&JsonErrorData>
 ```
 
+<div class="rust-decl-links" data-links="JsonErrorData #jsonerrordata" hidden></div>
+
 Structured `json.JSONDecodeError` fields, present only for decode
 errors raised by `json.loads` (not for manually raised exceptions).
 
@@ -565,6 +595,8 @@ errors raised by `json.loads` (not for manually raised exceptions).
 ```rust
 pub fn take_data(&mut self) -> ExcData
 ```
+
+<div class="rust-decl-links" data-links="ExcData #excdata" hidden></div>
 
 Removes and returns the structured payload, for consumers (like the
 Python bindings) that rebuild the native exception and want the
@@ -575,6 +607,8 @@ payload by value without cloning it.
 ```rust
 pub fn add_traceback(&mut self, traceback: impl IntoIterator<Item = StackFrame>)
 ```
+
+<div class="rust-decl-links" data-links="StackFrame #stackframe" hidden></div>
 
 Appends frames to this exception's traceback.
 
@@ -593,6 +627,8 @@ no sandbox stack frames exist.
 ```rust
 pub fn exc_type(&self) -> ExcType
 ```
+
+<div class="rust-decl-links" data-links="ExcType #exctype" hidden></div>
 
 The exception type raised.
 
@@ -623,6 +659,8 @@ Equivalent of python's `exc.args[0]`
 ```rust
 pub fn traceback(&self) -> &[StackFrame]
 ```
+
+<div class="rust-decl-links" data-links="StackFrame #stackframe" hidden></div>
 
 Stack trace of the exception, first is the outermost frame shown first in the traceback
 
@@ -688,6 +726,8 @@ pub struct StackFrame {
 }
 ```
 
+<div class="rust-decl-links" data-links="CodeLoc #codeloc" hidden></div>
+
 A single frame in a Python traceback.
 
 Contains all the information needed to display a traceback line:
@@ -720,6 +760,8 @@ pub struct UnicodeErrorData {
 }
 ```
 
+<div class="rust-decl-links" data-links="UnicodeErrorObject #unicodeerrorobject" hidden></div>
+
 Structured fields of a `UnicodeDecodeError` / `UnicodeEncodeError`,
 mirroring CPython's `encoding` / `object` / `start` / `end` / `reason`
 exception attributes.
@@ -748,8 +790,16 @@ so the cap bounds how much host memory a single raise can pin.
 ### encode
 
 ```rust
-pub fn encode(encoding: &str, object: &str, start: usize, end: usize, reason: &str) -> ExcData
+pub fn encode(
+    encoding: &str,
+    object: &str,
+    start: usize,
+    end: usize,
+    reason: &str,
+) -> ExcData
 ```
+
+<div class="rust-decl-links" data-links="ExcData #excdata" hidden></div>
 
 Builds the payload for an encode error on `object`, or
 [`ExcData::None`](#excdata) when `object` exceeds [`Self::MAX_OBJECT_LEN`](#unicodeerrordata).
@@ -757,8 +807,16 @@ Builds the payload for an encode error on `object`, or
 ### decode
 
 ```rust
-pub fn decode(encoding: &str, object: &[u8], start: usize, end: usize, reason: &str) -> ExcData
+pub fn decode(
+    encoding: &str,
+    object: &[u8],
+    start: usize,
+    end: usize,
+    reason: &str,
+) -> ExcData
 ```
+
+<div class="rust-decl-links" data-links="ExcData #excdata" hidden></div>
 
 Builds the payload for a decode error on `object`, or
 [`ExcData::None`](#excdata) when `object` exceeds [`Self::MAX_OBJECT_LEN`](#unicodeerrordata).
@@ -784,7 +842,13 @@ Implements: `Clone`, `Debug`, `Deserialize<'de>`, `Hash`, `PartialEq`, `Serializ
 ## unicode_decode_error_msg
 
 ```rust
-pub fn unicode_decode_error_msg(codec: &str, first_byte: u8, start: usize, end: usize, reason: &str) -> String;
+pub fn unicode_decode_error_msg(
+    codec: &str,
+    first_byte: u8,
+    start: usize,
+    end: usize,
+    reason: &str,
+) -> String;
 ```
 
 Formats the message for a `UnicodeDecodeError` covering the byte range
@@ -1088,6 +1152,8 @@ pub enum PrintWriter<'a> {
 }
 ```
 
+<div class="rust-decl-links" data-links="PrintStream #printstream;PrintWriterCallback #printwritercallback" hidden></div>
+
 Output handler for the `print()` builtin function.
 
 Provides common output modes as enum variants to avoid trait object overhead
@@ -1114,6 +1180,8 @@ use the `Callback` variant with a [`PrintWriterCallback`](#printwritercallback) 
 pub fn collect_string(buf: &mut String) -> PrintWriter<'_>
 ```
 
+<div class="rust-decl-links" data-links="PrintWriter #printwriter" hidden></div>
+
 Collect into `buf` with the default [`DEFAULT_MAX_PRINT_COLLECT_BYTES`](#default_max_print_collect_bytes) cap.
 
 ### collect_streams
@@ -1121,6 +1189,8 @@ Collect into `buf` with the default [`DEFAULT_MAX_PRINT_COLLECT_BYTES`](#default
 ```rust
 pub fn collect_streams(buf: &mut Vec<(PrintStream, String)>) -> PrintWriter<'_>
 ```
+
+<div class="rust-decl-links" data-links="PrintStream #printstream;PrintWriter #printwriter" hidden></div>
 
 Collect into `buf` with the default [`DEFAULT_MAX_PRINT_COLLECT_BYTES`](#default_max_print_collect_bytes) cap.
 
@@ -1130,10 +1200,12 @@ Collect into `buf` with the default [`DEFAULT_MAX_PRINT_COLLECT_BYTES`](#default
 pub fn reborrow(&mut self) -> PrintWriter<'_>
 ```
 
-Creates a new `PrintWriter` that reborrows the same underlying target.
+<div class="rust-decl-links" data-links="PrintWriter #printwriter" hidden></div>
+
+Creates a new [`PrintWriter`](#printwriter) that reborrows the same underlying target.
 
 This is useful in iterative execution (`start`/`resume` loops) where each
-step takes `PrintWriter` by value but you want all steps to write to the
+step takes [`PrintWriter`](#printwriter) by value but you want all steps to write to the
 same output target. The original writer remains valid after the reborrowed
 copy is dropped.
 
@@ -1142,6 +1214,8 @@ copy is dropped.
 ```rust
 pub fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException>
 ```
+
+<div class="rust-decl-links" data-links="MontyException #montyexception" hidden></div>
 
 Called once for each formatted argument passed to `print()`.
 
@@ -1154,6 +1228,8 @@ terminator (newline) are emitted via [`stdout_push`](#printwriter).
 ```rust
 pub fn stdout_push(&mut self, end: char) -> Result<(), MontyException>
 ```
+
+<div class="rust-decl-links" data-links="MontyException #montyexception" hidden></div>
 
 Appends a single character to the output.
 
@@ -1168,6 +1244,8 @@ pub trait PrintWriterCallback {
     fn stdout_push(&mut self, end: char) -> Result<(), MontyException>;
 }
 ```
+
+<div class="rust-decl-links" data-links="MontyException #montyexception" hidden></div>
 
 Trait for custom output handling from the `print()` builtin function.
 
@@ -1198,8 +1276,14 @@ Generally called to add spaces and newlines within print output.
 ## check_print_collect_limit
 
 ```rust
-pub fn check_print_collect_limit(current_len: usize, add: usize, max_bytes: Option<usize>) -> Result<(), MontyException>;
+pub fn check_print_collect_limit(
+    current_len: usize,
+    add: usize,
+    max_bytes: Option<usize>,
+) -> Result<(), MontyException>;
 ```
+
+<div class="rust-decl-links" data-links="MontyException #montyexception" hidden></div>
 
 Rejects a collect-buffer growth that would exceed `max_bytes`.
 
@@ -1212,15 +1296,15 @@ as [`ResourceError::Memory`](#resourceerror) so hosts see one familiar limit str
 pub struct ConversionError {
     /// The type name that was expected (e.g., "int", "str").
     pub expected: &'static str,
-    /// The actual type name of the `MontyObject` (e.g., "list", "NoneType").
+    /// The actual type name of the [`MontyObject`] (e.g., "list", "NoneType").
     pub actual: &'static str,
 }
 ```
 
-Error returned when a `MontyObject` cannot be converted to the requested Rust type.
+Error returned when a [`MontyObject`](#montyobject) cannot be converted to the requested Rust type.
 
 This error is returned by the `TryFrom` implementations when attempting to extract
-a specific type from a `MontyObject` that holds a different variant.
+a specific type from a [`MontyObject`](#montyobject) that holds a different variant.
 
 ### new
 
@@ -1228,7 +1312,7 @@ a specific type from a `MontyObject` that holds a different variant.
 pub fn new(expected: &'static str, actual: &'static str) -> Self
 ```
 
-Creates a new `ConversionError` with the expected and actual type names.
+Creates a new [`ConversionError`](#conversionerror) with the expected and actual type names.
 
 Implements: `Debug`, `Display`, `Error`.
 
@@ -1240,8 +1324,8 @@ pub struct DictPairs(/* private */);
 
 A collection of key-value pairs representing Python dictionary contents.
 
-Used internally by `MontyObject::Dict` to store dictionary entries while preserving
-insertion order. Keys and values are both `MontyObject` instances.
+Used internally by [`MontyObject::Dict`](#montyobject) to store dictionary entries while preserving
+insertion order. Keys and values are both [`MontyObject`](#montyobject) instances.
 
 ### len
 
@@ -1273,10 +1357,12 @@ pub enum InvalidInputError {
 }
 ```
 
-Error returned when a `MontyObject` cannot be used as an input to code execution.
+<div class="rust-decl-links" data-links="ResourceError #resourceerror" hidden></div>
+
+Error returned when a [`MontyObject`](#montyobject) cannot be used as an input to code execution.
 
 This can occur when:
-- A `MontyObject` variant (like `Repr`) is only valid as an output, not an input
+- A [`MontyObject`](#montyobject) variant (like [`Repr`](#montyobject)) is only valid as an output, not an input
 - A resource limit is exceeded during conversion
 
 ### invalid_type
@@ -1285,7 +1371,7 @@ This can occur when:
 pub fn invalid_type(msg: impl Into<Cow<'static, str>>) -> Self
 ```
 
-Creates a new `InvalidInputError` for the given type name.
+Creates a new [`InvalidInputError`](#invalidinputerror) for the given type name.
 
 Implements: `Clone`, `Debug`, `Display`, `Error`, `From<ResourceError>`.
 
@@ -1374,6 +1460,8 @@ pub struct MontyFileHandle {
     pub position: u64,
 }
 ```
+
+<div class="rust-decl-links" data-links="FileMode #filemode" hidden></div>
 
 An open file object (the result of `open()`).
 
@@ -1482,9 +1570,11 @@ pub enum MontyObject {
 }
 ```
 
+<div class="rust-decl-links" data-links="DictPairs #dictpairs;MontyDate #montydate;MontyDateTime #montydatetime;MontyTime #montytime;MontyTimeDelta #montytimedelta;MontyTimeZone #montytimezone;ExcType #exctype;MontyType #montytype;BuiltinsFunctions #builtinsfunctions;MontyFileHandle #montyfilehandle" hidden></div>
+
 An owned Python value exchanged between Monty and its host.
 
-Construct `MontyObject` values to provide globals, external-function
+Construct [`MontyObject`](#montyobject) values to provide globals, external-function
 results, and other inputs to sandboxed code. Execution results and values
 passed to host callbacks use the same representation.
 
@@ -1495,7 +1585,7 @@ reconstructed as executable Python values. [`Exception`](#montyobject)
 can be used both to raise an exception and to represent one returned by
 execution.
 
-Collections are owned snapshots: modifying a returned `MontyObject` does
+Collections are owned snapshots: modifying a returned [`MontyObject`](#montyobject) does
 not modify the corresponding value in a running session.
 
 ### Hashability
@@ -1517,7 +1607,9 @@ for snapshots and binary transport, not for human-facing JSON.
 pub fn dict(dict: impl Into<DictPairs>) -> Self
 ```
 
-Creates a new `MontyObject` from something that can be converted into a `DictPairs`.
+<div class="rust-decl-links" data-links="DictPairs #dictpairs" hidden></div>
+
+Creates a new [`MontyObject`](#montyobject) from something that can be converted into a [`DictPairs`](#dictpairs).
 
 ### builtin_function_from_name
 
@@ -1557,7 +1649,7 @@ pub fn host_size(&self) -> usize
 Shallow host footprint of a freshly decoded `obj`: the fixed [`MontyObject`](#montyobject)
 size plus any leaf payload it owns *directly* (string/bytes/bigint bytes, and
 the `Vec<String>` field names of structured values, which aren't themselves
-`MontyObject`s and would otherwise be uncharged). Container elements are
+[`MontyObject`](#montyobject)s and would otherwise be uncharged). Container elements are
 excluded — each charges its own size via `monty-proto`'s `decode_field`, so a list charges
 88 bytes here.
 
@@ -1596,7 +1688,7 @@ In Python, the following values are considered falsy:
 - Zero numeric values (`0`, `0.0`)
 - Empty sequences and collections (`""`, `b""`, `[]`, `()`, `{}`)
 
-All other values are truthy, including `Exception` and `Repr` variants.
+All other values are truthy, including [`Exception`](#montyobject) and [`Repr`](#montyobject) variants.
 
 ### type_name
 
@@ -1771,16 +1863,18 @@ pub enum MontyType {
 }
 ```
 
+<div class="rust-decl-links" data-links="ExcType #exctype" hidden></div>
+
 The Python type of a value at the host boundary — the public mirror of the
 internal runtime `Type` enum.
 
 Where the runtime `Type::Instance` carries a transient heap id, the public
 [`MontyType::Instance`](#montytype) carries the *resolved class name* as an owned
-`String`, so a `MontyType` is always self-contained: it can be serialized,
+`String`, so a [`MontyType`](#montytype) is always self-contained: it can be serialized,
 sent over the subprocess wire protocol, and displayed without heap access.
 
 `Instance` is output-only: a class binding cannot be reconstructed from a
-name, so passing `MontyType::Instance` as an *input* is rejected with an
+name, so passing [`MontyType::Instance`](#montytype) as an *input* is rejected with an
 [`InvalidInputError`](#invalidinputerror) (see [`MontyObject`](#montyobject) input conversion).
 
 ### name
@@ -1799,7 +1893,7 @@ pub fn from_type_name(name: &str) -> Option<Self>
 ```
 
 Parses a name produced by `Display`/[`name`](#montytype)
-back to the `MontyType` — the wire-protocol decode path for builtin
+back to the [`MontyType`](#montytype) — the wire-protocol decode path for builtin
 type names. Never yields [`Instance`](#montytype): class names
 return `None` (the wire carries instance types in a dedicated field
 instead), and `"object"` parses to the builtin [`Object`](#montytype).
@@ -1808,7 +1902,7 @@ instead), and `"object"` parses to the builtin [`Object`](#montytype).
 `IntoStaticStr` renders with, so the two stay in lockstep by
 construction. Exception types display as their exception name
 ("ValueError", "json.JSONDecodeError", ...) — fall back to the
-`ExcType` parser.
+[`ExcType`](#exctype) parser.
 
 Implements: `Clone`, `Debug`, `Deserialize<'de>`, `Display`, `Eq`, `From<&'_derivative_strum MontyType>`, `From<MontyType>`, `FromStr`, `IntoEnumIterator`, `PartialEq`, `Serialize`, `StructuralPartialEq`, `TryFrom<&str>`, `VariantNames`.
 
@@ -1820,6 +1914,8 @@ pub struct GetenvArgs {
     pub default: MontyObject,
 }
 ```
+
+<div class="rust-decl-links" data-links="MontyObject #montyobject" hidden></div>
 
 `os.getenv(key, default=None)` shape. The host decides whether to
 substitute `default` when the variable is unset.
@@ -1836,8 +1932,10 @@ pub struct MkdirCallArgs {
 }
 ```
 
+<div class="rust-decl-links" data-links="MontyPath #montypath" hidden></div>
+
 `mkdir(path, parents=False, exist_ok=False)` shape. `parents`/`exist_ok`
-are kw-only so `ToArgs` emits them as kwargs (matching CPython).
+are kw-only so [`ToArgs`](#toargs) emits them as kwargs (matching CPython).
 
 Implements: `Clone`, `Debug`, `Deserialize<'de>`, `Serialize`, `ToArgs`.
 
@@ -1849,7 +1947,7 @@ pub struct MontyPath(/* private */);
 
 Owned virtual (sandbox) path carried by OS-call args.
 
-`String` newtype: derefs to `&str` for fs/ routing, and `ToMontyObject`
+`String` newtype: derefs to `&str` for fs/ routing, and [`ToMontyObject`](#tomontyobject)
 projects it back to [`MontyObject::Path`](#montyobject) at the host boundary. Constructed
 at the producer site after the source `Value` has been validated as a
 path/string — never from raw input.
@@ -1883,9 +1981,11 @@ pub struct OpenCallArgs {
 }
 ```
 
+<div class="rust-decl-links" data-links="MontyPath #montypath;FileMode #filemode" hidden></div>
+
 `open(path, mode)` shape. The mode is parsed into [`FileMode`](#filemode) before
-construction so the fs/ backend doesn't re-parse; `ToArgs` re-serialises
-it back to a `MontyObject::String` for the host.
+construction so the fs/ backend doesn't re-parse; [`ToArgs`](#toargs) re-serialises
+it back to a [`MontyObject::String`](#montyobject) for the host.
 
 Implements: `Clone`, `Debug`, `Deserialize<'de>`, `Serialize`, `ToArgs`.
 
@@ -1946,10 +2046,12 @@ pub enum OsFunctionCall {
 }
 ```
 
+<div class="rust-decl-links" data-links="MontyPath #montypath;PathStringDataArgs #pathstringdataargs;PathBytesDataArgs #pathbytesdataargs;OpenCallArgs #opencallargs;MkdirCallArgs #mkdircallargs;RenameCallArgs #renamecallargs;GetenvArgs #getenvargs;MontyTimeZone #montytimezone" hidden></div>
+
 Tagged dispatch value for OS-level operations.
 
 Each variant carries the strongly-typed args/kwargs the corresponding OS
-call needs. The fs/ layer matches on this enum directly (no `MontyObject`
+call needs. The fs/ layer matches on this enum directly (no [`MontyObject`](#montyobject)
 introspection); host bindings get a generic `(positional, keyword)` view
 via [`OsFunctionCall::to_args`](#osfunctioncall).
 
@@ -1971,7 +2073,9 @@ snapshots. The strum `serialize` string on each variant.
 pub fn to_args(self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>)
 ```
 
-Projects this call's args into `(positional, keyword)` `MontyObject`
+<div class="rust-decl-links" data-links="MontyObject #montyobject" hidden></div>
+
+Projects this call's args into `(positional, keyword)` [`MontyObject`](#montyobject)
 vectors for delivery to a host callback.
 
 ### is_write
@@ -2034,6 +2138,8 @@ resolve to the same mount).
 pub fn on_no_handler(&self) -> MontyException
 ```
 
+<div class="rust-decl-links" data-links="MontyException #montyexception" hidden></div>
+
 Exception to raise when no handler accepted this call: `PermissionError`
 for FS ops (with the path), `RuntimeError` for non-FS ops.
 
@@ -2048,6 +2154,8 @@ pub struct PathBytesDataArgs {
 }
 ```
 
+<div class="rust-decl-links" data-links="MontyPath #montypath" hidden></div>
+
 `path + bytes data` shape used by `WriteBytes` and `AppendBytes`.
 
 Implements: `Clone`, `Debug`, `Deserialize<'de>`, `Serialize`, `ToArgs`.
@@ -2060,6 +2168,8 @@ pub struct PathStringDataArgs {
     pub data: String,
 }
 ```
+
+<div class="rust-decl-links" data-links="MontyPath #montypath" hidden></div>
 
 `path + str data` shape used by `WriteText` and `AppendText`.
 
@@ -2074,6 +2184,8 @@ pub struct RenameCallArgs {
 }
 ```
 
+<div class="rust-decl-links" data-links="MontyPath #montypath" hidden></div>
+
 `rename(src, dst)` shape.
 
 Implements: `Clone`, `Debug`, `Deserialize<'de>`, `Serialize`, `ToArgs`.
@@ -2083,6 +2195,8 @@ Implements: `Clone`, `Debug`, `Deserialize<'de>`, `Serialize`, `ToArgs`.
 ```rust
 pub fn dir_stat(mode: i64, mtime: f64) -> MontyObject;
 ```
+
+<div class="rust-decl-links" data-links="MontyObject #montyobject" hidden></div>
 
 Creates a `stat_result` for a directory.
 
@@ -2101,6 +2215,8 @@ The directory type bits (`0o040_000`) are automatically added if not present.
 pub fn file_stat(mode: i64, size: i64, mtime: f64) -> MontyObject;
 ```
 
+<div class="rust-decl-links" data-links="MontyObject #montyobject" hidden></div>
+
 Creates a `stat_result` for a regular file.
 
 The file type bits (`0o100_000`) are automatically added if not present.
@@ -2117,8 +2233,21 @@ The file type bits (`0o100_000`) are automatically added if not present.
 ## stat_result
 
 ```rust
-pub fn stat_result(st_mode: i64, st_ino: i64, st_dev: i64, st_nlink: i64, st_uid: i64, st_gid: i64, st_size: i64, st_atime: f64, st_mtime: f64, st_ctime: f64) -> MontyObject;
+pub fn stat_result(
+    st_mode: i64,
+    st_ino: i64,
+    st_dev: i64,
+    st_nlink: i64,
+    st_uid: i64,
+    st_gid: i64,
+    st_size: i64,
+    st_atime: f64,
+    st_mtime: f64,
+    st_ctime: f64,
+) -> MontyObject;
 ```
+
+<div class="rust-decl-links" data-links="MontyObject #montyobject" hidden></div>
 
 Creates a full `stat_result` with all 10 fields specified.
 
@@ -2130,6 +2259,8 @@ for common cases.
 ```rust
 pub fn symlink_stat(mode: i64, mtime: f64) -> MontyObject;
 ```
+
+<div class="rust-decl-links" data-links="MontyObject #montyobject" hidden></div>
 
 Creates a `stat_result` for a symbolic link.
 
@@ -2305,6 +2436,8 @@ off rather than restarting from zero.
 pub fn new(limits: ResourceLimits) -> Self
 ```
 
+<div class="rust-decl-links" data-links="ResourceLimits #resourcelimits" hidden></div>
+
 Creates a new ResourceTracker with the given limits.
 
 The execution-time clock starts at zero and only runs while the VM
@@ -2369,6 +2502,8 @@ in the host never counts toward the budget either way.
 pub fn check_allocation(&self, additional: usize) -> Result<(), ResourceError>
 ```
 
+<div class="rust-decl-links" data-links="ResourceError #resourceerror" hidden></div>
+
 Checks whether one up-front allocation fits the memory budget.
 
 Use this before reserving a buffer that could cross both the soft and
@@ -2379,6 +2514,8 @@ hard allocator limits before execution reaches another checkpoint.
 ```rust
 pub fn check_memory_time(&self) -> Result<(), ResourceError>
 ```
+
+<div class="rust-decl-links" data-links="ResourceError #resourceerror" hidden></div>
 
 Called periodically to check allocator-backed memory and time limits.
 
@@ -2394,6 +2531,8 @@ an immutable heap reference, such as `py_repr_fmt`.
 ```rust
 pub fn check_time(&self) -> Result<(), ResourceError>
 ```
+
+<div class="rust-decl-links" data-links="ResourceError #resourceerror" hidden></div>
 
 Called periodically to check the time limit. Elapsed execution time is
 monotonic, so once the budget is exceeded every later call fails too.
@@ -2416,6 +2555,8 @@ pathological cases.
 pub fn check_time_every(&self, i: usize) -> Result<(), ResourceError>
 ```
 
+<div class="rust-decl-links" data-links="ResourceError #resourceerror" hidden></div>
+
 Amortized per-item time check for Rust-side loops: a full clock read
 once per [`LOOP_CHECK_INTERVAL`](#resourcetracker) calls,
 free otherwise. Key `i` on the loop's index or a monotonically
@@ -2429,6 +2570,8 @@ dispatch checkpoint covers cadence between short calls.
 pub fn check_memory_time_every(&self, i: usize) -> Result<(), ResourceError>
 ```
 
+<div class="rust-decl-links" data-links="ResourceError #resourceerror" hidden></div>
+
 Amortized per-item memory + time check; the memory-probing sibling of
 [`check_time_every`](#resourcetracker), for loops that allocate
 per item. Between full checks the allocator's hard limit still bounds
@@ -2439,6 +2582,8 @@ runaway growth.
 ```rust
 pub fn check_recursion_depth(&self, current_depth: usize) -> Result<(), ResourceError>
 ```
+
+<div class="rust-decl-links" data-links="ResourceError #resourceerror" hidden></div>
 
 Called before pushing a new call frame to check recursion depth.
 
@@ -2452,11 +2597,13 @@ before the new frame is pushed.
 pub fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError>
 ```
 
+<div class="rust-decl-links" data-links="ResourceError #resourceerror" hidden></div>
+
 Called before operations that may produce large results (>100KB).
 
 This allows pre-emptive rejection of operations like `2 ** 10_000_000`
 before the memory is actually allocated. The check only happens for
-estimated result sizes above `LARGE_RESULT_THRESHOLD` to avoid overhead
+estimated result sizes above [`LARGE_RESULT_THRESHOLD`](#large_result_threshold) to avoid overhead
 on small operations.
 
 ### gc_interval
@@ -2520,6 +2667,8 @@ pub enum ExtFunctionResult {
 }
 ```
 
+<div class="rust-decl-links" data-links="MontyObject #montyobject;MontyException #montyexception" hidden></div>
+
 Return value or exception from an external function.
 
 Implements: `Debug`, `From<MontyException>`, `From<MontyObject>`.
@@ -2534,6 +2683,8 @@ pub enum NameLookupResult {
     Undefined,
 }
 ```
+
+<div class="rust-decl-links" data-links="MontyObject #montyobject" hidden></div>
 
 Result of a name lookup from the host.
 
@@ -2607,6 +2758,8 @@ pub struct CompileOptions {
 }
 ```
 
+<div class="rust-decl-links" data-links="AssertMessageAnnotations #assertmessageannotations" hidden></div>
+
 Options controlling how Monty behavior diverges from plain CPython.
 
 Consumed when code is compiled: a `MontyRun` bakes the choices into the
@@ -2628,6 +2781,8 @@ pub struct TypeCheckState {
 }
 ```
 
+<div class="rust-decl-links" data-links="TypeCheckingConfig #typecheckingconfig" hidden></div>
+
 Per-session type-check state: successfully committed snippets accumulate as
 stubs so later snippets can reference names defined by earlier ones.
 
@@ -2644,6 +2799,8 @@ pub struct TypeCheckingConfig {
     pub color: bool,
 }
 ```
+
+<div class="rust-decl-links" data-links="TypeCheckingFormat #typecheckingformat" hidden></div>
 
 How a type check renders whatever diagnostics it finds.
 

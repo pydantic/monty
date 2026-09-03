@@ -7,18 +7,1122 @@ title: monty
 
 The in-process interpreter: compile, run, suspend and resume sandboxed Python inside your own process. Most hosts should use [`monty-pool`](monty-pool.md) instead, which keeps a sandbox crash from taking the host process down.
 
-## DUMP_VERSION
+## MontyRun
 
 ```rust
-pub const DUMP_VERSION: u16 = 6;
+pub struct MontyRun { /* private fields */ }
 ```
 
-Version of the dump's postcard schema.
+Primary interface for running Monty code.
 
-Bump this whenever a serialized discriminant can shift, so older dumps are
-rejected instead of decoding as their neighbour. That covers the
-interpreter's own types *and* everything reachable from [`Dump`](#dump) — notably
-`TypeCheckingConfig` in `monty-types`.
+[`MontyRun`](#montyrun) supports two execution modes:
+- **Simple execution**: Use [`run`](#montyrun) or [`run_no_limits`](#montyrun) to run code to completion
+- **Iterative execution**: Use [`start`](#montyrun) to start execution which will pause at external function calls and
+  can be resumed later
+
+### Example
+```rust
+use monty::MontyRun;
+use monty_types::{CompileOptions, MontyObject};
+
+let runner = MontyRun::new(
+    "x + 1".to_owned(),
+    "test.py",
+    vec!["x".to_owned()],
+    CompileOptions::default(),
+)
+.unwrap();
+let result = runner.run_no_limits(vec![MontyObject::Int(41)]).unwrap();
+assert_eq!(result, MontyObject::Int(42));
+```
+
+### new
+
+```rust
+pub fn new(
+    code: String,
+    script_name: &str,
+    input_names: Vec<String>,
+    options: CompileOptions,
+) -> Result<Self, MontyException>
+```
+
+<div class="rust-decl-links" data-links="CompileOptions ../monty-types/#compileoptions;MontyException ../monty-types/#montyexception" hidden></div>
+
+Creates a new run snapshot by parsing the given code.
+
+This only parses and prepares the code - no heap or namespaces are created yet.
+Call [`run`](#montyrun) or [`start`](#montyrun) with inputs to execute it.
+
+#### Arguments
+* `code` - The Python code to execute
+* `script_name` - The script name for error messages
+* `input_names` - Names of input variables
+* `options` - [`CompileOptions`](monty-types.md#compileoptions) controlling CPython divergences; usually `CompileOptions::default()`
+
+#### Errors
+Returns [`MontyException`](monty-types.md#montyexception) if the code cannot be parsed.
+
+### code
+
+```rust
+pub fn code(&self) -> &str
+```
+
+Returns the code that was parsed to create this snapshot.
+
+### run
+
+```rust
+pub fn run(
+    &self,
+    inputs: Vec<MontyObject>,
+    resource_tracker: ResourceTracker,
+    print: PrintWriter<'_>,
+) -> Result<MontyObject, MontyException>
+```
+
+<div class="rust-decl-links" data-links="MontyObject ../monty-types/#montyobject;ResourceTracker ../monty-types/#resourcetracker;PrintWriter ../monty-types/#printwriter;MontyException ../monty-types/#montyexception" hidden></div>
+
+Executes the code to completion assuming not external functions or snapshotting.
+
+This is marginally faster than running with snapshotting enabled since we don't need
+to track the position in code, but does not allow calling of external functions.
+
+#### Arguments
+* `inputs` - Values to fill the first N slots of the namespace
+* `resource_tracker` - Custom resource tracker implementation
+* `print` - print output writer
+
+### run_no_limits
+
+```rust
+pub fn run_no_limits(
+    &self,
+    inputs: Vec<MontyObject>,
+) -> Result<MontyObject, MontyException>
+```
+
+<div class="rust-decl-links" data-links="MontyObject ../monty-types/#montyobject;MontyException ../monty-types/#montyexception" hidden></div>
+
+Executes the code to completion with no resource limits specified (will use the default),
+printing to stdout/stderr.
+
+### start
+
+```rust
+pub fn start(
+    self,
+    inputs: Vec<MontyObject>,
+    resource_tracker: ResourceTracker,
+    print: PrintWriter<'_>,
+) -> Result<RunProgress, MontyException>
+```
+
+<div class="rust-decl-links" data-links="MontyObject ../monty-types/#montyobject;ResourceTracker ../monty-types/#resourcetracker;PrintWriter ../monty-types/#printwriter;RunProgress #runprogress;MontyException ../monty-types/#montyexception" hidden></div>
+
+Starts execution with the given inputs and resource tracker, consuming self.
+
+Creates the heap and namespaces, then begins execution.
+
+For iterative execution, [`start`](#montyrun) consumes self and returns a [`RunProgress`](#runprogress):
+- [`RunProgress::FunctionCall`](#runprogress) - external function call, call [`FunctionCall::resume`](#functioncall) to resume
+- [`RunProgress::Complete`](#runprogress) - execution finished
+
+This enables snapshotting execution state and returning control to the host
+application during long-running computations.
+
+#### Arguments
+* `inputs` - Initial input values (must match length of `input_names` from [`new`](#montyrun))
+* `resource_tracker` - Resource tracker for the execution
+* `print` - Writer for print output
+
+#### Errors
+Returns [`MontyException`](monty-types.md#montyexception) if:
+- The number of inputs doesn't match the expected count
+- An input value is invalid (e.g., `MontyObject::Repr`)
+- A runtime error occurs during execution
+
+#### Panics
+This method should not panic under normal operation. Internal assertions
+may panic if the VM reaches an inconsistent state (indicating a bug).
+
+Implements: `Clone`, `Debug`, `Deserialize<'de>`, `Serialize`.
+
+## RunProgress
+
+```rust
+pub enum RunProgress {
+    /// Execution paused at an external function call or dataclass method call.
+    FunctionCall(FunctionCall),
+    /// Execution paused for an OS-level operation (filesystem, network, etc.).
+    OsCall(OsCall),
+    /// All async tasks are blocked waiting for external futures to resolve.
+    ResolveFutures(ResolveFutures),
+    /// Execution paused for an unresolved name lookup.
+    NameLookup(NameLookup),
+    /// Execution completed with a final result.
+    Complete(monty_types::MontyObject),
+}
+```
+
+<div class="rust-decl-links" data-links="FunctionCall #functioncall;OsCall #oscall;ResolveFutures #resolvefutures;NameLookup #namelookup;monty_types::MontyObject ../monty-types/#montyobject" hidden></div>
+
+Result of a single step of iterative execution.
+
+Each variant wraps a dedicated struct that owns the execution state and
+exposes only the resume methods relevant to that suspension reason.
+
+### into_function_call
+
+```rust
+pub fn into_function_call(self) -> Option<FunctionCall>
+```
+
+<div class="rust-decl-links" data-links="FunctionCall #functioncall" hidden></div>
+
+Consumes the progress and returns the [`FunctionCall`](#functioncall) struct if this is a function call.
+
+### into_os_call
+
+```rust
+pub fn into_os_call(self) -> Option<OsCall>
+```
+
+<div class="rust-decl-links" data-links="OsCall #oscall" hidden></div>
+
+Consumes the progress and returns the [`OsCall`](#oscall) struct if this is an OS call.
+
+### into_complete
+
+```rust
+pub fn into_complete(self) -> Option<MontyObject>
+```
+
+<div class="rust-decl-links" data-links="MontyObject ../monty-types/#montyobject" hidden></div>
+
+Consumes the progress and returns the final value if execution completed.
+
+### into_resolve_futures
+
+```rust
+pub fn into_resolve_futures(self) -> Option<ResolveFutures>
+```
+
+<div class="rust-decl-links" data-links="ResolveFutures #resolvefutures" hidden></div>
+
+Consumes the progress and returns the [`ResolveFutures`](#resolvefutures) struct.
+
+### into_name_lookup
+
+```rust
+pub fn into_name_lookup(self) -> Option<NameLookup>
+```
+
+<div class="rust-decl-links" data-links="NameLookup #namelookup" hidden></div>
+
+Consumes the progress and returns the [`NameLookup`](#namelookup) struct.
+
+Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
+
+## FunctionCall
+
+```rust
+pub struct FunctionCall {
+    /// The name of the function or method being called.
+    pub function_name: String,
+    /// The positional arguments passed to the function.
+    pub args: Vec<monty_types::MontyObject>,
+    /// The keyword arguments passed to the function (key, value pairs).
+    pub kwargs: Vec<(monty_types::MontyObject, monty_types::MontyObject)>,
+    /// Unique identifier for this call (used for async correlation).
+    pub call_id: u32,
+    /// Whether this is a dataclass method call (first arg is `self`).
+    pub method_call: bool,
+    /* private fields */
+}
+```
+
+<div class="rust-decl-links" data-links="monty_types::MontyObject ../monty-types/#montyobject" hidden></div>
+
+Execution paused at an external function call or dataclass method call.
+
+The host can choose how to handle this:
+- **Sync resolution**: Call [`resume`](#functioncall) to push the result and continue.
+- **Async resolution**: Call [`resume_pending`](#functioncall) to push an `ExternalFuture` and continue.
+
+When using async resolution, the code continues and may `await` the future later.
+If the future isn't resolved when awaited, execution yields with [`ResolveFutures`](#resolvefutures).
+
+When `method_call` is true, this represents a dataclass method call where the first
+positional arg is the dataclass instance (`self`).
+
+### tracker_mut
+
+```rust
+pub fn tracker_mut(&mut self) -> &mut ResourceTracker
+```
+
+<div class="rust-decl-links" data-links="ResourceTracker ../monty-types/#resourcetracker" hidden></div>
+
+Returns a mutable reference to the resource tracker.
+
+This allows modifying resource limits between execution phases,
+e.g. setting a time limit before resuming after an external function call.
+
+### tracker
+
+```rust
+pub fn tracker(&self) -> &ResourceTracker
+```
+
+<div class="rust-decl-links" data-links="ResourceTracker ../monty-types/#resourcetracker" hidden></div>
+
+Returns the resource tracker while execution is suspended.
+
+### resume
+
+```rust
+pub fn resume(
+    self,
+    result: impl Into<ExtFunctionResult>,
+    print: PrintWriter<'_>,
+) -> Result<RunProgress, MontyException>
+```
+
+<div class="rust-decl-links" data-links="ExtFunctionResult ../monty-types/#extfunctionresult;PrintWriter ../monty-types/#printwriter;RunProgress #runprogress;MontyException ../monty-types/#montyexception" hidden></div>
+
+Resumes execution with the return value or exception from the external function.
+
+Consumes self and returns the next execution progress.
+
+#### Arguments
+* `result` — The return value, exception, or pending future marker.
+* `print` — Writer for `print()` output.
+
+### resume_pending
+
+```rust
+pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<RunProgress, MontyException>
+```
+
+<div class="rust-decl-links" data-links="PrintWriter ../monty-types/#printwriter;RunProgress #runprogress;MontyException ../monty-types/#montyexception" hidden></div>
+
+Resumes execution by pushing an `ExternalFuture` instead of a concrete value.
+
+This is the async resolution pattern: the host continues execution with a
+pending future. The code can then `await` this future later. If the code
+awaits the future before it's resolved, execution will yield with
+[`RunProgress::ResolveFutures`](#runprogress).
+
+Uses `self.call_id` internally — no need to pass it again.
+
+#### Arguments
+* `print` — Writer for print output.
+
+Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
+
+## NameLookup
+
+```rust
+pub struct NameLookup {
+    /// The name being looked up.
+    pub name: String,
+    /* private fields */
+}
+```
+
+Execution paused for an unresolved name lookup.
+
+The host should check if the name corresponds to a known external function or
+value. Call [`resume`](#namelookup) with `NameLookupResult::Value` to
+cache it in the namespace and continue, or `NameLookupResult::Undefined` to
+raise `NameError`.
+
+The namespace slot and scope are managed internally — the host only needs to
+provide the name resolution result.
+
+### tracker
+
+```rust
+pub fn tracker(&self) -> &ResourceTracker
+```
+
+<div class="rust-decl-links" data-links="ResourceTracker ../monty-types/#resourcetracker" hidden></div>
+
+Returns the resource tracker while execution is suspended.
+
+### resume
+
+```rust
+pub fn resume(
+    self,
+    result: impl Into<NameLookupResult>,
+    print: PrintWriter<'_>,
+) -> Result<RunProgress, MontyException>
+```
+
+<div class="rust-decl-links" data-links="NameLookupResult ../monty-types/#namelookupresult;PrintWriter ../monty-types/#printwriter;RunProgress #runprogress;MontyException ../monty-types/#montyexception" hidden></div>
+
+Resumes execution after name resolution.
+
+Caches the resolved value in the appropriate slot (globals or stack)
+before restoring the VM, then either pushes the value or raises `NameError`.
+
+#### Arguments
+* `result` — The resolved value or `Undefined`.
+* `print` — Writer for print output.
+
+Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
+
+## OsCall
+
+```rust
+pub struct OsCall {
+    /// Typed OS-call dispatch value (variant + args).
+    pub function_call: monty_types::OsFunctionCall,
+    /// Unique identifier for this call (used for async correlation).
+    pub call_id: u32,
+    /* private fields */
+}
+```
+
+<div class="rust-decl-links" data-links="monty_types::OsFunctionCall ../monty-types/#osfunctioncall" hidden></div>
+
+Execution paused for an OS-level operation.
+
+The host should execute the OS operation (filesystem, network, etc.) and
+call `resume(return_value, print)` to provide the result and continue.
+
+This enables sandboxed execution where the interpreter never directly performs I/O.
+
+`function_call` is a tagged [`OsFunctionCall`](monty-types.md#osfunctioncall) whose variants carry the
+typed args directly. Host bindings that need a generic
+`(positional, keyword)` `MontyObject` view can call `OsFunctionCall::to_args`
+(the public projection method).
+
+### resume
+
+```rust
+pub fn resume(
+    self,
+    result: impl Into<ExtFunctionResult>,
+    print: PrintWriter<'_>,
+) -> Result<RunProgress, MontyException>
+```
+
+<div class="rust-decl-links" data-links="ExtFunctionResult ../monty-types/#extfunctionresult;PrintWriter ../monty-types/#printwriter;RunProgress #runprogress;MontyException ../monty-types/#montyexception" hidden></div>
+
+Resumes execution with the OS call result.
+
+#### Arguments
+* `result` — The return value or exception from the OS operation.
+* `print` — Writer for `print()` output.
+
+### resume_with
+
+```rust
+pub fn resume_with(
+    self,
+    print: PrintWriter<'_>,
+    handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult,
+) -> Result<RunProgress, MontyException>
+```
+
+<div class="rust-decl-links" data-links="PrintWriter ../monty-types/#printwriter;OsFunctionCall ../monty-types/#osfunctioncall;ExtFunctionResult ../monty-types/#extfunctionresult;RunProgress #runprogress;MontyException ../monty-types/#montyexception" hidden></div>
+
+Dispatches the call to `handler` and resumes execution with its result.
+
+`handler` receives the [`OsFunctionCall`](monty-types.md#osfunctioncall) by value, so large
+`WriteText` / `WriteBytes` payloads move into the host without
+cloning. Prefer this over reading `Self::function_call` and calling
+[`Self::resume`](#oscall) separately when the handler consumes the call.
+
+### tracker
+
+```rust
+pub fn tracker(&self) -> &ResourceTracker
+```
+
+<div class="rust-decl-links" data-links="ResourceTracker ../monty-types/#resourcetracker" hidden></div>
+
+Returns the resource tracker while execution is suspended.
+
+Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
+
+## ResolveFutures
+
+```rust
+pub struct ResolveFutures { /* private fields */ }
+```
+
+Execution state paused while waiting for external future results.
+
+Supports incremental resolution — you can provide partial results and Monty
+will continue running until all tasks are blocked again.
+
+Use [`pending_call_ids`](#resolvefutures) to see which calls are pending, then call
+[`resume`](#resolvefutures) with some or all of the results.
+
+### pending_call_ids
+
+```rust
+pub fn pending_call_ids(&self) -> &[u32]
+```
+
+Returns unresolved call IDs for this suspended state.
+
+### tracker
+
+```rust
+pub fn tracker(&self) -> &ResourceTracker
+```
+
+<div class="rust-decl-links" data-links="ResourceTracker ../monty-types/#resourcetracker" hidden></div>
+
+Returns the resource tracker while execution is suspended.
+
+### resume
+
+```rust
+pub fn resume(
+    self,
+    results: Vec<(u32, ExtFunctionResult)>,
+    print: PrintWriter<'_>,
+) -> Result<RunProgress, MontyException>
+```
+
+<div class="rust-decl-links" data-links="ExtFunctionResult ../monty-types/#extfunctionresult;PrintWriter ../monty-types/#printwriter;RunProgress #runprogress;MontyException ../monty-types/#montyexception" hidden></div>
+
+Resumes execution with results for some or all pending futures.
+
+**Incremental resolution**: You don't need to provide all results at once.
+If you provide a partial list, Monty will:
+1. Mark those futures as resolved
+2. Unblock any tasks waiting on those futures
+3. Continue running until all tasks are blocked again
+4. Return [`ResolveFutures`](#resolvefutures) with the remaining pending calls
+
+#### Arguments
+* `results` — List of `(call_id, result)` pairs. Can be a subset of pending calls.
+* `print` — Writer for print output.
+
+#### Errors
+Returns [`MontyException`](monty-types.md#montyexception) if any `call_id` in `results` is not in the pending set.
+
+Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
+
+## MontyRepl
+
+```rust
+pub struct MontyRepl { /* private fields */ }
+```
+
+Stateful REPL session that executes snippets incrementally without replay.
+
+[`MontyRepl`](#montyrepl) preserves heap and global variable state between snippets.
+Each [`feed_run`](#montyrepl) or [`feed_start`](#montyrepl) call compiles and executes only the new snippet against the current
+state, avoiding the cost and semantic risks of replaying prior code.
+
+### new
+
+```rust
+pub fn new(
+    script_name: &str,
+    resource_tracker: ResourceTracker,
+    options: CompileOptions,
+) -> Self
+```
+
+<div class="rust-decl-links" data-links="ResourceTracker ../monty-types/#resourcetracker;CompileOptions ../monty-types/#compileoptions" hidden></div>
+
+Creates an empty REPL session with no code parsed or executed.
+
+All code execution is driven through [`feed_run`](#montyrepl) or [`feed_start`](#montyrepl). This separates
+construction from execution, matching the pattern used by [`MontyRun::new`](#montyrun).
+The [`CompileOptions`](monty-types.md#compileoptions) apply to every snippet fed to the session.
+
+### tracker
+
+```rust
+pub fn tracker(&self) -> &ResourceTracker
+```
+
+<div class="rust-decl-links" data-links="ResourceTracker ../monty-types/#resourcetracker" hidden></div>
+
+Returns the resource tracker that will be used for the next snippet.
+
+This is primarily intended for host integrations that need to attach
+per-execution state, such as cancellation markers, to an existing REPL.
+
+### tracker_mut
+
+```rust
+pub fn tracker_mut(&mut self) -> &mut ResourceTracker
+```
+
+<div class="rust-decl-links" data-links="ResourceTracker ../monty-types/#resourcetracker" hidden></div>
+
+Returns mutable access to the resource tracker for the next snippet.
+
+REPL hosts use this to install ephemeral execution controls, such as
+async cancellation flags, before calling [`feed_start`](#montyrepl).
+
+### feed_start
+
+```rust
+pub fn feed_start(
+    self,
+    code: &str,
+    inputs: Vec<(String, MontyObject)>,
+    print: PrintWriter<'_>,
+) -> Result<ReplProgress, Box<ReplStartError>>
+```
+
+<div class="rust-decl-links" data-links="MontyObject ../monty-types/#montyobject;PrintWriter ../monty-types/#printwriter;ReplProgress #replprogress;ReplStartError #replstarterror" hidden></div>
+
+Starts executing a new snippet and returns suspendable REPL progress.
+
+This is the REPL equivalent of [`MontyRun::start`](#montyrun): execution may complete,
+suspend at external calls / OS calls / unresolved futures, or raise a Python
+exception. Resume with the returned state object and eventually recover the
+updated REPL from [`ReplProgress::into_complete`](#replprogress).
+
+Unlike [`MontyRepl::feed_run`](#montyrepl), this method consumes `self` so runtime state can be
+safely moved into snapshot objects for serialization and cross-process resume.
+
+On a Python-level runtime exception the REPL is **not** destroyed: it is
+returned inside [`ReplStartError`](#replstarterror) so the caller can continue feeding
+subsequent snippets against the same heap and namespace state.
+
+#### Errors
+Returns a boxed [`ReplStartError`](#replstarterror) for syntax, compile-time, or runtime
+failures — the REPL session is always preserved inside the error.
+
+### feed_run
+
+```rust
+pub fn feed_run(
+    &mut self,
+    code: &str,
+    inputs: Vec<(String, MontyObject)>,
+    print: PrintWriter<'_>,
+) -> Result<MontyObject, MontyException>
+```
+
+<div class="rust-decl-links" data-links="MontyObject ../monty-types/#montyobject;PrintWriter ../monty-types/#printwriter;MontyException ../monty-types/#montyexception" hidden></div>
+
+Feeds and executes a new snippet against the current REPL state to completion.
+
+This compiles only `code` using the existing global slot map, extends the
+global namespace if new names are introduced, and executes the snippet once.
+Previously executed snippets are never replayed. If execution raises after
+partially mutating globals, those mutations remain visible in later feeds,
+matching Python REPL semantics.
+
+#### Errors
+Returns [`MontyException`](monty-types.md#montyexception) for syntax/compile/runtime failures.
+
+### call_function
+
+```rust
+pub fn call_function(
+    &mut self,
+    name: &str,
+    args: Vec<MontyObject>,
+    print: PrintWriter<'_>,
+) -> Result<MontyObject, MontyException>
+```
+
+<div class="rust-decl-links" data-links="MontyObject ../monty-types/#montyobject;PrintWriter ../monty-types/#printwriter;MontyException ../monty-types/#montyexception" hidden></div>
+
+Calls a Python function defined in the session by name.
+
+Looks up the function, then executes a synthetic `<python-input-N>`
+call expression so failures include a visible host call site.
+
+#### Errors
+Returns [`MontyException`](monty-types.md#montyexception) if the function is not found, not callable,
+raises an exception, or encounters an external function call.
+
+### function_names
+
+```rust
+pub fn function_names(&self) -> Vec<&str>
+```
+
+Returns a list of all callable function names defined in the session.
+
+Includes functions, closures, and functions with default arguments.
+Does not include builtins or external functions.
+
+### has_function
+
+```rust
+pub fn has_function(&self, name: &str) -> bool
+```
+
+Returns whether a function with the given name exists in the session.
+
+Implements: `Debug`, `Deserialize<'de>`, `Drop`, `Serialize`.
+
+## ReplProgress
+
+```rust
+pub enum ReplProgress {
+    /// Execution paused at an external function call or dataclass method call.
+    FunctionCall(ReplFunctionCall),
+    /// Execution paused for an OS-level operation.
+    OsCall(ReplOsCall),
+    /// All async tasks are blocked waiting for external futures to resolve.
+    ResolveFutures(ReplResolveFutures),
+    /// Execution paused for an unresolved name lookup.
+    NameLookup(ReplNameLookup),
+    /// Snippet execution completed with the updated REPL and result value.
+    Complete { repl: MontyRepl, value: monty_types::MontyObject },
+}
+```
+
+<div class="rust-decl-links" data-links="ReplFunctionCall #replfunctioncall;ReplOsCall #reploscall;ReplResolveFutures #replresolvefutures;ReplNameLookup #replnamelookup;MontyRepl #montyrepl;monty_types::MontyObject ../monty-types/#montyobject" hidden></div>
+
+Result of a single suspendable REPL snippet execution.
+
+This mirrors [`RunProgress`](#runprogress) but returns the updated [`MontyRepl`](#montyrepl) on completion
+so callers can continue feeding additional snippets without replaying prior code.
+Each variant (except [`Complete`](#replprogress)) wraps a dedicated struct with only the relevant
+resume methods.
+
+### into_function_call
+
+```rust
+pub fn into_function_call(self) -> Option<ReplFunctionCall>
+```
+
+<div class="rust-decl-links" data-links="ReplFunctionCall #replfunctioncall" hidden></div>
+
+Consumes the progress and returns the [`ReplFunctionCall`](#replfunctioncall) struct.
+
+### into_resolve_futures
+
+```rust
+pub fn into_resolve_futures(self) -> Option<ReplResolveFutures>
+```
+
+<div class="rust-decl-links" data-links="ReplResolveFutures #replresolvefutures" hidden></div>
+
+Consumes the progress and returns the [`ReplResolveFutures`](#replresolvefutures) struct.
+
+### into_name_lookup
+
+```rust
+pub fn into_name_lookup(self) -> Option<ReplNameLookup>
+```
+
+<div class="rust-decl-links" data-links="ReplNameLookup #replnamelookup" hidden></div>
+
+Consumes the progress and returns the [`ReplNameLookup`](#replnamelookup) struct.
+
+### into_complete
+
+```rust
+pub fn into_complete(self) -> Option<(MontyRepl, MontyObject)>
+```
+
+<div class="rust-decl-links" data-links="MontyRepl #montyrepl;MontyObject ../monty-types/#montyobject" hidden></div>
+
+Consumes the progress and returns the completed REPL and value.
+
+### into_repl
+
+```rust
+pub fn into_repl(self) -> MontyRepl
+```
+
+<div class="rust-decl-links" data-links="MontyRepl #montyrepl" hidden></div>
+
+Extracts the REPL session from any progress variant, discarding
+the in-flight execution state.
+
+Use this to recover the REPL when you need to abandon the current
+snippet (e.g. because [`feed_run`](#montyrepl) doesn't support async futures).
+The REPL state reflects any mutations that occurred before the
+snapshot was taken.
+
+### tracker
+
+```rust
+pub fn tracker(&self) -> &ResourceTracker
+```
+
+<div class="rust-decl-links" data-links="ResourceTracker ../monty-types/#resourcetracker" hidden></div>
+
+Returns the session's resource tracker, whatever the progress state.
+
+Lets hosts read resource accounting — e.g. cumulative execution time
+for `max_duration` budgeting — at any suspension point without
+consuming the progress.
+
+Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
+
+## ReplFunctionCall
+
+```rust
+pub struct ReplFunctionCall {
+    /// The name of the function or method being called.
+    pub function_name: String,
+    /// The positional arguments passed to the function.
+    pub args: Vec<monty_types::MontyObject>,
+    /// The keyword arguments passed to the function (key, value pairs).
+    pub kwargs: Vec<(monty_types::MontyObject, monty_types::MontyObject)>,
+    /// Unique identifier for this call (used for async correlation).
+    pub call_id: u32,
+    /// Whether this is a dataclass method call (first arg is `self`).
+    pub method_call: bool,
+    /* private fields */
+}
+```
+
+<div class="rust-decl-links" data-links="monty_types::MontyObject ../monty-types/#montyobject" hidden></div>
+
+REPL execution paused at an external function call or dataclass method call.
+
+Resume with [`resume`](#replfunctioncall) to provide the return value and continue,
+or [`resume_pending`](#replfunctioncall) to push an `ExternalFuture` for async resolution.
+
+### into_repl
+
+```rust
+pub fn into_repl(self) -> MontyRepl
+```
+
+<div class="rust-decl-links" data-links="MontyRepl #montyrepl" hidden></div>
+
+Extracts the REPL session, discarding the in-flight execution state.
+
+Restores globals from the VM snapshot so the REPL remains usable.
+
+### resume
+
+```rust
+pub fn resume(
+    self,
+    result: impl Into<ExtFunctionResult>,
+    print: PrintWriter<'_>,
+) -> Result<ReplProgress, Box<ReplStartError>>
+```
+
+<div class="rust-decl-links" data-links="ExtFunctionResult ../monty-types/#extfunctionresult;PrintWriter ../monty-types/#printwriter;ReplProgress #replprogress;ReplStartError #replstarterror" hidden></div>
+
+Resumes snippet execution with an external result.
+
+### resume_pending
+
+```rust
+pub fn resume_pending(
+    self,
+    print: PrintWriter<'_>,
+) -> Result<ReplProgress, Box<ReplStartError>>
+```
+
+<div class="rust-decl-links" data-links="PrintWriter ../monty-types/#printwriter;ReplProgress #replprogress;ReplStartError #replstarterror" hidden></div>
+
+Resumes execution by pushing an `ExternalFuture` for async resolution.
+
+Uses `self.call_id` internally — no need to pass it again.
+
+Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
+
+## ReplNameLookup
+
+```rust
+pub struct ReplNameLookup {
+    /// The name being looked up.
+    pub name: String,
+    /* private fields */
+}
+```
+
+REPL execution paused for an unresolved name lookup.
+
+The host should check if the name corresponds to a known external function or
+value. Call [`resume`](#replnamelookup) with the appropriate [`NameLookupResult`](monty-types.md#namelookupresult).
+The namespace slot and scope are managed internally.
+
+### into_repl
+
+```rust
+pub fn into_repl(self) -> MontyRepl
+```
+
+<div class="rust-decl-links" data-links="MontyRepl #montyrepl" hidden></div>
+
+Extracts the REPL session, discarding the in-flight execution state.
+
+Restores globals from the VM snapshot so the REPL remains usable.
+
+### resume
+
+```rust
+pub fn resume(
+    self,
+    result: NameLookupResult,
+    print: PrintWriter<'_>,
+) -> Result<ReplProgress, Box<ReplStartError>>
+```
+
+<div class="rust-decl-links" data-links="NameLookupResult ../monty-types/#namelookupresult;PrintWriter ../monty-types/#printwriter;ReplProgress #replprogress;ReplStartError #replstarterror" hidden></div>
+
+Resumes execution after name resolution.
+
+Caches the resolved value in the namespace slot before restoring the VM,
+then either pushes the value onto the stack or raises `NameError`.
+
+Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
+
+## ReplOsCall
+
+```rust
+pub struct ReplOsCall {
+    /// Typed OS-call dispatch value (variant + args).
+    pub function_call: monty_types::OsFunctionCall,
+    /// Unique identifier for this call (used for async correlation).
+    pub call_id: u32,
+    /* private fields */
+}
+```
+
+<div class="rust-decl-links" data-links="monty_types::OsFunctionCall ../monty-types/#osfunctioncall" hidden></div>
+
+REPL execution paused for an OS-level operation.
+
+Resume with `resume(result, print)` to provide the OS call result and continue.
+
+### into_repl
+
+```rust
+pub fn into_repl(self) -> MontyRepl
+```
+
+<div class="rust-decl-links" data-links="MontyRepl #montyrepl" hidden></div>
+
+Extracts the REPL session, discarding the in-flight execution state.
+
+Restores globals from the VM snapshot so the REPL remains usable.
+
+### resume
+
+```rust
+pub fn resume(
+    self,
+    result: impl Into<ExtFunctionResult>,
+    print: PrintWriter<'_>,
+) -> Result<ReplProgress, Box<ReplStartError>>
+```
+
+<div class="rust-decl-links" data-links="ExtFunctionResult ../monty-types/#extfunctionresult;PrintWriter ../monty-types/#printwriter;ReplProgress #replprogress;ReplStartError #replstarterror" hidden></div>
+
+Resumes snippet execution with the OS call result.
+
+### resume_with
+
+```rust
+pub fn resume_with(
+    self,
+    print: PrintWriter<'_>,
+    handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult,
+) -> Result<ReplProgress, Box<ReplStartError>>
+```
+
+<div class="rust-decl-links" data-links="PrintWriter ../monty-types/#printwriter;OsFunctionCall ../monty-types/#osfunctioncall;ExtFunctionResult ../monty-types/#extfunctionresult;ReplProgress #replprogress;ReplStartError #replstarterror" hidden></div>
+
+REPL mirror of [`OsCall::resume_with`](#oscall) — dispatches the call
+to `handler` (which receives the [`OsFunctionCall`](monty-types.md#osfunctioncall) by value, so
+write payloads move without cloning) and resumes with its result.
+
+Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
+
+## ReplResolveFutures
+
+```rust
+pub struct ReplResolveFutures { /* private fields */ }
+```
+
+REPL execution state blocked on unresolved external futures.
+
+This is the REPL-aware counterpart to [`ResolveFutures`](#resolvefutures).
+
+### into_repl
+
+```rust
+pub fn into_repl(self) -> MontyRepl
+```
+
+<div class="rust-decl-links" data-links="MontyRepl #montyrepl" hidden></div>
+
+Extracts the REPL session, restoring globals from the suspended VM state.
+
+As with the other REPL snapshot types, globals live inside the VM
+snapshot while execution is suspended. Recovering the REPL for a
+cancelled or abandoned async snippet must put those globals back so
+previously defined REPL bindings remain available.
+
+### pending_call_ids
+
+```rust
+pub fn pending_call_ids(&self) -> &[u32]
+```
+
+Returns unresolved call IDs for this suspended state.
+
+### resume
+
+```rust
+pub fn resume(
+    self,
+    results: Vec<(u32, ExtFunctionResult)>,
+    print: PrintWriter<'_>,
+) -> Result<ReplProgress, Box<ReplStartError>>
+```
+
+<div class="rust-decl-links" data-links="ExtFunctionResult ../monty-types/#extfunctionresult;PrintWriter ../monty-types/#printwriter;ReplProgress #replprogress;ReplStartError #replstarterror" hidden></div>
+
+Resumes snippet execution with zero or more resolved futures.
+
+Supports incremental resolution: callers can provide only a subset of
+pending call IDs and continue resolving over multiple resumes.
+
+All errors — including API misuse (unknown `call_id`) and Python-level
+runtime failures — are returned as a boxed [`ReplStartError`](#replstarterror) so the REPL
+session is always preserved.
+
+Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
+
+## ReplStartError
+
+```rust
+pub struct ReplStartError {
+    /// REPL session state after the failed snippet — ready for further use.
+    pub repl: MontyRepl,
+    /// The Python exception that was raised.
+    pub error: monty_types::MontyException,
+}
+```
+
+<div class="rust-decl-links" data-links="MontyRepl #montyrepl;monty_types::MontyException ../monty-types/#montyexception" hidden></div>
+
+Error returned when a REPL snippet raises a Python exception during [`feed_start`](#montyrepl) or a `resume()`.
+
+Unlike syntax/compile errors which consume the REPL, runtime errors preserve
+the full session state so the caller can inspect the error and continue feeding
+subsequent snippets. Any global mutations that occurred before the exception
+remain visible in the returned `repl`.
+
+Implements: `Debug`.
+
+## ReplContinuationMode
+
+```rust
+pub enum ReplContinuationMode {
+    /// The current snippet is syntactically complete and can run now.
+    Complete,
+    /// The snippet is incomplete and needs more continuation lines.
+    IncompleteImplicit,
+    /// The snippet opened an indented block and should wait for a trailing blank
+    /// line before execution, matching CPython interactive behavior.
+    IncompleteBlock,
+}
+```
+
+Parse-derived continuation state for interactive REPL input collection.
+
+`monty-runtime` uses this to decide whether to execute the buffered snippet
+immediately, keep collecting continuation lines, or require a terminating
+blank line for block statements (`if:`, `def:`, etc.).
+
+Implements: `Clone`, `Copy`, `Debug`, `Eq`, `PartialEq`, `StructuralPartialEq`.
+
+## detect_repl_continuation_mode
+
+```rust
+pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode;
+```
+
+<div class="rust-decl-links" data-links="ReplContinuationMode #replcontinuationmode" hidden></div>
+
+Detects whether REPL source is complete or needs more input.
+
+This mirrors CPython's broad interactive behavior:
+- Incomplete bracketed / parenthesized / triple-quoted constructs continue.
+- Decorators continue until their class or function definition arrives.
+- Clause headers (`if:`, `def:`, etc.) require an indented body and then a
+  terminating blank line before execution.
+- All other parse outcomes are treated as complete (either valid code or a
+  syntax error that should be shown immediately).
+
+## Session
+
+```rust
+pub enum Session {
+    /// Between feeds, ready for the next snippet.
+    Idle(Box<MontyRepl>),
+    /// Mid-feed, waiting on a resume.
+    Suspended(Box<ReplProgress>),
+    /// A one-shot [`crate::MontyRun`] execution paused at a suspension. Not a
+    /// repl, so it cannot be fed further — only resumed to completion.
+    Running(Box<RunProgress>),
+}
+```
+
+<div class="rust-decl-links" data-links="MontyRepl #montyrepl;ReplProgress #replprogress;RunProgress #runprogress" hidden></div>
+
+Where a dumped session was paused. The variant order is mirrored by
+[`SessionRef`](#sessionref) and encoded as a postcard discriminant — keep them in step.
+
+Both arms are boxed because they differ by hundreds of bytes inline; a
+`Box<T>` serializes exactly as `T`, so this does not change the wire form.
+
+Implements: `Debug`, `Deserialize<'de>`.
+
+## SessionRef
+
+```rust
+pub enum SessionRef<'a> {
+    /// Between feeds, ready for the next snippet.
+    Idle(&'a MontyRepl),
+    /// Mid-feed, waiting on a resume.
+    Suspended(&'a ReplProgress),
+    /// A paused one-shot [`crate::MontyRun`] execution.
+    Running(&'a RunProgress),
+}
+```
+
+<div class="rust-decl-links" data-links="MontyRepl #montyrepl;ReplProgress #replprogress;RunProgress #runprogress" hidden></div>
+
+Borrowed counterpart of [`Session`](#session) used when dumping, so a live session can
+be serialized without moving the repl out of the host's own state.
+
+Implements: `Debug`, `Serialize`.
+
+## dump
+
+```rust
+pub fn dump(
+    script_name: &str,
+    type_check: Option<&monty_types::TypeCheckState>,
+    state: SessionRef<'_>,
+) -> Result<Vec<u8>, postcard::Error>;
+```
+
+<div class="rust-decl-links" data-links="monty_types::TypeCheckState ../monty-types/#typecheckstate;SessionRef #sessionref" hidden></div>
+
+Serializes a live session and its metadata into a versioned dump, readable
+by [`Dump::load`](#dump).
+
+Takes the state by reference because dumping is read-only: the caller keeps
+its session and can carry on feeding it.
+
+### Errors
+Returns an error if serialization fails.
 
 ## Dump
 
@@ -33,6 +1137,8 @@ pub struct Dump {
 }
 ```
 
+<div class="rust-decl-links" data-links="monty_types::TypeCheckState ../monty-types/#typecheckstate;Session #session" hidden></div>
+
 A complete REPL session snapshot: the interpreter state plus the
 session-scoped context that lives outside it.
 
@@ -45,6 +1151,8 @@ silently downgraded — losing `script_name` corrupts tracebacks, and losing
 ```rust
 pub fn load(bytes: &[u8]) -> Result<Self, DumpError>
 ```
+
+<div class="rust-decl-links" data-links="DumpError #dumperror" hidden></div>
 
 Restores a session dumped by `dump`.
 
@@ -76,932 +1184,18 @@ a payload error on a current-version dump means corruption.
 
 Implements: `Debug`, `Display`, `Eq`, `Error`, `PartialEq`, `StructuralPartialEq`.
 
-## Session
+## DUMP_VERSION
 
 ```rust
-pub enum Session {
-    /// Between feeds, ready for the next snippet.
-    Idle(Box<MontyRepl>),
-    /// Mid-feed, waiting on a resume.
-    Suspended(Box<ReplProgress>),
-    /// A one-shot [`crate::MontyRun`] execution paused at a suspension. Not a
-    /// repl, so it cannot be fed further — only resumed to completion.
-    Running(Box<RunProgress>),
-}
+pub const DUMP_VERSION: u16 = 6;
 ```
 
-Where a dumped session was paused. The variant order is mirrored by
-[`SessionRef`](#sessionref) and encoded as a postcard discriminant — keep them in step.
+Version of the dump's postcard schema.
 
-Both arms are boxed because they differ by hundreds of bytes inline; a
-`Box<T>` serializes exactly as `T`, so this does not change the wire form.
-
-Implements: `Debug`, `Deserialize<'de>`.
-
-## SessionRef
-
-```rust
-pub enum SessionRef<'a> {
-    /// Between feeds, ready for the next snippet.
-    Idle(&'a MontyRepl),
-    /// Mid-feed, waiting on a resume.
-    Suspended(&'a ReplProgress),
-    /// A paused one-shot [`crate::MontyRun`] execution.
-    Running(&'a RunProgress),
-}
-```
-
-Borrowed counterpart of [`Session`](#session) used when dumping, so a live session can
-be serialized without moving the repl out of the host's own state.
-
-Implements: `Debug`, `Serialize`.
-
-## dump
-
-```rust
-pub fn dump(script_name: &str, type_check: Option<&monty_types::TypeCheckState>, state: SessionRef<'_>) -> Result<Vec<u8>, postcard::Error>;
-```
-
-Serializes a live session and its metadata into a versioned dump, readable
-by [`Dump::load`](#dump).
-
-Takes the state by reference because dumping is read-only: the caller keeps
-its session and can carry on feeding it.
-
-### Errors
-Returns an error if serialization fails.
-
-## MontyRepl
-
-```rust
-pub struct MontyRepl { /* private fields */ }
-```
-
-Stateful REPL session that executes snippets incrementally without replay.
-
-`MontyRepl` preserves heap and global variable state between snippets.
-Each `feed()` compiles and executes only the new snippet against the current
-state, avoiding the cost and semantic risks of replaying prior code.
-
-### new
-
-```rust
-pub fn new(script_name: &str, resource_tracker: ResourceTracker, options: CompileOptions) -> Self
-```
-
-Creates an empty REPL session with no code parsed or executed.
-
-All code execution is driven through `feed_run()` or `feed_start()`. This separates
-construction from execution, matching the pattern used by `MontyRun::new()`.
-The [`CompileOptions`](monty-types.md#compileoptions) apply to every snippet fed to the session.
-
-### tracker
-
-```rust
-pub fn tracker(&self) -> &ResourceTracker
-```
-
-Returns the resource tracker that will be used for the next snippet.
-
-This is primarily intended for host integrations that need to attach
-per-execution state, such as cancellation markers, to an existing REPL.
-
-### tracker_mut
-
-```rust
-pub fn tracker_mut(&mut self) -> &mut ResourceTracker
-```
-
-Returns mutable access to the resource tracker for the next snippet.
-
-REPL hosts use this to install ephemeral execution controls, such as
-async cancellation flags, before calling `feed_start()`.
-
-### feed_start
-
-```rust
-pub fn feed_start(self, code: &str, inputs: Vec<(String, MontyObject)>, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>>
-```
-
-Starts executing a new snippet and returns suspendable REPL progress.
-
-This is the REPL equivalent of `MontyRun::start`: execution may complete,
-suspend at external calls / OS calls / unresolved futures, or raise a Python
-exception. Resume with the returned state object and eventually recover the
-updated REPL from `ReplProgress::into_complete`.
-
-Unlike `MontyRepl::feed`, this method consumes `self` so runtime state can be
-safely moved into snapshot objects for serialization and cross-process resume.
-
-On a Python-level runtime exception the REPL is **not** destroyed: it is
-returned inside `ReplStartError` so the caller can continue feeding
-subsequent snippets against the same heap and namespace state.
-
-#### Errors
-Returns `Err(Box<ReplStartError>)` for syntax, compile-time, or runtime
-failures — the REPL session is always preserved inside the error.
-
-### feed_run
-
-```rust
-pub fn feed_run(&mut self, code: &str, inputs: Vec<(String, MontyObject)>, print: PrintWriter<'_>) -> Result<MontyObject, MontyException>
-```
-
-Feeds and executes a new snippet against the current REPL state to completion.
-
-This compiles only `code` using the existing global slot map, extends the
-global namespace if new names are introduced, and executes the snippet once.
-Previously executed snippets are never replayed. If execution raises after
-partially mutating globals, those mutations remain visible in later feeds,
-matching Python REPL semantics.
-
-#### Errors
-Returns `MontyException` for syntax/compile/runtime failures.
-
-### call_function
-
-```rust
-pub fn call_function(&mut self, name: &str, args: Vec<MontyObject>, print: PrintWriter<'_>) -> Result<MontyObject, MontyException>
-```
-
-Calls a Python function defined in the session by name.
-
-Looks up the function, then executes a synthetic `<python-input-N>`
-call expression so failures include a visible host call site.
-
-#### Errors
-Returns `MontyException` if the function is not found, not callable,
-raises an exception, or encounters an external function call.
-
-### function_names
-
-```rust
-pub fn function_names(&self) -> Vec<&str>
-```
-
-Returns a list of all callable function names defined in the session.
-
-Includes functions, closures, and functions with default arguments.
-Does not include builtins or external functions.
-
-### has_function
-
-```rust
-pub fn has_function(&self, name: &str) -> bool
-```
-
-Returns whether a function with the given name exists in the session.
-
-Implements: `Debug`, `Deserialize<'de>`, `Drop`, `Serialize`.
-
-## ReplContinuationMode
-
-```rust
-pub enum ReplContinuationMode {
-    /// The current snippet is syntactically complete and can run now.
-    Complete,
-    /// The snippet is incomplete and needs more continuation lines.
-    IncompleteImplicit,
-    /// The snippet opened an indented block and should wait for a trailing blank
-    /// line before execution, matching CPython interactive behavior.
-    IncompleteBlock,
-}
-```
-
-Parse-derived continuation state for interactive REPL input collection.
-
-`monty-runtime` uses this to decide whether to execute the buffered snippet
-immediately, keep collecting continuation lines, or require a terminating
-blank line for block statements (`if:`, `def:`, etc.).
-
-Implements: `Clone`, `Copy`, `Debug`, `Eq`, `PartialEq`, `StructuralPartialEq`.
-
-## ReplFunctionCall
-
-```rust
-pub struct ReplFunctionCall {
-    /// The name of the function or method being called.
-    pub function_name: String,
-    /// The positional arguments passed to the function.
-    pub args: Vec<monty_types::MontyObject>,
-    /// The keyword arguments passed to the function (key, value pairs).
-    pub kwargs: Vec<(monty_types::MontyObject, monty_types::MontyObject)>,
-    /// Unique identifier for this call (used for async correlation).
-    pub call_id: u32,
-    /// Whether this is a dataclass method call (first arg is `self`).
-    pub method_call: bool,
-    /* private fields */
-}
-```
-
-REPL execution paused at an external function call or dataclass method call.
-
-Resume with `resume(result, print)` to provide the return value and continue,
-or `resume_pending(print)` to push an `ExternalFuture` for async resolution.
-
-### into_repl
-
-```rust
-pub fn into_repl(self) -> MontyRepl
-```
-
-Extracts the REPL session, discarding the in-flight execution state.
-
-Restores globals from the VM snapshot so the REPL remains usable.
-
-### resume
-
-```rust
-pub fn resume(self, result: impl Into<ExtFunctionResult>, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>>
-```
-
-Resumes snippet execution with an external result.
-
-### resume_pending
-
-```rust
-pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>>
-```
-
-Resumes execution by pushing an `ExternalFuture` for async resolution.
-
-Uses `self.call_id` internally — no need to pass it again.
-
-Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
-
-## ReplNameLookup
-
-```rust
-pub struct ReplNameLookup {
-    /// The name being looked up.
-    pub name: String,
-    /* private fields */
-}
-```
-
-REPL execution paused for an unresolved name lookup.
-
-The host should check if the name corresponds to a known external function or
-value. Call `resume(result, print)` with the appropriate `NameLookupResult`.
-The namespace slot and scope are managed internally.
-
-### into_repl
-
-```rust
-pub fn into_repl(self) -> MontyRepl
-```
-
-Extracts the REPL session, discarding the in-flight execution state.
-
-Restores globals from the VM snapshot so the REPL remains usable.
-
-### resume
-
-```rust
-pub fn resume(self, result: NameLookupResult, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>>
-```
-
-Resumes execution after name resolution.
-
-Caches the resolved value in the namespace slot before restoring the VM,
-then either pushes the value onto the stack or raises `NameError`.
-
-Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
-
-## ReplOsCall
-
-```rust
-pub struct ReplOsCall {
-    /// Typed OS-call dispatch value (variant + args).
-    pub function_call: monty_types::OsFunctionCall,
-    /// Unique identifier for this call (used for async correlation).
-    pub call_id: u32,
-    /* private fields */
-}
-```
-
-REPL execution paused for an OS-level operation.
-
-Resume with `resume(result, print)` to provide the OS call result and continue.
-
-### into_repl
-
-```rust
-pub fn into_repl(self) -> MontyRepl
-```
-
-Extracts the REPL session, discarding the in-flight execution state.
-
-Restores globals from the VM snapshot so the REPL remains usable.
-
-### resume
-
-```rust
-pub fn resume(self, result: impl Into<ExtFunctionResult>, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>>
-```
-
-Resumes snippet execution with the OS call result.
-
-### resume_with
-
-```rust
-pub fn resume_with(self, print: PrintWriter<'_>, handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult) -> Result<ReplProgress, Box<ReplStartError>>
-```
-
-REPL mirror of [`OsCall::resume_with`](#oscall) — dispatches the call
-to `handler` (which receives the [`OsFunctionCall`](monty-types.md#osfunctioncall) by value, so
-write payloads move without cloning) and resumes with its result.
-
-Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
-
-## ReplProgress
-
-```rust
-pub enum ReplProgress {
-    /// Execution paused at an external function call or dataclass method call.
-    FunctionCall(ReplFunctionCall),
-    /// Execution paused for an OS-level operation.
-    OsCall(ReplOsCall),
-    /// All async tasks are blocked waiting for external futures to resolve.
-    ResolveFutures(ReplResolveFutures),
-    /// Execution paused for an unresolved name lookup.
-    NameLookup(ReplNameLookup),
-    /// Snippet execution completed with the updated REPL and result value.
-    Complete { repl: MontyRepl, value: monty_types::MontyObject },
-}
-```
-
-Result of a single suspendable REPL snippet execution.
-
-This mirrors `RunProgress` but returns the updated `MontyRepl` on completion
-so callers can continue feeding additional snippets without replaying prior code.
-Each variant (except `Complete`) wraps a dedicated struct with only the relevant
-resume methods.
-
-### into_function_call
-
-```rust
-pub fn into_function_call(self) -> Option<ReplFunctionCall>
-```
-
-Consumes the progress and returns the `ReplFunctionCall` struct.
-
-### into_resolve_futures
-
-```rust
-pub fn into_resolve_futures(self) -> Option<ReplResolveFutures>
-```
-
-Consumes the progress and returns the `ReplResolveFutures` struct.
-
-### into_name_lookup
-
-```rust
-pub fn into_name_lookup(self) -> Option<ReplNameLookup>
-```
-
-Consumes the progress and returns the `ReplNameLookup` struct.
-
-### into_complete
-
-```rust
-pub fn into_complete(self) -> Option<(MontyRepl, MontyObject)>
-```
-
-Consumes the progress and returns the completed REPL and value.
-
-### into_repl
-
-```rust
-pub fn into_repl(self) -> MontyRepl
-```
-
-Extracts the REPL session from any progress variant, discarding
-the in-flight execution state.
-
-Use this to recover the REPL when you need to abandon the current
-snippet (e.g. because `feed_run` doesn't support async futures).
-The REPL state reflects any mutations that occurred before the
-snapshot was taken.
-
-### tracker
-
-```rust
-pub fn tracker(&self) -> &ResourceTracker
-```
-
-Returns the session's resource tracker, whatever the progress state.
-
-Lets hosts read resource accounting — e.g. cumulative execution time
-for `max_duration` budgeting — at any suspension point without
-consuming the progress.
-
-Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
-
-## ReplResolveFutures
-
-```rust
-pub struct ReplResolveFutures { /* private fields */ }
-```
-
-REPL execution state blocked on unresolved external futures.
-
-This is the REPL-aware counterpart to `ResolveFutures`.
-
-### into_repl
-
-```rust
-pub fn into_repl(self) -> MontyRepl
-```
-
-Extracts the REPL session, restoring globals from the suspended VM state.
-
-As with the other REPL snapshot types, globals live inside the VM
-snapshot while execution is suspended. Recovering the REPL for a
-cancelled or abandoned async snippet must put those globals back so
-previously defined REPL bindings remain available.
-
-### pending_call_ids
-
-```rust
-pub fn pending_call_ids(&self) -> &[u32]
-```
-
-Returns unresolved call IDs for this suspended state.
-
-### resume
-
-```rust
-pub fn resume(self, results: Vec<(u32, ExtFunctionResult)>, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>>
-```
-
-Resumes snippet execution with zero or more resolved futures.
-
-Supports incremental resolution: callers can provide only a subset of
-pending call IDs and continue resolving over multiple resumes.
-
-All errors — including API misuse (unknown `call_id`) and Python-level
-runtime failures — are returned as `Err(Box<ReplStartError>)` so the REPL
-session is always preserved.
-
-Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
-
-## ReplStartError
-
-```rust
-pub struct ReplStartError {
-    /// REPL session state after the failed snippet — ready for further use.
-    pub repl: MontyRepl,
-    /// The Python exception that was raised.
-    pub error: monty_types::MontyException,
-}
-```
-
-Error returned when a REPL snippet raises a Python exception during `start()` or `resume()`.
-
-Unlike syntax/compile errors which consume the REPL, runtime errors preserve
-the full session state so the caller can inspect the error and continue feeding
-subsequent snippets. Any global mutations that occurred before the exception
-remain visible in the returned `repl`.
-
-Implements: `Debug`.
-
-## detect_repl_continuation_mode
-
-```rust
-pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode;
-```
-
-Detects whether REPL source is complete or needs more input.
-
-This mirrors CPython's broad interactive behavior:
-- Incomplete bracketed / parenthesized / triple-quoted constructs continue.
-- Decorators continue until their class or function definition arrives.
-- Clause headers (`if:`, `def:`, etc.) require an indented body and then a
-  terminating blank line before execution.
-- All other parse outcomes are treated as complete (either valid code or a
-  syntax error that should be shown immediately).
-
-## MontyRun
-
-```rust
-pub struct MontyRun { /* private fields */ }
-```
-
-Primary interface for running Monty code.
-
-`MontyRun` supports two execution modes:
-- **Simple execution**: Use `run()` or `run_no_limits()` to run code to completion
-- **Iterative execution**: Use `start()` to start execution which will pause at external function calls and
-  can be resumed later
-
-### Example
-```rust
-use monty::MontyRun;
-use monty_types::{CompileOptions, MontyObject};
-
-let runner = MontyRun::new(
-    "x + 1".to_owned(),
-    "test.py",
-    vec!["x".to_owned()],
-    CompileOptions::default(),
-)
-.unwrap();
-let result = runner.run_no_limits(vec![MontyObject::Int(41)]).unwrap();
-assert_eq!(result, MontyObject::Int(42));
-```
-
-### new
-
-```rust
-pub fn new(code: String, script_name: &str, input_names: Vec<String>, options: CompileOptions) -> Result<Self, MontyException>
-```
-
-Creates a new run snapshot by parsing the given code.
-
-This only parses and prepares the code - no heap or namespaces are created yet.
-Call `run_snapshot()` with inputs to start execution.
-
-#### Arguments
-* `code` - The Python code to execute
-* `script_name` - The script name for error messages
-* `input_names` - Names of input variables
-* `options` - [`CompileOptions`](monty-types.md#compileoptions) controlling CPython divergences; usually `CompileOptions::default()`
-
-#### Errors
-Returns `MontyException` if the code cannot be parsed.
-
-### code
-
-```rust
-pub fn code(&self) -> &str
-```
-
-Returns the code that was parsed to create this snapshot.
-
-### run
-
-```rust
-pub fn run(&self, inputs: Vec<MontyObject>, resource_tracker: ResourceTracker, print: PrintWriter<'_>) -> Result<MontyObject, MontyException>
-```
-
-Executes the code to completion assuming not external functions or snapshotting.
-
-This is marginally faster than running with snapshotting enabled since we don't need
-to track the position in code, but does not allow calling of external functions.
-
-#### Arguments
-* `inputs` - Values to fill the first N slots of the namespace
-* `resource_tracker` - Custom resource tracker implementation
-* `print` - print output writer
-
-### run_no_limits
-
-```rust
-pub fn run_no_limits(&self, inputs: Vec<MontyObject>) -> Result<MontyObject, MontyException>
-```
-
-Executes the code to completion with no resource limits specified (will use the default),
-printing to stdout/stderr.
-
-### start
-
-```rust
-pub fn start(self, inputs: Vec<MontyObject>, resource_tracker: ResourceTracker, print: PrintWriter<'_>) -> Result<RunProgress, MontyException>
-```
-
-Starts execution with the given inputs and resource tracker, consuming self.
-
-Creates the heap and namespaces, then begins execution.
-
-For iterative execution, `start()` consumes self and returns a `RunProgress`:
-- `RunProgress::FunctionCall(call)` - external function call, call `call.resume(return_value)` to resume
-- `RunProgress::Complete(value)` - execution finished
-
-This enables snapshotting execution state and returning control to the host
-application during long-running computations.
-
-#### Arguments
-* `inputs` - Initial input values (must match length of `input_names` from `new()`)
-* `resource_tracker` - Resource tracker for the execution
-* `print` - Writer for print output
-
-#### Errors
-Returns `MontyException` if:
-- The number of inputs doesn't match the expected count
-- An input value is invalid (e.g., `MontyObject::Repr`)
-- A runtime error occurs during execution
-
-#### Panics
-This method should not panic under normal operation. Internal assertions
-may panic if the VM reaches an inconsistent state (indicating a bug).
-
-Implements: `Clone`, `Debug`, `Deserialize<'de>`, `Serialize`.
-
-## FunctionCall
-
-```rust
-pub struct FunctionCall {
-    /// The name of the function or method being called.
-    pub function_name: String,
-    /// The positional arguments passed to the function.
-    pub args: Vec<monty_types::MontyObject>,
-    /// The keyword arguments passed to the function (key, value pairs).
-    pub kwargs: Vec<(monty_types::MontyObject, monty_types::MontyObject)>,
-    /// Unique identifier for this call (used for async correlation).
-    pub call_id: u32,
-    /// Whether this is a dataclass method call (first arg is `self`).
-    pub method_call: bool,
-    /* private fields */
-}
-```
-
-Execution paused at an external function call or dataclass method call.
-
-The host can choose how to handle this:
-- **Sync resolution**: Call `resume(return_value, print)` to push the result and continue.
-- **Async resolution**: Call `resume_pending(print)` to push an `ExternalFuture` and continue.
-
-When using async resolution, the code continues and may `await` the future later.
-If the future isn't resolved when awaited, execution yields with `ResolveFutures`.
-
-When `method_call` is true, this represents a dataclass method call where the first
-positional arg is the dataclass instance (`self`).
-
-### tracker_mut
-
-```rust
-pub fn tracker_mut(&mut self) -> &mut ResourceTracker
-```
-
-Returns a mutable reference to the resource tracker.
-
-This allows modifying resource limits between execution phases,
-e.g. setting a time limit before resuming after an external function call.
-
-### tracker
-
-```rust
-pub fn tracker(&self) -> &ResourceTracker
-```
-
-Returns the resource tracker while execution is suspended.
-
-### resume
-
-```rust
-pub fn resume(self, result: impl Into<ExtFunctionResult>, print: PrintWriter<'_>) -> Result<RunProgress, MontyException>
-```
-
-Resumes execution with the return value or exception from the external function.
-
-Consumes self and returns the next execution progress.
-
-#### Arguments
-* `result` — The return value, exception, or pending future marker.
-* `print` — Writer for `print()` output.
-
-### resume_pending
-
-```rust
-pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<RunProgress, MontyException>
-```
-
-Resumes execution by pushing an `ExternalFuture` instead of a concrete value.
-
-This is the async resolution pattern: the host continues execution with a
-pending future. The code can then `await` this future later. If the code
-awaits the future before it's resolved, execution will yield with
-`RunProgress::ResolveFutures`.
-
-Uses `self.call_id` internally — no need to pass it again.
-
-#### Arguments
-* `print` — Writer for print output.
-
-Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
-
-## NameLookup
-
-```rust
-pub struct NameLookup {
-    /// The name being looked up.
-    pub name: String,
-    /* private fields */
-}
-```
-
-Execution paused for an unresolved name lookup.
-
-The host should check if the name corresponds to a known external function or
-value. Call `resume(result, print)` with `NameLookupResult::Value(obj)` to
-cache it in the namespace and continue, or `NameLookupResult::Undefined` to
-raise `NameError`.
-
-The namespace slot and scope are managed internally — the host only needs to
-provide the name resolution result.
-
-### tracker
-
-```rust
-pub fn tracker(&self) -> &ResourceTracker
-```
-
-Returns the resource tracker while execution is suspended.
-
-### resume
-
-```rust
-pub fn resume(self, result: impl Into<NameLookupResult>, print: PrintWriter<'_>) -> Result<RunProgress, MontyException>
-```
-
-Resumes execution after name resolution.
-
-Caches the resolved value in the appropriate slot (globals or stack)
-before restoring the VM, then either pushes the value or raises `NameError`.
-
-#### Arguments
-* `result` — The resolved value or `Undefined`.
-* `print` — Writer for print output.
-
-Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
-
-## OsCall
-
-```rust
-pub struct OsCall {
-    /// Typed OS-call dispatch value (variant + args).
-    pub function_call: monty_types::OsFunctionCall,
-    /// Unique identifier for this call (used for async correlation).
-    pub call_id: u32,
-    /* private fields */
-}
-```
-
-Execution paused for an OS-level operation.
-
-The host should execute the OS operation (filesystem, network, etc.) and
-call `resume(return_value, print)` to provide the result and continue.
-
-This enables sandboxed execution where the interpreter never directly performs I/O.
-
-`function_call` is a tagged [`OsFunctionCall`](monty-types.md#osfunctioncall) whose variants carry the
-typed args directly. Host bindings that need a generic
-`(positional, keyword)` `MontyObject` view can call `OsFunctionCall::to_args`
-(the public projection method).
-
-### resume
-
-```rust
-pub fn resume(self, result: impl Into<ExtFunctionResult>, print: PrintWriter<'_>) -> Result<RunProgress, MontyException>
-```
-
-Resumes execution with the OS call result.
-
-#### Arguments
-* `result` — The return value or exception from the OS operation.
-* `print` — Writer for `print()` output.
-
-### resume_with
-
-```rust
-pub fn resume_with(self, print: PrintWriter<'_>, handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult) -> Result<RunProgress, MontyException>
-```
-
-Dispatches the call to `handler` and resumes execution with its result.
-
-`handler` receives the [`OsFunctionCall`](monty-types.md#osfunctioncall) by value, so large
-`WriteText` / `WriteBytes` payloads move into the host without
-cloning. Prefer this over reading `Self::function_call` and calling
-[`Self::resume`](#oscall) separately when the handler consumes the call.
-
-### tracker
-
-```rust
-pub fn tracker(&self) -> &ResourceTracker
-```
-
-Returns the resource tracker while execution is suspended.
-
-Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
-
-## ResolveFutures
-
-```rust
-pub struct ResolveFutures { /* private fields */ }
-```
-
-Execution state paused while waiting for external future results.
-
-Supports incremental resolution — you can provide partial results and Monty
-will continue running until all tasks are blocked again.
-
-Use `pending_call_ids()` to see which calls are pending, then call
-`resume(results, print)` with some or all of the results.
-
-### pending_call_ids
-
-```rust
-pub fn pending_call_ids(&self) -> &[u32]
-```
-
-Returns unresolved call IDs for this suspended state.
-
-### tracker
-
-```rust
-pub fn tracker(&self) -> &ResourceTracker
-```
-
-Returns the resource tracker while execution is suspended.
-
-### resume
-
-```rust
-pub fn resume(self, results: Vec<(u32, ExtFunctionResult)>, print: PrintWriter<'_>) -> Result<RunProgress, MontyException>
-```
-
-Resumes execution with results for some or all pending futures.
-
-**Incremental resolution**: You don't need to provide all results at once.
-If you provide a partial list, Monty will:
-1. Mark those futures as resolved
-2. Unblock any tasks waiting on those futures
-3. Continue running until all tasks are blocked again
-4. Return `ResolveFutures` with the remaining pending calls
-
-#### Arguments
-* `results` — List of `(call_id, result)` pairs. Can be a subset of pending calls.
-* `print` — Writer for print output.
-
-#### Errors
-Returns `Err(MontyException)` if any `call_id` in `results` is not in the pending set.
-
-Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
-
-## RunProgress
-
-```rust
-pub enum RunProgress {
-    /// Execution paused at an external function call or dataclass method call.
-    FunctionCall(FunctionCall),
-    /// Execution paused for an OS-level operation (filesystem, network, etc.).
-    OsCall(OsCall),
-    /// All async tasks are blocked waiting for external futures to resolve.
-    ResolveFutures(ResolveFutures),
-    /// Execution paused for an unresolved name lookup.
-    NameLookup(NameLookup),
-    /// Execution completed with a final result.
-    Complete(monty_types::MontyObject),
-}
-```
-
-Result of a single step of iterative execution.
-
-Each variant wraps a dedicated struct that owns the execution state and
-exposes only the resume methods relevant to that suspension reason.
-
-### into_function_call
-
-```rust
-pub fn into_function_call(self) -> Option<FunctionCall>
-```
-
-Consumes the progress and returns the `FunctionCall` struct if this is a function call.
-
-### into_os_call
-
-```rust
-pub fn into_os_call(self) -> Option<OsCall>
-```
-
-Consumes the progress and returns the `OsCall` struct if this is an OS call.
-
-### into_complete
-
-```rust
-pub fn into_complete(self) -> Option<MontyObject>
-```
-
-Consumes the progress and returns the final value if execution completed.
-
-### into_resolve_futures
-
-```rust
-pub fn into_resolve_futures(self) -> Option<ResolveFutures>
-```
-
-Consumes the progress and returns the `ResolveFutures` struct.
-
-### into_name_lookup
-
-```rust
-pub fn into_name_lookup(self) -> Option<NameLookup>
-```
-
-Consumes the progress and returns the `NameLookup` struct.
-
-Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
+Bump this whenever a serialized discriminant can shift, so older dumps are
+rejected instead of decoding as their neighbour. That covers the
+interpreter's own types *and* everything reachable from [`Dump`](#dump) — notably
+[`TypeCheckingConfig`](monty-types.md#typecheckingconfig) in `monty-types`.
 
 ## defer_drop
 
@@ -1018,7 +1212,7 @@ that's normal completion, early return via `?`, `continue`, or any other branch.
 
 Beyond safety, this is often much more concise than inserting `drop_with` calls
 in every branch of complex control flow. For mutable access to the value, use
-`defer_drop_mut!`.
+[`defer_drop_mut!`](#defer_drop_mut).
 
 ### Limitation
 
@@ -1031,7 +1225,7 @@ is `self`. In `&mut self` methods, first assign `let this = self;` and pass `thi
 macro_rules! defer_drop_mut { /* macro body */ }
 ```
 
-Like `defer_drop!`, but rebinds `$value` as `&mut V` via `DropGuard::as_parts_mut`.
+Like [`defer_drop!`](#defer_drop), but rebinds `$value` as `&mut V` via `DropGuard::as_parts_mut`.
 
 Use this when the value needs to be mutated in place — for example, advancing an
 iterator with `for_next()`, or swapping values during a min/max comparison.

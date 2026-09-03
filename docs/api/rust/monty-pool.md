@@ -31,8 +31,15 @@ such a session likewise discards the worker rather than returning it.
 ### restore
 
 ```rust
-pub async fn restore(&mut self, state: Vec<u8>, mounts: Vec<MountSpec>, on_print: OnPrint<'_>) -> Result<(Option<TurnEvent>, Option<String>), PoolError>
+pub async fn restore(
+    &mut self,
+    state: Vec<u8>,
+    mounts: Vec<MountSpec>,
+    on_print: OnPrint<'_>,
+) -> Result<(Option<TurnEvent>, Option<String>), PoolError>
 ```
+
+<div class="rust-decl-links" data-links="MountSpec #mountspec;OnPrint #onprint;TurnEvent #turnevent;PoolError #poolerror" hidden></div>
 
 Restores a dumped session into this checkout's freshly configured (but
 not-yet-fed) worker, returning the re-announced suspension event when the
@@ -61,8 +68,17 @@ not the `Configure` one), which the parent surfaces in restored snapshots.
 ### feed
 
 ```rust
-pub async fn feed(&mut self, code: &str, inputs: Vec<(String, MontyObject)>, mounts: Vec<MountSpec>, skip_type_check: bool, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError>
+pub async fn feed(
+    &mut self,
+    code: &str,
+    inputs: Vec<(String, MontyObject)>,
+    mounts: Vec<MountSpec>,
+    skip_type_check: bool,
+    on_print: OnPrint<'_>,
+) -> Result<TurnEvent, PoolError>
 ```
+
+<div class="rust-decl-links" data-links="MontyObject ../monty-types/#montyobject;MountSpec #mountspec;OnPrint #onprint;TurnEvent #turnevent;PoolError #poolerror" hidden></div>
 
 Executes one snippet against the session. Inputs become sandbox
 globals; mounts apply to this feed only and are serviced by the parent
@@ -78,16 +94,27 @@ usable; all other errors mean the worker was discarded.
 ### resume
 
 ```rust
-pub async fn resume(&mut self, value: ResumeValue, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError>
+pub async fn resume(
+    &mut self,
+    value: ResumeValue,
+    on_print: OnPrint<'_>,
+) -> Result<TurnEvent, PoolError>
 ```
+
+<div class="rust-decl-links" data-links="ResumeValue #resumevalue;OnPrint #onprint;TurnEvent #turnevent;PoolError #poolerror" hidden></div>
 
 Answers a [`TurnEvent::FunctionCall`](#turnevent) or [`TurnEvent::OsCall`](#turnevent).
 
 ### resume_from_mounts
 
 ```rust
-pub async fn resume_from_mounts(&mut self, on_print: OnPrint<'_>) -> Result<Option<TurnEvent>, PoolError>
+pub async fn resume_from_mounts(
+    &mut self,
+    on_print: OnPrint<'_>,
+) -> Result<Option<TurnEvent>, PoolError>
 ```
+
+<div class="rust-decl-links" data-links="OnPrint #onprint;TurnEvent #turnevent;PoolError #poolerror" hidden></div>
 
 Answers a pending [`TurnEvent::OsCall`](#turnevent) from this feed's mounts, when
 they cover it.
@@ -112,8 +139,14 @@ on the next call.
 ### resume_name_lookup
 
 ```rust
-pub async fn resume_name_lookup(&mut self, value: Option<MontyObject>, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError>
+pub async fn resume_name_lookup(
+    &mut self,
+    value: Option<MontyObject>,
+    on_print: OnPrint<'_>,
+) -> Result<TurnEvent, PoolError>
 ```
+
+<div class="rust-decl-links" data-links="MontyObject ../monty-types/#montyobject;OnPrint #onprint;TurnEvent #turnevent;PoolError #poolerror" hidden></div>
 
 Answers a [`TurnEvent::NameLookup`](#turnevent): `Some(value)` resolves the name,
 `None` makes the sandbox raise `NameError`.
@@ -121,8 +154,14 @@ Answers a [`TurnEvent::NameLookup`](#turnevent): `Some(value)` resolves the name
 ### resume_futures
 
 ```rust
-pub async fn resume_futures(&mut self, results: Vec<(u32, ResumeValue)>, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError>
+pub async fn resume_futures(
+    &mut self,
+    results: Vec<(u32, ResumeValue)>,
+    on_print: OnPrint<'_>,
+) -> Result<TurnEvent, PoolError>
 ```
+
+<div class="rust-decl-links" data-links="ResumeValue #resumevalue;OnPrint #onprint;TurnEvent #turnevent;PoolError #poolerror" hidden></div>
 
 Answers a [`TurnEvent::ResolveFutures`](#turnevent) with results for some or all
 pending call ids. Each result must be `Return` or `Error` — a future
@@ -131,8 +170,13 @@ cannot resolve to another future or to "not found".
 ### install_dependencies
 
 ```rust
-pub async fn install_dependencies(&mut self, requirements: Vec<String>) -> Result<(), PoolError>
+pub async fn install_dependencies(
+    &mut self,
+    requirements: Vec<String>,
+) -> Result<(), PoolError>
 ```
+
+<div class="rust-decl-links" data-links="PoolError #poolerror" hidden></div>
 
 Installs third-party Python packages into the session, making them
 importable by subsequent feeds. Session-scoped and repeatable; an empty
@@ -155,6 +199,8 @@ package specifier is rejected with [`PoolError::Runtime`](#poolerror) (a
 pub async fn dump(&mut self) -> Result<Vec<u8>, PoolError>
 ```
 
+<div class="rust-decl-links" data-links="PoolError #poolerror" hidden></div>
+
 Serializes the session (idle or suspended) into opaque bytes that
 [`Checkout::restore`](#checkout) can restore — including into a
 different worker after this one crashes. The session stays live.
@@ -164,6 +210,8 @@ different worker after this one crashes. The session stays live.
 ```rust
 pub async fn finish(self) -> Result<(), PoolError>
 ```
+
+<div class="rust-decl-links" data-links="PoolError #poolerror" hidden></div>
 
 Ends the session and returns the worker to the pool.
 
@@ -182,8 +230,14 @@ remote WebSocket worker, or a finished checkout). Diagnostics/tests.
 ### turn_raw
 
 ```rust
-pub async fn turn_raw(&mut self, request: &pb::ParentRequest, on_event: OnRawEvent<'_>) -> Result<pb::ChildEvent, PoolError>
+pub async fn turn_raw(
+    &mut self,
+    request: &pb::ParentRequest,
+    on_event: OnRawEvent<'_>,
+) -> Result<pb::ChildEvent, PoolError>
 ```
+
+<div class="rust-decl-links" data-links="pb::ParentRequest ../monty-proto/#parentrequest;OnRawEvent #onrawevent;pb::ChildEvent ../monty-proto/#childevent;PoolError #poolerror" hidden></div>
 
 Sends `request` and returns the child's turn-ending event, as protobuf —
 no conversion to [`TurnEvent`](#turnevent).
@@ -231,6 +285,8 @@ pub struct MountSpec {
 }
 ```
 
+<div class="rust-decl-links" data-links="MountSpecMode #mountspecmode" hidden></div>
+
 A host directory mounted into the sandbox for one feed. Mounts are handled
 entirely on the parent: the checkout services covered filesystem OS calls
 from the host path itself (so mounts work even when the worker runs on a
@@ -241,8 +297,14 @@ mounts are consulted only when the caller asks, via
 ### new
 
 ```rust
-pub fn new(virtual_path: &str, host_path: impl AsRef<Path>, mode: MountSpecMode) -> Result<Self, PoolError>
+pub fn new(
+    virtual_path: &str,
+    host_path: impl AsRef<Path>,
+    mode: MountSpecMode,
+) -> Result<Self, PoolError>
 ```
+
+<div class="rust-decl-links" data-links="MountSpecMode #mountspecmode;PoolError #poolerror" hidden></div>
 
 Opens `host_path` and creates mount configuration with the default
 100 MB memory budget and no cumulative write limit.
@@ -264,6 +326,8 @@ the host path cannot be opened as a directory.
 ```rust
 pub fn from_root(root: MountRoot, mode: MountSpecMode) -> Self
 ```
+
+<div class="rust-decl-links" data-links="MountRoot ../monty-fs/#mountroot;MountSpecMode #mountspecmode" hidden></div>
 
 Creates mount configuration from an already-opened [`MountRoot`](monty-fs.md#mountroot), for
 hosts that open it themselves to map failures their own way.
@@ -314,6 +378,8 @@ Implements: `Clone`, `Copy`, `Debug`, `Eq`, `PartialEq`, `StructuralPartialEq`.
 pub type OnPrint<'a> = &'a mut dyn FnMut(monty_types::PrintStream, &str) -> PrintFuture + Send;
 ```
 
+<div class="rust-decl-links" data-links="monty_types::PrintStream ../monty-types/#printstream;PrintFuture #printfuture" hidden></div>
+
 Callback receiving sandbox `print()` output streamed during a turn.
 
 The callback returns a future so genuinely async sinks (a JS callback, a
@@ -326,6 +392,8 @@ copies of whatever it needs (including the text, if consumed async).
 ```rust
 pub type OnRawEvent<'a> = &'a mut dyn FnMut(&pb::ChildEvent) -> PrintFuture + Send;
 ```
+
+<div class="rust-decl-links" data-links="pb::ChildEvent ../monty-proto/#childevent;PrintFuture #printfuture" hidden></div>
 
 Callback for the events a [`Checkout::turn_raw`](#checkout) streams before the
 turn-ender — `Print`s today. Returns a future for the same reason
@@ -364,6 +432,8 @@ pub struct ReplConfig {
 }
 ```
 
+<div class="rust-decl-links" data-links="monty_types::ResourceLimits ../monty-types/#resourcelimits;monty_types::TypeCheckingConfig ../monty-types/#typecheckingconfig;monty_types::AssertMessageAnnotations ../monty-types/#assertmessageannotations" hidden></div>
+
 Arguments for the REPL session a checkout creates — mirrors
 `MontyRepl`'s constructor surface.
 
@@ -390,6 +460,8 @@ pub enum ResumeValue {
     NotHandled,
 }
 ```
+
+<div class="rust-decl-links" data-links="monty_types::MontyObject ../monty-types/#montyobject;monty_types::MontyException ../monty-types/#montyexception" hidden></div>
 
 The caller's answer to a [`TurnEvent::FunctionCall`](#turnevent) or
 [`TurnEvent::OsCall`](#turnevent).
@@ -423,6 +495,8 @@ pub enum TurnEvent {
 }
 ```
 
+<div class="rust-decl-links" data-links="monty_types::MontyObject ../monty-types/#montyobject" hidden></div>
+
 How a protocol turn ended: a suspension that needs an answer from the
 caller, or completion of the fed snippet.
 
@@ -431,10 +505,14 @@ Implements: `Debug`.
 ## on_print_sync
 
 ```rust
-pub fn on_print_sync<F>(sink: F) -> impl FnMut(monty_types::PrintStream, &str) -> PrintFuture + Send
+pub fn on_print_sync<F>(
+    sink: F,
+) -> impl FnMut(monty_types::PrintStream, &str) -> PrintFuture + Send
 where
     F: FnMut(monty_types::PrintStream, &str) + Send;
 ```
+
+<div class="rust-decl-links" data-links="monty_types::PrintStream ../monty-types/#printstream;PrintFuture #printfuture" hidden></div>
 
 Adapts a synchronous print sink to the [`OnPrint`](#onprint) callback shape.
 
@@ -467,6 +545,8 @@ those are finished or dropped.
 pub async fn new(config: PoolConfig) -> Result<Self, PoolError>
 ```
 
+<div class="rust-decl-links" data-links="PoolConfig #poolconfig;PoolError #poolerror" hidden></div>
+
 Creates the pool and eagerly spawns `min_processes` workers, failing
 fast if the binary cannot be spawned. Must be called within a tokio
 runtime (worker process and pipe I/O is driven by the runtime).
@@ -476,6 +556,8 @@ runtime (worker process and pipe I/O is driven by the runtime).
 ```rust
 pub async fn checkout(&self, repl: &ReplConfig) -> Result<Checkout, PoolError>
 ```
+
+<div class="rust-decl-links" data-links="ReplConfig #replconfig;Checkout #checkout;PoolError #poolerror" hidden></div>
 
 Dedicates a worker to one REPL session created from `repl`.
 
@@ -573,6 +655,8 @@ pub struct PoolConfig {
 }
 ```
 
+<div class="rust-decl-links" data-links="MontyTransport #montytransport" hidden></div>
+
 Configuration for a [`Pool`](#pool).
 
 ### subprocess
@@ -643,6 +727,8 @@ pub enum PoolError {
     Shutdown { dump: Option<Vec<u8>> },
 }
 ```
+
+<div class="rust-decl-links" data-links="CrashCause #crashcause;monty_types::MontyException ../monty-types/#montyexception" hidden></div>
 
 Why a pool operation failed.
 

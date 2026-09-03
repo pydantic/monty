@@ -36,6 +36,31 @@ const CRATES: &[CrateConfig] = &[
                 inside your own process. Most hosts should use [`monty-pool`](monty-pool.md) \
                 instead, which keeps a sandbox crash from taking the host process down.",
         render_crate_docs: false,
+        // reading order: one-shot runs and their suspensions, the REPL and
+        // its suspensions, then session dump/restore and the internal macros
+        order: &[
+            "MontyRun",
+            "RunProgress",
+            "FunctionCall",
+            "NameLookup",
+            "OsCall",
+            "ResolveFutures",
+            "MontyRepl",
+            "ReplProgress",
+            "ReplFunctionCall",
+            "ReplNameLookup",
+            "ReplOsCall",
+            "ReplResolveFutures",
+            "ReplStartError",
+            "ReplContinuationMode",
+            "detect_repl_continuation_mode",
+            "Session",
+            "SessionRef",
+            "dump",
+            "Dump",
+            "DumpError",
+            "DUMP_VERSION",
+        ],
     },
     CrateConfig {
         name: "monty-pool",
@@ -43,6 +68,7 @@ const CRATES: &[CrateConfig] = &[
                 timeouts and elastic scaling for running untrusted Python. This is the recommended \
                 Rust embedding surface — see the [Rust quickstart](../../quickstart/rust.md).",
         render_crate_docs: false,
+        order: &[],
     },
     CrateConfig {
         name: "monty-types",
@@ -50,12 +76,14 @@ const CRATES: &[CrateConfig] = &[
                 exceptions, resource limits and host-call payloads. Host-side code depends on \
                 this crate rather than on the interpreter.",
         render_crate_docs: false,
+        order: &[],
     },
     CrateConfig {
         name: "monty-fs",
         intro: "Host-side filesystem mounts: a `MountTable` maps real directories into the \
                 sandbox at virtual paths and services the sandbox's OS calls.",
         render_crate_docs: true,
+        order: &[],
     },
     CrateConfig {
         name: "monty-proto",
@@ -63,12 +91,14 @@ const CRATES: &[CrateConfig] = &[
                 messages, 4-byte length-prefixed framing, and validated conversions between wire \
                 frames and [`monty-types`](monty-types.md) values.",
         render_crate_docs: false,
+        order: &[],
     },
     CrateConfig {
         name: "monty-type-checking",
         intro: "Type checking for Monty sessions, powered by [ty](https://github.com/astral-sh/ty): \
                 checks code against Monty's trimmed typeshed before execution.",
         render_crate_docs: false,
+        order: &[],
     },
 ];
 
@@ -82,6 +112,10 @@ struct CrateConfig {
     name: &'static str,
     intro: &'static str,
     render_crate_docs: bool,
+    /// Explicit reading order for root items: listed names come first, in
+    /// this order; everything else keeps source order. A name not found at
+    /// the crate root is a generation error (catches renames).
+    order: &'static [&'static str],
 }
 
 fn main() {

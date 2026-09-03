@@ -78,6 +78,8 @@ pub enum MountError {
 }
 ```
 
+<div class="rust-decl-links" data-links="monty_types::ExcData ../monty-types/#excdata" hidden></div>
+
 Errors from mount configuration or filesystem operations.
 
 ### into_exception
@@ -85,6 +87,8 @@ Errors from mount configuration or filesystem operations.
 ```rust
 pub fn into_exception(self) -> MontyException
 ```
+
+<div class="rust-decl-links" data-links="MontyException ../monty-types/#montyexception" hidden></div>
 
 Converts this error into a [`MontyException`](monty-types.md#montyexception) for returning to the sandbox.
 
@@ -113,6 +117,8 @@ pub enum MountMode {
     OverlayMemory(super::overlay_state::OverlayState),
 }
 ```
+
+<div class="rust-decl-links" data-links="super::overlay_state::OverlayState #overlaystate" hidden></div>
 
 Access policy for a mount point.
 
@@ -167,8 +173,15 @@ and transferred into it with [`MountTable::push_mount`](#mounttable).
 ### new
 
 ```rust
-pub fn new(virtual_path: &str, host_path: impl AsRef<Path>, mode: MountMode, write_bytes_limit: Option<u64>) -> Result<Self, MountError>
+pub fn new(
+    virtual_path: &str,
+    host_path: impl AsRef<Path>,
+    mode: MountMode,
+    write_bytes_limit: Option<u64>,
+) -> Result<Self, MountError>
 ```
+
+<div class="rust-decl-links" data-links="MountMode #mountmode;MountError #mounterror" hidden></div>
 
 Creates a new mount point, opening a descriptor on the host directory.
 Mount memory defaults to [`DEFAULT_MEMORY_USAGE_LIMIT`](#default_memory_usage_limit).
@@ -187,6 +200,8 @@ or the host path cannot be opened as a directory or canonicalized.
 pub fn with_root(root: MountRoot, mode: MountMode, write_bytes_limit: Option<u64>) -> Self
 ```
 
+<div class="rust-decl-links" data-links="MountRoot #mountroot;MountMode #mountmode" hidden></div>
+
 Mounts an already-opened [`MountRoot`](#mountroot), touching no filesystem at all.
 Mount memory defaults to [`DEFAULT_MEMORY_USAGE_LIMIT`](#default_memory_usage_limit).
 
@@ -195,6 +210,8 @@ Mount memory defaults to [`DEFAULT_MEMORY_USAGE_LIMIT`](#default_memory_usage_li
 ```rust
 pub fn root(&self) -> &MountRoot
 ```
+
+<div class="rust-decl-links" data-links="MountRoot #mountroot" hidden></div>
 
 Returns the opened root, to clone into a later mount of the same directory.
 
@@ -219,6 +236,8 @@ Returns the canonical host directory path. Diagnostics only.
 ```rust
 pub fn mode(&self) -> &MountMode
 ```
+
+<div class="rust-decl-links" data-links="MountMode #mountmode" hidden></div>
 
 Returns the access mode for this mount.
 
@@ -275,6 +294,8 @@ pub enum MountCallOutcome {
 }
 ```
 
+<div class="rust-decl-links" data-links="monty_types::MontyObject ../monty-types/#montyobject;super::error::MountError #mounterror;monty_types::OsFunctionCall ../monty-types/#osfunctioncall" hidden></div>
+
 Outcome of [`MountTable::handle_os_call`](#mounttable).
 
 The call is consumed so write payloads can be moved into overlay storage;
@@ -301,6 +322,8 @@ an open descriptor cannot be redirected.
 ```rust
 pub fn open(virtual_path: &str, host_path: impl AsRef<Path>) -> Result<Self, MountError>
 ```
+
+<div class="rust-decl-links" data-links="MountError #mounterror" hidden></div>
 
 Opens `host_path`, pinning the root to the directory that is there now.
 
@@ -349,8 +372,16 @@ Creates a new empty mount table.
 ### mount
 
 ```rust
-pub fn mount(&mut self, virtual_path: &str, host_path: impl AsRef<Path>, mode: MountMode, write_bytes_limit: Option<u64>) -> Result<(), MountError>
+pub fn mount(
+    &mut self,
+    virtual_path: &str,
+    host_path: impl AsRef<Path>,
+    mode: MountMode,
+    write_bytes_limit: Option<u64>,
+) -> Result<(), MountError>
 ```
+
+<div class="rust-decl-links" data-links="MountMode #mountmode;MountError #mounterror" hidden></div>
 
 Adds a mount point mapping a virtual path to a host directory.
 
@@ -376,6 +407,8 @@ Linux accepts because it opens directories with `O_PATH`.
 pub fn push_mount(&mut self, mount: Mount)
 ```
 
+<div class="rust-decl-links" data-links="Mount #mount" hidden></div>
+
 Adds a pre-built [`Mount`](#mount) to the table.
 
 Use this when a mount was validated before the table was assembled.
@@ -385,6 +418,8 @@ Use this when a mount was validated before the table was assembled.
 ```rust
 pub fn handle_os_call(&mut self, call: OsFunctionCall) -> MountCallOutcome
 ```
+
+<div class="rust-decl-links" data-links="OsFunctionCall ../monty-types/#osfunctioncall;MountCallOutcome #mountcalloutcome" hidden></div>
 
 Handles an OS call using the mount table.
 

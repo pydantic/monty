@@ -3,7 +3,8 @@
 //! Page shape: frontmatter, `# crate-name`, a hand-written intro (and the
 //! crate's own `//!` docs where they aren't a README include), then one `##`
 //! section per public root item in source order, with methods as `###`
-//! subsections. Everything containing `<`/`{` goes inside ```rust fences or
+//! subsections. Declarations are entity-escaped HTML blocks with type links
+//! (see `sig::to_html`); everything else keeps `<`/`{` inside fences or
 //! backticks so the pages survive the docs site's MDX sanitizer untouched.
 
 use std::fmt::Write;
@@ -13,7 +14,7 @@ use rustdoc_types::{Crate, Id, Impl, Item, ItemEnum, Module};
 use crate::{
     CrateConfig,
     docs_md::process_docs,
-    sig::{fn_decl, item_decl, path_str, type_str},
+    sig::{SigCtx, linked_types, to_plain},
     symbols::{SymbolMap, resolve_root_entry},
 };
 
@@ -40,10 +41,11 @@ pub fn render_page(cfg: &CrateConfig, krate: &Crate, symbols: &SymbolMap) -> Str
     let ItemEnum::Module(module) = &root.inner else {
         panic!("crate root of {} is not a module", cfg.name)
     };
+    let mut rendered = Vec::new();
     let mut external = Vec::new();
     for entry in &module.items {
         match resolve_root_entry(krate, *entry) {
-            Some((name, item)) => ctx.render_item(&mut out, &name, item, 2),
+            Some((name, item)) => rendered.push((name, item)),
             None => {
                 if let ItemEnum::Use(use_) = &krate.index[entry].inner {
                     let defining = use_.id.and_then(|id| krate.paths.get(&id));
@@ -54,6 +56,19 @@ pub fn render_page(cfg: &CrateConfig, krate: &Crate, symbols: &SymbolMap) -> Str
                 }
             }
         }
+    }
+    // explicit reading order first, then everything else in source order
+    for ordered in cfg.order {
+        assert!(
+            rendered.iter().any(|(name, _)| name == ordered),
+            "{}: `order` names `{ordered}`, which is not a root item — update the list",
+            cfg.name
+        );
+    }
+    let position = |name: &str| cfg.order.iter().position(|o| o == &name).unwrap_or(cfg.order.len());
+    rendered.sort_by_key(|(name, _)| position(name));
+    for (name, item) in rendered {
+        ctx.render_item(&mut out, &name, item, 2);
     }
     if !external.is_empty() {
         out.push_str("\n## Re-exports\n\n");
@@ -87,7 +102,7 @@ impl Ctx<'_> {
             return;
         }
         writeln!(out, "\n{} {name}\n", "#".repeat(level)).unwrap();
-        writeln!(out, "```rust\n{}\n```", item_decl(name, item, self.krate)).unwrap();
+        Self::push_decl(out, &self.sig().item_decl(name, item));
         Self::push_deprecation(out, item);
         if let Some(docs) = &item.docs {
             writeln!(out, "\n{}", self.docs(docs, level, item)).unwrap();
@@ -100,10 +115,41 @@ impl Ctx<'_> {
         }
     }
 
+    /// A declaration as a plain ```rust fence, followed (when any of its
+    /// types resolve to a generated page) by a hidden `data-links` payload:
+    /// `Name url` pairs, `;`-separated. The docs site's client script wraps
+    /// those identifiers in links after syntax highlighting; the payload is
+    /// invisible everywhere else and vanishes from agent (llms) output.
+    fn push_decl(out: &mut String, decl: &str) {
+        writeln!(out, "```rust\n{}\n```", to_plain(decl)).unwrap();
+        let links = linked_types(decl);
+        if !links.is_empty() {
+            let pairs: Vec<String> = links
+                .iter()
+                .map(|(name, url)| format!("{name} {}", page_href(url)))
+                .collect();
+            writeln!(
+                out,
+                "\n<div class=\"rust-decl-links\" data-links=\"{}\" hidden></div>",
+                pairs.join(";")
+            )
+            .unwrap();
+        }
+    }
+
+    /// The declaration printer for this crate page.
+    fn sig(&self) -> SigCtx<'_> {
+        SigCtx {
+            krate: self.krate,
+            symbols: self.symbols,
+            rustdoc_name: &self.rustdoc_name,
+        }
+    }
+
     /// A public module: its docs, then its items one heading level down.
     fn render_module(&self, out: &mut String, name: &str, item: &Item, module: &Module, level: usize) {
         writeln!(out, "\n{} {name}\n", "#".repeat(level)).unwrap();
-        writeln!(out, "```rust\npub mod {name};\n```").unwrap();
+        Self::push_decl(out, &format!("pub mod {name};"));
         if let Some(docs) = &item.docs {
             writeln!(out, "\n{}", self.docs(docs, level, item)).unwrap();
         }
@@ -128,7 +174,7 @@ impl Ctx<'_> {
                 None => inherent.push(impl_item),
                 Some(trait_) => {
                     if !impl_.is_synthetic && !impl_.is_negative && impl_.blanket_impl.is_none() {
-                        traits.push(path_str(trait_));
+                        traits.push(to_plain(&self.sig().path_str(trait_)));
                     }
                 }
             }
@@ -156,10 +202,10 @@ impl Ctx<'_> {
                 continue;
             };
             let decl = match &method.inner {
-                ItemEnum::Function(f) => fn_decl(method_name, f, ""),
+                ItemEnum::Function(f) => self.sig().fn_decl(method_name, f, ""),
                 ItemEnum::AssocConst { type_, value, .. } => {
                     let value = value.as_deref().unwrap_or("_");
-                    format!("pub const {method_name}: {} = {value};", type_str(type_))
+                    format!("pub const {method_name}: {} = {value};", self.sig().type_str(type_))
                 }
                 inner => panic!(
                     "unhandled impl item {type_name}::{method_name}: {:?}",
@@ -167,7 +213,7 @@ impl Ctx<'_> {
                 ),
             };
             writeln!(out, "\n{} {method_name}\n", "#".repeat(level + 1)).unwrap();
-            writeln!(out, "```rust\n{decl}\n```").unwrap();
+            Self::push_decl(out, &decl);
             Self::push_deprecation(out, method);
             if let Some(docs) = &method.docs {
                 writeln!(out, "\n{}", self.docs(docs, level + 1, method)).unwrap();
@@ -205,5 +251,15 @@ impl Ctx<'_> {
             self.krate,
             self.symbols,
         )
+    }
+}
+
+/// A resolver URL as a browser href: pages are directory URLs, so the
+/// markdown-flavoured `page.md#anchor` cross-page form goes up one level.
+fn page_href(url: &str) -> String {
+    if url.starts_with('#') {
+        url.to_owned()
+    } else {
+        format!("../{}", url.replace(".md#", "/#"))
     }
 }

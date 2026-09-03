@@ -369,7 +369,7 @@ impl ResourceTracker {
     ///
     /// This allows pre-emptive rejection of operations like `2 ** 10_000_000`
     /// before the memory is actually allocated. The check only happens for
-    /// estimated result sizes above `LARGE_RESULT_THRESHOLD` to avoid overhead
+    /// estimated result sizes above [`LARGE_RESULT_THRESHOLD`] to avoid overhead
     /// on small operations.
     #[inline]
     pub fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError> {

@@ -37,8 +37,15 @@ pub struct TypeChecker { /* private fields */ }
 ### run
 
 ```rust
-pub fn run<'a>(&'a mut self, python_source: &SourceFile<'_>, stubs_file: Option<&SourceFile<'_>>, config: TypeCheckingConfig) -> Result<Option<TypeCheckingDiagnostics<'a>>, String>
+pub fn run<'a>(
+    &'a mut self,
+    python_source: &SourceFile<'_>,
+    stubs_file: Option<&SourceFile<'_>>,
+    config: TypeCheckingConfig,
+) -> Result<Option<TypeCheckingDiagnostics<'a>>, String>
 ```
+
+<div class="rust-decl-links" data-links="SourceFile #sourcefile;TypeCheckingConfig ../monty-types/#typecheckingconfig;TypeCheckingDiagnostics #typecheckingdiagnostics" hidden></div>
 
 Type check some python source code, checking if it's valid to run with monty.
 
