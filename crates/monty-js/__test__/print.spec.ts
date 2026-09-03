@@ -10,9 +10,9 @@ const { run, pool } = setupPool()
 // Print tests
 // =============================================================================
 
-// Collects printCallback invocations. Output is line-buffered: each callback
-// call receives one whole line including its trailing '\n' (or the unflushed
-// tail of the stream at the end of the turn).
+// Collects printCallback invocations. The worker batches output, so a call
+// receives whatever was buffered — not one line and not one print(). Tests
+// that care about the split pin `printFlushInterval: 0`.
 function makePrintCollector() {
   const output: string[] = []
 
@@ -33,7 +33,23 @@ test('basic', async () => {
 test('multiple', async () => {
   const { output, callback } = makePrintCollector()
   await run('print("hello")\nprint("world")', { printCallback: callback })
-  t.deepEqual(output, ['hello\n', 'world\n'])
+  t.is(output.join(''), 'hello\nworld\n')
+})
+
+test('batched into fewer callbacks than prints', async () => {
+  const { output, callback } = makePrintCollector()
+  await run('for i in range(500):\n    print(i)', { printCallback: callback })
+  t.is(output.join(''), Array.from({ length: 500 }, (_, i) => `${i}\n`).join(''))
+  t.true(output.length < 100, `expected far fewer callbacks than prints, got ${output.length}`)
+})
+
+test('a zero flush interval delivers one callback per line', async () => {
+  const { output, callback } = makePrintCollector()
+  await run('for i in range(20):\n    print(i)', { printCallback: callback, printFlushInterval: 0 })
+  t.deepEqual(
+    output,
+    Array.from({ length: 20 }, (_, i) => `${i}\n`),
+  )
 })
 
 test('with values', async () => {
@@ -55,7 +71,7 @@ test('with end', async () => {
   t.deepEqual(output, ['hello!'])
 })
 
-test('partial lines are buffered until a newline', async () => {
+test('a print with end="" joins the next print', async () => {
   const { output, callback } = makePrintCollector()
   await run('print("a", end="")\nprint("b")', { printCallback: callback })
   t.deepEqual(output, ['ab\n'])
@@ -92,7 +108,7 @@ for i in range(3):
 `
   const { output, callback } = makePrintCollector()
   await run(code, { printCallback: callback })
-  t.deepEqual(output, ['Count 0\n', 'Count 1\n', 'Count 2\n'])
+  t.is(output.join(''), 'Count 0\nCount 1\nCount 2\n')
 })
 
 test('print mixed types', async () => {
@@ -189,7 +205,9 @@ test('CollectString accumulates', async () => {
 
 test('CollectStreams accumulates with labels', async () => {
   const collector = new CollectStreams()
-  const result = await run('print("a"); print("b", 1); 123', { printCallback: collector })
+  // pinned to line buffering: entries follow chunk boundaries, and this test
+  // is about the labels on them, not about how the worker batched them
+  const result = await run('print("a"); print("b", 1); 123', { printCallback: collector, printFlushInterval: 0 })
   t.is(result, 123)
   t.deepEqual(collector.output, [
     { stream: 'stdout', text: 'a\n' },
@@ -225,9 +243,11 @@ test('CollectStreams maxBytes first write fails with overhead', async () => {
 
 test('CollectString partial success keeps prior buffer', async () => {
   // First print('a') → 'a\n' = 2 bytes; second print('x'*20) → 21 bytes; total 23 > 10.
+  // Line-buffered so the two writes reach the collector separately, which is
+  // what makes the first one's output survive the second one's failure.
   const collector = new CollectString(10)
   const thrown = await t.throwsAsync<MontyRuntimeError>(() =>
-    run("print('a'); print('x' * 20)", { printCallback: collector }),
+    run("print('a'); print('x' * 20)", { printCallback: collector, printFlushInterval: 0 }),
   )
   t.true(thrown instanceof MontyRuntimeError)
   t.is(thrown.exception.typeName, 'MemoryError')
@@ -237,9 +257,10 @@ test('CollectString partial success keeps prior buffer', async () => {
 
 test('CollectStreams partial success keeps prior entries', async () => {
   // First entry: 2 + 64 = 66; second: 21 + 64 = 85; total 151 > 100.
+  // Line-buffered for the same reason as the CollectString case above.
   const collector = new CollectStreams(100)
   const thrown = await t.throwsAsync<MontyRuntimeError>(() =>
-    run("print('a'); print('x' * 20)", { printCallback: collector }),
+    run("print('a'); print('x' * 20)", { printCallback: collector, printFlushInterval: 0 }),
   )
   t.true(thrown instanceof MontyRuntimeError)
   t.is(thrown.exception.typeName, 'MemoryError')

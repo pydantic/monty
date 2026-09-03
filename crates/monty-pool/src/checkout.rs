@@ -50,6 +50,16 @@ pub struct ReplConfig {
     /// (see `limitations/assert.md`). On by default with a 120-byte
     /// operand-repr truncation; `MaxBytes` customizes the truncation.
     pub assert_message_annotations: AssertMessageAnnotations,
+    /// How long the worker may hold buffered `print()` output before sending
+    /// it, batching a burst of prints into one `Print` event instead of one
+    /// each. `None` takes the worker's default
+    /// ([`crate::DEFAULT_PRINT_FLUSH_INTERVAL`]); `Duration::ZERO` restores line
+    /// buffering, delivering each completed line on its own.
+    ///
+    /// Output is always flushed before a suspension or a turn ends, so this
+    /// only sets how long live output may lag — never what arrives, or in
+    /// what order. Sub-millisecond values round down to zero on the wire.
+    pub print_flush_interval: Option<Duration>,
 }
 
 impl Default for ReplConfig {
@@ -61,6 +71,7 @@ impl Default for ReplConfig {
             type_check_stubs: None,
             type_check_config: TypeCheckingConfig::default(),
             assert_message_annotations: AssertMessageAnnotations::default(),
+            print_flush_interval: None,
         }
     }
 }
@@ -449,6 +460,11 @@ impl Checkout {
             protocol_version: PROTOCOL_VERSION,
             // Diagnostic only, so a rejection can report both builds.
             monty_version: MONTY_VERSION.to_owned(),
+            // Saturating: an interval past `u32::MAX` milliseconds is absurd
+            // rather than meaningful, and the turn-end flush bounds it anyway.
+            print_flush_interval_ms: repl
+                .print_flush_interval
+                .map(|interval| u32::try_from(interval.as_millis()).unwrap_or(u32::MAX)),
         }));
         let mut this = Self {
             worker: Some(worker),

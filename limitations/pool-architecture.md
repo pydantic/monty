@@ -238,11 +238,11 @@ properties that real CPython does not provide, per the caveat above.
   against the checker's database and so never cross the wire. Formats are
   ty's: `full` (default), `concise`, `azure`, `json`, `jsonlines`, `rdjson`,
   `pylint`, `gitlab`, `github`; only `full` and `concise` carry colour.
-- **Print callbacks** receive buffered chunks flushed at newline boundaries
-  or once ~8 KiB accumulates, not per-fragment writes. A chunk may contain
-  more than one line, and output larger than the threshold is split into
-  ~8 KiB pieces, so a chunk is bounded but not guaranteed to be exactly
-  one line. A callback that raises aborts the feed after the current
+- **Print callbacks** receive buffered chunks flushed once ~8 KiB accumulates
+  or the flush interval expires (see ./print.md), not per-fragment writes. A
+  chunk may hold several `print()` calls, and output larger than the threshold
+  is split into ~8 KiB pieces, so a chunk is bounded but corresponds to nothing
+  in the source. A callback that raises aborts the feed after the current
   protocol turn, not mid-`print`; if that turn had suspended (an external
   function, OS call, or name lookup), the binding resets/discards the
   suspension before surfacing the print error so later feeds can continue.

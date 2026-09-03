@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-use std::ops::RangeInclusive;
+use std::{ops::RangeInclusive, time::Duration};
 
 mod convert;
 mod frame;
@@ -25,6 +25,14 @@ pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 2;
+
+/// How long the child holds buffered `print()` output before emitting it as a
+/// `Print` event, when [`pb::Configure::print_flush_interval_ms`] says nothing.
+///
+/// Short enough to read as live output, long enough that a printing loop emits
+/// events at a rate set by elapsed time rather than by how often the program
+/// called `print()`.
+pub const DEFAULT_PRINT_FLUSH_INTERVAL: Duration = Duration::from_millis(5);
 
 // The supported range must be non-empty, and must exclude zero
 const _: () = assert!(MIN_SUPPORTED_PROTOCOL_VERSION >= 1);

@@ -17,19 +17,46 @@ host decides where it ends up; there is no real `sys.stdout` underneath (see
   supported"`. Code that does `print(..., file=sys.stderr)` will not work;
   `sys.stderr` is an opaque marker (see ./sys.md).
 - `flush=...` — accepted and ignored. Output is delivered to the host through
-  the subprocess protocol, which line-buffers and also flushes large partial
-  lines.
+  the subprocess protocol on its own schedule (see "Chunk boundaries" below);
+  a `print()` cannot make it arrive sooner.
 - Any other keyword raises `TypeError: ... unexpected keyword argument`.
 
 ## Behaviour
 
 - Each positional argument is converted via `py_str` (equivalent to `str(x)`)
   before being written.
-- The host callback receives formatted chunks. In subprocess execution, chunks
-  are flushed on newline or after an internal buffer reaches roughly 8 KiB, so
-  a single `print()` call can arrive in more than one callback. There is no
-  atomicity guarantee across multiple `print()` calls if the host interleaves
-  with other output.
+- The host callback receives formatted chunks. There is no atomicity guarantee
+  across multiple `print()` calls if the host interleaves with other output.
+
+## Chunk boundaries
+
+Chunk boundaries carry no meaning. The worker holds output in a buffer and
+sends it when the buffer reaches roughly 8 KiB or its oldest byte has waited
+out the flush interval (5 ms by default), so:
+
+- One `print()` can arrive in several callbacks, and several `print()` calls
+  can arrive in one. A chunk does not correspond to a call, a line, or an
+  argument.
+- Output that is printed and then followed by silence is released by the
+  interpreter's periodic checkpoint, so it does not wait for the next
+  `print()`. Native code that runs for a long time without reaching a
+  checkpoint can still delay it.
+- Ordering is exact, and the buffer is always drained before a host call or the
+  end of a run, so output cannot arrive after the event it preceded.
+- Buffered output is lost if the worker dies *hard*: the pool killing it on
+  `request_timeout`, the allocator ending the process at its hard memory
+  ceiling, or a crash. A graceful turn drains first, so this only affects a
+  worker that never finished — but the window is up to 8 KiB or one flush
+  interval of already-complete lines, where line buffering would have sent
+  them. A host that would rather have that output than the batching (to see
+  what a snippet printed before it hung, say) can set the interval to 0.
+
+Hosts can set the interval per session: `print_flush_interval` (seconds) in
+`pydantic_monty`, `printFlushInterval` (seconds) in `@pydantic/monty`, and
+`ReplConfig::print_flush_interval` in Rust. `0` turns the timer off and
+restores line buffering, one callback per completed line. The wasm worker does
+not expose the setting: it returns a whole turn's output at once, so there is
+no streaming schedule to tune.
 
 ## CollectString / CollectStreams caps
 
@@ -58,6 +85,9 @@ buffers. That growth is **not** covered by `ResourceLimits.max_memory`
   cap, since many tiny fragments would otherwise OOM the host before payload
   bytes hit the limit. Rust `PrintWriter::CollectStreams` merges consecutive
   same-stream fragments, so entry count stays small for normal `print()`.
+- Entries follow the chunk boundaries above, not `print()` calls: several
+  prints usually collect into one entry. Set `print_flush_interval=0` to get
+  one entry per completed line.
 - JS (`@pydantic/monty`): `CollectString` / `CollectStreams` accept `maxBytes`
   (camelCase), same 10 MiB default and message; `CollectStreams` charges the
   same **64-byte** per-entry overhead as the Python host path and does **not**

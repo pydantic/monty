@@ -121,6 +121,10 @@ A plain `(stream, text) => void` callback works too.
 Both collectors default to a 10 MiB cap (`DEFAULT_MAX_PRINT_COLLECT_BYTES`); pass `null` to disable it.
 The cap is host-side and separate from [`maxMemory`](../resource-limits.md).
 
+Output arrives in batched chunks, not one per `print()`.
+`printFlushInterval` on `checkout()` sets how long (in seconds) the worker may hold it — 0.005 by default, `0` for one
+chunk per line — and output is always flushed before a host call and before a feed ends.
+
 ## Errors
 
 ```ts

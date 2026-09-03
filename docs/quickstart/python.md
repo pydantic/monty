@@ -178,7 +178,10 @@ with Monty() as pool:
         #> [('stdout', 'hello\n')]
 ```
 
-Output arrives in chunks flushed at newline boundaries or once roughly 8 KiB accumulates, not one call per `print()`.
+Output arrives in chunks, not one call per `print()`.
+The worker batches it, sending a chunk once about 8 KiB accumulates or the oldest byte has waited out
+`print_flush_interval` — 0.005 seconds by default, settable on `checkout()`, and `0` to restore one chunk per line.
+Whatever the interval, output is flushed before a host call and before a feed ends, so it never arrives out of order.
 
 ## Errors
 

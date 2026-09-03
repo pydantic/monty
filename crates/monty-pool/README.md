@@ -65,8 +65,10 @@ async fn main() -> Result<(), PoolError> {
 }
 ```
 
-`ReplConfig` also enables per-session sandbox `ResourceLimits` and type checking of every fed
-snippet; `Checkout::feed` accepts inputs (host values exposed as sandbox globals) and
+`ReplConfig` also enables per-session sandbox `ResourceLimits`, type checking of every fed
+snippet, and `print_flush_interval` — how long the worker may batch `print()` output before
+sending it, so a burst of prints costs one event rather than one each (`Duration::ZERO`
+restores line buffering, one event per completed line); `Checkout::feed` accepts inputs (host values exposed as sandbox globals) and
 per-feed filesystem mounts (`MountSpec`). Sessions can be snapshotted with `Checkout::dump`
 and restored later — including on a different worker or machine — with `Checkout::restore`.
 

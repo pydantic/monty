@@ -1,4 +1,4 @@
-"""print_callback tests: line-buffered chunk delivery, error propagation, collectors."""
+"""print_callback tests: chunk delivery, error propagation, collectors."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ PrintCallback = Callable[[Literal['stdout', 'stderr'], str], None]
 def make_print_collector() -> tuple[list[str], PrintCallback]:
     """Create a print callback that collects output into a list.
 
-    The callback receives line-buffered chunks (one call per completed line,
-    or 8KiB), so assertions join the chunks rather than checking fragments.
+    The worker batches output, so a chunk is not a line or a `print()` call —
+    assertions join the chunks rather than checking fragments.
     """
     output: list[str] = []
 
@@ -95,6 +95,31 @@ for i in range(3):
     output, callback = make_print_collector()
     monty_run(code, print_callback=callback)
     assert ''.join(output) == snapshot('0\n1\n2\n')
+
+
+def test_print_flush_interval_batches_chunks(pool: Monty) -> None:
+    """A loop of prints costs a handful of callbacks, not one per print."""
+    output, callback = make_print_collector()
+    with pool.checkout() as s:
+        s.feed_run('for i in range(500):\n    print(i)', print_callback=callback)
+    assert ''.join(output) == ''.join(f'{i}\n' for i in range(500))
+    assert len(output) < 100
+
+
+def test_print_flush_interval_zero_is_line_buffered(pool: Monty) -> None:
+    """`0` turns the timer off, restoring one chunk per completed line."""
+    output, callback = make_print_collector()
+    with pool.checkout(print_flush_interval=0) as s:
+        s.feed_run('for i in range(20):\n    print(i)', print_callback=callback)
+    assert output == [f'{i}\n' for i in range(20)]
+
+
+def test_print_flush_interval_rejects_negative(pool: Monty) -> None:
+    with pytest.raises(ValueError) as exc_info:
+        pool.checkout(print_flush_interval=-1)
+    assert exc_info.value.args[0] == snapshot(
+        'invalid print_flush_interval: cannot convert float seconds to Duration: value is negative'
+    )
 
 
 def test_print_mixed_types(monty_run: RunMonty) -> None:
@@ -193,10 +218,11 @@ fetch()
     assert str(exc_info2.value) == snapshot('this checkout has already been finished')
 
 
-def test_print_callback_raises_in_loop(monty_run: RunMonty) -> None:
+def test_print_callback_raises_in_loop(pool: Monty) -> None:
     """Test exception from callback when print is called in a loop.
 
-    Chunks are line-buffered, so each `print(i)` delivers exactly one chunk.
+    Pinned to line buffering so the failing chunk is the third `print(i)`
+    rather than whichever batch the worker happened to send.
     """
     code = """
 for i in range(5):
@@ -210,8 +236,8 @@ for i in range(5):
         if call_count >= 3:
             raise ValueError('stopped at 3')
 
-    with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run(code, print_callback=callback)
+    with pytest.raises(MontyRuntimeError) as exc_info, pool.checkout(print_flush_interval=0) as s:
+        s.feed_run(code, print_callback=callback)
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert inner.args[0] == snapshot('stopped at 3')
@@ -237,7 +263,8 @@ def test_collect_streams_run_returns_raw_output(monty_run: RunMonty) -> None:
     result = monty_run('print("a"); print("b", 1); 123', print_callback=collector)
 
     assert result == snapshot(123)
-    assert collector.output == snapshot([('stdout', 'a\n'), ('stdout', 'b 1\n')])
+    # both prints land in one chunk, so the collector sees one entry
+    assert collector.output == snapshot([('stdout', 'a\nb 1\n')])
 
 
 def test_collect_streams_repr(monty_run: RunMonty) -> None:
