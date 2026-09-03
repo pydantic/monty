@@ -989,6 +989,13 @@ fn timeout_in_deepcopy_fill_loop() {
 /// cheaper than `deepcopy`'s, so the loop that can actually overshoot is the
 /// dict one, where every pair is re-hashed into the copy. Built in an earlier
 /// feed for the reason above.
+///
+/// Measured against an unlimited copy of the same dict rather than against a
+/// wall-clock constant. Without the poll the limited run *is* the unlimited
+/// one, since nothing stops it early, so the two times converge; with it the
+/// run ends a budget in. A fixed threshold has to sit between two numbers that
+/// both move with the machine, and this one did: it passed locally and failed
+/// under the coverage build, which is several times slower.
 #[test]
 fn timeout_in_shallow_copy_fill_loop() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
@@ -998,16 +1005,25 @@ fn timeout_in_shallow_copy_fill_loop() {
         PrintWriter::Stdout,
     )
     .unwrap();
+
+    // What the whole copy costs on this machine, in this build.
+    let start = Instant::now();
+    repl.feed_run("copy.copy(x)", vec![], PrintWriter::Stdout)
+        .expect("an unlimited copy should succeed");
+    let unlimited = start.elapsed();
+
     repl.tracker_mut().set_max_duration(Duration::from_millis(50));
     let start = Instant::now();
     let exc = repl
         .feed_run("copy.copy(x)", vec![], PrintWriter::Stdout)
         .expect_err("the copy must hit the time limit");
-    let elapsed = start.elapsed();
+    let limited = start.elapsed();
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    // Half is a wide margin on the ~4x the poll actually buys, and it holds
+    // whether a step costs a nanosecond or a microsecond.
     assert!(
-        elapsed < Duration::from_millis(300),
-        "should stop promptly, took {elapsed:?}"
+        limited * 2 < unlimited,
+        "the limit should cut the copy short: {limited:?} against {unlimited:?} unlimited"
     );
 }
 
