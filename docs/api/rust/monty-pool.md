@@ -359,7 +359,7 @@ pub enum MountSpecMode {
     ReadOnly,
     /// Files written by sandboxed code persist on the host and are untrusted;
     /// the host must not execute them, including indirectly via a Python
-    /// `import` when the directory is on `sys.path`. [`Self::Overlay`] keeps
+    /// `import` when the directory is on `sys.path`. `Self::Overlay` keeps
     /// writes in memory instead.
     ReadWrite,
     /// Copy-on-write overlay in parent memory; writes are discarded when the
@@ -448,7 +448,7 @@ pub enum ResumeValue {
     /// The call raised this exception.
     Error(monty_types::MontyException),
     /// The call is asynchronous: register an external future and continue
-    /// other tasks; resolve later via [`Checkout::resume_futures`].
+    /// other tasks; resolve later via `Checkout::resume_futures`.
     Future,
     /// No handler exists for the called name — the sandbox raises
     /// `NameError`.
@@ -456,7 +456,7 @@ pub enum ResumeValue {
     /// No handler accepted this OS call — the sandbox raises the call's own
     /// no-handler default (`PermissionError` naming the path for filesystem
     /// calls, `RuntimeError` for the rest). Only valid answering a
-    /// [`TurnEvent::OsCall`].
+    /// `TurnEvent::OsCall`.
     NotHandled,
 }
 ```
@@ -473,24 +473,24 @@ Implements: `Debug`.
 ```rust
 pub enum TurnEvent {
     /// The sandbox called an external function — answer with
-    /// [`Checkout::resume`]. When `method_call` is true this is a dataclass
+    /// `Checkout::resume`. When `method_call` is true this is a dataclass
     /// method call and the instance is the first argument.
     FunctionCall { function_name: String, args: Vec<monty_types::MontyObject>, kwargs: Vec<(monty_types::MontyObject, monty_types::MontyObject)>, call_id: u32, method_call: bool },
     /// The sandbox performed an OS operation (e.g. `"Path.read_text"`).
     /// Answer it from this feed's mounts with
-    /// [`Checkout::resume_from_mounts`], or directly with
-    /// [`Checkout::resume`]. A caller with no handler should resume with
-    /// [`ResumeValue::NotHandled`]; the sandbox then raises the call's own
+    /// `Checkout::resume_from_mounts`, or directly with
+    /// `Checkout::resume`. A caller with no handler should resume with
+    /// `ResumeValue::NotHandled`; the sandbox then raises the call's own
     /// no-handler default.
     OsCall { function_name: String, args: Vec<monty_types::MontyObject>, kwargs: Vec<(monty_types::MontyObject, monty_types::MontyObject)>, call_id: u32 },
     /// The sandbox read an undefined name — answer with
-    /// [`Checkout::resume_name_lookup`].
+    /// `Checkout::resume_name_lookup`.
     NameLookup { name: String },
     /// Every sandbox task is blocked on external futures — answer with
-    /// [`Checkout::resume_futures`].
+    /// `Checkout::resume_futures`.
     ResolveFutures { pending_call_ids: Vec<u32> },
     /// The fed snippet completed with this value; the session is ready for
-    /// the next [`Checkout::feed`].
+    /// the next `Checkout::feed`.
     Complete(monty_types::MontyObject),
 }
 ```
@@ -624,18 +624,18 @@ Implements: `Clone`, `Debug`.
 ```rust
 pub struct PoolConfig {
     /// Workers spawned eagerly at pool creation and kept warm. Forced to 0 for
-    /// the [`MontyTransport::Websocket`] transport (connections are made
+    /// the `MontyTransport::Websocket` transport (connections are made
     /// per-checkout, not pre-warmed).
     pub min_processes: usize,
     /// Hard cap on live workers; checkouts beyond this wait.
     pub max_processes: usize,
     /// How workers are reached (spawned locally or connected to remotely).
     pub transport: MontyTransport,
-    /// How long [`Pool::checkout`] waits for a free worker before
-    /// [`PoolError::Exhausted`]. `None` waits forever.
+    /// How long `Pool::checkout` waits for a free worker before
+    /// `PoolError::Exhausted`. `None` waits forever.
     pub checkout_timeout: Option<std::time::Duration>,
     /// Parent-side hard deadline per protocol turn: when it expires the
-    /// worker is killed and the call fails with [`PoolError::Timeout`]. This
+    /// worker is killed and the call fails with `PoolError::Timeout`. This
     /// backstops the child-side `ResourceLimits` — it also catches a child
     /// that hangs in ways the sandbox limits cannot see. Synchronous host
     /// telemetry callbacks prevent the timer from being polled while they run.
@@ -714,7 +714,7 @@ pub enum PoolError {
     /// The checkout was already finished or its worker already discarded.
     Finished,
     /// The remote worker's connection dropped without a turn-ending event
-    /// (WebSocket transport only — the local analogue is [`Self::Crashed`]).
+    /// (WebSocket transport only — the local analogue is `Self::Crashed`).
     /// The sandbox may have died, or the server may have dropped the session
     /// by policy (idle/session/turn timeout, capacity); the two are
     /// indistinguishable to a client that only learns of the close, so this
@@ -723,7 +723,7 @@ pub enum PoolError {
     /// The remote server is shutting down and did **not** run the request —
     /// re-running it on a fresh session is safe. `dump` carries the session
     /// state captured just before shutdown, restorable via
-    /// [`Checkout::restore`] on a fresh checkout.
+    /// `Checkout::restore` on a fresh checkout.
     Shutdown { dump: Option<Vec<u8>> },
 }
 ```
@@ -745,7 +745,7 @@ pub enum CrashCause {
     /// the pool's. A serving relay also uses this to report that it could not
     /// start a worker at all. A worker that exceeded its memory limit is not
     /// here at all: that exit code classifies into
-    /// [`PoolError::Runtime`] carrying a `MemoryError`.
+    /// `PoolError::Runtime` carrying a `MemoryError`.
     Announced { reason: String },
 }
 ```

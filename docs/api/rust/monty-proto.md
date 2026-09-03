@@ -14,7 +14,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 ```
 
 Version of the wire schema this build speaks, sent in
-`pb::Configure::protocol_version` and range-checked by the child.
+[`pb::Configure::protocol_version`](#configure) and range-checked by the child.
 
 Bump on any change a peer at the previous version could mis-read: removing
 or repurposing a field, changing a field's meaning, or adding one the child
@@ -35,7 +35,7 @@ Oldest [`PROTOCOL_VERSION`](#protocol_version) this build still serves.
 pub fn check_protocol_version(version: u32) -> Result<(), String>;
 ```
 
-Checks a peer's declared `pb::Configure::protocol_version` against the
+Checks a peer's declared [`pb::Configure::protocol_version`](#configure) against the
 range this build serves.
 
 ## MAX_VALUE_DEPTH
@@ -326,6 +326,8 @@ pub fn merge(
 ) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
 
+<div class="rust-decl-links" data-links="Kind #exc_data" hidden></div>
+
 Decodes an instance of the message from a buffer, and merges it into self.
 
 ##### encoded_len
@@ -376,6 +378,8 @@ pub fn merge(
     ctx: ::prost::encoding::DecodeContext,
 ) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
+
+<div class="rust-decl-links" data-links="Object #unicode_error_data" hidden></div>
 
 Decodes an instance of the message from a buffer, and merges it into self.
 
@@ -440,6 +444,8 @@ pub fn merge(
 ) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
 
+<div class="rust-decl-links" data-links="Kind #ext_function_result" hidden></div>
+
 Decodes an instance of the message from a buffer, and merges it into self.
 
 ##### encoded_len
@@ -499,6 +505,8 @@ pub fn merge(
 ) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
 
+<div class="rust-decl-links" data-links="Kind #parent_request" hidden></div>
+
 Decodes an instance of the message from a buffer, and merges it into self.
 
 ##### encoded_len
@@ -551,6 +559,8 @@ pub fn merge(
     ctx: ::prost::encoding::DecodeContext,
 ) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
+
+<div class="rust-decl-links" data-links="Kind #resume_name_lookup" hidden></div>
 
 Decodes an instance of the message from a buffer, and merges it into self.
 
@@ -612,6 +622,8 @@ pub fn merge(
     ctx: ::prost::encoding::DecodeContext,
 ) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
+
+<div class="rust-decl-links" data-links="Kind #child_event" hidden></div>
 
 Decodes an instance of the message from a buffer, and merges it into self.
 
@@ -778,7 +790,7 @@ pub enum Call {
 }
 ```
 
-<div class="rust-decl-links" data-links="super::Unit #unit" hidden></div>
+<div class="rust-decl-links" data-links="TextWrite #os_call;BytesWrite #os_call;Open #os_call;Mkdir #os_call;Rename #os_call;Getenv #os_call;super::Unit #unit;DateTimeNow #os_call" hidden></div>
 
 ##### encode
 
@@ -799,6 +811,8 @@ pub fn merge(
     ctx: ::prost::encoding::DecodeContext,
 ) -> ::core::result::Result<(), ::prost::DecodeError>
 ```
+
+<div class="rust-decl-links" data-links="Call #os_call" hidden></div>
 
 Decodes an instance of the message from a buffer, and merges it into self.
 
@@ -1152,6 +1166,8 @@ pub struct ExcData {
 }
 ```
 
+<div class="rust-decl-links" data-links="exc_data::Kind #exc_data" hidden></div>
+
 Structured exception payload, mirroring monty's `ExcData` enum. Future
 exception types that carry more than a message (e.g. OSError's errno)
 get new oneof arms with fresh tags. An absent/empty kind means "no
@@ -1175,6 +1191,8 @@ pub struct UnicodeErrorData {
     pub object: ::core::option::Option<unicode_error_data::Object>,
 }
 ```
+
+<div class="rust-decl-links" data-links="unicode_error_data::Object #unicode_error_data" hidden></div>
 
 CPython's UnicodeDecodeError/UnicodeEncodeError constructor fields
 (encoding, object, start, end, reason), letting hosts rebuild the real
@@ -1322,6 +1340,8 @@ pub struct ExtFunctionResult {
 }
 ```
 
+<div class="rust-decl-links" data-links="ext_function_result::Kind #ext_function_result" hidden></div>
+
 Outcome of an external function / OS call, decided by the parent. Mirrors
 monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
 resolve, against its suspended call).
@@ -1366,6 +1386,8 @@ pub struct ParentRequest {
     pub kind: ::core::option::Option<parent_request::Kind>,
 }
 ```
+
+<div class="rust-decl-links" data-links="parent_request::Kind #parent_request" hidden></div>
 
 Tags 1-19 are reserved for `kind` arms and the message-level fields start
 at 20, mirroring `ChildEvent` — a oneof shares its field-number space with
@@ -1512,6 +1534,8 @@ pub struct ResumeNameLookup {
 }
 ```
 
+<div class="rust-decl-links" data-links="resume_name_lookup::Kind #resume_name_lookup" hidden></div>
+
 Answers a `NameLookup` suspension.
 
 Implements: `Clone`, `Debug`, `Default`, `Message`, `PartialEq`, `StructuralPartialEq`, `TryFrom<ResumeNameLookup>`.
@@ -1625,6 +1649,8 @@ pub struct ChildEvent {
 }
 ```
 
+<div class="rust-decl-links" data-links="child_event::Kind #child_event" hidden></div>
+
 A oneof shares its field-number space with the enclosing message, so tags
 1-19 are reserved by convention for `kind` arms and the message-level
 fields start at 20 — a new arm then never has to jump the numbering. Note
@@ -1694,6 +1720,8 @@ pub struct OsCall {
     pub call: ::core::option::Option<os_call::Call>,
 }
 ```
+
+<div class="rust-decl-links" data-links="os_call::Call #os_call" hidden></div>
 
 Suspension: the sandbox performed an OS operation, surfaced for the parent
 to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm

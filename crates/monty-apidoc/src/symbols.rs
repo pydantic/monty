@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rustdoc_types::{Crate, Id, Item, ItemEnum};
+use rustdoc_types::{Crate, Id, Item, ItemEnum, StructKind};
 
 /// Anchor locations for every item rendered on any page.
 ///
@@ -50,11 +50,17 @@ impl SymbolMap {
             return Some(format!("#{anchor}"));
         }
         // not in this crate's index: look up the defining path of the
-        // external id and match it against another rendered crate's root
+        // external id and match it against another rendered crate's root —
+        // the item itself, then its parent, so members (`MontyObject::Repr`)
+        // land on the parent's anchor like same-crate members do
         let summary = krate.paths.get(&id)?;
         let defining_crate = summary.path.first()?;
-        let item_name = summary.path.last()?;
-        let anchor = self.root_items.get(&(defining_crate.clone(), item_name.clone()))?;
+        let anchor = summary
+            .path
+            .iter()
+            .rev()
+            .take(2)
+            .find_map(|name| self.root_items.get(&(defining_crate.clone(), name.clone())))?;
         if defining_crate == from_crate {
             Some(format!("#{anchor}"))
         } else {
@@ -120,7 +126,17 @@ pub fn resolve_root_entry(krate: &Crate, id: Id) -> Option<(String, &Item)> {
 fn index_subtree(krate: &Crate, item: &Item, anchor: &str, ids: &mut HashMap<Id, String>) {
     ids.insert(item.id, anchor.to_owned());
     let children: &[Id] = match &item.inner {
-        ItemEnum::Struct(s) => &s.impls,
+        ItemEnum::Struct(s) => {
+            // fields anchor to the struct itself, like methods do
+            let fields: &[Id] = match &s.kind {
+                StructKind::Plain { fields, .. } => fields,
+                StructKind::Tuple(_) | StructKind::Unit => &[],
+            };
+            for field in fields {
+                ids.insert(*field, anchor.to_owned());
+            }
+            &s.impls
+        }
         ItemEnum::Enum(e) => &e.variants,
         ItemEnum::Trait(t) => &t.items,
         ItemEnum::Impl(i) => &i.items,

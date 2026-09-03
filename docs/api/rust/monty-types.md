@@ -291,7 +291,7 @@ pub enum ExcData {
     /// this enum) small.
     Unicode(Box<UnicodeErrorData>),
     /// `json.JSONDecodeError` attribute fields. Boxed like
-    /// [`ExcData::Unicode`] to keep the enum small.
+    /// `ExcData::Unicode` to keep the enum small.
     Json(Box<JsonErrorData>),
 }
 ```
@@ -391,7 +391,7 @@ pub enum ExcType {
     /// operation isn't allowed by the open mode (e.g. `read()` on `'w'`).
     ///
     /// In CPython this inherits from both `OSError` and `ValueError`. Monty's
-    /// `ExcType` enum models single parents, but [`Self::is_subclass_of`]
+    /// `ExcType` enum models single parents, but `Self::is_subclass_of`
     /// matches `UnsupportedOperation` against both `OSError` and `ValueError`
     /// so `except ValueError:` and `except OSError:` both catch it as in
     /// CPython.
@@ -459,7 +459,7 @@ pub struct JsonErrorData {
     /// suffix the formatted exception message carries.
     pub msg: String,
     /// The document being parsed, matching CPython's `exc.doc`. `None` when
-    /// the document exceeds [`JsonErrorData::MAX_DOC_LEN`] or is not valid
+    /// the document exceeds `JsonErrorData::MAX_DOC_LEN` or is not valid
     /// UTF-8 (`json.loads` on `bytes` input).
     pub doc: Option<String>,
     /// Character index of the error in `doc`, matching CPython's `exc.pos`.
@@ -868,17 +868,17 @@ pub enum FileMode {
     /// `r` / `rb`: read-only; the file must already exist.
     Read(bool),
     /// `r+` / `rb+`: read and write an existing file. Reserved; not yet
-    /// produced by [`FromStr`].
+    /// produced by `FromStr`.
     ReadUpdate(bool),
     /// `w` / `wb`: write-only; truncate the file (creating it if missing) on open.
     Write(bool),
     /// `w+` / `wb+`: read and write; truncate the file (creating it if missing).
-    /// Reserved; not yet produced by [`FromStr`].
+    /// Reserved; not yet produced by `FromStr`.
     WriteUpdate(bool),
     /// `a` / `ab`: write-only appending; create the file if missing, preserving content.
     Append(bool),
     /// `a+` / `ab+`: read and append; create the file if missing, preserving content.
-    /// Reserved; not yet produced by [`FromStr`].
+    /// Reserved; not yet produced by `FromStr`.
     AppendUpdate(bool),
 }
 ```
@@ -1132,7 +1132,7 @@ pub enum PrintWriter<'a> {
     /// Collect all output into a single `String`, in emit order, with no stream labels.
     ///
     /// Second field: max collected bytes (`None` = unlimited). Exceeding raises
-    /// `MemoryError` with the same message as [`ResourceError::Memory`].
+    /// `MemoryError` with the same message as `ResourceError::Memory`.
     CollectString(&'a mut String, Option<usize>),
     /// Collect all output as `(stream, text)` tuples.
     ///
@@ -1296,7 +1296,7 @@ as [`ResourceError::Memory`](#resourceerror) so hosts see one familiar limit str
 pub struct ConversionError {
     /// The type name that was expected (e.g., "int", "str").
     pub expected: &'static str,
-    /// The actual type name of the [`MontyObject`] (e.g., "list", "NoneType").
+    /// The actual type name of the `MontyObject` (e.g., "list", "NoneType").
     pub actual: &'static str,
 }
 ```
@@ -1434,7 +1434,7 @@ pub struct MontyDateTime {
     pub microsecond: u32,
     /// Fixed offset seconds for aware datetimes, or `None` for naive values.
     ///
-    /// Within [`MIN_TIMEZONE_OFFSET_SECONDS`]..=[`MAX_TIMEZONE_OFFSET_SECONDS`] when set.
+    /// Within `MIN_TIMEZONE_OFFSET_SECONDS`..=`MAX_TIMEZONE_OFFSET_SECONDS` when set.
     pub offset_seconds: Option<i32>,
     /// Optional explicit timezone name for aware datetimes.
     ///
@@ -1716,7 +1716,7 @@ pub struct MontyTime {
     pub microsecond: u32,
     /// Fixed offset seconds for aware times, or `None` for naive values.
     ///
-    /// Within [`MIN_TIMEZONE_OFFSET_SECONDS`]..=[`MAX_TIMEZONE_OFFSET_SECONDS`] when set.
+    /// Within `MIN_TIMEZONE_OFFSET_SECONDS`..=`MAX_TIMEZONE_OFFSET_SECONDS` when set.
     pub offset_seconds: Option<i32>,
     /// Optional explicit timezone name for aware times.
     ///
@@ -1755,7 +1755,7 @@ Implements: `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `Hash`, `PartialEq`, `Se
 
 ```rust
 pub struct MontyTimeZone {
-    /// Fixed UTC offset in seconds, within [`MIN_TIMEZONE_OFFSET_SECONDS`]..=[`MAX_TIMEZONE_OFFSET_SECONDS`].
+    /// Fixed UTC offset in seconds, within `MIN_TIMEZONE_OFFSET_SECONDS`..=`MAX_TIMEZONE_OFFSET_SECONDS`.
     pub offset_seconds: i32,
     /// Optional display name.
     pub name: Option<String>,
@@ -1808,8 +1808,8 @@ pub enum MontyType {
     Instance(String),
     /// Exception types render/parse via `ExcType`'s own strum name
     /// (`"ValueError"`, `"json.JSONDecodeError"`, ...), so this variant is
-    /// `#[strum(disabled)]`: [`name`](Self::name) and
-    /// [`from_type_name`](Self::from_type_name) peel `Exception` off
+    /// `#[strum(disabled)]`: `name` and
+    /// `from_type_name` peel `Exception` off
     /// explicitly.
     Exception(ExcType),
     Function,
@@ -2023,7 +2023,7 @@ pub enum OsFunctionCall {
     AppendBytes(PathBytesDataArgs),
     /// Open a file. The host performs the open-time effect (truncate for
     /// `w`/`w+`, create-if-missing for `a`/`a+`, existence check for `r`/`r+`)
-    /// and returns a [`MontyObject::FileHandle`] — it never holds a live OS
+    /// and returns a `MontyObject::FileHandle` — it never holds a live OS
     /// handle across calls.
     Open(OpenCallArgs),
     /// Create directory (`parents`/`exist_ok` kwargs).
@@ -2701,13 +2701,13 @@ pub enum AssertMessageAnnotations {
     /// Disable introspection; bare asserts use CPython's empty message.
     Off,
     /// Retain at most this many UTF-8 bytes per operand before any `…` suffix.
-    /// Non-zero because `0` encodes [`Off`](Self::Off) on the wire.
+    /// Non-zero because `0` encodes `Off` on the wire.
     MaxBytes(std::num::NonZeroU32),
 }
 ```
 
 Controls the pytest-style introspected `assert` failure messages of
-`CompileOptions::assert_message_annotations`.
+[`CompileOptions::assert_message_annotations`](#compileoptions).
 
 The choice is baked in at compile time (whether the introspecting opcodes
 are emitted) but the truncation limit is applied at runtime, so it also

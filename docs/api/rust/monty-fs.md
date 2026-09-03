@@ -53,9 +53,8 @@ pub enum MountError {
     ///
     /// Carries CPython's wording for the operation that saw it rather than a
     /// path: CPython raises this from argument parsing, before the path is
-    /// echoed anywhere. See [`OsFunctionCall::embedded_null_message`].
+    /// echoed anywhere. See `OsFunctionCall::embedded_null_message`.
     ///
-    /// [`OsFunctionCall::embedded_null_message`]: monty_types::OsFunctionCall::embedded_null_message
     EmbeddedNullByte(&'static str),
     /// A write operation was attempted on a read-only mount.
     ReadOnly(String),
@@ -65,7 +64,7 @@ pub enum MountError {
     Io(io::Error, String),
     /// A file contained bytes that could not be decoded as UTF-8. Carries the
     /// details needed to reproduce CPython's `UnicodeDecodeError` wording
-    /// exactly (see [`monty_types::unicode_decode_error_msg`]).
+    /// exactly (see `monty_types::unicode_decode_error_msg`).
     InvalidUtf8 { start: usize, end: usize, first_byte: u8, reason: &'static str, data: monty_types::ExcData },
     /// Invalid mount configuration (e.g., host path doesn't exist or isn't a directory).
     InvalidMount(String),
@@ -103,7 +102,7 @@ pub enum MountMode {
     /// Files written by sandboxed code persist on the host and are untrusted;
     /// the host must not execute them. That includes indirect execution: a
     /// Python `import` when the directory is on `sys.path`, or a tool reading
-    /// `conftest.py` or `.git/hooks/*`. [`Self::OverlayMemory`] behaves the
+    /// `conftest.py` or `.git/hooks/*`. `Self::OverlayMemory` behaves the
     /// same inside the sandbox but keeps writes in memory.
     ReadWrite,
     /// Read-only access. Write operations raise `PermissionError`.
@@ -111,7 +110,7 @@ pub enum MountMode {
     /// Copy-on-write overlay backed by in-memory storage.
     ///
     /// Reads fall through to the host directory. Writes are captured in the
-    /// contained [`OverlayState`]. Deletions insert `OverlayEntry::Deleted`
+    /// contained `OverlayState`. Deletions insert `OverlayEntry::Deleted`
     /// tombstones that hide real files from subsequent reads. Directory listings
     /// merge real and overlay entries, with overlay taking precedence.
     OverlayMemory(super::overlay_state::OverlayState),
@@ -427,7 +426,7 @@ Consumes the call so a covered write's payload is *moved* into the
 backend (overlay storage retains it without a copy). Routing happens
 on a borrow first, so [`MountCallOutcome::NotHandled`](#mountcalloutcome) hands the call
 back untouched for the caller's fallback handler (a host callback or
-`OsFunctionCall::on_no_handler`).
+[`OsFunctionCall::on_no_handler`](monty-types.md#osfunctioncall)).
 
 Path length and null bytes are checked before anything else touches the
 path, so both apply whether or not a mount covers it — as in CPython,

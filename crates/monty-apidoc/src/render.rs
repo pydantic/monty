@@ -2,10 +2,11 @@
 //!
 //! Page shape: frontmatter, `# crate-name`, a hand-written intro (and the
 //! crate's own `//!` docs where they aren't a README include), then one `##`
-//! section per public root item in source order, with methods as `###`
-//! subsections. Declarations are entity-escaped HTML blocks with type links
-//! (see `sig::to_html`); everything else keeps `<`/`{` inside fences or
-//! backticks so the pages survive the docs site's MDX sanitizer untouched.
+//! section per public root item in reading order, with methods as `###`
+//! subsections. Declarations are plain ```rust fences followed by a hidden
+//! `data-links` payload (see [`Ctx::push_decl`]); everything else keeps
+//! `<`/`{` inside fences or backticks so the pages survive the docs site's
+//! MDX sanitizer untouched.
 
 use std::fmt::Write;
 

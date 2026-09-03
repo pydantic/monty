@@ -140,7 +140,7 @@ application during long-running computations.
 #### Errors
 Returns [`MontyException`](monty-types.md#montyexception) if:
 - The number of inputs doesn't match the expected count
-- An input value is invalid (e.g., `MontyObject::Repr`)
+- An input value is invalid (e.g., [`MontyObject::Repr`](monty-types.md#montyobject))
 - A runtime error occurs during execution
 
 #### Panics
@@ -335,8 +335,8 @@ pub struct NameLookup {
 Execution paused for an unresolved name lookup.
 
 The host should check if the name corresponds to a known external function or
-value. Call [`resume`](#namelookup) with `NameLookupResult::Value` to
-cache it in the namespace and continue, or `NameLookupResult::Undefined` to
+value. Call [`resume`](#namelookup) with [`NameLookupResult::Value`](monty-types.md#namelookupresult) to
+cache it in the namespace and continue, or [`NameLookupResult::Undefined`](monty-types.md#namelookupresult) to
 raise `NameError`.
 
 The namespace slot and scope are managed internally — the host only needs to
@@ -370,7 +370,7 @@ Caches the resolved value in the appropriate slot (globals or stack)
 before restoring the VM, then either pushes the value or raises `NameError`.
 
 #### Arguments
-* `result` — The resolved value or `Undefined`.
+* `result` — The resolved value or [`Undefined`](monty-types.md#namelookupresult).
 * `print` — Writer for print output.
 
 Implements: `Debug`, `Deserialize<'de>`, `Serialize`.
@@ -398,7 +398,7 @@ This enables sandboxed execution where the interpreter never directly performs I
 
 `function_call` is a tagged [`OsFunctionCall`](monty-types.md#osfunctioncall) whose variants carry the
 typed args directly. Host bindings that need a generic
-`(positional, keyword)` `MontyObject` view can call `OsFunctionCall::to_args`
+`(positional, keyword)` `MontyObject` view can call [`OsFunctionCall::to_args`](monty-types.md#osfunctioncall)
 (the public projection method).
 
 ### resume
@@ -435,7 +435,7 @@ Dispatches the call to `handler` and resumes execution with its result.
 
 `handler` receives the [`OsFunctionCall`](monty-types.md#osfunctioncall) by value, so large
 `WriteText` / `WriteBytes` payloads move into the host without
-cloning. Prefer this over reading `Self::function_call` and calling
+cloning. Prefer this over reading [`Self::function_call`](#oscall) and calling
 [`Self::resume`](#oscall) separately when the handler consumes the call.
 
 ### tracker
@@ -1067,7 +1067,7 @@ pub enum Session {
     Idle(Box<MontyRepl>),
     /// Mid-feed, waiting on a resume.
     Suspended(Box<ReplProgress>),
-    /// A one-shot [`crate::MontyRun`] execution paused at a suspension. Not a
+    /// A one-shot `MontyRun` execution paused at a suspension. Not a
     /// repl, so it cannot be fed further — only resumed to completion.
     Running(Box<RunProgress>),
 }
@@ -1091,7 +1091,7 @@ pub enum SessionRef<'a> {
     Idle(&'a MontyRepl),
     /// Mid-feed, waiting on a resume.
     Suspended(&'a ReplProgress),
-    /// A paused one-shot [`crate::MontyRun`] execution.
+    /// A paused one-shot `MontyRun` execution.
     Running(&'a RunProgress),
 }
 ```

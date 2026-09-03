@@ -18,7 +18,10 @@ use rustdoc_types::{
     Type, Variant, VariantKind, WherePredicate,
 };
 
-use crate::symbols::SymbolMap;
+use crate::{
+    docs_md::{is_rust_path_definition, strip_intra_doc_links},
+    symbols::SymbolMap,
+};
 
 /// Signatures longer than this wrap one parameter per line, rustfmt-style —
 /// the docs sites' content column fits roughly this many monospace
@@ -638,11 +641,16 @@ fn macro_decl(source: &str) -> String {
 
 /// Appends an item's doc comment as indented `///` lines inside a decl block
 /// (used for struct fields and enum variants, whose docs read best in place).
+/// Intra-doc links are reduced to plain code spans — inside a fence the link
+/// syntax would show literally.
 fn push_doc_lines(out: &mut String, item: &Item, indent: &str) {
     if let Some(docs) = &item.docs {
         for line in docs.lines() {
+            if is_rust_path_definition(line) {
+                continue; // its label occurrences are reduced to code spans
+            }
             let space = if line.is_empty() { "" } else { " " };
-            writeln!(out, "{indent}///{space}{line}").unwrap();
+            writeln!(out, "{indent}///{space}{}", strip_intra_doc_links(line)).unwrap();
         }
     }
 }

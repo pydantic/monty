@@ -10,7 +10,7 @@
 //! unresolved ones degrade to plain code spans (never broken links —
 //! `mkdocs build --strict` fails on those).
 
-use std::{borrow::Cow, cmp::Reverse, collections::HashMap, fmt::Write};
+use std::{borrow::Cow, cmp::Reverse, collections::HashMap};
 
 use rustdoc_types::{Crate, Id};
 
@@ -59,7 +59,7 @@ pub fn process_docs(
             let lang = normalize_fence_info(info);
             out.push(format!("```{lang}"));
             in_fence = Some(lang);
-        } else if Resolver::is_rust_path_definition(line) {
+        } else if is_rust_path_definition(line) {
             // dropped: its label occurrences are resolved via the links map
         } else {
             out.push(resolver.prose_line(line, heading_level));
@@ -118,12 +118,6 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Whether `line` is a reference definition targeting a Rust path (to be
-    /// dropped — markdown would render its label occurrences as dead links).
-    fn is_rust_path_definition(line: &str) -> bool {
-        split_definition(line).is_some_and(|(_, target)| is_rust_path(target))
-    }
-
     /// One non-fence line: demote headings, then rewrite intra-doc links.
     fn prose_line(&self, line: &str, heading_level: usize) -> String {
         let line = demote_heading(line, heading_level);
@@ -162,34 +156,12 @@ impl<'a> Resolver<'a> {
     /// Rewrites inline links whose target is a Rust path,
     /// `` [`X`](crate::x::X) `` — resolved to a page URL or reduced to text.
     fn rewrite_inline_rust_links(&self, line: &str) -> String {
-        let mut out = String::with_capacity(line.len());
-        let mut rest = line;
-        while let Some(open) = rest.find('[') {
-            let (Some(mid), Some(end)) = (rest[open..].find("]("), rest[open..].find(')')) else {
-                break;
-            };
-            let (mid, end) = (open + mid, open + end);
-            if end < mid {
-                // `)` before `](`: not an inline link, emit up to it and go on
-                out.push_str(&rest[..=end]);
-                rest = &rest[end + 1..];
-                continue;
-            }
-            let text = &rest[open + 1..mid];
-            let target = &rest[mid + 2..end];
-            out.push_str(&rest[..open]);
-            if is_rust_path(target) {
-                match self.resolve_key(target) {
-                    Some(url) => write!(out, "[{}]({url})", display_text(text)).unwrap(),
-                    None => out.push_str(&display_text(text)),
-                }
-            } else {
-                out.push_str(&rest[open..=end]);
-            }
-            rest = &rest[end + 1..];
-        }
-        out.push_str(rest);
-        out
+        rewrite_inline_links(line, |text, target| {
+            is_rust_path(target).then(|| match self.resolve_key(target) {
+                Some(url) => format!("[{}]({url})", display_text(text)),
+                None => display_text(text).into_owned(),
+            })
+        })
     }
 
     /// A links-map key to a page-relative URL, when the target is rendered.
@@ -197,6 +169,68 @@ impl<'a> Resolver<'a> {
         let id = self.links.get(key)?;
         self.symbols.resolve(self.from_crate, self.krate, *id)
     }
+}
+
+/// Whether `line` is a reference definition targeting a Rust path (to be
+/// dropped — markdown would render its label occurrences as dead links).
+pub fn is_rust_path_definition(line: &str) -> bool {
+    split_definition(line).is_some_and(|(_, target)| is_rust_path(target))
+}
+
+/// Reduces intra-doc link syntax to plain code spans, for doc lines placed
+/// inside a declaration fence where markdown links would render literally.
+pub fn strip_intra_doc_links(line: &str) -> String {
+    let line = rewrite_inline_links(line, |text, target| {
+        is_rust_path(target).then(|| display_text(text).into_owned())
+    });
+    // `crate::` prefixes mean nothing on the page, in code spans included
+    strip_unresolved_shorthand(&line.replace("`][]", "`]")).replace("`crate::", "`")
+}
+
+/// Scans `line` for inline `[text](target)` links, replacing each with
+/// `rewrite(text, target)` where that returns `Some`; other links pass
+/// through unchanged. The closing `)` is found by paren balancing so link
+/// text and targets containing `()` (`` [`run()`](Self::run()) ``) parse.
+fn rewrite_inline_links(line: &str, mut rewrite: impl FnMut(&str, &str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(mid) = rest.find("](") {
+        // the link text starts at the last `[` before `](`
+        let (Some(open), Some(end)) = (rest[..mid].rfind('['), balanced_close(rest, mid + 2)) else {
+            out.push_str(&rest[..mid + 2]);
+            rest = &rest[mid + 2..];
+            continue;
+        };
+        let text = &rest[open + 1..mid];
+        let target = &rest[mid + 2..end];
+        out.push_str(&rest[..open]);
+        match rewrite(text, target) {
+            Some(replacement) => out.push_str(&replacement),
+            None => out.push_str(&rest[open..=end]),
+        }
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Byte index of the `)` closing a link target that starts at `start`,
+/// balancing nested parentheses (targets like `Self::run()`).
+fn balanced_close(s: &str, start: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    for (i, b) in s.bytes().enumerate().skip(start) {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Splits a `[label]: target` reference-definition line.
