@@ -31,6 +31,10 @@ pub fn render_page(cfg: &CrateConfig, krate: &Crate, symbols: &SymbolMap) -> Str
         name = cfg.name,
         intro = cfg.intro,
     );
+    if !cfg.features.is_empty() {
+        let list: Vec<String> = cfg.features.iter().map(|f| format!("`{f}`")).collect();
+        writeln!(out, "\nDocumented with the {} feature(s) enabled.", list.join(", ")).unwrap();
+    }
     let root = &krate.index[&krate.root];
     if cfg.render_crate_docs
         && let Some(docs) = &root.docs
@@ -118,9 +122,10 @@ impl Ctx<'_> {
 
     /// A declaration as a plain ```rust fence, followed (when any of its
     /// types resolve to a generated page) by a hidden `data-links` payload:
-    /// `Name url` pairs, `;`-separated. The docs site's client script wraps
-    /// those identifiers in links after syntax highlighting; the payload is
-    /// invisible everywhere else and vanishes from agent (llms) output.
+    /// `Name url` pairs, `;`-separated. pydantic.dev's client script
+    /// (`unified-docs/src/scripts/code-highlight.ts`) wraps those identifiers
+    /// in links after syntax highlighting; the payload is invisible
+    /// everywhere else and vanishes from agent (llms) output.
     fn push_decl(out: &mut String, decl: &str) {
         writeln!(out, "```rust\n{}\n```", to_plain(decl)).unwrap();
         let links = linked_types(decl);

@@ -15,14 +15,8 @@ use std::{
     process::Command,
 };
 
+use monty_apidoc::{CrateConfig, render::render_page, symbols::SymbolMap};
 use rustdoc_types::{Crate, FORMAT_VERSION};
-
-use crate::{render::render_page, symbols::SymbolMap};
-
-mod docs_md;
-mod render;
-mod sig;
-mod symbols;
 
 /// Nightly toolchain whose rustdoc JSON format matches the exact-pinned
 /// `rustdoc-types` in Cargo.toml ([`FORMAT_VERSION`]). Bump all three
@@ -63,6 +57,7 @@ const CRATES: &[CrateConfig] = &[
             "DumpError",
             "DUMP_VERSION",
         ],
+        features: &[],
     },
     CrateConfig {
         name: "monty-pool",
@@ -70,7 +65,26 @@ const CRATES: &[CrateConfig] = &[
                 timeouts and elastic scaling for running untrusted Python. This is the recommended \
                 Rust embedding surface — see the [Rust quickstart](../../quickstart/rust.md).",
         render_crate_docs: false,
-        order: &[],
+        // the feature-gated telemetry module is declared first in lib.rs;
+        // keep the core pool API ahead of it
+        order: &[
+            "Pool",
+            "PoolConfig",
+            "Checkout",
+            "ReplConfig",
+            "TurnEvent",
+            "ResumeValue",
+            "OnPrint",
+            "OnRawEvent",
+            "PrintFuture",
+            "on_print_sync",
+            "MountSpec",
+            "MountSpecMode",
+            "MontyTransport",
+            "PoolError",
+            "CrashCause",
+        ],
+        features: &["telemetry-adapter"],
     },
     CrateConfig {
         name: "monty-types",
@@ -79,6 +93,7 @@ const CRATES: &[CrateConfig] = &[
                 this crate rather than on the interpreter.",
         render_crate_docs: false,
         order: &[],
+        features: &[],
     },
     CrateConfig {
         name: "monty-fs",
@@ -86,6 +101,7 @@ const CRATES: &[CrateConfig] = &[
                 sandbox at virtual paths and services the sandbox's OS calls.",
         render_crate_docs: true,
         order: &[],
+        features: &[],
     },
     CrateConfig {
         name: "monty-proto",
@@ -94,6 +110,7 @@ const CRATES: &[CrateConfig] = &[
                 frames and [`monty-types`](monty-types.md) values.",
         render_crate_docs: false,
         order: &[],
+        features: &[],
     },
     CrateConfig {
         name: "monty-type-checking",
@@ -101,30 +118,16 @@ const CRATES: &[CrateConfig] = &[
                 checks code against Monty's trimmed typeshed before execution.",
         render_crate_docs: false,
         order: &[],
+        features: &[],
     },
 ];
 
-/// One crate page. Most of the crates use
-/// `#![doc = include_str!("../README.md")]` as crate docs, which would
-/// duplicate install instructions and crates.io links into the reference —
-/// so every page opens with a short hand-written `intro` instead, and
-/// `render_crate_docs` includes the crate docs only where they are genuine
-/// `//!` module documentation (`monty-fs`).
-struct CrateConfig {
-    name: &'static str,
-    intro: &'static str,
-    render_crate_docs: bool,
-    /// Explicit reading order for root items: listed names come first, in
-    /// this order; everything else keeps source order. A name not found at
-    /// the crate root is a generation error (catches renames).
-    order: &'static [&'static str],
-}
-
 fn main() {
     let workspace_root = workspace_root();
+    let doc_dir = target_directory(&workspace_root).join("doc");
     let crates: Vec<(&CrateConfig, Crate)> = CRATES
         .iter()
-        .map(|cfg| (cfg, load_crate(&workspace_root, cfg.name)))
+        .map(|cfg| (cfg, load_crate(&workspace_root, &doc_dir, cfg)))
         .collect();
     let named: Vec<(&str, &Crate)> = crates.iter().map(|(cfg, krate)| (cfg.name, krate)).collect();
     let symbols = SymbolMap::build(&named);
@@ -138,21 +141,19 @@ fn main() {
     }
 }
 
-/// Documents `name` with the pinned nightly rustdoc and parses the JSON.
-fn load_crate(workspace_root: &Path, name: &str) -> Crate {
-    let status = Command::new("cargo")
+/// Documents `cfg`'s crate with the pinned nightly rustdoc and parses the
+/// JSON it writes under `doc_dir`.
+fn load_crate(workspace_root: &Path, doc_dir: &Path, cfg: &CrateConfig) -> Crate {
+    let name = cfg.name;
+    let mut command = Command::new("cargo");
+    command
         .arg(format!("+{NIGHTLY}"))
-        .args([
-            "rustdoc",
-            "-p",
-            name,
-            "--lib",
-            "--",
-            "--output-format",
-            "json",
-            "-Z",
-            "unstable-options",
-        ])
+        .args(["rustdoc", "-p", name, "--lib"]);
+    if !cfg.features.is_empty() {
+        command.arg("--features").arg(cfg.features.join(","));
+    }
+    let status = command
+        .args(["--", "--output-format", "json", "-Z", "unstable-options"])
         .current_dir(workspace_root)
         .status()
         .expect("failed to run cargo — is rustup on PATH?");
@@ -161,9 +162,7 @@ fn load_crate(workspace_root: &Path, name: &str) -> Crate {
         "cargo +{NIGHTLY} rustdoc -p {name} failed; if the toolchain is missing, install it with \
          `rustup toolchain install {NIGHTLY} --profile minimal`"
     );
-    let json_path = workspace_root
-        .join("target/doc")
-        .join(format!("{}.json", name.replace('-', "_")));
+    let json_path = doc_dir.join(format!("{}.json", name.replace('-', "_")));
     let raw =
         fs::read_to_string(&json_path).unwrap_or_else(|err| panic!("failed to read {}: {err}", json_path.display()));
     let value: serde_json::Value = serde_json::from_str(&raw).expect("rustdoc JSON is not valid JSON");
@@ -175,6 +174,23 @@ fn load_crate(workspace_root: &Path, name: &str) -> Crate {
          {FORMAT_VERSION} (the pinned rustdoc-types); bump the nightly pin and rustdoc-types together"
     );
     serde_json::from_value(value).expect("failed to deserialize rustdoc JSON")
+}
+
+/// The workspace's target directory as cargo resolves it, honouring
+/// `CARGO_TARGET_DIR` and `.cargo/config` overrides rather than assuming
+/// `<workspace>/target`.
+fn target_directory(workspace_root: &Path) -> PathBuf {
+    let output = Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(workspace_root)
+        .output()
+        .expect("failed to run cargo metadata");
+    assert!(output.status.success(), "cargo metadata failed");
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).expect("cargo metadata is not valid JSON");
+    let target = metadata["target_directory"]
+        .as_str()
+        .expect("cargo metadata has no target_directory");
+    PathBuf::from(target)
 }
 
 /// `crates/monty-apidoc` lives two levels below the workspace root.

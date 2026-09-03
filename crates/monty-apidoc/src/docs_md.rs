@@ -42,12 +42,14 @@ pub fn process_docs(
 ) -> String {
     let resolver = Resolver::new(docs, links, from_crate, krate, symbols);
     let mut out = Vec::new();
-    let mut in_fence: Option<String> = None;
+    // the open fence's marker and language: a block closes only on a fence
+    // at least as long, so ```` blocks can embed ``` fences
+    let mut in_fence: Option<(String, String)> = None;
     for line in docs.lines() {
-        if let Some(fence_lang) = &in_fence {
-            if line.trim_start().starts_with("```") {
+        if let Some((marker, fence_lang)) = &in_fence {
+            if is_closing_fence(line, marker) {
+                out.push(marker.clone());
                 in_fence = None;
-                out.push("```".to_owned());
             } else if fence_lang == "rust" && (line == "#" || line.starts_with("# ")) {
                 // rustdoc hidden line
             } else if fence_lang == "rust" && line.starts_with("##") {
@@ -55,10 +57,10 @@ pub fn process_docs(
             } else {
                 out.push(line.to_owned());
             }
-        } else if let Some(info) = line.trim_start().strip_prefix("```") {
+        } else if let Some((marker, info)) = split_fence(line) {
             let lang = normalize_fence_info(info);
-            out.push(format!("```{lang}"));
-            in_fence = Some(lang);
+            out.push(format!("{marker}{lang}"));
+            in_fence = Some((marker.to_owned(), lang));
         } else if is_rust_path_definition(line) {
             // dropped: its label occurrences are resolved via the links map
         } else {
@@ -66,6 +68,23 @@ pub fn process_docs(
         }
     }
     out.join("\n")
+}
+
+/// Splits an opening code fence into its marker (three or more backticks or
+/// tildes) and info string; `None` for any other line.
+fn split_fence(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim_start();
+    let first = trimmed.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let len = trimmed.chars().take_while(|c| *c == first).count();
+    (len >= 3).then(|| trimmed.split_at(len))
+}
+
+/// Whether `line` closes a fence opened with `marker`: the same character,
+/// at least as many of them, and nothing else.
+fn is_closing_fence(line: &str, marker: &str) -> bool {
+    let trimmed = line.trim();
+    let first = marker.chars().next();
+    trimmed.len() >= marker.len() && trimmed.chars().all(|c| Some(c) == first)
 }
 
 /// Maps a fence info string to the language mkdocs/Starlight should
@@ -233,16 +252,16 @@ fn balanced_close(s: &str, start: usize) -> Option<usize> {
     None
 }
 
-/// Splits a `[label]: target` reference-definition line.
+/// Splits a `[label]: target` reference-definition line, ignoring an
+/// optional markdown title (`[label]: target "Title"`).
 fn split_definition(line: &str) -> Option<(&str, &str)> {
     let rest = line.strip_prefix('[')?;
     let close = rest.find("]:")?;
-    let target = rest[close + 2..].trim();
-    if target.is_empty() || target.contains(' ') {
-        None
-    } else {
-        Some((&rest[..close], target))
-    }
+    let mut tokens = rest[close + 2..].trim().splitn(2, char::is_whitespace);
+    let target = tokens.next().filter(|target| !target.is_empty())?;
+    let title = tokens.next().map(str::trim_start).unwrap_or_default();
+    let is_title = title.is_empty() || title.starts_with(['"', '\'', '(']);
+    is_title.then_some((&rest[..close], target))
 }
 
 /// Whether a link target is a Rust item path rather than a real URL or a
@@ -256,15 +275,20 @@ fn is_rust_path(target: &str) -> bool {
             && target.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '`'))
 }
 
-/// Link text shown to the reader: `crate::` prefixes mean nothing outside
-/// the defining crate, so they are stripped (inside backticks too).
+/// Link text shown to the reader: `crate::`, `super::` and `self::`
+/// prefixes mean nothing outside the defining module, so they are stripped
+/// (inside backticks too).
 fn display_text(text: &str) -> Cow<'_, str> {
-    if text.starts_with("crate::") {
-        Cow::Owned(text.replacen("crate::", "", 1))
-    } else if text.starts_with("`crate::") {
-        Cow::Owned(text.replacen("`crate::", "`", 1))
-    } else {
-        Cow::Borrowed(text)
+    let (tick, body) = match text.strip_prefix('`') {
+        Some(body) => ("`", body),
+        None => ("", text),
+    };
+    let stripped = ["crate::", "super::", "self::"]
+        .iter()
+        .find_map(|prefix| body.strip_prefix(prefix));
+    match stripped {
+        Some(rest) => Cow::Owned(format!("{tick}{rest}")),
+        None => Cow::Borrowed(text),
     }
 }
 

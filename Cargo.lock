@@ -2454,6 +2454,7 @@ dependencies = [
 name = "monty-apidoc"
 version = "0.0.21"
 dependencies = [
+ "insta",
  "rustdoc-types",
  "serde_json",
 ]

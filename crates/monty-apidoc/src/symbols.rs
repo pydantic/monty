@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rustdoc_types::{Crate, Id, Item, ItemEnum, StructKind};
+use rustdoc_types::{Crate, Id, Item, ItemEnum, Module, StructKind, VariantKind};
 
 /// Anchor locations for every item rendered on any page.
 ///
@@ -68,7 +68,7 @@ impl SymbolMap {
         }
     }
 
-    /// Walks one crate's root module, assigning each root item an anchor and
+    /// Walks one crate's module tree, assigning each item an anchor and
     /// mapping its whole subtree (methods, fields, variants) to that anchor.
     /// Only page-unique anchors are recorded — see the struct docs.
     fn index_crate(&mut self, rustdoc_name: &str, krate: &Crate) {
@@ -78,31 +78,32 @@ impl SymbolMap {
         let ItemEnum::Module(module) = &root.inner else {
             panic!("crate root of {rustdoc_name} is not a module")
         };
-        for entry in &module.items {
-            let Some((name, item)) = resolve_root_entry(krate, *entry) else {
-                continue;
-            };
-            let anchor = name.to_lowercase();
-            if !taken.insert(anchor.clone()) {
-                continue; // a later duplicate would get a platform-specific suffix
-            }
-            self.root_items.insert((rustdoc_name.to_owned(), name), anchor.clone());
-            index_subtree(krate, item, &anchor, ids);
-            // nested public modules: their children get their own anchors
-            if let ItemEnum::Module(nested) = &item.inner {
-                for child_id in &nested.items {
-                    let Some((child_name, child)) = resolve_root_entry(krate, *child_id) else {
-                        continue;
-                    };
-                    let child_anchor = child_name.to_lowercase();
-                    if !taken.insert(child_anchor.clone()) {
-                        continue;
-                    }
-                    self.root_items
-                        .insert((rustdoc_name.to_owned(), child_name), child_anchor.clone());
-                    index_subtree(krate, child, &child_anchor, ids);
-                }
-            }
+        index_module(rustdoc_name, krate, module, &mut taken, &mut self.root_items, ids);
+    }
+}
+
+/// Indexes a module's entries, recursing into nested public modules to the
+/// same depth the renderer walks so every rendered heading has an anchor.
+fn index_module(
+    rustdoc_name: &str,
+    krate: &Crate,
+    module: &Module,
+    taken: &mut HashSet<String>,
+    root_items: &mut HashMap<(String, String), String>,
+    ids: &mut HashMap<Id, String>,
+) {
+    for entry in &module.items {
+        let Some((name, item)) = resolve_root_entry(krate, *entry) else {
+            continue;
+        };
+        let anchor = name.to_lowercase();
+        if !taken.insert(anchor.clone()) {
+            continue; // a later duplicate would get a platform-specific suffix
+        }
+        root_items.insert((rustdoc_name.to_owned(), name), anchor.clone());
+        index_subtree(krate, item, &anchor, ids);
+        if let ItemEnum::Module(nested) = &item.inner {
+            index_module(rustdoc_name, krate, nested, taken, root_items, ids);
         }
     }
 }
@@ -140,7 +141,19 @@ fn index_subtree(krate: &Crate, item: &Item, anchor: &str, ids: &mut HashMap<Id,
         ItemEnum::Enum(e) => &e.variants,
         ItemEnum::Trait(t) => &t.items,
         ItemEnum::Impl(i) => &i.items,
-        ItemEnum::Variant(_) | ItemEnum::Union(_) => &[],
+        ItemEnum::Variant(v) => {
+            // variant fields anchor to the enum, like struct fields do
+            let fields: Vec<Id> = match &v.kind {
+                VariantKind::Struct { fields, .. } => fields.clone(),
+                VariantKind::Tuple(fields) => fields.iter().flatten().copied().collect(),
+                VariantKind::Plain => Vec::new(),
+            };
+            for field in fields {
+                ids.insert(field, anchor.to_owned());
+            }
+            &[]
+        }
+        ItemEnum::Union(_) => &[],
         _ => return,
     };
     // enums also carry impls alongside variants

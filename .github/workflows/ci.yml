@@ -97,6 +97,8 @@ jobs:
       - name: Generate the Rust API reference
         run: make generate-api-docs
 
+      - run: cargo test -p monty-apidoc
+
   # The interpreter itself, under every feature config. Each `--features` flag
   # forces a full rebuild of `monty`, so the three configs are kept together
   # here; the crates layered on top run in parallel in `test-rust-crates`.
@@ -532,6 +534,12 @@ jobs:
     needs: [check]
     if: success() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+
+    # the branch is force-pushed as a whole, so a slower run for an older
+    # commit must never finish after a newer one
+    concurrency:
+      group: publish-docs
+      cancel-in-progress: true
 
     permissions:
       contents: write

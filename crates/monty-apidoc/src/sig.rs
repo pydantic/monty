@@ -208,17 +208,19 @@ impl SigCtx<'_> {
     }
 
     /// Prints a path with its generic arguments, e.g.
-    /// `Result<Checkout, PoolError>`. `crate::private_module::Name` paths (as
-    /// written in source) collapse to the bare name — the private module
-    /// means nothing to a reference reader. Names whose id resolves to a
-    /// rendered page are wrapped in link markers.
+    /// `Result<Checkout, PoolError>`. Module-relative paths as written in
+    /// source (`crate::private_module::Name`, `super::error::Name`,
+    /// `self::Name`) collapse to the bare name — the private module means
+    /// nothing to a reference reader. Names whose id resolves to a rendered
+    /// page are wrapped in link markers.
     pub fn path_str(&self, path: &Path) -> String {
         let args = path
             .args
             .as_deref()
             .map(|a| self.generic_args_str(a))
             .unwrap_or_default();
-        let name = if path.path.starts_with("crate::") {
+        let relative = ["crate::", "self::", "super::"];
+        let name = if relative.iter().any(|prefix| path.path.starts_with(prefix)) {
             path.path.rsplit("::").next().expect("empty path")
         } else {
             &path.path
@@ -425,17 +427,28 @@ impl SigCtx<'_> {
                     let default = value.as_ref().map(|v| format!(" = {v}")).unwrap_or_default();
                     writeln!(out, "    const {assoc_name}: {}{default};", self.type_str(type_)).unwrap();
                 }
-                ItemEnum::AssocType { bounds, type_, .. } => {
+                ItemEnum::AssocType {
+                    generics,
+                    bounds,
+                    type_,
+                    ..
+                } => {
+                    // generic associated types carry their own params and where clause
+                    let params = self.generic_params_str(&generics.params);
                     let bounds = if bounds.is_empty() {
                         String::new()
                     } else {
                         format!(": {}", self.bounds_str(bounds))
                     };
+                    let where_ = self
+                        .where_str(generics)
+                        .map(|preds| format!(" where {}", preds.join(", ")))
+                        .unwrap_or_default();
                     let default = type_
                         .as_ref()
                         .map(|t| format!(" = {}", self.type_str(t)))
                         .unwrap_or_default();
-                    writeln!(out, "    type {assoc_name}{bounds}{default};").unwrap();
+                    writeln!(out, "    type {assoc_name}{params}{bounds}{where_}{default};").unwrap();
                 }
                 inner => panic!("unhandled trait item in {name}: {:?}", inner.item_kind()),
             }
@@ -666,10 +679,32 @@ fn header_str(header: &FunctionHeader) -> String {
     if header.is_unsafe {
         out.push_str("unsafe ");
     }
-    if !matches!(header.abi, Abi::Rust) {
-        out.push_str("extern \"C\" ");
+    if let Some(abi) = abi_str(&header.abi) {
+        write!(out, "extern \"{abi}\" ").unwrap();
     }
     out
+}
+
+/// The ABI string as written in source (`"C-unwind"`, `"system"`, ...);
+/// `None` for the default Rust ABI, which is never spelled out.
+fn abi_str(abi: &Abi) -> Option<String> {
+    let (name, unwind) = match abi {
+        Abi::Rust => return None,
+        Abi::C { unwind } => ("C", *unwind),
+        Abi::Cdecl { unwind } => ("cdecl", *unwind),
+        Abi::Stdcall { unwind } => ("stdcall", *unwind),
+        Abi::Fastcall { unwind } => ("fastcall", *unwind),
+        Abi::Aapcs { unwind } => ("aapcs", *unwind),
+        Abi::Win64 { unwind } => ("win64", *unwind),
+        Abi::SysV64 { unwind } => ("sysv64", *unwind),
+        Abi::System { unwind } => ("system", *unwind),
+        Abi::Other(other) => return Some(other.clone()),
+    };
+    Some(if unwind {
+        format!("{name}-unwind")
+    } else {
+        name.to_owned()
+    })
 }
 
 fn is_synthetic(param: &GenericParamDef) -> bool {
