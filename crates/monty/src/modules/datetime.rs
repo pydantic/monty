@@ -25,7 +25,7 @@ use crate::{
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Datetime);
+    let mut module = Module::new(StaticStrings::Datetime, vm.interns);
 
     module.set_attr(StaticStrings::Date, Value::Builtin(Builtins::Type(Type::Date)), vm);
     module.set_attr(

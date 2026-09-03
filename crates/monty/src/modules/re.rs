@@ -94,7 +94,7 @@ pub(crate) enum ReFunctions {
 /// # Panics
 /// If the required strings were not pre-interned during the prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Re);
+    let mut module = Module::new(StaticStrings::Re, vm.interns);
 
     // Functions
     module.set_attr(

@@ -377,7 +377,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string() else {
+        let Some(method) = attr.static_string(vm.interns) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
         };
@@ -399,7 +399,7 @@ impl HeapItem for Bytes {
 /// This is the entry point for bytes method calls from the VM on interned bytes.
 /// Converts the `StringId` to `StaticStrings` and delegates to `call_bytes_method_impl`.
 pub fn call_bytes_method(bytes: &[u8], method_id: StringId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let Some(method) = StaticStrings::from_string_id(method_id) else {
+    let Some(method) = vm.interns.static_string(method_id) else {
         args.drop_with(vm);
         return Err(ExcType::attribute_error(Type::Bytes, vm.interns.get_str(method_id)));
     };

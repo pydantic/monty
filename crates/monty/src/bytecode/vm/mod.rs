@@ -2307,7 +2307,7 @@ impl<'h> VM<'h> {
     /// (`__file__`, `__cached__`, …).
     fn module_dunder(&self, name_id: StringId) -> Option<Value> {
         let value = match self.interns.get_str(name_id) {
-            "__name__" => Value::InternString(StaticStrings::DunderMain.into()),
+            "__name__" => Value::InternString(self.interns.static_id(StaticStrings::DunderMain)),
             "__debug__" => Value::Bool(true),
             "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))),
             "__doc__" | "__spec__" | "__package__" => Value::None,

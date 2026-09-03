@@ -1265,7 +1265,7 @@ fn dispatch_dunder(
     vm: &mut VM<'_>,
     args: &mut Option<ArgValues>,
 ) -> Option<Result<CallResult, RunError>> {
-    let static_str = StaticStrings::from_string_id(name_id)?;
+    let static_str = vm.interns.static_string(name_id)?;
     // User-defined instances are never intercepted: an explicit
     // `obj.__enter__()` / `obj.__exit__(a, b, c)` on an instance is an
     // ordinary method call in CPython — the instance `__dict__` can shadow

@@ -404,7 +404,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        match attr.static_string() {
+        match attr.static_string(vm.interns) {
             Some(StaticStrings::PatternAttr) => {
                 let v = allocate_string(self.get(vm.heap).pattern.as_str(), vm.heap);
                 Ok(Some(CallResult::Value(v)))
@@ -415,7 +415,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let result = match attr.static_string() {
+        let result = match attr.static_string(vm.interns) {
             Some(StaticStrings::Search) => {
                 let arg = args.get_one_arg("Pattern.search", vm.heap)?;
                 defer_drop!(arg, vm);

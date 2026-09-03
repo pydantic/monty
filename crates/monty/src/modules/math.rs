@@ -178,7 +178,7 @@ pub(crate) enum MathFunctions {
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Math);
+    let mut module = Module::new(StaticStrings::Math, vm.interns);
 
     // Register all math functions
     for (name, func) in MATH_FUNCTIONS {

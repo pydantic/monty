@@ -128,6 +128,51 @@ fn monty_run_round_trip_comprehension_closure() {
     );
 }
 
+/// A static tag is not part of the wire identity: text unknown to the loading
+/// build remains a usable owned interner entry at the same `StringId`.
+#[test]
+fn static_interns_deserialize_as_unknown_text() {
+    let runner = MontyRun::new("'partial'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut bytes = postcard::to_allocvec(&runner).unwrap();
+    let positions: Vec<_> = bytes
+        .windows(b"partial".len())
+        .enumerate()
+        .filter_map(|(index, value)| (value == b"partial").then_some(index))
+        .collect();
+    assert_eq!(positions.len(), 2, "expected interner text and source text");
+    bytes[positions[0]..positions[0] + b"mystery".len()].copy_from_slice(b"mystery");
+
+    let loaded: MontyRun = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(
+        loaded.run_no_limits(vec![]).unwrap(),
+        MontyObject::String("mystery".to_owned()),
+    );
+}
+
+/// Loading fills in module strings known to the current build but absent from
+/// an older interner, appending them without changing serialized IDs.
+#[test]
+fn deserialization_registers_new_module_static_strings() {
+    let runner = MontyRun::new(
+        "import functools\n1".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let mut bytes = postcard::to_allocvec(&runner).unwrap();
+    let positions: Vec<_> = bytes
+        .windows(b"partial".len())
+        .enumerate()
+        .filter_map(|(index, value)| (value == b"partial").then_some(index))
+        .collect();
+    assert_eq!(positions.len(), 1, "expected only the interner entry");
+    bytes[positions[0]..positions[0] + b"mystery".len()].copy_from_slice(b"mystery");
+
+    let loaded: MontyRun = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(1));
+}
+
 #[test]
 fn monty_run_round_trip_multiple_runs() {
     // A loaded runner can be run multiple times

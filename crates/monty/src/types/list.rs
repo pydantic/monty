@@ -598,12 +598,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
     /// Delegates methods to `call_list_method`.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string() == Some(StaticStrings::Sort) {
+        if attr.static_string(vm.interns) == Some(StaticStrings::Sort) {
             do_list_sort(self, args, vm)?;
             return Ok(CallResult::Value(Value::None));
         }
 
-        let Some(method) = attr.static_string() else {
+        let Some(method) = attr.static_string(vm.interns) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
         };

@@ -477,40 +477,40 @@ impl Type {
         args: ArgValues,
         vm: &mut VM<'_>,
     ) -> RunResult<AttrCallResult> {
-        match (self, method_id) {
+        match (self, vm.interns.static_string(method_id)) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
-            (Self::Dict, m) if m == StaticStrings::Fromkeys => {
+            (Self::Dict, Some(StaticStrings::Fromkeys)) => {
                 dict_fromkeys(args, DictKind::plain(), vm).map(AttrCallResult::Value)
             }
             // `defaultdict.fromkeys(...)` builds `cls()`, i.e. a defaultdict with no
             // factory — matching CPython's inherited `dict.fromkeys` classmethod.
-            (Self::DefaultDict, m) if m == StaticStrings::Fromkeys => {
+            (Self::DefaultDict, Some(StaticStrings::Fromkeys)) => {
                 dict_fromkeys(args, DictKind::defaultdict(None), vm).map(AttrCallResult::Value)
             }
             // Counter deliberately disables the inherited classmethod.
-            (Self::Counter, m) if m == StaticStrings::Fromkeys => {
+            (Self::Counter, Some(StaticStrings::Fromkeys)) => {
                 args.drop_with(vm);
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
-            (Self::Bytes, m) if m == StaticStrings::Fromhex => bytes_fromhex(args, vm).map(AttrCallResult::Value),
-            (Self::Date, m) if m == StaticStrings::Today => date::class_today(vm.heap, args),
-            (Self::Date, m) if m == StaticStrings::Fromisoformat => {
+            (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(AttrCallResult::Value),
+            (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm.heap, args),
+            (Self::Date, Some(StaticStrings::Fromisoformat)) => {
                 date::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
             }
-            (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(vm, args),
-            (Self::DateTime, m) if m == StaticStrings::Strptime => {
+            (Self::DateTime, Some(StaticStrings::Now)) => datetime::class_now(vm, args),
+            (Self::DateTime, Some(StaticStrings::Strptime)) => {
                 datetime::class_strptime(vm.heap, args, vm.interns).map(AttrCallResult::Value)
             }
-            (Self::DateTime, m) if m == StaticStrings::Fromisoformat => {
+            (Self::DateTime, Some(StaticStrings::Fromisoformat)) => {
                 datetime::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
             }
             // `object.__setattr__(obj, name, value)` called directly, which is
             // how it is nearly always reached; `object.__setattr__` as a value
             // is handled by `Value::py_getattr`.
-            (Self::Object, m) if vm.interns.get_str(m) == "__setattr__" => {
+            (Self::Object, _) if vm.interns.get_str(method_id) == "__setattr__" => {
                 builtin_object_setattr(vm, args).map(AttrCallResult::Value)
             }
-            (Self::Time, m) if m == StaticStrings::Fromisoformat => {
+            (Self::Time, Some(StaticStrings::Fromisoformat)) => {
                 time::class_fromisoformat(vm, args).map(AttrCallResult::Value)
             }
             _ => {

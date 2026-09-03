@@ -58,7 +58,7 @@ const ITERTOOLS_FUNCTIONS: &[(StaticStrings, ItertoolsFunctions)] = &[
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Itertools);
+    let mut module = Module::new(StaticStrings::Itertools, vm.interns);
 
     for (name, func) in ITERTOOLS_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Itertools(*func)), vm);

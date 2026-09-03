@@ -163,7 +163,10 @@ fn create_class(
         .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
         .collect();
     if source.get_by_str("__doc__", vm.heap, vm.interns).is_none() {
-        pairs.push((Value::InternString(StaticStrings::DunderDoc.into()), Value::None));
+        pairs.push((
+            Value::InternString(vm.interns.static_id(StaticStrings::DunderDoc)),
+            Value::None,
+        ));
     }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
 

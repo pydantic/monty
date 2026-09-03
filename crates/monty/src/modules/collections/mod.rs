@@ -47,7 +47,7 @@ use crate::{
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Collections);
+    let mut module = Module::new(StaticStrings::Collections, vm.interns);
 
     module.set_attr(StaticStrings::Deque, Value::Builtin(Builtins::Type(Type::Deque)), vm);
     module.set_attr(
@@ -248,7 +248,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // CPython substitutes the calling module's `__name__` for a `None` module, and
     // otherwise stores the argument unvalidated (it need not be a string).
     let module = match module {
-        Value::None => Value::InternString(StaticStrings::DunderMain.into()),
+        Value::None => Value::InternString(vm.interns.static_id(StaticStrings::DunderMain)),
         other => other.clone_with_heap(vm.heap),
     };
 

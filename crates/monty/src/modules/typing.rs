@@ -21,7 +21,7 @@ use crate::{
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Typing);
+    let mut module = Module::new(StaticStrings::Typing, vm.interns);
 
     // typing.TYPE_CHECKING - always False
     module.set_attr(StaticStrings::TypeChecking, Value::Bool(false), vm);

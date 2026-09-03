@@ -18,10 +18,8 @@
 //!   keeps the invariant "interned and heap values with equal content hash
 //!   identically" local rather than scattered, since otherwise dict lookups
 //!   would silently miss.
-//! * [`ASCII_HASHES`] / [`STATIC_HASHES`] — precomputed hashes for the
-//!   pre-interned ASCII single-character and [`StaticStrings`] tables,
-//!   built via `LazyLock` on first access (one-time cost, dwarfed by parse
-//!   time for any non-trivial program).
+//! * [`ASCII_HASHES`] — lazily computed hashes for the pre-interned ASCII
+//!   single-character strings.
 
 use std::{
     collections::hash_map::DefaultHasher,
@@ -33,7 +31,6 @@ use std::{
 
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
-use strum::EnumCount;
 
 use crate::{heap::HeapId, intern::StaticStrings};
 
@@ -197,9 +194,9 @@ pub(crate) fn hash_python_long_int(bi: &BigInt) -> HashValue {
 /// impossible to forget to keep the value and hash in sync, and makes
 /// serde recompute-on-deserialise local to this type.
 ///
-/// Constructors and `Deserialize` impls are provided for the three concrete
-/// `T` we use ([`String`], `Vec<u8>`, [`BigInt`]). Adding a fourth would
-/// require its own `WithHash<NewT>` constructor and `Deserialize` impl.
+/// Constructors and `Deserialize` impls are provided for each concrete value
+/// type used by the interners. Adding another requires a constructor and the
+/// corresponding hash-rebuilding `Deserialize` implementation.
 ///
 /// # Wire format
 ///
@@ -238,6 +235,25 @@ impl WithHash<String> {
     }
 }
 
+impl WithHash<Box<str>> {
+    /// Constructs an owned intern entry from boxed text.
+    #[inline]
+    pub fn for_boxed_str(value: Box<str>) -> Self {
+        let hash = hash_python_str(&value);
+        Self { value, hash }
+    }
+}
+
+impl WithHash<StaticStrings> {
+    /// Constructs a static-string entry and computes its Python hash once.
+    #[inline]
+    pub fn for_static_str(value: StaticStrings) -> Self {
+        let text: &'static str = value.into();
+        let hash = hash_python_str(text);
+        Self { value, hash }
+    }
+}
+
 impl WithHash<Vec<u8>> {
     /// Construct from an owned `Vec<u8>`, hashing via [`hash_python_bytes`].
     #[inline]
@@ -270,6 +286,12 @@ impl<T: serde::Serialize> serde::Serialize for WithHash<T> {
 impl<'de> serde::Deserialize<'de> for WithHash<String> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self::for_str(String::deserialize(deserializer)?))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for WithHash<Box<str>> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::for_boxed_str(Box::<str>::deserialize(deserializer)?))
     }
 }
 
@@ -336,12 +358,3 @@ impl<const N: usize> LazyHashTable<N> {
 /// access via [`hash_python_str`] applied to the matching entry of
 /// [`ASCII_STRS`].
 pub(crate) static ASCII_HASHES: LazyHashTable<128> = LazyHashTable::new();
-
-/// Per-slot lazy hashes for every [`StaticStrings`] variant.
-///
-/// Indexed by the variant's discriminant, minus the static strings offset
-/// (`StaticStrings as usize - STATIC_STRING_ID_OFFSET`).
-///
-/// Each slot is filled on first access from the variant's `&'static str`
-/// representation.
-pub(crate) static STATIC_HASHES: LazyHashTable<{ StaticStrings::COUNT }> = LazyHashTable::new();

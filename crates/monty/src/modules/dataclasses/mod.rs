@@ -54,7 +54,7 @@ pub(crate) enum DataclassesFunctions {
 
 /// Creates the `dataclasses` module and allocates it on the heap.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Dataclasses);
+    let mut module = Module::new(StaticStrings::Dataclasses, vm.interns);
     module.set_attr(
         StaticStrings::Dataclass,
         Value::ModuleFunction(ModuleFunctions::Dataclasses(DataclassesFunctions::Dataclass)),
@@ -299,7 +299,8 @@ fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<DataclassField>) -> RunResu
 /// `fields`. Re-decorating replaces the previous mapping, which nothing else
 /// owns once it is out of the namespace.
 fn store_dataclass_fields<'h>(class: &mut HeapRead<'h, Class>, fields: Value, vm: &mut VM<'h>) -> RunResult<()> {
-    let replaced = class.set_attr(StaticStrings::DataclassFields.into(), fields, vm)?;
+    let name = Value::InternString(vm.interns.static_id(StaticStrings::DataclassFields));
+    let replaced = class.set_attr(name, fields, vm)?;
     replaced.drop_with(vm);
     Ok(())
 }
@@ -316,7 +317,8 @@ fn store_dataclass_params<'h>(
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
     let params = vm.heap.allocate_as(DataclassParams::new(options)).into_value();
-    let replaced = class.set_attr(StaticStrings::DataclassParams.into(), params, vm)?;
+    let name = Value::InternString(vm.interns.static_id(StaticStrings::DataclassParams));
+    let replaced = class.set_attr(name, params, vm)?;
     replaced.drop_with(vm);
     Ok(())
 }
@@ -472,7 +474,8 @@ fn annotation_head(annotation: &str, name: &str) -> bool {
 /// `__dataclass_fields__` sandboxed code overwrote simply stops being a
 /// dataclass rather than reading metadata the class no longer advertises.
 fn fields_dict_id(namespace: &Dict, vm: &VM<'_>) -> Option<HeapId> {
-    match namespace.get_by_str(StaticStrings::DataclassFields.into(), vm.heap, vm.interns) {
+    let name: &'static str = StaticStrings::DataclassFields.into();
+    match namespace.get_by_str(name, vm.heap, vm.interns) {
         Some(Value::Ref(id)) if matches!(vm.heap.get(*id), HeapData::Dict(_)) => Some(*id),
         _ => None,
     }

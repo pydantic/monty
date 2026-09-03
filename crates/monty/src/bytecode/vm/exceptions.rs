@@ -30,7 +30,7 @@ impl VM<'_> {
     fn current_frame_name(&self) -> StringId {
         match self.current_frame().function_id {
             Some(func_id) => self.interns.get_function(func_id).name.name_id,
-            None => StaticStrings::Module.into(),
+            None => self.interns.static_id(StaticStrings::Module),
         }
     }
 
