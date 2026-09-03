@@ -1,0 +1,45 @@
+docs/api/rust/monty-proto.md
+  s_4b040862e1810d::t_793c00373069b1 17,38,329-330,382-383,447-448,508-509,563-564,626-627,793,815-816,1169-1170,1195-1196,1343-1344,1390-1391,1537-1538,1652-1653,1724
+docs/api/rust/monty.md
+  s_4b040862e1810d::t_793c00373069b1 143,338-339,373,401,438
+  s_4b040862e1810d::t_91dba4ecab9332 1070,1094
+crates/monty-apidoc/src/symbols.rs
+  s_4b040862e1810d::t_1c27e948a70240 129-139
+  s_4b040862e1810d::t_a3d21231df1671 53-55,58-63
+  s_4b040862e1810d::t_0220f90352fd30 12
+crates/monty-apidoc/src/render.rs
+  s_4b040862e1810d::t_24860646e4ad13 5-9
+docs/api/rust/monty-pool.md
+  s_4b040862e1810d::t_793c00373069b1 362,451,459,476,481-483,487,490,493,627,634-635,638,717,726,748
+docs/api/rust/monty-fs.md
+  s_4b040862e1810d::t_793c00373069b1 56,67,105,113,429
+docs/api/rust/monty-types.md
+  s_4b040862e1810d::t_793c00373069b1 294,394,462,871,876,881,1135,1299,1437,1719,1758,1811-1812,2026,2704,2710
+crates/monty-apidoc/src/docs_md.rs
+  s_4b040862e1810d::t_f23b44fb578107 186-187
+  s_4b040862e1810d::t_db63942114ce11 159-164
+  s_4b040862e1810d::t_6317275b7e8e25 13
+  s_4b040862e1810d::t_593cb07a68f38b 180-185,188-235
+  s_4b040862e1810d::t_3eb110aba31e30 62
+  s_4b040862e1810d::t_85f534bbc50846 174-179
+crates/monty-apidoc/src/sig.rs
+  s_4b040862e1810d::t_c9aed5fe53dabb 644-645,653
+  s_4b040862e1810d::t_72f3db1d032e7b 21-24
+  s_4b040862e1810d::t_1b6d84839a3049 649-651
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "61aac71b98c6b1e9e52128a84f138d222b77155d",
+  "prompts": {},
+  "sessions": {
+    "s_4b040862e1810d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a9524baf-ade1-427c-b08f-5a5595b03325",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
