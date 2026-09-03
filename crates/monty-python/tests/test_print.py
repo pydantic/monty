@@ -98,12 +98,26 @@ for i in range(3):
 
 
 def test_print_flush_interval_batches_chunks(pool: Monty) -> None:
-    """A loop of prints costs a handful of callbacks, not one per print."""
+    """A loop of prints costs a handful of callbacks, not one per print.
+
+    Pinned to an interval nothing will reach, so only the 8 KiB threshold and
+    the turn-end drain can flush. 500 short lines stay well under 8 KiB, making
+    the count exactly one rather than a function of how fast the loop ran.
+    """
+    expected = ''.join(f'{i}\n' for i in range(500))
+    output, callback = make_print_collector()
+    with pool.checkout(print_flush_interval=60) as s:
+        s.feed_run('for i in range(500):\n    print(i)', print_callback=callback)
+    assert ''.join(output) == expected
+    assert len(output) == 1
+
+    # At the default interval the count depends on machine speed, so assert
+    # only what batching guarantees: fewer callbacks than prints.
     output, callback = make_print_collector()
     with pool.checkout() as s:
         s.feed_run('for i in range(500):\n    print(i)', print_callback=callback)
-    assert ''.join(output) == ''.join(f'{i}\n' for i in range(500))
-    assert len(output) < 100
+    assert ''.join(output) == expected
+    assert len(output) < 500
 
 
 def test_print_flush_interval_zero_is_line_buffered(pool: Monty) -> None:
