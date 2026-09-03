@@ -1,0 +1,355 @@
+package pydantic:monty;
+
+/// Drives one persistent Monty child through semantic component calls.
+interface worker {
+    /// Whether the component can accept another request after this turn.
+    enum status {
+        /// The child remains ready for another turn.
+        continue,
+        /// The child reached a fatal error or clean shutdown.
+        shutdown,
+    }
+
+    /// A pair of indexes into a value's flat node arena.
+    record node-pair {
+        /// Index of the key node.
+        key: u32,
+        /// Index of the value node.
+        value: u32,
+    }
+
+    /// Named-tuple metadata plus indexes of its values.
+    record named-tuple-node {
+        /// Python type name used by repr.
+        type-name: string,
+        /// Attribute names corresponding to `items`.
+        field-names: list<string>,
+        /// Indexes of tuple values.
+        items: list<u32>,
+    }
+
+    /// Components of a Python `datetime.date`.
+    record date-node {
+        year: s32,
+        month: u8,
+        day: u8,
+    }
+
+    /// Components of a Python `datetime.datetime`.
+    record datetime-node {
+        year: s32,
+        month: u8,
+        day: u8,
+        hour: u8,
+        minute: u8,
+        second: u8,
+        microsecond: u32,
+        offset-seconds: option<s32>,
+        timezone-name: option<string>,
+    }
+
+    /// Components of a Python `datetime.time`.
+    record time-node {
+        hour: u8,
+        minute: u8,
+        second: u8,
+        microsecond: u32,
+        offset-seconds: option<s32>,
+        timezone-name: option<string>,
+        fold: u8,
+    }
+
+    /// Normalized components of a Python `datetime.timedelta`.
+    record timedelta-node {
+        days: s32,
+        seconds: s32,
+        microseconds: s32,
+    }
+
+    /// A fixed-offset Python timezone.
+    record timezone-node {
+        offset-seconds: s32,
+        name: option<string>,
+    }
+
+    /// A simple exception value without a traceback.
+    record exception-value-node {
+        exc-type: string,
+        message: option<string>,
+    }
+
+    /// A sandbox file handle represented only by virtual state.
+    record file-handle-node {
+        path: string,
+        mode: string,
+        position: u64,
+    }
+
+    /// A class type object (`type` is a WIT keyword, hence the name). The
+    /// real class lives on whichever side generated `id`.
+    record class-type-node {
+        name: string,
+        /// Canonical lowercase uuid string.
+        id: string,
+        host-defined: bool,
+        is-dataclass: bool,
+        /// Eagerly-sent class attributes (class constants), as a class value
+        /// or as the class-type of an instance; a non-empty set refreshes the
+        /// sandbox's type object. Empty when the worker sends an instance.
+        attrs: list<node-pair>,
+    }
+
+    /// A class instance and indexes of its attribute keys and values.
+    record class-instance-node {
+        /// Index of this instance's class-type node.
+        class-type: u32,
+        /// Canonical lowercase uuid string.
+        instance-id: string,
+        attrs: list<node-pair>,
+    }
+
+    /// An external function value.
+    record function-node {
+        name: string,
+        docstring: option<string>,
+    }
+
+    /// An output cycle marker.
+    record cycle-node {
+        identity: u64,
+        placeholder: string,
+    }
+
+    /// One node in a flat, index-linked `MontyObject` tree.
+    ///
+    /// Indexes avoid recursive WIT types, which the component model forbids,
+    /// while keeping protobuf bytes entirely inside Rust.
+    variant value-node {
+        ellipsis,
+        not-implemented,
+        none,
+        boolean(bool),
+        integer(s64),
+        bigint(string),
+        float(f64),
+        text(string),
+        bytes(list<u8>),
+        list-value(list<u32>),
+        tuple-value(list<u32>),
+        named-tuple(named-tuple-node),
+        dict(list<node-pair>),
+        set(list<u32>),
+        frozen-set(list<u32>),
+        date(date-node),
+        datetime(datetime-node),
+        time(time-node),
+        timedelta(timedelta-node),
+        timezone(timezone-node),
+        exception(exception-value-node),
+        type-name(string),
+        class-type(class-type-node),
+        builtin-function(string),
+        path(string),
+        file-handle(file-handle-node),
+        class-instance(class-instance-node),
+        function(function-node),
+        repr(string),
+        cycle(cycle-node),
+    }
+
+    /// A Python value encoded as a root index and a flat node tree.
+    /// Every node must be reachable exactly once from `root`.
+    record value {
+        root: u32,
+        nodes: list<value-node>,
+    }
+
+    /// A semantic key/value pair used for kwargs and dict-like results.
+    record value-pair {
+        key: value,
+        value: value,
+    }
+
+    /// A named input supplied to a feed.
+    record named-value {
+        name: string,
+        value: value,
+    }
+
+    /// Resource limits enforced by the sandbox.
+    record resource-limits {
+        max-duration-micros: option<u64>,
+        max-memory-bytes: option<u64>,
+        gc-interval: option<u64>,
+        max-recursion-depth: option<u64>,
+    }
+
+    /// Available renderings for type-check diagnostics.
+    enum type-check-format {
+        full,
+        concise,
+        azure,
+        json,
+        json-lines,
+        rdjson,
+        pylint,
+        gitlab,
+        github,
+    }
+
+    /// Options for creating one REPL session.
+    record configure-request {
+        script-name: string,
+        limits: option<resource-limits>,
+        type-check: bool,
+        type-check-stubs: option<string>,
+        assert-message-annotations: option<u32>,
+        type-check-format: type-check-format,
+        type-check-color: bool,
+    }
+
+    /// One Python snippet and its host inputs.
+    record feed-request {
+        code: string,
+        inputs: list<named-value>,
+        skip-type-check: bool,
+    }
+
+    /// A host-raised exception used to resume a call.
+    record raised-error {
+        exc-type: string,
+        message: string,
+    }
+
+    /// The host's answer to an external function or OS call.
+    variant call-result {
+        return-value(value),
+        error(raised-error),
+        pending-future(u32),
+        not-found(string),
+        not-handled,
+    }
+
+    /// An answer to the currently suspended function or OS call.
+    record resume-call-request {
+        call-id: u32,
+        outcome: call-result,
+    }
+
+    /// The host's answer to an undefined-name suspension: a value, absence
+    /// (NameError / AttributeError in the sandbox), or an exception the host
+    /// raised while resolving it (raised in the sandbox, bypassing
+    /// hasattr()/getattr() defaults).
+    variant name-lookup-result {
+        value(value),
+        undefined,
+        error(raised-error),
+    }
+
+    /// One settled external future.
+    record future-result {
+        call-id: u32,
+        outcome: call-result,
+    }
+
+    /// A semantic request to the retained protocol child.
+    variant request {
+        configure(configure-request),
+        feed(feed-request),
+        resume-call(resume-call-request),
+        resume-name-lookup(name-lookup-result),
+        resume-futures(list<future-result>),
+        dump,
+        load(list<u8>),
+        reset,
+    }
+
+    /// One Python traceback frame.
+    record stack-frame {
+        filename: string,
+        line: u32,
+        column: u32,
+        end-line: u32,
+        end-column: u32,
+        frame-name: option<string>,
+        preview-line: option<string>,
+        hide-caret: bool,
+        hide-frame-name: bool,
+    }
+
+    /// A Python exception raised by the sandbox.
+    record raised-exception {
+        exc-type: string,
+        message: string,
+        traceback: string,
+        frames: list<stack-frame>,
+    }
+
+    /// A buffered print emitted during a turn.
+    record print-event {
+        stderr: bool,
+        text: string,
+    }
+
+    /// A suspended external function call. When `object-id` is set this is a
+    /// method call on a host-backed object — a class instance, or a class
+    /// type (construction of a host class arrives as a `__call__` call).
+    record function-call-event {
+        function-name: string,
+        args: list<value>,
+        kwargs: list<value-pair>,
+        call-id: u32,
+        /// Uuid string of the routed receiver (instance or class type);
+        /// absent for plain external calls.
+        object-id: option<string>,
+    }
+
+    /// A suspended name or lazy-attribute lookup.
+    record name-lookup-event {
+        name: string,
+        /// Set for a lazy attribute lookup on a host-backed object (a class
+        /// instance, or a class type): its uuid string
+        /// (`NameLookup.object_id`).
+        object-id: option<string>,
+    }
+
+    /// A suspended OS call projected into the public callback shape.
+    record os-call-event {
+        function-name: string,
+        args: list<value>,
+        kwargs: list<value-pair>,
+        call-id: u32,
+    }
+
+    /// A semantic event emitted by the child.
+    variant event {
+        print(print-event),
+        function-call(function-call-event),
+        os-call(os-call-event),
+        name-lookup(name-lookup-event),
+        resolve-futures(list<u32>),
+        complete(value),
+        error(raised-exception),
+        typing-error(string),
+        dump-result(list<u8>),
+        ok,
+        fatal-error(string),
+        shutdown(option<list<u8>>),
+    }
+
+    /// All output produced by one request.
+    record dispatch-result {
+        /// Whether the child remains usable.
+        status: status,
+        /// Buffered prints followed by exactly one turn-ending event.
+        events: list<event>,
+    }
+
+    /// Handles one semantic request using the retained child.
+    dispatch: func(request: request) -> dispatch-result;
+}
+
+/// A component instance containing one stateful Monty worker.
+world monty-runtime {
+    export worker;
+}

@@ -34,7 +34,6 @@ class RunMonty(Protocol):
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
         skip_type_check: bool = False,
         limits: ResourceLimits | None = None,
-        dataclass_registry: list[type] | None = None,
     ) -> Any: ...
 
 
@@ -70,9 +69,8 @@ def monty_run(pool: Monty) -> RunMonty:
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
         skip_type_check: bool = False,
         limits: ResourceLimits | None = None,
-        dataclass_registry: list[type] | None = None,
     ) -> Any:
-        with pool.checkout(limits=limits, dataclass_registry=dataclass_registry) as s:
+        with pool.checkout(limits=limits) as s:
             return s.feed_run(
                 code,
                 inputs=inputs,

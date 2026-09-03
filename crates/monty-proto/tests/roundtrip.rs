@@ -1,12 +1,14 @@
 use std::time::Duration;
 
+use insta::assert_snapshot;
 use monty::MontyRun;
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use monty_types::{
     CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
-    MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTimeDelta, MontyTimeZone,
-    MontyType, NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
-    ResourceLimits, StackFrame, UnicodeErrorData,
+    MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
+    MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, OpenCallArgs,
+    OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
+    UnicodeErrorData,
 };
 use num_bigint::BigInt;
 use prost::Message;
@@ -136,6 +138,48 @@ fn datetime_values_round_trip() {
     }));
 }
 
+/// The decode budget is charged `host_size`, so every owned string a decoded
+/// value carries has to be counted there — the temporal values each hold a
+/// caller-supplied timezone name, and the rest of their fields are scalars.
+#[test]
+fn timezone_names_are_charged_to_the_decode_budget() {
+    let name = "z".repeat(500);
+    let sizes = |name: Option<String>| {
+        [
+            MontyObject::DateTime(MontyDateTime {
+                year: 2026,
+                month: 1,
+                day: 1,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                microsecond: 0,
+                offset_seconds: Some(0),
+                timezone_name: name.clone(),
+            }),
+            MontyObject::Time(MontyTime {
+                hour: 0,
+                minute: 0,
+                second: 0,
+                microsecond: 0,
+                offset_seconds: Some(0),
+                timezone_name: name.clone(),
+                fold: 0,
+            }),
+            MontyObject::TimeZone(MontyTimeZone {
+                offset_seconds: 0,
+                name,
+            }),
+        ]
+        .map(|obj| obj.host_size())
+    };
+    let named = sizes(Some(name.clone()));
+    let unnamed = sizes(None);
+    for (named, unnamed) in named.into_iter().zip(unnamed) {
+        assert_eq!(named - unnamed, name.len());
+    }
+}
+
 #[test]
 fn exception_and_type_values_round_trip() {
     assert_value_round_trip(&MontyObject::Exception {
@@ -151,9 +195,33 @@ fn exception_and_type_values_round_trip() {
     // Qualified name (`collections.deque`) must survive the wire round-trip.
     assert_value_round_trip(&MontyObject::Type(MontyType::Deque));
     assert_value_round_trip(&MontyObject::Type(MontyType::Exception(ExcType::KeyError)));
-    assert_value_round_trip(&MontyObject::Type(MontyType::Instance("Foo".to_owned())));
+    // Class types round-trip with their uuid, origin and flags.
+    assert_value_round_trip(&MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
+        name: "Foo".to_owned(),
+        id: MontyUuid::from_u128(0xFEED),
+        host_defined: false,
+        is_dataclass: false,
+        attrs: DictPairs::default(),
+    }))));
+    assert_value_round_trip(&MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
+        name: "Child".to_owned(),
+        id: MontyUuid::from_u128(0xBEEF),
+        host_defined: true,
+        is_dataclass: true,
+        attrs: DictPairs::default(),
+    }))));
     let builtin = MontyObject::builtin_function_from_name("len").expect("len is a builtin");
     assert_value_round_trip(&builtin);
+    // A dotted builtin name must survive too: `object.__setattr__` is the one
+    // whose name is not just its lowercased variant, so it is the only variant
+    // that can drift between the strum and serde spellings.
+    let dotted =
+        MontyObject::builtin_function_from_name("object.__setattr__").expect("object.__setattr__ is a builtin");
+    assert_value_round_trip(&dotted);
+    assert_eq!(
+        serde_json::to_string(&dotted).expect("serializes"),
+        r#"{"BuiltinFunction":"object.__setattr__"}"#
+    );
 }
 
 #[test]
@@ -170,17 +238,51 @@ fn file_handle_values_round_trip() {
 }
 
 #[test]
-fn dataclass_and_function_values_round_trip() {
-    assert_value_round_trip(&MontyObject::Dataclass {
-        name: "Point".to_owned(),
-        type_id: 0xDEAD_BEEF,
-        field_names: vec!["x".to_owned(), "y".to_owned()],
+fn class_instance_and_function_values_round_trip() {
+    assert_value_round_trip(&MontyObject::ClassInstance(Box::new(MontyClassInstance {
+        class_type: MontyClassType {
+            name: "Point".to_owned(),
+            id: MontyUuid::from_u128(0xDEAD_BEEF),
+            host_defined: true,
+            is_dataclass: true,
+            attrs: DictPairs::default(),
+        },
+        instance_id: MontyUuid::from_u128(0xFEED_FACE),
         attrs: DictPairs::from(vec![
             (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
             (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
         ]),
-        frozen: true,
-    });
+    })));
+    // Sandbox-defined shape: worker-generated ids, non-dataclass, mutable.
+    assert_value_round_trip(&MontyObject::ClassInstance(Box::new(MontyClassInstance {
+        class_type: MontyClassType {
+            name: "Widget".to_owned(),
+            id: MontyUuid::from_u128(3),
+            host_defined: false,
+            is_dataclass: false,
+            attrs: DictPairs::default(),
+        },
+        instance_id: MontyUuid::from_u128(4),
+        attrs: DictPairs::from(vec![]),
+    })));
+    // The class branch carries eager class attrs alongside the instance attrs.
+    assert_value_round_trip(&MontyObject::ClassInstance(Box::new(MontyClassInstance {
+        class_type: MontyClassType {
+            name: "Square".to_owned(),
+            id: MontyUuid::from_u128(5),
+            host_defined: true,
+            is_dataclass: false,
+            attrs: DictPairs::from(vec![
+                (MontyObject::String("SIDES".to_owned()), MontyObject::Int(4)),
+                (
+                    MontyObject::String("KIND".to_owned()),
+                    MontyObject::List(vec![MontyObject::String("polygon".to_owned())]),
+                ),
+            ]),
+        },
+        instance_id: MontyUuid::from_u128(6),
+        attrs: DictPairs::from(vec![(MontyObject::String("size".to_owned()), MontyObject::Int(3))]),
+    })));
     assert_value_round_trip(&MontyObject::Function {
         name: "fetch".to_owned(),
         docstring: Some("fetches a url".to_owned()),
@@ -266,6 +368,32 @@ fn invalid_stack_frame_coordinates_are_rejected() {
         })
     ));
     StackFrame::try_from(frame(1, 6)).expect("in-range columns must convert");
+}
+
+/// Multi-line spans render their preview as a pre-computed block with no
+/// caret math, and legitimately end on a lower column than they start (a
+/// call closed by a hanging `)`), so the same-line column validation must
+/// not reject them — regression test for issue #631, where such frames were
+/// discarded as "invalid exception payload", replacing the real exception.
+#[test]
+fn multiline_stack_frame_with_lower_end_column_converts() {
+    let frame = pb::StackFrame {
+        filename: "main.py".to_owned(),
+        start: Some(pb::CodeLoc { line: 4, column: 5 }),
+        end: Some(pb::CodeLoc { line: 6, column: 2 }),
+        frame_name: None,
+        preview_line: Some("r = f(\n    a=1,\n)".to_owned()),
+        hide_caret: false,
+        hide_frame_name: false,
+    };
+    let frame = StackFrame::try_from(frame).expect("multi-line span must convert");
+    // rendering takes the caret-free block path, so hostile columns are inert
+    assert_snapshot!(frame, @r#"
+      File "main.py", line 4, in <module>
+        r = f(
+            a=1,
+        )
+    "#);
 }
 
 #[test]
@@ -498,6 +626,30 @@ fn name_lookup_results_convert() {
         NameLookupResult::try_from(undefined),
         Ok(NameLookupResult::Undefined)
     ));
+    let error = pb::ResumeNameLookup {
+        kind: Some(pb::resume_name_lookup::Kind::Error(
+            (&MontyException::new(ExcType::KeyError, Some("boom".to_owned()))).into(),
+        )),
+    };
+    let back = NameLookupResult::try_from(error).unwrap();
+    let NameLookupResult::Error(exc) = back else {
+        panic!("expected Error, got {back:?}");
+    };
+    assert_eq!(exc.exc_type(), ExcType::KeyError);
+    assert_eq!(exc.message(), Some("boom"));
+    // an error arm is validated like any exception crossing the wire
+    let bogus = pb::ResumeNameLookup {
+        kind: Some(pb::resume_name_lookup::Kind::Error(pb::RaisedException {
+            exc_type: "NotARealError".to_owned(),
+            message: None,
+            traceback: vec![],
+            data: None,
+        })),
+    };
+    assert!(matches!(
+        NameLookupResult::try_from(bogus),
+        Err(ProtoConvertError::UnknownExcType(_))
+    ));
 }
 
 /// Deeply nested values: encoding works at depths a sandbox can plausibly
@@ -525,16 +677,56 @@ fn nest_dict(depth: usize) -> MontyObject {
     })
 }
 
-/// `Int(1)` nested in `depth` levels of single-field dataclass (4 proto
-/// levels per level: `MontyObject` + `Dataclass` + `Dict` + `Pair`).
-fn nest_dataclass(depth: usize) -> MontyObject {
-    (0..depth).fold(MontyObject::Int(1), |inner, _| MontyObject::Dataclass {
-        name: "D".to_owned(),
-        type_id: 1,
-        field_names: vec!["f".to_owned()],
-        attrs: DictPairs::from(vec![(MontyObject::String("f".to_owned()), inner)]),
-        frozen: false,
+/// `Int(1)` nested in `depth` levels of single-attr class instance (4 proto
+/// levels per level: `MontyObject` + `ClassInstance` + `Dict` + `Pair`).
+fn nest_class_instance(depth: usize) -> MontyObject {
+    (0..depth).fold(MontyObject::Int(1), |inner, _| {
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
+            class_type: MontyClassType {
+                name: "D".to_owned(),
+                id: MontyUuid::from_u128(1),
+                host_defined: true,
+                is_dataclass: false,
+                attrs: DictPairs::default(),
+            },
+            instance_id: MontyUuid::from_u128(1),
+            attrs: DictPairs::from(vec![(MontyObject::String("f".to_owned()), inner)]),
+        }))
     })
+}
+
+/// `Int(1)` nested in `depth` levels of class type whose single eager class
+/// attr holds the next level (4 proto levels per level: `MontyObject` +
+/// `Type` + `Dict` + `Pair` — `TYPE_COST` + `TYPE_ATTRS_COST`).
+fn nest_type_attrs(depth: usize) -> MontyObject {
+    (0..depth).fold(MontyObject::Int(1), |inner, _| {
+        MontyObject::Type(MontyType::Instance(Box::new(class_type_with_attr(inner))))
+    })
+}
+
+/// `Int(1)` nested in `depth` levels of attr-less class instance whose class
+/// branch holds the next level in an eager class attr (5 proto levels per
+/// level: `MontyObject` + `ClassInstance` + `Type` + `Dict` + `Pair` —
+/// `CLASS_INSTANCE_TYPE_COST` + `TYPE_ATTRS_COST`).
+fn nest_class_instance_type_attrs(depth: usize) -> MontyObject {
+    (0..depth).fold(MontyObject::Int(1), |inner, _| {
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
+            class_type: class_type_with_attr(inner),
+            instance_id: MontyUuid::from_u128(1),
+            attrs: DictPairs::default(),
+        }))
+    })
+}
+
+/// A host class `D` whose only eager class attr `k` is `value`.
+fn class_type_with_attr(value: MontyObject) -> MontyClassType {
+    MontyClassType {
+        name: "D".to_owned(),
+        id: MontyUuid::from_u128(1),
+        host_defined: true,
+        is_dataclass: false,
+        attrs: DictPairs::from(vec![(MontyObject::String("k".to_owned()), value)]),
+    }
 }
 
 /// Whether `value` decodes when shipped inside the deepest legitimate frame
@@ -555,18 +747,21 @@ fn decodes_in_frame(value: &MontyObject) -> bool {
 }
 
 /// The sender-side depth check must agree exactly with what the receiver can
-/// decode, for every container shape: dicts and dataclasses consume more of
-/// prost's recursion budget per level than lists, so a uniform per-container
-/// budget would pass values that then fail to decode (and kill the worker as
-/// a protocol failure instead of raising a clean depth error).
+/// decode, for every container shape: dicts and class instances consume more
+/// of prost's recursion budget per level than lists, so a uniform
+/// per-container budget would pass values that then fail to decode (and kill
+/// the worker as a protocol failure instead of raising a clean depth error).
 #[test]
 fn depth_check_matches_frame_decodability() {
     /// One container shape: name, nesting builder, deepest depth that must pass.
     type DepthCase = (&'static str, fn(usize) -> MontyObject, usize);
-    let cases: [DepthCase; 3] = [
-        ("list", nest_list, MAX_VALUE_DEPTH), // 48: 2 proto levels each
-        ("dict", nest_dict, 32),              // 3 proto levels each
-        ("dataclass", nest_dataclass, 24),    // 4 proto levels each
+    let cases: [DepthCase; 5] = [
+        ("list", nest_list, MAX_VALUE_DEPTH),        // 48: 2 proto levels each
+        ("dict", nest_dict, 32),                     // 3 proto levels each
+        ("class_instance", nest_class_instance, 24), // 4 proto levels each
+        ("type_attrs", nest_type_attrs, 24),         // 4 proto levels each
+        // 5 proto levels each: the type branch plus its attrs
+        ("class_instance_type_attrs", nest_class_instance_type_attrs, 19),
     ];
     for (shape, build, max_depth) in cases {
         let deepest = build(max_depth);

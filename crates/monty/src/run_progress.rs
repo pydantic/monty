@@ -8,16 +8,19 @@
 
 use std::mem;
 
-use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
+use monty_types::{
+    ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
+};
 
 use crate::{
     asyncio::CallId,
-    bytecode::{FrameExit, VM, VMSnapshot},
-    dump_format::{DumpKind, dump, load},
-    exception_private::{ExcTypeExt, RunError, RunResult},
-    heap::{Heap, HeapReader},
+    bytecode::{FrameExit, PendingLookupEffect, VM, VMSnapshot},
+    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
+    heap::{DropWithContext, Heap, HeapReader},
     object_bridge::MontyObjectExt,
+    os_dispatch::release_pending_effect,
     run::Executor,
+    value::Value,
 };
 
 // ---------------------------------------------------------------------------
@@ -31,7 +34,8 @@ use crate::{
 ///
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum RunProgress {
-    /// Execution paused at an external function call or dataclass method call.
+    /// Execution paused at an external function call, or a method call on a
+    /// host object (`object_id` set).
     FunctionCall(FunctionCall),
     /// Execution paused for an OS-level operation (filesystem, network, etc.).
     OsCall(OsCall),
@@ -90,27 +94,6 @@ impl RunProgress {
     }
 }
 
-impl RunProgress {
-    /// Serializes the execution state to a versioned binary format.
-    ///
-    /// # Errors
-    /// Returns an error if serialization fails.
-    pub fn dump(&self) -> Result<Vec<u8>, postcard::Error> {
-        dump(self, DumpKind::RunProgress)
-    }
-}
-
-impl RunProgress {
-    /// Deserializes execution state from binary format.
-    ///
-    /// # Errors
-    /// Returns an error for an incompatible dump version or kind, or if
-    /// deserialization fails.
-    pub fn load(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        load(bytes, DumpKind::RunProgress)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // FunctionCall
 // ---------------------------------------------------------------------------
@@ -124,8 +107,9 @@ impl RunProgress {
 /// When using async resolution, the code continues and may `await` the future later.
 /// If the future isn't resolved when awaited, execution yields with `ResolveFutures`.
 ///
-/// When `method_call` is true, this represents a dataclass method call where the first
-/// positional arg is the dataclass instance (`self`).
+/// When `object_id` is set, this represents a method call on a host-backed
+/// object (construction of a host class is a `__call__` method call): route
+/// it to the host object with that uuid — the receiver is NOT in `args`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct FunctionCall {
     /// The name of the function or method being called.
@@ -136,8 +120,10 @@ pub struct FunctionCall {
     pub kwargs: Vec<(MontyObject, MontyObject)>,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
-    /// Whether this is a dataclass method call (first arg is `self`).
-    pub method_call: bool,
+    /// Uuid of the routed receiver — an instance, or a class type (a
+    /// classmethod call, or construction spelled `__call__`); `None` for
+    /// plain external function calls.
+    pub object_id: Option<MontyUuid>,
     /// Internal execution snapshot.
     snapshot: Snapshot,
 }
@@ -149,7 +135,7 @@ impl FunctionCall {
         args: Vec<MontyObject>,
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
-        method_call: bool,
+        object_id: Option<MontyUuid>,
         snapshot: Snapshot,
     ) -> Self {
         Self {
@@ -157,7 +143,7 @@ impl FunctionCall {
             args,
             kwargs,
             call_id,
-            method_call,
+            object_id,
             snapshot,
         }
     }
@@ -167,13 +153,13 @@ impl FunctionCall {
     /// This allows modifying resource limits between execution phases,
     /// e.g. setting a time limit before resuming after an external function call.
     pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
-        self.snapshot.heap.tracker_mut()
+        &mut self.snapshot.heap.tracker
     }
 
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        self.snapshot.heap.tracker()
+        &self.snapshot.heap.tracker
     }
 
     /// Resumes execution with the return value or exception from the external function.
@@ -273,7 +259,7 @@ impl OsCall {
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        self.snapshot.heap.tracker()
+        &self.snapshot.heap.tracker
     }
 }
 
@@ -281,12 +267,54 @@ impl OsCall {
 // NameLookup
 // ---------------------------------------------------------------------------
 
-/// Execution paused for an unresolved name lookup.
+/// Where a resumed name-lookup value lands, and what an `Undefined` answer
+/// raises.
 ///
-/// The host should check if the name corresponds to a known external function or
-/// value. Call `resume(result, print)` with `NameLookupResult::Value(obj)` to
-/// cache it in the namespace and continue, or `NameLookupResult::Undefined` to
-/// raise `NameError`.
+/// `Namespace` is the classic global/local lookup (the value is cached in the
+/// slot, `Undefined` raises `NameError`). `Instance` is a lazy attribute
+/// lookup on a host class instance: the value becomes the result of the
+/// attribute expression — never cached, so every access re-consults the host —
+/// and `Undefined` raises `AttributeError` naming the real class.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum LookupScope {
+    /// Plain global/local name — cache into the namespace slot.
+    Namespace {
+        /// The namespace slot where the resolved value should be cached.
+        namespace_slot: u16,
+        /// Whether this is a global slot or a local/function slot.
+        is_global: bool,
+    },
+    /// Lazy attribute on a host-backed object (instance or class type).
+    Attr {
+        /// Host identity of the object whose attribute is read.
+        object_id: MontyUuid,
+        /// Class name captured at suspension for the AttributeError message.
+        class_name: String,
+        /// True for a class type receiver — selects CPython's
+        /// `type object '...' has no attribute ...` message.
+        type_object: bool,
+    },
+}
+
+impl LookupScope {
+    /// The receiver uuid when this is a lazy attribute lookup.
+    pub(crate) fn object_id(&self) -> Option<MontyUuid> {
+        match self {
+            Self::Namespace { .. } => None,
+            Self::Attr { object_id, .. } => Some(*object_id),
+        }
+    }
+}
+
+/// Execution paused for an unresolved name lookup, or — when
+/// [`object_id`](Self::object_id) is set — a lazy attribute lookup on a
+/// host-backed object.
+///
+/// The host should check if the name corresponds to a known external function,
+/// value, or instance attribute. Call `resume(result, print)` with
+/// `NameLookupResult::Value(obj)` to continue, `NameLookupResult::Undefined`
+/// to raise `NameError` (plain lookups) / `AttributeError` (instance lookups),
+/// or `NameLookupResult::Error(exc)` to raise a host exception in the sandbox.
 ///
 /// The namespace slot and scope are managed internally — the host only needs to
 /// provide the name resolution result.
@@ -294,38 +322,42 @@ impl OsCall {
 pub struct NameLookup {
     /// The name being looked up.
     pub name: String,
-    /// The namespace slot where the resolved value should be cached.
-    namespace_slot: u16,
-    /// Whether this is a global slot or a local/function slot.
-    is_global: bool,
+    /// Where the resolved value lands (namespace slot or instance attribute).
+    scope: LookupScope,
     /// Internal execution snapshot.
     snapshot: Snapshot,
 }
 
 impl NameLookup {
     /// Creates a new `NameLookup` from its parts.
-    fn new(name: String, namespace_slot: u16, is_global: bool, snapshot: Snapshot) -> Self {
-        Self {
-            name,
-            namespace_slot,
-            is_global,
-            snapshot,
-        }
+    fn new(name: String, scope: LookupScope, snapshot: Snapshot) -> Self {
+        Self { name, scope, snapshot }
+    }
+
+    /// Host identity of the receiver for a lazy attribute lookup; `None` for
+    /// a plain global/local name lookup.
+    #[must_use]
+    pub fn object_id(&self) -> Option<MontyUuid> {
+        self.scope.object_id()
     }
 
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        self.snapshot.heap.tracker()
+        &self.snapshot.heap.tracker
     }
 
     /// Resumes execution after name resolution.
     ///
-    /// Caches the resolved value in the appropriate slot (globals or stack)
-    /// before restoring the VM, then either pushes the value or raises `NameError`.
+    /// For a plain lookup, caches the resolved value in the appropriate slot
+    /// (globals or stack) before pushing it, and `Undefined` raises
+    /// `NameError`. For an instance attribute lookup, the value is pushed as
+    /// the attribute expression's result (never cached), and `Undefined`
+    /// raises `AttributeError`. `Error` raises the host's exception in the
+    /// sandbox, bypassing any `hasattr()` / `getattr()` default.
     ///
     /// # Arguments
-    /// * `result` — The resolved value or `Undefined`.
+    /// * `result` — The resolved value, `Undefined`, or a host exception.
     /// * `print` — Writer for print output.
     pub fn resume(
         self,
@@ -339,8 +371,7 @@ impl NameLookup {
             executor,
             vm_state: snapshot_vm_state,
         } = self.snapshot;
-        let namespace_slot = self.namespace_slot;
-        let is_global = self.is_global;
+        let scope = self.scope;
         let name = self.name;
 
         let (converted, vm_state) =
@@ -356,39 +387,160 @@ impl NameLookup {
                 );
 
                 // Resolve the name lookup result with the VM alive
-                let vm_result = match result {
-                    NameLookupResult::Value(obj) => {
-                        let value = obj
-                            .to_value(&mut vm)
-                            .map_err(|e| MontyException::runtime_error(format!("invalid name lookup result: {e}")))?;
-
-                        // Cache the resolved value in the appropriate slot
-                        let slot_idx = namespace_slot as usize;
-                        let cloned = value.clone_with_heap(&vm);
-                        let slot = if is_global {
-                            &mut vm.globals[slot_idx]
-                        } else {
-                            let stack_base = vm.current_stack_base();
-                            &mut vm.stack[stack_base + slot_idx]
-                        };
-                        let old = mem::replace(slot, cloned);
-                        old.drop_with(&mut vm);
-
-                        vm.push(value);
-                        vm.run_external()
-                    }
-                    NameLookupResult::Undefined => {
-                        let err = ExcType::name_error(&name);
-                        vm.resume_with_exception(err.into())
-                    }
-                };
+                let answer = LookupAnswer::new(result, &mut vm);
+                let effect = vm.pending_lookup_effect.take();
+                let vm_result = resume_lookup(&mut vm, answer, effect, &scope, &name);
 
                 // Three-phase: convert while VM alive, snapshot, build progress
                 let converted = convert_frame_exit(vm_result, &mut vm);
                 let vm_state = check_snapshot_from_converted(&converted, vm);
-                Ok((converted, vm_state))
-            })?;
+                (converted, vm_state)
+            });
         build_run_progress(converted, vm_state, executor, heap)
+    }
+}
+
+/// A host's [`NameLookupResult`] in interpreter terms, ready for
+/// [`resume_lookup`].
+pub(crate) enum LookupAnswer {
+    /// The host served this value.
+    Value(Value),
+    /// The name / attribute does not exist.
+    Undefined,
+    /// Resolving it failed — a host exception, or a value the heap could not
+    /// take — to be raised in the sandbox where the lookup suspended.
+    Error(RunError),
+}
+
+impl LookupAnswer {
+    /// Converts the host's answer while the VM is alive.
+    ///
+    /// A value the heap cannot take becomes an in-sandbox error with the
+    /// mapping [`VM::resume`] applies to external call results: a resource
+    /// limit raises `MemoryError`, an unconvertible object `RuntimeError`.
+    pub(crate) fn new(result: NameLookupResult, vm: &mut VM<'_>) -> Self {
+        match result {
+            NameLookupResult::Value(obj) => match obj.to_value(vm) {
+                Ok(value) => Self::Value(value),
+                Err(InvalidInputError::Resource(err)) => Self::Error(err.into()),
+                Err(other @ InvalidInputError::InvalidType(_)) => Self::Error(
+                    SimpleException::new(
+                        ExcType::RuntimeError,
+                        Some(format!("invalid name lookup result: {other}")),
+                    )
+                    .into(),
+                ),
+            },
+            NameLookupResult::Undefined => Self::Undefined,
+            NameLookupResult::Error(exc) => Self::Error(exc.into()),
+        }
+    }
+}
+
+/// Resumes a suspended lookup with the host's answer and runs on.
+///
+/// `effect` is the `hasattr()` / `getattr()` default armed for the lookup, if
+/// any. An error is raised as-is, dropping the effect — CPython only swallows
+/// `AttributeError` there, and the host reported something else. A served
+/// value or `Undefined` goes through the effect when one is armed; otherwise
+/// the value is pushed (a namespace lookup also caches it in its slot), or
+/// `Undefined` raises the `NameError` / `AttributeError` an unanswered
+/// lookup gets.
+pub(crate) fn resume_lookup(
+    vm: &mut VM<'_>,
+    answer: LookupAnswer,
+    effect: Option<PendingLookupEffect>,
+    scope: &LookupScope,
+    name: &str,
+) -> RunResult<FrameExit> {
+    let value = match (answer, effect) {
+        (LookupAnswer::Error(err), effect) => {
+            effect.drop_with(vm);
+            return vm.resume_with_exception(err);
+        }
+        (LookupAnswer::Value(value), Some(effect)) => effect.apply(Some(value), vm),
+        (LookupAnswer::Undefined, Some(effect)) => effect.apply(None, vm),
+        (LookupAnswer::Value(value), None) => {
+            if let LookupScope::Namespace {
+                namespace_slot,
+                is_global,
+            } = scope
+            {
+                // Cache the resolved value in the appropriate slot
+                let slot_idx = *namespace_slot as usize;
+                let cloned = value.clone_with_heap(vm);
+                let slot = if *is_global {
+                    &mut vm.globals[slot_idx]
+                } else {
+                    let stack_base = vm.current_stack_base();
+                    &mut vm.stack[stack_base + slot_idx]
+                };
+                let old = mem::replace(slot, cloned);
+                old.drop_with(vm);
+            }
+            value
+        }
+        (LookupAnswer::Undefined, None) => return vm.resume_with_exception(undefined_lookup_error(scope, name)),
+    };
+    vm.push(value);
+    vm.run_external()
+}
+
+/// Answers every lookup exit no host will serve — the non-iterative paths —
+/// as `Undefined`, running on until execution reaches some other exit.
+///
+/// An armed `hasattr()` / `getattr()` effect yields `False` / its default; a
+/// bare name or attribute read raises `NameError` / `AttributeError` through
+/// the VM so the traceback is captured. Any other exit passes through.
+pub(crate) fn answer_unserved_lookups(mut result: RunResult<FrameExit>, vm: &mut VM<'_>) -> RunResult<FrameExit> {
+    loop {
+        let (scope, name, effect) = match result? {
+            FrameExit::NameLookup {
+                name_id,
+                namespace_slot,
+                is_global,
+            } => {
+                let scope = LookupScope::Namespace {
+                    namespace_slot,
+                    is_global,
+                };
+                (scope, vm.interns.get_str(name_id).to_owned(), None)
+            }
+            FrameExit::AttrLookup {
+                name,
+                class_name,
+                object_id,
+                type_object,
+                effect,
+            } => {
+                let scope = LookupScope::Attr {
+                    object_id,
+                    class_name,
+                    type_object,
+                };
+                (scope, name.into_string(vm.interns), effect)
+            }
+            other => return Ok(other),
+        };
+        result = resume_lookup(vm, LookupAnswer::Undefined, effect, &scope, &name);
+    }
+}
+
+/// The exception an `Undefined` answer raises: `NameError` for a plain name
+/// lookup, `AttributeError` naming the real class for an instance attribute.
+fn undefined_lookup_error(scope: &LookupScope, name: &str) -> RunError {
+    match scope {
+        LookupScope::Namespace { .. } => ExcType::name_error(name).into(),
+        LookupScope::Attr {
+            class_name,
+            type_object: false,
+            ..
+        } => ExcType::attribute_error(class_name, name),
+        LookupScope::Attr {
+            class_name,
+            type_object: true,
+            ..
+        } => ExcType::attribute_error_type(class_name, name),
     }
 }
 
@@ -435,7 +587,7 @@ impl ResolveFutures {
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        self.heap.tracker()
+        &self.heap.tracker
     }
 
     /// Forces a GC cycle against the exact root walk used by the live VM.
@@ -469,6 +621,18 @@ impl ResolveFutures {
         });
 
         Self::new(executor, vm_state, heap, pending_call_ids)
+    }
+
+    /// Number of tasks still live while this snapshot is suspended.
+    ///
+    /// Test-only: lets a test assert that a gather child whose external call
+    /// failed was dropped rather than left parked forever on a future that
+    /// can no longer be resolved.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __live_task_count_for_tests(&self) -> usize {
+        self.vm_state.live_task_count()
     }
 
     /// Resumes execution with results for some or all pending futures.
@@ -628,13 +792,14 @@ impl ExtFunctionResultExt for ExtFunctionResult {}
 pub(crate) enum ConvertedExit {
     /// Execution completed with a final result.
     Complete(MontyObject),
-    /// External function call or dataclass method call.
+    /// External function call, or a host-routed method call (`object_id`
+    /// set; construction of a host class is a `__call__` method call).
     FunctionCall {
         function_name: String,
         args: Vec<MontyObject>,
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
-        method_call: bool,
+        object_id: Option<MontyUuid>,
     },
     /// OS-level operation.
     OsCall {
@@ -643,12 +808,8 @@ pub(crate) enum ConvertedExit {
     },
     /// All async tasks are blocked waiting for external futures.
     ResolveFutures(Vec<u32>),
-    /// Unresolved name lookup.
-    NameLookup {
-        name: String,
-        namespace_slot: u16,
-        is_global: bool,
-    },
+    /// Unresolved name lookup or lazy instance attribute lookup.
+    NameLookup { name: String, scope: LookupScope },
     /// Runtime error.
     Error(RunError),
 }
@@ -665,6 +826,14 @@ impl ConvertedExit {
 /// All `Value` → `MontyObject` and `StringId` → `String` conversions happen here,
 /// while the VM (and its heap/interns) are still accessible.
 pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) -> ConvertedExit {
+    // An effect still armed on arrival belongs to an OS call that was answered
+    // without consuming it — a host may reply `ExtFunctionResult::Future`,
+    // whose resume never takes it. It can never apply to whatever suspends
+    // next, so release it here rather than let it reshape an unrelated result
+    // (or leak its file pin when the next OS call overwrites the slot).
+    // Arming for *this* exit happens below, after the slot is clear.
+    release_pending_effect(vm.pending_os_effect.take(), vm.heap);
+    vm.pending_lookup_effect.take().drop_with(vm.heap);
     match result {
         Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::new(value, vm)),
         Ok(FrameExit::ExternalCall {
@@ -680,17 +849,27 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 args: args_py,
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
-                method_call: false,
+                object_id: None,
             }
         }
-        Ok(FrameExit::OsCall { function_call, call_id }) => ConvertedExit::OsCall {
+        Ok(FrameExit::OsCall {
             function_call,
-            call_id: call_id.raw(),
-        },
+            call_id,
+            effect,
+        }) => {
+            // The point of no return: the call is the host's, so a matching
+            // `resume` is guaranteed. Every other destination drops it.
+            vm.pending_os_effect = effect;
+            ConvertedExit::OsCall {
+                function_call,
+                call_id: call_id.raw(),
+            }
+        }
         Ok(FrameExit::MethodCall {
             method_name,
             args,
             call_id,
+            object_id,
         }) => {
             let name = method_name.into_string(vm.interns);
             let (args_py, kwargs_py) = args.into_py_objects(vm);
@@ -699,7 +878,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 args: args_py,
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
-                method_call: true,
+                object_id: Some(object_id),
             }
         }
         Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
@@ -713,8 +892,29 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             let name = vm.interns.get_str(name_id).to_owned();
             ConvertedExit::NameLookup {
                 name,
-                namespace_slot,
-                is_global,
+                scope: LookupScope::Namespace {
+                    namespace_slot,
+                    is_global,
+                },
+            }
+        }
+        Ok(FrameExit::AttrLookup {
+            name,
+            class_name,
+            object_id,
+            type_object,
+            effect,
+        }) => {
+            // The lookup is the host's now, so a `resume` is guaranteed to
+            // consume the effect (or the next `convert_frame_exit` releases it).
+            vm.pending_lookup_effect = effect;
+            ConvertedExit::NameLookup {
+                name: name.into_string(vm.interns),
+                scope: LookupScope::Attr {
+                    object_id,
+                    class_name,
+                    type_object,
+                },
             }
         }
         Err(err) => ConvertedExit::Error(err),
@@ -760,13 +960,13 @@ pub(crate) fn build_run_progress(
             args,
             kwargs,
             call_id,
-            method_call,
+            object_id,
         } => Ok(RunProgress::FunctionCall(FunctionCall::new(
             function_name,
             args,
             kwargs,
             call_id,
-            method_call,
+            object_id,
             new_snapshot!(),
         ))),
         ConvertedExit::OsCall { function_call, call_id } => Ok(RunProgress::OsCall(OsCall::new(
@@ -780,16 +980,9 @@ pub(crate) fn build_run_progress(
             heap,
             pending_call_ids,
         ))),
-        ConvertedExit::NameLookup {
-            name,
-            namespace_slot,
-            is_global,
-        } => Ok(RunProgress::NameLookup(NameLookup::new(
-            name,
-            namespace_slot,
-            is_global,
-            new_snapshot!(),
-        ))),
+        ConvertedExit::NameLookup { name, scope } => {
+            Ok(RunProgress::NameLookup(NameLookup::new(name, scope, new_snapshot!())))
+        }
         ConvertedExit::Error(err) => {
             Err(err.into_python_exception(&executor.interns, |_| Some(executor.code.as_str())))
         }

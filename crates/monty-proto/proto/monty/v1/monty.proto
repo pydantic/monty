@@ -10,12 +10,13 @@
 // followed by exactly one turn-ending event. There is no multiplexing, so a
 // parent can be implemented with a single blocking read loop in any language.
 //
-// Evolution rules: parent and child are deployed in lockstep (the packages
-// ship a matching `monty` binary) and the child rejects a mismatched
-// `Configure.monty_version` with a `FatalError`, so schema changes need not
-// be wire-compatible across versions. Once the protocol stabilizes, prefer
-// additive changes (fresh tag numbers, `reserved` removals) so third-party
-// transports have a migration window.
+// Evolution rules: the schema carries its own version, independent of the
+// monty package version. A parent declares it in `Configure.protocol_version`
+// and the child rejects anything outside the range it serves
+// (`MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION` in `monty-proto`).
+// Prefer additive changes (fresh tag numbers, `reserved` removals) so a
+// separately-deployed parent has a migration window; a change an older peer
+// could mis-read needs a `PROTOCOL_VERSION` bump instead.
 
 syntax = "proto3";
 
@@ -39,48 +40,46 @@ message MontyObject {
   oneof kind {
     Unit ellipsis = 1;
     Unit none = 2;
-    bool boolean = 3;
+    Unit not_implemented = 3;
+    bool boolean = 4;
     // Python int fitting in 64 bits.
-    sint64 int = 4;
+    sint64 int = 5;
     // Python int wider than 64 bits.
-    BigInt bigint = 5;
-    double float = 6;
-    string str = 7;
-    bytes bytes = 8;
-    ObjectList list = 9;
-    ObjectList tuple = 10;
-    NamedTuple named_tuple = 11;
-    Dict dict = 12;
-    ObjectList set = 13;
-    ObjectList frozen_set = 14;
-    Date date = 15;
-    DateTime datetime = 16;
-    TimeDelta timedelta = 17;
-    TimeZone timezone = 18;
+    BigInt bigint = 6;
+    double float = 7;
+    string str = 8;
+    bytes bytes = 9;
+    // A uuid.UUID value. Declared so the tag is settled, but NOT YET
+    // IMPLEMENTED: monty has no uuid module, so neither end produces or
+    // accepts this arm (it decodes like any unknown kind — rejected).
+    Uuid uuid = 10;
+    ObjectList list = 11;
+    ObjectList tuple = 12;
+    NamedTuple named_tuple = 13;
+    Dict dict = 14;
+    ObjectList set = 15;
+    ObjectList frozen_set = 16;
+    Date date = 17;
+    Time time = 18;
+    DateTime datetime = 19;
+    TimeDelta timedelta = 20;
+    TimeZone timezone = 21;
     // A simple exception VALUE (no traceback) — e.g. an exception stored in a
     // variable. Errors that terminate execution use `RaisedException` instead.
-    Exception exception = 19;
-    // A Python type object, named by monty's `Type` Display string, e.g.
-    // "int", "str", "datetime.datetime", "ValueError".
-    string type = 20;
-    // A builtin function, named by its Python name, e.g. "len", "print".
-    string builtin_function = 21;
-    // A pathlib.Path value (always a virtual POSIX path, never a host path).
-    string path = 22;
-    FileHandle file_handle = 23;
-    Dataclass dataclass = 24;
+    Exception exception = 22;
+    // A Python type object — builtin, sandbox class, or host class.
+    Type type = 23;
+    ClassInstance class_instance = 24;
     Function function = 25;
+    // A builtin function, named by its Python name, e.g. "len", "print".
+    string builtin_function = 26;
+    // A pathlib.Path value (always a virtual POSIX path, never a host path).
+    string path = 27;
+    FileHandle file_handle = 28;
     // OUTPUT-ONLY fallback: repr() of a value with no other representation.
-    string repr = 26;
+    string repr = 29;
     // OUTPUT-ONLY marker breaking reference cycles in container output.
-    Cycle cycle = 27;
-    // The type object of a sandbox-defined class, named by its class name,
-    // e.g. "Foo". Kept separate from `type` so a class shadowing a builtin
-    // name ("int") cannot be confused with the builtin type. Accepted by the
-    // decoder but rejected as an execution input (the class binding cannot be
-    // reconstructed from a name).
-    string instance_type = 28;
-    Unit not_implemented = 29;
+    Cycle cycle = 30;
   }
 }
 
@@ -138,6 +137,24 @@ message DateTime {
   optional string timezone_name = 9;
 }
 
+message Time {
+  // 0..=23.
+  uint32 hour = 1;
+  // 0..=59.
+  uint32 minute = 2;
+  // 0..=59.
+  uint32 second = 3;
+  // 0..=999999.
+  uint32 microsecond = 4;
+  // Fixed UTC offset for aware times; absent for naive values.
+  optional int32 offset_seconds = 5;
+  // Optional timezone name; only valid when offset_seconds is set.
+  optional string timezone_name = 6;
+  // Disambiguates a repeated wall clock, 0 or 1. Carried so a time does not
+  // silently lose the flag crossing the boundary; monty never interprets it.
+  uint32 fold = 7;
+}
+
 message TimeDelta {
   int32 days = 1;
   // Normalized to 0..86400.
@@ -168,16 +185,60 @@ message FileHandle {
   uint64 position = 3;
 }
 
-message Dataclass {
-  // Class name, e.g. "Point".
+// A 16-byte UUID (uuid4). Exactly 16 bytes; validated on decode. Class and
+// instance ids are generated by whichever side defined the object, so they never
+// encode a memory address and cannot be reused the way CPython reuses `id()`.
+message Uuid {
+  bytes data = 1;
+}
+
+// Where a `Type` comes from — drives id presence and input validation.
+enum TypeOrigin {
+  // Rejected on decode.
+  TYPE_ORIGIN_UNSPECIFIED = 0;
+  // `name` must parse as a known builtin type name ("int", "ValueError");
+  // valid as an execution input. `id` must be absent. Kept distinct from
+  // SANDBOX so a sandbox class shadowing a builtin name ("int") cannot be
+  // confused with the builtin type.
+  TYPE_ORIGIN_BUILTIN = 1;
+  // A sandbox-defined class; `id` required. Accepted by the decoder but
+  // rejected as an execution input (the class binding cannot be
+  // reconstructed host-side).
+  TYPE_ORIGIN_SANDBOX = 2;
+  // A host-defined class; `id` required.
+  TYPE_ORIGIN_HOST = 3;
+}
+
+// A Python type object crossing the sandbox boundary.
+message Type {
+  // Python-visible name: builtin Display name ("int", "datetime.datetime")
+  // or class name ("Point").
   string name = 1;
-  // Host-side identity of the class, from `id(type(dc))`.
-  uint64 type_id = 2;
-  // Declared field names in definition order.
-  repeated string field_names = 3;
-  // All attributes (fields and extras), in order.
-  Dict attrs = 4;
-  bool frozen = 5;
+  // Identity of the class; absent iff origin == TYPE_ORIGIN_BUILTIN.
+  Uuid id = 2;
+  // Where the type was defined (builtin, sandbox, or host).
+  TypeOrigin origin = 3;
+  // Whether `dataclasses.is_dataclass` is true for the class.
+  bool is_dataclass = 4;
+  // Class attributes sent eagerly with the type object (class constants, per
+  // the sending wrapper's policy), as a class value or as the `type` field of
+  // a ClassInstance. The sandbox keeps one type object per class id: a
+  // non-empty set replaces its attrs, an empty set leaves them unchanged. The
+  // worker sends an empty set for the `type` field of an instance.
+  Dict attrs = 5;
+}
+
+// A class instance crossing the sandbox boundary. Host-backed instances route
+// method calls and lazy attribute lookups back to the real object by uuid
+// (`FunctionCall.object_id` / `NameLookup.object_id`); sandbox-defined
+// instances carry a worker-generated uuid instead.
+message ClassInstance {
+  // The instance's class; origin SANDBOX or HOST (never BUILTIN).
+  Type type = 1;
+  // Identity of the instance, generated by whichever side defined it.
+  Uuid instance_id = 2;
+  // Eagerly-sent attributes, in order.
+  Dict attrs = 3;
 }
 
 // An external (host-provided) function value, usually supplied by the parent
@@ -373,11 +434,10 @@ message Configure {
   bool type_check = 3;
   // Optional stub file contents used by type checking.
   optional string type_check_stubs = 4;
-  // The parent's monty version (e.g. "0.0.18"). The child rejects the
-  // session with a `FatalError` when this does not match its own version:
-  // the protocol has no in-band negotiation and parent and child must be
-  // deployed in lockstep, so a mismatch is a hard, fail-fast error rather
-  // than a silent source of frame desync.
+  // The parent's monty package version (e.g. "0.0.18"). INFORMATIONAL ONLY —
+  // it is never checked, only reported (in telemetry, and when diagnosing a
+  // rejected `protocol_version`). Parent and child may run different package
+  // versions as long as their protocol versions are compatible.
   string monty_version = 5;
   // Introspected `assert` failure messages (see limitations/assert.md).
   // Absent = on with the default 120-byte operand-repr truncation; 0 disables
@@ -392,6 +452,15 @@ message Configure {
   // Render typing diagnostics with ANSI colour escapes. Only `FULL` and
   // `CONCISE` carry colour; the machine-readable formats ignore it.
   bool type_check_color = 8;
+  // Version of the wire schema the parent speaks. The child rejects the
+  // session with a `FatalError` naming its own supported range when this
+  // falls outside it, so a parent deployed separately from its worker (over
+  // a websocket, say) learns what to downgrade to without a handshake.
+  //
+  // 0 means the parent declared nothing — either it predates this field or it
+  // is not a monty parent — and is always rejected. The protocol has no
+  // in-band negotiation, so an undeclared peer cannot be assumed compatible.
+  uint32 protocol_version = 9;
 }
 
 // Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's
@@ -431,8 +500,13 @@ message ResumeNameLookup {
   oneof kind {
     // The name resolves to this value.
     MontyObject value = 1;
-    // The name is undefined — the child raises NameError.
+    // The name is undefined — the child raises NameError (AttributeError for
+    // a lazy attribute lookup).
     Unit undefined = 2;
+    // Resolving the name raised on the parent — the child raises this
+    // exception where the lookup suspended, bypassing hasattr()/getattr()
+    // defaults.
+    RaisedException error = 3;
   }
 }
 
@@ -443,8 +517,9 @@ message ResumeFutures {
 }
 
 // Requests an opaque serialized snapshot of the current session state
-// (idle or suspended). The child stays usable afterwards. The bytes can only
-// be restored by a monty child of the same version via `Load`.
+// (idle or suspended). The child stays usable afterwards. The bytes carry
+// monty's own dump format, versioned independently of this schema, and can
+// only be restored via `Load` by a child built with the same dump version.
 message Dump {}
 
 // Restores state produced by `Dump`. Valid only from no session. If
@@ -537,15 +612,19 @@ message Print {
   string text = 2;
 }
 
-// Suspension: the sandbox called an external function (or a dataclass method
-// when `method_call` is true — the instance is then the first arg). Answer
-// with `ResumeCall`.
+// Suspension: the sandbox called an external function, or — when `object_id`
+// is set — a method on a host-backed object (the receiver is NOT included in
+// `args`; the host routes by uuid). The receiver may be a class instance or a
+// class type: calling a host class arrives as a `__call__` method call on the
+// class's uuid, and the host's own policy decides whether construction is
+// allowed. Answer with `ResumeCall`.
 message FunctionCall {
   string function_name = 1;
   repeated MontyObject args = 2;
   repeated Pair kwargs = 3;
   uint32 call_id = 4;
-  bool method_call = 5;
+  // The uuid of the receiver; absent for plain external function calls.
+  Uuid object_id = 5;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent
@@ -564,32 +643,32 @@ message OsCall {
 
   oneof call {
     // ---- FS read / check / remove — the string is the virtual path -------
-    string exists = 2;      // Path.exists
-    string is_file = 3;     // Path.is_file
-    string is_dir = 4;      // Path.is_dir
-    string is_symlink = 5;  // Path.is_symlink
-    string read_text = 6;   // Path.read_text
-    string read_bytes = 7;  // Path.read_bytes
-    string stat = 8;        // Path.stat
-    string iterdir = 9;     // Path.iterdir
-    string resolve = 10;    // Path.resolve
-    string absolute = 11;   // Path.absolute
-    string unlink = 12;     // Path.unlink
-    string rmdir = 13;      // Path.rmdir
+    string exists = 2; // Path.exists
+    string is_file = 3; // Path.is_file
+    string is_dir = 4; // Path.is_dir
+    string is_symlink = 5; // Path.is_symlink
+    string read_text = 6; // Path.read_text
+    string read_bytes = 7; // Path.read_bytes
+    string stat = 8; // Path.stat
+    string iterdir = 9; // Path.iterdir
+    string resolve = 10; // Path.resolve
+    string absolute = 11; // Path.absolute
+    string unlink = 12; // Path.unlink
+    string rmdir = 13; // Path.rmdir
 
     // ---- FS write / mutate -----------------------------------------------
-    TextWrite write_text = 14;     // Path.write_text (truncating)
-    TextWrite append_text = 15;    // Path.append_text
-    BytesWrite write_bytes = 16;   // Path.write_bytes (truncating)
-    BytesWrite append_bytes = 17;  // Path.append_bytes
+    TextWrite write_text = 14; // Path.write_text (truncating)
+    TextWrite append_text = 15; // Path.append_text
+    BytesWrite write_bytes = 16; // Path.write_bytes (truncating)
+    BytesWrite append_bytes = 17; // Path.append_bytes
     Open open = 18;
     Mkdir mkdir = 19;
     Rename rename = 20;
 
     // ---- Non-FS ----------------------------------------------------------
-    Getenv getenv = 21;     // os.getenv
-    Unit get_environ = 22;  // the os.environ snapshot
-    Unit date_today = 23;   // date.today()
+    Getenv getenv = 21; // os.getenv
+    Unit get_environ = 22; // the os.environ snapshot
+    Unit date_today = 23; // date.today()
     // datetime.now(tz) — the timezone argument (absent for a naive result).
     DateTimeNow date_time_now = 24;
   }
@@ -631,9 +710,15 @@ message OsCall {
 }
 
 // Suspension: the sandbox read an undefined name — typically probing whether
-// the parent provides an external function. Answer with `ResumeNameLookup`.
+// the parent provides an external function — or, when `object_id` is set, a
+// lazy attribute lookup on a host-backed object. Answer with
+// `ResumeNameLookup`; for attribute lookups an `undefined` answer raises
+// AttributeError (not NameError) inside the sandbox.
 message NameLookup {
   string name = 1;
+  // Set for attribute lookups on a host-backed object — a class instance, or
+  // a class type (a lazy class attribute): the uuid of the receiver.
+  Uuid object_id = 2;
 }
 
 // Suspension: every sandbox task is blocked on external futures previously

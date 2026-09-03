@@ -308,13 +308,13 @@ Any code that builds a `String` whose final size is not already bounded by an ex
 
 ```rust
 // Bounded size known up front (padding to a given width):
-let mut builder = StringBuilder::with_capacity(width * fillchar.len_utf8(), vm.heap.tracker())?;
+let mut builder = StringBuilder::with_capacity(width * fillchar.len_utf8(), &vm.heap.tracker)?;
 builder.push_str(s)?;
 for _ in 0..pad { builder.push(fillchar)?; }
 builder.finish(vm.heap)
 
 // Size not bounded up front (e.g. attacker-controlled multiplier):
-let mut builder = StringBuilder::new(vm.heap.tracker());
+let mut builder = StringBuilder::new(&vm.heap.tracker);
 for c in input.chars() { builder.push(c)?; }
 builder.finish(vm.heap)
 ```
@@ -325,8 +325,8 @@ When the input *is* already bounded (e.g. `s.to_lowercase()`, slicing, `to_owned
 
 ### Soft memory-limit checks — when and why
 
-`max_memory` is a **soft** limit: the VM polls allocator-backed usage before every
-instruction (`check_time`), and everything pathological is caught by the hard
+`max_memory` is a **soft** limit: the VM polls allocator-backed usage every 255
+instructions (`check_memory_time`), and everything pathological is caught by the hard
 limits — the allocator's hard ceiling (soft + headroom, worker exits with
 `OOM_EXIT_CODE` and the pool replaces it) and the pool's turn timeout. Soft
 checks exist ONLY to turn *common* overshoots into a graceful `MemoryError`
@@ -336,7 +336,7 @@ sprinkle them everywhere — every check is code noise and hot-path cost.
 Add a check only where ordinary code commonly allocates a multi-MiB burst
 inside a single builtin call (i.e. before the next instruction checkpoint):
 
-- Known-size bulk allocation: one up-front `tracker().check_allocation(n * VALUE_SIZE)`
+- Known-size bulk allocation: one up-front `tracker.check_allocation(n * VALUE_SIZE)`
   (container clone/copy, e.g. `clone_all_items`, `list_copy`) or
   `check_repeat_size`-style estimate (`resource_checks.rs`).
 - Iterator collection: `collect_python_iterator` / `checked_preallocation_hint`
@@ -367,10 +367,11 @@ make build-js             Build the JS package (compile TypeScript)
 make lint-js              Lint JS code with oxlint
 make test-js              Test the JS package (builds the monty binary the workers run)
 make dev-py-release       Install the python package for development with a release build
-make build-wasm           Build the lean wasm worker module (requires the wasm32-wasip1 target)
-make test-wasm            Test the wasm worker module from node, with no browser
-make test-browser         Browser (Vitest) test of the wasm path in a real headless browser
-make dev-py-pgo           Install the python package for development with profile-guided optimization
+make build-wasm           Build the WASI 0.2 worker component (requires the wasm32-wasip1 target)
+make check-wasm-types     Verify checked-in component declarations match the WIT interface
+make test-wasm            Test the wasm worker component from Node, with no browser
+make test-browser         Build and test the wasm worker path in headless Chromium
+make dev-py-pgo           Install the Python package with a PGO-optimized Monty runtime
 make format-rs            Format Rust code with fmt
 make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!
 make format-js            Format JS code with prettier
@@ -381,8 +382,6 @@ make generate-proto       Regenerate monty-proto's checked-in code from the .pro
 make check-proto          Verify monty-proto's checked-in code matches the .proto schema
 make lint-py              Lint Python code with ruff
 make lint                 Lint the code with ruff and clippy
-make format-lint-rs       Format and lint Rust code with fmt and clippy
-make format-lint-py       Format and lint Python code with ruff
 make test-no-features     Run rust tests without any features enabled
 make test-memory-model-checks Run rust tests with memory-model-checks enabled - THIS IS EXTREMELY SLOW, SHOULD MOSTLY BE RUN IN CI OR IF ABSOLUTELY NECESSARY
 make test-ref-count-return Run rust tests with ref-count-return enabled
@@ -833,7 +832,7 @@ recovery, framing and value conversion all live in Rust.
   `session.ts` (MontySession + drive loop), `errors.ts`, `binary.ts`
   (monty binary resolution), `mount.ts`, `native.ts` (turn-object typings)
 - `crates/monty-js/ts/worker/` - the browser/wasm worker path (exported as
-  `@pydantic/monty/wasm`): `proto.ts`/`value.ts` (TS `monty-proto` codec),
+  `@pydantic/monty/wasm`): `value.ts` (JS ↔ flat semantic WIT values),
   `transport.ts` (WorkerTransport, the `NativeSession`-shaped seam),
   `host.ts`/`channel.ts` (in-process and message-channel dispatch),
   `pool.ts` (WorkerPool, the TS `monty-pool` analog), `nodeFactory.ts` /
@@ -844,9 +843,8 @@ recovery, framing and value conversion all live in Rust.
   `.node` library *and* the `monty` binary (`@pydantic/monty-<platform>`,
   selected via optionalDependencies; `napi create-npm-dirs` +
   `scripts/create-platform-packages.mjs`)
-- `crates/monty-js/__test__/` - Tests using vitest (`wasm_*.spec.ts` drive the
-  wasm worker pool/transport without the napi build, and need `make build-wasm`
-  first — `npm test` excludes them, `npm run test:wasm` runs them)
+- `crates/monty-js/__test__/` - Vitest tests shared by the native Node and
+  browser/WASM backends; `wasm_*.spec.ts` drive the wasm worker without napi
 
 ### Current API
 
@@ -875,7 +873,9 @@ See `crates/monty-js/README.md` for full API documentation.
 ```bash
 make install-js   # npm install
 make build-js     # napi debug build + compile TypeScript
-make test-js      # builds the napi binding + debug monty binary, then runs vitest
+make test-js      # builds the napi binding + debug monty binary, then runs Vitest
+make test-wasm    # builds and tests the wasm path from Node
+make test-browser # builds and tests the wasm path in headless Chromium
 make lint-js      # oxlint
 make format-js    # prettier
 make smoke-test-js  # packs + installs the package and platform binary package
@@ -887,7 +887,7 @@ Tests run straight from `ts/` via `@oxc-node/core` against the locally built
 
 ### JavaScript Test Guidelines
 
-- Tests use [vitest](https://vitest.dev) and live in `crates/monty-js/__test__/`
+- Tests use [Vitest](https://vitest.dev/) and live in `crates/monty-js/__test__/`
 - Tests are written in TypeScript; use the `setupPool` helper from `__test__/helpers.ts`
 - Follow the existing test style in the `__test__/` directory
 
@@ -898,27 +898,103 @@ Worker** instead of a subprocess, exposed under the `/wasm` subpath. The same
 pool → checkout → session → `feedRun` model and drive loop are used; only the
 transport differs. The pieces:
 
-- `crates/monty-wasm-runtime` — a lean `wasm32-wasip1` module: a WASI reactor wrapping
-  the transport-agnostic `monty-worker` `Child` state machine, exporting one
-  `monty_dispatch_turn` (read a framed request from stdin, run one turn, write
-  framed events to stdout). No napi, no threads, no `SharedArrayBuffer`. It
-  declares the `monty-alloc` global allocator, so a session's `max_memory`
-  bounds what the module allocates too; exceeding it traps, which the host
-  already reads as a dead instance.
+- `crates/monty-wasm-runtime` — a WIT-defined WASI 0.2 component wrapping the
+  transport-agnostic `monty-proto` `Child` state machine. Rust builds a
+  `wasm32-wasip1` core module, then Jco applies the Preview 1 reactor adapter
+  and generates JavaScript canonical-ABI bindings. No napi, threads, stdio RPC,
+  or `SharedArrayBuffer`. Its `monty-alloc` global allocator applies a session's
+  `max_memory` to component allocations; exceeding the hard limit traps.
 - `crates/monty-js/ts/worker/` — the TS pool/transport that drives it
   (`createWorkerPool`): a browser `Worker` backend (`browserFactory.ts`, whose
   `Worker.terminate()` is the watchdog's hard kill), a Node `worker_threads`
   backend (`nodeFactory.ts`), and an in-process degrade for environments with
-  no `Worker` (same API, but no crash isolation or preemption). Values cross as
-  `monty-proto` frames decoded in TypeScript (`proto.ts`/`value.ts`), not via
-  napi.
+  no `Worker` (same API, but no crash isolation or preemption). Semantic WIT
+  requests and events cross the component's typed `dispatch` export; recursive
+  Python values use flat node arenas because WIT types cannot be recursive.
+  Protobuf remains internal to Rust's shared `monty-proto` child state machine.
 
-Build the worker module locally with `make build-wasm` (needs the
-`wasm32-wasip1` target); it is built and tested in CI. `make test-browser` runs
-the whole suite against it in headless Chromium, and `make test-wasm` drives it
-from Node with no browser (`__test__/wasm_*.spec.ts`, run by their own
-`vitest.wasm.config.ts` — `npm test` excludes them, since it does not build the
-module).
+Build the worker component locally with `make build-wasm` (needs the
+`wasm32-wasip1` target); it is built and tested in CI. This also refreshes the
+checked-in WIT-derived declarations under `crates/monty-js/ts/worker/component/`;
+do not edit those files directly. `make test-browser` runs the whole suite in
+headless Chromium, while `make test-wasm` runs `wasm_*.spec.ts` from Node.
+
+## Documentation surfaces that must stay in sync
+
+Monty has four hand-maintained documentation surfaces. They serve different readers and
+none is generated from another, so a change that updates one and not the others leaves
+the project describing behaviour it no longer has.
+
+| Surface | Reader | Contains |
+| --- | --- | --- |
+| `README.md` | GitHub, PyPI, npm landing page | The pitch, the can/cannot lists, install, one quickstart per binding, the alternatives table |
+| `docs/` | the docs site (`pydantic.dev/docs/monty`), nav in `mkdocs.yml` | Conceptual and how-to: install, per-language quickstarts, security model, host functions, resource limits, filesystem, snapshots, type checking, the subset, CLI |
+| `limitations/` | users and contributors chasing a specific behaviour | The exhaustive per-feature record of CPython divergences (see the section below) |
+| `crates/*/README.md` | crates.io, and PyPI/npm for the binding crates | Per-crate API documentation; `monty-python/README.md` and `monty-js/README.md` are the binding references |
+
+**`docs/` does not duplicate `limitations/`.** `docs/` describes the *shape* of what Monty
+implements and links out; `limitations/` owns every divergence. A divergence written into
+a `docs/` page instead of `limitations/` is a defect — move it and link.
+
+### What a change obliges you to update
+
+- **A CPython divergence** — `limitations/<file>.md`, per the mandatory rule below.
+- **The subset changes shape** (a stdlib module becomes importable, a parse-time
+  rejection lands or is lifted, a language feature ships) — also `docs/python-subset.md`
+  and the `README.md` can/cannot bullets.
+- **Python binding API** (`crates/monty-python/`) — the `_monty.pyi` docstrings,
+  `crates/monty-python/README.md`, and the `docs/` page that covers the feature.
+- **JavaScript binding API** (`crates/monty-js/`) — `crates/monty-js/README.md` and
+  `docs/quickstart/javascript.md`.
+- **Rust API** — the owning crate's README and `docs/quickstart/rust.md`.
+- **Resource limits, mount options, or a sandbox invariant** — `docs/resource-limits.md`,
+  `docs/filesystem.md`, `docs/security.md` respectively, plus `limitations/`.
+- **CLI flags** (`crates/monty-runtime/src/main.rs`) — `crates/monty-runtime/README.md`
+  and `docs/cli.md`.
+
+### Named duplication points
+
+These facts are stated in more than one place on purpose, because a reader needs them
+where they are. Change one and you must change all of them:
+
+- **The importable stdlib module list** — `limitations/modules.md` (authoritative),
+  `docs/python-subset.md`, `docs/index.md`, `README.md`.
+- **Default resource limits** (1000 recursion frames, 100 MB per-mount memory, 10 MiB
+  print collectors, 1s duration grace) — `limitations/resource_limits.md`,
+  `docs/resource-limits.md`, and the binding docstrings.
+- **Mount modes and their defaults** — `limitations/filesystem.md`, `docs/filesystem.md`,
+  the `MountDir` docstrings in `_monty.pyi` and `crates/monty-js/ts/mount.ts`.
+
+### Reviewer Notes
+
+Monty implements a limited subset of CPython.
+Its behaviour should match CPython 3.14 except where documented in `limitations`.
+
+The list of stdlib modules in `docs/python-subset.md` must be updated if a new standard library module is implemented.
+
+### Rules for `docs/`
+
+- `make test-docs` checks every Python snippet in `docs/`, `README.md`,
+  `packages/pydantic-monty/README.md`, and `crates/monty-python/README.md`.
+  It executes each snippet unless marked ```` ```python test="skip" ````; skipped snippets are still ruff-linted.
+- Sandbox-side Python (code fed to Monty, not host code) belongs inside a host snippet as
+  a string, or in a `test="skip"` block. It must never be a runnable top-level block —
+  CPython would execute it.
+- New pages go in the `mkdocs.yml` `nav:`; the nav is what orders the docs site.
+- Prose style follows [`.agents/skills/writing-style`](.agents/skills/writing-style/SKILL.md):
+  one sentence per line, claims traceable to source, no hype.
+  Do not state a behaviour you have not read in the code, the tests or `limitations/`.
+
+### Enforcement
+
+- `make test-docs` applies the Python checks above and compiles Rust snippets in `docs/quickstart/rust.md`.
+  TypeScript snippets are not checked.
+- `make docs` builds the site with `--strict`, which fails on a broken internal link or a
+  page missing from the nav. `make docs-serve` previews it.
+- The `docs-parity-reviewer` subagent (`.agents/agents/docs-parity-reviewer.md`) is the
+  documentation gate before merge. It reports; it does not edit.
+- The `review-general` skill treats a missing `docs/` or `limitations/` update as a
+  finding.
 
 ## Limitations documentation (`./limitations/`)
 

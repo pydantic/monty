@@ -231,11 +231,8 @@ try:
 except OSError as exc:
     assert str(exc) == 'not writable', f'unexpected not-writable message: {exc}'
     # Mode-violation errors must surface as io.UnsupportedOperation, not bare
-    # OSError. CPython exposes the class as `io.UnsupportedOperation` whose
-    # `__name__` is the bare `UnsupportedOperation`; Monty uses the qualified
-    # `io.UnsupportedOperation` as its single type identifier.
-    expected_name = 'io.UnsupportedOperation' if is_monty else 'UnsupportedOperation'
-    assert type(exc).__name__ == expected_name, f'expected {expected_name}, got {type(exc).__name__}'
+    # OSError.
+    assert type(exc).__name__ == 'UnsupportedOperation', f'unexpected type name: {type(exc).__name__}'
 
 try:
     open(root / 'hello.txt', 'rb').write(b'x')

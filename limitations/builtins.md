@@ -1,8 +1,8 @@
 # Built-in functions
 
-Monty implements a deliberate subset of CPython's builtins. Referencing any
-name not listed here raises `NameError` at runtime — there is no fallback to
-a host Python.
+Monty implements a subset of CPython's builtins. Referencing any name not
+listed here raises `NameError` at runtime; there is no fallback to a host
+Python.
 
 ## Implemented builtin functions
 
@@ -21,7 +21,7 @@ a host Python.
 
 These raise `NameError`:
 
-- **Code execution**: `eval`, `exec`, `compile`, `__import__`. Deliberate —
+- **Code execution**: `eval`, `exec`, `compile`, `__import__`. Deliberate:
   sandboxed code must not be able to compile new code at runtime.
 - **Namespace introspection**: `globals`, `locals`, `vars`, `dir`.
 - **Interactive**: `input`, `breakpoint`, `help`.
@@ -31,12 +31,32 @@ These raise `NameError`:
   `object`, `format`, `ascii`.
 - **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
 
-`super()` is the biggest practical omission — combined with the lack of
-`class` statements (see [language.md](language.md)) there is no inheritance
-mechanism beyond dataclass field inheritance.
+`super()` is the biggest practical omission: with no class inheritance either
+(see ./classes.md), there is no inheritance mechanism at all.
 
 ## Behavioural divergences
 
+- **`repr` of a dict being mutated by its own elements** — Monty iterates the
+  live entries like CPython, but deletion compacts Monty's dense entry storage
+  where CPython leaves a tombstone in place: a key deleted from inside a user
+  `__repr__` running *during that dict's repr* shifts later entries down, so
+  the entry after the deleted one can be skipped from the output where CPython
+  would still print it. Insertions during repr match CPython (appended and
+  printed), as do list (live length, mid-repr pops truncate / appends extend),
+  `set`, `collections.deque` and `collections.Counter` (all snapshot, like
+  CPython).
+- **dict/set lookups under a mutating `__eq__`** — like CPython, a lookup
+  (`in`, `d[k]`, `set.remove`, …) whose user `__eq__` mutates the container
+  keeps probing rather than raising, and a mutation that only *adds* colliding
+  keys never makes it repeat a comparison. Monty re-reads the colliding
+  candidates after each comparison where CPython walks the live probe chain, so
+  an `__eq__` that moves the entry being compared restarts the probe and
+  re-compares the other candidates from scratch — extra `__eq__` calls CPython
+  would not make (CPython restarts and re-compares too, but only after a resize
+  or when that entry's own slot changed). An `__eq__` that adds a colliding key
+  on *every* comparison never finishes in either engine; under `max_duration`
+  Monty raises `TimeoutError`. No mutation pattern can panic or corrupt either
+  engine.
 - **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager, not lazy** —
   each drains its source and returns a `list`, so `type(enumerate(x)).__name__`
   is `'list'` rather than `'enumerate'`. Observable several ways: a
@@ -49,7 +69,7 @@ mechanism beyond dataclass field inheritance.
   `collections.deque`) will not raise when looped over via one of these. `zip`
   and multi-iterable `map` stop at the shortest input, so pairing an infinite
   iterable with a finite or empty one stays bounded. A plain `for x in
-  container` is lazy and does detect mutation. See [itertools.md](itertools.md).
+  container` is lazy and does detect mutation. See ./itertools.md.
 - **Arity-error wording for some str/bytes methods** — a handful of
   keyword-accepting methods (e.g. `str.split`, `str.rsplit` and the `bytes`
   equivalents) report too-many-arguments as `split expected at most 2
@@ -69,16 +89,17 @@ mechanism beyond dataclass field inheritance.
 - **`bytes(source)`** — an iterable of ints is not supported: CPython's
   `bytes([65, 66])` == `b'AB'`, Monty raises `TypeError: cannot convert
   'list' object to bytes`. The int / str-with-encoding / bytes source forms
-  all work.
+  all work. A count above `i64` (`bytes(2**70)`) gives that same `TypeError`,
+  not CPython's `OverflowError: cannot fit 'int' into an index-sized integer`.
 - **`isinstance(obj, T)`** — `T` must be a built-in type (`int`, `str`,
   `list`, ...), a built-in exception class, a sandbox-defined class (see
-  [classes.md](classes.md)), or a tuple of those. Passing a host-supplied
+  ./classes.md), or a tuple of those. Passing a host-supplied
   dataclass / namedtuple as the second argument raises `TypeError`.
-- **`iter()`** — see [iter.md](iter.md) for iterator and `iter(callable, sentinel)` divergences.
-- **`pow(base, exp, mod)`** — three-argument form requires all integers and
+- **`iter()`** — see ./iter.md for iterator and `iter(callable, sentinel)` divergences.
+- **`pow(base, exp, mod)`** — the three-argument form requires all integers and
   rejects negative exponents with `ValueError` instead of computing a modular
   inverse. Non-modular exponents whose result cannot be materialized raise
-  `OverflowError` (see [resource_limits.md](resource_limits.md)).
+  `OverflowError` (see ./resource_limits.md).
 - **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
   must be passed by keyword; positional forms raise `TypeError`.
 - **`round(n, ndigits)`** — `ndigits` values outside the i64 range are
@@ -102,8 +123,8 @@ mechanism beyond dataclass field inheritance.
     real builtin; Monty's modeled stdlib types map to their host stdlib class:
     `datetime`/`date`/`timedelta`/`timezone` → `datetime.*`,
     `re.Pattern`/`re.Match` → `re.*`, the binary/text file types → `io.*`. The
-    `pathlib.Path` class maps to `pathlib.PurePosixPath` (consistent with how Path
-    *instances* round-trip, and instantiable on every host OS). A type with no
+    `pathlib.Path` class maps to `pathlib.PurePosixPath`, consistent with how Path
+    *instances* round-trip, and instantiable on every host OS. A type with no
     faithful host class (e.g. an internal function or cell type) cannot be
     reconstructed and surfaces as an `AttributeError` from the host call.
   - *Host → sandbox* (input, or an external-call return value): the same recognized
@@ -113,5 +134,5 @@ mechanism beyond dataclass field inheritance.
     `__name__`/`__module__` to impersonate a builtin is *not* treated as one. Every
     `pathlib` path class collapses to `PurePosixPath` (it re-emerges as
     `PurePosixPath`). A host class Monty does **not** model (e.g. a user-defined
-    class) is not preserved as a type — it degrades to a callable, appearing inside
+    class) is not preserved as a type; it degrades to a callable, appearing inside
     the sandbox as a `function` rather than a `type`.

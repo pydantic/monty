@@ -175,6 +175,110 @@ result
     );
 }
 
+/// `map()` must contextually drop earlier heap results when a later callback
+/// raises instead of leaking the native output vector.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn map_callback_error_drops_prior_heap_results() {
+    let code = r"
+def build(value):
+    if value == 2:
+        raise ValueError('stop')
+    return [value]
+
+try:
+    map(build, [1, 2])
+except ValueError:
+    pass
+
+result = 'done'
+result
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
+/// The two-iterable fast path owns the first argument while advancing the
+/// second iterator. If that iterator raises, the first value must be dropped.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn map_second_iterator_error_drops_current_argument() {
+    let code = r"
+class RaisingIterator:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise ValueError('stop')
+
+def combine(a, b):
+    return (a, b)
+
+try:
+    map(combine, [[1]], RaisingIterator())
+except ValueError:
+    pass
+
+result = 'done'
+result
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
+/// The generic multi-iterable path accumulates arguments in a native vector.
+/// A later iterator error must drop every value already collected for the call.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn map_later_iterator_error_drops_current_arguments() {
+    let code = r"
+class RaisingIterator:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise ValueError('stop')
+
+def combine(a, b, c):
+    return (a, b, c)
+
+try:
+    map(combine, [[1]], [[2]], RaisingIterator())
+except ValueError:
+    pass
+
+result = 'done'
+result
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
+/// The generic multi-iterable path must also drop arguments already collected
+/// for a call when a later iterator is exhausted normally.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn map_later_iterator_exhaustion_drops_current_arguments() {
+    let code = r"
+def combine(a, b, c):
+    return a[0] + b[0] + c[0]
+
+result = map(combine, [[1], [4]], [[2], [5]], [[3]])
+result
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.py_object, MontyObject::List(vec![MontyObject::Int(6)]));
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
 /// Test that GC properly collects self-referencing list cycles.
 ///
 /// Each iteration's `a.append(a)` produces a self-referencing list; the next
@@ -365,10 +469,11 @@ result
 
 // === Timeout enforcement in builtin iteration loops ===
 // These tests verify that `max_duration_secs` is enforced inside Rust-side loops
-// within builtin functions. Previously, builtins like sum(), sorted(), min(), max()
-// ran Rust loops entirely within a single bytecode instruction, bypassing the VM's
-// per-instruction timeout check. The fix adds `heap.check_time()` calls inside
-// Python iterator advancement and other non-iterator loops.
+// within builtin functions. Builtins like sum(), sorted(), min(), max() run Rust
+// loops entirely within a single bytecode instruction, so they would otherwise
+// bypass the VM's dispatch checkpoint entirely. Python iterator advancement and
+// the other non-iterator loops therefore poll the tracker themselves, amortized
+// via `check_time_every` / `check_memory_time_every`.
 
 /// Helper: runs code with a short time limit and asserts it produces a TimeoutError promptly.
 fn assert_timeout_in_builtin(code: &str, label: &str) {
@@ -394,7 +499,7 @@ fn assert_timeout_in_builtin(code: &str, label: &str) {
 
 /// Test that `sum(range(huge))` respects the time limit.
 ///
-/// `sum()` iterates via `for_next()` which now calls `heap.check_time()`.
+/// `sum()` iterates via `for_next()`, which polls the time limit every 64th step.
 #[test]
 fn timeout_in_sum_builtin() {
     assert_timeout_in_builtin("sum(range(10**18))", "sum(range(10**18))");
@@ -582,7 +687,7 @@ fn timeout_in_str_join() {
 /// Test that the insertion sort inner loop in `sorted()` respects the time limit.
 ///
 /// Uses reverse-sorted data to trigger worst-case O(n^2) insertion sort behavior.
-/// The sort comparison loop has an explicit `heap.check_time()` call.
+/// The sort comparison loop polls the time limit (amortized, every 64th comparison).
 #[test]
 fn timeout_in_sorted_comparison_loop() {
     // Build a reverse-sorted list, then sort it. Insertion sort on reverse-sorted
@@ -596,8 +701,8 @@ sorted(x)
 
 /// Test that `[1] * 10_000_000` (list repetition) respects the time limit.
 ///
-/// The sequence-repetition copy loop in `py_mult` now calls `heap.check_time()`
-/// on each repetition to prevent large sequence multiplications from bypassing timeout.
+/// The sequence-repetition copy loop in `py_mult` polls the time limit every
+/// 64th repetition, so a large multiplication cannot bypass the timeout.
 #[test]
 fn timeout_in_list_repetition() {
     assert_timeout_in_builtin("[1, 2, 3] * 10_000_000", "list repetition");
@@ -640,10 +745,116 @@ a == b
     assert_timeout_in_builtin(code, "dict equality");
 }
 
+/// Test that a dict/set probe restarted by a mutating `__eq__` respects the
+/// time limit.
+///
+/// Every comparison adds another colliding key whose own `__eq__` does the
+/// same, so the probe never runs out of new candidates (CPython, walking the
+/// live chain, hangs on this too). Re-entering the VM for the callback restarts
+/// the dispatch countdown, so only the probe's own `check_time()` can end it.
+#[test]
+fn timeout_in_mutating_lookup_probe() {
+    let template = r"
+busy = False
+
+
+class Mutator:
+    def __hash__(self):
+        return 1
+
+    def __eq__(self, other):
+        global busy
+        if not busy:
+            busy = True
+            ADD_MUTATOR
+            busy = False
+        return False
+
+
+container = MAKE_CONTAINER
+Mutator() in container
+";
+    let dict = template
+        .replace("ADD_MUTATOR", "container[Mutator()] = 0")
+        .replace("MAKE_CONTAINER", "{Mutator(): 0}");
+    let set = template
+        .replace("ADD_MUTATOR", "container.add(Mutator())")
+        .replace("MAKE_CONTAINER", "{Mutator()}");
+    assert_timeout_in_builtin(&dict, "dict probe restarted by __eq__");
+    assert_timeout_in_builtin(&set, "set probe restarted by __eq__");
+}
+
+/// Missing lookups in a fully colliding container must not rescan their
+/// already-compared candidates quadratically.
+///
+/// `H` instances hash constant and are never `eq_is_native`, so a missing
+/// probe hands all N entries to the mutation-aware continuation, whose
+/// seen-check must be O(1) — a linear scan makes each miss Θ(N²), and that
+/// pass reaches no limit poll. Found lookups walk the same candidate chain
+/// but never reach the continuation, so timing misses against finds on the
+/// same container isolates exactly the continuation's cost — the ratio is
+/// independent of machine speed, coverage instrumentation, and feature
+/// flags. Measured: healthy ~1.2x, the old linear seen-scan ~4.2x. The 3x
+/// threshold therefore sits closer to the regression than to a false alarm —
+/// raise it and the test stops catching the bug.
+#[test]
+fn colliding_lookup_is_not_quadratic() {
+    let build_template = r"
+class H:
+    def __hash__(self):
+        return 1
+
+
+container = MAKE_CONTAINER
+for _ in range(800):
+    ADD_ENTRY
+";
+    // 800 found lookups: same per-candidate machinery as the misses below
+    // (every comparison still dispatches through the guarded snapshot loop),
+    // but the probe ends at its match, before the continuation.
+    let found_lookups = r"
+for k in list(container):
+    assert k in container
+";
+    // 400 misses, each comparing all 800 candidates and then entering the
+    // continuation — in total the same number of comparisons as the finds.
+    let missing_lookups = r"
+probe = H()
+for _ in range(400):
+    assert probe not in container
+";
+    for (label, make_container, add_entry) in [
+        ("dict", "{}", "container[H()] = 0"),
+        ("set", "set()", "container.add(H())"),
+    ] {
+        let build = build_template
+            .replace("MAKE_CONTAINER", make_container)
+            .replace("ADD_ENTRY", add_entry);
+        let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run(&build, vec![], PrintWriter::Stdout)
+            .unwrap_or_else(|e| panic!("{label}: build failed: {e}"));
+
+        let start = Instant::now();
+        repl.feed_run(found_lookups, vec![], PrintWriter::Stdout)
+            .unwrap_or_else(|e| panic!("{label}: found lookups failed: {e}"));
+        let found_elapsed = start.elapsed();
+
+        let start = Instant::now();
+        repl.feed_run(missing_lookups, vec![], PrintWriter::Stdout)
+            .unwrap_or_else(|e| panic!("{label}: missing lookups failed: {e}"));
+        let missing_elapsed = start.elapsed();
+
+        assert!(
+            missing_elapsed < found_elapsed * 3,
+            "{label}: misses took {missing_elapsed:?} vs finds {found_elapsed:?}, expected linear seen-checks"
+        );
+    }
+}
+
 /// Test that `str.splitlines()` on a large string respects the time limit.
 ///
 /// `str_splitlines()` scans the entire string for line endings in a while loop
-/// that now calls `heap.check_time()` on each iteration.
+/// that polls the limits every 64th line.
 #[test]
 fn timeout_in_str_splitlines() {
     let code = r"
@@ -668,8 +879,8 @@ s.splitlines()
 // === Timeout truncation in repr ===
 // These tests verify that `repr()` on large containers respects the time limit
 // and terminates promptly instead of hanging indefinitely. The repr methods
-// (`repr_sequence_fmt`, `Dict::py_repr_fmt`, `SetInner::repr_fmt`) call
-// `heap.check_time()` on each iteration and write `...[timeout]` when the
+// (`repr_sequence_fmt`, `Dict::py_repr_fmt`, `SetInner::repr_fmt`) poll the
+// limits every 64th item via `repr_check_time` and write `...[timeout]` when the
 // time limit is exceeded, returning normally instead of propagating an error.
 //
 // Each test uses the external function "interrupt" pattern: the large object is
@@ -720,6 +931,100 @@ fn call_function_enforces_max_duration() {
     let exc = repl
         .call_function("spin", vec![], PrintWriter::Stdout)
         .expect_err("infinite loop must hit the time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+/// The key pass computes every key before the first comparison, and a key
+/// shorter than the dispatch interval reaches no checkpoint — so the key
+/// loop's own poll is all that bounds it. `sort`, not `sorted`, so no
+/// collection phase polls first.
+#[test]
+fn timeout_in_sort_key_loop() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "x = [0] * 4_000_000\ndef f(v):\n    return v",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    repl.tracker_mut().set_max_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("x.sort(key=f)", vec![], PrintWriter::Stdout)
+        .expect_err("the key loop must hit the time limit");
+    let elapsed = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    // Polled, this stops one budget in at any machine speed; unpolled it runs
+    // all 4M key calls before anything re-checks, which takes seconds.
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "should stop promptly, took {elapsed:?}"
+    );
+}
+
+/// Feeds shorter than the dispatch-checkpoint interval never probe GC inside
+/// the run loop, so only the host-boundary probe in `finish_host_turn` keeps
+/// a stream of tiny cycle-making snippets from accumulating garbage (and from
+/// tripping the boundary memory check on memory a collection would reclaim).
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn short_repl_feeds_still_collect_cycles() {
+    let limits = ResourceLimits::default().gc_interval(1);
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
+    for _ in 0..20 {
+        // Rebinding `c` orphans the previous iteration's cycle; each feed is
+        // fewer instructions than the dispatch checkpoint interval.
+        repl.feed_run("c = []", vec![], PrintWriter::Stdout).unwrap();
+        repl.feed_run("c.append(c)", vec![], PrintWriter::Stdout).unwrap();
+    }
+    assert!(
+        repl.heap_entry_count() <= 3,
+        "boundary GC probe should collect orphaned cycles: {} live heap entries",
+        repl.heap_entry_count()
+    );
+}
+
+/// `call_function` applies the same host-boundary epilogue as `feed_run`: a
+/// call whose over-budget repr truncates (swallowing the timeout) must still
+/// fail rather than return the truncated value, and the discarded result's
+/// refcounts are released (verified under `memory-model-checks`).
+#[test]
+fn call_function_rechecks_limits_at_exit() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "x = ['abcdefghij'] * 100_000\ndef f():\n    return repr(x)",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    // Arm a budget only for the call: repr of 100K strings blows it mid-format
+    // and truncates, so only the exit re-check can surface the timeout.
+    repl.tracker_mut().set_max_duration(Duration::from_millis(10));
+    let exc = repl
+        .call_function("f", vec![], PrintWriter::Stdout)
+        .expect_err("over-budget repr must fail the call even though it truncates");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+/// The boundary limit check also covers turns ending in a Python exception:
+/// session state survives exceptions, so an allocate-then-raise turn must
+/// surface the uncatchable resource error, not its own exception, or repeated
+/// short erroring feeds could evade the limits entirely.
+#[test]
+fn erroring_turns_still_hit_limits_at_exit() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "x = ['abcdefghij'] * 100_000\ndef f():\n    s = repr(x)\n    raise ValueError(s[:3])",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    // The over-budget repr truncates (swallowing the timeout), then the raise
+    // ends the turn before any dispatch checkpoint can fire.
+    repl.tracker_mut().set_max_duration(Duration::from_millis(10));
+    let exc = repl
+        .call_function("f", vec![], PrintWriter::Stdout)
+        .expect_err("the call must fail");
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
 
@@ -791,14 +1096,36 @@ repr(x)
     assert_repr_timeout(code, "dict repr");
 }
 
+/// Test that `repr()` of a widely bound `functools.partial` respects the time
+/// limit.
+///
+/// The bound arguments and keywords are formatted in one native loop, so
+/// without the shared `repr_check_time` counter the repr runs to completion
+/// before any checkpoint — 500k arguments overshoot the deadline by more than
+/// an order of magnitude over the bound asserted here.
+#[test]
+fn timeout_truncation_in_partial_repr() {
+    let code = r"
+import functools
+def target(*args, **kwargs):
+    return 0
+p = functools.partial(target, *(['abcdefghij'] * 500_000))
+interrupt()
+repr(p)
+";
+    assert_repr_timeout(code, "partial repr");
+}
+
 /// Test that `repr(large_set)` respects the time limit.
 ///
-/// Uses a set of 100K unique strings so that repr formatting is slow enough
-/// to trigger the timeout.
+/// The elements are ints rather than strings so that the promptness bound
+/// measures the timeout and not the teardown: freeing 300K distinct heap
+/// strings after the truncated repr costs more than the whole time budget on
+/// a loaded CI machine.
 #[test]
 fn timeout_truncation_in_set_repr() {
     let code = r"
-x = {str(i) for i in range(100_000)}
+x = {i for i in range(300_000)}
 interrupt()
 repr(x)
 ";
@@ -911,5 +1238,33 @@ a < b
 
         let exc = result.expect_err("nested namedtuple ordering should exceed the recursion limit");
         assert_eq!(exc.exc_type(), ExcType::RecursionError, "build: {build}");
+    }
+}
+
+/// Every `itertools` adaptor whose `next` can loop natively without yielding.
+///
+/// Each pairs a discarding or draining adaptor with an infinite source, so the
+/// loop never returns to the VM. `dropwhile` appears twice because a builtin
+/// predicate and a short user-defined one fail the same way: the dispatch
+/// checkpoint is per-`run()`, so a callback under `CHECK_INTERVAL`
+/// instructions restarts the countdown instead of reaching it.
+const ITERTOOLS_INFINITE_LOOPS: &[&str] = &[
+    "next(itertools.dropwhile(bool, itertools.count(1)))",
+    "def always(x):\n    return True\nnext(itertools.dropwhile(always, itertools.count(1)))",
+    "next(itertools.filterfalse(bool, itertools.count(1)))",
+    "next(itertools.compress(itertools.count(1), itertools.repeat(0)))",
+    "next(itertools.islice(itertools.count(1), 10**18, None))",
+    "next(itertools.starmap(max, itertools.repeat(itertools.count(1))))",
+];
+
+/// Test that adaptors discarding items from an infinite source still time out.
+///
+/// These loops sit inside one bytecode instruction and drive native sources, so
+/// nothing returns to the dispatch checkpoint; each must poll the tracker
+/// itself or `max_duration` is unenforceable.
+#[test]
+fn timeout_in_itertools_adaptor_loops() {
+    for expr in ITERTOOLS_INFINITE_LOOPS {
+        assert_timeout_in_builtin(&format!("import itertools\n{expr}"), expr);
     }
 }

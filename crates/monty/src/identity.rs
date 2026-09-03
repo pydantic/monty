@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use crate::{
     builtins::Builtins,
-    heap::Heap,
+    heap::{Heap, HeapId},
     modules::ModuleFunctions,
     types::{LongInt, Property},
     value::{Marker, Value},
@@ -22,8 +22,9 @@ const MAX_FIXED_BYTES: usize = 14;
 /// Complete identity key for a runtime value.
 ///
 /// Equality is the implementation of Python's `is`; the integer encoding is
-/// injective and used to expose the same key through `id()`.
-#[derive(PartialEq, Eq)]
+/// injective and used to expose the same key through `id()`. `Hash` lets
+/// identity sets answer "seen this object?" in O(1) (see the dict/set probes).
+#[derive(PartialEq, Eq, Hash)]
 pub(crate) enum Identity {
     /// Internal uninitialized-value sentinel.
     Undefined,
@@ -84,11 +85,14 @@ impl Identity {
         }
     }
 
-    /// Encodes this key as a nonnegative Python integer.
-    ///
-    /// Returns an immediate integer when possible, otherwise allocating a `LongInt`.
-    pub(crate) fn into_value(self, heap: &Heap) -> Value {
-        let payload = match &self {
+    /// Builds the identity of an arena-allocated object.
+    pub(crate) fn from_heap_id(id: HeapId) -> Self {
+        Self::Heap(id.index())
+    }
+
+    /// Encodes this key as the nonnegative integer exposed by Python's `id()`.
+    pub(crate) fn encoded(&self) -> u128 {
+        let payload = match self {
             Self::Undefined | Self::Ellipsis | Self::NotImplemented | Self::None => 0,
             Self::Bool(value) => u128::from(*value),
             Self::Int(value) => u128::from(zigzag_i64(*value)),
@@ -103,8 +107,14 @@ impl Identity {
             Self::Marker(value) => fixed_serde_payload(value),
             Self::Property(value) => fixed_serde_payload(value),
         };
-        let encoded = (payload << TAG_BITS) | u128::from(self.tag());
-        LongInt::value_from_u128(encoded, heap)
+        (payload << TAG_BITS) | u128::from(self.tag())
+    }
+
+    /// Encodes this key as a Python integer.
+    ///
+    /// Returns an immediate integer when possible, otherwise allocating a `LongInt`.
+    pub(crate) fn into_value(self, heap: &Heap) -> Value {
+        LongInt::value_from_u128(self.encoded(), heap)
     }
 
     /// Returns the stable low-bit category tag for this identity variant.

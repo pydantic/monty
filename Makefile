@@ -43,7 +43,7 @@ build-js: install-js ## Build the JS package (napi debug build + TypeScript)
 	cd crates/monty-js && npm run build:debug
 
 .PHONY: lint-js
-lint-js: install-js ## Lint JS code with oxlint
+lint-js: install-js ## Lint JS code with oxlint and type-check the tests
 	cd crates/monty-js && npm run lint
 
 .PHONY: test-js
@@ -52,11 +52,17 @@ test-js: build-js ## Test the JS package (builds the monty binary the workers ru
 	cd crates/monty-js && MONTY_BIN="$${CARGO_TARGET_DIR:-../../target}/debug/monty$(EXE_EXT)" npm test
 
 .PHONY: build-wasm
-build-wasm: install-js ## Build the lean wasm worker module (requires the wasm32-wasip1 target)
+build-wasm: install-js ## Build the WASI 0.2 worker component (requires the wasm32-wasip1 target)
 	cd crates/monty-js && npm run build:wasm && npm run build:ts
 
+.PHONY: check-wasm-types
+check-wasm-types: build-wasm ## Verify checked-in component declarations match the WIT interface
+	git diff --exit-code -- crates/monty-js/ts/worker/component
+	@untracked=$$(git ls-files --others --exclude-standard -- crates/monty-js/ts/worker/component); \
+		test -z "$$untracked" || { echo "Untracked generated component declarations:"; echo "$$untracked"; exit 1; }
+
 .PHONY: test-wasm
-test-wasm: install-js ## Test the wasm worker module from node, with no browser
+test-wasm: install-js ## Test the wasm worker component from node, with no browser
 	cd crates/monty-js && npm run build:wasm && npm run build:ts && npm run test:wasm
 
 .PHONY: test-browser
@@ -64,17 +70,11 @@ test-browser: install-js ## Browser (Vitest) test of the wasm path in a real hea
 	cd crates/monty-js && npm run build:wasm && npm run build:ts && npx playwright install chromium && npm run test:browser
 
 .PHONY: dev-py-pgo
-dev-py-pgo: install-py ## Install the python package for development with profile-guided optimization
-	$(eval PROFDATA := $(shell mktemp -d))
-	# the profiling run below spawns `monty` workers; build the runtime outside
-	# the instrumented build so only the client extension is profiled
-	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml --release
-	RUSTFLAGS='-Cprofile-generate=$(PROFDATA)' uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
-	uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
-	$(eval LLVM_PROFDATA := $(shell rustup run stable bash -c 'echo $$RUSTUP_HOME/toolchains/$$RUSTUP_TOOLCHAIN/lib/rustlib/$$(rustc -Vv | grep host | cut -d " " -f 2)/bin/llvm-profdata'))
-	$(LLVM_PROFDATA) merge -o $(PROFDATA)/merged.profdata $(PROFDATA)
-	RUSTFLAGS='-Cprofile-use=$(PROFDATA)/merged.profdata' $(uv-run-no-sync) maturin develop --uv -m crates/monty-python/Cargo.toml --release
-	@rm -rf $(PROFDATA)
+dev-py-pgo: install-py ## Install the Python package with a PGO-optimized Monty interpreter
+	rustup component add llvm-tools --toolchain stable
+	rm -rf target/pgo-wheels
+	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml --pgo
+	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
 .PHONY: format-rs
 format-rs:  ## Format Rust code with fmt
@@ -124,12 +124,6 @@ lint-py: dev-py ## Lint Python code with ruff
 .PHONY: lint
 lint: lint-rs lint-py ## Lint the code with ruff and clippy
 
-.PHONY: format-lint-rs
-format-lint-rs: format-rs lint-rs ## Format and lint Rust code with fmt and clippy
-
-.PHONY: format-lint-py
-format-lint-py: format-py lint-py ## Format and lint Python code with ruff
-
 .PHONY: test-no-features
 test-no-features: ## Run rust tests without any features enabled
 	cargo test -p monty -p monty-fs
@@ -174,9 +168,17 @@ pytest: ## Run Python tests with pytest
 test-py: dev-py pytest ## Build the python package (debug profile) and run tests
 
 .PHONY: test-docs
-test-docs: dev-py ## Test docs examples only
+test-docs: dev-py ## Test docs examples only (docs/, README.md, crates/monty-python/README.md)
 	uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests/test_readme_examples.py
-	cargo test --doc -p monty
+	cargo test --doc --workspace
+
+.PHONY: docs
+docs: ## Build the docs site from docs/ and mkdocs.yml
+	uv run --group docs mkdocs build --strict
+
+.PHONY: docs-serve
+docs-serve: ## Serve the docs site locally with live reload
+	uv run --group docs mkdocs serve
 
 .PHONY: test
 test: test-memory-model-checks test-ref-count-return test-no-features test-type-checking test-subprocess test-py miri ## Run rust tests

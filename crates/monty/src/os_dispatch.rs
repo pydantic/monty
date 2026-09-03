@@ -46,11 +46,11 @@ impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
 /// Work the VM must perform on the result of a paused OS call when it
 /// resumes, instead of pushing the raw host value onto the operand stack.
 ///
-/// Travels in [`CallResult::OsCallWithEffect`](crate::bytecode::CallResult)
-/// (which owns the arming/cleanup contract) and is held in the VM's single
-/// `pending_os_effect` slot while the call is in flight — at most one OS call
-/// is in flight per task. `resume_with_exception` clears/rolls back the
-/// pending state so user code that catches the host exception can retry.
+/// Rides inside the suspension value — [`CallResult::OsCallWithEffect`],
+/// then [`FrameExit::OsCall`](crate::bytecode::FrameExit) — and is armed on
+/// the VM's single slot (one call in flight per task) only once the call
+/// reaches the host, where a `resume` becomes guaranteed; anything discarding
+/// the suspension calls [`release_pending_effect`] instead.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PendingOsEffect {
     /// Store a full-file read result into the file buffer, then compute the
@@ -81,6 +81,17 @@ impl PendingOsEffect {
             Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => Some(file_id),
             Self::ListdirNames => None,
         }
+    }
+}
+
+/// Releases an effect that will never be resumed, dropping the file pin it
+/// carried (see `inc_ref_for_pending_oscall`).
+///
+/// Reached via the owner's `drop_with`, or `Drop for VM` once the effect is
+/// armed and no owning value remains.
+pub(crate) fn release_pending_effect(effect: Option<PendingOsEffect>, heap: &mut impl ContainsHeap) {
+    if let Some(file_id) = effect.and_then(PendingOsEffect::pinned_file) {
+        heap.heap_mut().dec_ref(file_id);
     }
 }
 

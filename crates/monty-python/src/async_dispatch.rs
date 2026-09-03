@@ -5,37 +5,35 @@
 //! (`ResolveFutures`), the completed task results are batched back to the
 //! worker.
 
-use monty_proto::python::DcRegistry;
-use monty_types::{ExtFunctionResult, MontyObject};
+use monty_proto::python::InstanceStore;
+use monty_types::{ExtFunctionResult, MontyObject, MontyUuid};
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use pyo3_async_runtimes::tokio::into_future;
 use tokio::task::{JoinError, JoinSet};
 
 use crate::external::{
-    CallResult, ExternalLookup, dispatch_method_call_or_coroutine, py_err_to_ext_result, py_obj_to_ext_result,
+    CallResult, ExternalLookup, dispatch_object_call_or_coroutine, py_err_to_ext_result, py_obj_to_ext_result,
 };
 
-/// Dispatches a function call to a dataclass method or external function,
-/// returning `CallResult::Coroutine` (for the caller to spawn) when the Python
-/// result is a coroutine.
+/// Dispatches a function call to a host-routed method (when `object_id` is
+/// set — an instance method, a classmethod, or `__call__` construction) or an
+/// external function, returning `CallResult::Coroutine` (for the caller to
+/// spawn) when the Python result is a coroutine.
 pub(crate) fn dispatch_function_call(
     function_name: &str,
-    method_call: bool,
+    object_id: Option<MontyUuid>,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
     external_lookup: Option<&Py<PyDict>>,
-    dc_registry: &DcRegistry,
+    instances: &InstanceStore,
 ) -> CallResult {
-    Python::attach(|py| {
-        if method_call {
-            dispatch_method_call_or_coroutine(py, function_name, args, kwargs, dc_registry)
-        } else {
-            ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), dc_registry).call_or_coroutine(
-                function_name,
-                args,
-                kwargs,
-            )
-        }
+    Python::attach(|py| match object_id {
+        Some(object_id) => dispatch_object_call_or_coroutine(py, function_name, &object_id, args, kwargs, instances),
+        None => ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), instances).call_or_coroutine(
+            function_name,
+            args,
+            kwargs,
+        ),
     })
 }
 
@@ -45,16 +43,16 @@ pub(crate) fn spawn_coroutine_task(
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
     call_id: u32,
     coro: Py<PyAny>,
-    dc_registry: &DcRegistry,
+    instances: &InstanceStore,
 ) -> PyResult<()> {
-    let dc_registry = Python::attach(|py| dc_registry.clone_ref(py));
+    let instances = Python::attach(|py| instances.clone_ref(py));
     let future = Python::attach(|py| into_future(coro.into_bound(py)))?;
 
     join_set.spawn(async move {
         match future.await {
             Ok(py_result) => Python::attach(|py| {
                 let bound = py_result.bind(py);
-                (call_id, py_obj_to_ext_result(bound, &dc_registry))
+                (call_id, py_obj_to_ext_result(bound, &instances))
             }),
             Err(err) => Python::attach(|py| (call_id, py_err_to_ext_result(py, &err))),
         }

@@ -32,7 +32,8 @@
 use std::{cell::Cell, fmt::Display, ops::RangeInclusive};
 
 use monty_types::{
-    DictPairs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone, MontyType,
+    DictPairs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyClassInstance, MontyClassType, MontyDate,
+    MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -119,8 +120,10 @@ pub struct WireFunctionCall {
     pub kwargs: Vec<(MontyObject, MontyObject)>,
     /// Child-assigned call id used by the matching resume request.
     pub call_id: u32,
-    /// Whether the first argument is the method receiver.
-    pub method_call: bool,
+    /// Uuid of the routed receiver (a host-backed instance, or a class type
+    /// for `__call__`/classmethod calls); `None` for plain external function
+    /// calls. The receiver is never included in `args`.
+    pub object_id: Option<MontyUuid>,
 }
 
 impl Message for WireFunctionCall {
@@ -129,8 +132,8 @@ impl Message for WireFunctionCall {
         encode_repeated_object(2, &self.args, buf);
         encode_repeated_pair(3, &self.kwargs, buf);
         encode_uint32(4, self.call_id, buf);
-        if self.method_call {
-            encoding::bool::encode(5, &self.method_call, buf);
+        if let Some(id) = &self.object_id {
+            encoding::message::encode(5, &uuid_to_pb(id), buf);
         }
     }
 
@@ -139,11 +142,10 @@ impl Message for WireFunctionCall {
             + repeated_object_len(2, &self.args)
             + repeated_pair_len(3, &self.kwargs)
             + uint32_len(4, self.call_id)
-            + if self.method_call {
-                encoding::bool::encoded_len(5, &self.method_call)
-            } else {
-                0
-            }
+            + self
+                .object_id
+                .as_ref()
+                .map_or(0, |id| encoding::message::encoded_len(5, &uuid_to_pb(id)))
     }
 
     fn merge_field(
@@ -158,7 +160,12 @@ impl Message for WireFunctionCall {
             2 => merge_object_item(wire_type, buf, ctx, &mut self.args),
             3 => merge_pair_item(wire_type, buf, ctx, &mut self.kwargs),
             4 => encoding::uint32::merge(wire_type, &mut self.call_id, buf, ctx),
-            5 => encoding::bool::merge(wire_type, &mut self.method_call, buf, ctx),
+            5 => {
+                let mut uuid = pb::Uuid::default();
+                encoding::message::merge(wire_type, &mut uuid, buf, ctx)?;
+                self.object_id = Some(pb_uuid_to_monty(&uuid, "FunctionCall.object_id")?);
+                Ok(())
+            }
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
@@ -168,7 +175,7 @@ impl Message for WireFunctionCall {
         self.args.clear();
         self.kwargs.clear();
         self.call_id = 0;
-        self.method_call = false;
+        self.object_id = None;
     }
 }
 
@@ -177,33 +184,35 @@ impl Message for WireFunctionCall {
 mod tag {
     pub const ELLIPSIS: u32 = 1;
     pub const NONE: u32 = 2;
-    pub const BOOLEAN: u32 = 3;
-    pub const INT: u32 = 4;
-    pub const BIGINT: u32 = 5;
-    pub const FLOAT: u32 = 6;
-    pub const STR: u32 = 7;
-    pub const BYTES: u32 = 8;
-    pub const LIST: u32 = 9;
-    pub const TUPLE: u32 = 10;
-    pub const NAMED_TUPLE: u32 = 11;
-    pub const DICT: u32 = 12;
-    pub const SET: u32 = 13;
-    pub const FROZEN_SET: u32 = 14;
-    pub const DATE: u32 = 15;
-    pub const DATETIME: u32 = 16;
-    pub const TIMEDELTA: u32 = 17;
-    pub const TIMEZONE: u32 = 18;
-    pub const EXCEPTION: u32 = 19;
-    pub const TYPE: u32 = 20;
-    pub const BUILTIN_FUNCTION: u32 = 21;
-    pub const PATH: u32 = 22;
-    pub const FILE_HANDLE: u32 = 23;
-    pub const DATACLASS: u32 = 24;
+    pub const NOT_IMPLEMENTED: u32 = 3;
+    pub const BOOLEAN: u32 = 4;
+    pub const INT: u32 = 5;
+    pub const BIGINT: u32 = 6;
+    pub const FLOAT: u32 = 7;
+    pub const STR: u32 = 8;
+    pub const BYTES: u32 = 9;
+    // 10 is `Uuid uuid`, declared in the schema but not yet implemented
+    // (monty has no uuid module) — it decodes like any unknown kind.
+    pub const LIST: u32 = 11;
+    pub const TUPLE: u32 = 12;
+    pub const NAMED_TUPLE: u32 = 13;
+    pub const DICT: u32 = 14;
+    pub const SET: u32 = 15;
+    pub const FROZEN_SET: u32 = 16;
+    pub const DATE: u32 = 17;
+    pub const TIME: u32 = 18;
+    pub const DATETIME: u32 = 19;
+    pub const TIMEDELTA: u32 = 20;
+    pub const TIMEZONE: u32 = 21;
+    pub const EXCEPTION: u32 = 22;
+    pub const TYPE: u32 = 23;
+    pub const CLASS_INSTANCE: u32 = 24;
     pub const FUNCTION: u32 = 25;
-    pub const REPR: u32 = 26;
-    pub const CYCLE: u32 = 27;
-    pub const INSTANCE_TYPE: u32 = 28;
-    pub const NOT_IMPLEMENTED: u32 = 29;
+    pub const BUILTIN_FUNCTION: u32 = 26;
+    pub const PATH: u32 = 27;
+    pub const FILE_HANDLE: u32 = 28;
+    pub const REPR: u32 = 29;
+    pub const CYCLE: u32 = 30;
 }
 
 // ============================================================================
@@ -262,6 +271,10 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
             encode_message_key(tag::DATETIME, datetime_len(dt), buf);
             encode_datetime(dt, buf);
         }
+        MontyObject::Time(t) => {
+            encode_message_key(tag::TIME, time_len(t), buf);
+            encode_time(t, buf);
+        }
         MontyObject::TimeDelta(td) => encoding::message::encode(tag::TIMEDELTA, &timedelta_to_proto(td), buf),
         MontyObject::TimeZone(tz) => {
             encode_message_key(tag::TIMEZONE, timezone_len(tz), buf);
@@ -274,12 +287,7 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
             encode_str(1, &name, buf);
             encode_opt_str(2, arg.as_deref(), buf);
         }
-        MontyObject::Type(t) => match t {
-            // Sandbox-class type objects carry the class name in a dedicated
-            // field so a class named e.g. "int" cannot decode as the builtin.
-            MontyType::Instance(name) => encoding::string::encode(tag::INSTANCE_TYPE, name, buf),
-            other => encoding::string::encode(tag::TYPE, &other.to_string(), buf),
-        },
+        MontyObject::Type(t) => encoding::message::encode(tag::TYPE, &monty_type_to_pb(t), buf),
         MontyObject::BuiltinFunction(bf) => encoding::string::encode(tag::BUILTIN_FUNCTION, &bf.to_string(), buf),
         MontyObject::Path(p) => encoding::string::encode(tag::PATH, p, buf),
         MontyObject::FileHandle(fh) => {
@@ -288,28 +296,22 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
             encode_str(2, fh.mode.as_str(), buf);
             encode_uint64(3, fh.position, buf);
         }
-        MontyObject::Dataclass {
-            name,
-            type_id,
-            field_names,
-            attrs,
-            frozen,
-        } => {
-            encode_message_key(
-                tag::DATACLASS,
-                dataclass_len(name, *type_id, field_names, attrs, *frozen),
-                buf,
-            );
-            encode_str(1, name, buf);
-            encode_uint64(2, *type_id, buf);
-            encode_repeated_str(3, field_names, buf);
-            // attrs is a non-optional message field that senders always
-            // populate, so it encodes even when empty (message presence)
-            encode_message_key(4, dict_len(attrs), buf);
+        MontyObject::ClassInstance(instance) => {
+            let MontyClassInstance {
+                class_type,
+                instance_id,
+                attrs,
+            } = instance.as_ref();
+            let ty = class_type_to_pb(class_type);
+            let id = uuid_to_pb(instance_id);
+            encode_message_key(tag::CLASS_INSTANCE, class_instance_len(&ty, &id, attrs), buf);
+            // type and instance_id are non-optional message fields that
+            // senders always populate, so they encode even when default
+            // (message presence); likewise attrs when empty.
+            encoding::message::encode(1, &ty, buf);
+            encoding::message::encode(2, &id, buf);
+            encode_message_key(3, dict_len(attrs), buf);
             encode_dict(attrs, buf);
-            if *frozen {
-                encoding::bool::encode(5, frozen, buf);
-            }
         }
         MontyObject::Function { name, docstring } => {
             encode_message_key(
@@ -355,28 +357,24 @@ fn object_len(obj: &MontyObject) -> usize {
         MontyObject::FrozenSet(items) => submessage_len(tag::FROZEN_SET, value_list_len(items)),
         MontyObject::Date(d) => encoding::message::encoded_len(tag::DATE, &date_to_proto(d)),
         MontyObject::DateTime(dt) => submessage_len(tag::DATETIME, datetime_len(dt)),
+        MontyObject::Time(t) => submessage_len(tag::TIME, time_len(t)),
         MontyObject::TimeDelta(td) => encoding::message::encoded_len(tag::TIMEDELTA, &timedelta_to_proto(td)),
         MontyObject::TimeZone(tz) => submessage_len(tag::TIMEZONE, timezone_len(tz)),
         MontyObject::Exception { exc_type, arg } => {
             let name = exc_type.to_string();
             submessage_len(tag::EXCEPTION, str_len(1, &name) + opt_str_len(2, arg.as_deref()))
         }
-        MontyObject::Type(t) => match t {
-            MontyType::Instance(name) => encoding::string::encoded_len(tag::INSTANCE_TYPE, name),
-            other => encoding::string::encoded_len(tag::TYPE, &other.to_string()),
-        },
+        MontyObject::Type(t) => encoding::message::encoded_len(tag::TYPE, &monty_type_to_pb(t)),
         MontyObject::BuiltinFunction(bf) => encoding::string::encoded_len(tag::BUILTIN_FUNCTION, &bf.to_string()),
         MontyObject::Path(p) => encoding::string::encoded_len(tag::PATH, p),
         MontyObject::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
-        MontyObject::Dataclass {
-            name,
-            type_id,
-            field_names,
-            attrs,
-            frozen,
-        } => submessage_len(
-            tag::DATACLASS,
-            dataclass_len(name, *type_id, field_names, attrs, *frozen),
+        MontyObject::ClassInstance(instance) => submessage_len(
+            tag::CLASS_INSTANCE,
+            class_instance_len(
+                &class_type_to_pb(&instance.class_type),
+                &uuid_to_pb(&instance.instance_id),
+                &instance.attrs,
+            ),
         ),
         MontyObject::Function { name, docstring } => {
             submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
@@ -489,6 +487,30 @@ fn encode_datetime(dt: &MontyDateTime, buf: &mut impl BufMut) {
     encode_opt_str(9, dt.timezone_name.as_deref(), buf);
 }
 
+/// `Time` body: scalar fields 1–4 and `fold = 7` (implicit presence, skipped
+/// at zero) plus explicit-presence `offset_seconds = 5` / `timezone_name = 6`.
+fn time_len(t: &MontyTime) -> usize {
+    uint32_len(1, u32::from(t.hour))
+        + uint32_len(2, u32::from(t.minute))
+        + uint32_len(3, u32::from(t.second))
+        + uint32_len(4, t.microsecond)
+        + t.offset_seconds.map_or(0, |off| encoding::int32::encoded_len(5, &off))
+        + opt_str_len(6, t.timezone_name.as_deref())
+        + uint32_len(7, u32::from(t.fold))
+}
+
+fn encode_time(t: &MontyTime, buf: &mut impl BufMut) {
+    encode_uint32(1, u32::from(t.hour), buf);
+    encode_uint32(2, u32::from(t.minute), buf);
+    encode_uint32(3, u32::from(t.second), buf);
+    encode_uint32(4, t.microsecond, buf);
+    if let Some(off) = t.offset_seconds {
+        encoding::int32::encode(5, &off, buf);
+    }
+    encode_opt_str(6, t.timezone_name.as_deref(), buf);
+    encode_uint32(7, u32::from(t.fold), buf);
+}
+
 /// `TimeZone` body: `int32 offset_seconds = 1; optional string name = 2`.
 fn timezone_len(tz: &MontyTimeZone) -> usize {
     int32_len(1, tz.offset_seconds) + opt_str_len(2, tz.name.as_deref())
@@ -500,18 +522,9 @@ fn file_handle_len(fh: &MontyFileHandle) -> usize {
     str_len(1, &fh.path) + str_len(2, fh.mode.as_str()) + uint64_len(3, fh.position)
 }
 
-/// `Dataclass` body: `string name = 1; uint64 type_id = 2; repeated
-/// string field_names = 3; Dict attrs = 4; bool frozen = 5`.
-fn dataclass_len(name: &str, type_id: u64, field_names: &[String], attrs: &DictPairs, frozen: bool) -> usize {
-    str_len(1, name)
-        + uint64_len(2, type_id)
-        + repeated_str_len(3, field_names)
-        + submessage_len(4, dict_len(attrs))
-        + if frozen {
-            encoding::bool::encoded_len(5, &frozen)
-        } else {
-            0
-        }
+/// `ClassInstance` body: `Type type = 1; Uuid instance_id = 2; Dict attrs = 3`.
+fn class_instance_len(ty: &pb::Type, id: &pb::Uuid, attrs: &DictPairs) -> usize {
+    encoding::message::encoded_len(1, ty) + encoding::message::encoded_len(2, id) + submessage_len(3, dict_len(attrs))
 }
 
 // --- proto3 field helpers, mirroring prost's generated default-skipping ---
@@ -667,6 +680,10 @@ fn decode_field(
             let dt: pb::DateTime = merge_message(wire_type, buf, ctx)?;
             MontyObject::DateTime(datetime_from_proto(dt).map_err(to_decode_err)?)
         }
+        tag::TIME => {
+            let t: pb::Time = merge_message(wire_type, buf, ctx)?;
+            MontyObject::Time(time_from_proto(t).map_err(to_decode_err)?)
+        }
         tag::TIMEDELTA => {
             let td: pb::TimeDelta = merge_message(wire_type, buf, ctx)?;
             MontyObject::TimeDelta(timedelta_from_proto(&td).map_err(to_decode_err)?)
@@ -674,7 +691,7 @@ fn decode_field(
         tag::TIMEZONE => {
             let tz: pb::TimeZone = merge_message(wire_type, buf, ctx)?;
             MontyObject::TimeZone(MontyTimeZone {
-                offset_seconds: tz.offset_seconds,
+                offset_seconds: timezone_offset(tz.offset_seconds, "TimeZone.offset_seconds").map_err(to_decode_err)?,
                 name: tz.name,
             })
         }
@@ -689,12 +706,9 @@ fn decode_field(
             }
         }
         tag::TYPE => {
-            let name = merge_string(wire_type, buf, ctx)?;
-            MontyType::from_type_name(&name)
-                .map(MontyObject::Type)
-                .ok_or_else(|| to_decode_err(ProtoConvertError::UnknownType(name)))?
+            let ty: TypeBody = merge_message(wire_type, buf, ctx)?;
+            MontyObject::Type(type_body_to_monty(ty)?)
         }
-        tag::INSTANCE_TYPE => MontyObject::Type(MontyType::Instance(merge_string(wire_type, buf, ctx)?)),
         tag::BUILTIN_FUNCTION => {
             let name = merge_string(wire_type, buf, ctx)?;
             MontyObject::builtin_function_from_name(&name)
@@ -712,18 +726,30 @@ fn decode_field(
                 position: fh.position,
             })
         }
-        tag::DATACLASS => {
-            let dc: DataclassBody = merge_message(wire_type, buf, ctx)?;
-            let attrs = dc
+        tag::CLASS_INSTANCE => {
+            let ci: ClassInstanceBody = merge_message(wire_type, buf, ctx)?;
+            let ty = ci
+                .class_type
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.type")))?;
+            // An instance's class is never a builtin, so its Type must decode
+            // to a class type (origin SANDBOX or HOST).
+            let MontyType::Instance(class_type) = type_body_to_monty(ty)? else {
+                return Err(to_decode_err(ProtoConvertError::InvalidValue {
+                    field: "ClassInstance.type",
+                    reason: "must be a class type, not a builtin".to_owned(),
+                }));
+            };
+            let instance_id = ci
+                .instance_id
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.instance_id")))?;
+            let attrs = ci
                 .attrs
-                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("Dataclass.attrs")))?;
-            MontyObject::Dataclass {
-                name: dc.name,
-                type_id: dc.type_id,
-                field_names: dc.field_names,
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.attrs")))?;
+            MontyObject::ClassInstance(Box::new(MontyClassInstance {
+                class_type: *class_type,
+                instance_id: pb_uuid_to_monty(&instance_id, "ClassInstance.instance_id")?,
                 attrs: DictPairs::from(attrs.0),
-                frozen: dc.frozen,
-            }
+            }))
         }
         tag::FUNCTION => {
             let func: pb::Function = merge_message(wire_type, buf, ctx)?;
@@ -902,6 +928,55 @@ impl Message for PairList {
     }
 }
 
+/// Decode-only `prost::Message` for a wire `Type`, materializing `attrs`
+/// straight into a [`PairList`] (each value charged as it decodes) instead of
+/// the `Vec<pb::Pair>` the generated `pb::Type` would force. Decode-only;
+/// types encode via [`monty_type_to_pb`].
+#[derive(Default)]
+struct TypeBody {
+    name: String,
+    id: Option<pb::Uuid>,
+    origin: i32,
+    is_dataclass: bool,
+    attrs: Option<PairList>,
+}
+
+impl Message for TypeBody {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        // Field numbers from `Type` in monty.proto; unknown → skip.
+        match tag {
+            1 => encoding::string::merge(wire_type, &mut self.name, buf, ctx),
+            2 => encoding::message::merge(wire_type, self.id.get_or_insert_with(pb::Uuid::default), buf, ctx),
+            3 => encoding::int32::merge(wire_type, &mut self.origin, buf, ctx),
+            4 => encoding::bool::merge(wire_type, &mut self.is_dataclass, buf, ctx),
+            5 => encoding::message::merge(wire_type, self.attrs.get_or_insert_with(PairList::default), buf, ctx),
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("TypeBody is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("TypeBody is decode-only")
+    }
+
+    fn clear(&mut self) {
+        self.name.clear();
+        self.id = None;
+        self.origin = 0;
+        self.is_dataclass = false;
+        self.attrs = None;
+    }
+}
+
 /// Decode-only `prost::Message` for `NamedTuple`, materializing the
 /// `repeated MontyObject values` field straight into `Vec<MontyObject>` (the
 /// [`ObjectList`] trick inlined alongside the other two fields) instead of the
@@ -946,21 +1021,19 @@ impl Message for NamedTupleBody {
     }
 }
 
-/// Decode-only `prost::Message` for `Dataclass`, decoding the `attrs`
+/// Decode-only `prost::Message` for `ClassInstance`, decoding the `attrs`
 /// field (a `Dict`) straight into [`DictPairs`] via [`PairList`] rather
-/// than the `Vec<pb::Pair>` wrapper the generated `pb::Dataclass` would
-/// build and then unwrap. `attrs` stays `Option` so an absent message field is
-/// rejected by [`decode_field`] (presence, not a default). Decode-only.
+/// than the `Vec<pb::Pair>` wrapper the generated `pb::ClassInstance` would
+/// build and then unwrap. The message fields stay `Option` so an absent one
+/// is rejected by the caller (presence, not a default). Decode-only.
 #[derive(Default)]
-struct DataclassBody {
-    name: String,
-    type_id: u64,
-    field_names: Vec<String>,
+struct ClassInstanceBody {
+    class_type: Option<TypeBody>,
+    instance_id: Option<pb::Uuid>,
     attrs: Option<PairList>,
-    frozen: bool,
 }
 
-impl Message for DataclassBody {
+impl Message for ClassInstanceBody {
     fn merge_field(
         &mut self,
         tag: u32,
@@ -968,33 +1041,39 @@ impl Message for DataclassBody {
         buf: &mut impl Buf,
         ctx: DecodeContext,
     ) -> Result<(), DecodeError> {
-        // Field numbers from `Dataclass` in monty.proto; unknown → skip.
+        // Field numbers from `ClassInstance` in monty.proto; unknown → skip.
+        // `get_or_insert_with` mirrors prost's message-field merge: repeated
+        // occurrences accumulate into the same message.
         match tag {
-            1 => encoding::string::merge(wire_type, &mut self.name, buf, ctx),
-            2 => encoding::uint64::merge(wire_type, &mut self.type_id, buf, ctx),
-            3 => encoding::string::merge_repeated(wire_type, &mut self.field_names, buf, ctx),
-            // `get_or_insert` mirrors prost's message-field merge: repeated
-            // occurrences accumulate `pairs` into the same `PairList`.
-            4 => encoding::message::merge(wire_type, self.attrs.get_or_insert_with(PairList::default), buf, ctx),
-            5 => encoding::bool::merge(wire_type, &mut self.frozen, buf, ctx),
+            1 => encoding::message::merge(
+                wire_type,
+                self.class_type.get_or_insert_with(TypeBody::default),
+                buf,
+                ctx,
+            ),
+            2 => encoding::message::merge(
+                wire_type,
+                self.instance_id.get_or_insert_with(pb::Uuid::default),
+                buf,
+                ctx,
+            ),
+            3 => encoding::message::merge(wire_type, self.attrs.get_or_insert_with(PairList::default), buf, ctx),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
 
     fn encode_raw(&self, _buf: &mut impl BufMut) {
-        unreachable!("DataclassBody is decode-only")
+        unreachable!("ClassInstanceBody is decode-only")
     }
 
     fn encoded_len(&self) -> usize {
-        unreachable!("DataclassBody is decode-only")
+        unreachable!("ClassInstanceBody is decode-only")
     }
 
     fn clear(&mut self) {
-        self.name.clear();
-        self.type_id = 0;
-        self.field_names.clear();
+        self.class_type = None;
+        self.instance_id = None;
         self.attrs = None;
-        self.frozen = false;
     }
 }
 
@@ -1012,6 +1091,114 @@ fn to_decode_err(err: impl Display) -> DecodeError {
 // ============================================================================
 // Leaf conversions and validation (the wire is untrusted)
 // ============================================================================
+
+/// Encodes a [`MontyUuid`] as the wire `Uuid` message (16 raw bytes).
+pub(crate) fn uuid_to_pb(uuid: &MontyUuid) -> pb::Uuid {
+    pb::Uuid {
+        data: uuid.as_bytes().to_vec(),
+    }
+}
+
+/// Validates a wire `Uuid`: exactly 16 bytes, anything else is rejected.
+fn pb_uuid_to_monty(uuid: &pb::Uuid, field: &'static str) -> Result<MontyUuid, DecodeError> {
+    MontyUuid::try_from_slice(&uuid.data).ok_or_else(|| {
+        to_decode_err(ProtoConvertError::InvalidValue {
+            field,
+            reason: format!("uuid must be 16 bytes, got {}", uuid.data.len()),
+        })
+    })
+}
+
+/// Encodes a [`MontyType`] as the wire `Type` message: builtins carry only
+/// their Display name (origin BUILTIN, no id), class types their full
+/// [`MontyClassType`].
+fn monty_type_to_pb(t: &MontyType) -> pb::Type {
+    match t {
+        MontyType::Instance(class_type) => class_type_to_pb(class_type),
+        other => pb::Type {
+            name: other.to_string(),
+            origin: pb::TypeOrigin::Builtin as i32,
+            ..pb::Type::default()
+        },
+    }
+}
+
+/// The class-type half of [`monty_type_to_pb`].
+fn class_type_to_pb(class_type: &MontyClassType) -> pb::Type {
+    let origin = if class_type.host_defined {
+        pb::TypeOrigin::Host
+    } else {
+        pb::TypeOrigin::Sandbox
+    };
+    // Eager class attrs clone into the generated message. Hosts may send them
+    // with every instance crossing (the sandbox's single type object refreshes
+    // from them); the worker sends them only when a class object crosses out.
+    let attrs = if class_type.attrs.is_empty() {
+        None
+    } else {
+        let pairs = class_type
+            .attrs
+            .iter()
+            .map(|(key, value)| pb::Pair {
+                key: Some(WireObject::new(key.clone())),
+                value: Some(WireObject::new(value.clone())),
+            })
+            .collect();
+        Some(pb::Dict { pairs })
+    };
+    pb::Type {
+        name: class_type.name.clone(),
+        id: Some(uuid_to_pb(&class_type.id)),
+        origin: origin as i32,
+        is_dataclass: class_type.is_dataclass,
+        attrs,
+    }
+}
+
+/// Validates a decoded wire `Type` and converts it to a [`MontyType`].
+///
+/// Enforces the id-presence invariants per origin (BUILTIN must not carry an
+/// id or attrs; SANDBOX/HOST must carry an id).
+fn type_body_to_monty(ty: TypeBody) -> Result<MontyType, DecodeError> {
+    let origin = pb::TypeOrigin::try_from(ty.origin).map_err(|_| {
+        to_decode_err(ProtoConvertError::InvalidValue {
+            field: "Type.origin",
+            reason: format!("unknown origin {}", ty.origin),
+        })
+    })?;
+    let invalid = |reason: &str| {
+        to_decode_err(ProtoConvertError::InvalidValue {
+            field: "Type",
+            reason: reason.to_owned(),
+        })
+    };
+    match origin {
+        pb::TypeOrigin::Unspecified => Err(invalid("origin must be specified")),
+        pb::TypeOrigin::Builtin => {
+            if ty.id.is_some() {
+                Err(invalid("a builtin type must not carry an id"))
+            } else if ty.attrs.is_some() {
+                Err(invalid("a builtin type must not carry attrs"))
+            } else {
+                MontyType::from_type_name(&ty.name)
+                    .ok_or_else(|| to_decode_err(ProtoConvertError::UnknownType(ty.name)))
+            }
+        }
+        pb::TypeOrigin::Sandbox | pb::TypeOrigin::Host => {
+            let id = ty.id.ok_or_else(|| invalid("a class type must carry an id"))?;
+            // `PairList` already validated each pair (key and value present)
+            // and charged their values against the budget while decoding.
+            let attrs = ty.attrs.map(|pairs| DictPairs::from(pairs.0)).unwrap_or_default();
+            Ok(MontyType::Instance(Box::new(MontyClassType {
+                name: ty.name,
+                id: pb_uuid_to_monty(&id, "Type.id")?,
+                host_defined: origin == pb::TypeOrigin::Host,
+                is_dataclass: ty.is_dataclass,
+                attrs,
+            })))
+        }
+    }
+}
 
 /// Encodes a `BigInt` as sign + big-endian magnitude.
 fn bigint_to_proto(bi: &BigInt) -> pb::BigInt {
@@ -1065,8 +1252,32 @@ fn datetime_from_proto(dt: pb::DateTime) -> Result<MontyDateTime, ProtoConvertEr
         minute: ranged_u8(dt.minute, 0..=59, "DateTime.minute")?,
         second: ranged_u8(dt.second, 0..=59, "DateTime.second")?,
         microsecond: bounded(dt.microsecond, 999_999, "DateTime.microsecond")?,
-        offset_seconds: dt.offset_seconds,
+        offset_seconds: dt
+            .offset_seconds
+            .map(|offset| timezone_offset(offset, "DateTime.offset_seconds"))
+            .transpose()?,
         timezone_name: dt.timezone_name,
+    })
+}
+
+fn time_from_proto(t: pb::Time) -> Result<MontyTime, ProtoConvertError> {
+    if t.offset_seconds.is_none() && t.timezone_name.is_some() {
+        return Err(ProtoConvertError::InvalidValue {
+            field: "Time.timezone_name",
+            reason: "timezone_name requires offset_seconds".to_owned(),
+        });
+    }
+    Ok(MontyTime {
+        hour: ranged_u8(t.hour, 0..=23, "Time.hour")?,
+        minute: ranged_u8(t.minute, 0..=59, "Time.minute")?,
+        second: ranged_u8(t.second, 0..=59, "Time.second")?,
+        microsecond: bounded(t.microsecond, 999_999, "Time.microsecond")?,
+        offset_seconds: t
+            .offset_seconds
+            .map(|offset| timezone_offset(offset, "Time.offset_seconds"))
+            .transpose()?,
+        timezone_name: t.timezone_name,
+        fold: ranged_u8(t.fold, 0..=1, "Time.fold")?,
     })
 }
 
@@ -1126,6 +1337,22 @@ fn ranged_u8(value: u32, range: RangeInclusive<u32>, field: &'static str) -> Res
         Err(ProtoConvertError::InvalidValue {
             field,
             reason: format!("{value} is outside the range {}..={}", range.start(), range.end()),
+        })
+    }
+}
+
+/// Checks a wire UTC offset against the range `datetime.timezone`
+/// accepts, so a forged offset names its own field here rather than surfacing as
+/// a generic bad value when the sandbox-side constructor rejects it.
+fn timezone_offset(offset: i32, field: &'static str) -> Result<i32, ProtoConvertError> {
+    if (MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&offset) {
+        Ok(offset)
+    } else {
+        Err(ProtoConvertError::InvalidValue {
+            field,
+            reason: format!(
+                "{offset} is outside the range {MIN_TIMEZONE_OFFSET_SECONDS}..={MAX_TIMEZONE_OFFSET_SECONDS}"
+            ),
         })
     }
 }

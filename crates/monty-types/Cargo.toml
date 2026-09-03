@@ -31,6 +31,10 @@ unicode-general-category = { workspace = true }
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 web-time = "1.1"
 
+[dev-dependencies]
+postcard = { workspace = true }
+serde_json = { workspace = true }
+
 [features]
 # test-hooks exposes small internal helpers needed by integration tests that
 # exercise production behavior (e.g. `ResourceTracker::lower_recursion_limit`

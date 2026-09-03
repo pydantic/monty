@@ -1,3 +1,4 @@
+import binascii
 import datetime
 import io
 import json
@@ -119,8 +120,8 @@ results
     }
     assert monty_run(code, external_lookup=fns) == snapshot(
         [
-            ('datetime.datetime', 'datetime.datetime(2021, 1, 2, 3, 4, 5)'),
-            ('datetime.datetime', 'datetime.datetime(2021, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)'),
+            ('datetime', 'datetime.datetime(2021, 1, 2, 3, 4, 5)'),
+            ('datetime', 'datetime.datetime(2021, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)'),
             ('date', 'datetime.date(2021, 1, 2)'),
             ('timedelta', 'datetime.timedelta(days=1, seconds=2)'),
             ('timezone', 'datetime.timezone(datetime.timedelta(seconds=18000))'),
@@ -132,9 +133,24 @@ results
 @pytest.mark.parametrize(
     'factory, message',
     [
-        (lambda: re.compile('a'), snapshot('Cannot convert re.Pattern to Monty value')),
-        (lambda: re.match('a', 'a'), snapshot('Cannot convert re.Match to Monty value')),
-        (lambda: io.StringIO('x'), snapshot('Cannot convert _io.StringIO to Monty value')),
+        (
+            lambda: re.compile('a'),
+            snapshot(
+                'Cannot convert re.Pattern to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+            ),
+        ),
+        (
+            lambda: re.match('a', 'a'),
+            snapshot(
+                'Cannot convert re.Match to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+            ),
+        ),
+        (
+            lambda: io.StringIO('x'),
+            snapshot(
+                'Cannot convert _io.StringIO to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+            ),
+        ),
     ],
 )
 def test_external_function_returns_unconvertible_instance(monty_run: RunMonty, factory: Any, message: str):
@@ -394,6 +410,7 @@ def test_external_function_json_decode_error_missing_attributes(monty_run: RunMo
         (AssertionError, 'AssertionError'),
         (StopIteration, 'StopIteration'),
         (re.error, 're.PatternError'),
+        (binascii.Error, 'binascii.Error'),
     ],
 )
 def test_external_function_exception_hierarchy(
@@ -481,6 +498,53 @@ caught
 
     result = monty_run(code, external_lookup={'fail': fail})
     assert result == expected_result
+
+
+@pytest.mark.parametrize(
+    'exception_class,dotted_name,parent_class',
+    [
+        (binascii.Error, 'binascii.Error', ValueError),
+        (json.JSONDecodeError, 'json.JSONDecodeError', ValueError),
+        (re.error, 're.PatternError', Exception),
+    ],
+)
+def test_external_function_dotted_exception_caught_by_own_name(
+    monty_run: RunMonty,
+    exception_class: type[BaseException],
+    dotted_name: str,
+    parent_class: type[BaseException],
+):
+    """A stdlib exception the bridge identifies by a dotted name must reach the
+    sandbox as itself — otherwise `except binascii.Error:` there silently misses
+    and the broader parent handler swallows it."""
+    module, _, _ = dotted_name.partition('.')
+    code = f"""
+import {module}
+try:
+    fail()
+except {dotted_name}:
+    caught = '{dotted_name}'
+except {parent_class.__name__}:
+    caught = '{parent_class.__name__}'
+caught
+"""
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise make_exception(exception_class)
+
+    assert monty_run(code, external_lookup={'fail': fail}) == dotted_name
+
+
+def make_exception(exception_class: type[BaseException]) -> BaseException:
+    """Builds a `'test message'` instance of any bridged exception class.
+
+    `json.JSONDecodeError` needs its document and position too, and only crosses
+    with the structured payload intact — see
+    `test_external_function_json_decode_error_missing_attributes`.
+    """
+    if exception_class is json.JSONDecodeError:
+        return json.JSONDecodeError('test message', '', 0)
+    return exception_class('test message')
 
 
 def test_external_function_exception_in_expression(monty_run: RunMonty):
@@ -616,9 +680,24 @@ def test_external_lookup_absent_name_raises(monty_run: RunMonty):
 @pytest.mark.parametrize(
     'value, message',
     [
-        (object(), snapshot('Cannot convert builtins.object to Monty value')),
-        (re.compile('a'), snapshot('Cannot convert re.Pattern to Monty value')),
-        (io.StringIO('x'), snapshot('Cannot convert _io.StringIO to Monty value')),
+        (
+            object(),
+            snapshot(
+                'Cannot convert builtins.object to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+            ),
+        ),
+        (
+            re.compile('a'),
+            snapshot(
+                'Cannot convert re.Pattern to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+            ),
+        ),
+        (
+            io.StringIO('x'),
+            snapshot(
+                'Cannot convert _io.StringIO to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+            ),
+        ),
     ],
 )
 def test_external_lookup_value_unconvertible_surfaces_error(monty_run: RunMonty, value: Any, message: str):
@@ -665,7 +744,9 @@ def test_external_lookup_name_conversion_error_discards_session(session: MontySe
     suspension the aborted feed never answered."""
     with pytest.raises(pydantic_monty.MontyConversionError) as exc_info:
         session.feed_run('x', external_lookup={'x': object()})
-    assert str(exc_info.value) == snapshot('Cannot convert builtins.object to Monty value')
+    assert str(exc_info.value) == snapshot(
+        'Cannot convert builtins.object to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+    )
     # the worker was discarded, so the session can no longer be fed
     with pytest.raises(RuntimeError) as exc_info2:
         session.feed_run('1 + 1')

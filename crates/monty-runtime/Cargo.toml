@@ -1,6 +1,8 @@
 [package]
 name = "monty-runtime"
-readme = "README.md"
+# `README.md` is the PyPI readme for the `pydantic-monty-runtime` wheels built
+# from this crate; crates.io gets the one about cargo features and siblings
+readme = "README-crate.md"
 version = { workspace = true }
 license = { workspace = true }
 rust-version = { workspace = true }

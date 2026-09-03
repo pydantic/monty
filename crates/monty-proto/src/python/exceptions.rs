@@ -13,10 +13,8 @@ use pyo3::{
     exceptions::{self},
     prelude::*,
     sync::PyOnceLock,
-    types::{PyBytes, PyString},
+    types::{PyBytes, PyString, PyTuple},
 };
-
-use super::dataclass::get_frozen_instance_error;
 
 /// Converts Monty's `MontyException` to the matching Python exception value.
 /// Traceback info is folded into the message, since PyO3 doesn't expose direct
@@ -89,6 +87,16 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
                 exceptions::PyRuntimeError::new_err(msg)
             }
         }
+        ExcType::BinasciiError => {
+            if let Ok(binascii_error) = get_binascii_error(py)
+                && let Ok(exc_instance) = binascii_error.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                // Fall back to ValueError — the parent we model in `is_subclass_of`.
+                exceptions::PyValueError::new_err(msg)
+            }
+        }
     }
 }
 
@@ -150,7 +158,7 @@ fn json_decode_error_to_py(py: Python<'_>, exc_data: ExcData, msg: String) -> Py
 pub fn exc_py_to_monty(py: Python<'_>, py_err: &PyErr) -> MontyException {
     let exc = py_err.value(py);
     let exc_type = py_err_to_exc_type(exc);
-    let arg = exc.str().ok().map(|s| s.to_string_lossy().into_owned());
+    let arg = exception_arg(exc);
     let data = if exc_type == ExcType::JsonDecodeError {
         json_data_from_py(exc)
     } else {
@@ -158,6 +166,26 @@ pub fn exc_py_to_monty(py: Python<'_>, py_err: &PyErr) -> MontyException {
     };
 
     MontyException::new(exc_type, arg).with_data(data)
+}
+
+/// The single argument the sandbox exception is raised with.
+///
+/// A lone `str` argument is taken as-is so the sandbox's own `__str__` applies
+/// (`KeyError('k')` must read `'k'`, not `"'k'"`); anything else falls back to
+/// `str(exc)`, the only rendering Monty's single-string exceptions can carry.
+fn exception_arg(exc: &Bound<'_, exceptions::PyBaseException>) -> Option<String> {
+    let single_str = || -> PyResult<Option<String>> {
+        let args = exc.getattr("args")?.cast_into::<PyTuple>()?;
+        if args.len() == 1 {
+            Ok(args.get_item(0)?.extract::<String>().ok())
+        } else {
+            Ok(None)
+        }
+    };
+    single_str()
+        .ok()
+        .flatten()
+        .or_else(|| exc.str().ok().map(|s| s.to_string_lossy().into_owned()))
 }
 
 /// Reads the structured `msg`/`doc`/`pos`/`lineno`/`colno` attributes off a
@@ -183,7 +211,7 @@ fn json_data_from_py(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcData {
 #[must_use]
 pub fn exc_to_monty_object(exc: &Bound<'_, exceptions::PyBaseException>) -> MontyObject {
     let exc_type = py_err_to_exc_type(exc);
-    let arg = exc.str().ok().map(|s| s.to_string_lossy().into_owned());
+    let arg = exception_arg(exc);
 
     MontyObject::Exception { exc_type, arg }
 }
@@ -202,6 +230,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
         } else if exceptions::PyValueError::type_check(exc) {
             if is_json_decode_error(exc) {
                 ExcType::JsonDecodeError
+            } else if is_binascii_error(exc) {
+                ExcType::BinasciiError
             } else if exceptions::PyUnicodeDecodeError::type_check(exc) {
                 ExcType::UnicodeDecodeError
             } else if exceptions::PyUnicodeEncodeError::type_check(exc) {
@@ -325,6 +355,23 @@ fn is_json_decode_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
     }
 }
 
+/// Checks if an exception is a `binascii.Error` (a stdlib class, not a
+/// PyO3 built-in, so looked up lazily and cached).
+fn is_binascii_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(binascii_error_cls) = get_binascii_error(exc.py()) {
+        exc.is_instance(binascii_error_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Returns the cached `binascii.Error` class — the `ValueError` subclass the
+/// `base64` codecs raise for malformed input.
+fn get_binascii_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static BINASCII_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    BINASCII_ERROR.import(py, "binascii", "Error")
+}
+
 /// Checks if an exception is a `re.PatternError` (a stdlib class, not a
 /// PyO3 built-in, so looked up lazily and cached).
 fn is_re_pattern_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
@@ -378,4 +425,11 @@ fn is_unsupported_operation(exc: &Bound<'_, exceptions::PyBaseException>) -> boo
     } else {
         false
     }
+}
+
+/// Cached import of `dataclasses.FrozenInstanceError` exception class.
+fn get_frozen_instance_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DC_FROZEN_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DC_FROZEN_ERROR.import(py, "dataclasses", "FrozenInstanceError")
 }

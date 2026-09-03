@@ -621,6 +621,7 @@ impl TurnMetrics {
                 let outcome = match r.kind {
                     Some(pb::resume_name_lookup::Kind::Value(_)) => "value",
                     Some(pb::resume_name_lookup::Kind::Undefined(_)) => "undefined",
+                    Some(pb::resume_name_lookup::Kind::Error(_)) => "error",
                     None => "missing",
                 };
                 self.close_suspension(outcome);
@@ -989,7 +990,7 @@ mod tests {
             args: vec![],
             kwargs: vec![],
             call_id: 1,
-            method_call: false,
+            object_id: None,
         }))
     }
 
@@ -1186,6 +1187,7 @@ mod tests {
         metrics.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::NameLookup(pb::NameLookup {
                 name: "value".to_owned(),
+                object_id: None,
             })),
             total_execution_micros: 10_000_000,
             max_duration_micros: None,

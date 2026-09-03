@@ -5,33 +5,46 @@ Python client for the Monty sandboxed Python interpreter.
 Most users want [`pydantic-monty`](https://pypi.org/project/pydantic-monty/)
 instead, which pulls in this package plus
 [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/) and
-is documented in full on its PyPI page. Install this one directly only when the
-`monty` binary is supplied some other way — a base image, a system package, or a
-build of this repository:
+is documented in full on its PyPI page.
+
+Install this package directly to use the websocket client alone,
+or if you're installing the `monty` binary another way.
 
 ```bash
+uv add pydantic-monty-client
+# or
 pip install pydantic-monty-client
 ```
 
-## Locating the worker binary
+## Usage with a remote monty server and websockets
 
-Execution always happens in a pool of `monty` worker subprocesses: a monty
-process can never be made fully crash-proof against memory errors (stack
-overflows, allocator aborts) triggered by adversarial input, so crash isolation
-is built in. Without `pydantic-monty-runtime` installed, `pydantic_monty` has to
-find that binary itself, in this order:
+You can use this library alone to connect to a remote monty server via websockets.
 
-1. the `binary_path=` argument to `Monty(...)` / `AsyncMonty(...)`
-2. the `MONTY_BIN` environment variable
-3. the environment's scripts directory (where `pydantic-monty-runtime` installs it)
-4. a `monty` executable on `PATH`
-5. a cargo-built binary in the monty workspace, for editable installs of this repo
+```python test="skip"
+from pydantic_monty import AsyncMontyWebsocket
 
-If none match, constructing a pool raises `FileNotFoundError`. The binary must be
-the same version as this package — the worker rejects a version mismatch when a
-session is checked out.
 
-## Usage
+async def main() -> None:
+    url = '...'
+    async with AsyncMontyWebsocket(url) as pool:
+        async with pool.checkout() as session:
+            output = await session.feed_run('1 + 1')
+            print('output ->', output)
+
+
+if __name__ == '__main__':
+    import asyncio
+
+    asyncio.run(main())
+```
+
+## Usage with a local monty worker
+
+Host objects and classes cross the boundary through the `ClassInstance` / `ClassType` wrappers; see the
+`pydantic-monty` README.
+
+This requires the `pydantic-monty-runtime` package, which is generally
+installed as part of the `pydantic-monty` meta-package.
 
 ```python
 from pydantic_monty import Monty
@@ -42,7 +55,25 @@ with Monty() as pool:
         #> 3
 ```
 
+or in async code:
+
+```python
+from pydantic_monty import AsyncMonty
+
+
+async def main() -> None:
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            output = await session.feed_run('1 + 1')
+            print('output from local worker ->', output)
+            #> output from local worker -> 2
+
+
+if __name__ == '__main__':
+    import asyncio
+
+    asyncio.run(main())
+```
+
 See the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) README for
-async usage, external functions, snapshots, resource limits, type checking and
-observability, and `limitations/pool-architecture.md` in the repository for the
-behavioural details of subprocess execution.
+more details.

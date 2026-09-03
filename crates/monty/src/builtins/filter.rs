@@ -5,7 +5,7 @@
 //! - `None` as predicate (filters falsy values)
 //! - Builtin functions (len, abs, etc.)
 //! - Type constructors (int, str, float, etc.)
-//! - User-defined functions (via `vm.evaluate_function`)
+//! - User-defined functions (via `call_predicate`)
 
 use crate::{
     args::ArgValues,
@@ -13,6 +13,7 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, HeapData},
+    predicate::call_predicate,
     types::{List, PyTrait},
     value::Value,
 };
@@ -48,12 +49,7 @@ pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             // No predicate - use truthiness of element
             item.py_bool(vm)?
         } else {
-            // Clone for predicate call - the clone is consumed by evaluate_function
-            let item_for_predicate = item.clone_with_heap(vm);
-            let result = vm.evaluate_function("filter()", function, ArgValues::One(item_for_predicate))?;
-            let is_truthy = result.py_bool(vm);
-            result.drop_with(vm);
-            is_truthy?
+            call_predicate(function, item, "filter()", vm)?
         };
 
         if should_include {

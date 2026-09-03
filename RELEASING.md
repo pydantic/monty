@@ -18,8 +18,7 @@ and sync the `pydantic-monty` metapackage's version and its exact pins on
 
 ```bash
 git checkout -b prepare-release-vX.Y.Z
-git add .
-git commit -m "Bump version to vX.Y.Z"
+git commit -am "Bump version to vX.Y.Z"
 git push
 ```
 

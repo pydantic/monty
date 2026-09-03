@@ -41,6 +41,9 @@ unicode-normalization = { workspace = true }
 memchr = { workspace = true }
 smallvec = { version = "1.13", features = ["serde"] }
 fancy-regex = "0.17.0"
+# worker-side uuid generation for sandbox-defined classes/instances crossing the
+# boundary; supports native and wasm32-wasip1 (WASI random)
+getrandom = "0.3"
 libm = "0.2"
 chrono = { workspace = true }
 speedate = "0.17.0"

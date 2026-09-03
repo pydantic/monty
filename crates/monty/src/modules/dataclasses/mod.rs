@@ -9,22 +9,30 @@
 //! See `limitations/dataclasses.md` for divergences from CPython.
 
 mod field;
+mod options;
 
-use std::{fmt::Write, mem};
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
-pub(crate) use self::field::DataclassField;
+pub(crate) use self::{field::DataclassField, options::DataclassParams};
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::{ArgValues, FromArgs, KwargsValues},
+    builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    hash::HashValue,
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapRead, HeapReadOutput},
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     types::{
-        Class, Dict, Instance, LazyHeapSet, Module,
-        dataclass::write_dataclass_repr,
-        instance::{class_name, instance_attr},
+        Class, DataclassOptions, Dict, Instance, LazyHeapSet, Module, PyTrait,
+        host_class::{host_class_type, write_dataclass_repr},
+        instance::{class_defines, class_dunder, class_name, instance_attr},
     },
     value::Value,
 };
@@ -37,6 +45,11 @@ pub(crate) enum DataclassesFunctions {
     Dataclass,
     /// `is_dataclass(obj)` — true for a dataclass class or instance.
     IsDataclass,
+    /// The decorator `@dataclass(...)` returns while it waits for the class,
+    /// carrying the bound options so `d = dataclass(frozen=True)` then `@d`
+    /// works. Named for the user-visible decorator, not the variant.
+    #[strum(serialize = "dataclass")]
+    Configured(DataclassOptions),
 }
 
 /// Creates the `dataclasses` module and allocates it on the heap.
@@ -52,7 +65,12 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::ModuleFunction(ModuleFunctions::Dataclasses(DataclassesFunctions::IsDataclass)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module.set_attr(
+        StaticStrings::FrozenInstanceError,
+        Value::Builtin(Builtins::ExcType(ExcType::FrozenInstanceError)),
+        vm,
+    );
+    vm.heap.allocate_as(module).into_id()
 }
 
 /// Dispatches a `dataclasses` module function call.
@@ -60,28 +78,152 @@ pub(super) fn call(vm: &mut VM<'_>, func: DataclassesFunctions, args: ArgValues)
     match func {
         DataclassesFunctions::Dataclass => dataclass_decorator(vm, args),
         DataclassesFunctions::IsDataclass => is_dataclass(vm, args),
+        // The options are already bound; this call supplies the class.
+        DataclassesFunctions::Configured(options) => {
+            let ConfiguredArgs { cls } = ConfiguredArgs::from_args(args, vm)?;
+            apply_dataclass(vm, cls, options)
+        }
     }
 }
 
-/// The `@dataclass` decorator (bare form): writes `__dataclass_fields__` into
-/// the class namespace and returns the class. `@dataclass(...)` with keyword
-/// options is not yet handled.
-///
-/// Ownership of the single argument (the class) passes straight through to the
-/// return value, so no extra refcount work is needed on the happy path.
+/// The `@dataclass` decorator, in both spellings: applied bare the class
+/// arrives here directly, while `@dataclass(...)` has none yet and gets back a
+/// [`DataclassesFunctions::Configured`] that receives it on the next call.
 fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    // `@dataclass(...)`: name the unimplemented keyword form rather than letting
-    // the bare decorator's arity check report a confusing "0 given".
-    if matches!(args, ArgValues::Kwargs(_) | ArgValues::ArgsKargs { .. }) {
-        args.drop_with(vm);
-        return Err(ExcType::not_implemented(
-            "dataclass() keyword options (eq, order, frozen, unsafe_hash, ...) are not yet supported",
-        )
-        .into());
+    let DataclassArgs {
+        cls,
+        init,
+        repr,
+        eq,
+        order,
+        unsafe_hash,
+        frozen,
+        match_args,
+        kw_only,
+        slots,
+        weakref_slot,
+    } = DataclassArgs::from_args(args, vm)?;
+    // CPython's `dataclass` is a `def`, so it type-checks nothing and takes each
+    // option's truthiness. That runs user code — a `__bool__` may raise — so
+    // `cls` and all ten flags are guarded before the first read.
+    let mut guard = DropGuard::new(
+        [
+            cls,
+            init,
+            repr,
+            eq,
+            order,
+            unsafe_hash,
+            frozen,
+            match_args,
+            kw_only,
+            slots,
+            weakref_slot,
+        ],
+        vm,
+    );
+    let (values, vm) = guard.as_parts();
+    let mut truthy = [false; 10];
+    for (slot, flag) in truthy.iter_mut().zip(&values[1..]) {
+        *slot = flag.py_bool(vm)?;
     }
-    let cls = args.get_one_arg("dataclass", vm.heap)?;
-    // The decorator returns the class it was given, so `cls` is only released
-    // when something below rejects it — which the guard handles on every path.
+    let [
+        init,
+        repr,
+        eq,
+        order,
+        unsafe_hash,
+        frozen,
+        match_args,
+        kw_only,
+        slots,
+        weakref_slot,
+    ] = truthy;
+    let options = DataclassOptions { eq, frozen };
+    // Options Monty does not implement are refused when set away from their
+    // CPython default, rather than accepted and ignored.
+    let unimplemented = [
+        ("init", init, true),
+        ("repr", repr, true),
+        ("order", order, false),
+        ("unsafe_hash", unsafe_hash, false),
+        ("match_args", match_args, true),
+        ("kw_only", kw_only, false),
+        ("slots", slots, false),
+        ("weakref_slot", weakref_slot, false),
+    ]
+    .into_iter()
+    .find(|&(_, given, default)| given != default);
+    // Only truthiness is kept, so the flags are released here; `cls` alone lives
+    // on, into the return value.
+    let (values, vm) = guard.into_parts();
+    let [cls, flags @ ..] = values;
+    flags.drop_with(vm);
+    match unimplemented {
+        Some((name, _, _)) => {
+            cls.drop_with(vm);
+            Err(ExcType::not_implemented(format!("dataclass() does not yet support the {name} option")).into())
+        }
+        // `@dataclass(...)`: no class yet, so hand back the configured decorator.
+        None if matches!(cls, Value::None) => Ok(Value::ModuleFunction(ModuleFunctions::Dataclasses(
+            DataclassesFunctions::Configured(options),
+        ))),
+        None => apply_dataclass(vm, cls, options),
+    }
+}
+
+/// `@dataclass` arguments, mirroring CPython's
+/// `dataclass(cls=None, /, *, init=True, repr=True, ...)`.
+///
+/// Raw `Value` fields because CPython's `def` type-checks nothing; the body
+/// takes each option's truthiness instead.
+#[derive(FromArgs)]
+#[from_args(name = "dataclass", style = def)]
+struct DataclassArgs {
+    #[from_args(pos_only, default = Value::None)]
+    cls: Value,
+    #[from_args(kw_only, default = Value::Bool(true))]
+    init: Value,
+    #[from_args(kw_only, default = Value::Bool(true))]
+    repr: Value,
+    #[from_args(kw_only, default = Value::Bool(true))]
+    eq: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    order: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    unsafe_hash: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    frozen: Value,
+    #[from_args(kw_only, default = Value::Bool(true))]
+    match_args: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    kw_only: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    slots: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    weakref_slot: Value,
+}
+
+/// The class a [`DataclassesFunctions::Configured`] decorator is waiting for.
+///
+/// CPython's `dataclass` closes over a plain `def wrap(cls)`, so the class binds
+/// positionally *or* by keyword, and the arity errors name that closure rather
+/// than `dataclass` itself. Raw `Value` for [`DataclassArgs`]' reason: a `def`
+/// type-checks nothing, and `apply_dataclass` makes the class check the body
+/// would.
+#[derive(FromArgs)]
+#[from_args(name = "dataclass.<locals>.wrap", style = def)]
+struct ConfiguredArgs {
+    cls: Value,
+}
+
+/// Writes `__dataclass_params__` and `__dataclass_fields__` into the class
+/// namespace, and returns the class unchanged.
+///
+/// Ownership of `cls` passes straight through to the return value, so no extra
+/// refcount work is needed on the happy path; the guard releases it on every
+/// path that rejects the class instead.
+fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> RunResult<Value> {
     let mut guard = DropGuard::new(cls, vm);
     let (cls, vm) = guard.as_parts();
     // Read once and pass the handle down: everything below then works from a
@@ -93,7 +235,13 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         return Err(non_class_error(cls, vm));
     };
     let fields = build_dataclass_fields(&class, vm)?;
+    // Fields first, so nothing owns the mapping while the params allocation
+    // can still fail; a class left with fields alone reads back as a default one.
     store_dataclass_fields(&mut class, fields, vm)?;
+    store_dataclass_params(&mut class, options, vm)?;
+    // Last, so the options a class acts on are only ever those of a decoration
+    // that ran to completion.
+    class.set_dataclass_options(options, vm);
     Ok(guard.into_inner())
 }
 
@@ -131,22 +279,20 @@ fn build_dataclass_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) -> R
 /// fields. The dict owns every `Field` from its first insertion, so a failure
 /// part-way releases them with it.
 fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<DataclassField>) -> RunResult<Value> {
-    let dict_id = vm.heap.allocate(HeapData::Dict(Dict::with_capacity(fields.len())));
-    let mut guard = DropGuard::new(Value::Ref(dict_id), vm);
-    let vm = guard.ctx();
+    let dict = vm.heap.allocate_as(Dict::with_capacity(fields.len()));
+    let mut guard = DropGuard::new(dict, vm);
+    let (dict, vm) = guard.as_parts_mut();
+    let dict = dict.read(vm.heap);
     for field in fields {
         let name = field.name();
-        let field_id = vm.heap.allocate(HeapData::DataclassField(field));
-        let HeapReadOutput::Dict(mut dict) = vm.heap.read(dict_id) else {
-            unreachable!("the dict was just allocated")
-        };
+        let field = vm.heap.allocate_as(field).into_value();
         // Annotation keys are unique, so nothing is ever replaced — released
         // rather than asserted away so a future duplicate cannot leak. A dict
         // rejected by the memory limit releases the field it was handed.
-        let replaced = dict.set(Value::InternString(name), Value::Ref(field_id), vm)?;
+        let replaced = dict.set(Value::InternString(name), field, vm)?;
         replaced.drop_with(vm);
     }
-    Ok(guard.into_inner())
+    Ok(guard.into_inner().into_value())
 }
 
 /// Writes `__dataclass_fields__` into the class namespace, taking ownership of
@@ -154,6 +300,23 @@ fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<DataclassField>) -> RunResu
 /// owns once it is out of the namespace.
 fn store_dataclass_fields<'h>(class: &mut HeapRead<'h, Class>, fields: Value, vm: &mut VM<'h>) -> RunResult<()> {
     let replaced = class.set_attr(StaticStrings::DataclassFields.into(), fields, vm)?;
+    replaced.drop_with(vm);
+    Ok(())
+}
+
+/// Writes `__dataclass_params__` into the class namespace, as CPython's
+/// `_DataclassParams` records the same options.
+///
+/// Purely introspection: the options the class *acts* on live on the [`Class`],
+/// so overwriting this entry reports something else without changing behaviour,
+/// exactly as it does in CPython.
+fn store_dataclass_params<'h>(
+    class: &mut HeapRead<'h, Class>,
+    options: DataclassOptions,
+    vm: &mut VM<'h>,
+) -> RunResult<()> {
+    let params = vm.heap.allocate_as(DataclassParams::new(options)).into_value();
+    let replaced = class.set_attr(StaticStrings::DataclassParams.into(), params, vm)?;
     replaced.drop_with(vm);
     Ok(())
 }
@@ -324,6 +487,74 @@ fn class_fields_dict_id(class_id: HeapId, vm: &VM<'_>) -> Option<HeapId> {
     }
 }
 
+/// The options `@dataclass` recorded on `class_id`, or `None` for a class that
+/// is not a dataclass — the split the `Instance` dunders branch on.
+///
+/// Still gated on the fields, which stay the mark of a dataclass: overwriting
+/// `__dataclass_fields__` un-marks the class, as it does for `is_dataclass`.
+pub(crate) fn dataclass_options(class_id: HeapId, vm: &VM<'_>) -> Option<DataclassOptions> {
+    let HeapData::Class(class) = vm.heap.get(class_id) else {
+        return None;
+    };
+    fields_dict_id(class.namespace(), vm)?;
+    Some(class.dataclass_options())
+}
+
+/// The `__hash__` a `@dataclass` decoration generates, where it generates one.
+///
+/// The cells of CPython's `_hash_action` table that write a `__hash__`; every
+/// other cell leaves the class to its own body, which [`hash_action`] reports as
+/// `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DataclassHash {
+    /// CPython's `_hash_add`: hash by the field values, as a tuple of them does.
+    FieldWise,
+    /// CPython's `_hash_set_none`: value equality without immutability.
+    Unhashable,
+}
+
+/// Which [`DataclassHash`] `class_id`'s decoration generated, or `None` when
+/// CPython would leave the class's own `__hash__` standing — including for a
+/// plain class, which is most callers' path.
+///
+/// Monty refuses `unsafe_hash`, so CPython's four-way table collapses to `eq`,
+/// `frozen`, and whether the body set a `__hash__` of its own.
+pub(crate) fn hash_action(class_id: HeapId, vm: &VM<'_>) -> Option<DataclassHash> {
+    let options = dataclass_options(class_id, vm)?;
+    // CPython's `has_explicit_hash`: a `__hash__ = None` beside a body `__eq__`
+    // is the opt-out `type` inserted, not one the author wrote, so a generated
+    // hash overwrites it. Alone, it is deliberate and survives.
+    let explicit_hash = class_dunder(class_id, "__hash__", vm)
+        .is_some_and(|hash| !(matches!(hash, Value::None) && class_defines(class_id, "__eq__", vm)));
+    match (options.eq, options.frozen, explicit_hash) {
+        (true, true, false) => Some(DataclassHash::FieldWise),
+        (true, false, false) => Some(DataclassHash::Unhashable),
+        _ => None,
+    }
+}
+
+/// The error assigning `name` raises on a `frozen=True` dataclass instance, or
+/// `None` when the write may proceed.
+///
+/// Every instance assignment passes through here, so it reads the class's
+/// options alone: only a decoration sets them, so [`dataclass_options`]' field
+/// lookup would be redundant work on this path.
+pub(crate) fn frozen_assignment_error(class_id: HeapId, name: &Value, vm: &VM<'_>) -> Option<RunError> {
+    let HeapData::Class(class) = vm.heap.get(class_id) else {
+        return None;
+    };
+    if !class.dataclass_options().frozen {
+        return None;
+    }
+    // Refused for any attribute, declared field or not, as CPython's generated
+    // `__setattr__` does.
+    let message = match name.as_either_str(vm.heap) {
+        Some(field) => format!("cannot assign to field '{}'", field.as_str(vm.interns)),
+        None => "cannot assign to field".to_owned(),
+    };
+    Some(SimpleException::new_msg(ExcType::FrozenInstanceError, message).into())
+}
+
 /// Dataclass field names in definition order, or `None` for a plain class —
 /// the `Some`/`None` split the generic `Instance` code branches on.
 pub(crate) fn dataclass_fields(class_id: HeapId, vm: &VM<'_>) -> Option<Vec<StringId>> {
@@ -402,7 +633,9 @@ fn store_bound_fields<'h>(
     for i in 0..values.len() {
         let value = mem::replace(&mut values[i], Value::None);
         let name = Value::InternString(fields[i].0);
-        let replaced = instance.set_attr(name, value, vm)?;
+        // Unchecked: a `frozen=True` instance refuses its own `set_attr`, as
+        // CPython's generated `__init__` goes through `object.__setattr__`.
+        let replaced = instance.set_attr_unchecked(name, value, vm)?;
         replaced.drop_with(vm);
     }
     Ok(())
@@ -586,6 +819,38 @@ pub(crate) fn dataclass_eq(
     Ok(Some(true))
 }
 
+/// Synthesized `__hash__` for a `frozen=True` dataclass: the hash of the field
+/// values as a tuple, matching CPython's generated `hash((self.f1, ...))`.
+///
+/// An unhashable field raises naming *its* type, as hashing that tuple would;
+/// fields are read as attributes, as the generated `__hash__` reads them, so an
+/// uninitialised one raises too.
+pub(crate) fn dataclass_hash(self_id: HeapId, field_names: &[StringId], vm: &mut VM<'_>) -> RunResult<HashValue> {
+    let class_id = instance_class(self_id, vm);
+    // Charge a recursion level, as `dataclass_eq` does: a frozen class cannot
+    // build a cycle itself, but options are read live, so retro-freezing a class
+    // whose instances already cycle (`C.__dataclass_params__ = Frozen...`) would
+    // otherwise re-enter here per level and overflow the host stack.
+    let mut guard = vm.recursion_guard()?;
+    let vm = &mut *guard;
+    // Same walk as `Tuple::py_hash`, so `hash(Point(1, 2)) == hash((1, 2))`.
+    let mut hasher = DefaultHasher::new();
+    for name_id in field_names {
+        let field_name = vm.interns.get_str(*name_id).to_owned();
+        let value = instance_attr(self_id, &field_name, vm);
+        defer_drop!(value, vm);
+        let Some(value) = value else {
+            let class_name = class_name(class_id, vm.heap, vm.interns).into_owned();
+            return Err(ExcType::attribute_error(&class_name, &field_name));
+        };
+        match value.py_hash(vm)? {
+            Some(h) => h.hash(&mut hasher),
+            None => return Err(ExcType::type_error_unhashable(&value.py_type_name(vm))),
+        }
+    }
+    Ok(HashValue::new(hasher.finish()))
+}
+
 /// Synthesized `__repr__`: `ClassName(f1=v1, ...)`. Formatting is shared with
 /// the host-supplied `Dataclass` via [`write_dataclass_repr`] so the two cannot
 /// drift.
@@ -630,6 +895,10 @@ fn is_dataclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Class(_) => is_dataclass_class(*id, vm),
             HeapData::Instance(instance) => is_dataclass_class(instance.class(), vm),
+            // Host-backed instances and classes carry dataclass-ness as a flag
+            // set by the host when the class crossed the wire.
+            HeapData::HostClass(hc) => host_class_type(vm.heap, hc.class_id()).is_dataclass(),
+            HeapData::HostClassType(ty) => ty.is_dataclass(),
             _ => false,
         },
         _ => false,

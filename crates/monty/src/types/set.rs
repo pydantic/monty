@@ -1,5 +1,6 @@
 use std::{cell::Cell, fmt::Write, mem};
 
+use ahash::AHashSet;
 use hashbrown::HashTable;
 use monty_types::{ResourceError, ResourceTracker};
 use smallvec::SmallVec;
@@ -13,11 +14,16 @@ use crate::{
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem,
-        HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
+        HeapObjectRead, HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
+    identity::Identity,
     intern::StaticStrings,
-    types::{LazyHeapSet, Type},
-    value::{EitherStr, Value},
+    types::{
+        LazyHeapSet, Type,
+        dict::{ProbeOutcome, eq_is_native, probe_native_eq},
+        list::repr_items_fmt,
+    },
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Entry in the set storage, containing a value and its cached hash.
@@ -100,10 +106,12 @@ impl SetStorage {
         let (value, vm) = value_guard.as_parts_mut();
         let hash = set_element_hash(value, vm)?;
 
-        // Check if value already exists.
+        // Check if value already exists. CPython compares the stored element on
+        // the left, which an asymmetric user `__eq__` can tell apart — the
+        // mutation-safe twin ([`HeapRead::find_index`]) does the same.
         let existing = self
             .indices
-            .find(hash, |&idx| value.py_eq(&self.entries[idx].value, vm).unwrap_or(false));
+            .find(hash, |&idx| self.entries[idx].value.py_eq(value, vm).unwrap_or(false));
 
         if existing.is_some() {
             Ok(false)
@@ -125,28 +133,7 @@ impl<'h> HeapRead<'h, SetStorage> {
     fn remove(&mut self, value: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let hash = set_element_hash(value, vm)?;
 
-        // Collect candidates by hash
-        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
-        let storage = &self.get(vm.heap);
-        storage.indices.find(hash, |&idx| {
-            if storage.entries[idx].hash == hash {
-                candidates.push(idx);
-            }
-            false
-        });
-
-        // Compare each candidate
-        let mut found_index = None;
-        for candidate_index in candidates {
-            let candidate_value = self.get(vm.heap).entries[candidate_index].value.clone_with_heap(vm);
-            defer_drop!(candidate_value, vm);
-            if value.py_eq(candidate_value, vm)? {
-                found_index = Some(candidate_index);
-                break;
-            }
-        }
-
-        let Some(index) = found_index else {
+        let Some(index) = self.find_index(value, hash, vm)? else {
             return Ok(false);
         };
 
@@ -221,27 +208,177 @@ impl<'h> HeapRead<'h, SetStorage> {
     /// Checks if the set contains a value.
     pub fn contains(&self, value: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let hash = set_element_hash(value, vm)?;
+        Ok(self.find_index(value, hash, vm)?.is_some())
+    }
 
-        // Collect candidates by hash
-        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
-        let storage = &self.get(vm.heap);
+    /// Finds the index of the entry equal to `value`, or `None` if absent.
+    ///
+    /// Snapshots candidates so each can be validated around user `__eq__`
+    /// without holding a borrow of the hash table; only one that moved restarts
+    /// the probe. The twin of [`HeapRead::<Dict>::find_index_hash`], which
+    /// carries the full reasoning — the two must stay in sync.
+    fn find_index(&self, value: &Value, hash: u64, vm: &mut VM<'h>) -> RunResult<Option<usize>> {
+        // When no comparison can dispatch to user code, nothing can mutate the
+        // set mid-probe: skip revalidation and the miss continuation, as in
+        // the dict twin.
+        let value_native = eq_is_native(value, vm.heap);
+
+        'restart: loop {
+            // Collected inline rather than through `probe_candidates`, for the
+            // reason given in the dict twin.
+            let mut candidate_indices: SmallVec<[usize; 2]> = SmallVec::new();
+            let mut candidate_values: SmallVec<[Value; 2]> = SmallVec::new();
+            let mut all_native = value_native;
+            let storage = self.get(vm.heap);
+            // Native pairs are compared inline during the probe walk; only
+            // pairs that may need user code are cloned for the guarded loop —
+            // see the dict twin.
+            let found = storage
+                .indices
+                .find(hash, |&idx| {
+                    let entry = &storage.entries[idx];
+                    if entry.hash != hash {
+                        return false;
+                    }
+                    if candidate_indices.is_empty()
+                        && let Some(eq) = probe_native_eq(&entry.value, value, vm)
+                    {
+                        eq
+                    } else {
+                        candidate_indices.push(idx);
+                        candidate_values.push(entry.value.clone_with_heap(vm.heap));
+                        all_native = all_native && eq_is_native(&entry.value, vm.heap);
+                        false
+                    }
+                })
+                .copied();
+            // Guarded before the early returns — see the dict twin.
+            defer_drop!(candidate_values, vm);
+            if let Some(index) = found {
+                return Ok(Some(index));
+            }
+            if candidate_indices.is_empty() {
+                return Ok(None);
+            }
+
+            for (&candidate_index, candidate_value) in candidate_indices.iter().zip(candidate_values.iter()) {
+                if !all_native && !self.probe_valid(candidate_index, hash, candidate_value, vm) {
+                    vm.heap.tracker.check_memory_time()?;
+                    continue 'restart;
+                }
+                // CPython compares the stored value on the left.
+                let eq = candidate_value.py_eq(value, vm)?;
+                if !all_native && !self.probe_valid(candidate_index, hash, candidate_value, vm) {
+                    vm.heap.tracker.check_memory_time()?;
+                    continue 'restart;
+                }
+                if eq {
+                    return Ok(Some(candidate_index));
+                }
+            }
+
+            // A comparison can itself have added a colliding value the snapshot
+            // never saw, so a pass that ran any hands over to the mutation-aware
+            // continuation — unless none could run user code.
+            if all_native {
+                return Ok(None);
+            }
+            match self.probe_after_compare(hash, value, candidate_values, vm)? {
+                ProbeOutcome::Found(index) => return Ok(Some(index)),
+                ProbeOutcome::Missing => return Ok(None),
+                // a candidate moved: fall through to the next probe from scratch
+                ProbeOutcome::Restart => (),
+            }
+        }
+    }
+
+    /// Continues a probe whose comparisons all missed, in case one of them
+    /// mutated the set and added a colliding value.
+    ///
+    /// The twin of [`HeapRead::<Dict>::probe_after_compare`]: re-reads the
+    /// candidates until a pass finds nothing new, never re-running user
+    /// `__eq__` on a value. Inline-compared native pairs may repeat — see there.
+    fn probe_after_compare(
+        &self,
+        hash: u64,
+        value: &Value,
+        already_compared: &[Value],
+        vm: &mut VM<'h>,
+    ) -> RunResult<ProbeOutcome> {
+        // The clones keep every compared value alive so its heap slot cannot
+        // be recycled into a new value that would then be skipped by identity.
+        let compared: SmallVec<[Value; 2]> = already_compared.iter().map(|v| v.clone_with_heap(vm.heap)).collect();
+        defer_drop_mut!(compared, vm);
+        // Identity set for O(1) seen-checks; see the dict twin for why the
+        // linear alternative is quadratic.
+        let mut compared_ids: AHashSet<Identity> = compared.iter().map(Value::id).collect();
+
+        loop {
+            // Polled up front so every entry checks the limits at least once —
+            // see the dict twin.
+            vm.heap.tracker.check_memory_time()?;
+            let (candidate_indices, candidate_values) = self.probe_candidates(hash, vm);
+            defer_drop!(candidate_values, vm);
+            let mut compared_any = false;
+
+            for (&candidate_index, candidate_value) in candidate_indices.iter().zip(candidate_values.iter()) {
+                if !compared_ids.insert(candidate_value.id()) {
+                    continue;
+                }
+                if !self.probe_valid(candidate_index, hash, candidate_value, vm) {
+                    vm.heap.tracker.check_memory_time()?;
+                    return Ok(ProbeOutcome::Restart);
+                }
+                compared.push(candidate_value.clone_with_heap(vm.heap));
+                compared_any = true;
+                // CPython compares the stored value on the left.
+                let eq = candidate_value.py_eq(value, vm)?;
+                if !self.probe_valid(candidate_index, hash, candidate_value, vm) {
+                    vm.heap.tracker.check_memory_time()?;
+                    return Ok(ProbeOutcome::Restart);
+                }
+                if eq {
+                    return Ok(ProbeOutcome::Found(candidate_index));
+                }
+            }
+
+            if !compared_any {
+                return Ok(ProbeOutcome::Missing);
+            }
+        }
+    }
+
+    /// Snapshots the live entries colliding on `hash`: their indices, plus an
+    /// owned reference to each of their values.
+    ///
+    /// Cloning the values lets `py_eq` run without the hash-table borrow held;
+    /// the caller owns the returned values and must drop them. Only the
+    /// mutation-aware continuation calls this — the fast path above inlines the
+    /// same collection.
+    fn probe_candidates(&self, hash: u64, vm: &VM<'h>) -> (SmallVec<[usize; 2]>, SmallVec<[Value; 2]>) {
+        let mut indices: SmallVec<[usize; 2]> = SmallVec::new();
+        let mut values: SmallVec<[Value; 2]> = SmallVec::new();
+        let storage = self.get(vm.heap);
         storage.indices.find(hash, |&idx| {
             if storage.entries[idx].hash == hash {
-                candidates.push(idx);
+                indices.push(idx);
+                values.push(storage.entries[idx].value.clone_with_heap(vm.heap));
             }
             false
         });
+        (indices, values)
+    }
 
-        // Compare each candidate
-        for candidate_index in candidates {
-            let candidate_value = self.get(vm.heap).entries[candidate_index].value.clone_with_heap(vm);
-            defer_drop!(candidate_value, vm);
-            if value.py_eq(candidate_value, vm)? {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
+    /// Checks that a snapshotted candidate still names the same live entry.
+    ///
+    /// The caller checks before and after `py_eq`; a mismatch restarts the probe.
+    #[inline]
+    fn probe_valid(&self, index: usize, hash: u64, value: &Value, vm: &VM<'h>) -> bool {
+        let storage = self.get(vm.heap);
+        storage
+            .entries
+            .get(index)
+            .is_some_and(|entry| entry.hash == hash && entry.value.is(value))
     }
 }
 
@@ -354,7 +491,7 @@ impl<'a, 'h> SetIter<'a, 'h> {
     pub(crate) fn next<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<&'i Value>> {
         // Drop the previously-yielded element (no-op when `current` is `Undefined`).
         mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_time_every(self.index)?;
         let current = self.storage.get(vm.heap);
         if current.entries.len() != self.expected_len {
             return Err(ExcType::runtime_error_set_changed_size());
@@ -426,8 +563,10 @@ impl<'h> HeapRead<'h, SetStorage> {
     fn intersection(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<SetStorage> {
         let mut result_guard = DropGuard::new(SetStorage::new(), vm);
         let (result, vm) = result_guard.as_parts_mut();
-        // Iterate over the smaller set for efficiency
-        let (smaller, larger) = if self.get(vm.heap).len() <= other.get(vm.heap).len() {
+        // Iterate over the smaller set for efficiency. CPython swaps only when
+        // `other` is strictly larger, so on a tie it walks `other` and tests
+        // membership in `self` — observable through an asymmetric `__eq__`.
+        let (smaller, larger) = if self.get(vm.heap).len() < other.get(vm.heap).len() {
             (self, other)
         } else {
             (other, self)
@@ -522,25 +661,24 @@ impl<'h> HeapRead<'h, SetStorage> {
             write!(f, "{type_name}(")?;
         }
 
-        f.write_char('{')?;
+        // Format a refcount-bumped snapshot of the elements: CPython's set repr
+        // copies to a list first, so a user `__repr__` mutating the set
+        // mid-format changes nothing (and can't invalidate indices here).
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        let items = Vec::with_capacity(len);
+        defer_drop_mut!(items, vm);
         for i in 0..len {
-            if i > 0 {
-                if vm.heap.check_time().is_err() {
-                    f.write_str(", ...[timeout]")?;
-                    break;
-                }
-                f.write_str(", ")?;
-            }
-            // Refcount-bump each element before recursing so a user-defined
-            // `__repr__` mutating the set can't free the entry mid-format.
-            let value = self
-                .get(vm.heap)
-                .value_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
-            defer_drop!(value, vm);
-            value.py_repr_fmt(f, vm, heap_ids)?;
+            // The whole snapshot runs before `repr_items_fmt` reaches its first
+            // checkpoint, so it polls the deadline itself — otherwise a big set
+            // overshoots the time limit by the entire copy.
+            vm.heap.tracker.check_time_every(i)?;
+            // No user code runs during the snapshot, so `len` is still current.
+            let value = self.get(vm.heap).value_at(i).expect("index in range");
+            items.push(value.clone_with_heap(vm.heap));
         }
+
+        f.write_char('{')?;
+        repr_items_fmt(items, f, vm, heap_ids)?;
         f.write_char('}')?;
 
         if needs_prefix {
@@ -683,7 +821,7 @@ impl Set {
         defer_drop!(iterator, vm);
         let mut iterator = iterator.read(vm);
         let hint = iterator.iter_size_hint(vm);
-        let capacity = checked_preallocation_hint(hint, mem::size_of::<SetEntry>(), vm.heap.tracker())?;
+        let capacity = checked_preallocation_hint(hint, mem::size_of::<SetEntry>(), &vm.heap.tracker)?;
         let mut set = Self::with_capacity(capacity);
         while let Some(item) = iterator.py_next(vm)? {
             set.add(item, vm)?;
@@ -699,29 +837,16 @@ impl<'h> HeapRead<'h, Set> {
     /// `Ok(false)` if the element was already in the set (and the value is dropped).
     /// Returns `Err` if the element is unhashable (and the value is dropped).
     ///
-    /// Uses a two-phase lookup (collect candidates, then compare) to avoid
-    /// holding a borrow on the set storage during `py_eq` calls.
+    /// Uses the mutation-safe storage lookup ([`HeapRead::find_index`]) to
+    /// detect duplicates, so a user `__eq__` mutating the set mid-add cannot
+    /// leave the probe holding stale indices.
     pub fn add(&mut self, value: Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let mut value_guard = DropGuard::new(value, vm);
         let (value, vm) = value_guard.as_parts();
         let hash = set_element_hash(value, vm)?;
 
-        // Collect candidate indices to avoid borrow conflict between set storage and py_eq
-        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
-        let storage = &self.get(vm.heap).0;
-        storage.indices.find(hash, |&idx| {
-            if storage.entries[idx].hash == hash {
-                candidates.push(idx);
-            }
-            false
-        });
-
-        for candidate_index in candidates {
-            let candidate_value = self.get(vm.heap).0.entries[candidate_index].value.clone_with_heap(vm);
-            defer_drop!(candidate_value, vm);
-            if value.py_eq(candidate_value, vm)? {
-                return Ok(false);
-            }
+        if self.storage().find_index(value, hash, vm)?.is_some() {
+            return Ok(false);
         }
 
         // Add new entry
@@ -966,12 +1091,12 @@ impl<C: ContainsHeap> DropWithContext<C> for SetEntry {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
 
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         self.contains(item, vm).map(Some)
     }
 
@@ -979,12 +1104,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Type::Set
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(SetIterator::from_set(
-            self_id.expect("heap values have an id"),
-            self.get(vm.heap).len(),
-            vm,
-        ))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(SetIterator::from_set(self.id(), self.get(vm.heap).len(), vm))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -1006,7 +1127,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Ok(!self.get(vm.heap).is_empty())
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.sub_value(other, vm)? else {
             return Ok(None);
         };
@@ -1014,7 +1135,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.and_value(other, vm)? else {
             return Ok(None);
         };
@@ -1022,7 +1143,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.or_value(other, vm)? else {
             return Ok(None);
         };
@@ -1042,13 +1163,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         self.storage().repr_fmt(f, vm, heap_ids, "set")
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let value = match attr.static_string() {
             Some(StaticStrings::Add) => {
                 let value = args.get_one_arg("set.add", vm.heap)?;
@@ -1285,12 +1400,12 @@ impl FrozenSet {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
 
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         self.contains(item, vm).map(Some)
     }
 
@@ -1298,12 +1413,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Type::FrozenSet
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(SetIterator::from_frozen_set(
-            self_id.expect("heap values have an id"),
-            self.get(vm.heap).len(),
-            vm,
-        ))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(SetIterator::from_frozen_set(self.id(), self.get(vm.heap).len(), vm))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -1326,7 +1437,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
     /// XOR is commutative, so the hash is independent of insertion order — two
     /// frozensets with the same members hash equally regardless of how they were built.
     /// Caches the computed hash on first call (frozensets are immutable).
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         if let Some(cached) = self.get(vm.heap).cached_hash.get() {
             return Ok(Some(cached));
         }
@@ -1346,7 +1457,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Ok(!self.get(vm.heap).is_empty())
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.sub_value(other, vm)? else {
             return Ok(None);
         };
@@ -1354,7 +1465,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.and_value(other, vm)? else {
             return Ok(None);
         };
@@ -1362,7 +1473,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.or_value(other, vm)? else {
             return Ok(None);
         };
@@ -1382,13 +1493,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         self.storage().repr_fmt(f, vm, heap_ids, "frozenset")
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let value = match attr.static_string() {
             Some(StaticStrings::Copy) => {
                 args.check_zero_args("frozenset.copy", vm.heap)?;
@@ -1577,7 +1682,7 @@ impl HeapItem for SetIterator {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, SetIterator> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
     fn py_is_iterable(&self, _: &VM<'h>) -> bool {
         true
     }
@@ -1594,13 +1699,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, SetIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        let self_id = self_id.expect("heap values have an id");
-        vm.heap.inc_ref(self_id);
-        Ok(Value::Ref(self_id))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(self.clone_value(vm.heap))
     }
 
-    fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let (source_id, index, expected_len, mutable) = {
             let iter = self.get(vm.heap);
             (

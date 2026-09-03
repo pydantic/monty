@@ -57,6 +57,20 @@ pub struct Code {
 }
 
 impl Code {
+    /// Creates an empty code object for tests that only need VM context.
+    #[cfg(test)]
+    pub(crate) fn empty() -> Self {
+        Self::new(
+            Vec::new(),
+            ConstPool::default(),
+            Vec::new(),
+            Vec::new(),
+            0,
+            0,
+            Vec::new(),
+        )
+    }
+
     /// Creates a new Code object with all components.
     ///
     /// This is typically called by `CodeBuilder::build()` after compilation.

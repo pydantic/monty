@@ -210,3 +210,60 @@ except TypeError:
 members = {1, 2, 3}
 assert 2 in members
 assert 9 not in members
+
+
+# === an asymmetric __eq__ is always asked stored-value-first ===
+# CPython's set lookup compares the stored element on the left, so a stored
+# element claiming equality wins regardless of what the incoming one says.
+class Asym:
+    def __init__(self, result):
+        self.result = result
+
+    def __hash__(self):
+        return 1
+
+    def __eq__(self, other):
+        return self.result
+
+
+def _pair():
+    return Asym(True), Asym(False)
+
+
+yes, no = _pair()
+assert (yes == no) is True
+assert (no == yes) is False
+
+# every construction route collapses the pair, not just `set.add`
+yes, no = _pair()
+seeded = {yes}
+seeded.add(no)
+assert len(seeded) == 1
+
+yes, no = _pair()
+assert len({yes, no}) == 1
+
+yes, no = _pair()
+assert len(set([yes, no])) == 1
+
+yes, no = _pair()
+assert len(frozenset([yes, no])) == 1
+
+yes, no = _pair()
+updated = {yes}
+updated.update([no])
+assert len(updated) == 1
+
+# and the binary operators agree
+yes, no = _pair()
+assert len({yes} | {no}) == 1
+
+yes, no = _pair()
+assert len({yes} & {no}) == 1
+
+# `&` walks the smaller side, and on a tie the right one, so that side's
+# elements are the ones kept — visible through equal-but-distinct numbers
+assert repr({1} & {1.0}) == '{1.0}'
+assert repr({1.0} & {1}) == '{1}'
+assert repr({1, 2} & {1.0}) == '{1.0}'
+assert repr({1.0} & {1, 2}) == '{1.0}'

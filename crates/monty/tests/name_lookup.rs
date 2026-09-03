@@ -12,7 +12,9 @@
 //! - Builtins bypass the `NameLookup` mechanism entirely
 
 use monty::{MontyRun, RunProgress};
-use monty_types::{CompileOptions, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
+use monty_types::{
+    CompileOptions, ExcType, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceTracker,
+};
 
 /// Helper: drives execution through consecutive `NameLookup` yields,
 /// resolving each by calling `resolver(name)`.
@@ -178,6 +180,26 @@ fn undefined_raises_name_error() {
     assert!(
         msg.contains("NameError: name 'unknown_thing' is not defined"),
         "Expected NameError, got: {msg}"
+    );
+}
+
+/// `NameLookupResult::Error` raises the host's exception where the name was
+/// read, so sandbox code can catch it.
+#[test]
+fn error_raises_host_exception() {
+    let code = "try:\n    secret\nexcept PermissionError as e:\n    result = str(e)\nresult".to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    let lookup = progress.into_name_lookup().unwrap();
+    assert_eq!(lookup.name, "secret");
+    let error = MontyException::new(ExcType::PermissionError, Some("secret is off limits".to_owned()));
+    let progress = lookup.resume(error, PrintWriter::Stdout).unwrap();
+    assert_eq!(
+        progress.into_complete().unwrap(),
+        MontyObject::String("secret is off limits".to_owned())
     );
 }
 

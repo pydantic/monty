@@ -18,11 +18,13 @@ mod compiler;
 mod op;
 mod vm;
 
+pub(crate) use builder::CodeBuilder;
 pub use code::Code;
 pub use compiler::Compiler;
+pub(crate) use op::Opcode;
 #[cfg(test)]
 pub(crate) use op::opcode_fingerprint;
-pub(crate) use vm::{CallResult, ContainsVM, RecursionToken};
+pub(crate) use vm::{CallResult, ContainsVM, PendingLookupEffect, RecursionToken};
 pub use vm::{FrameExit, VM, VMSnapshot};
 
 /// Module-level dunder names Monty exposes with fixed values for CPython

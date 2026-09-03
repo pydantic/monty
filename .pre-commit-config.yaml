@@ -45,15 +45,27 @@ repos:
         types: [rust]
         language: system
         pass_filenames: false
-      - id: format-lint-py
-        name: Format & Lint Python
-        entry: make format-lint-py
+      - id: format--py
+        name: Format Python
+        entry: make format-py
         types: [python]
         language: system
         pass_filenames: false
-      - id: format-lint-js
-        name: Format & Lint TypeScript
-        entry: make format-js lint-js
+      - id: lint-py
+        name: Lint Python
+        entry: make lint-py
+        types: [python]
+        language: system
+        pass_filenames: false
+      - id: format-js
+        name: Format TypeScript
+        entry: make format-js
+        types: [ts]
+        language: system
+        pass_filenames: false
+      - id: lint-js
+        name: Lint TypeScript
+        entry: make lint-js
         types: [ts]
         language: system
         pass_filenames: false

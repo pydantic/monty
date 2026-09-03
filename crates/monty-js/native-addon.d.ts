@@ -38,5 +38,7 @@ export declare class NativeSession {
   resumeFromMounts(...args: unknown[]): Promise<object>
   resumeFuture(...args: unknown[]): Promise<object>
   resumeNameLookup(...args: unknown[]): Promise<object>
+  resumeLazyAttr(...args: unknown[]): Promise<object>
+  resumeNameLookupError(...args: unknown[]): Promise<object>
   resolveFutures(...args: unknown[]): Promise<object>
 }

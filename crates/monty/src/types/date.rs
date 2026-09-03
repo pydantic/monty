@@ -18,7 +18,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     types::{
         AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type,
@@ -184,7 +184,7 @@ impl HeapItem for Date {
 
 /// `HeapRead`-based dispatch for `Date`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident dates.
-impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Date
     }
@@ -200,7 +200,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         Ok(Some(*self.get(vm.heap) == *other.get(vm.heap)))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
@@ -225,14 +225,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         Ok(allocate_string(format!("{year:04}-{month:02}-{day:02}"), vm.heap))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
         Ok(py_add(*self.get(vm.heap), *other.get(vm.heap), vm.heap))
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::Date(other)) => Ok(py_sub_date(*self.get(vm.heap), *other.get(vm.heap), vm.heap)),
             Some(HeapReadOutput::TimeDelta(other)) => {
@@ -242,13 +242,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         }
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let date = *self.get(vm.heap);
         match attr.string_id() {
             Some(id) if id == StaticStrings::Isoformat => {
@@ -293,7 +287,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
                     date.0.weekday().number_from_monday(),
                 ))))
             }
-            _ => Err(ExcType::attribute_error(Type::Date, attr.as_str(vm.interns))),
+            _ => Err(ExcType::attribute_error_method(Type::Date, attr, args, vm)),
         }
     }
 

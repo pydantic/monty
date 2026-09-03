@@ -11,6 +11,8 @@ replaced transparently — your process is never at risk.
 ## Installation
 
 ```bash
+uv add pydantic-monty
+# or
 pip install pydantic-monty
 ```
 
@@ -26,6 +28,31 @@ distributions that make up a working sandbox:
 Install `pydantic-monty-client` on its own when the worker binary comes from
 somewhere else — a base image, a system package, a build of this repo — and
 point `pydantic_monty` at it via `MONTY_BIN`, `binary_path=`, or `PATH`.
+
+## CLI
+
+Usage without installing via [uvx](https://docs.astral.sh/uv/guides/tools/):
+
+```bash
+uvx pydantic-monty --help
+```
+
+`uvx pydantic-monty` runs a REPL, or `uvx pydantic-monty <file>` runs a file.
+
+Or to install `monty` locally, run
+
+```bash
+uv tool install pydantic-monty-runtime
+# then to run the repl:
+monty
+# or run a file:
+monty <file>
+# or for help:
+monty --help
+```
+
+Within an environment that already has `pydantic-monty` installed,
+`python -m pydantic_monty` runs the same binary.
 
 ## Usage
 
@@ -98,6 +125,44 @@ with Monty() as pool:
     print(result)
     #> 11
 ```
+
+### Host objects and classes
+
+Wrap a host object in `ClassInstance` to let the sandbox read chosen attributes and call chosen methods on it, or a
+class in `ClassType` with `init=True` to let sandbox code construct it; every policy is an allow-list, and the sandbox returning the
+object hands you the original back.
+
+```python
+from dataclasses import dataclass
+
+from pydantic_monty import ClassInstance, ClassType, Monty
+
+
+@dataclass
+class Person:
+    name: str
+    age: int
+
+    def greeting(self) -> str:
+        return f'hi {self.name}'
+
+
+person = Person(name='Samuel', age=4)
+with Monty() as pool:
+    with pool.checkout() as session:
+        wrapper = ClassInstance(person, eager_attrs='all', allowed_methods={'greeting'})
+        code = 'assert user.greeting() == "hi Samuel"\nuser'
+        result = session.feed_run(code, inputs={'user': wrapper})
+        print(result is person)
+        #> True
+        wrapper = ClassType(Person, init=True, instance_eager_attrs='all')
+        print(session.feed_run('Person("Ada", 36).name', inputs={'Person': wrapper}))
+        #> Ada
+```
+
+Method return values are not wrapped automatically: override `convert_value` to wrap derived objects with policies you
+choose (each wrapper is kept by the session until it closes). Instances defined inside the sandbox arrive as read-only
+`MontyClassProxy` stand-ins. See the [host objects docs](https://github.com/pydantic/monty/blob/main/docs/host-objects.md).
 
 ### Snapshots: pausing and resuming execution
 
@@ -248,10 +313,12 @@ with Monty() as pool:
             """
 ```
 
-### Crash isolation
+### Crash/failure isolation
+
+Every failure in monty code execution raises a subclass of `MontyError`.
 
 ```python test="skip"
-from pydantic_monty import Monty, MontyCrashedError
+from pydantic_monty import Monty, MontyError
 
 hostile_code = '...'
 
@@ -259,7 +326,7 @@ with Monty() as pool:
     with pool.checkout() as session:
         try:
             session.feed_run(hostile_code)  # even a segfault is contained
-        except MontyCrashedError:
+        except MontyError:
             ...  # the worker died; the pool already replaced it
 ```
 
@@ -267,17 +334,17 @@ with Monty() as pool:
 
 The Python Logfire integration instruments the pool through a private adapter
 hook. It propagates the active Python OTel context into each checkout, which
-becomes one session span with nested feed and suspension
-spans recording code, inputs, external calls, exceptions, and `print` output.
-Session dumps and restores are recorded by size only.
+becomes one session span with nested feed and suspension spans recording code,
+inputs, external calls, exceptions, and `print` output. Session dumps and
+restores are recorded by size only.
 
 The same adapter also receives pool metrics — live and host-blocked worker
 counts, checkout waits, worker deaths by reason, run durations and the sandbox
-execution time of each feed. Unlike the spans these cover every
-checkout, and they record no sandbox-supplied values: metric attributes are
-closed sets, so nothing a script chooses (a called function's name, an
-exception class, a path) can become a dimension. An adapter that does not implement
-`record_metric` receives none of them.
+execution time of each feed. Unlike the spans these cover every checkout, and
+they record no sandbox-supplied values: metric attributes are closed sets, so
+nothing a script chooses (a called function's name, an exception class, a path)
+can become a dimension. An adapter that does not implement `record_metric`
+receives none of them.
 
 Logfire's Python SDK owns sampling, export credentials, resources, flushing,
 and shutdown. The Rust binding runs only an exporter-free processor pipeline;
@@ -286,5 +353,5 @@ is explicitly installed. Enabled instrumentation captures content, truncating
 large values at the telemetry attribute size limit.
 
 See `limitations/pool-architecture.md` in the repository for the behavioural
-details of subprocess execution (host-side mounts, buffered print
-callbacks, session dumps).
+details of subprocess execution (host-side mounts, buffered print callbacks,
+session dumps).

@@ -163,7 +163,7 @@ fn int_pow_int(b: i64, e: i64, heap: &mut Heap) -> RunResult<Value> {
         } else {
             // Overflow - promote to LongInt
             // Check size before computing to prevent DoS
-            check_pow_size(i64_bits(b), u64::from(exp_u32), heap.tracker())?;
+            check_pow_size(i64_bits(b), u64::from(exp_u32), &heap.tracker)?;
             let bi = BigInt::from(b).pow(exp_u32);
             Ok(LongInt::new(bi).into_value(heap))
         }
@@ -173,7 +173,7 @@ fn int_pow_int(b: i64, e: i64, heap: &mut Heap) -> RunResult<Value> {
         #[expect(clippy::cast_sign_loss)]
         let exp_u64 = e as u64;
         // Check size before computing to prevent DoS
-        check_pow_size(i64_bits(b), exp_u64, heap.tracker())?;
+        check_pow_size(i64_bits(b), exp_u64, &heap.tracker)?;
         let base_bi = BigInt::from(b);
         let bi = bigint_pow_large(&base_bi, exp_u64)?;
         Ok(LongInt::new(bi).into_value(heap))
@@ -205,7 +205,7 @@ fn int_pow_longint(b: i64, e: &BigInt, heap: &Heap) -> RunResult<Value> {
         Ok(Value::Int(if is_even { 1 } else { -1 }))
     } else if let Some(exp_u32) = e.to_u32() {
         // Check size before computing to prevent DoS
-        check_pow_size(i64_bits(b), u64::from(exp_u32), heap.tracker())?;
+        check_pow_size(i64_bits(b), u64::from(exp_u32), &heap.tracker)?;
         let bi = BigInt::from(b).pow(exp_u32);
         Ok(LongInt::new(bi).into_value(heap))
     } else {
@@ -228,7 +228,7 @@ fn longint_pow_int(b: &BigInt, e: i64, heap: &Heap) -> RunResult<Value> {
         }
     } else if let Ok(exp_u32) = u32::try_from(e) {
         // Check size before computing to prevent DoS
-        check_pow_size(b.bits(), u64::from(exp_u32), heap.tracker())?;
+        check_pow_size(b.bits(), u64::from(exp_u32), &heap.tracker)?;
         let bi = b.pow(exp_u32);
         Ok(LongInt::new(bi).into_value(heap))
     } else {
@@ -237,7 +237,7 @@ fn longint_pow_int(b: &BigInt, e: i64, heap: &Heap) -> RunResult<Value> {
         #[expect(clippy::cast_sign_loss)]
         let exp_u64 = e as u64;
         // Check size before computing to prevent DoS
-        check_pow_size(b.bits(), exp_u64, heap.tracker())?;
+        check_pow_size(b.bits(), exp_u64, &heap.tracker)?;
         let bi = bigint_pow_large(b, exp_u64)?;
         Ok(LongInt::new(bi).into_value(heap))
     }
@@ -257,7 +257,7 @@ fn longint_pow_longint(b: &BigInt, e: &BigInt, heap: &Heap) -> RunResult<Value> 
         }
     } else if let Some(exp_u32) = e.to_u32() {
         // Check size before computing to prevent DoS
-        check_pow_size(b.bits(), u64::from(exp_u32), heap.tracker())?;
+        check_pow_size(b.bits(), u64::from(exp_u32), &heap.tracker)?;
         let bi = b.pow(exp_u32);
         Ok(LongInt::new(bi).into_value(heap))
     } else {

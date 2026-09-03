@@ -21,6 +21,7 @@ mod len;
 mod map;
 mod min_max; // min and max share implementation
 mod next;
+pub(crate) mod object_setattr;
 mod oct;
 pub(crate) mod open;
 mod ord;
@@ -139,8 +140,9 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Divmod => divmod::builtin_divmod(vm, args),
             Self::Enumerate => enumerate::builtin_enumerate(vm, args),
             Self::Filter => filter::builtin_filter(vm, args),
-            Self::Getattr => getattr::builtin_getattr(vm, args),
-            Self::Hasattr => hasattr::builtin_hasattr(vm, args),
+            // `getattr()` / `hasattr()` may suspend a lazy host attribute lookup.
+            Self::Getattr => return getattr::builtin_getattr(vm, args),
+            Self::Hasattr => return hasattr::builtin_hasattr(vm, args),
             Self::Hash => hash::builtin_hash(vm, args),
             Self::Hex => hex::builtin_hex(vm, args),
             Self::Id => id::builtin_id(vm, args),
@@ -160,6 +162,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Reversed => reversed::builtin_reversed(vm, args),
             Self::Round => round::builtin_round(vm, args),
             Self::Setattr => setattr::builtin_setattr(vm, args),
+            Self::ObjectSetattr => object_setattr::builtin_object_setattr(vm, args),
             Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),

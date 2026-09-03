@@ -1,34 +1,27 @@
 // Drives a Monty worker over a message channel (a Web Worker, or Node's
 // `worker_threads`) as a [`PooledWorker`].
 //
-// This is where the browser model earns its keep over the in-process one: each
-// turn is a `postMessage` round-trip, and a turn that runs too long is stopped
-// by `terminate()` — the hard, unconditional kill the in-process path lacks.
-// The channel correlates replies to requests by id, arms a per-turn watchdog,
-// and rejects every in-flight request when the worker dies or is killed (so the
-// transport sees a crash and the pool replaces it).
+// Each turn is a `postMessage` round-trip. The channel correlates replies to
+// requests by id, arms a per-turn watchdog, and rejects every in-flight request
+// when the worker dies or is killed.
 
-import type { DecodedChildEvent, Dispatcher } from './host.js'
+import type { DispatchRequest as ComponentRequest, DispatchResult, Dispatcher } from './host.js'
 import type { PooledWorker } from './pool.js'
 
-/** A request sent to the worker: a turn's framed `ParentRequest`. */
+/** A semantic component request sent to a worker. */
 export interface DispatchRequest {
   id: number
-  frame: Uint8Array
+  request: ComponentRequest
 }
 
-/** A reply from the worker: a turn's framed `ChildEvent`s. */
-export interface DispatchReply {
+/** A semantic component reply sent back by a worker. */
+export interface DispatchReply extends DispatchResult {
   id: number
-  reply: Uint8Array
-  status: number
-  events?: DecodedChildEvent[]
 }
 
 /**
  * The slice of a worker handle the channel needs, satisfied structurally by a
- * browser `Worker` (via a tiny adapter for its event API) and a Node
- * `worker_threads.Worker`.
+ * browser `Worker` and a Node `worker_threads.Worker`.
  */
 export interface WorkerLike {
   post(message: DispatchRequest): void
@@ -43,7 +36,7 @@ export interface WorkerChannelOptions {
 }
 
 interface Pending {
-  resolve(value: { reply: Uint8Array; status: number; events?: DecodedChildEvent[] }): void
+  resolve(value: DispatchResult): void
   reject(err: Error): void
   timer: ReturnType<typeof setTimeout> | null
 }
@@ -67,14 +60,14 @@ export class WorkerChannel implements PooledWorker {
   }
 
   /** Posts one turn and resolves with its reply, or rejects on death/timeout. */
-  dispatch: Dispatcher = (frame) => {
+  dispatch: Dispatcher = (request) => {
     if (!this.live) return Promise.reject(new Error('worker is dead'))
     const id = this.nextId++
     return new Promise((resolve, reject) => {
       const timeoutMs = this.options.requestTimeoutMs
       const timer = timeoutMs === undefined ? null : setTimeout(() => this.onTimeout(), timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
-      this.worker.post({ id, frame })
+      this.worker.post({ id, request })
     })
   }
 
@@ -88,11 +81,10 @@ export class WorkerChannel implements PooledWorker {
     if (!pending) return
     this.pending.delete(reply.id)
     if (pending.timer) clearTimeout(pending.timer)
-    pending.resolve({ reply: reply.reply, status: reply.status })
+    pending.resolve({ status: reply.status, events: reply.events })
   }
 
   private onTimeout(): void {
-    // a synchronous sandbox turn can only be stopped by killing the worker
     this.kill(new Error('turn exceeded the request timeout'))
   }
 

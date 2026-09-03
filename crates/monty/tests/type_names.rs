@@ -1,4 +1,4 @@
-use monty_types::{ExcType, MontyType};
+use monty_types::{DictPairs, ExcType, MontyClassType, MontyType, MontyUuid};
 use strum::IntoEnumIterator;
 
 /// `MontyType::from_type_name` must be the exact inverse of `Display`/`name()`
@@ -35,13 +35,20 @@ fn exception_type_names_round_trip() {
 }
 
 /// A sandbox-class type displays as its class name, but names never parse back
-/// to `Instance`: a class binding cannot be reconstructed from a name, and
-/// `"object"` (the historical generic rendering) is not a Monty type at all.
+/// to `Instance`: a class binding cannot be reconstructed from a name. `"object"`
+/// does parse, to the builtin of that name — never to an instance, which is the
+/// confusion this guards against.
 #[test]
 fn instance_type_is_not_nameable() {
-    let t = MontyType::Instance("Foo".to_owned());
+    let t = MontyType::Instance(Box::new(MontyClassType {
+        name: "Foo".to_owned(),
+        id: MontyUuid::from_u128(1),
+        host_defined: false,
+        is_dataclass: false,
+        attrs: DictPairs::default(),
+    }));
     assert_eq!(t.to_string(), "Foo");
     assert_eq!(t.name(), "Foo");
     assert_eq!(MontyType::from_type_name("Foo"), None);
-    assert_eq!(MontyType::from_type_name("object"), None);
+    assert_eq!(MontyType::from_type_name("object"), Some(MontyType::Object));
 }

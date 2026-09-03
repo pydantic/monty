@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 // these files first because they include macros for the rest of the crate to use
+mod boundary_uuid;
 mod heap;
 mod heap_traits;
 
@@ -23,6 +24,7 @@ mod namespace;
 mod object_bridge;
 mod os_dispatch;
 mod parse;
+mod predicate;
 mod prepare;
 mod repl;
 mod resource_checks;
@@ -35,9 +37,13 @@ mod stringize;
 mod types;
 mod value;
 
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub use crate::function::FunctionMetadataFault;
 #[cfg(feature = "ref-count-return")]
 pub use crate::run::RefCountOutput;
 pub use crate::{
+    dump_format::{DUMP_VERSION, Dump, DumpError, Session, SessionRef, dump},
     repl::{
         MontyRepl, ReplContinuationMode, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,
         ReplResolveFutures, ReplStartError, detect_repl_continuation_mode,

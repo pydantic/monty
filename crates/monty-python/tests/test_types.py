@@ -137,7 +137,7 @@ from collections import deque
 [
     int, str, type, type(None), type(...), type(iter([])), type(iter(lambda: 0, 0)),
     type(Path('/x')), Path,
-    datetime.datetime, datetime.date, datetime.timedelta, datetime.timezone,
+    datetime.datetime, datetime.date, datetime.time, datetime.timedelta, datetime.timezone,
     type(re.compile('a')), type(re.match('a', 'a')),
     type(deque()),
 ]
@@ -155,6 +155,7 @@ from collections import deque
         pathlib.PurePosixPath,
         datetime.datetime,
         datetime.date,
+        datetime.time,
         datetime.timedelta,
         datetime.timezone,
         re.Pattern,
@@ -177,6 +178,7 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         type(iter(lambda: 0, 0)),
         datetime.datetime,
         datetime.date,
+        datetime.time,
         datetime.timedelta,
         datetime.timezone,
         pathlib.PurePosixPath,
@@ -245,6 +247,52 @@ def test_aware_datetime_input_roundtrip(monty_run: RunMonty):
     assert (type(result).__name__, repr(result)) == snapshot(
         ('datetime', 'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)')
     )
+
+
+def test_time_input_roundtrip(monty_run: RunMonty):
+    result = monty_run('x', inputs={'x': datetime.time(10, 30, 5, 123456)})
+    assert (type(result).__name__, repr(result)) == snapshot(('time', 'datetime.time(10, 30, 5, 123456)'))
+
+
+def test_aware_time_input_roundtrip(monty_run: RunMonty):
+    result = monty_run('x', inputs={'x': datetime.time(10, 30, tzinfo=datetime.timezone.utc)})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('time', 'datetime.time(10, 30, tzinfo=datetime.timezone.utc)')
+    )
+
+
+def test_named_tz_time_input_roundtrip(monty_run: RunMonty):
+    tz = datetime.timezone(datetime.timedelta(hours=2), 'PLUS2')
+    result = monty_run('x', inputs={'x': datetime.time(1, 2, tzinfo=tz)})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('time', "datetime.time(1, 2, tzinfo=datetime.timezone(datetime.timedelta(seconds=7200), 'PLUS2'))")
+    )
+
+
+def test_time_fold_survives_roundtrip(monty_run: RunMonty):
+    """`fold` is carried across the boundary rather than silently reset to 0."""
+    result = monty_run('x', inputs={'x': datetime.time(1, 2, fold=1)})
+    assert (repr(result), result.fold) == snapshot(('datetime.time(1, 2, fold=1)', 1))
+
+
+def test_time_output_from_sandbox(monty_run: RunMonty):
+    """A `time` built inside the sandbox comes back as a real `datetime.time`."""
+    result = monty_run('import datetime\ndatetime.time(23, 59, 59, 999999)')
+    assert (type(result).__name__, repr(result)) == snapshot(('time', 'datetime.time(23, 59, 59, 999999)'))
+
+
+def test_aware_time_output_from_sandbox(monty_run: RunMonty):
+    code = 'import datetime\ndatetime.time(6, 7, tzinfo=datetime.timezone(datetime.timedelta(hours=-5)))'
+    result = monty_run(code)
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('time', 'datetime.time(6, 7, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=68400)))')
+    )
+
+
+def test_time_in_container_roundtrip(monty_run: RunMonty):
+    """Nested `time` values convert like any other temporal type."""
+    result = monty_run('x', inputs={'x': {'t': [datetime.time(1, 2)]}})
+    assert result == snapshot({'t': [datetime.time(1, 2)]})
 
 
 def test_timedelta_input_roundtrip(monty_run: RunMonty):

@@ -6,11 +6,14 @@
 # NOT tested here, and why:
 # - `del d[i]`: CPython supports it, but the `del` statement is unimplemented
 #   Monty-wide (a parse error), so including it would fail to parse the file.
-# - `type(d).__name__`: CPython gives the bare 'deque'; Monty gives the qualified
-#   'collections.deque' for all module-scoped types. Pre-existing repo-wide
-#   divergence, see limitations/collections.md.
 
 from collections import deque
+
+# === Type name ===
+# The dotted `tp_name` shows in reprs and error messages, the bare one in
+# `__name__`, as CPython does it.
+assert str(type(deque())) == "<class 'collections.deque'>"
+assert type(deque()).__name__ == 'deque'
 
 # === Construction ===
 assert list(deque()) == [], 'empty deque'

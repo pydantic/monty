@@ -201,3 +201,188 @@ nested_1 = asyncio.gather(task1(), task1())
 nested_2 = asyncio.gather(nested_1, nested_1)
 
 assert await nested_2 == [[1, 1], [1, 1]]  # pyright: ignore
+
+
+# === Nested gather that settles before its parent finishes its items ===
+# An empty gather has nothing to wait for, so it settles while the outer gather
+# is still working through its items; the result must land in the outer's slot
+# rather than leaving the outer waiting on it.
+assert await asyncio.gather(asyncio.gather()) == [[]]  # pyright: ignore
+assert await asyncio.gather(asyncio.gather(asyncio.gather())) == [[[]]]  # pyright: ignore
+
+settled = asyncio.gather()
+assert await asyncio.gather(settled, task1(), settled) == [[], 1, []]  # pyright: ignore
+
+
+# === Sibling failure while blocked on a gather of gathers ===
+# The failing sibling settles the gather that a task blocked on
+# `gather(gather(...))` was a child of, whose inner gather owns a task of its
+# own; the scheduler must keep running after.
+async def leaf():
+    return 1
+
+
+async def blocked_on_nested():
+    return await asyncio.gather(asyncio.gather(leaf()))
+
+
+async def detonate_sibling():
+    raise ValueError('boom')
+
+
+try:
+    await asyncio.gather(blocked_on_nested(), detonate_sibling())  # pyright: ignore
+    assert False, 'expected the failing sibling to propagate'
+except ValueError as e:
+    assert str(e) == 'boom'
+
+assert await asyncio.gather(leaf(), leaf()) == [1, 1]  # pyright: ignore
+
+
+# === A failing gather leaves its siblings running ===
+# CPython does not cancel the other children when one raises; they stay on the
+# loop and finish as it turns. `ticks` gives the loop those turns, and the
+# order the orphans interleave in is not part of the contract, hence `sorted`.
+sibling_log = []
+
+
+async def tick():
+    pass
+
+
+async def ticks(n):
+    for _ in range(n):
+        await asyncio.gather(tick())
+
+
+async def step(tag):
+    sibling_log.append(tag)
+
+
+async def stepping_worker():
+    for i in range(3):
+        await asyncio.gather(step('step' + str(i)))
+    sibling_log.append('finished')
+
+
+async def raise_boom():
+    raise ValueError('boom')
+
+
+try:
+    await asyncio.gather(stepping_worker(), raise_boom())  # pyright: ignore
+    assert False, 'expected the failing child to propagate'
+except ValueError as e:
+    assert str(e) == 'boom'
+
+await ticks(8)  # pyright: ignore
+assert sorted(sibling_log) == ['finished', 'step0', 'step1', 'step2']
+
+
+# === ... including the children of a gather a sibling was awaiting ===
+nested_log = []
+
+
+async def nested_leaf():
+    nested_log.append('leaf')
+
+
+async def awaits_nested_gather():
+    await asyncio.gather(asyncio.gather(nested_leaf()))
+    nested_log.append('holder finished')
+
+
+try:
+    await asyncio.gather(awaits_nested_gather(), raise_boom())  # pyright: ignore
+    assert False, 'expected the failing child to propagate'
+except ValueError as e:
+    assert str(e) == 'boom'
+
+await ticks(4)  # pyright: ignore
+assert sorted(nested_log) == ['holder finished', 'leaf']
+
+
+# === A gather that fails while starting up leaves them running too ===
+# The second item is already awaited, so `gather` itself raises — after the
+# first item has been spawned. That one keeps running.
+startup_log = []
+
+
+async def startup_step():
+    startup_log.append('ran')
+
+
+reused_coroutine = startup_step()
+await reused_coroutine  # pyright: ignore
+startup_log.clear()
+
+try:
+    await asyncio.gather(startup_step(), reused_coroutine)  # pyright: ignore
+    assert False, 'expected the reused coroutine to be rejected'
+except RuntimeError as e:
+    assert str(e) == 'cannot reuse already awaited coroutine'
+
+await ticks(4)  # pyright: ignore
+assert startup_log == ['ran']
+
+
+# === An exception in a task nobody awaits any more is discarded ===
+# CPython stores it on the task and reports it unretrieved at collection;
+# either way it does not reach the code that stopped waiting.
+orphan_log = []
+
+
+async def raises_after_yielding():
+    await asyncio.gather(tick())
+    orphan_log.append('reached the raise')
+    raise KeyError('nobody is listening')
+
+
+try:
+    await asyncio.gather(raises_after_yielding(), raise_boom())  # pyright: ignore
+    assert False, 'expected the failing child to propagate'
+except ValueError as e:
+    assert str(e) == 'boom'
+
+await ticks(4)  # pyright: ignore
+orphan_log.append('run continues')
+assert orphan_log == ['reached the raise', 'run continues']
+
+
+# === A nested gather outlives the parent that settled ===
+# The inner gather is an item of the failing one, so it keeps driving its own
+# children. When one of them raises it settles on that error with nobody left
+# to raise into, and when it is the last one in flight the settling releases
+# the inner gather's final reference.
+nested_late_log = []
+
+
+async def nested_raiser():
+    await asyncio.gather(tick())
+    raise KeyError('inner raised late')
+
+
+async def nested_survivor():
+    await asyncio.gather(tick())
+    nested_late_log.append('survivor finished')
+
+
+try:
+    await asyncio.gather(asyncio.gather(nested_raiser(), nested_survivor()), raise_boom())  # pyright: ignore
+    assert False, 'expected the failing child to propagate'
+except ValueError as e:
+    assert str(e) == 'boom'
+
+await ticks(6)  # pyright: ignore
+assert nested_late_log == ['survivor finished']
+
+# The same with the raiser as the inner gather's only child.
+try:
+    await asyncio.gather(asyncio.gather(nested_raiser()), raise_boom())  # pyright: ignore
+    assert False, 'expected the failing child to propagate'
+except ValueError as e:
+    assert str(e) == 'boom'
+
+await ticks(6)  # pyright: ignore
+nested_late_log.append('run continues')
+assert nested_late_log == ['survivor finished', 'run continues']

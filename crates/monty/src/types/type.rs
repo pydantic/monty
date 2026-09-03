@@ -4,6 +4,7 @@ use num_bigint::BigInt;
 
 use crate::{
     args::{ArgValues, FromArgs, is_long_int},
+    builtins::object_setattr::builtin_object_setattr,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -11,15 +12,15 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     modules::collections,
     types::{
-        AttrCallResult, Bytes, Deque, Dict, FrozenSet, List, LongInt, Path, PyTrait, Range, Set, Slice, Str, TimeZone,
-        Tuple,
+        AttrCallResult, Bytes, Deque, Dict, FrozenSet, List, LongInt, Partial, Path, PyTrait, Range, Set, Slice, Str,
+        TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         date, datetime,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
         str::StringRepr,
-        timedelta,
+        time, timedelta,
     },
     value::Value,
 };
@@ -41,6 +42,7 @@ use crate::{
     serde::Deserialize,
     strum::EnumString,
     strum::IntoStaticStr,
+    strum::VariantNames,
 )]
 #[strum(serialize_all = "lowercase")]
 #[expect(
@@ -59,10 +61,17 @@ pub enum Type {
     Float,
     Range,
     Slice,
+    /// The four `datetime` classes are qualified like `collections.deque`:
+    /// this is the `tp_name` CPython gives these C types, so it is the
+    /// spelling its reprs and type-naming error messages use. `__name__`
+    /// reports the bare name, see `dunder_name`.
+    #[strum(serialize = "datetime.date")]
     Date,
     #[strum(serialize = "datetime.datetime")]
     DateTime,
+    #[strum(serialize = "datetime.timedelta")]
     TimeDelta,
+    #[strum(serialize = "datetime.timezone")]
     TimeZone,
     Str,
     Bytes,
@@ -85,7 +94,13 @@ pub enum Type {
     DictValues,
     Set,
     FrozenSet,
-    Dataclass,
+    /// The type of a host-backed class instance ([`HeapData::HostClass`]),
+    /// for internal dispatch only: `type(x)` materializes a `HostClassType`
+    /// instead, so it never reaches Python code or the host boundary.
+    ///
+    /// [`HeapData::HostClass`]: crate::heap::HeapData::HostClass
+    #[strum(serialize = "HostClass")]
+    HostClass,
     /// An instance of a user-defined class (`class Foo: ...`), carrying the
     /// `HeapId` of its class object so the real class name can be resolved
     /// (via [`Type::name`]) for error messages and reprs. The class
@@ -176,8 +191,8 @@ pub enum Type {
     #[strum(serialize = "Field")]
     DataclassField,
     /// `collections.deque` — qualified like `datetime.datetime`/`re.Pattern` so
-    /// the name matches CPython's `repr` and error messages; only `__name__`
-    /// diverges from CPython's bare `'deque'`. See `limitations/collections.md`.
+    /// the name matches CPython's `repr` and error messages; `__name__` reports
+    /// the bare `'deque'`, see `dunder_name`.
     #[strum(serialize = "collections.deque")]
     Deque,
     /// `iter(deque(...))` — CPython's `_collections._deque_iterator`.
@@ -193,6 +208,28 @@ pub enum Type {
     ItertoolsChain,
     #[strum(serialize = "itertools.cycle")]
     ItertoolsCycle,
+    /// The `__dataclass_params__` of a `@dataclass`, named as CPython's
+    /// private `dataclasses._DataclassParams` reports itself.
+    #[strum(serialize = "_DataclassParams")]
+    DataclassParams,
+    #[strum(serialize = "itertools.takewhile")]
+    ItertoolsTakeWhile,
+    #[strum(serialize = "itertools.dropwhile")]
+    ItertoolsDropWhile,
+    #[strum(serialize = "itertools.filterfalse")]
+    ItertoolsFilterFalse,
+    #[strum(serialize = "itertools.starmap")]
+    ItertoolsStarMap,
+    /// `object` — the builtin name only, not a base class: Monty has no
+    /// inheritance, so it exists to carry `object.__setattr__`, the write that
+    /// bypasses a class's attribute hooks. Constructing it is unsupported.
+    Object,
+    #[strum(serialize = "datetime.time")]
+    Time,
+    /// `functools.partial` — qualified like `collections.deque`, so
+    /// `type(p)` reads `<class 'functools.partial'>`.
+    #[strum(serialize = "functools.partial")]
+    Partial,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -234,6 +271,19 @@ impl Type {
             Self::Instance(class_id) => class_name(class_id, heap, interns),
             Self::Exception(exc_type) => Cow::Borrowed(exc_type.into()),
             other => Cow::Borrowed(other.into()),
+        }
+    }
+
+    /// The name CPython's `__name__` reports: [`name`](Self::name) with any
+    /// module qualifier stripped (`datetime.date` → `date`). CPython keeps one
+    /// dotted `tp_name` per C type and derives the bare `__name__` from it, so
+    /// reprs and error messages qualify where `__name__` does not. Sandbox
+    /// class names ([`Instance`](Self::Instance)) are identifiers, so
+    /// stripping is a no-op for them.
+    pub(crate) fn dunder_name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
+        match self.name(heap, interns) {
+            Cow::Borrowed(name) => Cow::Borrowed(name.rsplit_once('.').map_or(name, |(_, bare)| bare)),
+            owned @ Cow::Owned(_) => owned,
         }
     }
 
@@ -303,6 +353,7 @@ impl Type {
             "iter" => Some(Self::Iterator),
             "type" => Some(Self::Type),
             "property" => Some(Self::Property),
+            "object" => Some(Self::Object),
             _ => None,
         }
     }
@@ -331,6 +382,10 @@ impl Type {
                 | Self::ItertoolsIslice
                 | Self::ItertoolsChain
                 | Self::ItertoolsCycle
+                | Self::ItertoolsTakeWhile
+                | Self::ItertoolsDropWhile
+                | Self::ItertoolsFilterFalse
+                | Self::ItertoolsStarMap
         )
     }
 
@@ -342,6 +397,10 @@ impl Type {
     #[must_use]
     pub fn is_instance_of(self, other: Self) -> bool {
         if self == other {
+            true
+        } else if other == Self::Object {
+            // `object` is the universal base: every value is an instance of it,
+            // even though Monty stores it in no MRO (see `types/class.rs`).
             true
         } else if self == Self::Bool && other == Self::Int {
             // bool is a subtype of int in Python
@@ -445,10 +504,22 @@ impl Type {
             (Self::DateTime, m) if m == StaticStrings::Fromisoformat => {
                 datetime::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
             }
+            // `object.__setattr__(obj, name, value)` called directly, which is
+            // how it is nearly always reached; `object.__setattr__` as a value
+            // is handled by `Value::py_getattr`.
+            (Self::Object, m) if vm.interns.get_str(m) == "__setattr__" => {
+                builtin_object_setattr(vm, args).map(AttrCallResult::Value)
+            }
+            (Self::Time, m) if m == StaticStrings::Fromisoformat => {
+                time::class_fromisoformat(vm, args).map(AttrCallResult::Value)
+            }
             _ => {
                 let method_name = vm.interns.get_str(method_id);
                 args.drop_with(vm.heap);
-                Err(ExcType::attribute_error(self, method_name))
+                Err(ExcType::attribute_error_type(
+                    &self.name(vm.heap, vm.interns),
+                    method_name,
+                ))
             }
         }
     }
@@ -474,10 +545,12 @@ impl Type {
             Self::Slice => Slice::init(vm, args),
             Self::Date => date::init(vm, args),
             Self::DateTime => datetime::init(vm, args),
+            Self::Time => time::init(vm, args),
             Self::TimeDelta => timedelta::init(vm, args),
             Self::TimeZone => TimeZone::init(vm, args),
             Self::Iterator => super::iter::init(vm, args),
             Self::Path => Path::init(vm, args),
+            Self::Partial => Partial::init(vm, args),
 
             // Primitive types - inline implementation
             Self::Int => int_init(vm, args),

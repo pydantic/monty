@@ -24,12 +24,15 @@ use std::{
 
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
+// only the dump round-trip needs these, and it is skipped under memory-model-checks
+#[cfg(not(feature = "memory-model-checks"))]
+use monty::{Dump, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
-    MontyObject, MontyTimeZone, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker,
-    dir_stat, file_stat,
+    CompileOptions, DictPairs, ExcType, ExtFunctionResult, FileMode, MontyClassInstance, MontyClassType, MontyDate,
+    MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyTimeZone, MontyUuid, NameLookupResult,
+    OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -439,7 +442,7 @@ enum DispatchResult {
 ///
 /// # Panics
 /// Panics if the function name is unknown or arguments are invalid types.
-fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult {
+fn dispatch_external_call(name: &str, args: Vec<MontyObject>, registry: &mut FixtureRegistry) -> DispatchResult {
     match name {
         "add_ints" => {
             assert!(args.len() == 2, "add_ints requires 2 arguments");
@@ -479,75 +482,47 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
         }
         "make_point" => {
             assert!(args.is_empty(), "make_point requires no arguments");
-            // Return an immutable Point(x=1, y=2) dataclass
-            DispatchResult::Sync(
-                MontyObject::Dataclass {
-                    name: "Point".to_string(),
-                    type_id: 1, // distinct per fixture class (real hosts pass the Python type id)
-                    field_names: vec!["x".to_string(), "y".to_string()],
-                    attrs: vec![
-                        (MontyObject::String("x".to_string()), MontyObject::Int(1)),
-                        (MontyObject::String("y".to_string()), MontyObject::Int(2)),
-                    ]
-                    .into(),
-
-                    frozen: true,
-                }
-                .into(),
-            )
+            // Register and return a Point(x=1, y=2)
+            DispatchResult::Sync(registry.make_point(1, 2).into())
         }
         "make_mutable_point" => {
             assert!(args.is_empty(), "make_mutable_point requires no arguments");
-            // Return a mutable Point(x=1, y=2) dataclass
+            // Register and return a MutablePoint(x=1, y=2)
             DispatchResult::Sync(
-                MontyObject::Dataclass {
-                    name: "MutablePoint".to_string(),
-                    type_id: 2, // distinct per fixture class (real hosts pass the Python type id)
-                    field_names: vec!["x".to_string(), "y".to_string()],
-                    attrs: vec![
-                        (MontyObject::String("x".to_string()), MontyObject::Int(1)),
-                        (MontyObject::String("y".to_string()), MontyObject::Int(2)),
-                    ]
+                registry
+                    .register(Fixture {
+                        class_name: "MutablePoint",
+                        type_id: 2, // distinct per fixture class (real hosts pass the Python type id)
+                        attrs: vec![("x", MontyObject::Int(1)), ("y", MontyObject::Int(2))],
+                    })
                     .into(),
-
-                    frozen: false,
-                }
-                .into(),
             )
         }
         "make_user" => {
             assert!(args.len() == 1, "make_user requires 1 argument");
             let name = String::try_from(&args[0]).expect("make_user: first arg must be str");
-            // Return an immutable User(name=name, active=True) dataclass
+            // Register and return a User(name=name, active=True)
             DispatchResult::Sync(
-                MontyObject::Dataclass {
-                    name: "User".to_string(),
-                    type_id: 3, // distinct per fixture class (real hosts pass the Python type id)
-                    field_names: vec!["name".to_string(), "active".to_string()],
-                    attrs: vec![
-                        (MontyObject::String("name".to_string()), MontyObject::String(name)),
-                        (MontyObject::String("active".to_string()), MontyObject::Bool(true)),
-                    ]
+                registry
+                    .register(Fixture {
+                        class_name: "User",
+                        type_id: 3, // distinct per fixture class (real hosts pass the Python type id)
+                        attrs: vec![("name", MontyObject::String(name)), ("active", MontyObject::Bool(true))],
+                    })
                     .into(),
-
-                    frozen: true,
-                }
-                .into(),
             )
         }
         "make_empty" => {
             assert!(args.is_empty(), "make_empty requires no arguments");
-            // Return an immutable empty dataclass with no fields
+            // Register and return an empty dataclass with no fields
             DispatchResult::Sync(
-                MontyObject::Dataclass {
-                    name: "Empty".to_string(),
-                    type_id: 4, // distinct per fixture class (real hosts pass the Python type id)
-                    field_names: vec![],
-                    attrs: vec![].into(),
-
-                    frozen: true,
-                }
-                .into(),
+                registry
+                    .register(Fixture {
+                        class_name: "Empty",
+                        type_id: 4, // distinct per fixture class (real hosts pass the Python type id)
+                        attrs: vec![],
+                    })
+                    .into(),
             )
         }
         "async_call" => {
@@ -575,70 +550,131 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
     }
 }
 
-/// Dispatches a dataclass method call to the appropriate test implementation.
+/// Host-side store of the class-instance fixtures handed to the sandbox,
+/// keyed by `instance_id` — the datatest analog of a real host holding its
+/// objects and routing wire calls by uuid.
 ///
-/// The first argument is always the dataclass instance (`self`). Known methods
-/// are implemented to mirror the Python dataclass methods in `test_fixtures.py`.
-/// Unknown methods return `AttributeError`.
+/// Ids are deterministic `MontyUuid::from_u128` values (never random) so
+/// fixtures and expected output stay reproducible.
+///
+/// Registered instances are snapshots: sandbox-side `setattr` mutates the
+/// sandbox copy only, exactly like a real host's own objects.
+struct FixtureRegistry {
+    /// Next id counter to hand out; starts at 1.
+    next_id: u128,
+    instances: HashMap<MontyUuid, Fixture>,
+}
+
+/// One registered host instance: its class identity and eager attrs.
+struct Fixture {
+    class_name: &'static str,
+    type_id: u64,
+    attrs: Vec<(&'static str, MontyObject)>,
+}
+
+impl FixtureRegistry {
+    fn new() -> Self {
+        Self {
+            next_id: 1,
+            instances: HashMap::new(),
+        }
+    }
+
+    /// Registers a fixture and returns the `ClassInstance` value to send.
+    fn register(&mut self, fixture: Fixture) -> MontyObject {
+        let instance_id = MontyUuid::from_u128(0x1000 + self.next_id);
+        self.next_id += 1;
+        let value = MontyObject::ClassInstance(Box::new(MontyClassInstance {
+            class_type: MontyClassType {
+                name: fixture.class_name.to_string(),
+                id: MontyUuid::from_u128(u128::from(fixture.type_id)),
+                host_defined: true,
+                is_dataclass: true,
+                attrs: DictPairs::default(),
+            },
+            instance_id,
+            attrs: fixture
+                .attrs
+                .iter()
+                .map(|(k, v)| (MontyObject::String((*k).to_string()), v.clone()))
+                .collect::<Vec<_>>()
+                .into(),
+        }));
+        self.instances.insert(instance_id, fixture);
+        value
+    }
+
+    /// Registers and returns a `Point(x, y)` (type_id 1).
+    fn make_point(&mut self, x: i64, y: i64) -> MontyObject {
+        self.register(Fixture {
+            class_name: "Point",
+            type_id: 1, // distinct per fixture class (real hosts pass the Python type id)
+            attrs: vec![("x", MontyObject::Int(x)), ("y", MontyObject::Int(y))],
+        })
+    }
+
+    /// The registered fixture for `instance_id`, if the harness handed it out.
+    fn get(&self, instance_id: MontyUuid) -> Option<&Fixture> {
+        self.instances.get(&instance_id)
+    }
+}
+
+impl Fixture {
+    /// The named attr as an i64; panics if missing or not an int.
+    fn int_attr(&self, name: &str) -> i64 {
+        let value = self.attr(name).unwrap_or_else(|| panic!("no '{name}' attr"));
+        i64::try_from(value).unwrap_or_else(|_| panic!("'{name}' must be int"))
+    }
+
+    fn attr(&self, name: &str) -> Option<&MontyObject> {
+        self.attrs.iter().find(|(k, _)| *k == name).map(|(_, v)| v)
+    }
+}
+
+/// Dispatches a method call on a host class instance, routed by
+/// `instance_id` — the receiver is NOT in `args`. Known methods mirror the
+/// Python dataclass methods in `test_fixtures.py`; unknown methods return
+/// `AttributeError`.
 fn dispatch_method_call(
     method_name: &str,
+    instance_id: MontyUuid,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
+    registry: &mut FixtureRegistry,
 ) -> ExtFunctionResult {
-    let class_name = match args.first() {
-        Some(MontyObject::Dataclass { name, .. }) => name.as_str(),
-        _ => "<unknown>",
+    let Some(fixture) = registry.get(instance_id) else {
+        // Mirror a real host's store miss (e.g. a class-uuid receiver from
+        // `type(point).m()` — the harness registers no class types) so test
+        // cases see the documented RuntimeError instead of a harness panic.
+        let message = format!("no host object registered for method call '{method_name}' (id {instance_id})");
+        return MontyException::new(ExcType::RuntimeError, Some(message)).into();
     };
+    let class_name = fixture.class_name;
 
     match (class_name, method_name) {
         // Point.sum(self) -> int
-        ("Point" | "MutablePoint", "sum") => {
-            let (x, y) = extract_point_fields(&args[0]);
-            MontyObject::Int(x + y).into()
-        }
+        ("Point" | "MutablePoint", "sum") => MontyObject::Int(fixture.int_attr("x") + fixture.int_attr("y")).into(),
         // Point.add(self, dx, dy) -> Point
         ("Point", "add") => {
-            assert!(args.len() == 3, "Point.add requires self, dx, dy");
-            let (x, y) = extract_point_fields(&args[0]);
-            let dx = i64::try_from(&args[1]).expect("dx must be int");
-            let dy = i64::try_from(&args[2]).expect("dy must be int");
-            MontyObject::Dataclass {
-                name: "Point".to_string(),
-                type_id: 1, // same class as `make_point`'s Point
-                field_names: vec!["x".to_string(), "y".to_string()],
-                attrs: vec![
-                    (MontyObject::String("x".to_string()), MontyObject::Int(x + dx)),
-                    (MontyObject::String("y".to_string()), MontyObject::Int(y + dy)),
-                ]
-                .into(),
-                frozen: true,
-            }
-            .into()
+            assert!(args.len() == 2, "Point.add requires dx, dy");
+            let (x, y) = (fixture.int_attr("x"), fixture.int_attr("y"));
+            let dx = i64::try_from(&args[0]).expect("dx must be int");
+            let dy = i64::try_from(&args[1]).expect("dy must be int");
+            registry.make_point(x + dx, y + dy).into()
         }
         // Point.scale(self, factor) -> Point
         ("Point", "scale") => {
-            assert!(args.len() == 2, "Point.scale requires self, factor");
-            let (x, y) = extract_point_fields(&args[0]);
-            let factor = i64::try_from(&args[1]).expect("factor must be int");
-            MontyObject::Dataclass {
-                name: "Point".to_string(),
-                type_id: 1, // same class as `make_point`'s Point
-                field_names: vec!["x".to_string(), "y".to_string()],
-                attrs: vec![
-                    (MontyObject::String("x".to_string()), MontyObject::Int(x * factor)),
-                    (MontyObject::String("y".to_string()), MontyObject::Int(y * factor)),
-                ]
-                .into(),
-                frozen: true,
-            }
-            .into()
+            assert!(args.len() == 1, "Point.scale requires factor");
+            let (x, y) = (fixture.int_attr("x"), fixture.int_attr("y"));
+            let factor = i64::try_from(&args[0]).expect("factor must be int");
+            registry.make_point(x * factor, y * factor).into()
         }
         // Point.describe(self, label='point') -> str
         ("Point", "describe") => {
-            let (x, y) = extract_point_fields(&args[0]);
+            let (x, y) = (fixture.int_attr("x"), fixture.int_attr("y"));
             // Check positional arg first, then kwargs, then default
-            let label = if args.len() > 1 {
-                String::try_from(&args[1]).expect("label must be str")
+            let label = if !args.is_empty() {
+                String::try_from(&args[0]).expect("label must be str")
             } else if let Some(kw_label) = get_kwarg_str(kwargs, "label") {
                 kw_label
             } else {
@@ -647,14 +683,12 @@ fn dispatch_method_call(
             MontyObject::String(format!("{label}({x}, {y})")).into()
         }
         // MutablePoint.shift(self, dx, dy) -> None (mutates in-place via host)
-        // Note: In the test runner, we can't actually mutate the dataclass in-place
-        // since the host doesn't have direct heap access. Return None as the method
-        // would in Python (the mutation happens inside Python's method body).
-        // For test coverage purposes, we just return None.
+        // Note: the mutation happens to the host-side object only; the
+        // sandbox's eager-attr copy is a snapshot, so it does not see it.
         ("MutablePoint", "shift") => MontyObject::None.into(),
         // User.greeting(self) -> str
         ("User", "greeting") => {
-            let name = extract_user_name(&args[0]);
+            let name = String::try_from(fixture.attr("name").expect("User has 'name'")).expect("name must be str");
             MontyObject::String(format!("Hello, {name}!")).into()
         }
         // Unknown method — return AttributeError
@@ -665,24 +699,21 @@ fn dispatch_method_call(
     }
 }
 
-/// Extracts (x, y) fields from a Point or MutablePoint `MontyObject::Dataclass`.
-fn extract_point_fields(obj: &MontyObject) -> (i64, i64) {
-    match obj {
-        MontyObject::Dataclass { attrs, .. } => {
-            let mut x = 0i64;
-            let mut y = 0i64;
-            for (key, value) in attrs {
-                if let MontyObject::String(k) = key {
-                    match k.as_str() {
-                        "x" => x = i64::try_from(value).expect("x must be int"),
-                        "y" => y = i64::try_from(value).expect("y must be int"),
-                        _ => {}
-                    }
-                }
-            }
-            (x, y)
-        }
-        other => panic!("Expected Dataclass, got {other:?}"),
+/// Answers a lazy attribute lookup on a host class instance (`NameLookup`
+/// with an instance id): class attributes and properties the eager attrs do
+/// not carry. Mirrors the class attributes in `test_fixtures.py`.
+fn dispatch_instance_attr(name: &str, instance_id: MontyUuid, registry: &FixtureRegistry) -> NameLookupResult {
+    let Some(fixture) = registry.get(instance_id) else {
+        return NameLookupResult::Undefined;
+    };
+    match (fixture.class_name, name) {
+        // Class attribute mirrored by `dimensions = 2` on the Python fixtures
+        ("Point" | "MutablePoint", "dimensions") => NameLookupResult::Value(MontyObject::Int(2)),
+        // The `MutablePoint.boom` property raises KeyError('boom') on the
+        // host; the sandbox raises it where the attribute was read
+        ("MutablePoint", "boom") => MontyException::new(ExcType::KeyError, Some("boom".to_owned())).into(),
+        // Anything else is genuinely absent -> AttributeError in the sandbox
+        _ => NameLookupResult::Undefined,
     }
 }
 
@@ -696,23 +727,6 @@ fn get_kwarg_str(kwargs: &[(MontyObject, MontyObject)], name: &str) -> Option<St
         }
     }
     None
-}
-
-/// Extracts the `name` field from a User `MontyObject::Dataclass`.
-fn extract_user_name(obj: &MontyObject) -> String {
-    match obj {
-        MontyObject::Dataclass { attrs, .. } => {
-            for (key, value) in attrs {
-                if let MontyObject::String(k) = key
-                    && k == "name"
-                {
-                    return String::try_from(value).expect("name must be str");
-                }
-            }
-            panic!("User dataclass has no 'name' field");
-        }
-        other => panic!("Expected Dataclass, got {other:?}"),
-    }
 }
 
 // =============================================================================
@@ -1793,6 +1807,10 @@ fn run_mount_fs_iter_loop(
 fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, MontyException> {
     let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
 
+    // Host-side instance store: survives the dump/load round-trips below,
+    // exactly like a real host's objects survive its worker suspensions.
+    let mut registry = FixtureRegistry::new();
+
     // Track pending async calls: (call_id, pre-built ExtFunctionResult).
     // Successful async calls produce `Return(value)`; `async_fail` produces
     // `Error(exception)`. The pre-built result is handed back verbatim at
@@ -1800,25 +1818,30 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
     let mut pending_results: Vec<(u32, ExtFunctionResult)> = Vec::new();
 
     loop {
-        // Test serialization round-trip at each step (skip when memory-model-checks is enabled
-        // since the old RunProgress would panic on drop without proper cleanup)
+        // Dump and reload the suspended state at each step, so every test case's
+        // heap shape goes through the real dump format. (Skipped under
+        // memory-model-checks: the discarded `RunProgress` would panic on drop
+        // without proper cleanup.)
         #[cfg(not(feature = "memory-model-checks"))]
         {
-            let bytes = progress.dump().expect("failed to dump RunProgress");
-            progress = RunProgress::load(&bytes).expect("failed to load RunProgress");
+            progress = dump_load_round_trip(&progress);
         }
 
         match progress {
             RunProgress::Complete(result) => return Ok(result),
             RunProgress::FunctionCall(call) => {
-                // Method calls on dataclasses are dispatched to the host.
-                // Dispatch known methods; return AttributeError for unknown ones.
-                if call.method_call {
-                    let result = dispatch_method_call(&call.function_name, &call.args, &call.kwargs);
+                // Method calls on host-backed objects are routed by the
+                // receiver uuid; unknown methods return AttributeError, and
+                // an unregistered id (e.g. a class-uuid receiver — the
+                // harness registers no class types) answers the documented
+                // store-miss RuntimeError like a real host.
+                if let Some(object_id) = call.object_id {
+                    let result =
+                        dispatch_method_call(&call.function_name, object_id, &call.args, &call.kwargs, &mut registry);
                     progress = call.resume(result, PrintWriter::Stdout)?;
                     continue;
                 }
-                let dispatch_result = dispatch_external_call(&call.function_name, call.args.clone());
+                let dispatch_result = dispatch_external_call(&call.function_name, call.args.clone(), &mut registry);
                 match dispatch_result {
                     DispatchResult::Sync(return_value) => {
                         progress = call.resume(return_value, PrintWriter::Stdout)?;
@@ -1859,6 +1882,13 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                 progress = state.resume(results, PrintWriter::Stdout)?;
             }
             RunProgress::NameLookup(lookup) => {
+                // Instance-scoped lookups are lazy attribute reads on a host
+                // class instance; plain lookups resolve globals as before.
+                if let Some(object_id) = lookup.object_id() {
+                    let result = dispatch_instance_attr(&lookup.name, object_id, &registry);
+                    progress = lookup.resume(result, PrintWriter::Stdout)?;
+                    continue;
+                }
                 let result = match lookup.name.as_str() {
                     // External functions — resolved as callable Function objects
                     "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
@@ -1890,6 +1920,17 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                 progress = call.resume(result, PrintWriter::Stdout)?;
             }
         }
+    }
+}
+
+/// Dumps a suspended run and reloads it, so every test case exercises the real
+/// dump format rather than only the underlying serde impls.
+#[cfg(not(feature = "memory-model-checks"))]
+fn dump_load_round_trip(progress: &RunProgress) -> RunProgress {
+    let bytes = dump("test.py", None, SessionRef::Running(progress)).expect("failed to dump RunProgress");
+    match Dump::load(&bytes).expect("failed to load RunProgress").state {
+        Session::Running(progress) => *progress,
+        _ => panic!("dumped a running session, loaded something else"),
     }
 }
 

@@ -429,6 +429,7 @@ fn overlay_permission_errors_match_direct_mode() {
         mounts.mount("/mnt", dir.path(), mode, None).expect("failed to mount");
 
         for call in [
+            OsFunctionCall::Iterdir("/mnt/sub".into()),
             OsFunctionCall::ReadText("/mnt/sub/f.txt".into()),
             OsFunctionCall::Open(OpenCallArgs {
                 path: "/mnt/sub/f.txt".into(),

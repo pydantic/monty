@@ -1,20 +1,21 @@
 // Node `worker_threads` entry for a Monty worker.
 //
-// Runs in the worker thread: serves dispatch turns over `parentPort` using the
-// already-compiled wasm module passed via `workerData` (a `WebAssembly.Module`
-// is structured-cloneable across threads, so no per-worker recompile). The
-// browser equivalent is the same against `self.postMessage` / `self.onmessage`.
+// Runs in the worker thread and instantiates the precompiled component modules
+// passed through `workerData`. `WebAssembly.Module`s are structured-cloneable,
+// so each worker gets isolated state without recompiling. The browser entry
+// provides the same transport over `self.postMessage`.
 
 import { parentPort, workerData } from 'node:worker_threads'
 
+import type { ComponentModules } from './host.js'
 import { serveDispatch } from './serve.js'
 
 void (async () => {
   const port = parentPort
   if (!port) throw new Error('nodeWorkerEntry must run as a worker thread')
-  const { module } = workerData as { module: WebAssembly.Module }
+  const { modules } = workerData as { modules: ComponentModules }
   await serveDispatch(
-    module,
+    modules,
     (reply) => port.postMessage(reply),
     (handler) => port.on('message', handler),
   )

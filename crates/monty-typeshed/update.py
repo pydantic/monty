@@ -118,8 +118,12 @@ COPY_FILES = [
     'collections/__init__.pyi',
     'collections/abc.pyi',
     # ==============================
-    # Take only `__init__.pyi` from _typeshed dir
+    # From the _typeshed dir take `__init__.pyi` plus
+    # `_type_checker_internals.pyi`: ty synthesizes TypedDict members from its
+    # `TypedDictFallback`; without it attribute access on a TypedDict silently
+    # resolves to `Unknown` instead of `unresolved-attribute` (issue #799)
     '_typeshed/__init__.pyi',
+    '_typeshed/_type_checker_internals.pyi',
     # ==============================
     # all of pathlib dir
     'pathlib/__init__.pyi',
@@ -144,10 +148,13 @@ _collections_abc: 3.3-
 _typeshed: 3.0-  # not present at runtime, only for type checking
 abc: 3.0-  # not importable at runtime, only for type checking
 asyncio: 3.4-
+base64: 3.0-
+binascii: 3.0-
 builtins: 3.0-
 collections: 3.0-
 dataclasses: 3.7-
 datetime: 3.0-
+functools: 3.0-
 itertools: 3.0-
 json: 3.0-
 math: 3.0-
@@ -177,7 +184,9 @@ def clone_or_update_typeshed() -> None:
     """Clone or update the typeshed repository to be at COMMIT.
 
     If the repository already exists at TYPESHED_REPO_DIR, fetches the target
-    commit. Otherwise, clones the repository. In both cases, checks out COMMIT.
+    commit. Otherwise, clones the repository. In both cases, checks out COMMIT
+    and then refuses to continue if the working tree is dirty — local edits
+    would otherwise be vendored while source_commit.txt still claims COMMIT.
     """
     if TYPESHED_REPO_DIR.exists():
         # Check if already at the right commit
@@ -190,14 +199,21 @@ def clone_or_update_typeshed() -> None:
         )
         if result.stdout.strip() == COMMIT:
             print(f'{TYPESHED_REPO_DIR} already at {COMMIT}')
-            return
-        print(f'{TYPESHED_REPO_DIR} exists, fetching {COMMIT}...')
-        subprocess.run(
-            ['git', 'fetch', 'origin', COMMIT],
-            cwd=TYPESHED_REPO_DIR,
-            check=True,
-            capture_output=True,
-        )
+        else:
+            print(f'{TYPESHED_REPO_DIR} exists, fetching {COMMIT}...')
+            subprocess.run(
+                ['git', 'fetch', 'origin', COMMIT],
+                cwd=TYPESHED_REPO_DIR,
+                check=True,
+                capture_output=True,
+            )
+            print(f'Checking out {COMMIT}...')
+            subprocess.run(
+                ['git', 'checkout', COMMIT],
+                cwd=TYPESHED_REPO_DIR,
+                check=True,
+                capture_output=True,
+            )
     else:
         print(f'Cloning typeshed to {TYPESHED_REPO_DIR}...')
         subprocess.run(
@@ -205,14 +221,26 @@ def clone_or_update_typeshed() -> None:
             check=True,
             capture_output=True,
         )
+        print(f'Checking out {COMMIT}...')
+        subprocess.run(
+            ['git', 'checkout', COMMIT],
+            cwd=TYPESHED_REPO_DIR,
+            check=True,
+            capture_output=True,
+        )
 
-    print(f'Checking out {COMMIT}...')
-    subprocess.run(
-        ['git', 'checkout', COMMIT],
+    status = subprocess.run(
+        ['git', 'status', '--porcelain'],
         cwd=TYPESHED_REPO_DIR,
         check=True,
         capture_output=True,
+        text=True,
     )
+    if status.stdout.strip():
+        raise ValueError(
+            f'{TYPESHED_REPO_DIR} has local modifications that would leak into the vendored stubs;'
+            f' discard them (or delete the directory to re-clone) and re-run:\n{status.stdout}'
+        )
 
 
 def filter_statements(nodes: list[ast.stmt]) -> list[ast.stmt]:
@@ -297,14 +325,15 @@ def filter_builtins(source: str) -> str:
 
 def main() -> int:
     """Main entry point."""
+    # Clone or update typeshed first: it validates the checkout, and failing
+    # there must leave the existing vendor directory untouched
+    clone_or_update_typeshed()
+    print(f'At python/typeshed commit {COMMIT}')
+
     # Clean up any stale files from previous runs
     if VENDOR_DIR.exists():
         print(f'Removing existing {VENDOR_DIR}...')
         shutil.rmtree(VENDOR_DIR)
-
-    # Clone or update typeshed
-    clone_or_update_typeshed()
-    print(f'At python/typeshed commit {COMMIT}')
 
     # Read source file
     src_stdlib = TYPESHED_REPO_DIR / 'stdlib'

@@ -1,20 +1,22 @@
 use std::{borrow::Cow, fmt::Write};
 
+use monty_types::MontyUuid;
+
 use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
     args::{ArgValues, KwargsValues},
+    boundary_uuid::create_uuid,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput,
-        heap_read_ref_as_field_mut,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
+        HeapReadOutput, heap_read_ref_as_field_mut,
     },
     intern::Interns,
-    modules::dataclasses,
-    types::allocate_string,
+    modules::dataclasses::{self, DataclassHash},
     value::{EitherStr, Value},
 };
 
@@ -30,13 +32,33 @@ pub(crate) struct Instance {
     class: HeapId,
     /// Instance attributes (`__dict__`).
     attrs: Dict,
+    /// Boundary identity, generated lazily the first time the instance crosses
+    /// to the host; dumped with the heap so it stays stable across restores.
+    uuid: Option<MontyUuid>,
 }
 
 impl Instance {
     /// Creates a new instance of `class` with the given initial attributes.
     #[must_use]
     pub fn new(class: HeapId, attrs: Dict) -> Self {
-        Self { class, attrs }
+        Self {
+            class,
+            attrs,
+            uuid: None,
+        }
+    }
+
+    /// Boundary identity of the instance, generated and stored on first use
+    /// so repeated crossings (and dump/restore) observe the same id. Only
+    /// `Heap::boundary_uuid` may call this: it also indexes the new id.
+    pub(crate) fn boundary_uuid(&mut self) -> MontyUuid {
+        *self.uuid.get_or_insert_with(create_uuid)
+    }
+
+    /// The boundary identity, if the instance has crossed to the host.
+    #[must_use]
+    pub fn uuid(&self) -> Option<MontyUuid> {
+        self.uuid
     }
 
     /// Returns the `HeapId` of the instance's class object.
@@ -72,16 +94,84 @@ impl<'h> HeapRead<'h, Instance> {
 
     /// Sets an instance attribute, returning the previous value (if any) for the
     /// caller to drop. Takes ownership of both `name` and `value`.
+    ///
+    /// The entry point for an ordinary `obj.x = v`: it applies whatever the
+    /// class has to say about the write — today just
+    /// `@dataclass(frozen=True)` — and is where a class-level `__setattr__`
+    /// hook would be dispatched once one is. The write itself is
+    /// [`set_attr_unchecked`](Self::set_attr_unchecked).
     pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let class_id = self.get(vm.heap).class();
+        if let Some(exc) = dataclasses::frozen_assignment_error(class_id, &name, vm) {
+            [name, value].drop_with(vm);
+            return Err(exc);
+        }
+        self.set_attr_unchecked(name, value, vm)
+    }
+
+    /// Writes straight to the instance `__dict__`, skipping every check
+    /// [`set_attr`](Self::set_attr) makes — the only place the write itself
+    /// lives, and what both `object.__setattr__` and a `@dataclass`'s
+    /// synthesized `__init__` call. The latter has to populate a
+    /// `frozen=True` instance that `set_attr` would refuse, exactly as
+    /// CPython's generated `__init__` goes through `object.__setattr__`.
+    ///
+    /// Whatever `set_attr` grows must stay above this line (see
+    /// `limitations/classes.md`).
+    pub fn set_attr_unchecked(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.attrs_mut().set(name, value, vm)
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
-    /// The class's `__contains__`, or `None` when it defines none — `in` then
-    /// falls back to iteration, matching CPython's `sq_contains` before `tp_iter`.
-    fn py_contains_impl(&self, self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        instance_contains(self_id, item, vm)
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
+    /// Evaluates `item in self` through the class's `__contains__`.
+    ///
+    /// `None` leaves the caller to fall back to iteration. An explicit
+    /// `__contains__ = None` instead reports that the object is not a container.
+    /// Results use `py_bool`, whose handling of user objects is documented in
+    /// `limitations/classes.md`.
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let class_id = self.get(vm.heap).class();
+        if matches!(class_dunder(class_id, "__contains__", vm), Some(Value::None)) {
+            Err(ExcType::type_error_object_not_container(&class_name(
+                class_id, vm.heap, vm.interns,
+            )))
+        } else {
+            // The callee owns its argument, so the borrowed `item` is cloned;
+            // `instance_call_dunder_sync` drops it again if there is no `__contains__`.
+            let item = item.clone_with_heap(vm.heap);
+            match instance_call_dunder_sync(self.id(), "__contains__", Some(item), vm)? {
+                Some(result) => {
+                    defer_drop!(result, vm);
+                    Ok(Some(result.py_bool(vm)?))
+                }
+                None => Ok(None),
+            }
+        }
+    }
+
+    /// Coerces the instance to an integer through the class's `__index__`.
+    ///
+    /// Validating the result here is both CPython's `__index__ returned non-int`
+    /// check and what stops a class whose `__index__` returns another such
+    /// instance from recursing — the caller converts a real int without
+    /// re-entering the protocol.
+    ///
+    /// Runs synchronously like the other dunders here, so an `__index__` that
+    /// calls an external/OS function raises rather than suspending.
+    fn py_index_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(result) = instance_call_dunder_sync(self.id(), "__index__", None, vm)? else {
+            return Ok(None);
+        };
+        if matches!(result, Value::Int(_) | Value::Bool(_) | Value::InternLongInt(_))
+            || matches!(&result, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)))
+        {
+            Ok(Some(result))
+        } else {
+            let exc = ExcType::type_error(format!("__index__ returned non-int (type {})", result.py_type_name(vm)));
+            result.drop_with(vm);
+            Err(exc)
+        }
     }
 
     fn py_type(&self, vm: &VM<'h>) -> Type {
@@ -109,44 +199,55 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
 
     /// Hashes an instance, following CPython's precedence.
     ///
-    /// A user `__hash__` wins; `__hash__ = None` is the explicit unhashable
-    /// opt-out. Failing that, a class defining `__eq__` is unhashable — CPython
-    /// sets `__hash__ = None` implicitly whenever `__eq__` is defined — as is a
-    /// default `@dataclass` (`eq=True, frozen=False`). Everything else hashes by
-    /// identity.
-    fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    /// A `@dataclass` decoration generating a `__hash__` wins, since CPython
+    /// writes it into the class after the body has run. Otherwise the body
+    /// decides: a `__hash__` is used, `__hash__ = None` is the unhashable
+    /// opt-out, and defining `__eq__` is the same opt-out implicitly. What is
+    /// left hashes by identity.
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let class_id = self.get(vm.heap).class();
-        if class_defines(class_id, "__hash__", vm) {
-            if class_defines_not_none(class_id, "__hash__", vm) {
-                instance_user_hash(self_id, vm)
-            } else {
-                Ok(None)
+        match dataclasses::hash_action(class_id, vm) {
+            Some(DataclassHash::FieldWise) => {
+                let field_names = dataclasses::dataclass_fields(class_id, vm).unwrap_or_default();
+                dataclasses::dataclass_hash(self.id(), &field_names, vm).map(Some)
             }
-        } else if class_defines(class_id, "__eq__", vm) || dataclasses::is_dataclass_class(class_id, vm) {
-            Ok(None)
-        } else {
-            Ok(Some(identity_hash(self_id)))
+            Some(DataclassHash::Unhashable) => Ok(None),
+            None if class_defines(class_id, "__hash__", vm) => {
+                if class_defines_not_none(class_id, "__hash__", vm) {
+                    instance_user_hash(self.id(), vm)
+                } else {
+                    Ok(None)
+                }
+            }
+            // CPython's `type` sets `__hash__ = None` whenever `__eq__` is defined.
+            None if class_defines(class_id, "__eq__", vm) => Ok(None),
+            None => Ok(Some(identity_hash(self.id()))),
         }
     }
 
-    /// The best-effort `<ClassName object>` default, never the real `repr`.
-    ///
-    /// Every form that distinguishes instances needs the `HeapId` to pass `self`,
-    /// so all of it lives in [`instance_repr_fmt`], which `Value::py_repr_fmt`
-    /// routes every instance through; this is only the floor under a heap-level
-    /// `repr` reached without a `Value`.
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        let class_id = self.get(vm.heap).class();
-        Ok(write!(f, "<{} object>", class_name(class_id, vm.heap, vm.interns))?)
+    /// Dispatches to a user or synthesized `__repr__`, falling back to the
+    /// identity-bearing default representation. The dataclass form registers
+    /// the instance in `heap_ids`, so a field pointing back renders `...`.
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        let self_id = self.id();
+        if let Some(s) = instance_call_str_dunder(self_id, "__repr__", vm)? {
+            defer_drop!(s, vm);
+            Ok(f.write_str(s.to_str(vm)?)?)
+        } else {
+            let class_id = instance_class(self_id, vm);
+            match dataclasses::dataclass_fields(class_id, vm) {
+                Some(field_names) => {
+                    heap_ids.insert(self_id);
+                    let result = dataclasses::dataclass_repr_fmt(self_id, &field_names, f, vm, heap_ids);
+                    heap_ids.remove(&self_id);
+                    result
+                }
+                None => self.py_default_repr_fmt(f, vm),
+            }
+        }
     }
 
-    fn py_call_attr(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
 
         // 1. An instance attribute shadows class methods; call it as-is (unbound).
@@ -164,7 +265,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         let class_id = self.get(vm.heap).class;
         if let Some(member) = class_member(class_id, attr_str, vm) {
             defer_drop!(member, vm);
-            return call_member_bound(member, self_id, args, vm);
+            return call_member_bound(member, self.id(), args, vm);
         }
 
         // 3. `obj.__class__(...)` constructs a new instance — the callable form of
@@ -207,20 +308,19 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
     /// exactly as in CPython. The result must itself be an iterator, mirroring
     /// `PyObject_GetIter`'s `PyIter_Check` — raising here rather than deferring
     /// the failure to the first `next()`.
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        let self_id = self_id.expect("heap values have an id");
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         // `py_is_iterable` is the single source of truth for "does this class
         // iterate", so an opted-out `__iter__ = None` reports not-iterable here
         // instead of reaching the call and raising "'NoneType' object is not
         // callable" — CPython's `slot_tp_iter` rejects it the same way.
         let dispatched = if self.py_is_iterable(vm) {
-            instance_call_dunder_sync(self_id, "__iter__", None, vm)?
+            instance_call_dunder_sync(self.id(), "__iter__", None, vm)?
         } else {
             None
         };
         let Some(iterator) = dispatched else {
             return Err(ExcType::type_error_not_iterable(&class_name(
-                instance_class(self_id, vm),
+                instance_class(self.id(), vm),
                 vm.heap,
                 vm.interns,
             )));
@@ -237,17 +337,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
     /// Dispatches the class's `__next__`, turning `StopIteration` into exhaustion.
     ///
     /// Every other exception propagates, including an `UncatchableExc` from a
-    /// resource limit — see [`RunError::is_stop_iteration`]. No heap borrow is
-    /// held across the call: `__next__` runs Python, which may re-enter this
-    /// same instance through a nested `next()`.
-    fn py_next(&mut self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let self_id = self_id.expect("heap values have an id");
+    /// resource limit — see [`RunError::is_stop_iteration`].
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         // The absent case doubles as the not-an-iterator check, halving the
         // lookups — this runs for every item of every user iterator.
-        match instance_call_dunder_sync(self_id, "__next__", None, vm) {
+        match instance_call_dunder_sync(self.id(), "__next__", None, vm) {
             Ok(Some(value)) => Ok(Some(value)),
             Ok(None) => Err(ExcType::type_error_not_iterator(&class_name(
-                instance_class(self_id, vm),
+                instance_class(self.id(), vm),
                 vm.heap,
                 vm.interns,
             ))),
@@ -264,7 +361,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         class_defines(self.get(vm.heap).class, "__exit__", vm)
     }
 
-    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn py_enter(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let class_id = self.get(vm.heap).class;
         let Some(enter) = class_member(class_id, "__enter__", vm) else {
             return Err(ExcType::type_error_not_context_manager(
@@ -277,10 +374,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         // (`CallResult::FramePushed`), so — unlike `__repr__`/`__str__` — it
         // can suspend on external/OS calls; the frame's return value becomes
         // the `as` target via the normal `ReturnValue` push.
-        call_member_bound(enter, self_id, ArgValues::Empty, vm)
+        call_member_bound(enter, self.id(), ArgValues::Empty, vm)
     }
 
-    fn py_exit(&mut self, self_id: HeapId, vm: &mut VM<'h>, exc: Option<HeapId>) -> RunResult<CallResult> {
+    fn py_exit(&mut self, vm: &mut VM<'h>, exc: Option<HeapId>) -> RunResult<CallResult> {
         let class_id = self.get(vm.heap).class;
         let Some(exit) = class_member(class_id, "__exit__", vm) else {
             // Defensive tripwire — unreachable via `with`. `py_is_context_manager`
@@ -318,7 +415,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
             args: vec![typ, val, Value::None],
             kwargs: KwargsValues::Empty,
         };
-        call_member_bound(exit, self_id, args, vm)
+        call_member_bound(exit, self.id(), args, vm)
     }
 }
 
@@ -329,7 +426,7 @@ impl HeapItem for Instance {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, BoundMethod> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         // Monty has no dedicated `method` type; bound methods report `function`.
         Type::Function
@@ -343,10 +440,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BoundMethod> {
         Ok(None)
     }
 
-    fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         // Bound methods hash by identity, consistent with their identity-only
         // equality (CPython hashes by `(instance, func)` — see limitations/classes.md).
-        Ok(Some(identity_hash(self_id)))
+        Ok(Some(identity_hash(self.id())))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, _vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -425,38 +522,10 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> Opt
 /// Produces `repr(instance)`, dispatching to a user `__repr__` if the class
 /// defines one, otherwise the default `<ClassName object at 0x..>`.
 pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
-    // Top of a repr, so the cycle set starts empty.
-    let mut s = String::new();
-    let mut heap_ids = LazyHeapSet::default();
-    instance_repr_fmt(self_id, &mut s, vm, &mut heap_ids)?;
-    Ok(allocate_string(s, vm.heap))
-}
-
-/// Writes an instance's `repr` into `f`: a user `__repr__` wins, then the
-/// synthesized dataclass form, then the `<Foo object at 0x..>` default.
-///
-/// The dataclass form registers the instance in the *caller's* `heap_ids` for
-/// its duration, so a field pointing back renders `...` rather than nesting.
-pub(crate) fn instance_repr_fmt(
-    self_id: HeapId,
-    f: &mut impl Write,
-    vm: &mut VM<'_>,
-    heap_ids: &mut LazyHeapSet,
-) -> RunResult<()> {
-    if let Some(s) = instance_call_str_dunder(self_id, "__repr__", vm)? {
-        defer_drop!(s, vm);
-        return Ok(f.write_str(s.to_str(vm)?)?);
-    }
-    let class_id = instance_class(self_id, vm);
-    match dataclasses::dataclass_fields(class_id, vm) {
-        Some(field_names) => {
-            heap_ids.insert(self_id);
-            let result = dataclasses::dataclass_repr_fmt(self_id, &field_names, f, vm, heap_ids);
-            heap_ids.remove(&self_id);
-            result
-        }
-        None => Ok(f.write_str(&default_repr(self_id, vm))?),
-    }
+    let HeapReadOutput::Instance(instance) = vm.heap.read(self_id) else {
+        unreachable!("instance_repr called on non-instance heap value")
+    };
+    instance.py_repr(vm)
 }
 
 /// Produces `str(instance)`, dispatching to a user `__str__` if defined, else
@@ -465,36 +534,6 @@ pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value>
     match instance_call_str_dunder(self_id, "__str__", vm)? {
         Some(s) => Ok(s),
         None => instance_repr(self_id, vm),
-    }
-}
-
-/// Evaluates `item in instance` through the class's `__contains__`.
-///
-/// `Ok(None)` means the class does not define it, leaving the caller to fall
-/// back to iteration — CPython checks `sq_contains` before `tp_iter`, so a
-/// class defining both is never iterated by `in`. `__contains__ = None` is an
-/// opt-out rather than an absence: it errors here instead of falling back.
-///
-/// The result is coerced with `py_bool`, which reports every instance as truthy
-/// — so a `__contains__` returning a user object with a false `__bool__` /
-/// `__len__` diverges from CPython's `PyObject_IsTrue` (see
-/// `limitations/classes.md`).
-pub(crate) fn instance_contains(self_id: HeapId, item: &Value, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
-    let class_id = instance_class(self_id, vm);
-    if matches!(class_dunder(class_id, "__contains__", vm), Some(Value::None)) {
-        return Err(ExcType::type_error_object_not_container(&class_name(
-            class_id, vm.heap, vm.interns,
-        )));
-    }
-    // The callee owns its argument, so the borrowed `item` is cloned;
-    // `instance_call_dunder_sync` drops it again if there is no `__contains__`.
-    let item = item.clone_with_heap(vm.heap);
-    match instance_call_dunder_sync(self_id, "__contains__", Some(item), vm)? {
-        Some(result) => {
-            defer_drop!(result, vm);
-            Ok(Some(result.py_bool(vm)?))
-        }
-        None => Ok(None),
     }
 }
 
@@ -603,22 +642,14 @@ pub(crate) fn class_defines_not_none(class_id: HeapId, dunder: &str, vm: &VM<'_>
 /// Borrows a dunder out of `class_id`'s namespace, or `None` if absent.
 ///
 /// Backs the existence checks above without the `clone_with_heap` that
-/// [`class_member`] pays to hand out an owned value.
-fn class_dunder<'v>(class_id: HeapId, dunder: &str, vm: &'v VM<'_>) -> Option<&'v Value> {
+/// [`class_member`] pays to hand out an owned value. Callers needing to tell a
+/// `None` member apart from an absent one — CPython's `has_explicit_hash` does
+/// — want this rather than either check.
+pub(crate) fn class_dunder<'v>(class_id: HeapId, dunder: &str, vm: &'v VM<'_>) -> Option<&'v Value> {
     match vm.heap.get(class_id) {
         HeapData::Class(class) => class.namespace().get_by_str(dunder, vm.heap, vm.interns),
         _ => None,
     }
-}
-
-/// The default `repr` for an instance with no user `__repr__`.
-fn default_repr(self_id: HeapId, vm: &mut VM<'_>) -> String {
-    let class_id = instance_class(self_id, vm);
-    format!(
-        "<{} object at 0x{:x}>",
-        class_name(class_id, vm.heap, vm.interns),
-        self_id.index()
-    )
 }
 
 /// Returns the `HeapId` of `self_id`'s class object.
@@ -646,18 +677,24 @@ pub(crate) fn instance_user_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) 
 }
 
 /// Dispatches the synthesized field-wise `__eq__` of a dataclass instance, or
-/// `Ok(None)` when `self_id` is not one, which leaves the caller on identity.
+/// `Ok(None)` when `self_id` is not one — or is one declared `eq=False` — which
+/// leaves the caller on identity.
 ///
-/// Not in `HeapRead<Instance>::py_eq_impl` because fields are read as
+/// Not in `HeapObjectRead<Instance>::py_eq_impl` because fields are read as
 /// `self.field` is (see [`instance_attr`]), which needs the instance's `HeapId`.
 pub(crate) fn instance_dataclass_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
     if !matches!(vm.heap.get(self_id), HeapData::Instance(_)) {
         return Ok(None);
     }
     let class_id = instance_class(self_id, vm);
-    match dataclasses::dataclass_fields(class_id, vm) {
-        None => Ok(None),
-        Some(field_names) => dataclasses::dataclass_eq(self_id, &field_names, other, vm),
+    match dataclasses::dataclass_options(class_id, vm) {
+        // `eq=True` (the default) gets CPython's field-wise `__eq__`; `eq=False`
+        // and a plain class alike return `None`, leaving the caller on identity.
+        Some(options) if options.eq => {
+            let field_names = dataclasses::dataclass_fields(class_id, vm).unwrap_or_default();
+            dataclasses::dataclass_eq(self_id, &field_names, other, vm)
+        }
+        _ => Ok(None),
     }
 }
 
@@ -736,7 +773,12 @@ fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut 
 fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
     match value {
         Value::DefFunction(_) => true,
-        Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::Closure(_) | HeapData::FunctionDefaults(_)),
+        Value::Ref(id) => matches!(
+            vm.heap.get(*id),
+            // `functools.partial` is a descriptor in CPython 3.14 too, and binds
+            // the instance the same way: after the arguments it already carries.
+            HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::Partial(_)
+        ),
         _ => false,
     }
 }

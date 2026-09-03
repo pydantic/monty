@@ -33,8 +33,8 @@ use std::{
 };
 
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
-use monty_proto::python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty_value};
-use monty_types::{ExtFunctionResult, MontyException, MontyObject};
+use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value, uuid_to_py};
+use monty_types::{ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult};
 use pyo3::{
     Borrowed,
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
@@ -48,7 +48,7 @@ use tokio::{sync::Mutex, task::JoinSet};
 use crate::{
     async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
     exceptions::MontyError,
-    external::{CallResult, ExternalLookup},
+    external::{CallResult, ExternalLookup, resolve_object_attr, wire_call_arguments},
     pool::{
         FeedArgs, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
         dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync, turn_fn,
@@ -57,9 +57,9 @@ use crate::{
 };
 
 /// Shared context threaded across a `feed_start` drive so each `resume` can
-/// keep dispatching against the same worker, conversion registry, and print
-/// sink. Cloning bumps the shared handles (the checkout `Arc`, the dataclass
-/// registry dict, the print collector buffer) — every clone drives the **same**
+/// keep dispatching against the same worker, instance store, and print
+/// sink. Cloning bumps the shared handles (the checkout `Arc`, the instance
+/// store dict, the print collector buffer) — every clone drives the **same**
 /// underlying session.
 ///
 /// It also carries the `external_lookup=` / `os=` captured at
@@ -70,7 +70,7 @@ use crate::{
 /// matter to `resume_auto`.
 pub(crate) struct DriveContext {
     checkout: SharedCheckout,
-    dc_registry: DcRegistry,
+    instances: InstanceStore,
     print_target: PrintTarget,
     script_name: String,
     /// `external_lookup=` captured at `feed_start` / `load_snapshot`; consulted
@@ -90,7 +90,7 @@ pub(crate) struct DriveContext {
 impl DriveContext {
     pub(crate) fn new(
         checkout: SharedCheckout,
-        dc_registry: DcRegistry,
+        instances: InstanceStore,
         print_target: PrintTarget,
         script_name: String,
         external_lookup: Option<Py<PyDict>>,
@@ -98,7 +98,7 @@ impl DriveContext {
     ) -> Self {
         Self {
             checkout,
-            dc_registry,
+            instances,
             print_target,
             script_name,
             external_lookup,
@@ -110,7 +110,7 @@ impl DriveContext {
     fn clone_ref(&self, py: Python<'_>) -> Self {
         Self {
             checkout: SharedCheckout::clone(&self.checkout),
-            dc_registry: self.dc_registry.clone_ref(py),
+            instances: self.instances.clone_ref(py),
             print_target: self.print_target.clone_handle(py),
             script_name: self.script_name.clone(),
             external_lookup: self.external_lookup.as_ref().map(|d| d.clone_ref(py)),
@@ -142,9 +142,9 @@ pub(crate) fn feed_start_sync(
         os,
         print_target,
         checkout,
-        dc_registry,
+        instances,
     } = args;
-    let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name, external_lookup, os);
+    let ctx = DriveContext::new(checkout, instances, print_target, script_name, external_lookup, os);
     drive_sync(
         py,
         ctx,
@@ -169,9 +169,9 @@ pub(crate) fn feed_start_async(
         os,
         print_target,
         checkout,
-        dc_registry,
+        instances,
     } = args;
-    let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name, external_lookup, os);
+    let ctx = DriveContext::new(checkout, instances, print_target, script_name, external_lookup, os);
     future_into_py(py, async move {
         drive_async(
             ctx,
@@ -234,7 +234,7 @@ pub(crate) fn build_snapshot(
             py,
             MontyComplete {
                 value,
-                dc_registry: ctx.dc_registry,
+                instances: ctx.instances,
             },
         )
         .map(Py::into_any),
@@ -243,7 +243,7 @@ pub(crate) fn build_snapshot(
             args,
             kwargs,
             call_id,
-            method_call,
+            object_id,
         } => {
             let call = FunctionCallData {
                 function_name,
@@ -251,7 +251,7 @@ pub(crate) fn build_snapshot(
                 kwargs,
                 call_id,
                 is_os_function: false,
-                is_method_call: method_call,
+                object_id,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -267,16 +267,32 @@ pub(crate) fn build_snapshot(
                 kwargs,
                 call_id,
                 is_os_function: true,
-                is_method_call: false,
+                object_id: None,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
-        TurnEvent::NameLookup { name } => {
+        TurnEvent::NameLookup { name, object_id } => {
             let snapshot = SnapshotState::new(ctx);
             if is_async {
-                Py::new(py, PyAsyncNameLookupSnapshot(NameLookupSnapshot { snapshot, name })).map(Py::into_any)
+                Py::new(
+                    py,
+                    PyAsyncNameLookupSnapshot(NameLookupSnapshot {
+                        snapshot,
+                        name,
+                        object_id,
+                    }),
+                )
+                .map(Py::into_any)
             } else {
-                Py::new(py, PyNameLookupSnapshot(NameLookupSnapshot { snapshot, name })).map(Py::into_any)
+                Py::new(
+                    py,
+                    PyNameLookupSnapshot(NameLookupSnapshot {
+                        snapshot,
+                        name,
+                        object_id,
+                    }),
+                )
+                .map(Py::into_any)
             }
         }
         TurnEvent::ResolveFutures { pending_call_ids } => {
@@ -391,11 +407,29 @@ fn ext_result_to_resume(result: ExtFunctionResult) -> ResumeValue {
     }
 }
 
+/// An optional receiver uuid as a Python `uuid.UUID | None`.
+fn optional_uuid_to_py(py: Python<'_>, uuid: Option<&MontyUuid>) -> PyResult<Option<Py<PyAny>>> {
+    uuid.map(|uuid| uuid_to_py(py, uuid)).transpose()
+}
+
 /// Resolves a name against the [`DriveContext`]'s captured `external_lookup=`,
-/// shared by the sync and async name-lookup `resume_auto`. `None` leaves the
-/// name undefined so the sandbox raises `NameError`, matching `feed_run`.
-fn resolve_captured_name(py: Python<'_>, ctx: &DriveContext, name: &str) -> PyResult<Option<MontyObject>> {
-    ExternalLookup::new(py, ctx.external_lookup.as_ref().map(|d| d.bind(py)), &ctx.dc_registry).resolve_name(name)
+/// shared by the sync and async name-lookup `resume_auto`, matching `feed_run`:
+/// `Undefined` makes the sandbox raise `NameError` for a plain name, or
+/// `AttributeError` when `object_id` marks a lazy attribute on a host-backed
+/// object; a host error serving a lazy attribute is raised in the sandbox.
+fn resolve_captured_name(
+    py: Python<'_>,
+    ctx: &DriveContext,
+    name: &str,
+    object_id: Option<MontyUuid>,
+) -> PyResult<NameLookupResult> {
+    if let Some(object_id) = object_id {
+        Ok(resolve_object_attr(py, name, &object_id, &ctx.instances))
+    } else {
+        ExternalLookup::new(py, ctx.external_lookup.as_ref().map(|d| d.bind(py)), &ctx.instances)
+            .resolve_name(name)
+            .map(NameLookupResult::from)
+    }
 }
 
 /// Parses an `ExternalResult` TypedDict — one of `{'return_value': obj}`,
@@ -405,7 +439,7 @@ fn resolve_captured_name(py: Python<'_>, ctx: &DriveContext, name: &str) -> PyRe
 fn parse_external_result(
     py: Python<'_>,
     result: &Bound<'_, PyDict>,
-    dc_registry: &DcRegistry,
+    instances: &InstanceStore,
 ) -> PyResult<ResumeValue> {
     const ARGS_ERROR: &str = "ExternalResult must be a dict with one of: 'return_value', 'exception', 'exc_type' (with optional 'message'), or 'future'";
 
@@ -433,7 +467,7 @@ fn parse_external_result(
     if result.len() != 1 {
         Err(PyTypeError::new_err(ARGS_ERROR))
     } else if let Some(rv) = result.get_item(intern!(py, "return_value"))? {
-        let value = py_to_monty_value(&rv, dc_registry).map_err(|e| MontyError::new_err(py, e))?;
+        let value = py_to_monty_value(&rv, instances).map_err(|e| MontyError::new_err(py, e))?;
         Ok(ResumeValue::Return(value))
     } else if let Some(exc) = result.get_item(intern!(py, "exception"))? {
         if exc.is_instance_of::<PyBaseException>() {
@@ -455,24 +489,18 @@ fn parse_external_result(
     }
 }
 
-fn args_to_py<'py>(py: Python<'py>, args: &[MontyObject], dc_registry: &DcRegistry) -> PyResult<Bound<'py, PyTuple>> {
-    let items = args
-        .iter()
-        .map(|arg| monty_to_py(py, arg, dc_registry))
-        .collect::<PyResult<Vec<_>>>()?;
-    PyTuple::new(py, items)
+/// The pending call's positional args as a Python tuple.
+fn args_to_py<'py>(py: Python<'py>, args: &[MontyObject], instances: &InstanceStore) -> PyResult<Bound<'py, PyTuple>> {
+    wire_call_arguments(py, args, &[], instances).map(|(args, _)| args)
 }
 
+/// The pending call's keyword args as a Python dict.
 fn kwargs_to_py<'py>(
     py: Python<'py>,
     kwargs: &[(MontyObject, MontyObject)],
-    dc_registry: &DcRegistry,
+    instances: &InstanceStore,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    for (key, value) in kwargs {
-        dict.set_item(monty_to_py(py, key, dc_registry)?, monty_to_py(py, value, dc_registry)?)?;
-    }
-    Ok(dict)
+    wire_call_arguments(py, &[], kwargs, instances).map(|(_, kwargs)| kwargs)
 }
 
 // =============================================================================
@@ -490,7 +518,9 @@ struct FunctionCallData {
     kwargs: Vec<(MontyObject, MontyObject)>,
     call_id: u32,
     is_os_function: bool,
-    is_method_call: bool,
+    /// Uuid of the routed receiver — an instance or class type; `None` for
+    /// plain external functions and OS calls.
+    object_id: Option<MontyUuid>,
 }
 
 struct FunctionSnapshot {
@@ -500,7 +530,7 @@ struct FunctionSnapshot {
 
 impl FunctionSnapshot {
     fn resume_value(&self, py: Python<'_>, result: &Bound<'_, PyDict>) -> PyResult<ResumeValue> {
-        parse_external_result(py, result, &self.snapshot.ctx.dc_registry)
+        parse_external_result(py, result, &self.snapshot.ctx.instances)
     }
 
     /// `ResumeValue::NotHandled` for an OS-call snapshot: the sandbox raises
@@ -534,8 +564,8 @@ impl PyFunctionSnapshot {
     }
 
     #[getter]
-    fn is_method_call(&self) -> bool {
-        self.0.call.is_method_call
+    fn object_id(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        optional_uuid_to_py(py, self.0.call.object_id.as_ref())
     }
 
     #[getter]
@@ -550,12 +580,12 @@ impl PyFunctionSnapshot {
 
     #[getter]
     fn args<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        args_to_py(py, &self.0.call.args, &self.0.snapshot.ctx.dc_registry)
+        args_to_py(py, &self.0.call.args, &self.0.snapshot.ctx.instances)
     }
 
     #[getter]
     fn kwargs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        kwargs_to_py(py, &self.0.call.kwargs, &self.0.snapshot.ctx.dc_registry)
+        kwargs_to_py(py, &self.0.call.kwargs, &self.0.snapshot.ctx.instances)
     }
 
     /// Resumes execution with an `ExternalResult` (return value, exception, or
@@ -593,16 +623,16 @@ impl PyFunctionSnapshot {
                 &call.args,
                 &call.kwargs,
                 ctx.os.as_ref(),
-                &ctx.dc_registry,
+                &ctx.instances,
             )
         } else {
             match dispatch_function_call(
                 &call.function_name,
-                call.is_method_call,
+                call.object_id,
                 &call.args,
                 &call.kwargs,
                 ctx.external_lookup.as_ref(),
-                &ctx.dc_registry,
+                &ctx.instances,
             ) {
                 CallResult::Sync(result) => ext_result_to_resume(result),
                 CallResult::Coroutine(coro) => {
@@ -648,8 +678,8 @@ impl PyAsyncFunctionSnapshot {
     }
 
     #[getter]
-    fn is_method_call(&self) -> bool {
-        self.0.call.is_method_call
+    fn object_id(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        optional_uuid_to_py(py, self.0.call.object_id.as_ref())
     }
 
     #[getter]
@@ -664,12 +694,12 @@ impl PyAsyncFunctionSnapshot {
 
     #[getter]
     fn args<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        args_to_py(py, &self.0.call.args, &self.0.snapshot.ctx.dc_registry)
+        args_to_py(py, &self.0.call.args, &self.0.snapshot.ctx.instances)
     }
 
     #[getter]
     fn kwargs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        kwargs_to_py(py, &self.0.call.kwargs, &self.0.snapshot.ctx.dc_registry)
+        kwargs_to_py(py, &self.0.call.kwargs, &self.0.snapshot.ctx.instances)
     }
 
     fn resume<'py>(&self, py: Python<'py>, result: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
@@ -716,23 +746,23 @@ impl PyAsyncFunctionSnapshot {
                             &call.args,
                             &call.kwargs,
                             ctx.os.as_ref(),
-                            &ctx.dc_registry,
+                            &ctx.instances,
                         )
                     })),
                 }
             } else {
                 match dispatch_function_call(
                     &call.function_name,
-                    call.is_method_call,
+                    call.object_id,
                     &call.args,
                     &call.kwargs,
                     ctx.external_lookup.as_ref(),
-                    &ctx.dc_registry,
+                    &ctx.instances,
                 ) {
                     CallResult::Sync(result) => Ok(ext_result_to_resume(result)),
                     CallResult::Coroutine(coro) => {
                         let mut join_set = ctx.pending_futures.lock().await;
-                        spawn_coroutine_task(&mut join_set, call.call_id, coro, &ctx.dc_registry)
+                        spawn_coroutine_task(&mut join_set, call.call_id, coro, &ctx.instances)
                             .map(|()| ResumeValue::Future)
                     }
                 }
@@ -767,6 +797,10 @@ impl PyAsyncFunctionSnapshot {
 struct NameLookupSnapshot {
     snapshot: SnapshotState,
     name: String,
+    /// Id of the receiver for a lazy attribute lookup on a host-backed
+    /// object (instance or class type); `None` for a plain undefined-name
+    /// lookup.
+    object_id: Option<MontyUuid>,
 }
 
 /// The argument to `NameLookupSnapshot.resume`, distinguishing an omitted value
@@ -793,20 +827,23 @@ impl<'a, 'py> FromPyObject<'a, 'py> for MaybeValue<'py> {
 
 impl NameLookupSnapshot {
     /// Converts the `resume` argument into the name's binding: an omitted value
-    /// (`Unset`) leaves the name undefined so the sandbox raises `NameError`,
-    /// while a supplied value — **including `None`** — binds the name to it.
+    /// (`Unset`) leaves the lookup unanswered — the sandbox raises `NameError`
+    /// for a plain name, or `AttributeError` when `object_id` marks a lazy host
+    /// attribute — while a supplied value (**including `None`**) binds it.
     fn resume_value(&self, py: Python<'_>, value: MaybeValue<'_>) -> PyResult<Option<MontyObject>> {
         match value {
             MaybeValue::Unset => Ok(None),
-            MaybeValue::Set(value) => py_to_monty_value(&value, &self.snapshot.ctx.dc_registry)
+            MaybeValue::Set(value) => py_to_monty_value(&value, &self.snapshot.ctx.instances)
                 .map(Some)
                 .map_err(|e| MontyError::new_err(py, e)),
         }
     }
 }
 
-/// A paused execution waiting for the value of an undefined name. Resume with a
-/// `value` to define it, or with nothing to let the sandbox raise `NameError`.
+/// A paused execution waiting for the value of an undefined name (or, when
+/// `object_id` is set, a lazy host attribute). Resume with a `value` to define
+/// it, or with nothing to let the sandbox raise `NameError` (`AttributeError`
+/// for a host attribute).
 #[pyclass(name = "NameLookupSnapshot", module = "pydantic_monty", frozen)]
 pub struct PyNameLookupSnapshot(NameLookupSnapshot);
 
@@ -822,6 +859,13 @@ impl PyNameLookupSnapshot {
         &self.0.name
     }
 
+    /// Id of the receiver for a lazy attribute lookup; `None` for a plain
+    /// undefined-name lookup.
+    #[getter]
+    fn object_id(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        optional_uuid_to_py(py, self.0.object_id.as_ref())
+    }
+
     #[pyo3(signature = (*, value=MaybeValue::Unset))]
     fn resume(&self, py: Python<'_>, value: MaybeValue<'_>) -> PyResult<Py<PyAny>> {
         let value = self.0.resume_value(py, value)?;
@@ -831,11 +875,12 @@ impl PyNameLookupSnapshot {
 
     /// Answers this name lookup automatically from the captured
     /// `external_lookup=`, then drives to the next snapshot. A name absent from
-    /// the lookup leaves it undefined, so the sandbox raises `NameError`.
+    /// the lookup leaves it undefined, so the sandbox raises `NameError`; a
+    /// host error serving a lazy attribute is raised in the sandbox instead.
     /// Consumes the snapshot.
     fn resume_auto(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let ctx = self.0.snapshot.claim(py)?;
-        let value = match resolve_captured_name(py, &ctx, &self.0.name) {
+        let value = match resolve_captured_name(py, &ctx, &self.0.name, self.0.object_id) {
             Ok(value) => value,
             Err(err) => {
                 discard_checkout_sync(py, &ctx.checkout);
@@ -870,6 +915,13 @@ impl PyAsyncNameLookupSnapshot {
         &self.0.name
     }
 
+    /// Id of the receiver for a lazy attribute lookup; `None` for a plain
+    /// undefined-name lookup.
+    #[getter]
+    fn object_id(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        optional_uuid_to_py(py, self.0.object_id.as_ref())
+    }
+
     #[pyo3(signature = (*, value=MaybeValue::Unset))]
     fn resume<'py>(&self, py: Python<'py>, value: MaybeValue<'_>) -> PyResult<Bound<'py, PyAny>> {
         let value = self.0.resume_value(py, value)?;
@@ -883,8 +935,9 @@ impl PyAsyncNameLookupSnapshot {
     fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let ctx = self.0.snapshot.claim(py)?;
         let name = self.0.name.clone();
+        let object_id = self.0.object_id;
         future_into_py(py, async move {
-            let value = match Python::attach(|py| resolve_captured_name(py, &ctx, &name)) {
+            let value = match Python::attach(|py| resolve_captured_name(py, &ctx, &name, object_id)) {
                 Ok(value) => value,
                 Err(err) => {
                     discard_checkout(&ctx.checkout).await;
@@ -928,7 +981,7 @@ impl FutureSnapshot {
             let dict = value
                 .cast_into::<PyDict>()
                 .map_err(|_| PyTypeError::new_err("future result values must be ExternalResult dicts"))?;
-            let resume = parse_external_result(py, &dict, &self.snapshot.ctx.dc_registry)?;
+            let resume = parse_external_result(py, &dict, &self.snapshot.ctx.instances)?;
             if matches!(resume, ResumeValue::Future) {
                 return Err(PyTypeError::new_err(format!(
                     "future {call_id} cannot resolve to another future; provide a return value or exception"
@@ -1051,14 +1104,14 @@ impl PyAsyncFutureSnapshot {
 #[pyclass(name = "MontyComplete", module = "pydantic_monty", frozen)]
 pub struct MontyComplete {
     value: MontyObject,
-    dc_registry: DcRegistry,
+    instances: InstanceStore,
 }
 
 #[pymethods]
 impl MontyComplete {
     #[getter]
     fn output(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        monty_to_py(py, &self.value, &self.dc_registry)
+        monty_to_py(py, &self.value, &self.instances)
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {

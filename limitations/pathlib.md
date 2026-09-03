@@ -1,18 +1,24 @@
 # `pathlib` module
 
 Only one class is exported: `pathlib.Path`. It always represents a virtual
-POSIX path inside the sandbox — `/mnt/data/foo.txt`, never a Windows path
+POSIX path inside the sandbox (`/mnt/data/foo.txt`), never a Windows path
 even when the host is Windows. `PurePath`, `PurePosixPath`, `PureWindowsPath`,
-`PosixPath`, `WindowsPath` are not separately exposed (the printed `repr`
-of a `Path` is `PosixPath(...)` for compatibility).
+`PosixPath`, `WindowsPath` are not separately exposed; the printed `repr`
+of a `Path` is `PosixPath(...)` for compatibility.
+
+Because the class object and its instances share one type, the class object
+answers to the instance name: `pathlib.Path.__name__` and `repr(pathlib.Path)`
+give `PosixPath` / `<class 'PosixPath'>`, and `pathlib.Path.nonexistent` raises
+`type object 'PosixPath' has no attribute 'nonexistent'`, where CPython names
+`Path` (the instance-level spellings, e.g. `Path('/a') / 1`, match CPython).
 
 ## Construction
 
 `Path(*segments)` works. Each segment may be a `str` or another `Path`.
 Bytes paths are rejected with `TypeError`.
 
-`Path.cwd()` and `Path.home()` are **not** implemented — there is no
-notion of "current directory" or "home" inside the sandbox.
+`Path.cwd()` and `Path.home()` are **not** implemented: the sandbox has no
+current directory and no home directory.
 
 ## Pure (no I/O) methods and attributes
 
@@ -36,10 +42,10 @@ These yield an `OsCall` for the host to resolve:
 - `mkdir(mode=0o777, parents=False, exist_ok=False)`, `unlink()`, `rmdir()`
 - `iterdir()`, `stat()`, `rename(target)`
 - `resolve()`, `absolute()`
-- `open(...)` — see [`open.md`](open.md) for the supported file API and divergences
+- `open(...)` — see ./open.md for the supported file API and divergences
 
 `Path.mkdir()` parses `mode`, `parents`, and `exist_ok`, but `mode` is
-accepted only for signature compatibility — Monty does not model POSIX
+accepted only for signature compatibility: Monty does not model POSIX
 permission bits. The `missing_ok` and `target_is_directory` keyword arguments
 accepted by other CPython methods are not parsed; pass only the positional
 arguments documented above.
@@ -56,4 +62,4 @@ Not implemented: `glob`, `rglob`, `touch`, `chmod`, `lchmod`, `owner`,
 ## Path normalization and the sandbox
 
 Every I/O call routes through the host's mount table; paths are resolved
-strictly within mounted roots. See [filesystem.md](filesystem.md).
+strictly within mounted roots. See ./filesystem.md.

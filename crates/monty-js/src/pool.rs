@@ -36,8 +36,8 @@ use monty_pool::{
     TurnEvent,
 };
 use monty_types::{
-    AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintStream, StackFrame, TypeCheckingConfig,
-    TypeCheckingFormat,
+    AssertMessageAnnotations, ExcType, MontyException, MontyObject, NameLookupResult, PrintStream, StackFrame,
+    TypeCheckingConfig, TypeCheckingFormat,
 };
 use napi::{
     bindgen_prelude::{
@@ -497,6 +497,51 @@ impl NativeSession {
         )
     }
 
+    /// Answers a lazy attribute `nameLookup` (one carrying an `objectId`) with
+    /// the host's value. Unlike `resume_name_lookup`, a value that cannot cross
+    /// the wire is raised in the sandbox as `TypeError`, as `resume_return`
+    /// does: the host has served the attribute, so the failure is sandbox
+    /// code's to catch rather than a rejected turn.
+    #[napi]
+    pub fn resume_lazy_attr<'env>(
+        &self,
+        env: &'env Env,
+        value: Unknown<'env>,
+        on_print: PrintCallback<'env>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        let resolved = match sendable_value(env, value) {
+            Ok(value) => NameLookupResult::Value(value),
+            Err(exc) => NameLookupResult::Error(exc),
+        };
+        self.run_turn(
+            env,
+            on_print,
+            outcome_fn(move |checkout, on_print| Box::pin(checkout.resume_name_lookup(resolved, on_print))),
+        )
+    }
+
+    /// Answers a `nameLookup` suspension with an exception raised where the
+    /// lookup suspended — how a host error while serving a lazy attribute
+    /// reaches sandbox code as a catchable exception. Same `exc_type` mapping
+    /// as `resume_error`.
+    #[napi]
+    pub fn resume_name_lookup_error<'env>(
+        &self,
+        env: &'env Env,
+        exc_type: String,
+        message: String,
+        on_print: PrintCallback<'env>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        let exc = exception_from_parts(&exc_type, message);
+        self.run_turn(
+            env,
+            on_print,
+            outcome_fn(move |checkout, on_print| {
+                Box::pin(checkout.resume_name_lookup(NameLookupResult::Error(exc), on_print))
+            }),
+        )
+    }
+
     /// Answers a `resolveFutures` suspension with the settled promises'
     /// outcomes: an array of `{ callId, ok, value?, excType?, message? }`.
     #[napi]
@@ -776,14 +821,15 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
             args,
             kwargs,
             call_id,
-            method_call,
+            object_id,
         }) => {
             obj.set("kind", "functionCall")?;
             obj.set("functionName", function_name)?;
             obj.set("args", values_to_js(env, &args)?)?;
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
             obj.set("callId", call_id)?;
-            obj.set("methodCall", method_call)?;
+            // the routed receiver uuid as a canonical string
+            obj.set("objectId", object_id.map(|uuid| uuid.to_string()))?;
         }
         TurnOutcome::Event(TurnEvent::OsCall {
             function_name,
@@ -797,9 +843,11 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
             obj.set("callId", call_id)?;
         }
-        TurnOutcome::Event(TurnEvent::NameLookup { name }) => {
+        TurnOutcome::Event(TurnEvent::NameLookup { name, object_id }) => {
             obj.set("kind", "nameLookup")?;
             obj.set("name", name)?;
+            // the receiver uuid as a canonical string
+            obj.set("objectId", object_id.map(|uuid| uuid.to_string()))?;
         }
         TurnOutcome::Event(TurnEvent::ResolveFutures { pending_call_ids }) => {
             obj.set("kind", "resolveFutures")?;
@@ -954,13 +1002,23 @@ fn require<T: FromNapiValue>(obj: &Object<'_>, field: &str) -> Result<T> {
 /// catchable in-sandbox error instead: the worker is suspended awaiting
 /// exactly one resume, so this must never fail.
 fn sendable_resume(env: &Env, value: Unknown<'_>) -> ResumeValue {
+    match sendable_value(env, value) {
+        Ok(value) => ResumeValue::Return(value),
+        Err(exc) => ResumeValue::Error(exc),
+    }
+}
+
+/// Converts a host value the sandbox has already asked for, mapping one the
+/// wire cannot carry to the exception raised in its place: `TypeError` for an
+/// unconvertible value, `RuntimeError` for excessive nesting.
+fn sendable_value(env: &Env, value: Unknown<'_>) -> StdResult<MontyObject, MontyException> {
     match js_to_monty(value, *env) {
-        Ok(value) if exceeds_max_value_depth(&value) => ResumeValue::Error(MontyException::new(
+        Ok(value) if exceeds_max_value_depth(&value) => Err(MontyException::new(
             ExcType::RuntimeError,
             Some("Max input depth exceeded".to_owned()),
         )),
-        Ok(value) => ResumeValue::Return(value),
-        Err(err) => ResumeValue::Error(MontyException::new(ExcType::TypeError, Some(err.reason.clone()))),
+        Ok(value) => Ok(value),
+        Err(err) => Err(MontyException::new(ExcType::TypeError, Some(err.reason.clone()))),
     }
 }
 

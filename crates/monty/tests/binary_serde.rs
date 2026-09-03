@@ -1,11 +1,29 @@
-//! Tests for binary serialization and deserialization of `MontyRun` and `RunProgress`.
+//! Tests that execution state survives serialization.
 //!
-//! These tests verify that execution state can be serialized with postcard for:
-//! - Caching parsed code to avoid re-parsing
-//! - Snapshotting execution state for external function calls
+//! A paused `RunProgress` goes through the real dump format ([`monty::dump`] /
+//! [`monty::Dump::load`]), which is how a host would actually snapshot it.
+//! `MontyRun` has no dump of its own — it is compiled code, not a session — but
+//! it is `Serialize`/`Deserialize`, so it is round-tripped through postcard
+//! directly to cover the serde impls a dump ultimately rests on.
 
-use monty::{MontyRun, RunProgress};
+use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{CompileOptions, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
+use serde::{Serialize, de::DeserializeOwned};
+
+/// Round-trips compiled code through postcard.
+fn round_trip<T: Serialize + DeserializeOwned>(value: &T) -> T {
+    postcard::from_bytes(&postcard::to_allocvec(value).unwrap()).unwrap()
+}
+
+/// Round-trips a paused run through the dump format, asserting it comes back on
+/// the arm it went out on.
+fn round_trip_progress(progress: &RunProgress) -> RunProgress {
+    let bytes = dump("test.py", None, SessionRef::Running(progress)).unwrap();
+    match Dump::load(&bytes).unwrap().state {
+        Session::Running(progress) => *progress,
+        _ => panic!("dumped a running session, loaded something else"),
+    }
+}
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
 fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyException> {
@@ -19,56 +37,21 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
     Ok(progress)
 }
 
-// === MontyRun dump/load Tests ===
+// === MontyRun round-trip tests ===
 
 #[test]
-fn dump_header_rejects_incompatible_data() {
+fn monty_run_round_trip_simple() {
+    // Create a runner, round-trip it, and verify it produces the same result
     let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let bytes = runner.dump().unwrap();
-    assert_eq!(&bytes[..9], b"MONTY\0\x04\x00\x00");
-
-    let legacy = postcard::to_allocvec(&runner).unwrap();
-    assert_eq!(
-        MontyRun::load(&legacy).unwrap_err(),
-        postcard::Error::DeserializeBadEncoding
-    );
-
-    let mut wrong_version = bytes.clone();
-    wrong_version[6] = 1;
-    assert_eq!(
-        MontyRun::load(&wrong_version).unwrap_err(),
-        postcard::Error::DeserializeBadEncoding
-    );
-
-    let mut trailing_data = bytes.clone();
-    trailing_data.push(0);
-    assert_eq!(
-        MontyRun::load(&trailing_data).unwrap_err(),
-        postcard::Error::DeserializeBadEncoding
-    );
-
-    let mut wrong_kind = bytes;
-    wrong_kind[8] = 2;
-    assert_eq!(
-        MontyRun::load(&wrong_kind).unwrap_err(),
-        postcard::Error::DeserializeBadEncoding
-    );
-}
-
-#[test]
-fn monty_run_dump_load_simple() {
-    // Create a runner, dump it, load it, and verify it produces the same result
-    let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let bytes = runner.dump().unwrap();
-    let loaded = MontyRun::load(&bytes).unwrap();
+    let loaded = round_trip(&runner);
 
     let result = loaded.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(3));
 }
 
 #[test]
-fn monty_run_dump_load_with_inputs() {
-    // Test that input names are preserved across dump/load
+fn monty_run_round_trip_with_inputs() {
+    // Test that input names are preserved across a round-trip
     let runner = MontyRun::new(
         "x + y * 2".to_owned(),
         "test.py",
@@ -76,8 +59,7 @@ fn monty_run_dump_load_with_inputs() {
         CompileOptions::default(),
     )
     .unwrap();
-    let bytes = runner.dump().unwrap();
-    let loaded = MontyRun::load(&bytes).unwrap();
+    let loaded = round_trip(&runner);
 
     let result = loaded
         .run_no_limits(vec![MontyObject::Int(10), MontyObject::Int(5)])
@@ -86,12 +68,11 @@ fn monty_run_dump_load_with_inputs() {
 }
 
 #[test]
-fn monty_run_dump_load_preserves_code() {
+fn monty_run_round_trip_preserves_code() {
     // Verify the code string is preserved
     let code = "def foo(x):\n    return x * 2\nfoo(21)".to_owned();
     let runner = MontyRun::new(code.clone(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let bytes = runner.dump().unwrap();
-    let loaded = MontyRun::load(&bytes).unwrap();
+    let loaded = round_trip(&runner);
 
     assert_eq!(loaded.code(), code);
     let result = loaded.run_no_limits(vec![]).unwrap();
@@ -99,7 +80,7 @@ fn monty_run_dump_load_preserves_code() {
 }
 
 #[test]
-fn monty_run_dump_load_complex_code() {
+fn monty_run_round_trip_complex_code() {
     // Test with more complex code including functions, loops, conditionals
     let code = r"
 def fib(n):
@@ -115,8 +96,7 @@ result
     .to_owned();
 
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let bytes = runner.dump().unwrap();
-    let loaded = MontyRun::load(&bytes).unwrap();
+    let loaded = round_trip(&runner);
 
     let result = loaded.run_no_limits(vec![]).unwrap();
     // First 10 Fibonacci numbers: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34
@@ -137,10 +117,10 @@ result
 
 /// Captured comprehension cells and their closure metadata survive code serialization.
 #[test]
-fn monty_run_dump_load_comprehension_closure() {
+fn monty_run_round_trip_comprehension_closure() {
     let code = "funcs = [lambda: item for item in ['first', 'second']]\nfuncs[0]()".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let loaded = MontyRun::load(&runner.dump().unwrap()).unwrap();
+    let loaded = round_trip(&runner);
 
     assert_eq!(
         loaded.run_no_limits(vec![]).unwrap(),
@@ -149,7 +129,7 @@ fn monty_run_dump_load_comprehension_closure() {
 }
 
 #[test]
-fn monty_run_dump_load_multiple_runs() {
+fn monty_run_round_trip_multiple_runs() {
     // A loaded runner can be run multiple times
     let runner = MontyRun::new(
         "x * 2".to_owned(),
@@ -158,8 +138,7 @@ fn monty_run_dump_load_multiple_runs() {
         CompileOptions::default(),
     )
     .unwrap();
-    let bytes = runner.dump().unwrap();
-    let loaded = MontyRun::load(&bytes).unwrap();
+    let loaded = round_trip(&runner);
 
     assert_eq!(
         loaded.run_no_limits(vec![MontyObject::Int(5)]).unwrap(),
@@ -171,10 +150,10 @@ fn monty_run_dump_load_multiple_runs() {
     );
 }
 
-// === RunProgress dump/load Tests ===
+// === RunProgress round-trip tests ===
 
 #[test]
-fn run_progress_dump_load_roundtrip() {
+fn run_progress_round_trip_at_external_call() {
     // Start execution with an external function, dump at the call, load and resume
     let runner = MontyRun::new(
         "ext_fn(42) + 1".to_owned(),
@@ -191,11 +170,8 @@ fn run_progress_dump_load_roundtrip() {
     // First resolve the NameLookup for ext_fn
     let progress = resolve_name_lookups(progress).unwrap();
 
-    // Dump the progress at the external call
-    let bytes = progress.dump().unwrap();
-
-    // Load it back
-    let loaded: RunProgress = RunProgress::load(&bytes).unwrap();
+    // Round-trip the progress suspended at the external call
+    let loaded: RunProgress = round_trip_progress(&progress);
 
     // Should still be at the external function call
     let call = loaded.into_function_call().expect("should be at function call");
@@ -208,8 +184,8 @@ fn run_progress_dump_load_roundtrip() {
 }
 
 #[test]
-fn run_progress_dump_load_multiple_calls() {
-    // Test multiple external calls with dump/load between each
+fn run_progress_round_trip_multiple_calls() {
+    // Test multiple external calls with a round-trip between each
     let runner = MontyRun::new(
         "x = ext_fn(1); y = ext_fn(2); x + y".to_owned(),
         "test.py",
@@ -223,8 +199,7 @@ fn run_progress_dump_load_multiple_calls() {
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
-    let bytes = progress.dump().unwrap();
-    let loaded: RunProgress = RunProgress::load(&bytes).unwrap();
+    let loaded: RunProgress = round_trip_progress(&progress);
     let call = loaded.into_function_call().unwrap();
     assert_eq!(call.function_name, "ext_fn");
     assert_eq!(call.args, vec![MontyObject::Int(1)]);
@@ -234,9 +209,8 @@ fn run_progress_dump_load_multiple_calls() {
     // Resolve any NameLookup for the second ext_fn reference
     let progress = resolve_name_lookups(progress).unwrap();
 
-    // Dump/load at second call
-    let bytes = progress.dump().unwrap();
-    let loaded: RunProgress = RunProgress::load(&bytes).unwrap();
+    // Round-trip at second call
+    let loaded: RunProgress = round_trip_progress(&progress);
     let call = loaded.into_function_call().unwrap();
     assert_eq!(call.function_name, "ext_fn");
     assert_eq!(call.args, vec![MontyObject::Int(2)]);
@@ -246,11 +220,11 @@ fn run_progress_dump_load_multiple_calls() {
     assert_eq!(result.into_complete().unwrap(), MontyObject::Int(30)); // 10 + 20
 }
 
-/// Live `itertools` iterators on the heap survive a dump/load with their state
+/// Live `itertools` iterators on the heap survive a round-trip with their state
 /// intact — the only coverage that carries `HeapData::Itertools` through
 /// postcard, since a `MontyRun` dump holds compiled code and no heap at all.
 #[test]
-fn run_progress_dump_load_preserves_itertools_iterators() {
+fn run_progress_round_trip_preserves_itertools_iterators() {
     let code = r"
 import itertools
 
@@ -269,7 +243,7 @@ ext_fn(0)
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
-    let bytes = progress.dump().unwrap();
+    let loaded: RunProgress = round_trip_progress(&progress);
 
     // Both adaptors kept their position: the count carries `current`/`step`,
     // the repeat carries its object and remaining count.
@@ -288,22 +262,67 @@ ext_fn(0)
     let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
     assert_eq!(from_original.into_complete().unwrap(), expected);
 
-    let loaded: RunProgress = RunProgress::load(&bytes).unwrap();
+    let call = loaded.into_function_call().expect("should be at function call");
+    let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_loaded.into_complete().unwrap(), expected);
+}
+
+/// A live `functools.partial` on the heap survives a round-trip with its bound
+/// callable, positionals and keywords intact — the only coverage that carries
+/// `HeapData::Partial` through postcard.
+#[test]
+fn run_progress_round_trip_preserves_partial() {
+    let code = r"
+import functools
+
+
+def target(a, b, c=0):
+    return a * 100 + b * 10 + c
+
+
+p = functools.partial(target, 1, c=3)
+ext_fn(0)
+[p(2), p.args, p.keywords, repr(p.func is target)]
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+    // Suspend at `ext_fn` with the partial built and still live.
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded: RunProgress = round_trip_progress(&progress);
+
+    // The wrapped function is reached by id, so it still resolves to the same
+    // object after a reload rather than to a copy.
+    let expected = MontyObject::List(vec![
+        MontyObject::Int(123),
+        MontyObject::Tuple(vec![MontyObject::Int(1)]),
+        MontyObject::Dict(vec![(MontyObject::String("c".to_owned()), MontyObject::Int(3))].into()),
+        MontyObject::String("True".to_owned()),
+    ]);
+
+    // Both are resumed for the reason given in the itertools round-trip above.
+    let original = progress.into_function_call().expect("should be at function call");
+    assert_eq!(original.function_name, "ext_fn");
+    let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_original.into_complete().unwrap(), expected);
+
     let call = loaded.into_function_call().expect("should be at function call");
     let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
     assert_eq!(from_loaded.into_complete().unwrap(), expected);
 }
 
 #[test]
-fn run_progress_complete_roundtrip() {
+fn run_progress_complete_round_trip() {
     // When execution completes, we can still dump/load the Complete variant
     let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
-    let bytes = progress.dump().unwrap();
-    let loaded: RunProgress = RunProgress::load(&bytes).unwrap();
+    let loaded: RunProgress = round_trip_progress(&progress);
 
     assert_eq!(loaded.into_complete().unwrap(), MontyObject::Int(3));
 }

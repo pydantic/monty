@@ -1,0 +1,20 @@
+{
+  // Check-only config for the specs (`npm run lint`): the package imports
+  // resolve to the TypeScript sources, so no build is needed and a wrong
+  // property name in a test fails the lint rather than only at runtime.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "..",
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "paths": {
+      "@pydantic/monty": ["../ts/index.ts"],
+      "@pydantic/monty/node": ["../ts/node.ts"],
+      "@pydantic/monty/wasm": ["../ts/worker/index.ts"]
+    }
+  },
+  "include": ["../ts", "../test-support", "."],
+  "exclude": []
+}

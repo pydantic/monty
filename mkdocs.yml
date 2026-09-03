@@ -1,0 +1,49 @@
+site_name: Monty
+site_description: A minimal, secure Python interpreter written in Rust for use by AI.
+
+theme:
+  name: 'material'
+  palette:
+    - scheme: 'default'
+      media: '(prefers-color-scheme: light)'
+      primary: 'blue'
+      toggle:
+        icon: 'material/lightbulb'
+        name: 'Switch to dark mode'
+    - scheme: 'slate'
+      media: '(prefers-color-scheme: dark)'
+      primary: 'blue'
+      toggle:
+        icon: 'material/lightbulb-outline'
+        name: 'Switch to light mode'
+
+repo_name: pydantic/monty
+repo_url: https://github.com/pydantic/monty/
+edit_uri: ''
+
+nav:
+  - Introduction: 'index.md'
+  - Installation: 'install.md'
+  - QuickStart:
+      - Python: 'quickstart/python.md'
+      - JavaScript: 'quickstart/javascript.md'
+      - Rust: 'quickstart/rust.md'
+  - Concepts:
+      - Security Model: 'security.md'
+      - Host Functions: 'host-functions.md'
+      - Host Objects: 'host-objects.md'
+      - Resource Limits: 'resource-limits.md'
+      - Filesystem Access: 'filesystem.md'
+      - Snapshots: 'snapshots.md'
+      - Type Checking: 'type-checking.md'
+  - The Python Subset: 'python-subset.md'
+  - Command Line: 'cli.md'
+  - Running monty-server: 'server.md'
+
+markdown_extensions:
+  - admonition
+  - tables
+  - pymdownx.highlight:
+      use_pygments: true
+      pygments_lang_class: true
+  - pymdownx.superfences

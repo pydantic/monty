@@ -233,6 +233,11 @@ const exceptionTypes: Array<[string, string]> = [
   ['AttributeError', 'AttributeError'],
   ['NameError', 'NameError'],
   ['AssertionError', 'AssertionError'],
+  // Dotted names are the interesting case: they only survive if PYTHON_EXC_NAMES
+  // carries them, and without that they arrive as their builtin parent's type.
+  ['json.JSONDecodeError', 'json.JSONDecodeError'],
+  ['re.PatternError', 're.PatternError'],
+  ['binascii.Error', 'binascii.Error'],
   ['SomeCustomError', 'RuntimeError'],
 ]
 
@@ -284,6 +289,42 @@ caught
 
     // Child exception should be caught by parent handler (which comes first)
     t.is(await run(code, { externalLookup: { fail } }), 'parent')
+  })
+}
+
+// =============================================================================
+// Dotted exception name tests
+// =============================================================================
+
+// Dotted names identify a stdlib class that would otherwise be indistinguishable
+// from its builtin parent. They survive the crossing only while PYTHON_EXC_NAMES
+// carries them; without the entry the sandbox sees the parent (or RuntimeError)
+// and an `except <module>.<Name>:` handler silently misses.
+const dottedTypes: Array<[string, string, string]> = [
+  ['binascii.Error', 'binascii', 'ValueError'],
+  ['json.JSONDecodeError', 'json', 'ValueError'],
+  ['re.PatternError', 're', 'Exception'],
+]
+
+for (const [dottedName, module, parentType] of dottedTypes) {
+  test(`external function dotted exception caught by own name - ${dottedName}`, async () => {
+    const code = `
+import ${module}
+try:
+    fail()
+except ${dottedName} as exc:
+    caught = f'${dottedName}: {exc}'
+except ${parentType} as exc:
+    caught = f'${parentType}: {exc}'
+caught
+`
+    const fail = () => {
+      const error = new Error('test message')
+      error.name = dottedName
+      throw error
+    }
+
+    t.is(await run(code, { externalLookup: { fail } }), `${dottedName}: test message`)
   })
 }
 
@@ -358,11 +399,12 @@ except TypeError as exc:
     caught = str(exc)
 caught
 `
-  // a Dataclass marker without its fieldNames array
-  const bad = () => ({ __monty_type__: 'Dataclass', name: 'Broken' })
+  // a raw ClassInstance marker is rejected by `prepare` before it can reach
+  // the native codec — identity markers are internal, never host data
+  const bad = () => ({ __monty_type__: 'ClassInstance', name: 'Broken' })
   t.is(
     await run(code, { externalLookup: { bad } }),
-    "Object property 'typeId' type mismatch. Expect value to be BigInt, but received Undefined",
+    'raw ClassInstance markers are not accepted — wrap the object in ClassInstance(...)',
   )
 })
 
@@ -465,6 +507,12 @@ test('stale proxy TypeError names tuple-marked and __monty_type__ values', async
       instanceOf: MontyRuntimeError,
     })
     t.is(markedError.message, "TypeError: 'datetime' object is not callable")
+    // a class instance marker is named by its class, like the converted value
+    const instance = { __monty_type__: 'ClassInstance', type: { name: 'Point' }, instanceId: '', attrs: [] }
+    const instanceError = await t.throwsAsync(() => session.feedRun('f()', { externalLookup: { fn: instance } }), {
+      instanceOf: MontyRuntimeError,
+    })
+    t.is(instanceError.message, "TypeError: 'Point' object is not callable")
   } finally {
     await session.close()
   }

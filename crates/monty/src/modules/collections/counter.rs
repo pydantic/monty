@@ -1,9 +1,10 @@
 //! Runtime behaviour for `collections.Counter`.
 //!
 //! A Counter is a `dict` tagged with a `Counter` [`DictKind`](crate::types::DictKind);
-//! everything here operates on that dict through the VM by [`HeapId`] rather than
-//! on `Dict`'s internals, which is why it lives beside the module surface instead
-//! of in `types/dict.rs`. The dict method surface is inherited as-is — only the
+//! operations receive the Counter's heap object handle but re-read its dictionary
+//! through the VM whenever Python execution can intervene. This is why the logic
+//! lives beside the module surface instead of in `types/dict.rs`. The dict method
+//! surface is inherited as-is — only the
 //! missing-key read (`0`, no insert), `most_common`/`elements`/`total`/`update`/
 //! `subtract`, and the `+ - & |` algebra are added on top.
 
@@ -16,7 +17,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput},
     resource_checks::check_repeat_size,
     types::{Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
     value::{VALUE_SIZE, Value},
@@ -138,8 +139,8 @@ fn count_repeat_len(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
     }
 }
 
-/// Adds `delta` to the count for `key` in the Counter `dict_id` (creating the
-/// key at `0 + delta` if absent). Takes ownership of `key`, which the dict keeps
+/// Adds `delta` to the count for `key` in `counter` (creating the key at
+/// `0 + delta` if absent). Takes ownership of `key`, which the dict keeps
 /// on success; `delta` is only read, so the caller retains it.
 ///
 /// `delta_first` selects the operand order for the addition: CPython's mapping
@@ -147,23 +148,20 @@ fn count_repeat_len(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
 /// `self.get(elem, 0) + 1`. The two agree numerically, but the left operand is
 /// the one named in a `TypeError`. Ignored when `subtract` is set, which is
 /// always `self.get(elem, 0) - count`.
-fn counter_bump(
-    dict_id: HeapId,
+fn counter_bump<'h>(
+    counter: &mut HeapObjectRead<'h, Dict>,
     key: Value,
     delta: &Value,
     subtract: bool,
     delta_first: bool,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<()> {
-    let HeapReadOutput::Dict(mut dict) = vm.heap.read(dict_id) else {
-        unreachable!("counter_bump on a non-dict heap entry");
-    };
     // Either failure below — `dict_get` hashing an unhashable key (e.g.
     // `Counter([[1]])`), or the arithmetic on a non-numeric count — releases the
     // key through the guard; only the store at the end takes it out again.
     let mut key_guard = DropGuard::new(key, vm);
     let (key, vm) = key_guard.as_parts_mut();
-    let base = dict.dict_get(key, vm)?.unwrap_or(Value::Int(0));
+    let base = counter.dict_get(key, vm)?.unwrap_or(Value::Int(0));
     let total = if subtract || !delta_first {
         count_arith(&base, delta, subtract, vm)
     } else {
@@ -172,7 +170,7 @@ fn counter_bump(
     base.drop_with(vm);
     let total = total?;
     let (key, vm) = key_guard.into_parts();
-    if let Some(old) = dict.set(key, total, vm)? {
+    if let Some(old) = counter.set(key, total, vm)? {
         old.drop_with(vm);
     }
     Ok(())
@@ -180,15 +178,15 @@ fn counter_bump(
 
 /// Implements `Counter.update`/`subtract` and construction: folds counts from
 /// `source` (a mapping adds its values; any other iterable counts occurrences)
-/// and from `kwargs` into the Counter `dict_id`. `subtract` negates the deltas.
+/// and from `kwargs` into `counter`. `subtract` negates the deltas.
 ///
 /// Consumes `source` and `kwargs`.
-pub(crate) fn counter_update(
-    dict_id: HeapId,
+pub(crate) fn counter_update<'h>(
+    counter: &mut HeapObjectRead<'h, Dict>,
     source: Option<Value>,
     kwargs: KwargsValues,
     subtract: bool,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<()> {
     // An explicit `None` source is a no-op (CPython skips it before dispatch), so
     // `Counter(None)` and `c.update(None)` only apply the keyword counts below.
@@ -202,7 +200,7 @@ pub(crate) fn counter_update(
             };
             // Snapshot (key, delta) pairs first so `c.update(c)` is well-defined.
             let pairs: Vec<(Value, Value)> = {
-                let HeapReadOutput::Dict(src) = vm.heap.read(src_id) else {
+                let Some(src) = vm.heap.read_as::<Dict>(src_id) else {
                     unreachable!("mapping is a dict");
                 };
                 let src = src.get(vm.heap);
@@ -211,7 +209,7 @@ pub(crate) fn counter_update(
                     .collect()
             };
             source.drop_with(vm);
-            counter_merge_mapping(dict_id, pairs, subtract, vm)?;
+            counter_merge_mapping(counter, pairs, subtract, vm)?;
         } else {
             // `_count_elements`: `self[elem] = self_get(elem, 0) + 1`, so the
             // existing count is the left operand here.
@@ -220,7 +218,7 @@ pub(crate) fn counter_update(
             // items it never reached.
             defer_drop_mut!(items, vm);
             for item in items.by_ref() {
-                counter_bump(dict_id, item, &Value::Int(1), subtract, false, vm)?;
+                counter_bump(counter, item, &Value::Int(1), subtract, false, vm)?;
             }
         }
     }
@@ -229,11 +227,11 @@ pub(crate) fn counter_update(
     // via `self.update(kwds)`, so these follow the mapping path — including the
     // empty-Counter fast path, re-evaluated after the iterable was folded in.
     let kwarg_pairs = counter_kwarg_deltas(kwargs);
-    counter_merge_mapping(dict_id, kwarg_pairs, subtract, vm)?;
+    counter_merge_mapping(counter, kwarg_pairs, subtract, vm)?;
     Ok(())
 }
 
-/// Folds mapping `(key, count)` pairs into the Counter `dict_id`.
+/// Folds mapping `(key, count)` pairs into `counter`.
 ///
 /// Mirrors `Counter.update`'s mapping branch: into a **non-empty** Counter each
 /// count is added as `count + self.get(elem, 0)` (the incoming count is the left
@@ -241,18 +239,13 @@ pub(crate) fn counter_update(
 /// one CPython takes a `super().update()` fast path that stores values verbatim
 /// — which is why `Counter({'a': True})` keeps `True` rather than `1`.
 /// `subtract` has no fast path and always computes `self.get(elem, 0) - count`.
-fn counter_merge_mapping(
-    dict_id: HeapId,
+fn counter_merge_mapping<'h>(
+    counter: &mut HeapObjectRead<'h, Dict>,
     pairs: Vec<(Value, Value)>,
     subtract: bool,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<()> {
-    let is_empty = {
-        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
-            unreachable!("counter_merge_mapping on a non-dict heap entry");
-        };
-        dict.get(vm.heap).is_empty()
-    };
+    let is_empty = counter.get(vm.heap).is_empty();
     // A merge can fail on an unhashable key or a non-numeric count; the guard
     // releases the pairs it never reached.
     let pairs = pairs.into_iter();
@@ -261,9 +254,11 @@ fn counter_merge_mapping(
         // The fast path stores `count` itself, while a bump only reads it — so
         // that branch owns the release.
         if is_empty && !subtract {
-            counter_set(dict_id, key, count, vm)?;
+            if let Some(old) = counter.set(key, count, vm)? {
+                old.drop_with(vm);
+            }
         } else {
-            let outcome = counter_bump(dict_id, key, &count, subtract, true, vm);
+            let outcome = counter_bump(counter, key, &count, subtract, true, vm);
             count.drop_with(vm);
             outcome?;
         }
@@ -289,11 +284,11 @@ fn counter_kwarg_deltas(kwargs: KwargsValues) -> Vec<(Value, Value)> {
 /// `self` (`Counter.update() takes from 1 to 2 positional arguments but 3 were
 /// given`), which the derive's `def` family — positional-only, no receiver —
 /// cannot express. The `+ 1`s below re-introduce that `self`.
-pub(crate) fn counter_update_method(
-    dict_id: HeapId,
+pub(crate) fn counter_update_method<'h>(
+    counter: &mut HeapObjectRead<'h, Dict>,
     args: ArgValues,
     subtract: bool,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<Value> {
     let (mut pos, kwargs) = args.into_parts();
     let total = pos.len();
@@ -306,7 +301,7 @@ pub(crate) fn counter_update_method(
         kwargs.drop_with(vm);
         return Err(ExcType::type_error_too_many_positional_range(name, 1, 2, total + 1, 0));
     }
-    counter_update(dict_id, source, kwargs, subtract, vm)?;
+    counter_update(counter, source, kwargs, subtract, vm)?;
     Ok(Value::None)
 }
 
@@ -314,8 +309,13 @@ pub(crate) fn counter_update_method(
 ///
 /// Sums with real numeric addition (CPython's `sum(self.values())`), so a
 /// float or big-int count is preserved in the total rather than truncated.
-pub(crate) fn counter_total(dict_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
-    let counts = counter_count_snapshot(dict_id, vm).into_iter();
+pub(crate) fn counter_total<'h>(counter: &HeapObjectRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
+    let counts = counter
+        .get(vm.heap)
+        .iter()
+        .map(|(_, count)| count.clone_with_heap(vm.heap))
+        .collect::<Vec<_>>()
+        .into_iter();
     // A count that cannot be added raises mid-fold, so both the counts not yet
     // folded in and the running total are held by guards that release them.
     defer_drop_mut!(counts, vm);
@@ -362,20 +362,14 @@ pub(crate) fn counter_order(counts: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Ve
     }
 }
 
-/// Snapshots a Counter's counts as owned clones, releasing the heap borrow so
-/// the caller can run arithmetic that needs `&mut VM`.
-fn counter_count_snapshot(dict_id: HeapId, vm: &mut VM<'_>) -> Vec<Value> {
-    let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
-        unreachable!("counter_count_snapshot on a non-dict heap entry");
-    };
-    let dict = dict.get(vm.heap);
-    dict.iter().map(|(_, v)| v.clone_with_heap(vm.heap)).collect()
-}
-
 /// `Counter.most_common([n])` — a list of `(element, count)` tuples ordered by
 /// count descending (ties in insertion order). `n` omitted/`None` returns all;
 /// a non-positive `n` returns an empty list.
-pub(crate) fn counter_most_common(dict_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+pub(crate) fn counter_most_common<'h>(
+    counter: &HeapObjectRead<'h, Dict>,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
     let n_arg = args.get_zero_one_arg("most_common", vm.heap)?;
     // `n` goes through `__index__`, so a bool counts as `0`/`1` and a big int is
     // accepted (clamped): a huge positive returns every item, a negative none.
@@ -403,39 +397,42 @@ pub(crate) fn counter_most_common(dict_id: HeapId, args: ArgValues, vm: &mut VM<
         }
     };
 
-    let order = counter_order(counter_count_snapshot(dict_id, vm), vm)?;
+    let counts = counter
+        .get(vm.heap)
+        .iter()
+        .map(|(_, count)| count.clone_with_heap(vm.heap))
+        .collect();
+    let order = counter_order(counts, vm)?;
     let take = limit.unwrap_or(order.len()).min(order.len());
 
     let mut items: Vec<Value> = Vec::with_capacity(take);
     for &i in &order[..take] {
-        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
-            unreachable!("counter_most_common on a non-dict heap entry");
-        };
-        let dict = dict.get(vm.heap);
+        let dict = counter.get(vm.heap);
         let key = dict.key_at(i).expect("index in range").clone_with_heap(vm.heap);
         let count = dict.value_at(i).expect("index in range").clone_with_heap(vm.heap);
         let pair = allocate_tuple(smallvec![key, count], vm.heap);
         items.push(pair);
     }
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))))
+    Ok(vm.heap.allocate_as(List::new(items)).into_value())
 }
 
 /// `Counter.elements()` — a list repeating each element by its count, skipping
 /// zero and negative counts (Monty's eager iterator convention returns a list
 /// rather than CPython's lazy iterator).
-pub(crate) fn counter_elements(dict_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+pub(crate) fn counter_elements<'h>(
+    counter: &HeapObjectRead<'h, Dict>,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
     args.check_zero_args("elements", vm.heap)?;
-    let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
-        unreachable!("counter_elements on a non-dict heap entry");
-    };
-    let n = dict.get(vm.heap).len();
+    let n = counter.get(vm.heap).len();
 
     // Resolve every repetition length up front: a count that `itertools.repeat`
     // rejects — non-integer (TypeError) or outside `ssize_t` (OverflowError) —
     // must raise before anything is built.
     let mut lengths = Vec::with_capacity(n);
     for i in 0..n {
-        let count = dict
+        let count = counter
             .get(vm.heap)
             .value_at(i)
             .expect("index in range")
@@ -449,7 +446,7 @@ pub(crate) fn counter_elements(dict_id: HeapId, args: ArgValues, vm: &mut VM<'_>
     // large count (e.g. `c['a'] = 10**18`) would otherwise attempt to build a
     // multi-exabyte Rust-heap `Vec` before returning a graceful error.
     let total = lengths.iter().fold(0usize, |acc, len| acc.saturating_add(*len));
-    check_repeat_size(VALUE_SIZE, total, vm.heap.tracker())?;
+    check_repeat_size(VALUE_SIZE, total, &vm.heap.tracker)?;
 
     // `Vec::new()` (not `with_capacity(total)`): `total` is attacker-controlled,
     // and `check_repeat_size` above is the real guard (it fires before this loop
@@ -457,7 +454,7 @@ pub(crate) fn counter_elements(dict_id: HeapId, args: ArgValues, vm: &mut VM<'_>
     let mut items: Vec<Value> = Vec::new();
     for (i, &count) in lengths.iter().enumerate() {
         for _ in 0..count {
-            let key = dict
+            let key = counter
                 .get(vm.heap)
                 .key_at(i)
                 .expect("index in range")
@@ -465,7 +462,7 @@ pub(crate) fn counter_elements(dict_id: HeapId, args: ArgValues, vm: &mut VM<'_>
             items.push(key);
         }
     }
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))))
+    Ok(vm.heap.allocate_as(List::new(items)).into_value())
 }
 
 /// The four binary `Counter` algebra operators.
@@ -483,38 +480,44 @@ pub(crate) enum CounterOp {
 
 /// Computes a binary `Counter` operation, returning a new Counter that keeps
 /// only positive counts (CPython's `Counter.__add__` etc.).
-pub(crate) fn counter_binary_op(l_id: HeapId, r_id: HeapId, op: CounterOp, vm: &mut VM<'_>) -> RunResult<Value> {
+pub(crate) fn counter_binary_op<'h>(
+    lhs: &HeapObjectRead<'h, Dict>,
+    rhs: &HeapObjectRead<'h, Dict>,
+    op: CounterOp,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
     let mut result = Dict::new();
     result.make_counter();
-    let result_id = vm.heap.allocate(HeapData::Dict(result));
+    let result = vm.heap.allocate_as(result);
     // Guard the freshly allocated result dict: a catchable error below (e.g.
     // arithmetic or comparison on non-numeric counts raising `TypeError`) must
     // free it, which the bare `?` early-returns would otherwise leak.
-    let mut result_guard = DropGuard::new(Value::Ref(result_id), vm);
-    let vm = result_guard.ctx();
+    let mut result_guard = DropGuard::new(result, vm);
+    let (result, vm) = result_guard.as_parts_mut();
+    let result = result.read(vm.heap);
 
     // Each operand is snapshotted only when it is about to be consumed: taking
     // the right snapshot up front would leak it if folding the left one raised.
     match op {
         CounterOp::Add => {
-            let l_pairs = counter_snapshot(l_id, vm);
-            counter_bump_all(result_id, l_pairs, false, vm)?;
-            let r_pairs = counter_snapshot(r_id, vm);
-            counter_bump_all(result_id, r_pairs, false, vm)?;
+            let l_pairs = lhs.clone_all_pairs(vm)?;
+            counter_bump_all(result, l_pairs, false, vm)?;
+            let r_pairs = rhs.clone_all_pairs(vm)?;
+            counter_bump_all(result, r_pairs, false, vm)?;
         }
         CounterOp::Sub => {
-            let l_pairs = counter_snapshot(l_id, vm);
-            counter_bump_all(result_id, l_pairs, false, vm)?;
-            let r_pairs = counter_snapshot(r_id, vm);
-            counter_bump_all(result_id, r_pairs, true, vm)?;
+            let l_pairs = lhs.clone_all_pairs(vm)?;
+            counter_bump_all(result, l_pairs, false, vm)?;
+            let r_pairs = rhs.clone_all_pairs(vm)?;
+            counter_bump_all(result, r_pairs, true, vm)?;
         }
         // `|` keeps the larger count over the union of keys (see `counter_binary_extreme`).
-        CounterOp::Or => counter_binary_extreme(result_id, l_id, r_id, ExtremeOp::Max, vm)?,
+        CounterOp::Or => counter_binary_extreme(result, lhs, rhs, ExtremeOp::Max, vm)?,
         // `&` keeps the smaller count over shared keys (see `counter_binary_extreme`).
-        CounterOp::And => counter_binary_extreme(result_id, l_id, r_id, ExtremeOp::Min, vm)?,
+        CounterOp::And => counter_binary_extreme(result, lhs, rhs, ExtremeOp::Min, vm)?,
     }
-    counter_retain_positive(result_id, vm)?;
-    Ok(result_guard.into_inner())
+    counter_retain_positive(result, vm)?;
+    Ok(result_guard.into_inner().into_value())
 }
 
 /// The extreme kept by the binary `&`/`|` algebra.
@@ -526,7 +529,7 @@ enum ExtremeOp {
     Max,
 }
 
-/// Folds a binary `&`/`|` into the fresh `result_id`.
+/// Folds a binary `&`/`|` into the fresh `result`.
 ///
 /// Both walk the *left* operand's keys and pick the extreme of `count` and the
 /// right's `other[elem]` (a missing right key reads as `0`), comparing exactly as
@@ -535,21 +538,21 @@ enum ExtremeOp {
 /// right-only keys across. The caller's final `retain_positive` performs the
 /// `> 0` strip (and raises the `> 0` `TypeError` for an unorderable right-only
 /// key, matching CPython's second-loop wording).
-fn counter_binary_extreme(
-    result_id: HeapId,
-    l_id: HeapId,
-    r_id: HeapId,
+fn counter_binary_extreme<'h>(
+    result: &mut HeapObjectRead<'h, Dict>,
+    lhs: &HeapObjectRead<'h, Dict>,
+    rhs: &HeapObjectRead<'h, Dict>,
     op: ExtremeOp,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<()> {
     // Two guards cover every failure below, so each one is a plain `?`: the outer
     // releases the entries the loop never reached, the inner the one in flight.
-    let l_pairs = counter_snapshot(l_id, vm).into_iter();
+    let l_pairs = lhs.clone_all_pairs(vm)?.into_iter();
     defer_drop_mut!(l_pairs, vm);
     for entry in l_pairs.by_ref() {
         let mut entry = DropGuard::new(entry, vm);
         let ((key, count), vm) = entry.as_parts_mut();
-        let other = counter_lookup(r_id, key, vm)?.unwrap_or(Value::Int(0));
+        let other = rhs.dict_get(key, vm)?.unwrap_or(Value::Int(0));
         let mut other = DropGuard::new(other, vm);
         let (other_count, vm) = other.as_parts_mut();
         // `count < other`: `|` keeps `count` when it is *not* smaller, `&` keeps
@@ -568,23 +571,26 @@ fn counter_binary_extreme(
             count.drop_with(vm);
             other
         };
-        // `counter_set` consumes both, releasing them itself if the store fails.
-        counter_set(result_id, key, picked, vm)?;
+        if let Some(old) = result.set(key, picked, vm)? {
+            old.drop_with(vm);
+        }
     }
 
     if matches!(op, ExtremeOp::Max) {
-        let r_pairs = counter_snapshot(r_id, vm).into_iter();
+        let r_pairs = rhs.clone_all_pairs(vm)?.into_iter();
         defer_drop_mut!(r_pairs, vm);
         for entry in r_pairs.by_ref() {
             let mut entry = DropGuard::new(entry, vm);
             let ((key, _), vm) = entry.as_parts_mut();
             // Shared keys were already resolved in the left pass, so the guard
             // releases this entry; only a right-only key reaches the result.
-            if let Some(existing) = counter_lookup(l_id, key, vm)? {
+            if let Some(existing) = lhs.dict_get(key, vm)? {
                 existing.drop_with(vm);
             } else {
                 let ((key, count), vm) = entry.into_parts();
-                counter_set(result_id, key, count, vm)?;
+                if let Some(old) = result.set(key, count, vm)? {
+                    old.drop_with(vm);
+                }
             }
         }
     }
@@ -611,7 +617,12 @@ pub(crate) enum CounterCmp {
 /// present in only one operand still constrains the result. The strict forms
 /// are defined in terms of the loose ones: `<` is `<= and !=`, `>` is
 /// `>= and !=`.
-pub(crate) fn counter_compare(l_id: HeapId, r_id: HeapId, cmp: CounterCmp, vm: &mut VM<'_>) -> RunResult<bool> {
+pub(crate) fn counter_compare<'h>(
+    lhs: &HeapObjectRead<'h, Dict>,
+    rhs: &HeapObjectRead<'h, Dict>,
+    cmp: CounterCmp,
+    vm: &mut VM<'h>,
+) -> RunResult<bool> {
     // `<` is `<= and !=` and `>` is `>= and !=`, so both strict forms run the
     // loose comparison — whose operator is what an unorderable pair reports — and
     // add the inequality via the separately tracked `equal`.
@@ -628,7 +639,7 @@ pub(crate) fn counter_compare(l_id: HeapId, r_id: HeapId, cmp: CounterCmp, vm: &
     // `counter_union_counts` hands back owned pairs the caller must drop. The
     // guard covers every exit — a short-circuit (`!holds`), a failing comparison,
     // and normal exhaustion — releasing whatever the loop never compared.
-    let pairs = counter_union_counts(l_id, r_id, vm)?.into_iter();
+    let pairs = counter_union_counts(lhs, rhs, vm)?.into_iter();
     defer_drop_mut!(pairs, vm);
     for pair in pairs.by_ref() {
         defer_drop!(pair, vm);
@@ -666,19 +677,23 @@ pub(crate) fn counter_compare(l_id: HeapId, r_id: HeapId, cmp: CounterCmp, vm: &
 ///
 /// Returns owned clones so the caller can run comparisons that need `&mut VM`.
 /// Every returned pair must be dropped by the caller.
-fn counter_union_counts(l_id: HeapId, r_id: HeapId, vm: &mut VM<'_>) -> RunResult<Vec<(Value, Value)>> {
+fn counter_union_counts<'h>(
+    lhs: &HeapObjectRead<'h, Dict>,
+    rhs: &HeapObjectRead<'h, Dict>,
+    vm: &mut VM<'h>,
+) -> RunResult<Vec<(Value, Value)>> {
     // Three guards, so a failing lookup is a plain `?`: the pairs accumulated so
     // far, the entries not yet visited, and the entry in flight all get released.
     let mut pairs = DropGuard::new(Vec::new(), vm);
     // Left keys against their right counterparts, then the right-only keys.
-    for (keys_id, other_id, flip) in [(l_id, r_id, false), (r_id, l_id, true)] {
+    for (keys, other, flip) in [(lhs, rhs, false), (rhs, lhs, true)] {
         let (collected, vm) = pairs.as_parts_mut();
-        let entries = counter_snapshot(keys_id, vm).into_iter();
+        let entries = keys.clone_all_pairs(vm)?.into_iter();
         defer_drop_mut!(entries, vm);
         for entry in entries.by_ref() {
             let mut entry = DropGuard::new(entry, vm);
             let ((key, _), vm) = entry.as_parts_mut();
-            let other = counter_lookup(other_id, key, vm)?;
+            let other = other.dict_get(key, vm)?;
             // On the second pass only keys absent from the left are new; the
             // shared ones were already paired, so skip them (the guard releases
             // the entry); otherwise the count moves into `collected`.
@@ -700,7 +715,7 @@ fn counter_union_counts(l_id: HeapId, r_id: HeapId, vm: &mut VM<'_>) -> RunResul
     Ok(pairs.into_inner())
 }
 
-/// Applies a `Counter` algebra operator **in place**, mutating `l_id`.
+/// Applies a `Counter` algebra operator **in place**, mutating `counter`.
 ///
 /// CPython's `__iadd__`/`__isub__`/`__iand__`/`__ior__` mutate `self` and return
 /// it, so `c += other` keeps the object identity and any alias observes the
@@ -715,22 +730,33 @@ fn counter_union_counts(l_id: HeapId, r_id: HeapId, vm: &mut VM<'_>) -> RunResul
 /// Note the asymmetry CPython has between the directions: `+=` / `-=` walk
 /// *other*'s keys (so new keys can appear), whereas `&=` walks *self*'s keys
 /// (so no key is ever added), and `|=` walks *other*'s keys keeping the larger.
-pub(crate) fn counter_inplace_op(l_id: HeapId, rhs: &Value, op: CounterOp, vm: &mut VM<'_>) -> RunResult<()> {
+pub(crate) fn counter_inplace_op<'h>(
+    counter: &mut HeapObjectRead<'h, Dict>,
+    rhs: &Value,
+    op: CounterOp,
+    vm: &mut VM<'h>,
+) -> RunResult<()> {
     match op {
         // `for elem, count in other.items(): self[elem] += count`
-        CounterOp::Add => counter_bump_all(l_id, counter_snapshot(counter_require_mapping(rhs, vm)?, vm), false, vm)?,
-        CounterOp::Sub => counter_bump_all(l_id, counter_snapshot(counter_require_mapping(rhs, vm)?, vm), true, vm)?,
+        CounterOp::Add => {
+            let rhs = counter_require_mapping(rhs, vm)?;
+            counter_bump_all(counter, rhs.clone_all_pairs(vm)?, false, vm)?;
+        }
+        CounterOp::Sub => {
+            let rhs = counter_require_mapping(rhs, vm)?;
+            counter_bump_all(counter, rhs.clone_all_pairs(vm)?, true, vm)?;
+        }
         // `for elem, other_count in other.items(): if other_count > self[elem]:
         //     self[elem] = other_count` — walks *other*, so new keys can appear.
         CounterOp::Or => {
-            let r_id = counter_require_mapping(rhs, vm)?;
-            let r_pairs = counter_snapshot(r_id, vm).into_iter();
+            let rhs = counter_require_mapping(rhs, vm)?;
+            let r_pairs = rhs.clone_all_pairs(vm)?.into_iter();
             defer_drop_mut!(r_pairs, vm);
             for entry in r_pairs.by_ref() {
                 let mut entry = DropGuard::new(entry, vm);
                 let ((key, other_count), vm) = entry.as_parts_mut();
                 // A key absent from `self` reads as 0 (`self[elem]`).
-                let count = counter_lookup(l_id, key, vm)?.unwrap_or(Value::Int(0));
+                let count = counter.dict_get(key, vm)?.unwrap_or(Value::Int(0));
                 // `other_count > self[elem]`: other first, so the TypeError names it first.
                 let bigger = count_holds(other_count, &count, CountCmp::Gt, vm);
                 count.drop_with(vm);
@@ -738,14 +764,16 @@ pub(crate) fn counter_inplace_op(l_id: HeapId, rhs: &Value, op: CounterOp, vm: &
                 // releases the entry — as it does if the comparison raised.
                 if bigger? {
                     let ((key, other_count), vm) = entry.into_parts();
-                    counter_set(l_id, key, other_count, vm)?;
+                    if let Some(old) = counter.set(key, other_count, vm)? {
+                        old.drop_with(vm);
+                    }
                 }
             }
         }
         // `for elem, count in self.items(): if other[elem] < count:
         //     self[elem] = other[elem]` — walks *self*, subscripting `other`.
         CounterOp::And => {
-            let pairs = counter_snapshot(l_id, vm).into_iter();
+            let pairs = counter.clone_all_pairs(vm)?.into_iter();
             defer_drop_mut!(pairs, vm);
             for entry in pairs.by_ref() {
                 let mut entry = DropGuard::new(entry, vm);
@@ -766,31 +794,38 @@ pub(crate) fn counter_inplace_op(l_id: HeapId, rhs: &Value, op: CounterOp, vm: &
                     let smaller = other_count.into_inner();
                     let ((key, count), vm) = entry.into_parts();
                     count.drop_with(vm);
-                    counter_set(l_id, key, smaller, vm)?;
+                    if let Some(old) = counter.set(key, smaller, vm)? {
+                        old.drop_with(vm);
+                    }
                 }
             }
         }
     }
-    counter_retain_positive(l_id, vm)
+    counter_retain_positive(counter, vm)
 }
 
 /// Computes a unary `Counter` operation. `+c` keeps the counts that are `> 0`;
 /// `-c` keeps the *strictly negative* counts, storing their negation (CPython's
 /// `{elem: -count for elem, count in self.items() if count < 0}`). Both leave
 /// only positive counts, so the result is a valid Counter.
-pub(crate) fn counter_unary_op(id: HeapId, negate: bool, vm: &mut VM<'_>) -> RunResult<Value> {
+pub(crate) fn counter_unary_op<'h>(
+    counter: &HeapObjectRead<'h, Dict>,
+    negate: bool,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
     let mut result = Dict::new();
     result.make_counter();
-    let result_id = vm.heap.allocate(HeapData::Dict(result));
+    let result = vm.heap.allocate_as(result);
     // Guard the freshly allocated result dict: a catchable error below (e.g.
     // comparing a non-numeric count) must free it, which the bare `?`
     // early-returns would otherwise leak.
-    let mut result_guard = DropGuard::new(Value::Ref(result_id), vm);
-    let vm = result_guard.ctx();
+    let mut result_guard = DropGuard::new(result, vm);
+    let (result, vm) = result_guard.as_parts_mut();
+    let result = result.read(vm.heap);
     // Scoped so the iterator guard releases its borrow of `result_guard` before
     // the result is handed back.
     {
-        let pairs = counter_snapshot(id, vm).into_iter();
+        let pairs = counter.clone_all_pairs(vm)?.into_iter();
         defer_drop_mut!(pairs, vm);
         for entry in pairs.by_ref() {
             let mut entry = DropGuard::new(entry, vm);
@@ -815,85 +850,59 @@ pub(crate) fn counter_unary_op(id: HeapId, negate: bool, vm: &mut VM<'_>) -> Run
                 }
                 None => count,
             };
-            counter_set(result_id, key, stored, vm)?;
+            if let Some(old) = result.set(key, stored, vm)? {
+                old.drop_with(vm);
+            }
         }
     }
-    counter_retain_positive(result_id, vm)?;
-    Ok(result_guard.into_inner())
+    counter_retain_positive(result, vm)?;
+    Ok(result_guard.into_inner().into_value())
 }
 
-/// Folds a batch of `(key, delta)` pairs into the Counter `id`, releasing any
-/// pairs left unconsumed when a bump fails.
-fn counter_bump_all(id: HeapId, pairs: Vec<(Value, Value)>, subtract: bool, vm: &mut VM<'_>) -> RunResult<()> {
+/// Folds a batch of `(key, delta)` pairs into `counter`, releasing any pairs
+/// left unconsumed when a bump fails.
+fn counter_bump_all<'h>(
+    counter: &mut HeapObjectRead<'h, Dict>,
+    pairs: Vec<(Value, Value)>,
+    subtract: bool,
+    vm: &mut VM<'h>,
+) -> RunResult<()> {
     let pairs = pairs.into_iter();
     defer_drop_mut!(pairs, vm);
     for (key, delta) in pairs.by_ref() {
         // `counter_bump` borrows the delta, so each one is released here.
-        let outcome = counter_bump(id, key, &delta, subtract, false, vm);
+        let outcome = counter_bump(counter, key, &delta, subtract, false, vm);
         delta.drop_with(vm);
         outcome?;
     }
     Ok(())
 }
 
-/// Snapshots a Counter's entries as `(cloned key, count)` pairs, releasing the
-/// heap borrow so the caller can mutate a different dict.
-fn counter_snapshot(id: HeapId, vm: &mut VM<'_>) -> Vec<(Value, Value)> {
-    let HeapReadOutput::Dict(dict) = vm.heap.read(id) else {
-        unreachable!("counter_snapshot on a non-dict heap entry");
-    };
-    let dict = dict.get(vm.heap);
-    dict.iter()
-        .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
-        .collect()
-}
-
-/// Returns the `HeapId` of a mapping in-place right-hand operand, or raises
+/// Returns the dictionary handle for an in-place right-hand operand, or raises
 /// CPython's `AttributeError: 'X' object has no attribute 'items'` — the failure
 /// `c += other` / `-=` / `|=` hit when `other.items()` has no `.items()`.
-fn counter_require_mapping(rhs: &Value, vm: &mut VM<'_>) -> RunResult<HeapId> {
-    match rhs {
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)) => Ok(*id),
-        other => Err(ExcType::attribute_error(other.py_type_name(vm), "items")),
+fn counter_require_mapping<'h>(rhs: &Value, vm: &VM<'h>) -> RunResult<HeapObjectRead<'h, Dict>> {
+    match rhs.read_heap(vm) {
+        Some(HeapReadOutput::Dict(dict)) => Ok(dict),
+        _ => Err(ExcType::attribute_error(rhs.py_type_name(vm), "items")),
     }
 }
 
-/// Returns the count for `key` in the Counter `id`, or `None` if absent.
-fn counter_lookup(id: HeapId, key: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
-    let HeapReadOutput::Dict(dict) = vm.heap.read(id) else {
-        unreachable!("counter_lookup on a non-dict heap entry");
-    };
-    dict.dict_get(key, vm)
-}
-
-/// Sets `key -> count` in the Counter `id`. Takes ownership of `key` and `count`.
-fn counter_set(id: HeapId, key: Value, count: Value, vm: &mut VM<'_>) -> RunResult<()> {
-    let HeapReadOutput::Dict(mut dict) = vm.heap.read(id) else {
-        unreachable!("counter_set on a non-dict heap entry");
-    };
-    if let Some(old) = dict.set(key, count, vm)? {
-        old.drop_with(vm);
-    }
-    Ok(())
-}
-
-/// Removes every entry whose count is not strictly positive from the Counter `id`.
-fn counter_retain_positive(id: HeapId, vm: &mut VM<'_>) -> RunResult<()> {
+/// Removes every entry whose count is not strictly positive from `counter`.
+fn counter_retain_positive<'h>(counter: &mut HeapObjectRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<()> {
     // The keys to remove are collected first: the scan clones them out of the
     // dict, so popping while iterating is not possible. Both guards release what
     // they still hold if a count comparison — or a `pop` hashing a key — raises.
     let mut remove = DropGuard::new(Vec::new(), vm);
     {
         let (remove, vm) = remove.as_parts_mut();
-        let entries = counter_snapshot(id, vm).into_iter();
+        let entries = counter.clone_all_pairs(vm)?.into_iter();
         defer_drop_mut!(entries, vm);
-        for entry in entries.by_ref() {
-            let mut entry = DropGuard::new(entry, vm);
-            let ((_, count), vm) = entry.as_parts_mut();
-            let positive = count_is_positive(count, vm)?;
-            if !positive {
-                let ((key, count), vm) = entry.into_parts();
-                count.drop_with(vm);
+        for (key, count) in entries {
+            defer_drop_mut!(count, vm);
+            let mut key_guard = DropGuard::new(key, vm);
+            if !count_is_positive(count, key_guard.ctx())? {
+                let key = key_guard.into_inner();
                 remove.push(key);
             }
         }
@@ -903,10 +912,7 @@ fn counter_retain_positive(id: HeapId, vm: &mut VM<'_>) -> RunResult<()> {
     defer_drop_mut!(remove, vm);
     for key in remove.by_ref() {
         defer_drop!(key, vm);
-        let HeapReadOutput::Dict(mut dict) = vm.heap.read(id) else {
-            unreachable!("counter_retain_positive on a non-dict heap entry");
-        };
-        if let Some(old) = dict.pop(key, vm)? {
+        if let Some(old) = counter.pop(key, vm)? {
             old.drop_with(vm);
         }
     }

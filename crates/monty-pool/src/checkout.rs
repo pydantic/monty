@@ -13,10 +13,10 @@ use std::{
 };
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
-use monty_proto::{FrameError, exceeds_max_value_depth, pb, validate_requirement};
+use monty_proto::{FrameError, PROTOCOL_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 use monty_types::{
-    AssertMessageAnnotations, ExcType, MONTY_VERSION, MontyException, MontyObject, OsFunctionCall, PrintStream,
-    ResourceLimits, TypeCheckingConfig,
+    AssertMessageAnnotations, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid, NameLookupResult,
+    OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig,
 };
 use tokio::{task::spawn_blocking, time::timeout};
 
@@ -133,7 +133,12 @@ impl MountSpec {
 /// Access mode for a [`MountSpec`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MountSpecMode {
+    /// Reads only; writes raise `PermissionError` in the sandbox.
     ReadOnly,
+    /// Files written by sandboxed code persist on the host and are untrusted;
+    /// the host must not execute them, including indirectly via a Python
+    /// `import` when the directory is on `sys.path`. [`Self::Overlay`] keeps
+    /// writes in memory instead.
     ReadWrite,
     /// Copy-on-write overlay in parent memory; writes are discarded when the
     /// feed ends.
@@ -145,14 +150,16 @@ pub enum MountSpecMode {
 #[derive(Debug)]
 pub enum TurnEvent {
     /// The sandbox called an external function — answer with
-    /// [`Checkout::resume`]. When `method_call` is true this is a dataclass
-    /// method call and the instance is the first argument.
+    /// [`Checkout::resume`]. When `object_id` is set this is a method call on
+    /// a host-backed object, routed by uuid — a class instance, or a class
+    /// type (a classmethod call, or construction of a host class, which is
+    /// spelled `__call__`); the receiver is NOT included in `args`.
     FunctionCall {
         function_name: String,
         args: Vec<MontyObject>,
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
-        method_call: bool,
+        object_id: Option<MontyUuid>,
     },
     /// The sandbox performed an OS operation (e.g. `"Path.read_text"`).
     /// Answer it from this feed's mounts with
@@ -166,9 +173,13 @@ pub enum TurnEvent {
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
     },
-    /// The sandbox read an undefined name — answer with
-    /// [`Checkout::resume_name_lookup`].
-    NameLookup { name: String },
+    /// The sandbox read an undefined name, or — when `object_id` is set — a
+    /// lazy attribute on the host-backed object with that uuid (a class
+    /// instance, or a class type) — answer with
+    /// [`Checkout::resume_name_lookup`]. An `Undefined` (or `None`) answer
+    /// raises `NameError` for plain lookups, `AttributeError` for attribute
+    /// lookups; an `Error` answer raises the host's exception in the sandbox.
+    NameLookup { name: String, object_id: Option<MontyUuid> },
     /// Every sandbox task is blocked on external futures — answer with
     /// [`Checkout::resume_futures`].
     ResolveFutures { pending_call_ids: Vec<u32> },
@@ -314,10 +325,12 @@ impl Checkout {
             type_check_format: pb::TypeCheckFormat::from(repl.type_check_config.format).into(),
             type_check_color: repl.type_check_config.color,
             assert_message_annotations: Some(repl.assert_message_annotations.max_bytes()),
-            // This crate ships the matching `monty` binary, so our own
-            // version is always what the child expects. The child rejects a
-            // mismatch with a `FatalError` (relevant when a remote driver
-            // built against a different version reuses the wire format).
+            // What the child actually checks: it rejects a version outside the
+            // range it serves with a `FatalError`. Relevant whenever the worker
+            // is not the binary this crate ships — a system-packaged `monty`,
+            // or a remote worker reached over a socket.
+            protocol_version: PROTOCOL_VERSION,
+            // Diagnostic only, so a rejection can report both builds.
             monty_version: MONTY_VERSION.to_owned(),
         }));
         let mut this = Self {
@@ -551,23 +564,30 @@ impl Checkout {
         }
     }
 
-    /// Answers a [`TurnEvent::NameLookup`]: `Some(value)` resolves the name,
-    /// `None` makes the sandbox raise `NameError`.
+    /// Answers a [`TurnEvent::NameLookup`] with a [`NameLookupResult`] (or a
+    /// `MontyObject`, an `Option<MontyObject>` where `None` is `Undefined`, or
+    /// a `MontyException` for `Error`): a value resolves the name; `Undefined`
+    /// makes the sandbox raise `NameError` for a plain lookup, or
+    /// `AttributeError` when the lookup carried an `object_id` (a lazy
+    /// attribute on a host-backed object — a class instance or class type);
+    /// `Error` raises the host's exception in the sandbox, bypassing
+    /// `hasattr()` / `getattr()` defaults the way a raising property does.
     pub async fn resume_name_lookup(
         &mut self,
-        value: Option<MontyObject>,
+        result: impl Into<NameLookupResult>,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         self.ensure_ready()?;
         if !matches!(self.pending, Some(Pending::NameLookup)) {
             return Err(PoolError::Protocol("no suspended name lookup to resume".into()));
         }
-        if let Some(obj) = &value {
-            ensure_sendable([obj])?;
-        }
-        let kind = match value {
-            Some(obj) => pb::resume_name_lookup::Kind::Value(obj.into()),
-            None => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
+        let kind = match result.into() {
+            NameLookupResult::Value(obj) => {
+                ensure_sendable([&obj])?;
+                pb::resume_name_lookup::Kind::Value(obj.into())
+            }
+            NameLookupResult::Undefined => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
+            NameLookupResult::Error(exc) => pb::resume_name_lookup::Kind::Error((&exc).into()),
         };
         let request = request(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
             kind: Some(kind),
@@ -684,11 +704,19 @@ impl Checkout {
     async fn finish_session(&mut self) -> Result<(), PoolError> {
         // A websocket worker is single-use — the pool discards it after every
         // checkout — so there is no point round-tripping a `Reset` to ready it
-        // for reuse. Dropping it closes the socket, which the child reads as a
-        // clean EOF and exits. Only subprocess workers are reset and returned to
-        // the idle pool for the next checkout.
+        // for reuse. Closing the connection (Close frame, then socket) is what
+        // ends the session; the child reads it as a clean EOF and exits. Only
+        // subprocess workers are reset and returned to the idle pool for the
+        // next checkout.
         if self.pool.config.transport.is_websocket() {
-            if let Some(worker) = self.worker.take() {
+            if let Some(mut worker) = self.worker.take() {
+                // guard, not a trailing release: the worker is already out of
+                // `self`, so a caller dropping this future mid-goodbye would
+                // leave `Checkout::drop` with nothing to release. Disarmed
+                // before `release_worker`, which releases the slot itself.
+                let capacity = CapacityGuard::new(&self.pool);
+                worker.close_transport().await;
+                capacity.disarm();
                 self.pool.release_worker(worker);
             }
             return Ok(());
@@ -1029,7 +1057,7 @@ impl Checkout {
                             args: call.args,
                             kwargs: call.kwargs,
                             call_id: call.call_id,
-                            method_call: call.method_call,
+                            object_id: call.object_id,
                         })
                     });
                 }
@@ -1068,8 +1096,22 @@ impl Checkout {
                     }));
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {
+                    // Frames from the child are untrusted — a malformed uuid
+                    // is a protocol violation, not a panic.
+                    let object_id = match lookup.object_id {
+                        None => None,
+                        Some(uuid) => match MontyUuid::try_from_slice(&uuid.data) {
+                            Some(uuid) => Some(uuid),
+                            None => {
+                                return Err(self.protocol_violation("NameLookup.object_id is not a 16-byte uuid"));
+                            }
+                        },
+                    };
                     self.pending = Some(Pending::NameLookup);
-                    return Ok(ControlEvent::Turn(TurnEvent::NameLookup { name: lookup.name }));
+                    return Ok(ControlEvent::Turn(TurnEvent::NameLookup {
+                        name: lookup.name,
+                        object_id,
+                    }));
                 }
                 Some(pb::child_event::Kind::ResolveFutures(futures)) => {
                     self.pending = Some(Pending::Futures);

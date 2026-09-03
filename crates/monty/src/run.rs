@@ -9,17 +9,18 @@ use monty_types::{ExcType, MontyException, MontyObject, PrintWriter, ResourceTra
 use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
-    bytecode::{Code, Compiler, FrameExit, VM},
-    dump_format::{DumpKind, dump, load},
-    exception_private::{ExcTypeExt, RunResult},
+    bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
+    exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{DropWithContext, Heap, HeapReader},
-    intern::{InternerBuilder, Interns},
+    intern::{InternerBuilder, Interns, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
     parse::{CodeRange, parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
-    run_progress::{RunProgress, build_run_progress, check_snapshot_from_converted, convert_frame_exit},
+    run_progress::{
+        RunProgress, answer_unserved_lookups, build_run_progress, check_snapshot_from_converted, convert_frame_exit,
+    },
     types::str::StringRepr,
     value::Value,
 };
@@ -121,30 +122,6 @@ impl MontyRun {
         self.run(inputs, ResourceTracker::default(), PrintWriter::Stdout)
     }
 
-    /// Serializes the runner to a binary format.
-    ///
-    /// The serialized data can be stored and later restored with `load()`.
-    /// Dumps include a format version and kind so incompatible data is rejected.
-    /// This allows caching parsed code to avoid re-parsing on subsequent runs.
-    ///
-    /// # Errors
-    /// Returns an error if serialization fails.
-    pub fn dump(&self) -> Result<Vec<u8>, postcard::Error> {
-        dump(self, DumpKind::MontyRun)
-    }
-
-    /// Deserializes a runner from binary format.
-    ///
-    /// # Arguments
-    /// * `bytes` - The serialized runner data from `dump()`
-    ///
-    /// # Errors
-    /// Returns an error for an incompatible dump version or kind, or if
-    /// deserialization fails.
-    pub fn load(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        load(bytes, DumpKind::MontyRun)
-    }
-
     /// Starts execution with the given inputs and resource tracker, consuming self.
     ///
     /// Creates the heap and namespaces, then begins execution.
@@ -185,6 +162,7 @@ impl MontyRun {
             HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
                 let mut vm = VM::new(
                     globals,
+                    &executor.module_code,
                     reader,
                     &executor.interns,
                     print.reborrow(),
@@ -193,7 +171,7 @@ impl MontyRun {
                 executor.populate_inputs(inputs, &mut vm)?;
 
                 // Start execution
-                let vm_result = vm.run_module(&executor.module_code);
+                let vm_result = vm.run_module();
 
                 // Three-phase conversion: convert while VM alive, then snapshot, then build progress
                 let converted = convert_frame_exit(vm_result, &mut vm);
@@ -357,6 +335,72 @@ impl Executor {
         })
     }
 
+    /// Builds a synthetic REPL input that calls one existing global with host arguments.
+    ///
+    /// The argument tuple occupies a temporary namespace slot whose name mapping
+    /// must not be committed; appended interns remain valid session metadata.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "synthetic calls combine existing REPL and call-site metadata"
+    )]
+    pub(crate) fn new_repl_function_call(
+        name: &str,
+        name_id: StringId,
+        callable_slot: NamespaceId,
+        arg_count: usize,
+        script_name: &str,
+        mut existing_globals: NameMap,
+        existing_interns: &Interns,
+        options: CompileOptions,
+    ) -> Result<Self, MontyException> {
+        const CALL_ARGS_NAME: &str = "<monty-call-args>";
+
+        let code = if arg_count == 0 {
+            format!("{name}()")
+        } else {
+            format!("{name}(...)")
+        };
+        let mut interner = InternerBuilder::from_interns(existing_interns, &code);
+        let filename = interner.intern(script_name);
+        let range = CodeRange {
+            filename,
+            start_byte: 0,
+            end_byte: u32::try_from(code.len()).unwrap_or(u32::MAX),
+        };
+        let args_name_id = interner.intern(CALL_ARGS_NAME);
+        let args_slot = existing_globals
+            .ensure_slot(args_name_id, range)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+
+        let mut builder = CodeBuilder::new();
+        builder.new_code_region(0);
+        builder.set_location(range, None);
+        builder
+            .emit_load_global_callable(callable_slot.as_u16(), name_id)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        builder
+            .emit_u16(Opcode::LoadGlobal, args_slot.as_u16())
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        builder
+            .emit_u8(Opcode::CallFunctionExtended, 0)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        builder
+            .emit(Opcode::ReturnValue)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+
+        let functions = existing_interns.functions_clone();
+        let interns = Interns::new(interner, functions);
+        Ok(Self {
+            globals: existing_globals,
+            module_code: Arc::new(builder.build(0)),
+            interns,
+            code,
+            input_slots: vec![args_slot],
+            assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            heap_capacity: AtomicUsize::new(0),
+        })
+    }
+
     /// Executes the code with a custom resource tracker.
     ///
     /// This provides full control over resource tracking and garbage collection
@@ -381,6 +425,7 @@ impl Executor {
         let result = HeapReader::with(&mut heap, &mut (self, print), |reader, (executor, print)| {
             let mut vm = VM::new(
                 globals,
+                &executor.module_code,
                 reader,
                 &executor.interns,
                 print.reborrow(),
@@ -401,25 +446,21 @@ impl Executor {
 
     /// Runs module code on an already-configured VM to completion.
     ///
-    /// Executes [`VM::run_module`], then handles `NameLookup` and `ExternalCall`
-    /// exits by raising `NameError` through the VM so tracebacks are properly
-    /// captured. Finally converts the result via [`frame_exit_to_object`].
+    /// Executes [`VM::run_module`], then answers the lookup and `ExternalCall`
+    /// exits no host will serve by raising `NameError` / `AttributeError`
+    /// through the VM so tracebacks are properly captured. Finally converts
+    /// the result via [`frame_exit_to_object`].
     ///
     /// This is the shared non-iterative execution core used by both the standard
     /// `run` path and the REPL's `feed_run` path.
     pub(crate) fn run_to_completion<'h>(&'h self, vm: &mut VM<'h>) -> RunResult<MontyObject> {
-        let mut frame_exit_result = vm.run_module(&self.module_code);
+        let mut frame_exit_result = vm.run_module();
 
-        // Handle NameLookup and ExternalCall exits by raising NameError through the VM
-        // so that traceback information is properly captured. In the non-iterative path,
-        // there's no host to resolve names or external functions, so these become NameErrors.
+        // In the non-iterative path there's no host to resolve names, lazy
+        // attributes or external functions, so lookups are answered `Undefined`
+        // and a called external function is an undefined name.
         loop {
-            match frame_exit_result {
-                Ok(FrameExit::NameLookup { name_id, .. }) => {
-                    let name = self.interns.get_str(name_id);
-                    let err = ExcType::name_error(name);
-                    frame_exit_result = vm.resume_with_exception(err.into());
-                }
+            match answer_unserved_lookups(frame_exit_result, vm) {
                 Ok(FrameExit::ExternalCall {
                     function_name,
                     args,
@@ -474,14 +515,22 @@ impl Executor {
             // Create VM, populate inputs, and run
             let mut vm = VM::new(
                 globals,
+                &executor.module_code,
                 reader,
                 &executor.interns,
                 PrintWriter::Stdout,
                 executor.assert_repr_max_bytes,
             );
             executor.populate_inputs(inputs, &mut vm)?;
-            let frame_exit_result = vm.run_module(&executor.module_code);
+            // Lookups are answered before the globals are taken below: an
+            // armed `hasattr()` / `getattr()` effect runs the module on.
+            let frame_exit_result = answer_unserved_lookups(vm.run_module(), &mut vm);
 
+            // Tasks the module left running (a sibling detached from a failed
+            // gather, say) hold real references, and are not reachable from
+            // any name — so tear the scheduler down first and hold the
+            // leak check to what survives that.
+            vm.__finalize_tasks_for_tests();
             vm.__force_gc_for_tests();
 
             // Take globals out of the VM so we can inspect them, but keep VM alive
@@ -567,45 +616,42 @@ impl Executor {
 
 /// Converts module/frame exit results into plain `MontyObject` outputs.
 ///
-/// Used by non-iterative execution paths where suspendable outcomes (external calls,
-/// name lookups) are not supported and should produce errors.
+/// Used by non-iterative execution paths: lookups are answered as no host
+/// would (see [`answer_unserved_lookups`]) and the remaining suspendable
+/// outcomes (external calls, futures) produce errors.
 pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: &mut VM<'_>) -> RunResult<MontyObject> {
-    match frame_exit_result? {
-        FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, vm)),
-        FrameExit::ExternalCall {
-            function_name, args, ..
-        } => {
-            args.drop_with(vm);
+    // Suspensions this path cannot service. The error is built from a borrow
+    // so one `drop_with` releases whatever the exit owns, fields added later
+    // included.
+    let exit = match answer_unserved_lookups(frame_exit_result, vm)? {
+        FrameExit::Return(return_value) => return Ok(MontyObject::new(return_value, vm)),
+        exit => exit,
+    };
+    let error: RunError = match &exit {
+        FrameExit::Return(_) => unreachable!("returns are handled above"),
+        FrameExit::ExternalCall { function_name, .. } => {
             let function_name = function_name.as_str(vm.interns);
-            Err(ExcType::not_implemented(format!(
+            ExcType::not_implemented(format!(
                 "External function '{function_name}' not implemented with standard execution"
             ))
-            .into())
+            .into()
         }
-        FrameExit::OsCall { function_call, .. } => {
-            let name = function_call.name();
-            function_call.drop_with(vm);
-            Err(
-                ExcType::not_implemented(format!("OS function '{name}' not implemented with standard execution"))
-                    .into(),
-            )
-        }
-        FrameExit::MethodCall { method_name, args, .. } => {
-            args.drop_with(vm);
+        FrameExit::OsCall { function_call, .. } => ExcType::not_implemented(format!(
+            "OS function '{}' not implemented with standard execution",
+            function_call.name()
+        ))
+        .into(),
+        FrameExit::MethodCall { method_name, .. } => {
             let name = method_name.as_str(vm.interns);
-            Err(
-                ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
-                    .into(),
-            )
+            ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution")).into()
         }
         FrameExit::ResolveFutures(_) => {
-            Err(ExcType::not_implemented("async futures not supported by standard execution.").into())
+            ExcType::not_implemented("async futures not supported by standard execution.").into()
         }
-        FrameExit::NameLookup { name_id, .. } => {
-            let name = vm.interns.get_str(name_id);
-            Err(ExcType::name_error(name).into())
-        }
-    }
+        FrameExit::NameLookup { .. } | FrameExit::AttrLookup { .. } => unreachable!("lookups are answered above"),
+    };
+    exit.drop_with(vm);
+    Err(error)
 }
 
 /// Output from `run_ref_counts` containing reference count and heap information.

@@ -3,7 +3,10 @@ import { defineConfig } from 'vitest/config'
 const nodeBuiltinsStub = new URL('./test-support/node-builtins-stub.ts', import.meta.url).pathname
 
 export default defineConfig({
-  optimizeDeps: { exclude: ['@pydantic/monty'] },
+  optimizeDeps: {
+    include: ['@bytecodealliance/preview2-shim/instantiation'],
+    exclude: ['@pydantic/monty'],
+  },
   resolve: {
     alias: {
       '@pydantic/monty/node': new URL('./test-support/node-stubs.ts', import.meta.url).pathname,
@@ -24,6 +27,10 @@ export default defineConfig({
   },
   test: {
     include: ['__test__/*.spec.ts'],
+    // `node_*` specs check things about the repo itself (reading source files,
+    // shelling out) and cannot run against a filesystem-less browser, where
+    // every `node:` import resolves to the throwing stub above
+    exclude: ['__test__/node_*.spec.ts'],
     testTimeout: 60_000,
     hookTimeout: 60_000,
     browser: {

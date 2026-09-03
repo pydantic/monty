@@ -3,6 +3,9 @@
 //! session. This exercises `Worker::websocket` (the async dial) and the WS
 //! send/recv path end-to-end without needing a real remote child.
 
+// only the windows-gated capacity test wedges a socket with a blocked channel
+#[cfg(not(windows))]
+use std::sync::mpsc;
 use std::{
     fs,
     future::ready,
@@ -17,6 +20,8 @@ use monty_pool::{
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb};
 use monty_types::{MontyObject, PrintStream, ResourceLimits};
 use tokio::task::spawn_blocking;
+#[cfg(not(windows))]
+use tokio::time::timeout;
 use tungstenite::{Message, WebSocket};
 
 /// A mock child: accepts one WebSocket connection and answers each request with
@@ -699,7 +704,7 @@ fn function_call(call_id: u32) -> pb::child_event::Kind {
         args: vec![],
         kwargs: vec![],
         call_id,
-        method_call: false,
+        object_id: None,
     })
 }
 
@@ -871,6 +876,181 @@ async fn shutdown_without_a_session_carries_no_dump() {
     };
     assert!(matches!(err, PoolError::Shutdown { dump: None }), "got {err:?}");
     join_server(server).await;
+}
+
+/// The load-bearing keepalive check: a ping sent while the client sits idle
+/// (no turn in flight, so no `recv` polling the stream) is still answered,
+/// because the background reader task polls the read half continuously.
+/// Without that task the pong only goes out on the next turn — and a
+/// keepalive server would have dropped the session as vanished long before.
+#[tokio::test]
+async fn pings_are_answered_while_idle() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        // the client is now idle: nothing in flight, nothing awaited
+        socket.send(Message::Ping(b"live".as_slice().into())).expect("ping");
+        // bound the wait so a missing pong fails the test rather than hanging it
+        socket
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        match socket.read() {
+            Ok(Message::Pong(payload)) => assert_eq!(payload.as_ref(), b"live"),
+            other => panic!("expected a Pong while the client is idle, got {other:?}"),
+        }
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    // go idle: hold the checkout without driving a turn while the server
+    // pings; joining the server is what proves the pong arrived
+    join_server(server).await;
+    drop(checkout);
+}
+
+// === teardown says goodbye ===
+
+/// Reads until the client's Close frame, panicking on anything else.
+///
+/// Behind a proxy this is the *only* signal the far side gets: some load
+/// balancers forward a Close frame but never propagate a bare TCP disconnect
+/// upstream, so a teardown that only drops the socket leaves the remote session
+/// alive until its own idle timeout.
+fn expect_close(socket: &mut WebSocket<TcpStream>) {
+    loop {
+        match socket.read() {
+            Ok(Message::Close(_)) => return,
+            Ok(Message::Ping(_) | Message::Pong(_)) => {}
+            other => panic!("expected a Close frame, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn finishing_a_checkout_sends_a_close_frame() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Complete(pb::Complete {
+                value: Some(MontyObject::Int(42).into()),
+            }),
+        );
+        expect_close(&mut socket);
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn an_abandoned_checkout_sends_a_close_frame() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_close(&mut socket);
+    });
+
+    let (_pool, checkout) = websocket_checkout(port).await;
+    // dropping a checkout is a synchronous teardown, so the goodbye is sent by
+    // a detached task rather than awaited here
+    drop(checkout);
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn a_timed_out_turn_sends_a_close_frame() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "while True:\n    pass");
+        // never reply: the client's deadline must end the session, and the
+        // abandoned-session case is exactly when the server most wants the slot
+        expect_close(&mut socket);
+    });
+
+    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    config.max_processes = 1;
+    config.request_timeout = Some(Duration::from_millis(200));
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let err = checkout
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the turn must time out");
+    assert!(matches!(err, PoolError::Timeout { .. }), "got {err:?}");
+    join_server(server).await;
+}
+
+/// Cancelling `finish()` mid-goodbye must not leak the worker's capacity slot.
+///
+/// The goodbye only *pends* against a peer that stopped reading, so the socket
+/// is wedged first: one oversized feed the mock server never drains fills the
+/// buffers, and every later write queues behind it. The worker is already out
+/// of the `Checkout` by then, so without a `CapacityGuard` across the await
+/// nothing releases its slot and the pool shrinks by one for good.
+///
+/// Not run on Windows: dynamic send buffering grows the loopback socket's
+/// kernel buffer past the wedge, the goodbye never pends, and the cancel
+/// window this test needs cannot be forced open (the client socket is dialled
+/// inside `connect_async`, so its `SO_SNDBUF` — the only way to disable the
+/// growth — is out of reach). The guarded logic is platform-independent; do
+/// not "fix" this by enlarging the wedge, which only moves the flake.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn cancelling_finish_does_not_leak_capacity() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let (release, wait_for_release) = mpsc::channel::<()>();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        // never read again: the client's writes now back up in the socket
+        wait_for_release.recv().expect("release");
+    });
+
+    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    config.max_processes = 1;
+    config.checkout_timeout = Some(Duration::from_millis(200));
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+
+    let wedge = "#".repeat(32 * 1024 * 1024);
+    let mut on_print = no_print;
+    let feed = checkout.feed(&wedge, vec![], vec![], false, &mut on_print);
+    assert!(
+        timeout(Duration::from_secs(1), feed).await.is_err(),
+        "the unread feed must block, wedging the socket"
+    );
+    assert!(
+        timeout(Duration::from_millis(200), checkout.finish()).await.is_err(),
+        "the goodbye must block behind the wedged socket, cancelling inside the window"
+    );
+
+    release.send(()).expect("release the server");
+    join_server(server).await;
+
+    // the slot came back: the next checkout gets as far as dialling (and fails
+    // to connect, the listener being gone) instead of reporting no capacity
+    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+        panic!("the listener is gone, so a checkout cannot succeed");
+    };
+    assert!(matches!(err, PoolError::Spawn(_)), "got {err:?}");
 }
 
 #[tokio::test]

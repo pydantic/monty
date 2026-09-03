@@ -1,19 +1,19 @@
 # `sys` module
 
-Minimal. The module exposes only the attributes listed below; every other
-`sys.*` access raises `AttributeError`.
+The module exposes only the attributes listed below; every other `sys.*`
+access raises `AttributeError`.
 
 ## Attributes
 
 - `sys.version` — the string `"3.14.0 (Monty)"`.
 - `sys.version_info` — named tuple `(major=3, minor=14, micro=0,
   releaselevel='final', serial=0)`.
-- `sys.platform` — the string `"monty"` (not `"linux"` / `"darwin"` /
-  `"win32"`). Code that branches on the host OS will not work; the
-  sandbox deliberately hides it.
-- `sys.stdout` / `sys.stderr` — opaque marker objects with no methods.
-  They cannot be written to via `.write()`; printing always goes through
-  the host print callback regardless.
+- `sys.platform` — the string `"monty"`, not `"linux"` / `"darwin"` /
+  `"win32"`. Code that branches on the host OS will not work; the sandbox
+  does not expose which OS it runs on.
+- `sys.stdout` / `sys.stderr` — opaque marker objects with no methods. They
+  cannot be written to via `.write()`; printing always goes through the host
+  print callback regardless.
 
 ## Not implemented
 
@@ -26,4 +26,4 @@ Minimal. The module exposes only the attributes listed below; every other
 Production builds do not expose `sys.setrecursionlimit`. Test builds expose a
 lowering-only hook so shared fixtures can force deterministic recursion errors;
 it cannot raise the host-configured ceiling. See
-[resource_limits.md](resource_limits.md).
+./resource_limits.md.

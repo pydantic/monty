@@ -4,7 +4,9 @@
 //! and can be used in Python code execution.
 
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyObject};
+use monty_types::{
+    CompileOptions, DictPairs, ExcType, MontyClassInstance, MontyClassType, MontyObject, MontyType, MontyUuid,
+};
 
 // === Immediate Value Tests ===
 
@@ -587,23 +589,114 @@ fn invalid_input_namedtuple_length_mismatch() {
 }
 
 #[test]
-fn invalid_input_repr_in_dataclass_attrs() {
-    let err = run_input(MontyObject::Dataclass {
-        name: "Point".to_owned(),
-        type_id: 1,
-        field_names: vec!["a".to_owned(), "b".to_owned()],
+fn invalid_input_repr_in_class_instance_attrs() {
+    let err = run_input(MontyObject::ClassInstance(Box::new(MontyClassInstance {
+        class_type: MontyClassType {
+            name: "Point".to_owned(),
+            id: MontyUuid::from_u128(1),
+            host_defined: true,
+            is_dataclass: false,
+            attrs: DictPairs::default(),
+        },
+        instance_id: MontyUuid::from_u128(2),
         attrs: vec![
             (MontyObject::String("a".to_owned()), heap_element()),
             (MontyObject::String("b".to_owned()), MontyObject::Repr("bad".to_owned())),
         ]
         .into(),
-        frozen: false,
-    })
+    })))
     .unwrap_err();
     assert_eq!(
         err.message(),
         Some("invalid input type: 'Repr' is not a valid input value")
     );
+}
+
+/// A host `Point` class-type input carrying one eager class attr (`data`, a
+/// mutable list) — the shape used by the host-class-type tests below.
+fn host_class_type_input() -> MontyObject {
+    MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
+        name: "Point".to_owned(),
+        id: MontyUuid::from_u128(1),
+        host_defined: true,
+        is_dataclass: false,
+        attrs: vec![(
+            MontyObject::String("data".to_owned()),
+            MontyObject::List(vec![MontyObject::Int(1)]),
+        )]
+        .into(),
+    })))
+}
+
+#[test]
+fn type_object_missing_attr_uses_type_object_wording() {
+    // Non-iterative `run` has no host to answer the AttrLookup suspension, so
+    // it must raise the AttributeError locally — with CPython's type-object
+    // wording, since the receiver is a class type.
+    let ex = MontyRun::new(
+        "x.missing".to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let err = ex.run_no_limits(vec![host_class_type_input()]).unwrap_err();
+    assert_eq!(err.message(), Some("type object 'Point' has no attribute 'missing'"));
+}
+
+#[test]
+fn host_class_type_attr_cycle_is_collected() {
+    // Sandbox code can reach a container in a host class type's eager attrs
+    // and close a cycle back to the type object. The run must still complete
+    // and tear down cleanly — under `memory-model-checks` this verifies the
+    // GC traces and frees the HostClassType's attrs (a missed
+    // `for_each_child_id`/`py_dec_ref_ids` arm leaks or corrupts refcounts).
+    let code = "
+x.data.append(x)
+x = None
+1
+";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let result = ex.run_no_limits(vec![host_class_type_input()]).unwrap();
+    assert_eq!(result, MontyObject::Int(1));
+}
+
+#[test]
+fn host_class_instance_type_cycle_is_collected() {
+    // An instance owns its class entry, whose eager attrs can hold a container
+    // the sandbox reaches: instance -> type -> attrs -> instance is a cycle
+    // the collector must trace through the new `HostClass` -> class edge.
+    let code = "
+x.data.append(p)
+x = p = None
+1
+";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["x".to_owned(), "p".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let MontyObject::Type(MontyType::Instance(class_type)) = host_class_type_input() else {
+        unreachable!("host_class_type_input builds a type");
+    };
+    let instance = MontyObject::ClassInstance(Box::new(MontyClassInstance {
+        class_type: MontyClassType {
+            attrs: DictPairs::default(),
+            ..*class_type
+        },
+        instance_id: MontyUuid::from_u128(2),
+        attrs: DictPairs::default(),
+    }));
+    let result = ex.run_no_limits(vec![host_class_type_input(), instance]).unwrap();
+    assert_eq!(result, MontyObject::Int(1));
 }
 
 // === Function Parameter Shadowing Tests ===

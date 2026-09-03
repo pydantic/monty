@@ -123,7 +123,7 @@ fn setrecursionlimit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if new_limit == 0 {
         return Err(ExcType::value_error("recursion limit must be greater or equal than 1"));
     }
-    match vm.heap.tracker().lower_recursion_limit(new_limit) {
+    match vm.heap.tracker.lower_recursion_limit(new_limit) {
         Ok(()) => Ok(Value::None),
         Err(current) => Err(ExcType::value_error(format!(
             "sys.setrecursionlimit: cannot raise above current limit {current} (sandbox only allows lowering)"

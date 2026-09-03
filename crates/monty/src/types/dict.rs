@@ -5,18 +5,23 @@ use std::{
     mem, slice, vec,
 };
 
+use ahash::AHashSet;
 use hashbrown::HashTable;
 use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
 
-use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple};
+use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, list::repr_check_time};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     expressions::CmpOperator,
-    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{
+        ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
+        HeapReadOutput,
+    },
+    identity::Identity,
     intern::{Interns, StaticStrings},
     modules::collections::{
         counter::{
@@ -26,7 +31,7 @@ use crate::{
         defaultdict::defaultdict_missing,
     },
     types::Type,
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
 
 /// Python dict type preserving insertion order.
@@ -227,13 +232,6 @@ impl Dict {
         }
     }
 
-    /// Clones every entry's value, for the `Counter` orderings that must compare
-    /// counts through the VM (see [`counter_order`]).
-    #[must_use]
-    pub fn cloned_values(&self, heap: &impl ContainsHeap) -> Vec<Value> {
-        self.entries.iter().map(|e| e.value.clone_with_heap(heap)).collect()
-    }
-
     /// Returns the `default_factory` callable, or `None` for a plain dict or a
     /// factory-less defaultdict.
     #[must_use]
@@ -381,7 +379,7 @@ fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap, interns: &Inter
 impl<'h> HeapRead<'h, Dict> {
     /// Element-wise equality against another dict (matching keys and values).
     ///
-    /// Shared by `Dict::py_eq_impl` and `Dataclass::py_eq_impl` (which compares
+    /// Shared by `Dict::py_eq_impl` and `HostClass::py_eq_impl` (which compares
     /// the dataclasses' attribute dicts).
     pub(crate) fn eq_dict(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<bool> {
         if self.get(vm.heap).len() != other.get(vm.heap).len() {
@@ -673,6 +671,65 @@ struct DictInitArgs {
     extras: KwargsValues,
 }
 
+/// Heap-only equality for probe candidates, mirroring `py_eq` for pairs whose
+/// comparison can never re-enter the VM.
+///
+/// Returns `None` when the pair may need the VM (user `__eq__`, container
+/// recursion, or a cross-type pair the native helpers do not decide); the
+/// caller then falls back to the guarded snapshot path. Runs no user code, so
+/// it is safe to call while the index-table borrow is held.
+pub(crate) fn probe_native_eq(candidate: &Value, key: &Value, vm: &VM<'_>) -> Option<bool> {
+    // `py_eq` starts with identity, so this must too (it is what makes a NaN
+    // key findable).
+    if candidate.is(key) {
+        Some(true)
+    } else {
+        match candidate {
+            Value::Bool(b) => eq_i64(i64::from(*b), key, vm),
+            Value::Int(i) => eq_i64(*i, key, vm),
+            Value::Float(f) => eq_f64(*f, key, vm),
+            Value::InternLongInt(id) => eq_bigint(vm.interns.get_long_int(*id), key, vm),
+            Value::InternString(id) => eq_str(vm.interns.get_str(*id), key, vm),
+            Value::InternBytes(id) => eq_bytes(vm.interns.get_bytes(*id), key, vm),
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Str(s) => eq_str(s.as_str(), key, vm),
+                HeapData::Bytes(b) => eq_bytes(b.as_slice(), key, vm),
+                HeapData::LongInt(li) => eq_bigint(li.inner(), key, vm),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+/// Whether an equality comparison involving `value` can never re-enter the VM.
+///
+/// True for immediates and for heap types whose `py_eq` is fully native.
+/// Instances and dataclasses dispatch to user `__eq__`, and containers
+/// (tuples, frozensets) recurse into element comparisons that might; those and
+/// any unlisted heap type return false. A conservative fast-path filter for
+/// the dict/set probes, not a complete classification.
+pub(crate) fn eq_is_native(value: &Value, heap: &Heap) -> bool {
+    match value {
+        Value::Ref(id) => matches!(
+            heap.get(*id),
+            HeapData::Str(_) | HeapData::Bytes(_) | HeapData::LongInt(_) | HeapData::Range(_)
+        ),
+        _ => true,
+    }
+}
+
+/// How a probe continued after user `__eq__` code may have mutated the
+/// container; shared by the dict and set lookups, which mirror each other.
+pub(crate) enum ProbeOutcome {
+    /// The key was found in this entry.
+    Found(usize),
+    /// Every live candidate has been compared, none matched.
+    Missing,
+    /// A candidate moved mid-probe, so the whole probe must start over.
+    Restart,
+}
+
 impl<'h> HeapRead<'h, Dict> {
     fn find_index_hash(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<(Option<usize>, u64)> {
         let hash = key
@@ -680,29 +737,179 @@ impl<'h> HeapRead<'h, Dict> {
             .ok_or_else(|| ExcType::type_error_unhashable_dict_key(&key.py_type_name(vm)))?
             .raw();
 
-        // Dict keys are typically shallow (strings, ints, tuples of primitives),
-        // so recursion errors are unlikely. If one occurs, treat it as "not equal" -
-        // the key lookup fails but doesn't crash.
-        //
-        // Collect candidate indices during the lookup to avoid borrow tracker issues
-        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
+        // Candidates are snapshotted so `py_eq` can run without the index-table
+        // borrow held, and revalidated either side of it: only one that moved
+        // restarts the probe, as in CPython's `lookdict`. Restarts poll the
+        // limits, since each callback restarts the VM's dispatch countdown.
+
+        // False for anything whose `__eq__` could mutate the dict; when true,
+        // revalidation and the miss continuation are skipped (the str/int path).
+        let key_native = eq_is_native(key, vm.heap);
+
+        'restart: loop {
+            // Collected inline rather than through `probe_candidates`: every
+            // lookup runs this, and moving the buffers out of a call shows up
+            // in the dict benchmarks.
+            let mut candidate_indices: SmallVec<[usize; 2]> = SmallVec::new();
+            let mut candidate_keys: SmallVec<[Value; 2]> = SmallVec::new();
+            let mut all_native = key_native;
+            let this = self.get(vm.heap);
+            // The `find` predicate doubles as the probe walk: native pairs are
+            // compared inline (a `true` stops at the match), and only pairs
+            // that may need user code are cloned for the guarded loop below.
+            // Once one is deferred, later candidates queue behind it so
+            // comparisons keep CPython's probe order.
+            let found = this
+                .indices
+                .find(hash, |v| {
+                    let entry = &this.entries[*v];
+                    if entry.hash != hash {
+                        return false;
+                    }
+                    if candidate_indices.is_empty()
+                        && let Some(eq) = probe_native_eq(&entry.key, key, vm)
+                    {
+                        eq
+                    } else {
+                        candidate_indices.push(*v);
+                        candidate_keys.push(entry.key.clone_with_heap(vm.heap));
+                        all_native = all_native && eq_is_native(&entry.key, vm.heap);
+                        false
+                    }
+                })
+                .copied();
+            // Guarded before the early returns below: the deferred keys are
+            // owned, and only the `candidate_indices.is_empty()` condition in
+            // the predicate above keeps them empty on the `found` path.
+            defer_drop!(candidate_keys, vm);
+            if let Some(index) = found {
+                return Ok((Some(index), hash));
+            }
+            if candidate_indices.is_empty() {
+                return Ok((None, hash));
+            }
+
+            for (&candidate_index, candidate_key) in candidate_indices.iter().zip(candidate_keys.iter()) {
+                if !all_native && !self.probe_valid(candidate_index, hash, candidate_key, vm) {
+                    vm.heap.tracker.check_memory_time()?;
+                    continue 'restart;
+                }
+                // CPython compares the stored key on the left.
+                let eq = candidate_key.py_eq(key, vm)?;
+                if !all_native && !self.probe_valid(candidate_index, hash, candidate_key, vm) {
+                    vm.heap.tracker.check_memory_time()?;
+                    continue 'restart;
+                }
+                if eq {
+                    return Ok((Some(candidate_index), hash));
+                }
+            }
+
+            // Nothing matched. Comparisons can themselves add colliding keys the
+            // snapshot never saw, so a pass that ran any hands over to the
+            // mutation-aware continuation — unless none could run user code.
+            if all_native {
+                return Ok((None, hash));
+            }
+            match self.probe_after_compare(hash, key, candidate_keys, vm)? {
+                ProbeOutcome::Found(index) => return Ok((Some(index), hash)),
+                ProbeOutcome::Missing => return Ok((None, hash)),
+                // a candidate moved: fall through to the next probe from scratch
+                ProbeOutcome::Restart => (),
+            }
+        }
+    }
+
+    /// Continues a probe whose comparisons all missed, in case one of them
+    /// mutated the dict and added a colliding key.
+    ///
+    /// Re-reads the candidates until a pass finds nothing new, skipping keys
+    /// already compared so no user `__eq__` runs twice, as CPython's live probe
+    /// chain does. Inline-compared native pairs are deliberately left out of
+    /// the seen set: repeating one is side-effect-free, and tracking them would
+    /// put clone and identity bookkeeping on the pure-native fast path.
+    fn probe_after_compare(
+        &self,
+        hash: u64,
+        key: &Value,
+        already_compared: &[Value],
+        vm: &mut VM<'h>,
+    ) -> RunResult<ProbeOutcome> {
+        // The clones keep every compared key alive so its heap slot cannot be
+        // recycled into a new key that would then be skipped by identity.
+        let compared: SmallVec<[Value; 2]> = already_compared.iter().map(|k| k.clone_with_heap(vm.heap)).collect();
+        defer_drop_mut!(compared, vm);
+        // Identity set for O(1) seen-checks — a linear scan is quadratic over
+        // a fully colliding dict, all skips, before the poll below is reached.
+        let mut compared_ids: AHashSet<Identity> = compared.iter().map(Value::id).collect();
+
+        loop {
+            // Polled up front so every entry checks the limits at least once:
+            // the comparisons that brought us here ran user code, restarting
+            // the VM dispatch countdown, so no checkpoint fires otherwise —
+            // including on the no-mutation pass that returns `Missing`.
+            vm.heap.tracker.check_memory_time()?;
+            let (candidate_indices, candidate_keys) = self.probe_candidates(hash, vm);
+            defer_drop!(candidate_keys, vm);
+            let mut compared_any = false;
+
+            for (&candidate_index, candidate_key) in candidate_indices.iter().zip(candidate_keys.iter()) {
+                if !compared_ids.insert(candidate_key.id()) {
+                    continue;
+                }
+                if !self.probe_valid(candidate_index, hash, candidate_key, vm) {
+                    vm.heap.tracker.check_memory_time()?;
+                    return Ok(ProbeOutcome::Restart);
+                }
+                compared.push(candidate_key.clone_with_heap(vm.heap));
+                compared_any = true;
+                // CPython compares the stored key on the left.
+                let eq = candidate_key.py_eq(key, vm)?;
+                if !self.probe_valid(candidate_index, hash, candidate_key, vm) {
+                    vm.heap.tracker.check_memory_time()?;
+                    return Ok(ProbeOutcome::Restart);
+                }
+                if eq {
+                    return Ok(ProbeOutcome::Found(candidate_index));
+                }
+            }
+
+            if !compared_any {
+                return Ok(ProbeOutcome::Missing);
+            }
+        }
+    }
+
+    /// Snapshots the live entries colliding on `hash`: their indices, plus an
+    /// owned reference to each of their keys.
+    ///
+    /// Cloning the keys lets `py_eq` run without the index-table borrow held;
+    /// the caller owns the returned keys and must drop them. Only the
+    /// mutation-aware continuation calls this — the fast path above inlines the
+    /// same collection.
+    fn probe_candidates(&self, hash: u64, vm: &VM<'h>) -> (SmallVec<[usize; 2]>, SmallVec<[Value; 2]>) {
+        let mut indices: SmallVec<[usize; 2]> = SmallVec::new();
+        let mut keys: SmallVec<[Value; 2]> = SmallVec::new();
         let this = self.get(vm.heap);
         this.indices.find(hash, |v| {
             if this.entries[*v].hash == hash {
-                candidates.push(*v);
+                indices.push(*v);
+                keys.push(this.entries[*v].key.clone_with_heap(vm.heap));
             }
             false
         });
+        (indices, keys)
+    }
 
-        for candidate_index in candidates {
-            let candidate_key = self.get(vm.heap).entries[candidate_index].key.clone_with_heap(vm);
-            defer_drop!(candidate_key, vm);
-            if key.py_eq(candidate_key, vm)? {
-                return Ok((Some(candidate_index), hash));
-            }
-        }
-
-        Ok((None, hash))
+    /// Checks that a snapshotted candidate still names the same live entry.
+    ///
+    /// The caller checks before and after `py_eq`; a mismatch restarts the probe.
+    #[inline]
+    fn probe_valid(&self, index: usize, hash: u64, key: &Value, vm: &VM<'h>) -> bool {
+        let this = self.get(vm.heap);
+        this.entries
+            .get(index)
+            .is_some_and(|entry| entry.hash == hash && entry.key.is(key))
     }
 
     /// Checks whether the dict contains a given key.
@@ -975,13 +1182,13 @@ impl<'a, 'h> DictIter<'a, 'h> {
     /// Shared step for the iterator's borrowed and owned yield modes.
     ///
     /// Releases the previously-yielded slot (no-op when each slot is
-    /// `Undefined`), runs the per-step time check and the dict mutation
+    /// `Undefined`), runs the amortized time check and the dict mutation
     /// guard, then returns the entry index to read at — or `Ok(None)` when
     /// the iterator is exhausted. Bumps `self.index` on success.
     fn advance(&mut self, vm: &mut VM<'h>) -> RunResult<Option<usize>> {
         mem::replace(&mut self.current_key, Value::Undefined).drop_with(vm.heap);
         mem::replace(&mut self.current_value, Value::Undefined).drop_with(vm.heap);
-        vm.heap.check_time()?;
+        vm.heap.tracker.check_time_every(self.index)?;
         let current = self.dict.get(vm.heap);
         if current.entries.len() != self.expected_len {
             return Err(ExcType::runtime_error_dict_changed_size());
@@ -1018,29 +1225,29 @@ impl<'h> HeapRead<'h, Dict> {
         let vm = &mut *guard;
 
         f.write_char('{')?;
-        let len = self.get(vm.heap).len();
-        for i in 0..len {
+        // Iterate the live entries like CPython, cloning only the current pair
+        // (refcount bumps — required because the reprs below run user
+        // `__repr__` code that may drop the dict's references). Bounds are
+        // re-checked every index, so mid-repr mutation cannot panic: inserted
+        // entries append and are printed (matching CPython); a deletion shifts
+        // `entries` where CPython leaves a tombstone, so later entries can be
+        // skipped (see `limitations/builtins.md`).
+        for i in 0.. {
+            let Some((key, value)) = self.get(vm.heap).item_at(i) else {
+                break;
+            };
+            let pair = (key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap));
+            defer_drop!(pair, vm);
+            let (key, value) = pair;
             if i > 0 {
-                if vm.heap.check_time().is_err() {
+                if repr_check_time(i, vm) {
                     f.write_str(", ...[timeout]")?;
                     break;
                 }
                 f.write_str(", ")?;
             }
-            let key = self
-                .get(vm.heap)
-                .key_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
-            defer_drop!(key, vm);
             key.py_repr_fmt(f, vm, heap_ids)?;
             f.write_str(": ")?;
-            let value = self
-                .get(vm.heap)
-                .value_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
-            defer_drop!(value, vm);
             value.py_repr_fmt(f, vm, heap_ids)?;
         }
         f.write_char('}')?;
@@ -1056,31 +1263,57 @@ impl<'h> HeapRead<'h, Dict> {
         };
         let vm = &mut *guard;
 
-        let counts = self.get(vm.heap).cloned_values(vm.heap);
+        // Snapshot the entries BEFORE ordering: the reprs printed below run
+        // user `__repr__` code that can mutate the Counter, so the ordered
+        // indices must refer to the snapshot, not live entries.
+        let pairs = self.clone_all_pairs(vm)?;
+        defer_drop!(pairs, vm);
+        // The counts clone and the order indices live alongside the pair
+        // snapshot — preflight them too so an over-budget Counter raises a
+        // graceful `MemoryError` instead of hitting the allocator hard limit.
+        vm.heap
+            .tracker
+            .check_allocation(pairs.len().saturating_mul(VALUE_SIZE + mem::size_of::<usize>()))?;
+        let counts = pairs.iter().map(|(_, value)| value.clone_with_heap(vm.heap)).collect();
         let order = counter_order(counts, vm)?;
         f.write_char('{')?;
         for (n, &i) in order.iter().enumerate() {
             if n > 0 {
+                if repr_check_time(n, vm) {
+                    f.write_str(", ...[timeout]")?;
+                    break;
+                }
                 f.write_str(", ")?;
             }
-            let key = self
-                .get(vm.heap)
-                .key_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
-            defer_drop!(key, vm);
+            let (key, value) = &pairs[i];
             key.py_repr_fmt(f, vm, heap_ids)?;
             f.write_str(": ")?;
-            let value = self
-                .get(vm.heap)
-                .value_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
-            defer_drop!(value, vm);
             value.py_repr_fmt(f, vm, heap_ids)?;
         }
         f.write_char('}')?;
         Ok(())
+    }
+
+    /// Clones every entry as a refcount-bumped `(key, value)` pair, for the
+    /// Counter repr: printing runs user `__repr__` code against indices from
+    /// the ordering pass, so live indices would panic or skew once that code
+    /// mutates the Counter — and CPython's `most_common()` snapshots the same way.
+    ///
+    /// Preflights the slot bytes so an over-budget clone raises a graceful
+    /// `MemoryError` instead of bursting past the allocator's hard limit.
+    pub(crate) fn clone_all_pairs(&self, vm: &mut VM<'h>) -> RunResult<Vec<(Value, Value)>> {
+        let len = self.get(vm.heap).len();
+        vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
+        let mut pairs = Vec::with_capacity(len);
+        // No user code runs during the snapshot, so `len` stays current and
+        // the `expect`s cannot fire.
+        for i in 0..len {
+            let dict = self.get(vm.heap);
+            let key = dict.key_at(i).expect("index in range").clone_with_heap(vm.heap);
+            let value = dict.value_at(i).expect("index in range").clone_with_heap(vm.heap);
+            pairs.push((key, value));
+        }
+        Ok(pairs)
     }
 
     /// Handles dict attribute assignment. Only `defaultdict.default_factory` is
@@ -1105,25 +1338,25 @@ impl<'h> HeapRead<'h, Dict> {
                 Ok(self.get_mut(vm.heap).replace_default_factory(Some(value)))
             }
         } else {
-            let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+            let type_name = self.get(vm.heap).kind_type().name(vm.heap, vm.interns);
             value.drop_with(vm);
             Err(ExcType::attribute_error_no_setattr(&type_name, attr.as_str(vm.interns)))
         }
     }
 }
 
-/// `PyTrait` implementation for `HeapRead<'h, Dict>`.
+/// `PyTrait` implementation for a heap-backed `Dict` object.
 ///
 /// All methods access the dict data through short-lived borrows from the heap via
 /// `self.get(vm.heap)`, and mutation methods use `self.get_mut(vm.heap)`. This avoids
 /// taking the dict out of the heap, enabling self-referential operations like `d.update(d)`.
-impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
 
     /// `in` on a dict tests its *keys*, matching CPython.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         self.contains_key(item, vm).map(Some)
     }
 
@@ -1137,12 +1370,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         Ok(())
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(DictKeyIterator::allocate(
-            self_id.expect("heap values have an id"),
-            self.get(vm.heap).len(),
-            vm,
-        ))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(DictKeyIterator::allocate(self.id(), self.get(vm.heap).len(), vm))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -1154,8 +1383,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
             Some(HeapReadOutput::Dict(other)) => {
                 // Two Counters compare as multisets (zero counts ignored); any
                 // other pairing is plain dict equality.
-                let both_counters = self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter();
-                if both_counters {
+                if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
                     Ok(Some(self.eq_counter(&other, vm)?))
                 } else {
                     Ok(Some(self.eq_dict(&other, vm)?))
@@ -1173,13 +1401,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
     /// which has no dict ordering and so raises `TypeError` — CPython's
     /// `Counter.__lt__` likewise returns `NotImplemented` for a non-Counter,
     /// which is why `Counter(a=1) < {'a': 2}` never becomes a dict comparison.
-    fn py_cmp_op(
-        &self,
-        other: &Value,
-        op: CmpOperator,
-        vm: &mut VM<'h>,
-        self_id: Option<HeapId>,
-    ) -> RunResult<Option<bool>> {
+    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let cmp = match op {
             CmpOperator::Lt => CounterCmp::Lt,
             CmpOperator::LtE => CounterCmp::Le,
@@ -1188,50 +1410,54 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
             // Only the four ordering operators reach `py_cmp_op`.
             _ => return Ok(None),
         };
-        match (self_id, other.ref_id()) {
-            (Some(l), Some(r)) if self.both_counters(r, vm) => Ok(Some(counter_compare(l, r, cmp, vm)?)),
-            _ => Ok(None),
+        let Some(HeapReadOutput::Dict(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
+            Ok(Some(counter_compare(self, &other, cmp, vm)?))
+        } else {
+            Ok(None)
         }
     }
 
-    fn py_neg_impl(&self, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
-        self.counter_unary(true, vm, self_id)
+    fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.counter_unary(true, vm)
     }
 
-    fn py_pos_impl(&self, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
-        self.counter_unary(false, vm, self_id)
+    fn py_pos_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.counter_unary(false, vm)
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
-        self.counter_binary(other, CounterOp::Add, vm, self_id)
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.counter_binary(other, CounterOp::Add, vm)
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
-        self.counter_binary(other, CounterOp::Sub, vm, self_id)
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.counter_binary(other, CounterOp::Sub, vm)
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
-        self.counter_binary(other, CounterOp::And, vm, self_id)
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.counter_binary(other, CounterOp::And, vm)
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
-        self.counter_binary(other, CounterOp::Or, vm, self_id)
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.counter_binary(other, CounterOp::Or, vm)
     }
 
-    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
-        self.counter_inplace(other, CounterOp::Add, vm, self_id)
+    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        self.counter_inplace(other, CounterOp::Add, vm)
     }
 
-    fn py_isub_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
-        self.counter_inplace(other, CounterOp::Sub, vm, self_id)
+    fn py_isub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        self.counter_inplace(other, CounterOp::Sub, vm)
     }
 
-    fn py_iand_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
-        self.counter_inplace(other, CounterOp::And, vm, self_id)
+    fn py_iand_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        self.counter_inplace(other, CounterOp::And, vm)
     }
 
-    fn py_ior_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
-        self.counter_inplace(other, CounterOp::Or, vm, self_id)
+    fn py_ior_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        self.counter_inplace(other, CounterOp::Or, vm)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -1296,13 +1522,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         Ok(())
     }
 
-    fn py_call_attr(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             let type_name = self.py_type(vm).name(vm.heap, vm.interns);
             args.drop_with(vm);
@@ -1311,15 +1531,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
 
         let value = match method {
             // Counter-only methods (a plain dict falls through to AttributeError).
-            StaticStrings::MostCommon if self.get(vm.heap).is_counter() => counter_most_common(self_id, args, vm),
-            StaticStrings::Elements if self.get(vm.heap).is_counter() => counter_elements(self_id, args, vm),
+            StaticStrings::MostCommon if self.get(vm.heap).is_counter() => counter_most_common(self, args, vm),
+            StaticStrings::Elements if self.get(vm.heap).is_counter() => counter_elements(self, args, vm),
             StaticStrings::Total if self.get(vm.heap).is_counter() => {
                 args.check_zero_args("total", vm.heap)?;
-                counter_total(self_id, vm)
+                counter_total(self, vm)
             }
-            StaticStrings::Subtract if self.get(vm.heap).is_counter() => counter_update_method(self_id, args, true, vm),
+            StaticStrings::Subtract if self.get(vm.heap).is_counter() => counter_update_method(self, args, true, vm),
             // Counter overrides `update` to add counts, and disables `fromkeys`.
-            StaticStrings::Update if self.get(vm.heap).is_counter() => counter_update_method(self_id, args, false, vm),
+            StaticStrings::Update if self.get(vm.heap).is_counter() => counter_update_method(self, args, false, vm),
             StaticStrings::Fromkeys if self.get(vm.heap).is_counter() => {
                 args.drop_with(vm);
                 return Err(ExcType::not_implemented(
@@ -1342,20 +1562,22 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
             }
             StaticStrings::Keys => {
                 args.check_zero_args("dict.keys", vm.heap)?;
-                let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self_id)));
-                vm.heap.inc_ref(self_id);
+                let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self.id())));
+                vm.heap.inc_ref(self.id());
                 Ok(Value::Ref(view_id))
             }
             StaticStrings::Values => {
                 args.check_zero_args("dict.values", vm.heap)?;
-                let view_id = vm.heap.allocate(HeapData::DictValuesView(DictValuesView::new(self_id)));
-                vm.heap.inc_ref(self_id);
+                let view_id = vm
+                    .heap
+                    .allocate(HeapData::DictValuesView(DictValuesView::new(self.id())));
+                vm.heap.inc_ref(self.id());
                 Ok(Value::Ref(view_id))
             }
             StaticStrings::Items => {
                 args.check_zero_args("dict.items", vm.heap)?;
-                let view_id = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(self_id)));
-                vm.heap.inc_ref(self_id);
+                let view_id = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(self.id())));
+                vm.heap.inc_ref(self.id());
                 Ok(Value::Ref(view_id))
             }
             StaticStrings::Pop => {
@@ -1408,7 +1630,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
             StaticStrings::DunderMissing if self.get(vm.heap).is_defaultdict() => {
                 let key = args.get_one_arg("__missing__", vm.heap)?;
                 defer_drop!(key, vm);
-                defaultdict_missing(self_id, key, vm)
+                defaultdict_missing(self, key, vm)
             }
             _ => {
                 let type_name = self.py_type(vm).name(vm.heap, vm.interns);
@@ -1420,23 +1642,21 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
     }
 }
 
-impl<'h> HeapRead<'h, Dict> {
+impl<'h> HeapObjectRead<'h, Dict> {
     /// Runs a binary `Counter` operator (`+ - & |`), which needs *both* operands
     /// to be Counters.
     ///
     /// Any other pairing reports `None` so the caller raises its ordinary
     /// `TypeError`, matching CPython: `Counter.__add__` returns `NotImplemented`
     /// for a non-Counter, and a plain dict has no `+` of its own.
-    fn counter_binary(
-        &self,
-        other: &Value,
-        op: CounterOp,
-        vm: &mut VM<'h>,
-        self_id: Option<HeapId>,
-    ) -> RunResult<Option<Value>> {
-        match (self_id, other.ref_id()) {
-            (Some(l), Some(r)) if self.both_counters(r, vm) => Ok(Some(counter_binary_op(l, r, op, vm)?)),
-            _ => Ok(None),
+    fn counter_binary(&self, other: &Value, op: CounterOp, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(HeapReadOutput::Dict(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
+            Ok(Some(counter_binary_op(self, &other, op, vm)?))
+        } else {
+            Ok(None)
         }
     }
 
@@ -1448,19 +1668,12 @@ impl<'h> HeapRead<'h, Dict> {
     /// `other[elem]` raises — so once the left is a Counter this owns the
     /// operation, error paths included. A plain dict reports `false`, falling
     /// back to the binary operator.
-    fn counter_inplace(
-        &mut self,
-        other: &Value,
-        op: CounterOp,
-        vm: &mut VM<'h>,
-        self_id: Option<HeapId>,
-    ) -> RunResult<bool> {
-        match self_id {
-            Some(l) if self.get(vm.heap).is_counter() => {
-                counter_inplace_op(l, other, op, vm)?;
-                Ok(true)
-            }
-            _ => Ok(false),
+    fn counter_inplace(&mut self, other: &Value, op: CounterOp, vm: &mut VM<'h>) -> RunResult<bool> {
+        if self.get(vm.heap).is_counter() {
+            counter_inplace_op(self, other, op, vm)?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
@@ -1469,16 +1682,12 @@ impl<'h> HeapRead<'h, Dict> {
     ///
     /// A plain dict has no unary form and reports `None` for the caller's
     /// `TypeError`.
-    fn counter_unary(&self, negate: bool, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
-        match self_id {
-            Some(id) if self.get(vm.heap).is_counter() => Ok(Some(counter_unary_op(id, negate, vm)?)),
-            _ => Ok(None),
+    fn counter_unary(&self, negate: bool, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        if self.get(vm.heap).is_counter() {
+            Ok(Some(counter_unary_op(self, negate, vm)?))
+        } else {
+            Ok(None)
         }
-    }
-
-    /// Whether this dict and the heap value `other_id` are both Counters.
-    fn both_counters(&self, other_id: HeapId, vm: &VM<'h>) -> bool {
-        self.get(vm.heap).is_counter() && matches!(vm.heap.get(other_id), HeapData::Dict(d) if d.is_counter())
     }
 }
 
@@ -1827,15 +2036,32 @@ struct DictIteratorState {
     dict: HeapId,
     index: usize,
     expected_len: usize,
+    /// Set once a `next` call has reached the end. Mirrors CPython clearing
+    /// `di_dict`: an already-exhausted iterator returns `StopIteration` on every
+    /// further call and never re-checks the size, even if the dict was mutated
+    /// after exhaustion. Defaulted for backward-compatible snapshot decode.
+    #[serde(default)]
+    exhausted: bool,
 }
 
 impl DictIteratorState {
     /// Validates mutation and returns the next storage index.
+    ///
+    /// Matches CPython's `dictiterobject`: the size-change guard fires only while
+    /// the iterator is still live, and it is checked *before* exhaustion so a
+    /// mutation on the final element still raises on the terminating `next()`
+    /// (the case a plain `index >= expected_len` check first would mask). Once a
+    /// call has reached the end, `exhausted` makes every later call a plain
+    /// `StopIteration` with no size check — mutating the dict after the iterator
+    /// is spent is not an error.
     fn next_index(&mut self, current_len: usize) -> RunResult<Option<usize>> {
-        if self.index >= self.expected_len {
+        if self.exhausted {
             Ok(None)
         } else if current_len != self.expected_len {
             Err(ExcType::runtime_error_dict_changed_size())
+        } else if self.index >= self.expected_len {
+            self.exhausted = true;
+            Ok(None)
         } else {
             let index = self.index;
             self.index += 1;
@@ -1870,6 +2096,7 @@ macro_rules! impl_dict_iterator {
                     dict,
                     index: 0,
                     expected_len,
+                    exhausted: false,
                 })));
                 vm.heap.inc_ref(dict);
                 Value::Ref(id)
@@ -1892,7 +2119,7 @@ macro_rules! impl_dict_iterator {
             }
         }
 
-        impl<'h> PyTrait<'h> for HeapRead<'h, $ty> {
+        impl<'h> PyTrait<'h> for HeapObjectRead<'h, $ty> {
             fn py_is_iterable(&self, _: &VM<'h>) -> bool {
                 true
             }
@@ -1909,13 +2136,11 @@ macro_rules! impl_dict_iterator {
                 Ok(None)
             }
 
-            fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-                let self_id = self_id.expect("heap values have an id");
-                vm.heap.inc_ref(self_id);
-                Ok(Value::Ref(self_id))
+            fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+                Ok(self.clone_value(vm.heap))
             }
 
-            fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+            fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
                 $next(self, vm)
             }
         }

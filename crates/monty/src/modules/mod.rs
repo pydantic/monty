@@ -16,9 +16,12 @@ use crate::{
 };
 
 pub(crate) mod asyncio;
+pub(crate) mod base64;
+pub(crate) mod binascii;
 pub(crate) mod collections;
 pub(crate) mod dataclasses;
 pub(crate) mod datetime;
+pub(crate) mod functools;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod gc;
 pub(crate) mod itertools;
@@ -39,7 +42,7 @@ pub(crate) enum StandardLib {
     Sys,
     /// The `typing` module providing type hints support.
     Typing,
-    /// The `asyncio` module providing async/await support (only `gather()` implemented).
+    /// The `asyncio` module providing async/await support (only `run()` and `gather()` implemented).
     Asyncio,
     /// The `pathlib` module providing object-oriented filesystem paths.
     Pathlib,
@@ -63,6 +66,13 @@ pub(crate) enum StandardLib {
     /// The `collections` module providing container datatypes: `deque`,
     /// `namedtuple`, `defaultdict`, and `Counter`.
     Collections,
+    /// The `functools` module providing `reduce` and `partial`.
+    Functools,
+    /// The `base64` module providing the base64/base32/base16 codecs.
+    Base64,
+    /// The `binascii` module providing binary-to-ASCII conversions, CRC32,
+    /// and the `Error` class used by `base64`.
+    Binascii,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -91,6 +101,9 @@ impl StandardLib {
             StaticStrings::Itertools => Some(Self::Itertools),
             StaticStrings::Dataclasses => Some(Self::Dataclasses),
             StaticStrings::Collections => Some(Self::Collections),
+            StaticStrings::Functools => Some(Self::Functools),
+            StaticStrings::Base64 => Some(Self::Base64),
+            StaticStrings::Binascii => Some(Self::Binascii),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -117,6 +130,9 @@ impl StandardLib {
             Self::Itertools => itertools::create_module(vm),
             Self::Dataclasses => dataclasses::create_module(vm),
             Self::Collections => collections::create_module(vm),
+            Self::Functools => functools::create_module(vm),
+            Self::Base64 => base64::create_module(vm),
+            Self::Binascii => binascii::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -124,6 +140,12 @@ impl StandardLib {
 }
 
 /// All stdlib module function (but not builtins).
+///
+/// Serde encodes these by declaration index and every dump reaches them through
+/// `Value::ModuleFunction`, so ALWAYS APPEND new variants, ahead of the gated
+/// block — inserting one misdecodes old dumps into the wrong function instead
+/// of failing. The leading alphabetical run is an accident, not a rule;
+/// reordering needs a `DUMP_VERSION` bump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),
@@ -135,6 +157,9 @@ pub(crate) enum ModuleFunctions {
     Unicodedata(unicodedata::UnicodedataFunctions),
     Itertools(itertools::ItertoolsFunctions),
     Dataclasses(dataclasses::DataclassesFunctions),
+    Functools(functools::FunctoolsFunctions),
+    Base64(base64::Base64Functions),
+    Binascii(binascii::BinasciiFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -160,6 +185,9 @@ impl fmt::Display for ModuleFunctions {
             Self::Unicodedata(func) => write!(f, "{func}"),
             Self::Itertools(func) => write!(f, "{func}"),
             Self::Dataclasses(func) => write!(f, "{func}"),
+            Self::Functools(func) => write!(f, "{func}"),
+            Self::Base64(func) => write!(f, "{func}"),
+            Self::Binascii(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -184,6 +212,9 @@ impl ModuleFunctions {
             Self::Unicodedata(functions) => unicodedata::call(vm, functions, args).map(CallResult::Value),
             Self::Itertools(functions) => itertools::call(vm, functions, args).map(CallResult::Value),
             Self::Dataclasses(functions) => dataclasses::call(vm, functions, args).map(CallResult::Value),
+            Self::Functools(functions) => functools::call(vm, functions, args).map(CallResult::Value),
+            Self::Base64(functions) => base64::call(vm, functions, args).map(CallResult::Value),
+            Self::Binascii(functions) => binascii::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

@@ -9,7 +9,7 @@ members = ["crates/monty-python", "crates/monty-runtime", "packages/pydantic-mon
 [dependency-groups]
 dev = [
     "basedpyright>=1.34.0",
-    "maturin>=1.9.4,<2.0",
+    "maturin>=1.15.0,<2.0",
     "mypy>=2.1.0",
     "ruff>=0.14.7",
     "duckdb>=1.0.0",
@@ -20,6 +20,10 @@ dev = [
     "devtools>=0.12.2",
     "pydantic-ai-slim[anthropic,openai]>=1.63.0",
     "websockets>=14",
+]
+docs = [
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.7",
 ]
 
 # https://beta.ruff.rs/docs/configuration/
@@ -142,6 +146,10 @@ exclude = [
     "crates/monty/test_cases/loop__continue_in_function_error.py",
     "crates/monty/test_cases/loop__break_in_if_error.py",
     "crates/monty/test_cases/loop__continue_in_if_error.py",
+    # deliberately calls `reduce`/`partial` with wrong arity and types to pin
+    # their TypeError messages
+    "crates/monty/test_cases/functools__reduce.py",
+    "crates/monty/test_cases/functools__partial.py",
     "scripts/startup_performance.py",
     "examples/web_scraper/example_code.py",
 ]
@@ -220,7 +228,7 @@ exclude = [
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
-ignore-words-list = 'crate,NotIn,ser,IST,Nd,afterAll,beforeAll,deques'
+ignore-words-list = 'crate,NotIn,ser,IST,Nd,afterAll,beforeAll,deques,wit'
 skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",

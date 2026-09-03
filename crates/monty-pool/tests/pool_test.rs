@@ -29,7 +29,9 @@ use monty_pool::{
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
-use monty_types::{MontyObject, PrintStream, ResourceLimits, TypeCheckingConfig, TypeCheckingFormat};
+use monty_types::{
+    ExcType, MontyException, MontyObject, PrintStream, ResourceLimits, TypeCheckingConfig, TypeCheckingFormat,
+};
 use tokio::time::sleep;
 
 /// Locates (building once if needed) the `monty` CLI binary for tests.
@@ -185,12 +187,60 @@ async fn feed_and_finish_reuses_the_worker() {
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     assert_eq!(session.pid().unwrap(), first_pid);
     let event = session.feed("x", vec![], vec![], false, &mut no_print).await.unwrap();
-    assert!(matches!(event, TurnEvent::NameLookup { name } if name == "x"));
+    assert!(matches!(event, TurnEvent::NameLookup { name, .. } if name == "x"));
     let err = session.resume_name_lookup(None, &mut no_print).await.unwrap_err();
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };
     assert_eq!(exc.message(), Some("name 'x' is not defined"));
+    session.finish().await.unwrap();
+}
+
+/// An `Error` answer to a name lookup is raised inside the sandbox — so the
+/// snippet can catch it — and the session stays usable.
+#[tokio::test]
+async fn name_lookup_error_is_raised_in_the_sandbox() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let event = session
+        .feed(
+            "try:\n    secret\nexcept PermissionError as e:\n    caught = str(e)\ncaught",
+            vec![],
+            vec![],
+            false,
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::NameLookup { ref name, .. } if name == "secret"));
+    let error = MontyException::new(ExcType::PermissionError, Some("secret is off limits".to_owned()));
+    let event = session.resume_name_lookup(error, &mut no_print).await.unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::String("secret is off limits".to_owned())
+    );
+    // uncaught, the error ends the turn as a runtime error with a traceback
+    let event = session
+        .feed("secret", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::NameLookup { ref name, .. } if name == "secret"));
+    let error = MontyException::new(ExcType::PermissionError, Some("still off limits".to_owned()));
+    let err = session.resume_name_lookup(error, &mut no_print).await.unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type(), ExcType::PermissionError);
+    assert_eq!(exc.message(), Some("still off limits"));
+    assert!(
+        !exc.traceback().is_empty(),
+        "the sandbox frame must be on the traceback"
+    );
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
     session.finish().await.unwrap();
 }
 
@@ -229,7 +279,7 @@ async fn name_lookup_value_too_deep_for_the_wire_is_rejected_cleanly() {
         .feed("missing", vec![], vec![], false, &mut no_print)
         .await
         .unwrap();
-    assert!(matches!(event, TurnEvent::NameLookup { ref name } if name == "missing"));
+    assert!(matches!(event, TurnEvent::NameLookup { ref name, .. } if name == "missing"));
     // a value nested past the wire depth bound would produce a frame the
     // worker cannot decode; it must fail as a session-preserving error
     let deep = (0..=monty_pool::MAX_VALUE_DEPTH).fold(MontyObject::Int(1), |inner, _| MontyObject::List(vec![inner]));
@@ -791,7 +841,7 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
         .feed("missing", vec![], vec![], false, &mut no_print)
         .await
         .unwrap();
-    assert!(matches!(event, TurnEvent::NameLookup { ref name } if name == "missing"));
+    assert!(matches!(event, TurnEvent::NameLookup { ref name, .. } if name == "missing"));
     let huge = MontyObject::String("x".repeat(OVERSIZE));
     let err = session.resume_name_lookup(Some(huge), &mut no_print).await.unwrap_err();
     let PoolError::Runtime(exc) = err else {

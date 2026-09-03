@@ -15,6 +15,7 @@ mod resource;
 mod results;
 mod run_options;
 mod type_checking;
+mod uuid;
 
 pub use crate::{
     builtins::BuiltinsFunctions,
@@ -26,7 +27,8 @@ pub use crate::{
     format::{FormatFloat, StringRepr, bytes_repr, bytes_repr_fmt, string_repr_fmt, utf8_error_reason},
     io::{DEFAULT_MAX_PRINT_COLLECT_BYTES, PrintStream, PrintWriter, PrintWriterCallback, check_print_collect_limit},
     object::{
-        ConversionError, DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject,
+        ConversionError, DictPairs, InvalidInputError, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
+        MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
         MontyTimeDelta, MontyTimeZone, MontyType,
     },
     os::{
@@ -39,5 +41,6 @@ pub use crate::{
     },
     results::{ExtFunctionResult, NameLookupResult},
     run_options::{AssertMessageAnnotations, CompileOptions},
-    type_checking::{TypeCheckingConfig, TypeCheckingFormat},
+    type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
+    uuid::MontyUuid,
 };

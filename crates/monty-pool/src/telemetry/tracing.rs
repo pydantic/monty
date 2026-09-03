@@ -15,7 +15,7 @@ use std::fmt::{self, Write};
 
 use logfire::{Logfire, set_local_logfire};
 use monty_proto::{WireFunctionCall, WireObject, pb, pb::os_call::Call};
-use monty_types::{MontyObject, bytes_repr};
+use monty_types::{MontyObject, MontyUuid, bytes_repr};
 use opentelemetry::Value as OtelValue;
 use tracing::{Span, field::Empty};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -281,7 +281,7 @@ impl Recorder {
                     args = args,
                     kwargs = kwargs,
                     call_id = c.call_id,
-                    method_call = c.method_call,
+                    object_id = c.object_id.as_ref().map(MontyUuid::to_string),
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_duration_micros = max_duration,
@@ -533,16 +533,7 @@ fn render_call_arguments(call: &WireFunctionCall) -> (Option<String>, Option<Str
 fn render_ext_result(result: Option<&pb::ExtFunctionResult>) -> (OtelValue, bool) {
     match result.and_then(|r| r.kind.as_ref()) {
         Some(pb::ext_function_result::Kind::ReturnValue(v)) => attr_value(v),
-        Some(pb::ext_function_result::Kind::Error(e)) => {
-            let (text, cut) = capped_text(|writer| {
-                write!(writer, "raise {}", e.exc_type)?;
-                if let Some(message) = &e.message {
-                    write!(writer, ": {message}")?;
-                }
-                Ok(())
-            });
-            (text.into(), cut)
-        }
+        Some(pb::ext_function_result::Kind::Error(e)) => render_raised(e),
         Some(pb::ext_function_result::Kind::Future(id)) => (format!("future {id}").into(), false),
         Some(pb::ext_function_result::Kind::NotFound(name)) => {
             let (text, cut) = capped_text(|writer| write!(writer, "not found: {name}"));
@@ -559,8 +550,22 @@ fn render_name_lookup(kind: Option<&pb::resume_name_lookup::Kind>) -> (OtelValue
     match kind {
         Some(pb::resume_name_lookup::Kind::Value(v)) => attr_value(v),
         Some(pb::resume_name_lookup::Kind::Undefined(_)) => ("undefined".into(), false),
+        Some(pb::resume_name_lookup::Kind::Error(e)) => render_raised(e),
         None => (MISSING.into(), false),
     }
+}
+
+/// Renders a host-raised exception as `raise Type: message`; the bool
+/// reports a cut at [`ATTR_SIZE_LIMIT`].
+fn render_raised(e: &pb::RaisedException) -> (OtelValue, bool) {
+    let (text, cut) = capped_text(|writer| {
+        write!(writer, "raise {}", e.exc_type)?;
+        if let Some(message) = &e.message {
+            write!(writer, ": {message}")?;
+        }
+        Ok(())
+    });
+    (text.into(), cut)
 }
 
 /// Renders resolved futures as `call_id: result, ...`; the bool reports a cut
@@ -1006,7 +1011,7 @@ mod tests {
             args: vec![MontyObject::Int(2)],
             kwargs: vec![],
             call_id: 1,
-            method_call: false,
+            object_id: None,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
@@ -1059,6 +1064,7 @@ mod tests {
 
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "fetch".to_owned(),
+            object_id: None,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
             pb::ResumeNameLookup {
@@ -1188,6 +1194,7 @@ mod tests {
         recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "value".to_owned(),
+            object_id: None,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
             pb::ResumeNameLookup {

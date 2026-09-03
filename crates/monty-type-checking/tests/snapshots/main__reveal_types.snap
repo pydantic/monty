@@ -1,5 +1,6 @@
 ---
 source: crates/monty-type-checking/tests/main.rs
+assertion_line: 359
 expression: actual
 ---
 reveal_types.py:4:13: info[revealed-type] Revealed type: `None`
@@ -7,7 +8,7 @@ reveal_types.py:5:13: info[revealed-type] Revealed type: `object`
 reveal_types.py:6:13: info[revealed-type] Revealed type: `<class 'int'>`
 reveal_types.py:9:13: info[revealed-type] Revealed type: `Literal[True]`
 reveal_types.py:10:13: info[revealed-type] Revealed type: `int`
-reveal_types.py:11:13: info[revealed-type] Revealed type: `float`
+reveal_types.py:11:13: info[revealed-type] Revealed type: `float*`
 reveal_types.py:14:13: info[revealed-type] Revealed type: `Literal["hello"]`
 reveal_types.py:15:13: info[revealed-type] Revealed type: `Literal[b"foobar"]`
 reveal_types.py:18:13: info[revealed-type] Revealed type: `list[int]`

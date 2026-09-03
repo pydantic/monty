@@ -22,7 +22,7 @@ pub struct Unit {}
 pub struct MontyObject {
     #[prost(
         oneof = "monty_object::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
     )]
     pub kind: ::core::option::Option<monty_object::Kind>,
 }
@@ -34,75 +34,74 @@ pub mod monty_object {
         Ellipsis(super::Unit),
         #[prost(message, tag = "2")]
         None(super::Unit),
-        #[prost(bool, tag = "3")]
+        #[prost(message, tag = "3")]
+        NotImplemented(super::Unit),
+        #[prost(bool, tag = "4")]
         Boolean(bool),
         /// Python int fitting in 64 bits.
-        #[prost(sint64, tag = "4")]
+        #[prost(sint64, tag = "5")]
         Int(i64),
         /// Python int wider than 64 bits.
-        #[prost(message, tag = "5")]
+        #[prost(message, tag = "6")]
         Bigint(super::BigInt),
-        #[prost(double, tag = "6")]
+        #[prost(double, tag = "7")]
         Float(f64),
-        #[prost(string, tag = "7")]
+        #[prost(string, tag = "8")]
         Str(::prost::alloc::string::String),
-        #[prost(bytes, tag = "8")]
+        #[prost(bytes, tag = "9")]
         Bytes(::prost::alloc::vec::Vec<u8>),
-        #[prost(message, tag = "9")]
-        List(super::ObjectList),
+        /// A uuid.UUID value. Declared so the tag is settled, but NOT YET
+        /// IMPLEMENTED: monty has no uuid module, so neither end produces or
+        /// accepts this arm (it decodes like any unknown kind — rejected).
         #[prost(message, tag = "10")]
-        Tuple(super::ObjectList),
+        Uuid(super::Uuid),
         #[prost(message, tag = "11")]
-        NamedTuple(super::NamedTuple),
+        List(super::ObjectList),
         #[prost(message, tag = "12")]
-        Dict(super::Dict),
+        Tuple(super::ObjectList),
         #[prost(message, tag = "13")]
-        Set(super::ObjectList),
+        NamedTuple(super::NamedTuple),
         #[prost(message, tag = "14")]
-        FrozenSet(super::ObjectList),
+        Dict(super::Dict),
         #[prost(message, tag = "15")]
-        Date(super::Date),
+        Set(super::ObjectList),
         #[prost(message, tag = "16")]
-        Datetime(super::DateTime),
+        FrozenSet(super::ObjectList),
         #[prost(message, tag = "17")]
-        Timedelta(super::TimeDelta),
+        Date(super::Date),
         #[prost(message, tag = "18")]
+        Time(super::Time),
+        #[prost(message, tag = "19")]
+        Datetime(super::DateTime),
+        #[prost(message, tag = "20")]
+        Timedelta(super::TimeDelta),
+        #[prost(message, tag = "21")]
         Timezone(super::TimeZone),
         /// A simple exception VALUE (no traceback) — e.g. an exception stored in a
         /// variable. Errors that terminate execution use `RaisedException` instead.
-        #[prost(message, tag = "19")]
+        #[prost(message, tag = "22")]
         Exception(super::Exception),
-        /// A Python type object, named by monty's `Type` Display string, e.g.
-        /// "int", "str", "datetime.datetime", "ValueError".
-        #[prost(string, tag = "20")]
-        Type(::prost::alloc::string::String),
-        /// A builtin function, named by its Python name, e.g. "len", "print".
-        #[prost(string, tag = "21")]
-        BuiltinFunction(::prost::alloc::string::String),
-        /// A pathlib.Path value (always a virtual POSIX path, never a host path).
-        #[prost(string, tag = "22")]
-        Path(::prost::alloc::string::String),
+        /// A Python type object — builtin, sandbox class, or host class.
         #[prost(message, tag = "23")]
-        FileHandle(super::FileHandle),
+        Type(super::Type),
         #[prost(message, tag = "24")]
-        Dataclass(super::Dataclass),
+        ClassInstance(super::ClassInstance),
         #[prost(message, tag = "25")]
         Function(super::Function),
-        /// OUTPUT-ONLY fallback: repr() of a value with no other representation.
+        /// A builtin function, named by its Python name, e.g. "len", "print".
         #[prost(string, tag = "26")]
+        BuiltinFunction(::prost::alloc::string::String),
+        /// A pathlib.Path value (always a virtual POSIX path, never a host path).
+        #[prost(string, tag = "27")]
+        Path(::prost::alloc::string::String),
+        #[prost(message, tag = "28")]
+        FileHandle(super::FileHandle),
+        /// OUTPUT-ONLY fallback: repr() of a value with no other representation.
+        #[prost(string, tag = "29")]
         Repr(::prost::alloc::string::String),
         /// OUTPUT-ONLY marker breaking reference cycles in container output.
-        #[prost(message, tag = "27")]
+        #[prost(message, tag = "30")]
         Cycle(super::Cycle),
-        /// The type object of a sandbox-defined class, named by its class name,
-        /// e.g. "Foo". Kept separate from `type` so a class shadowing a builtin
-        /// name ("int") cannot be confused with the builtin type. Accepted by the
-        /// decoder but rejected as an execution input (the class binding cannot be
-        /// reconstructed from a name).
-        #[prost(string, tag = "28")]
-        InstanceType(::prost::alloc::string::String),
-        #[prost(message, tag = "29")]
-        NotImplemented(super::Unit),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -180,6 +179,31 @@ pub struct DateTime {
     #[prost(string, optional, tag = "9")]
     pub timezone_name: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Time {
+    /// 0..=23.
+    #[prost(uint32, tag = "1")]
+    pub hour: u32,
+    /// 0..=59.
+    #[prost(uint32, tag = "2")]
+    pub minute: u32,
+    /// 0..=59.
+    #[prost(uint32, tag = "3")]
+    pub second: u32,
+    /// 0..=999999.
+    #[prost(uint32, tag = "4")]
+    pub microsecond: u32,
+    /// Fixed UTC offset for aware times; absent for naive values.
+    #[prost(int32, optional, tag = "5")]
+    pub offset_seconds: ::core::option::Option<i32>,
+    /// Optional timezone name; only valid when offset_seconds is set.
+    #[prost(string, optional, tag = "6")]
+    pub timezone_name: ::core::option::Option<::prost::alloc::string::String>,
+    /// Disambiguates a repeated wall clock, 0 or 1. Carried so a time does not
+    /// silently lose the flag crossing the boundary; monty never interprets it.
+    #[prost(uint32, tag = "7")]
+    pub fold: u32,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TimeDelta {
     #[prost(int32, tag = "1")]
@@ -220,22 +244,53 @@ pub struct FileHandle {
     #[prost(uint64, tag = "3")]
     pub position: u64,
 }
+/// A 16-byte UUID (uuid4). Exactly 16 bytes; validated on decode. Class and
+/// instance ids are generated by whichever side defined the object, so they never
+/// encode a memory address and cannot be reused the way CPython reuses `id()`.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Uuid {
+    #[prost(bytes = "vec", tag = "1")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+}
+/// A Python type object crossing the sandbox boundary.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Dataclass {
-    /// Class name, e.g. "Point".
+pub struct Type {
+    /// Python-visible name: builtin Display name ("int", "datetime.datetime")
+    /// or class name ("Point").
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    /// Host-side identity of the class, from `id(type(dc))`.
-    #[prost(uint64, tag = "2")]
-    pub type_id: u64,
-    /// Declared field names in definition order.
-    #[prost(string, repeated, tag = "3")]
-    pub field_names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// All attributes (fields and extras), in order.
-    #[prost(message, optional, tag = "4")]
+    /// Identity of the class; absent iff origin == TYPE_ORIGIN_BUILTIN.
+    #[prost(message, optional, tag = "2")]
+    pub id: ::core::option::Option<Uuid>,
+    /// Where the type was defined (builtin, sandbox, or host).
+    #[prost(enumeration = "TypeOrigin", tag = "3")]
+    pub origin: i32,
+    /// Whether `dataclasses.is_dataclass` is true for the class.
+    #[prost(bool, tag = "4")]
+    pub is_dataclass: bool,
+    /// Class attributes sent eagerly with the type object (class constants, per
+    /// the sending wrapper's policy), as a class value or as the `type` field of
+    /// a ClassInstance. The sandbox keeps one type object per class id: a
+    /// non-empty set replaces its attrs, an empty set leaves them unchanged. The
+    /// worker sends an empty set for the `type` field of an instance.
+    #[prost(message, optional, tag = "5")]
     pub attrs: ::core::option::Option<Dict>,
-    #[prost(bool, tag = "5")]
-    pub frozen: bool,
+}
+/// A class instance crossing the sandbox boundary. Host-backed instances route
+/// method calls and lazy attribute lookups back to the real object by uuid
+/// (`FunctionCall.object_id` / `NameLookup.object_id`); sandbox-defined
+/// instances carry a worker-generated uuid instead.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClassInstance {
+    /// The instance's class; origin SANDBOX or HOST (never BUILTIN).
+    #[prost(message, optional, tag = "1")]
+    pub r#type: ::core::option::Option<Type>,
+    /// Identity of the instance, generated by whichever side defined it.
+    #[prost(message, optional, tag = "2")]
+    pub instance_id: ::core::option::Option<Uuid>,
+    /// Eagerly-sent attributes, in order.
+    #[prost(message, optional, tag = "3")]
+    pub attrs: ::core::option::Option<Dict>,
 }
 /// An external (host-provided) function value, usually supplied by the parent
 /// in response to a `NameLookup` event.
@@ -497,11 +552,10 @@ pub struct Configure {
     /// Optional stub file contents used by type checking.
     #[prost(string, optional, tag = "4")]
     pub type_check_stubs: ::core::option::Option<::prost::alloc::string::String>,
-    /// The parent's monty version (e.g. "0.0.18"). The child rejects the
-    /// session with a `FatalError` when this does not match its own version:
-    /// the protocol has no in-band negotiation and parent and child must be
-    /// deployed in lockstep, so a mismatch is a hard, fail-fast error rather
-    /// than a silent source of frame desync.
+    /// The parent's monty package version (e.g. "0.0.18"). INFORMATIONAL ONLY —
+    /// it is never checked, only reported (in telemetry, and when diagnosing a
+    /// rejected `protocol_version`). Parent and child may run different package
+    /// versions as long as their protocol versions are compatible.
     #[prost(string, tag = "5")]
     pub monty_version: ::prost::alloc::string::String,
     /// Introspected `assert` failure messages (see limitations/assert.md).
@@ -520,6 +574,16 @@ pub struct Configure {
     /// `CONCISE` carry colour; the machine-readable formats ignore it.
     #[prost(bool, tag = "8")]
     pub type_check_color: bool,
+    /// Version of the wire schema the parent speaks. The child rejects the
+    /// session with a `FatalError` naming its own supported range when this
+    /// falls outside it, so a parent deployed separately from its worker (over
+    /// a websocket, say) learns what to downgrade to without a handshake.
+    ///
+    /// 0 means the parent declared nothing — either it predates this field or it
+    /// is not a monty parent — and is always rejected. The protocol has no
+    /// in-band negotiation, so an undeclared peer cannot be assumed compatible.
+    #[prost(uint32, tag = "9")]
+    pub protocol_version: u32,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -545,7 +609,7 @@ pub struct ResumeCall {
 /// Answers a `NameLookup` suspension.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResumeNameLookup {
-    #[prost(oneof = "resume_name_lookup::Kind", tags = "1, 2")]
+    #[prost(oneof = "resume_name_lookup::Kind", tags = "1, 2, 3")]
     pub kind: ::core::option::Option<resume_name_lookup::Kind>,
 }
 /// Nested message and enum types in `ResumeNameLookup`.
@@ -555,9 +619,15 @@ pub mod resume_name_lookup {
         /// The name resolves to this value.
         #[prost(message, tag = "1")]
         Value(super::MontyObject),
-        /// The name is undefined — the child raises NameError.
+        /// The name is undefined — the child raises NameError (AttributeError for
+        /// a lazy attribute lookup).
         #[prost(message, tag = "2")]
         Undefined(super::Unit),
+        /// Resolving the name raised on the parent — the child raises this
+        /// exception where the lookup suspended, bypassing hasattr()/getattr()
+        /// defaults.
+        #[prost(message, tag = "3")]
+        Error(super::RaisedException),
     }
 }
 /// Answers a `ResolveFutures` suspension with results for some or all pending
@@ -568,8 +638,9 @@ pub struct ResumeFutures {
     pub results: ::prost::alloc::vec::Vec<FutureResult>,
 }
 /// Requests an opaque serialized snapshot of the current session state
-/// (idle or suspended). The child stays usable afterwards. The bytes can only
-/// be restored by a monty child of the same version via `Load`.
+/// (idle or suspended). The child stays usable afterwards. The bytes carry
+/// monty's own dump format, versioned independently of this schema, and can
+/// only be restored via `Load` by a child built with the same dump version.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Dump {}
 /// Restores state produced by `Dump`. Valid only from no session. If
@@ -674,9 +745,12 @@ pub struct Print {
     #[prost(string, tag = "2")]
     pub text: ::prost::alloc::string::String,
 }
-/// Suspension: the sandbox called an external function (or a dataclass method
-/// when `method_call` is true — the instance is then the first arg). Answer
-/// with `ResumeCall`.
+/// Suspension: the sandbox called an external function, or — when `object_id`
+/// is set — a method on a host-backed object (the receiver is NOT included in
+/// `args`; the host routes by uuid). The receiver may be a class instance or a
+/// class type: calling a host class arrives as a `__call__` method call on the
+/// class's uuid, and the host's own policy decides whether construction is
+/// allowed. Answer with `ResumeCall`.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FunctionCall {
     #[prost(string, tag = "1")]
@@ -687,8 +761,9 @@ pub struct FunctionCall {
     pub kwargs: ::prost::alloc::vec::Vec<Pair>,
     #[prost(uint32, tag = "4")]
     pub call_id: u32,
-    #[prost(bool, tag = "5")]
-    pub method_call: bool,
+    /// The uuid of the receiver; absent for plain external function calls.
+    #[prost(message, optional, tag = "5")]
+    pub object_id: ::core::option::Option<Uuid>,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the parent
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
@@ -845,11 +920,18 @@ pub mod os_call {
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
-/// the parent provides an external function. Answer with `ResumeNameLookup`.
+/// the parent provides an external function — or, when `object_id` is set, a
+/// lazy attribute lookup on a host-backed object. Answer with
+/// `ResumeNameLookup`; for attribute lookups an `undefined` answer raises
+/// AttributeError (not NameError) inside the sandbox.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NameLookup {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
+    /// Set for attribute lookups on a host-backed object — a class instance, or
+    /// a class type (a lazy class attribute): the uuid of the receiver.
+    #[prost(message, optional, tag = "2")]
+    pub object_id: ::core::option::Option<Uuid>,
 }
 /// Suspension: every sandbox task is blocked on external futures previously
 /// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
@@ -914,6 +996,48 @@ pub struct ShutdownDump {
     /// when there was no session yet or the dump itself failed.
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+/// Where a `Type` comes from — drives id presence and input validation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum TypeOrigin {
+    /// Rejected on decode.
+    Unspecified = 0,
+    /// `name` must parse as a known builtin type name ("int", "ValueError");
+    /// valid as an execution input. `id` must be absent. Kept distinct from
+    /// SANDBOX so a sandbox class shadowing a builtin name ("int") cannot be
+    /// confused with the builtin type.
+    Builtin = 1,
+    /// A sandbox-defined class; `id` required. Accepted by the decoder but
+    /// rejected as an execution input (the class binding cannot be
+    /// reconstructed host-side).
+    Sandbox = 2,
+    /// A host-defined class; `id` required.
+    Host = 3,
+}
+impl TypeOrigin {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "TYPE_ORIGIN_UNSPECIFIED",
+            Self::Builtin => "TYPE_ORIGIN_BUILTIN",
+            Self::Sandbox => "TYPE_ORIGIN_SANDBOX",
+            Self::Host => "TYPE_ORIGIN_HOST",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "TYPE_ORIGIN_UNSPECIFIED" => Some(Self::Unspecified),
+            "TYPE_ORIGIN_BUILTIN" => Some(Self::Builtin),
+            "TYPE_ORIGIN_SANDBOX" => Some(Self::Sandbox),
+            "TYPE_ORIGIN_HOST" => Some(Self::Host),
+            _ => None,
+        }
+    }
 }
 /// Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's
 /// `DiagnosticFormat`.

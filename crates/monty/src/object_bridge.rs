@@ -3,10 +3,12 @@
 //! `Value`/`Type` representations. The types themselves (and their pure
 //! methods — reprs, hashing, truthiness) live in `monty-types`.
 
+use std::mem;
+
 use ahash::AHashSet;
 use monty_types::{
-    DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta,
-    MontyTimeZone, MontyType,
+    DictPairs, InvalidInputError, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle,
+    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
 };
 
 use crate::{
@@ -14,10 +16,10 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{RunError, SimpleException},
-    heap::{DropGuard, Heap, HeapData, HeapId, HeapReadOutput},
-    intern::Interns,
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    modules::dataclasses,
     types::{
-        Dataclass, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type, allocate_tuple,
+        HostClass, HostClassType, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type, allocate_tuple,
         bytes::Bytes,
         date as date_type, datetime as datetime_type,
         dict::Dict,
@@ -25,7 +27,7 @@ use crate::{
         list::List,
         set::{FrozenSet, Set},
         str::allocate_string,
-        timedelta as timedelta_type,
+        time as time_type, timedelta as timedelta_type,
     },
     value::{EitherStr, Value},
 };
@@ -42,8 +44,9 @@ pub(crate) trait MontyObjectExt: Sized {
 
     /// Converts this `MontyObject` into a `Value`, allocating on the heap if
     /// needed. Fails with `InvalidInputError` on output-only variants
-    /// (`Repr`, `Cycle`, sandbox class `Type`s) and malformed input; memory
-    /// overshoot surfaces at the next soft-limit checkpoint, not here.
+    /// (`Repr`, `Cycle`), on a sandbox class `Type` or instance whose sandbox
+    /// object no longer exists, and on malformed input; memory overshoot
+    /// surfaces at the next soft-limit checkpoint, not here.
     fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError>;
 
     /// Top-level entry into [`from_value_inner`](Self::from_value_inner),
@@ -166,6 +169,35 @@ impl MontyObjectExt for MontyObject {
                 .map_err(|_| InvalidInputError::invalid_type("datetime"))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(value))))
             }
+            Self::Time(time) => {
+                let MontyTime {
+                    hour,
+                    minute,
+                    second,
+                    microsecond,
+                    offset_seconds,
+                    timezone_name,
+                    fold,
+                } = time;
+                if offset_seconds.is_none() && timezone_name.is_some() {
+                    return Err(InvalidInputError::invalid_type("time"));
+                }
+                let tzinfo = offset_seconds
+                    .map(|offset| TimeZone::new(offset, timezone_name))
+                    .transpose()
+                    .map_err(|_| InvalidInputError::invalid_type("time"))?;
+                let value = time_type::from_boundary_components(
+                    i32::from(hour),
+                    i32::from(minute),
+                    i32::from(second),
+                    i32::try_from(microsecond).map_err(|_| InvalidInputError::invalid_type("time"))?,
+                    i32::from(fold),
+                    tzinfo,
+                    vm.heap,
+                )
+                .map_err(|_| InvalidInputError::invalid_type("time"))?;
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Time(value))))
+            }
             Self::TimeDelta(delta) => {
                 let delta = timedelta_type::new(delta.days, delta.seconds, delta.microseconds)
                     .map_err(|_| InvalidInputError::invalid_type("timedelta"))?;
@@ -184,32 +216,68 @@ impl MontyObjectExt for MontyObject {
                 let exc = SimpleException::new(exc_type, arg);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(exc))))
             }
-            Self::Dataclass {
-                name,
-                type_id,
-                field_names,
-                attrs,
-                frozen,
-            } => {
-                let pairs = convert_pairs(attrs, vm)?;
-                let dict = Dict::from_pairs(pairs, vm)
-                    .map_err(|_| InvalidInputError::invalid_type("unhashable dataclass attr keys"))?;
-                let dc = Dataclass::new(name, type_id, field_names, dict, frozen);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Dataclass(Box::new(dc)))))
+            // A sandbox instance the host hands back resolves to the original
+            // object by uuid (identity survives the round trip); anything else
+            // is host-backed.
+            Self::ClassInstance(instance) => {
+                let MontyClassInstance {
+                    class_type,
+                    instance_id,
+                    attrs,
+                } = *instance;
+                match vm.heap.resolve_boundary_uuid(&instance_id) {
+                    Some(id) if matches!(vm.heap.get(id), HeapData::Instance(_)) => {
+                        // TODO: apply `attrs` to the instance so host-side edits
+                        // are visible; for now the payload is ignored.
+                        vm.heap.inc_ref(id);
+                        Ok(Value::Ref(id))
+                    }
+                    _ if class_type.host_defined => {
+                        let pairs = convert_pairs(attrs, vm)?;
+                        let dict = Dict::from_pairs(pairs, vm)
+                            .map_err(|_| InvalidInputError::invalid_type("unhashable class instance attr keys"))?;
+                        // Guarded while the class type converts (its attrs can fail
+                        // too); `HostClass::new` then takes both.
+                        let mut dict_guard = DropGuard::new(dict, vm);
+                        let (_, vm) = dict_guard.as_parts_mut();
+                        let class_id = intern_host_class_type(class_type, vm)?;
+                        let (dict, vm) = dict_guard.into_parts();
+                        let hc = HostClass::new(instance_id, class_id, dict);
+                        Ok(Value::Ref(vm.heap.allocate(HeapData::HostClass(Box::new(hc)))))
+                    }
+                    _ => Err(InvalidInputError::invalid_type(format!(
+                        "sandbox instance of '{}' (id {instance_id}) no longer exists",
+                        class_type.name
+                    ))),
+                }
             }
             Self::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s))))),
             Self::FileHandle(handle) => {
                 let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(Box::new(file)))))
             }
-            Self::Type(t) => match t.to_internal() {
-                Some(ty) => Ok(Value::Builtin(Builtins::Type(ty))),
-                // `MontyType::Instance` carries only a class name — the class
-                // binding cannot be reconstructed inside the sandbox (see the
-                // invariant on the runtime `Type::Instance` variant).
-                None => Err(InvalidInputError::invalid_type(
-                    "a sandbox class type object is not a valid input value",
-                )),
+            Self::Type(t) => match t {
+                // A sandbox class the host hands back resolves to the class
+                // object itself; a host class resolves to its single
+                // `HostClassType` entry, and calling it (or a classmethod on
+                // it) suspends to the host, whose own policy decides.
+                MontyType::Instance(class_type) => match vm.heap.resolve_boundary_uuid(&class_type.id) {
+                    Some(class_id) if matches!(vm.heap.get(class_id), HeapData::Class(_)) => {
+                        vm.heap.inc_ref(class_id);
+                        Ok(Value::Ref(class_id))
+                    }
+                    _ if class_type.host_defined => intern_host_class_type(*class_type, vm).map(Value::Ref),
+                    _ => Err(InvalidInputError::invalid_type(format!(
+                        "sandbox class '{}' (id {}) no longer exists",
+                        class_type.name, class_type.id
+                    ))),
+                },
+                t => match t.to_internal() {
+                    Some(ty) => Ok(Value::Builtin(Builtins::Type(ty))),
+                    None => Err(InvalidInputError::invalid_type(format!(
+                        "type object '{t}' is not a valid input value"
+                    ))),
+                },
             },
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
             Self::Function { name, .. } => Ok(vm.heap.get_ext_function(&name)),
@@ -407,6 +475,20 @@ impl MontyObjectExt for MontyObject {
                             repr_or_error(object, vm)
                         }
                     }
+                    HeapReadOutput::Time(t) => {
+                        let time = t.get(vm.heap);
+                        let (hour, minute, second, microsecond, fold) = time.to_components();
+                        let tz = time_type::attached_timezone(time, vm.heap);
+                        Self::Time(MontyTime {
+                            hour,
+                            minute,
+                            second,
+                            microsecond,
+                            offset_seconds: tz.as_ref().map(|tz| tz.offset_seconds),
+                            timezone_name: tz.and_then(|tz| tz.name),
+                            fold,
+                        })
+                    }
                     HeapReadOutput::TimeDelta(td) => {
                         let (days, seconds, microseconds) = timedelta_type::components(td.get(vm.heap));
                         Self::TimeDelta(MontyTimeDelta {
@@ -429,26 +511,49 @@ impl MontyObjectExt for MontyObject {
                             arg: exc_ref.arg().map(ToString::to_string),
                         }
                     }
-                    HeapReadOutput::Dataclass(dc) => {
-                        let (name, type_id, field_names, frozen) = {
-                            let dc_ref = dc.get(vm.heap);
-                            (
-                                dc_ref.name(vm.interns).to_owned(),
-                                dc_ref.type_id(),
-                                dc_ref.field_names().to_vec(),
-                                dc_ref.is_frozen(),
-                            )
+                    HeapReadOutput::HostClass(hc) => {
+                        let (class_type, instance_id) = {
+                            let hc_ref = hc.get(vm.heap);
+                            (hc_ref.class_type(vm.heap, vm.interns), hc_ref.instance_id())
                         };
                         // Snapshot before recursing: attrs are mutable via `setattr`.
-                        let children = snapshot_dict_pairs(dc.get(vm.heap).attrs(), vm.heap);
+                        let children = snapshot_dict_pairs(hc.get(vm.heap).attrs(), vm.heap);
                         defer_drop!(children, vm);
-                        Self::Dataclass {
-                            name,
-                            type_id,
-                            field_names,
+                        Self::ClassInstance(Box::new(MontyClassInstance {
+                            class_type,
+                            instance_id,
                             attrs: pairs_to_objects(children, vm, visited).into(),
-                            frozen,
-                        }
+                        }))
+                    }
+                    // The type object of a host class crosses out with its
+                    // full class type (uuid included), so hosts can resolve
+                    // it back to the real class — eager class attrs included,
+                    // so an echoed type round-trips intact.
+                    HeapReadOutput::HostClassType(ty) => {
+                        let mut class_type = ty.get(vm.heap).class_type(vm.interns);
+                        let children = snapshot_dict_pairs(ty.get(vm.heap).attrs(), vm.heap);
+                        defer_drop!(children, vm);
+                        class_type.attrs = pairs_to_objects(children, vm, visited).into();
+                        Self::Type(MontyType::Instance(Box::new(class_type)))
+                    }
+                    // Sandbox-defined class instances cross out structured
+                    // rather than as a repr string, so hosts get name + attrs
+                    // + dataclass-ness, plus worker-generated uuids (stored on
+                    // the heap objects, so stable across crossings and
+                    // dump/restore). Class *objects* keep their type
+                    // representation.
+                    HeapReadOutput::Instance(inst) => {
+                        let class_id = inst.get(vm.heap).class();
+                        let instance_id = vm.heap.boundary_uuid(*id);
+                        let class_type = sandbox_class_type(class_id, vm);
+                        // Snapshot before recursing: attrs are mutable via `setattr`.
+                        let children = snapshot_dict_pairs(inst.get(vm.heap).attrs(), vm.heap);
+                        defer_drop!(children, vm);
+                        Self::ClassInstance(Box::new(MontyClassInstance {
+                            class_type,
+                            instance_id,
+                            attrs: pairs_to_objects(children, vm, visited).into(),
+                        }))
                     }
                     // Iterators are internal objects — represent as a fixed type
                     // string rather than recursing.
@@ -505,7 +610,7 @@ impl MontyObjectExt for MontyObject {
                 visited.remove(id);
                 result
             }
-            Value::Builtin(Builtins::Type(t)) => Self::Type(MontyType::from_internal(*t, vm.heap, vm.interns)),
+            Value::Builtin(Builtins::Type(t)) => Self::Type(MontyType::from_internal(*t, vm)),
             Value::Builtin(Builtins::ExcType(e)) => Self::Type(MontyType::Exception(*e)),
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
             #[cfg(feature = "memory-model-checks")]
@@ -525,7 +630,7 @@ pub(crate) trait MontyTypeExt: Sized {
 
     fn from_internal_static(ty: Type) -> Self;
 
-    fn from_internal(ty: Type, heap: &Heap, interns: &Interns) -> Self;
+    fn from_internal(ty: Type, vm: &mut VM<'_>) -> Self;
 }
 
 impl MontyTypeExt for MontyType {
@@ -548,6 +653,7 @@ impl MontyTypeExt for MontyType {
             Self::Slice => Some(Type::Slice),
             Self::Date => Some(Type::Date),
             Self::DateTime => Some(Type::DateTime),
+            Self::Time => Some(Type::Time),
             Self::TimeDelta => Some(Type::TimeDelta),
             Self::TimeZone => Some(Type::TimeZone),
             Self::Str => Some(Type::Str),
@@ -570,8 +676,13 @@ impl MontyTypeExt for MontyType {
             Self::ItertoolsIslice => Some(Type::ItertoolsIslice),
             Self::ItertoolsChain => Some(Type::ItertoolsChain),
             Self::ItertoolsCycle => Some(Type::ItertoolsCycle),
+            Self::ItertoolsTakeWhile => Some(Type::ItertoolsTakeWhile),
+            Self::ItertoolsDropWhile => Some(Type::ItertoolsDropWhile),
+            Self::ItertoolsFilterFalse => Some(Type::ItertoolsFilterFalse),
+            Self::ItertoolsStarMap => Some(Type::ItertoolsStarMap),
             Self::ItertoolsCount => Some(Type::ItertoolsCount),
             Self::ItertoolsRepeat => Some(Type::ItertoolsRepeat),
+            Self::Partial => Some(Type::Partial),
             Self::Tuple => Some(Type::Tuple),
             Self::NamedTuple => Some(Type::NamedTuple),
             Self::Dict => Some(Type::Dict),
@@ -580,7 +691,6 @@ impl MontyTypeExt for MontyType {
             Self::DictValues => Some(Type::DictValues),
             Self::Set => Some(Type::Set),
             Self::FrozenSet => Some(Type::FrozenSet),
-            Self::Dataclass => Some(Type::Dataclass),
             Self::Instance(_) => None,
             Self::Exception(exc_type) => Some(Type::Exception(*exc_type)),
             Self::Function => Some(Type::Function),
@@ -596,9 +706,11 @@ impl MontyTypeExt for MontyType {
             Self::SpecialForm => Some(Type::SpecialForm),
             Self::Path => Some(Type::Path),
             Self::Property => Some(Type::Property),
+            Self::Object => Some(Type::Object),
             Self::RePattern => Some(Type::RePattern),
             Self::ReMatch => Some(Type::ReMatch),
             Self::Field => Some(Type::DataclassField),
+            Self::DataclassParams => Some(Type::DataclassParams),
         }
     }
 
@@ -622,6 +734,7 @@ impl MontyTypeExt for MontyType {
             Type::Slice => Self::Slice,
             Type::Date => Self::Date,
             Type::DateTime => Self::DateTime,
+            Type::Time => Self::Time,
             Type::TimeDelta => Self::TimeDelta,
             Type::TimeZone => Self::TimeZone,
             Type::Str => Self::Str,
@@ -647,8 +760,13 @@ impl MontyTypeExt for MontyType {
             Type::ItertoolsIslice => Self::ItertoolsIslice,
             Type::ItertoolsChain => Self::ItertoolsChain,
             Type::ItertoolsCycle => Self::ItertoolsCycle,
+            Type::ItertoolsTakeWhile => Self::ItertoolsTakeWhile,
+            Type::ItertoolsDropWhile => Self::ItertoolsDropWhile,
+            Type::ItertoolsFilterFalse => Self::ItertoolsFilterFalse,
+            Type::ItertoolsStarMap => Self::ItertoolsStarMap,
             Type::ItertoolsCount => Self::ItertoolsCount,
             Type::ItertoolsRepeat => Self::ItertoolsRepeat,
+            Type::Partial => Self::Partial,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
             Type::Dict => Self::Dict,
@@ -660,8 +778,12 @@ impl MontyTypeExt for MontyType {
             Type::DictValues => Self::DictValues,
             Type::Set => Self::Set,
             Type::FrozenSet => Self::FrozenSet,
-            Type::Dataclass => Self::Dataclass,
             Type::Instance(_) => unreachable!("Type::Instance requires heap access — use MontyType::from_internal"),
+            // The interpreter-internal placeholder never becomes a value:
+            // `type(x)` on a host instance materializes a `HostClassType`.
+            Type::HostClass => {
+                unreachable!("Type::HostClass has no boundary mirror — host instances cross as MontyClassType")
+            }
             Type::Exception(exc_type) => Self::Exception(exc_type),
             Type::Function => Self::Function,
             Type::BuiltinFunction => Self::BuiltinFunction,
@@ -676,19 +798,67 @@ impl MontyTypeExt for MontyType {
             Type::SpecialForm => Self::SpecialForm,
             Type::Path => Self::Path,
             Type::Property => Self::Property,
+            Type::Object => Self::Object,
             Type::RePattern => Self::RePattern,
             Type::ReMatch => Self::ReMatch,
             Type::DataclassField => Self::Field,
+            Type::DataclassParams => Self::DataclassParams,
         }
     }
 
     /// The total mirror of a runtime [`Type`]: `Instance` resolves its class
-    /// name via the heap.
-    fn from_internal(ty: Type, heap: &Heap, interns: &Interns) -> Self {
+    /// via the heap, generating the class's boundary uuid on first crossing.
+    fn from_internal(ty: Type, vm: &mut VM<'_>) -> Self {
         match ty {
-            Type::Instance(class_id) => Self::Instance(class_name(class_id, heap, interns).into_owned()),
+            Type::Instance(class_id) => Self::Instance(Box::new(sandbox_class_type(class_id, vm))),
             other => Self::from_internal_static(other),
         }
+    }
+}
+
+/// Builds the wire [`MontyClassType`] for a sandbox-defined class, generating and
+/// storing its boundary uuid on first crossing so repeated crossings (and
+/// dump/restore) observe the same id.
+///
+/// # Panics
+/// If `class_id` does not refer to a `Class` heap entry — every producer of a
+/// class id guarantees it does, so this is a programmer-error tripwire.
+fn sandbox_class_type(class_id: HeapId, vm: &mut VM<'_>) -> MontyClassType {
+    MontyClassType {
+        name: class_name(class_id, vm.heap, vm.interns).into_owned(),
+        id: vm.heap.boundary_uuid(class_id),
+        host_defined: false,
+        is_dataclass: dataclasses::is_dataclass_class(class_id, vm),
+        attrs: DictPairs::default(),
+    }
+}
+
+/// Resolves a host-defined wire class type to the sandbox's single
+/// `HostClassType` entry for its uuid, creating it on first sight, and returns
+/// an owned reference. A re-send overwrites `name` and `is_dataclass` (the
+/// host is authoritative) and, when its eager class attrs are non-empty,
+/// replaces them; an empty set (an instance's class branch) leaves them alone.
+fn intern_host_class_type(mut class_type: MontyClassType, vm: &mut VM<'_>) -> Result<HeapId, InvalidInputError> {
+    // Eager class attrs convert like instance attrs do; done first so a
+    // failure leaves nothing to unwind.
+    let attr_pairs = convert_pairs(mem::take(&mut class_type.attrs), vm)?;
+    let attrs =
+        Dict::from_pairs(attr_pairs, vm).map_err(|_| InvalidInputError::invalid_type("unhashable class attr keys"))?;
+    let name = EitherStr::Heap(class_type.name);
+    match vm.heap.resolve_host_type(&class_type.id) {
+        Some(class_id) => {
+            vm.heap.inc_ref(class_id);
+            let HeapReadOutput::HostClassType(mut ty) = vm.heap.read(class_id) else {
+                unreachable!("host_type_index points at a non-host-class-type entry");
+            };
+            let replaced = (!attrs.is_empty()).then_some(attrs);
+            let old_attrs = ty.update_from_wire(name, class_type.is_dataclass, replaced, vm.heap);
+            old_attrs.drop_with(vm);
+            Ok(class_id)
+        }
+        None => Ok(vm
+            .heap
+            .allocate_host_type(HostClassType::new(name, class_type.id, class_type.is_dataclass, attrs))),
     }
 }
 

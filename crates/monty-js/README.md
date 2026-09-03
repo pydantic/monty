@@ -6,16 +6,18 @@ same public API to a Web Worker pool backed by a lean wasm build.
 
 [Monty](https://github.com/pydantic/monty) is a sandboxed Python interpreter
 written in Rust. A sandbox process can never be made fully crash-proof against
-memory errors (stack overflow, allocator aborts), so this package _only_ runs
-the interpreter in worker subprocesses: a worker that crashes raises
-`MontyCrashedError`, is replaced by the pool, and your Node.js process is
-never at risk.
+memory errors (stack overflow, allocator aborts), so the native binding
+(`@pydantic/monty`, `@pydantic/monty/node`) only runs the interpreter in worker
+subprocesses. A worker that crashes raises `MontyCrashedError` and is replaced
+by the pool. The wasm entry (`@pydantic/monty/wasm`, and the `browser` export)
+runs off-thread in a `Worker` in browsers, but in-process under Node, which has
+no global `Worker`.
 
 The native binding and the `monty` binary ship together via platform-specific
 npm packages installed automatically (like esbuild). Browser builds use the
 package `browser` export and never import the napi loader; they run the sandbox
-in a Web Worker (`wasm32-wasip1`) with the same pool/session API. Advanced
-Node-only helpers are available from `@pydantic/monty/node`, and wasm-specific
+in a Web Worker as a WIT-defined WASI 0.2 component with the same pool/session
+API. Advanced Node-only helpers are available from `@pydantic/monty/node`, and wasm-specific
 factories from `@pydantic/monty/wasm`.
 
 ## Installation
@@ -91,6 +93,129 @@ errors cross into the sandbox as Python exceptions (the error's `name` is used
 when it matches a Python exception type, e.g. `TypeError`, otherwise
 `RuntimeError`).
 
+## Class Instances
+
+Wrap a host object in `ClassInstance` to send it into the sandbox. The wrapper
+is a policy: it decides which attributes cross eagerly (`eagerAttrs`), which
+the sandbox may fetch lazily on demand (`lazyAttrs`), and which methods it may
+call (`allowedMethods`) — each an explicit list/`Set`, or `'all'`, which never
+exposes `_`-prefixed names. Method calls and lazy lookups route back to the
+real object, and when sandbox code returns the instance, the host receives the
+**original object** back (identity preserved):
+
+```ts
+import { ClassInstance } from '@pydantic/monty'
+
+class Wallet {
+  constructor(public balance: number) {}
+  pay(amount: number) {
+    return new Wallet(this.balance - amount)
+  }
+}
+
+// nothing is wrapped automatically: `pay()` returns a Wallet, so the hook wraps it
+function wrapWallet(wallet: Wallet): ClassInstance {
+  return new ClassInstance(wallet, {
+    eagerAttrs: 'all',
+    allowedMethods: 'all',
+    convertValue: (_name, value) => (value instanceof Wallet ? wrapWallet(value) : value),
+  })
+}
+
+await session.feedRun('w.pay(30).balance', { inputs: { w: wrapWallet(new Wallet(100)) } }) // 70
+```
+
+Methods may be sync or async (`await w.fetch()` in the sandbox). JS functions
+have no keyword arguments, so kwargs arrive as a trailing options-bag object
+(a `__proto__` keyword is dropped).
+Names outside the policy raise `AttributeError` in the sandbox.
+An error thrown while serving a lazy attribute (by a getter, `convertValue`,
+or an unconvertible value) is raised inside the sandbox where the lookup
+happened, so sandbox code can catch it; `hasattr` and `getattr` defaults only
+swallow `AttributeError`.
+`allowedMethods: 'all'` exposes the methods the class defines — functions on
+the prototype chain below `Object.prototype`, or own static functions of a
+`ClassType` — so callables stored on the instance, nested classes and
+built-ins such as `toString` or `hasOwnProperty` are not reachable.
+No policy, `'all'` or explicit, exposes `constructor`, `__proto__`,
+`prototype`, `arguments` or `caller`. A
+`convertValue` option hook transforms each value crossing to the sandbox
+(eager attrs, lazy lookup results, method returns); the default passes values
+through unchanged, so unwrapped class instances are rejected with a
+`TypeError` — wrapping is always an explicit host decision, with policies
+chosen per value (deliberately nothing inherits another wrapper's policies).
+Each wrapper the hook creates is held by the session's instance store until
+the session closes, so a method returning a fresh object per call grows host
+memory by one entry per call; see
+[`limitations/pool-architecture.md`](https://github.com/pydantic/monty/blob/main/limitations/pool-architecture.md#host-api-behaviour-notes).
+
+One more option: `name` overrides the class name the sandbox sees (default
+the class name). It is a class-level property: on a `ClassInstance` it names
+the default `ClassType` built for the instance and cannot be combined with
+`classType`. Sandbox code may set attributes — on its own copy only: sandbox
+mutations never touch the wrapped host object.
+
+Each wrapper owns its identity: `wrapper.id` (a uuid4 by default, or the `id`
+option) is the id the sandbox routes by, so reuse one wrapper to re-send an
+object under the same identity. An explicit `id` must be a canonical
+8-4-4-4-12 uuid string and is lowercased, so `wrapper.id` is the form the
+sandbox reports back. Every `ClassInstance` also carries a
+`ClassType` wrapper for its class — a default one built from the
+constructor, or the `classType` option to grant class-level policies (or pin
+a class id) alongside the instance. The sandbox keeps one type object per
+class id, so `type(a) is type(b)` holds and the class wrapper's eager attrs
+(sent with every instance) are visible through `type(x)`.
+
+Instances the host has no original for — defined inside the sandbox, or
+returned after a dump was restored into a fresh session — cross to the host as read-only
+`MontyClassProxy` stand-ins (`name`, `attributes`, `isDataclass`, `id`). Passing a
+proxy back into the sandbox hands over the original object: a still-live
+sandbox instance resolves by identity (its `attributes` are not applied). A
+proxy of a host-sent instance re-enters as a host-backed copy of its `attributes`.
+
+### Host classes (`ClassType`)
+
+Wrap a _class_ in `ClassType` to pass it into the sandbox. It is
+`ClassInstance`'s sibling, applied to the class object itself: `eagerAttrs` sends
+static class constants with the type, `lazyAttrs` serves them on demand, and
+`allowedMethods` exposes static methods (each routed back to the real class).
+With `init: true`, sandbox code may also call the class; the construction
+arrives as a `__call__` method call, runs host-side (the wrapper re-checks
+its own `init` policy on every request), and the constructed instance
+crosses back wrapped with the `instance*` policies (`instanceEagerAttrs` /
+`instanceLazyAttrs` / `instanceAllowedMethods`):
+
+```ts
+import { ClassType } from '@pydantic/monty'
+
+await session.feedRun('w = Wallet(100)\nw.pay(30).balance', {
+  inputs: {
+    Wallet: new ClassType(Wallet, {
+      init: true,
+      instanceEagerAttrs: 'all',
+      instanceAllowedMethods: 'all',
+      // forwarded to every constructed instance, so `pay()`'s Wallet crosses too
+      convertValue: (_name, value) => (value instanceof Wallet ? wrapWallet(value) : value),
+    }),
+  },
+}) // 70
+```
+
+Without `init`, calling the class raises
+`TypeError: cannot instantiate host class 'Wallet'` in the sandbox. A
+constructed instance carries the `ClassType` that built it, so its `id` and
+`name` apply to `type(x)`. Override `instanceWrapper` to customize how
+constructed instances are exposed, or `convertValue` to transform class
+attrs, static-method returns and (through `instanceWrapper`) every
+constructed instance's values.
+
+A host class the sandbox returns — the `ClassType` input itself, or
+`type(x)` of a wrapped instance — resolves to the class object when the
+session registered its id (any `ClassType` or `ClassInstance` crossing
+registers the class). Otherwise, such as after a dump restored into a fresh
+session, it stays a `{ __monty_type__: 'Type', classType: { name, id, ... } }`
+marker.
+
 ## Snapshots: pausing and resuming
 
 `feedStart` is the suspendable counterpart of `feedRun`: instead of driving a
@@ -127,6 +252,17 @@ while (!(snap instanceof MontyComplete)) {
 }
 console.log(snap.output) // 'hello Ada!'
 ```
+
+Calls and lookups routed to a wrapped host object carry the receiver's id:
+`FunctionSnapshot.objectId` is set for a method call on a `ClassInstance`
+(or a static method / `__call__` construction on a `ClassType`), and
+`NameLookupSnapshot.objectId` for a lazy attribute lookup; both are `null`
+for plain external calls and name lookups. `resumeAuto()` answers them
+from the session's wrappers. To answer a lazy lookup by hand, use
+`NameLookupSnapshot.resumeValue(value)`, which resolves the attribute to
+any convertible value (`resume()` resolves a name to an external function
+only, and with no argument leaves the lookup unresolved: `NameError` for a
+plain name, `AttributeError` when `objectId` is set).
 
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's
 `loadSnapshot` restores it and returns the snapshot to resume. Re-supply the
@@ -180,7 +316,7 @@ Exceeding the cap rejects the feed with `MontyRuntimeError` / `MemoryError`
 Mount host directories into the sandbox at virtual POSIX paths:
 
 ```ts
-import { MountDir } from '@pydantic/monty'
+import { MountDir } from '@pydantic/monty/node'
 
 const mount = new MountDir({ hostPath: '/path/on/host', virtualPath: '/mnt/data', mode: 'read-only' })
 await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
@@ -368,20 +504,20 @@ reconstructs spans should ignore that kind.
 
 ## Value Conversion
 
-| Python            | JavaScript                                              |
-| ----------------- | ------------------------------------------------------- |
-| `None`            | `null`                                                  |
-| `bool`            | `boolean`                                               |
-| `int`             | `number` (±2^53) or `BigInt`                            |
-| `float`           | `number`                                                |
-| `str`             | `string`                                                |
-| `bytes`           | `Buffer`                                                |
-| `list`            | `Array`                                                 |
-| `tuple`           | `Array` with non-enumerable `__tuple__: true`           |
-| `dict`            | `Map` (preserves key types and order)                   |
-| `set`/`frozenset` | `Set`                                                   |
-| datetime types    | marker objects (`{ __monty_type__: 'DateTime', ... }`)  |
-| file handles      | `MontyFileHandle`                                       |
-| dataclasses       | marker objects (`{ __monty_type__: 'Dataclass', ... }`) |
+| Python            | JavaScript                                             |
+| ----------------- | ------------------------------------------------------ |
+| `None`            | `null`                                                 |
+| `bool`            | `boolean`                                              |
+| `int`             | `number` (±2^53) or `BigInt`                           |
+| `float`           | `number`                                               |
+| `str`             | `string`                                               |
+| `bytes`           | `Buffer`                                               |
+| `list`            | `Array`                                                |
+| `tuple`           | `Array` with non-enumerable `__tuple__: true`          |
+| `dict`            | `Map` (preserves key types and order)                  |
+| `set`/`frozenset` | `Set`                                                  |
+| datetime types    | marker objects (`{ __monty_type__: 'DateTime', ... }`) |
+| file handles      | `MontyFileHandle`                                      |
+| class instances   | `ClassInstance` wrappers / `MontyClassProxy` stand-ins |
 
 Plain objects are accepted as dict inputs (string keys).

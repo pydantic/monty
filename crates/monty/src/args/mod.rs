@@ -6,6 +6,8 @@ use std::{mem, slice, vec::IntoIter};
 
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
+#[cfg(feature = "test-hooks")]
+pub(crate) use bind_python::SignatureMetadataFault;
 pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int};
 pub(crate) use monty_macros::FromArgs;
 use monty_types::MontyObject;
@@ -44,10 +46,26 @@ impl ArgValues {
         match self {
             Self::Empty => Ok(()),
             other => {
+                // CPython checks keywords first and reports them separately, so a
+                // stray kwarg is never described as `(0 given)`.
+                let has_kwargs = other.has_kwargs();
                 let count = other.count();
                 other.drop_with(heap);
-                Err(ExcType::type_error_no_args(name, count))
+                if has_kwargs {
+                    Err(ExcType::type_error_no_kwargs(name))
+                } else {
+                    Err(ExcType::type_error_no_args(name, count))
+                }
             }
+        }
+    }
+
+    /// Whether any keyword argument was passed.
+    #[must_use]
+    fn has_kwargs(&self) -> bool {
+        match self {
+            Self::Empty | Self::One(_) | Self::Two(_, _) => false,
+            Self::Kwargs(kwargs) | Self::ArgsKargs { kwargs, .. } => !kwargs.is_empty(),
         }
     }
 
@@ -113,6 +131,27 @@ impl ArgValues {
         }
     }
 
+    /// Builds an `ArgValues` from split parts, collapsing to the small-arity
+    /// variants the way [`VM::pop_n_args`](crate::bytecode::VM) does.
+    ///
+    /// Anything assembling arguments itself rather than popping them off the
+    /// stack must go through this. `get_one_arg` and its siblings match only
+    /// `Empty`/`One`/`Two`, so a hand-built `ArgsKargs` carrying empty kwargs
+    /// makes every builtin using them report a bogus arity error.
+    pub(crate) fn from_parts(mut args: Vec<Value>, kwargs: KwargsValues) -> Self {
+        match args.len() {
+            _ if !kwargs.is_empty() => Self::ArgsKargs { args, kwargs },
+            0 => Self::Empty,
+            1 => Self::One(args.pop().expect("length checked")),
+            2 => {
+                let b = args.pop().expect("length checked");
+                let a = args.pop().expect("length checked");
+                Self::Two(a, b)
+            }
+            _ => Self::ArgsKargs { args, kwargs },
+        }
+    }
+
     /// Prepends a value as the first positional argument.
     ///
     /// Used to insert `self` when dispatching dataclass method calls to the host.
@@ -126,13 +165,10 @@ impl ArgValues {
                 args: vec![value, a, b],
                 kwargs: KwargsValues::Empty,
             },
-            Self::Kwargs(kw) => Self::ArgsKargs {
-                args: vec![value],
-                kwargs: kw,
-            },
+            Self::Kwargs(kw) => Self::from_parts(vec![value], kw),
             Self::ArgsKargs { mut args, kwargs } => {
                 args.insert(0, value);
-                Self::ArgsKargs { args, kwargs }
+                Self::from_parts(args, kwargs)
             }
         }
     }

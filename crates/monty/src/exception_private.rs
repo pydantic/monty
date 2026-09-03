@@ -11,7 +11,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     fstring::{FormatError, ascii_escape},
-    heap::{HeapData, HeapRead},
+    heap::{DropWithContext, HeapData, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     source_map::{SourceMap, StackFrameExt},
@@ -53,6 +53,19 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
         })
+    }
+
+    /// Creates an AttributeError for an unknown *method*, releasing the
+    /// arguments the call has already evaluated.
+    ///
+    /// Prefer this over [`attribute_error`](Self::attribute_error) anywhere the
+    /// arguments are already owned: that one releases nothing, so calling it from
+    /// a `py_call_attr` fall-through leaks a reference per call — something
+    /// sandboxed code can repeat in a loop.
+    #[must_use]
+    fn attribute_error_method(type_name: impl Display, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunError {
+        args.drop_with(vm);
+        Self::attribute_error(type_name, attr.as_str(vm.interns))
     }
 
     /// Creates an AttributeError for a missing attribute on a class object.
@@ -932,6 +945,34 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::value_error("Step for islice() must be a positive integer or None.")
     }
 
+    /// Creates the TypeError `functools.reduce` raises when the iterable is
+    /// empty and no `initial` was given, so there is nothing to return.
+    #[must_use]
+    fn reduce_empty_iterable() -> RunError {
+        Self::type_error("reduce() of empty iterable with no initial value")
+    }
+
+    /// Creates the TypeError `functools.reduce` raises for a second argument
+    /// that cannot be iterated, replacing the generic not-iterable wording.
+    #[must_use]
+    fn reduce_not_iterable() -> RunError {
+        Self::type_error("reduce() arg 2 must support iteration")
+    }
+
+    /// Creates the TypeError `functools.partial()` raises when called with no
+    /// positional argument, so there is no callable to wrap.
+    #[must_use]
+    fn partial_needs_argument() -> RunError {
+        Self::type_error("type 'partial' takes at least one argument")
+    }
+
+    /// Creates the TypeError `functools.partial()` raises for a first argument
+    /// that is not callable.
+    #[must_use]
+    fn partial_not_callable() -> RunError {
+        Self::type_error("the first argument must be callable")
+    }
+
     /// Creates a TypeError for the right operand of `in` / `not in` supporting
     /// neither `__contains__` nor iteration.
     ///
@@ -1103,7 +1144,10 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates a TypeError for functions that don't accept keyword arguments.
     ///
-    /// Matches CPython's format: `TypeError: {name}() takes no keyword arguments`
+    /// Matches CPython's `PyArg_NoKeywords` format: `TypeError: {name}() takes
+    /// no keyword arguments`. CPython checks keywords before the positional
+    /// count, so a no-argument method given only a kwarg reports this rather
+    /// than `(0 given)`.
     #[must_use]
     fn type_error_no_kwargs(name: &str) -> RunError {
         SimpleException::new_msg(ExcType::TypeError, format!("{name}() takes no keyword arguments")).into()
@@ -1268,11 +1312,13 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ZeroDivisionError, "division by zero")
     }
 
-    /// Creates an OverflowError for string/sequence repetition with count too large.
+    /// Creates an OverflowError for an int too large for an index-sized integer.
     ///
-    /// Matches CPython's format: `OverflowError('cannot fit 'int' into an index-sized integer')`
+    /// This is CPython's `PyNumber_AsSsize_t` wording, used wherever a count or
+    /// size goes through `__index__` (repetition counts, `bytes(n)`) — unlike
+    /// [`Self::overflow_c_ssize_t`], which is `PyLong_AsSsize_t`'s.
     #[must_use]
-    fn overflow_repeat_count() -> SimpleException {
+    fn overflow_index_sized_int() -> SimpleException {
         SimpleException::new_msg(ExcType::OverflowError, "cannot fit 'int' into an index-sized integer")
     }
 
@@ -1282,6 +1328,20 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn index_error_int_too_large() -> RunError {
         SimpleException::new_msg(ExcType::IndexError, "cannot fit 'int' into an index-sized integer").into()
+    }
+
+    /// [`Self::index_error_int_too_large`] for a value that supplied the index
+    /// through `__index__`.
+    ///
+    /// CPython names the object it asked, not the `int` it got back, so an
+    /// instance reports its own class here.
+    #[must_use]
+    fn index_error_cannot_fit(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::IndexError,
+            format!("cannot fit '{type_name}' into an index-sized integer"),
+        )
+        .into()
     }
 
     /// Creates an ImportError for when a name cannot be imported from a module.
@@ -1908,6 +1968,14 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn runtime_error_deque_mutated() -> RunError {
         SimpleException::new_msg(ExcType::RuntimeError, "deque mutated during iteration").into()
+    }
+
+    /// Creates an IndexError for a user `__eq__` mutating a deque during
+    /// `deque.remove` — CPython quirkily raises IndexError there, with the
+    /// same message its RuntimeError sibling uses.
+    #[must_use]
+    fn index_error_deque_mutated() -> RunError {
+        SimpleException::new_msg(ExcType::IndexError, "deque mutated during iteration").into()
     }
 
     /// `IndexError: deque index out of range` — indexing or assigning out of bounds.
