@@ -159,6 +159,27 @@ let err = runner.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout).
 assert!(err.to_string().contains("time limit exceeded"));
 ```
 
+### Reading the clock
+
+`run` has no host to ask, so it answers `date.today()` and `datetime.now()` from a clock of its own — this machine's,
+unless you choose otherwise:
+
+```rust
+use monty::MontyRun;
+use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
+
+let code = "from datetime import date\ndate.today().year";
+let runner = MontyRun::new(code.to_owned(), "today.py", vec![], CompileOptions::default()).unwrap();
+let year = runner.run(vec![], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
+assert!(matches!(year, MontyObject::Int(y) if y >= 2026));
+```
+
+`with_host_clock` changes that: `HostClock::Denied` takes the clock away, for embedders who would rather sandboxed code
+could not read their wall time at all, and `HostClock::Fixed` freezes an instant, for runs that have to be reproducible.
+
+`start` ignores this: there the call pauses and the host answers it, like any other OS call, and the same is true of
+every pool session (see [the clock](../security.md#the-clock)).
+
 ### Host functions and pausing
 
 `MontyRun::start` returns a `RunProgress` that pauses whenever the sandboxed code calls a function the host provides.

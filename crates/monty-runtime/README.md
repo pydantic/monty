@@ -41,6 +41,10 @@ monty --help
 - `--max-memory 10MB`, `--max-duration 0.5`, `--max-recursion-depth`,
   `--gc-interval`, `--max-suspensions` — sandbox resource limits
 
+`date.today()` and `datetime.now()` read this machine's clock and local
+timezone, as they do for any in-process run. `MontyRun::with_host_clock` is how
+an embedder chooses otherwise; the CLI has no flag for it.
+
 ## Worker mode
 
 `monty subprocess` runs the binary as a wire-protocol child: framed protobuf

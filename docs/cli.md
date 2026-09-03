@@ -57,6 +57,20 @@ See [filesystem access](filesystem.md).
 
 CLI mounts always use the default per-mount memory limit of 100 MB; there is no flag to change it.
 
+## The clock
+
+`date.today()` and `datetime.now()` read the machine's clock and local timezone.
+
+```console
+$ monty -c "from datetime import datetime; print(datetime.now())"
+```
+
+An in-process Rust run reads the same clock; `MontyRun::with_host_clock` is how an embedder chooses otherwise, and the
+CLI has no flag for it.
+A sandbox driven through the pool is different: there both calls reach your `os=` handler (see
+[the clock](security.md#the-clock)).
+See [`limitations/datetime.md`](https://github.com/pydantic/monty/blob/main/limitations/datetime.md).
+
 ## Worker mode
 
 `monty subprocess` runs the binary as a wire-protocol child: framed protobuf requests on stdin, framed events on stdout.

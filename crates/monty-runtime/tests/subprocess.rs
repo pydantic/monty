@@ -14,7 +14,7 @@ use monty_proto::{
     FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireFunctionCall,
     WireObject, exceeds_max_frame_len, pb, write_frame,
 };
-use monty_types::MontyObject;
+use monty_types::{MontyDate, MontyObject};
 
 /// How long a death-expecting helper waits for the child to exit. Generous:
 /// the regression it guards is "the child never dies", so the only cost of a
@@ -495,6 +495,41 @@ fn external_function_not_found_raises_name_error() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "NameError");
     assert_eq!(error.message.as_deref(), Some("name 'undefined_fn' is not defined"));
+    child.shutdown();
+}
+
+/// The worker's `MontyRepl` carries a `HostClock` — `System` since #330 — that
+/// only the non-suspending paths read, and it drives `feed_start`, which does
+/// not. Nothing in the type system holds that apart: routing a worker feed
+/// through `feed_run` would silently start answering the clock inside the
+/// sandbox instead of asking the parent, so this pins that the two clock calls
+/// still arrive here.
+#[test]
+fn clock_calls_bubble_to_parent() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let (_, event) = child.feed("from datetime import date\ndate.today()");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(call.call, Some(pb::os_call::Call::DateToday(pb::Unit {})));
+
+    let (_, event) = child.resume_call(
+        call.call_id,
+        pb::ext_function_result::Kind::ReturnValue(WireObject::new(MontyObject::Date(MontyDate {
+            year: 2024,
+            month: 1,
+            day: 15,
+        }))),
+    );
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::Date(MontyDate {
+            year: 2024,
+            month: 1,
+            day: 15,
+        })
+    );
     child.shutdown();
 }
 

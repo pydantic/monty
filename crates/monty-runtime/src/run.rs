@@ -23,14 +23,23 @@ use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
-    OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig,
+    CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, HostClock, MontyException, MontyObject,
+    NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
 use tracing::field::Empty;
 
 use crate::Cli;
+
+/// The clock the CLI lends to sandboxed code for `date.today()` and
+/// `datetime.now()`.
+///
+/// The same clock a fresh [`MontyRun`] already has, set explicitly so the CLI's
+/// choice does not quietly follow a change to that default — and so
+/// [`handle_os_call`] can answer the suspended calls the mounted REPL path
+/// produces from the same source.
+const CLI_CLOCK: HostClock = HostClock::System;
 
 /// Dim/gray text (timings). `{DIM}` opens the style, `{DIM:#}` closes it.
 const DIM: Style = Style::new().dimmed();
@@ -199,7 +208,7 @@ fn run_script(
     let inputs = vec![];
 
     let runner = match MontyRun::new(code, file_path, input_names, CompileOptions::default()) {
-        Ok(ex) => ex,
+        Ok(ex) => ex.with_host_clock(CLI_CLOCK),
         Err(err) => {
             eprintln!("{BOLD_RED}error{BOLD_RED:#}:\n{err}");
             return ExitCode::FAILURE;
@@ -275,7 +284,7 @@ fn run_script(
 /// initialization or I/O errors.
 fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut mount_table: Option<MountTable>) -> ExitCode {
     let mut suspensions = SuspensionBudget::new(&tracker);
-    let mut repl = Some(MontyRepl::new(file_path, tracker, CompileOptions::default()));
+    let mut repl = Some(MontyRepl::new(file_path, tracker, CompileOptions::default()).with_host_clock(CLI_CLOCK));
 
     if !code.is_empty() {
         execute_repl_snippet(&mut repl, code, &mut mount_table, &mut suspensions);
@@ -582,6 +591,12 @@ impl SuspensionBudget {
 /// successful `MontyObject` or an exception for errors / unsupported
 /// operations.
 fn handle_os_call(call: OsFunctionCall, mount_table: &mut Option<MountTable>) -> ExtFunctionResult {
+    // The clock answers `date.today()` / `datetime.now()` here for the same
+    // reason it is granted to the non-suspending path: the CLI is the host, and
+    // a local script expecting CPython's clock should get one either way.
+    if let Some(now) = CLI_CLOCK.resolve(&call) {
+        return now.into();
+    }
     match mount_table.as_mut() {
         Some(mounts) => match mounts.handle_os_call(call) {
             MountCallOutcome::Handled(Ok(obj)) => obj.into(),

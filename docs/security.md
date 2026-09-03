@@ -79,6 +79,22 @@ Confinement is structural rather than checked:
 
 `/tmp`, `/etc`, `/proc`, `/dev`, `~` and the host working directory are not reachable unless you mount them.
 
+### The clock
+
+`date.today()` and `datetime.now()` are the only two calls that read a clock, and what answers them depends on how you
+run the sandbox.
+
+Through the pool — `pydantic_monty`, `@pydantic/monty`, or `monty-pool` — they reach your `os=` handler as OS calls like
+any other, so the sandbox reads no clock until you write a handler that gives it one, and a handler that answers neither
+makes both raise.
+
+In-process Rust runs have no host loop to ask, so they read this machine's clock, as the `monty` CLI does.
+`MontyRun::with_host_clock` changes that: `HostClock::Denied` if sandboxed code should not read your wall time at all,
+`HostClock::Fixed` for a frozen instant.
+
+Wall-clock time is a weak capability, but it is one — it is what makes elapsed time measurable from inside the sandbox,
+and it discloses the host's UTC offset, which is what a naive `datetime.now()` is read in.
+
 ## Crash isolation
 
 A Monty process can never be made fully crash-proof against memory errors — a stack-overflow abort or an allocator abort

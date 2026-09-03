@@ -10,9 +10,13 @@ Constructor: `date(year, month, day)`.
 Attributes: `year`, `month`, `day`.
 Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`.
 
-Class methods `today()`, `fromisoformat()`, `fromisocalendar()`,
-`fromtimestamp()`, `fromordinal()` are not implemented. `today()` is
-missing because the sandbox has no access to the host clock.
+Class methods supported: `today()`, `fromisoformat()`.
+`fromisocalendar()`, `fromtimestamp()`, `fromordinal()` are not
+implemented. `strptime()`, added in CPython 3.14, is not implemented
+either.
+
+`today()` reads the clock, so it depends on the embedder granting one —
+see "Reading the clock" below.
 
 Constructor overflow wording on Windows: CPython's `i` converter goes
 through C `long`, which is 32 bits on Windows, so `date(2**40, 1, 1)`
@@ -37,12 +41,11 @@ Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`,
 Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
 `fromisoformat(date_string)`.
 
-- `now()` reaches the host for the current time (the only "live" datetime
-  call); it yields an external call.
+- `now()` reads the clock — see "Reading the clock" below.
 - `now(tz)` returns a `datetime` whose `tzinfo` is `==` the input timezone
   but not `is` it: the original `tzinfo` object isn't threaded through the
-  OS-call resume, so a fresh `timezone` is reconstructed from the
-  offset/name on the return path.
+  return path, so a fresh `timezone` is reconstructed from the
+  offset/name. This holds however the call is answered.
 - `utcnow()` (the deprecated class method) and `today()` are not
   implemented.
 - `combine()`, `fromtimestamp()`, `fromordinal()`, `utcfromtimestamp()`
@@ -58,6 +61,39 @@ keyword arguments** in Monty. CPython accepts positional args too
 (`d.replace(2025)` is valid in CPython 3.14). Calling with positionals
 in Monty raises `TypeError: replace expected at most 0 arguments,
 got N`.
+
+## Reading the clock
+
+`date.today()` and `datetime.now()` are the only two calls that read a
+clock, and Monty has none of its own. What answers them depends on how the
+sandbox is driven.
+
+Under the suspend/resume path — every pool session (`pydantic_monty`,
+`@pydantic/monty`, `monty-pool`) and `MontyRun::start` — both reach the
+host, and a host that answers neither makes them raise `RuntimeError:
+'date.today' is not supported in this environment` (`'datetime.now'`
+likewise), where CPython would return a time.
+
+Standard (non-suspending) execution — `MontyRun::run`, `MontyRepl::feed_run`
+and `MontyRepl::call_function` in Rust, and the `monty` CLI — has no host to
+ask and reads this machine's clock, so it matches CPython.
+`MontyRun::with_host_clock` / `MontyRepl::with_host_clock` choose otherwise:
+
+- `HostClock::Denied` makes both raise `NotImplementedError: OS function
+  'datetime.now' not implemented with standard execution` — a different
+  exception from the suspend path's `RuntimeError` for the same refusal.
+- `HostClock::Fixed` answers every call with one frozen instant, so
+  `datetime.now() == datetime.now()` is `True`, a loop polling
+  `datetime.now()` never sees it move, and `(datetime.now() - start)` is
+  always a zero `timedelta`. An instant outside `datetime`'s 1..=9999 years
+  reads as `Denied` rather than failing some other way.
+
+Whatever answers them, both calls read local wall time for `date.today()`
+and a naive `datetime.now()`, and convert into the argument for
+`datetime.now(tz)`, matching CPython.
+
+`time.time()` has no equivalent — the `time` module is not importable at
+all (see ./modules.md).
 
 ## `time`
 
