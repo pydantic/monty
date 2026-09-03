@@ -1,0 +1,34 @@
+crates/monty-proto/src/worker.rs
+  s_0dddb5d39d9a85::t_f6c4c7717ca133 417,784-788,790,792,804-806,808,810,929-939,944
+crates/monty-pool/tests/websocket.rs
+  s_0dddb5d39d9a85::t_e0dfa049cf0d3b 805-889
+docs/resource-limits.md
+  s_0dddb5d39d9a85::t_f6c4c7717ca133 32,114-115
+crates/monty-proto/src/lib.rs
+  s_0dddb5d39d9a85::t_f6c4c7717ca133 24
+crates/monty-pool/src/telemetry.rs
+  s_0dddb5d39d9a85::t_f6c4c7717ca133 295,297,312,314,328-329,636,638
+crates/monty-runtime/tests/subprocess.rs
+  s_0dddb5d39d9a85::t_e0dfa049cf0d3b 14-15,351-354,356-380,384-385,390-392,405-414
+  s_0dddb5d39d9a85::t_1f8ad8b299ec95 381-383,386-389,393-404
+  s_0dddb5d39d9a85::t_f6c4c7717ca133 350,355,415
+crates/monty-pool/src/checkout.rs
+  s_0dddb5d39d9a85::t_f6c4c7717ca133 463-465,467,474,476-479,482-485,937-940,958-960,965
+  s_0dddb5d39d9a85::t_e0dfa049cf0d3b 961-963
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "78db499b3d12d2941bc876ced9e27c4160044769",
+  "prompts": {},
+  "sessions": {
+    "s_0dddb5d39d9a85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4ff5acd4-3351-4ad9-a7b8-0662afd66a41",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
