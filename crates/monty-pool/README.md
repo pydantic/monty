@@ -102,9 +102,8 @@ a worker that has already exited.
 ## Observability
 
 The optional `telemetry` feature records semantic execution for language bindings
-and other hosts. `monty-pool` never selects an exporter, reads credentials or environment
-variables, or shuts an exporter down; the host SDK owns those choices and its final
-flush/shutdown.
+and other hosts. `monty-pool` never selects or shuts down a network exporter or reads
+exporter credentials; the host SDK owns those choices and its final flush/shutdown.
 
 Recording happens in the host process, which builds every request and decodes every event
 anyway, so both transports are covered and the workers stay uninstrumented. Each instrumented checkout
@@ -115,19 +114,20 @@ the way the Python logfire SDK encodes attributes, capped at 64KB per value — 
 `Load`/`Dump` snapshot blobs are recorded by size only. Supplying an SDK is therefore an
 explicit opt-in to recording potentially sensitive values.
 
-The adapter configures an exporter-free process-global Rust pipeline and returns a handle
-that creates each checkout's serialized parent context. Records are emitted through
-`TelemetryAdapter`; Python, Node, and third-party bindings retain ownership of their native
-SDK and exporter. Without the feature, workers contain no telemetry recorder or telemetry
-hot path.
+The adapter configures a process-global Rust pipeline and returns a handle that creates each
+checkout's serialized parent context. Span and log records are emitted through
+`TelemetryAdapter`; metrics are aggregated by that pipeline and exported through the adapter
+as standard OTLP protobuf batches. Python, Node, and third-party bindings retain ownership of
+their native SDK and exporter. Without the feature, workers contain no telemetry recorder or
+telemetry hot path.
 
 ### Metrics
 
 The same handle yields a `Metrics` for `PoolConfig::metrics` — as does
-`Metrics::for_logfire` for a Rust host, which records into real instruments on its own meter
-(with exponential histogram buckets) rather than pushing measurements at an adapter it would
-otherwise have to implement to receive its own data. Either turns on the aggregate
-side: pool health (`monty.pool.workers.live`, `monty.pool.workers.idle`,
+`Metrics::for_logfire` for a Rust host. Both record into real Logfire instruments, with
+exponential histogram buckets; the adapter pipeline differs only in exporting its resulting
+aggregate over the language boundary. Either turns on the aggregate side: pool health
+(`monty.pool.workers.live`, `monty.pool.workers.idle`,
 `monty.pool.workers.suspended`, `monty.pool.checkout.wait`, `monty.pool.worker.terminated`,
 `monty.pool.session.duration`) and per-turn cost (`monty.run.duration`,
 `monty.run.execution_time`, `monty.turn.duration`, `monty.run.suspensions`,
@@ -148,8 +148,10 @@ Metric attributes deliberately never identify a pool. The worker up/down counter
 total over all pools recording into the same host meter, and a dropped pool subtracts its
 remaining contribution.
 
-Measurements reach `TelemetryAdapter::record_metric`, which defaults to dropping them, so an
-adapter written before metrics existed keeps working unchanged.
+A foreign SDK receives aggregated `ExportMetricsServiceRequest` protobufs through
+`TelemetryAdapter::export_metrics`, which defaults to dropping them so a span-only adapter
+continues to work. Its flush path should call `TelemetryAdapterHandle::force_flush` before
+flushing the host exporter.
 
 ## Transports
 

@@ -53,10 +53,10 @@ export {
 } from './types.js'
 export { findMontyBinary } from './binary.js'
 export {
+  _flushTelemetry,
   _installTelemetryAdapter,
   type MontyTelemetryAdapter,
   type TelemetryEvent,
-  type TelemetryMetricEvent,
   type TelemetryParentContext,
   type TelemetrySpanEvent,
   type TelemetryTimestamp,

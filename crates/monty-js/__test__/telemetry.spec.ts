@@ -3,11 +3,12 @@ import { test } from 'vitest'
 import { t } from './assertions.js'
 import { skipIfBrowser } from './env.js'
 
-import { _installTelemetryAdapter, Monty, type TelemetryEvent, type TelemetrySpanEvent } from '@pydantic/monty/node'
+import { _flushTelemetry, _installTelemetryAdapter, Monty, type TelemetryEvent } from '@pydantic/monty/node'
 
 test('installed telemetry adapter receives the session tree', async (ctx) => {
   skipIfBrowser(ctx)
   const events: TelemetryEvent[] = []
+  const metricBatches: Uint8Array[] = []
   const adapter = {
     captureContext() {
       return {
@@ -18,6 +19,9 @@ test('installed telemetry adapter receives the session tree', async (ctx) => {
     },
     event(event: TelemetryEvent) {
       events.push(event)
+    },
+    exportMetrics(payload: Uint8Array) {
+      metricBatches.push(payload)
     },
   }
   t.throws(() => _installTelemetryAdapter(2, adapter), {
@@ -30,13 +34,12 @@ test('installed telemetry adapter receives the session tree', async (ctx) => {
   const result = await session.feedRun("'\\x00' * 70000")
   t.is((result as string).length, 70_000)
   await session.close()
-  const spanEvents = () => events.filter((event) => event.kind !== 'metric')
   const deadline = Date.now() + 2_000
-  while (spanEvents().length < 4 && Date.now() < deadline) {
+  while (events.length < 4 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
 
-  const starts = events.filter((event): event is TelemetrySpanEvent => event.kind === 'start')
+  const starts = events.filter((event) => event.kind === 'start')
   t.deepEqual(
     starts.map((event) => [event.traceId, event.traceFlags, event.traceState, event.name]),
     [
@@ -52,18 +55,12 @@ test('installed telemetry adapter receives the session tree', async (ctx) => {
   t.true((output as string).length < (result as string).length)
   t.is(runEnd?.attributes?.length_limit_exceeded, true)
   t.deepEqual(
-    spanEvents().map((event) => event.kind),
+    events.map((event) => event.kind),
     ['start', 'start', 'end', 'end'],
   )
 
-  // metrics travel over the same callback but carry no trace context
-  const metrics = events.filter((event) => event.kind === 'metric')
-  const run = metrics.find((event) => event.name === 'monty.run.duration')
-  t.is(run?.metricKind, 'histogram')
-  t.is(run?.unit, 's')
-  t.deepEqual(run?.attributes, { outcome: 'complete' })
-  t.true((run?.value ?? 0) > 0)
-  const workers = metrics.filter((event) => event.name === 'monty.pool.workers.live')
-  t.true(workers.length > 0)
-  t.is(workers[0]?.metricKind, 'up_down_counter')
+  // metrics are aggregated in Rust and cross as a canonical OTLP protobuf
+  await _flushTelemetry()
+  t.is(metricBatches.length, 1)
+  t.true((metricBatches[0]?.byteLength ?? 0) > 0)
 })

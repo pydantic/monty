@@ -60,7 +60,7 @@ pub(crate) struct Recorder {
     dump_turn: bool,
     /// One-shot host context consumed when `Configure` starts the root span.
     adapter_context: Option<TelemetryContext>,
-    /// Isolated dispatcher installed only while this recorder emits telemetry.
+    /// Scoped dispatcher installed only while this recorder emits telemetry.
     logfire: Option<Logfire>,
 }
 

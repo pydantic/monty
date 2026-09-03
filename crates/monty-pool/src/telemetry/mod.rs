@@ -4,8 +4,10 @@
 //! This root is the host-facing surface both are delivered through — the
 //! [`TelemetryAdapter`] bridge for a host whose SDK is in another language,
 //! and [`TelemetryContext::for_logfire`] / [`Metrics::for_logfire`] for a Rust
-//! host that already owns one. The recorders behind it are internal: the
-//! `tracing` submodule mirrors the protocol into spans, `metrics` into
+//! host that already owns one. Foreign-language bindings install their own
+//! statically linked Logfire pipeline and export aggregated metrics as OTLP.
+//! The recorders behind it are internal: the `tracing` submodule mirrors the
+//! protocol into spans, `metrics` into
 //! instruments, and `tracing_json` encodes span attributes the way the Logfire
 //! SDKs do.
 
@@ -16,37 +18,43 @@ mod tracing_json;
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    future::{Future, ready},
     str::FromStr,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
 
-use logfire::{ConfigureError, Logfire, config::AdvancedOptions};
-pub use metrics::{Measurement, MetricKind, MetricValue, Metrics};
+use logfire::{
+    ConfigureError, Logfire,
+    config::{AdvancedOptions, MetricsOptions},
+};
+pub use metrics::Metrics;
 use opentelemetry::{
     Context, InstrumentationScope,
     trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState},
 };
+use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_sdk::{
     error::OTelSdkResult,
     logs::{LogProcessor, SdkLogRecord},
+    metrics::{PeriodicReader, Temporality, data::ResourceMetrics, exporter::PushMetricExporter},
     trace::{Span, SpanData, SpanProcessor},
 };
+use prost::Message;
 
 /// Current host-adapter protocol version.
 pub const TELEMETRY_ADAPTER_VERSION: u8 = 1;
 
-/// Configured exporter-free pipeline shared by all checkouts using one adapter.
+/// Configured pipeline shared by all checkouts using one language adapter.
 pub struct TelemetryAdapterHandle {
-    /// Retains the isolated provider and its processors for the handle's lifetime.
+    /// Retains the configured provider and its processors for the handle's lifetime.
     logfire: Logfire,
-    /// The one recorder every pool built from this handle shares, so the
-    /// worker counters total over all of them. Reaches the adapter directly
-    /// rather than through the span pipeline.
+    /// The one instrument set every pool built from this handle shares, so
+    /// worker counters total over all of them.
     metrics: Metrics,
 }
 
-/// Distributed parent context and isolated recorder for one checkout root.
+/// Distributed parent context and recorder for one checkout root.
 pub struct TelemetryContext {
     parent: Option<SpanContext>,
     logfire: Logfire,
@@ -98,6 +106,13 @@ impl TelemetryAdapterHandle {
     pub fn metrics(&self) -> Metrics {
         self.metrics.clone()
     }
+
+    /// Exports pending metrics and waits for their delivery to the adapter.
+    ///
+    /// Foreign SDK integrations should call this from their own flush path.
+    pub fn force_flush(&self) -> OTelSdkResult {
+        self.logfire.force_flush()
+    }
 }
 
 impl TelemetryContext {
@@ -112,7 +127,7 @@ impl TelemetryContext {
 }
 
 impl TelemetryContext {
-    /// Returns the isolated recorder installed while processing this checkout.
+    /// Returns the configured recorder used while processing this checkout.
     pub(crate) fn logfire(&self) -> Logfire {
         self.logfire.clone()
     }
@@ -135,36 +150,69 @@ pub trait TelemetryAdapter: Send + Sync + 'static {
     fn emit_log(&self, parent_span_id: SpanId, record: &SdkLogRecord) -> bool;
     /// Discards host-side state after delivery for one Monty root becomes unreliable.
     fn disable_root(&self, trace_id: TraceId, root_span_id: SpanId);
-    /// Records one metric measurement, creating the instrument named by
-    /// [`Measurement::name`] on first sight.
+    /// Exports one aggregated OTLP `ExportMetricsServiceRequest` protobuf.
     ///
-    /// Defaults to dropping the measurement, so an adapter written against an
-    /// earlier version of this trait keeps compiling and keeps working — which
-    /// is why adding metrics did not bump [`TELEMETRY_ADAPTER_VERSION`].
-    /// Metrics carry no span context and cannot disable a root, so unlike the
-    /// methods above this one reports nothing back.
-    fn record_metric(&self, measurement: &Measurement<'_>) {
-        let _ = measurement;
+    /// Defaults to dropping the batch, so adapters that only reconstruct spans
+    /// continue to work. The foreign SDK can submit this canonical aggregate at
+    /// its exporter boundary without replaying it through host instruments;
+    /// the host applies its own resource when constructing the exported batch.
+    fn export_metrics(&self, payload: &[u8]) {
+        let _ = payload;
     }
 }
 
-/// Configures the exporter-free Rust pipeline shared by language adapters.
+/// Configures the statically linked Logfire pipeline used by a language binding.
 pub fn configure_telemetry_adapter(
     adapter: Arc<dyn TelemetryAdapter>,
 ) -> Result<TelemetryAdapterHandle, ConfigureError> {
     let processor = AdapterProcessor::new(Arc::clone(&adapter));
+    let metrics_reader = PeriodicReader::builder(AdapterMetricExporter::new(adapter)).build();
     let logfire = logfire::configure()
-        .local()
         .send_to_logfire(false)
         .with_console(None)
         .with_install_panic_handler(false)
         .with_additional_span_processor(processor.clone())
+        .with_metrics(Some(MetricsOptions::default().with_additional_reader(metrics_reader)))
         .with_advanced_options(AdvancedOptions::default().with_log_processor(processor))
         .finish()?;
     Ok(TelemetryAdapterHandle {
+        metrics: Metrics::for_logfire(logfire.clone()),
         logfire,
-        metrics: Metrics::new(adapter),
     })
+}
+
+/// Exports aggregated SDK metrics through a foreign-language adapter.
+struct AdapterMetricExporter {
+    adapter: Arc<dyn TelemetryAdapter>,
+}
+
+impl AdapterMetricExporter {
+    /// Creates an OTLP exporter around the language bridge.
+    fn new(adapter: Arc<dyn TelemetryAdapter>) -> Self {
+        Self { adapter }
+    }
+}
+
+impl PushMetricExporter for AdapterMetricExporter {
+    fn export(&self, metrics: &ResourceMetrics) -> impl Future<Output = OTelSdkResult> + Send {
+        let request = ExportMetricsServiceRequest::from(metrics);
+        self.adapter.export_metrics(&request.encode_to_vec());
+        ready(Ok(()))
+    }
+
+    fn force_flush(&self) -> OTelSdkResult {
+        Ok(())
+    }
+
+    fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult {
+        Ok(())
+    }
+
+    fn temporality(&self) -> Temporality {
+        // Match Logfire's native OTLP exporters; the foreign SDK forwards the
+        // aggregate rather than feeding it through another metrics SDK.
+        Temporality::Delta
+    }
 }
 
 /// Shared processor state for span ancestry and root-level disablement.

@@ -1,4 +1,4 @@
-//! Bridge from Monty's shared telemetry processor into an adapter installed by Python Logfire.
+//! Bridge from Monty's statically linked Logfire pipeline into Python Logfire.
 
 use std::{
     sync::{
@@ -9,8 +9,8 @@ use std::{
 };
 
 use monty_pool::telemetry::{
-    Measurement, MetricKind, MetricValue, Metrics, TELEMETRY_ADAPTER_VERSION, TelemetryAdapter, TelemetryAdapterHandle,
-    TelemetryContext, configure_telemetry_adapter,
+    Metrics, TELEMETRY_ADAPTER_VERSION, TelemetryAdapter, TelemetryAdapterHandle, TelemetryContext,
+    configure_telemetry_adapter,
 };
 use opentelemetry::{
     Array, KeyValue, Value,
@@ -24,7 +24,7 @@ use pyo3::{
     types::{PyBytes, PyDict, PyList, PyTuple},
 };
 
-/// Installed bridge and exporter-free Rust Logfire pipeline.
+/// Installed bridge and process-global Rust Logfire pipeline.
 struct InstalledBridge {
     bridge: Arc<PythonBridge>,
     handle: TelemetryAdapterHandle,
@@ -34,10 +34,7 @@ struct InstalledBridge {
 struct PythonBridge {
     adapter: Py<PyAny>,
     disabled: AtomicBool,
-    /// Whether the adapter implements `record_metric`, resolved on the first
-    /// measurement. Adapters written before metrics existed simply lack it,
-    /// and dropping their measurements must not disturb their spans — so this
-    /// is a capability check, not an error.
+    /// Whether the adapter accepts aggregate OTLP metric batches.
     metrics: OnceLock<bool>,
 }
 
@@ -61,6 +58,16 @@ pub(crate) fn _install_telemetry_adapter(version: u8, adapter: Py<PyAny>) -> PyR
     BRIDGE
         .set(InstalledBridge { bridge, handle })
         .map_err(|_| PyRuntimeError::new_err("Monty telemetry is already configured"))
+}
+
+/// Flushes the extension's Rust telemetry pipeline into the Python adapter.
+#[pyfunction]
+pub(crate) fn _flush_telemetry(py: Python<'_>) -> PyResult<()> {
+    if let Some(installed) = BRIDGE.get() {
+        py.detach(|| installed.handle.force_flush())
+            .map_err(|err| PyRuntimeError::new_err(format!("failed to flush Monty telemetry: {err}")))?;
+    }
+    Ok(())
 }
 
 /// The pool metrics handle, when an adapter is installed.
@@ -185,57 +192,24 @@ impl TelemetryAdapter for PythonBridge {
         });
     }
 
-    fn record_metric(&self, measurement: &Measurement<'_>) {
+    fn export_metrics(&self, payload: &[u8]) {
         if self.disabled.load(Ordering::Relaxed) {
             return;
         }
-        Python::attach(|py| {
+        // The periodic reader can outlive Python during interpreter shutdown.
+        let _ = Python::try_attach(|py| {
             let adapter = self.adapter.bind(py);
             if !*self
                 .metrics
-                .get_or_init(|| adapter.hasattr("record_metric").unwrap_or(false))
+                .get_or_init(|| adapter.hasattr("export_metrics").unwrap_or(false))
             {
                 return;
             }
-            let attributes = PyDict::new(py);
-            let call: PyResult<()> = (|| {
-                for attribute in measurement.attributes {
-                    set_value(&attributes, attribute.key.as_str(), &attribute.value)?;
-                }
-                let value = match measurement.value {
-                    MetricValue::I64(value) => value.into_pyobject(py)?.into_any(),
-                    MetricValue::F64(value) => value.into_pyobject(py)?.into_any(),
-                };
-                adapter.call_method1(
-                    "record_metric",
-                    (
-                        metric_kind(measurement.kind),
-                        measurement.name,
-                        measurement.unit,
-                        measurement.description,
-                        value,
-                        attributes,
-                    ),
-                )?;
-                Ok(())
-            })();
-            // a failing metrics callback disables the whole bridge, as a
-            // failing span callback does: it means the host is not in a state
-            // to be called into
-            if let Err(err) = call {
+            if let Err(err) = adapter.call_method1("export_metrics", (PyBytes::new(py, payload),)) {
                 self.disabled.store(true, Ordering::Relaxed);
                 err.write_unraisable(py, Some(adapter));
             }
         });
-    }
-}
-
-/// The instrument kind a Python host creates for a measurement.
-fn metric_kind(kind: MetricKind) -> &'static str {
-    match kind {
-        MetricKind::Counter => "counter",
-        MetricKind::UpDownCounter => "up_down_counter",
-        MetricKind::Histogram => "histogram",
     }
 }
 

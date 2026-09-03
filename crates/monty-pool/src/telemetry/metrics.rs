@@ -5,10 +5,9 @@
 //!
 //! Recorded for *every* checkout, not only those a host gave a
 //! [`TelemetryContext`](crate::telemetry::TelemetryContext) to: an aggregate
-//! covering only traced sessions would mislead. The host owns the instruments
-//! and the aggregation; each measurement is pushed to
-//! [`TelemetryAdapter::record_metric`] with the name, unit and description its
-//! SDK needs to create the instrument on first use.
+//! covering only traced sessions would mislead. All measurements use Logfire
+//! instruments; a foreign host receives the resulting aggregated OTLP batches
+//! through its configured telemetry adapter.
 //!
 //! **No value the sandbox controls may become an attribute.** Every attribute
 //! here is a closed set fixed by this crate, because one time series per value
@@ -32,8 +31,6 @@ use opentelemetry::{
     KeyValue,
     metrics::{Counter, UpDownCounter},
 };
-
-use crate::telemetry::TelemetryAdapter;
 
 /// Live workers, whatever they are doing.
 static LIVE_WORKERS: Instrument = Instrument {
@@ -156,50 +153,23 @@ struct Instrument {
     description: &'static str,
 }
 
-/// Records measurements into the host's metrics SDK.
+/// Records pool measurements into one Logfire metrics SDK.
 ///
 /// Put on [`PoolConfig::metrics`](crate::PoolConfig::metrics); cheap to clone
-/// (one `Arc`). Comes from
-/// [`TelemetryAdapterHandle::metrics`](crate::telemetry::TelemetryAdapterHandle::metrics)
-/// for a foreign-SDK host, or [`Metrics::for_logfire`] for a Rust one.
+/// (one `Arc`). Foreign-language bindings obtain it from
+/// [`TelemetryAdapterHandle::metrics`](crate::telemetry::TelemetryAdapterHandle::metrics),
+/// while Rust hosts construct one with [`Metrics::for_logfire`].
 #[derive(Clone)]
-pub struct Metrics(Arc<Shared>);
-
-/// What every pool holding a clone of one [`Metrics`] records through.
-struct Shared {
-    sink: Sink,
-}
-
-/// Where measurements go, which is what separates a host that owns an OTel SDK
-/// from one that only owns a bridge to a foreign one.
-enum Sink {
-    /// Pushed one at a time to a host adapter, which owns the instruments.
-    Adapter(Arc<dyn TelemetryAdapter>),
-    /// Recorded into instruments of our own, built from a Rust host's meter.
-    /// Boxed: the instrument map dwarfs the adapter pointer beside it.
-    Logfire(Box<Instruments>),
-}
+pub struct Metrics(Arc<Instruments>);
 
 impl Metrics {
-    /// Wraps the adapter a configured pipeline delivers measurements to.
-    pub(crate) fn new(adapter: Arc<dyn TelemetryAdapter>) -> Self {
-        Self::with_sink(Sink::Adapter(adapter))
-    }
-
-    /// Records into a Rust host's own `Logfire` — real instruments with
-    /// exponential histogram buckets — with no [`TelemetryAdapter`] in between.
-    /// The span-side equivalent is
-    /// [`TelemetryContext::for_logfire`](crate::telemetry::TelemetryContext::for_logfire).
+    /// Builds Monty's instruments on a configured `Logfire` meter.
     ///
     /// Create one and clone it per pool: the worker counters then sum over all
     /// pools and sessions that record through the handle.
     #[must_use]
     pub fn for_logfire(logfire: Logfire) -> Self {
-        Self::with_sink(Sink::Logfire(Box::new(Instruments::new(logfire))))
-    }
-
-    fn with_sink(sink: Sink) -> Self {
-        Self(Arc::new(Shared { sink }))
+        Self(Arc::new(Instruments::new(logfire)))
     }
 
     /// Adjusts the number of live workers across all pools using this handle.
@@ -250,19 +220,9 @@ impl Metrics {
         );
     }
 
-    /// Hands one measurement to whichever sink this handle was built with.
+    /// Records one measurement into its lazily built instrument.
     fn record(&self, instrument: &Instrument, value: MetricValue, attributes: &[KeyValue]) {
-        match &self.0.sink {
-            Sink::Adapter(adapter) => adapter.record_metric(&Measurement {
-                kind: instrument.kind,
-                name: instrument.name,
-                unit: instrument.unit,
-                description: instrument.description,
-                value,
-                attributes,
-            }),
-            Sink::Logfire(instruments) => instruments.record(instrument, value, attributes),
-        }
+        self.0.record(instrument, value, attributes);
     }
 }
 
@@ -272,27 +232,9 @@ impl fmt::Debug for Metrics {
     }
 }
 
-/// One measurement, with everything the host needs to create the instrument it
-/// belongs to: `kind`, `unit` and `description` are constant for a given
-/// [`Self::name`], so a host can create it on first sight and cache it.
-pub struct Measurement<'a> {
-    /// Which kind of instrument records this measurement.
-    pub kind: MetricKind,
-    /// Dotted instrument name, e.g. `monty.pool.checkout.wait`.
-    pub name: &'static str,
-    /// UCUM unit: `s`, `By`, `1`, or a `{thing}` annotation for counts.
-    pub unit: &'static str,
-    /// One-line description of what the instrument measures.
-    pub description: &'static str,
-    /// The measured value.
-    pub value: MetricValue,
-    /// Dimensions to record it under; always a closed set of values.
-    pub attributes: &'a [KeyValue],
-}
-
-/// The kind of instrument a measurement belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MetricKind {
+/// The kind of Logfire instrument a definition builds.
+#[derive(Clone, Copy)]
+enum MetricKind {
     /// Monotonic sum: the value is an increment.
     Counter,
     /// Non-monotonic sum: the value adjusts a current count.
@@ -303,8 +245,8 @@ pub enum MetricKind {
 
 /// A measured value, integral for counts and byte sizes, floating for
 /// durations and ratios.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum MetricValue {
+#[derive(Clone, Copy)]
+enum MetricValue {
     /// An integral count.
     I64(i64),
     /// A duration in seconds, or a ratio.
@@ -799,89 +741,175 @@ fn print_stream(stream: i32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Barrier, Mutex},
+        sync::{Arc, Barrier},
         thread,
         time::Duration,
     };
 
-    use logfire::config::MetricsOptions;
+    use logfire::{Logfire, config::MetricsOptions};
     use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
     use monty_types::MontyObject;
-    use opentelemetry::trace::{SpanId, TraceId};
-    use opentelemetry_sdk::{
-        logs::SdkLogRecord,
-        metrics::{
-            InMemoryMetricExporter, PeriodicReader,
-            data::{AggregatedMetrics, MetricData},
-        },
-        trace::SpanData,
+    use opentelemetry::KeyValue;
+    use opentelemetry_sdk::metrics::{
+        InMemoryMetricExporter, PeriodicReader,
+        data::{AggregatedMetrics, MetricData},
     };
 
-    use super::{Measurement, MetricValue, Metrics, TurnMetrics};
-    use crate::telemetry::TelemetryAdapter;
+    use super::{Metrics, TurnMetrics};
 
-    /// An adapter that keeps every measurement instead of exporting it.
-    #[derive(Default)]
-    struct Capture(Mutex<Vec<Recorded>>);
+    /// A cumulative aggregate exported from the test's Logfire provider.
+    struct Capture {
+        logfire: Logfire,
+        exporter: InMemoryMetricExporter,
+    }
 
-    /// One captured measurement, with its attributes flattened to strings.
+    /// One exported metric point, flattened for focused state-machine assertions.
     struct Recorded {
-        name: &'static str,
-        value: MetricValue,
+        name: String,
+        value: Aggregate,
         attributes: Vec<(String, String)>,
     }
 
-    impl TelemetryAdapter for Capture {
-        fn start_span(&self, _: &SpanData) -> bool {
-            true
-        }
-        fn end_span(&self, _: &SpanData) -> bool {
-            true
-        }
-        fn emit_log(&self, _: SpanId, _: &SdkLogRecord) -> bool {
-            true
-        }
-        fn disable_root(&self, _: TraceId, _: SpanId) {}
-        fn record_metric(&self, measurement: &Measurement<'_>) {
-            self.0.lock().unwrap().push(Recorded {
-                name: measurement.name,
-                value: measurement.value,
-                attributes: measurement
-                    .attributes
-                    .iter()
-                    .map(|kv| (kv.key.to_string(), kv.value.to_string()))
-                    .collect(),
-            });
-        }
+    /// The aggregate shapes produced by Monty's instruments.
+    enum Aggregate {
+        I64(i64),
+        U64(u64),
+        Histogram {
+            count: usize,
+            sum: f64,
+            min: Option<f64>,
+            max: Option<f64>,
+        },
     }
 
     impl Capture {
-        /// The attributes of every measurement recorded under `name`.
+        /// The attributes of every time series recorded under `name`.
         fn attributes(&self, name: &str) -> Vec<Vec<(String, String)>> {
-            self.select(name, |recorded| recorded.attributes.clone())
+            let mut series = self.select(name, |recorded| {
+                let mut attributes = recorded.attributes.clone();
+                attributes.sort();
+                attributes
+            });
+            series.sort();
+            series
         }
 
-        /// The values of every measurement recorded under `name`.
-        fn values(&self, name: &str) -> Vec<MetricValue> {
-            self.select(name, |recorded| recorded.value)
+        /// The current value of an integral up/down counter.
+        fn i64_sum(&self, name: &str) -> i64 {
+            self.select(name, |recorded| match recorded.value {
+                Aggregate::I64(value) => value,
+                _ => panic!("{name} was not an i64 sum"),
+            })
+            .into_iter()
+            .sum()
         }
 
+        /// Total value across a monotonic counter's attribute series.
+        fn u64_sum(&self, name: &str) -> u64 {
+            self.select(name, |recorded| match recorded.value {
+                Aggregate::U64(value) => value,
+                _ => panic!("{name} was not a u64 sum"),
+            })
+            .into_iter()
+            .sum()
+        }
+
+        /// Histogram aggregates under `name`.
+        fn histograms(&self, name: &str) -> Vec<(usize, f64, Option<f64>, Option<f64>)> {
+            self.select(name, |recorded| match recorded.value {
+                Aggregate::Histogram { count, sum, min, max } => (count, sum, min, max),
+                _ => panic!("{name} was not a histogram"),
+            })
+        }
+
+        /// Whether the latest collection includes `name`.
+        fn has(&self, name: &str) -> bool {
+            self.records().iter().any(|recorded| recorded.name == name)
+        }
+
+        /// Selects every point from the latest cumulative collection.
         fn select<T>(&self, name: &str, map: impl Fn(&Recorded) -> T) -> Vec<T> {
-            self.0
-                .lock()
-                .unwrap()
+            self.records()
                 .iter()
                 .filter(|recorded| recorded.name == name)
                 .map(map)
                 .collect()
         }
+
+        /// Flushes and flattens the provider's latest cumulative collection.
+        fn records(&self) -> Vec<Recorded> {
+            self.exporter.reset();
+            self.logfire.force_flush().unwrap();
+            let exported = self.exporter.get_finished_metrics().unwrap();
+            let mut records = Vec::new();
+            for resource in &exported {
+                for scope in resource.scope_metrics() {
+                    for metric in scope.metrics() {
+                        flatten(metric.name(), metric.data(), &mut records);
+                    }
+                }
+            }
+            records
+        }
     }
 
-    /// A recorder writing into a fresh capture.
+    /// Adds each supported aggregate data point to the flattened capture.
+    fn flatten(name: &str, data: &AggregatedMetrics, records: &mut Vec<Recorded>) {
+        match data {
+            AggregatedMetrics::I64(MetricData::Sum(sum)) => {
+                for point in sum.data_points() {
+                    records.push(Recorded {
+                        name: name.to_owned(),
+                        value: Aggregate::I64(point.value()),
+                        attributes: attributes(point.attributes()),
+                    });
+                }
+            }
+            AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+                for point in sum.data_points() {
+                    records.push(Recorded {
+                        name: name.to_owned(),
+                        value: Aggregate::U64(point.value()),
+                        attributes: attributes(point.attributes()),
+                    });
+                }
+            }
+            AggregatedMetrics::F64(MetricData::ExponentialHistogram(histogram)) => {
+                for point in histogram.data_points() {
+                    records.push(Recorded {
+                        name: name.to_owned(),
+                        value: Aggregate::Histogram {
+                            count: point.count(),
+                            sum: point.sum(),
+                            min: point.min(),
+                            max: point.max(),
+                        },
+                        attributes: attributes(point.attributes()),
+                    });
+                }
+            }
+            other => panic!("unexpected Monty metric aggregate: {other:?}"),
+        }
+    }
+
+    /// Flattens OTel attributes to their stable string representation.
+    fn attributes<'a>(values: impl Iterator<Item = &'a KeyValue>) -> Vec<(String, String)> {
+        values.map(|kv| (kv.key.to_string(), kv.value.to_string())).collect()
+    }
+
+    /// A recorder writing into a fresh local Logfire provider.
     fn recorder() -> (TurnMetrics, Arc<Capture>) {
-        let capture = Arc::new(Capture::default());
-        let metrics = Metrics::new(Arc::clone(&capture) as Arc<dyn TelemetryAdapter>);
-        (TurnMetrics::new(metrics), capture)
+        let exporter = InMemoryMetricExporter::default();
+        let logfire = logfire::configure()
+            .local()
+            .send_to_logfire(false)
+            .with_metrics(Some(
+                MetricsOptions::default().with_additional_reader(PeriodicReader::builder(exporter.clone()).build()),
+            ))
+            .finish()
+            .unwrap();
+        let metrics = TurnMetrics::new(Metrics::for_logfire(logfire.clone()));
+        (metrics, Arc::new(Capture { logfire, exporter }))
     }
 
     fn request(kind: pb::parent_request::Kind) -> pb::ParentRequest {
@@ -932,6 +960,20 @@ mod tests {
             .map(|(_, value)| value.as_str())
     }
 
+    /// Asserts two small metric values agree despite floating-point addition.
+    fn assert_close(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+    }
+
+    /// Applies [`assert_close`] to two optional metric bounds.
+    fn assert_optional_close(actual: Option<f64>, expected: Option<f64>) {
+        match (actual, expected) {
+            (Some(actual), Some(expected)) => assert_close(actual, expected),
+            (None, None) => {}
+            _ => panic!("{actual:?} != {expected:?}"),
+        }
+    }
+
     /// One feed with one host call: the suspension is counted, the round-trip
     /// timed on its own, and the run recorded when the completion arrives.
     #[test]
@@ -961,7 +1003,8 @@ mod tests {
             capture.attributes("monty.run.duration"),
             [[("outcome".to_owned(), "complete".to_owned())]]
         );
-        assert_eq!(capture.values("monty.run.execution_time").len(), 1);
+        assert_eq!(capture.histograms("monty.run.execution_time")[0].0, 1);
+        assert_eq!(capture.u64_sum("monty.run.suspensions"), 1);
     }
 
     /// The called name is chosen by the sandboxed code, so it must never reach
@@ -1000,7 +1043,7 @@ mod tests {
             .iter()
             .map(|attributes| attribute(attributes, "outcome").unwrap().to_owned())
             .collect();
-        assert_eq!(outcomes, ["not_found", "error", "value"]);
+        assert_eq!(outcomes, ["error", "not_found", "value"]);
     }
 
     /// An os call is the one suspension that names what it did — from the
@@ -1020,9 +1063,9 @@ mod tests {
         assert_eq!(
             capture.attributes("monty.ext.call.duration"),
             [[
+                ("function".to_owned(), "read_text".to_owned()),
                 ("kind".to_owned(), "os".to_owned()),
-                ("outcome".to_owned(), "value".to_owned()),
-                ("function".to_owned(), "read_text".to_owned())
+                ("outcome".to_owned(), "value".to_owned())
             ]]
         );
     }
@@ -1042,13 +1085,14 @@ mod tests {
             });
         }
 
-        assert_eq!(
-            capture.values("monty.run.execution_time"),
-            [
-                MetricValue::F64(Duration::from_micros(100).as_secs_f64()),
-                MetricValue::F64(Duration::from_micros(150).as_secs_f64())
-            ]
-        );
+        let execution = capture.histograms("monty.run.execution_time");
+        let [(count, sum, min, max)] = execution.as_slice() else {
+            panic!("expected one execution-time series")
+        };
+        assert_eq!(*count, 2);
+        assert_close(*sum, Duration::from_micros(250).as_secs_f64());
+        assert_optional_close(*min, Some(Duration::from_micros(100).as_secs_f64()));
+        assert_optional_close(*max, Some(Duration::from_micros(150).as_secs_f64()));
     }
 
     /// A raised exception ends the run and shows up as its outcome. The class
@@ -1093,10 +1137,9 @@ mod tests {
             restored_script_name: None,
         });
 
-        assert_eq!(
-            capture.values("monty.run.execution_time"),
-            [MetricValue::F64(Duration::from_micros(100).as_secs_f64())]
-        );
+        let execution = capture.histograms("monty.run.execution_time");
+        assert_eq!(execution[0].0, 1);
+        assert_close(execution[0].1, Duration::from_micros(100).as_secs_f64());
     }
 
     /// A feed restored mid-suspension re-raises the suspension as the load's
@@ -1121,8 +1164,8 @@ mod tests {
         assert_eq!(
             turns,
             [[
-                ("turn".to_owned(), "load".to_owned()),
-                ("outcome".to_owned(), "ok".to_owned())
+                ("outcome".to_owned(), "ok".to_owned()),
+                ("turn".to_owned(), "load".to_owned())
             ]]
         );
 
@@ -1137,11 +1180,10 @@ mod tests {
             max_duration_micros: None,
             restored_script_name: None,
         });
-        assert_eq!(
-            capture.values("monty.run.execution_time"),
-            [MetricValue::F64(Duration::from_micros(50).as_secs_f64())]
-        );
-        assert!(capture.values("monty.run.duration").is_empty());
+        let execution = capture.histograms("monty.run.execution_time");
+        assert_eq!(execution[0].0, 1);
+        assert_close(execution[0].1, Duration::from_micros(50).as_secs_f64());
+        assert!(!capture.has("monty.run.duration"));
     }
 
     /// An error answering a housekeeping turn is that turn's outcome; no run
@@ -1166,23 +1208,22 @@ mod tests {
         assert_eq!(
             capture.attributes("monty.turn.duration"),
             [[
-                ("turn".to_owned(), "install_dependencies".to_owned()),
-                ("outcome".to_owned(), "error".to_owned())
+                ("outcome".to_owned(), "error".to_owned()),
+                ("turn".to_owned(), "install_dependencies".to_owned())
             ]]
         );
-        assert!(capture.values("monty.run.duration").is_empty());
-        assert!(capture.values("monty.run.execution_time").is_empty());
+        assert!(!capture.has("monty.run.duration"));
+        assert!(!capture.has("monty.run.execution_time"));
     }
 
-    /// Worker adjustments commute across concurrent users of one `Metrics`,
-    /// and each transition makes exactly one adapter call rather than retrying.
+    /// Worker adjustments commute across concurrent users of one `Metrics`.
     #[test]
-    fn worker_adjustments_are_bounded_and_commutative() {
+    fn worker_adjustments_are_commutative_under_concurrency() {
         const THREADS: usize = 8;
         const ITERATIONS: usize = 100;
 
-        let capture = Arc::new(Capture::default());
-        let metrics = Metrics::new(Arc::clone(&capture) as Arc<dyn TelemetryAdapter>);
+        let (_, capture) = recorder();
+        let metrics = Metrics::for_logfire(capture.logfire.clone());
         let barrier = Arc::new(Barrier::new(THREADS));
         let threads: Vec<_> = (0..THREADS)
             .map(|_| {
@@ -1203,13 +1244,8 @@ mod tests {
             thread.join().unwrap();
         }
 
-        let expected = THREADS * ITERATIONS * 2;
-        let live = capture.values("monty.pool.workers.live");
-        let idle = capture.values("monty.pool.workers.idle");
-        assert_eq!(live.len(), expected);
-        assert_eq!(idle.len(), expected);
-        assert_eq!(live.iter().map(|value| value.as_i64()).sum::<i64>(), 0);
-        assert_eq!(idle.iter().map(|value| value.as_i64()).sum::<i64>(), 0);
+        assert_eq!(capture.i64_sum("monty.pool.workers.live"), 0);
+        assert_eq!(capture.i64_sum("monty.pool.workers.idle"), 0);
     }
 
     /// The suspended-worker count rises while the host owns a suspension and
@@ -1219,26 +1255,17 @@ mod tests {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
+        assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 1);
         metrics.begin_turn(&resume_call(pb::ext_function_result::Kind::ReturnValue(
             MontyObject::Int(4).into(),
         )));
-        assert_eq!(
-            capture.values("monty.pool.workers.suspended"),
-            [MetricValue::I64(1), MetricValue::I64(-1)]
-        );
+        assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 0);
 
         // a worker dropped mid-suspension is no longer waiting on anyone
         metrics.event(&call_event("double"));
+        assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 1);
         drop(metrics);
-        assert_eq!(
-            capture.values("monty.pool.workers.suspended"),
-            [
-                MetricValue::I64(1),
-                MetricValue::I64(-1),
-                MetricValue::I64(1),
-                MetricValue::I64(-1)
-            ]
-        );
+        assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 0);
     }
 
     /// A dump is a housekeeping turn: it reports its own size and duration and
@@ -1252,10 +1279,12 @@ mod tests {
             state: vec![0; 32],
         })));
 
-        assert_eq!(capture.values("monty.snapshot.bytes"), [MetricValue::I64(32)]);
+        let snapshots = capture.histograms("monty.snapshot.bytes");
+        assert_eq!(snapshots[0].0, 1);
+        assert_close(snapshots[0].1, 32.0);
         let turns = capture.attributes("monty.turn.duration");
         assert_eq!(attribute(&turns[0], "turn"), Some("dump"));
-        assert!(capture.values("monty.run.duration").is_empty());
+        assert!(!capture.has("monty.run.duration"));
     }
 
     /// A Rust host records into instruments of its own rather than through an

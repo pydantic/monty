@@ -343,13 +343,14 @@ host-blocked worker counts, checkout waits, worker deaths by reason, run
 durations and the sandbox execution time of each feed. Unlike the spans these
 cover every checkout, and they record no sandbox-supplied values: metric
 attributes are closed sets, so nothing a script chooses (a called function's
-name, an exception class, or a path) can become a dimension. An adapter that
-does not implement `record_metric`
-receives none of them.
+name, an exception class, or a path) can become a dimension.
+Rust's statically linked Logfire pipeline aggregates these instruments and
+passes standard OTLP protobuf batches to the Python adapter, rather than
+replaying individual measurements through Python instruments.
 
-Logfire's Python SDK owns sampling, export credentials, resources, flushing,
-and shutdown. The Rust binding runs only an exporter-free processor pipeline;
-workers receive no credentials. Instrumentation is disabled unless an adapter
+Logfire's Python SDK owns sampling, export credentials, resources, and final
+export. Its flush path first collects the Rust metric pipeline. Workers receive
+no credentials. Instrumentation is disabled unless an adapter
 is explicitly installed. Enabled instrumentation captures content, truncating
 large values at the telemetry attribute size limit.
 

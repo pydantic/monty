@@ -1,4 +1,4 @@
-//! Exporter-free shared telemetry pipeline forwarding records to Node's event loop.
+//! Statically linked Logfire pipeline forwarding telemetry to Node's event loop.
 
 use std::{
     sync::{
@@ -9,11 +9,10 @@ use std::{
 };
 
 use monty_pool::telemetry::{
-    configure_telemetry_adapter, Measurement, MetricKind, MetricValue, TelemetryAdapter, TelemetryAdapterHandle,
-    TELEMETRY_ADAPTER_VERSION,
+    configure_telemetry_adapter, TelemetryAdapter, TelemetryAdapterHandle, TELEMETRY_ADAPTER_VERSION,
 };
 use napi::{
-    bindgen_prelude::{spawn, FnArgs, Function},
+    bindgen_prelude::{spawn, Buffer, FnArgs, Function},
     threadsafe_function::{ThreadsafeFunctionCallMode, UnknownReturnValue},
     Status,
 };
@@ -25,12 +24,14 @@ use opentelemetry::{
 };
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
 use serde_json::{json, Map, Value as JsonValue};
-use tokio::time::sleep;
+use tokio::{task::spawn_blocking, time::sleep};
 
 type SendEvent = Arc<dyn Fn(String, ThreadsafeFunctionCallMode) -> Status + Send + Sync>;
+type SendMetrics = Arc<dyn Fn(Buffer, ThreadsafeFunctionCallMode) -> Status + Send + Sync>;
 
 struct JsBridge {
     send: SendEvent,
+    send_metrics: SendMetrics,
     /// Queue overflow disables the shared bridge rather than risking
     /// cross-root gaps or an unbounded cleanup backlog.
     disabled: AtomicBool,
@@ -53,11 +54,12 @@ const VALUE_SIZE_LIMIT: usize = 64 * 1024;
 /// Maximum nesting accepted from recursive OTel log values.
 const VALUE_DEPTH_LIMIT: usize = 64;
 
-/// Installs the versioned Node callback and shared exporter-free pipeline.
+/// Installs the versioned Node callbacks and process-global Logfire pipeline.
 #[napi(js_name = "_installTelemetryAdapter")]
 pub fn install_telemetry_adapter(
     version: u8,
     callback: Function<'_, FnArgs<(String,)>, UnknownReturnValue>,
+    metrics_callback: Function<'_, FnArgs<(Buffer,)>, UnknownReturnValue>,
 ) -> napi::Result<()> {
     if version != TELEMETRY_ADAPTER_VERSION {
         return Err(napi::Error::from_reason(format!(
@@ -70,8 +72,16 @@ pub fn install_telemetry_adapter(
         .max_queue_size::<1024>()
         .build()?;
     let send: SendEvent = Arc::new(move |event, mode| callback.call(FnArgs::from((event,)), mode));
+    let metrics_callback = metrics_callback
+        .build_threadsafe_function()
+        .weak::<true>()
+        .max_queue_size::<64>()
+        .build()?;
+    let send_metrics: SendMetrics =
+        Arc::new(move |payload, mode| metrics_callback.call(FnArgs::from((payload,)), mode));
     let bridge = Arc::new(JsBridge {
         send,
+        send_metrics,
         disabled: AtomicBool::new(false),
         delivery: RwLock::new(DeliveryState {
             cleanup_requested: false,
@@ -82,6 +92,18 @@ pub fn install_telemetry_adapter(
     BRIDGE
         .set(InstalledBridge { bridge, handle })
         .map_err(|_| napi::Error::from_reason("Monty telemetry is already configured"))
+}
+
+/// Flushes the extension's Rust telemetry pipeline into the Node adapter.
+#[napi(js_name = "_flushTelemetry")]
+pub async fn flush_telemetry() -> napi::Result<()> {
+    if let Some(installed) = BRIDGE.get() {
+        spawn_blocking(|| installed.handle.force_flush())
+            .await
+            .map_err(|err| napi::Error::from_reason(format!("failed to join Monty telemetry flush: {err}")))?
+            .map_err(|err| napi::Error::from_reason(format!("failed to flush Monty telemetry: {err}")))?;
+    }
+    Ok(())
 }
 
 /// Returns the installed handle used to construct coupled checkout context.
@@ -157,27 +179,15 @@ impl TelemetryAdapter for JsBridge {
         )
     }
 
-    fn record_metric(&self, measurement: &Measurement<'_>) {
-        let kind = match measurement.kind {
-            MetricKind::Counter => "counter",
-            MetricKind::UpDownCounter => "up_down_counter",
-            MetricKind::Histogram => "histogram",
-        };
-        let value = match measurement.value {
-            MetricValue::I64(value) => JsonValue::from(value),
-            MetricValue::F64(value) => JsonValue::from(value),
-        };
-        // measurements carry no span context, so an adapter that does not know
-        // the `metric` kind can drop them without leaving a span half-built
-        self.emit(json!({
-            "kind": "metric",
-            "metricKind": kind,
-            "name": measurement.name,
-            "unit": measurement.unit,
-            "description": measurement.description,
-            "value": value,
-            "attributes": attributes(measurement.attributes),
-        }));
+    fn export_metrics(&self, payload: &[u8]) {
+        // Exports run on the periodic reader thread; blocking here makes an
+        // explicit flush wait until the Node adapter has accepted its batch.
+        let _delivery = read_lock(&self.delivery);
+        if !self.disabled.load(Ordering::Relaxed)
+            && (self.send_metrics)(Buffer::from(payload), ThreadsafeFunctionCallMode::Blocking) != Status::Ok
+        {
+            self.disabled.store(true, Ordering::Relaxed);
+        }
     }
 
     fn disable_root(&self, trace_id: TraceId, root_span_id: SpanId) {

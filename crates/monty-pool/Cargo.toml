@@ -21,6 +21,8 @@ telemetry = [
     "dep:num-traits",
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
+    "dep:opentelemetry-proto",
+    "dep:prost",
     "dep:serde",
     "dep:serde_json",
     "dep:tracing",
@@ -55,6 +57,9 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 # Typed values used when recording attributes; version must match logfire's.
 opentelemetry = { version = "0.32", optional = true }
+# Aggregated metrics cross language-extension boundaries as standard OTLP protobuf.
+opentelemetry-proto = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
 # Span construction and eager OTel context creation; versions must match Logfire.
 tracing = { version = "0.1", optional = true }
 tracing-opentelemetry = { version = "0.33", optional = true }

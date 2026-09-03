@@ -279,8 +279,8 @@ impl PoolInner {
 
     /// Records changes to live and immediately available workers.
     ///
-    /// Call with the pool lock released: recording reaches into the host SDK
-    /// and, for Python, acquires the GIL.
+    /// Call with the pool lock released to keep telemetry outside pool
+    /// synchronization. Recording only updates Rust SDK aggregates.
     pub(crate) fn record_worker_delta(&self, live: i64, idle: i64) {
         #[cfg(feature = "telemetry")]
         if let Some(metrics) = &self.config.metrics {

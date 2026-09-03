@@ -3,7 +3,7 @@
 //!
 //! The turn-level state machine is unit-tested in `src/metrics.rs`; what needs
 //! a real worker is the plumbing — that every path which spawns, hands out or
-//! discards a worker reaches the adapter.
+//! discards a worker reaches the SDK aggregates.
 
 #![cfg(feature = "telemetry")]
 
@@ -17,62 +17,96 @@ use std::{
     time::Duration,
 };
 
+use logfire::{Logfire, config::MetricsOptions};
 use monty_pool::{
     Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
-    telemetry::{Measurement, MetricKind, MetricValue, TelemetryAdapter, configure_telemetry_adapter},
+    telemetry::{Metrics, TelemetryAdapter, configure_telemetry_adapter},
 };
 use monty_proto::pb;
 use monty_types::PrintStream;
-use opentelemetry::trace::{SpanId, TraceId};
-use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
+use opentelemetry::{
+    KeyValue,
+    trace::{SpanId, TraceId},
+};
+use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+use opentelemetry_sdk::{
+    logs::SdkLogRecord,
+    metrics::{
+        InMemoryMetricExporter, PeriodicReader,
+        data::{AggregatedMetrics, MetricData},
+    },
+    trace::SpanData,
+};
+use prost::Message;
 
-/// An adapter that keeps every measurement instead of exporting it.
-#[derive(Default)]
-struct Capture(Mutex<Vec<Recorded>>);
+/// A cumulative aggregate exported from a test Logfire provider.
+struct Capture {
+    logfire: Logfire,
+    exporter: InMemoryMetricExporter,
+}
 
-/// One captured measurement, with its attributes flattened to strings.
+/// One captured time series, flattened for pool lifecycle assertions.
 #[derive(Clone, Debug)]
 struct Recorded {
-    kind: MetricKind,
     name: String,
-    value: MetricValue,
+    value: Value,
+    count: usize,
     attributes: HashMap<String, String>,
 }
 
-impl TelemetryAdapter for Capture {
+/// Numeric aggregate types produced by Monty's instruments.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Value {
+    I64(i64),
+    U64(u64),
+    F64(f64),
+}
+
+/// A foreign-SDK adapter retaining each aggregated OTLP payload.
+#[derive(Default)]
+struct BatchCapture(Mutex<Vec<Vec<u8>>>);
+
+impl TelemetryAdapter for BatchCapture {
     fn start_span(&self, _: &SpanData) -> bool {
         true
     }
+
     fn end_span(&self, _: &SpanData) -> bool {
         true
     }
+
     fn emit_log(&self, _: SpanId, _: &SdkLogRecord) -> bool {
         true
     }
+
     fn disable_root(&self, _: TraceId, _: SpanId) {}
-    fn record_metric(&self, measurement: &Measurement<'_>) {
-        self.0.lock().unwrap().push(Recorded {
-            kind: measurement.kind,
-            name: measurement.name.to_owned(),
-            value: measurement.value,
-            attributes: measurement
-                .attributes
-                .iter()
-                .map(|kv| (kv.key.to_string(), kv.value.to_string()))
-                .collect(),
-        });
+
+    fn export_metrics(&self, payload: &[u8]) {
+        self.0.lock().unwrap().push(payload.to_vec());
     }
 }
 
 impl Capture {
-    /// Every measurement recorded under `name`.
+    /// Builds a local provider and its Monty metrics handle.
+    fn new() -> (Metrics, Arc<Self>) {
+        let exporter = InMemoryMetricExporter::default();
+        let logfire = logfire::configure()
+            .local()
+            .send_to_logfire(false)
+            .with_metrics(Some(
+                MetricsOptions::default().with_additional_reader(PeriodicReader::builder(exporter.clone()).build()),
+            ))
+            .finish()
+            .unwrap();
+        let metrics = Metrics::for_logfire(logfire.clone());
+        (metrics, Arc::new(Self { logfire, exporter }))
+    }
+
+    /// Every aggregate time series recorded under `name`.
     fn named(&self, name: &str) -> Vec<Recorded> {
-        self.0
-            .lock()
-            .unwrap()
-            .iter()
+        self.records()
+            .into_iter()
             .filter(|recorded| recorded.name == name)
-            .cloned()
             .collect()
     }
 
@@ -94,13 +128,13 @@ impl Capture {
             .unwrap_or_else(|| panic!("nothing recorded under {name}"))
     }
 
-    /// Sum of the integral adjustments recorded under `name`.
+    /// Sum of the integral time series recorded under `name`.
     fn total(&self, name: &str) -> i64 {
         self.named(name)
             .into_iter()
             .map(|recorded| match recorded.value {
-                MetricValue::I64(value) => value,
-                MetricValue::F64(value) => panic!("expected integral {name} measurement, got {value}"),
+                Value::I64(value) => value,
+                other => panic!("expected integral {name} measurement, got {other:?}"),
             })
             .sum()
     }
@@ -109,15 +143,108 @@ impl Capture {
     fn has(&self, name: &str) -> bool {
         !self.named(name).is_empty()
     }
+
+    /// Flushes and flattens the provider's latest cumulative collection.
+    fn records(&self) -> Vec<Recorded> {
+        self.exporter.reset();
+        self.logfire.force_flush().unwrap();
+        let exported = self.exporter.get_finished_metrics().unwrap();
+        let mut records = Vec::new();
+        for resource in &exported {
+            for scope in resource.scope_metrics() {
+                for metric in scope.metrics() {
+                    flatten(metric.name(), metric.data(), &mut records);
+                }
+            }
+        }
+        records
+    }
+}
+
+/// Adds each supported aggregate data point to the flattened capture.
+fn flatten(name: &str, data: &AggregatedMetrics, records: &mut Vec<Recorded>) {
+    match data {
+        AggregatedMetrics::I64(MetricData::Sum(sum)) => {
+            for point in sum.data_points() {
+                records.push(Recorded {
+                    name: name.to_owned(),
+                    value: Value::I64(point.value()),
+                    count: 0,
+                    attributes: attributes(point.attributes()),
+                });
+            }
+        }
+        AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+            for point in sum.data_points() {
+                records.push(Recorded {
+                    name: name.to_owned(),
+                    value: Value::U64(point.value()),
+                    count: 0,
+                    attributes: attributes(point.attributes()),
+                });
+            }
+        }
+        AggregatedMetrics::F64(MetricData::ExponentialHistogram(histogram)) => {
+            for point in histogram.data_points() {
+                records.push(Recorded {
+                    name: name.to_owned(),
+                    value: Value::F64(point.sum()),
+                    count: point.count(),
+                    attributes: attributes(point.attributes()),
+                });
+            }
+        }
+        other => panic!("unexpected Monty metric aggregate: {other:?}"),
+    }
+}
+
+/// Flattens OTel attributes to their stable string representation.
+fn attributes<'a>(values: impl Iterator<Item = &'a KeyValue>) -> HashMap<String, String> {
+    values.map(|kv| (kv.key.to_string(), kv.value.to_string())).collect()
 }
 
 /// A pool whose metrics land in the returned capture.
 async fn pool_with_metrics(mut config: PoolConfig) -> (Pool, Arc<Capture>) {
-    let capture = Arc::new(Capture::default());
-    let handle = configure_telemetry_adapter(Arc::clone(&capture) as Arc<dyn TelemetryAdapter>).expect("configure");
-    config.metrics = Some(handle.metrics());
+    let (metrics, capture) = Capture::new();
+    config.metrics = Some(metrics);
     let pool = Pool::new(config).await.expect("pool");
     (pool, capture)
+}
+
+/// The binding pipeline exports one canonical aggregate instead of replaying
+/// individual measurements through the foreign SDK.
+#[tokio::test]
+async fn an_adapter_receives_aggregated_otlp() {
+    let capture = Arc::new(BatchCapture::default());
+    let handle = configure_telemetry_adapter(Arc::clone(&capture) as Arc<dyn TelemetryAdapter>).expect("configure");
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 1;
+    config.max_processes = 1;
+    config.metrics = Some(handle.metrics());
+    let pool = Pool::new(config).await.expect("pool");
+
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    checkout.finish().await.expect("finish");
+    pool.close().await;
+    handle.force_flush().expect("flush");
+
+    let payloads = capture.0.lock().unwrap();
+    assert_eq!(payloads.len(), 1);
+    let request = ExportMetricsServiceRequest::decode(payloads[0].as_slice()).expect("valid OTLP");
+    let mut names: Vec<_> = request
+        .resource_metrics
+        .iter()
+        .flat_map(|resource| &resource.scope_metrics)
+        .flat_map(|scope| &scope.metrics)
+        .map(|metric| metric.name.as_str())
+        .collect();
+    names.sort_unstable();
+    assert!(names.contains(&"monty.pool.workers.live"));
+    assert!(names.contains(&"monty.run.duration"));
 }
 
 /// A session that runs one snippet: the common shape a host's metrics cover.
@@ -130,8 +257,7 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
 
     // pre-warming adds one live worker which is immediately available
     let live = capture.latest("monty.pool.workers.live");
-    assert_eq!(live.value, MetricValue::I64(1));
-    assert_eq!(live.kind, MetricKind::UpDownCounter);
+    assert_eq!(live.value, Value::I64(1));
     assert_eq!(capture.total("monty.pool.workers.idle"), 1);
 
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
@@ -143,7 +269,7 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
     checkout.finish().await.expect("finish");
 
     // the pre-warmed worker was reused, so nothing waited and nothing spawned
-    assert_eq!(capture.named("monty.pool.checkout.wait").len(), 1);
+    assert_eq!(capture.latest("monty.pool.checkout.wait").count, 1);
     capture.last("monty.pool.checkout.wait", "outcome", "idle");
     assert_eq!(capture.total("monty.pool.workers.live"), 1);
     assert_eq!(capture.total("monty.pool.workers.idle"), 1);
@@ -156,7 +282,7 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
     // `print` writes 3 bytes including its newline
     assert_eq!(
         capture.last("monty.print.bytes", "stream", "stdout").value,
-        MetricValue::I64(3)
+        Value::U64(3)
     );
     assert!(capture.has("monty.wire.frame.bytes"));
     capture.last("monty.wire.frame.bytes", "direction", "received");
@@ -166,7 +292,7 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
     pool.close().await;
     assert_eq!(
         capture.last("monty.pool.worker.terminated", "reason", "closed").value,
-        MetricValue::I64(1)
+        Value::U64(1)
     );
     assert_eq!(capture.total("monty.pool.workers.live"), 0);
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
@@ -223,7 +349,7 @@ async fn a_crashed_worker_is_counted_as_it_is_torn_down() {
 
     // exactly once: the crash is counted where the slot is released, not at
     // both the teardown and the drop that follows it
-    assert_eq!(capture.named("monty.pool.worker.terminated").len(), 1);
+    assert_eq!(capture.latest("monty.pool.worker.terminated").value, Value::U64(1));
     capture.last("monty.pool.worker.terminated", "reason", "crash");
     assert_eq!(capture.total("monty.pool.workers.live"), 0);
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
@@ -239,8 +365,7 @@ async fn a_dropped_pool_counts_its_idle_workers() {
     let (pool, capture) = pool_with_metrics(config).await;
 
     drop(pool);
-    let closed = capture.named("monty.pool.worker.terminated");
-    assert_eq!(closed.len(), 2);
+    assert_eq!(capture.latest("monty.pool.worker.terminated").value, Value::U64(2));
     capture.last("monty.pool.worker.terminated", "reason", "closed");
     assert_eq!(capture.total("monty.pool.workers.live"), 0);
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
@@ -250,9 +375,7 @@ async fn a_dropped_pool_counts_its_idle_workers() {
 /// pool removes exactly its remaining live and idle contribution.
 #[tokio::test]
 async fn worker_counts_sum_across_pools_and_drop_cleanly() {
-    let capture = Arc::new(Capture::default());
-    let handle = configure_telemetry_adapter(Arc::clone(&capture) as Arc<dyn TelemetryAdapter>).expect("configure");
-    let metrics = handle.metrics();
+    let (metrics, capture) = Capture::new();
 
     let mut first_config = PoolConfig::subprocess(monty_binary());
     first_config.min_processes = 1;
@@ -313,7 +436,7 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
     assert!(capture.has("monty.run.execution_time"));
     assert_eq!(
         capture.last("monty.print.bytes", "stream", "stdout").value,
-        MetricValue::I64(3)
+        Value::U64(3)
     );
 }
 
