@@ -7,9 +7,7 @@ def capture_error(template, value):
 
 
 long_int = 10**20
-assert '{:b}'.format(long_int) == (
-    '1010110101111000111010111100010110101100011000100000000000000000000'
-)
+assert '{:b}'.format(long_int) == ('1010110101111000111010111100010110101100011000100000000000000000000')
 assert '{:f}'.format(long_int) == '100000000000000000000.000000'
 assert '{:F}'.format(long_int) == '100000000000000000000.000000'
 assert '{:e}'.format(long_int) == '1.000000e+20'
