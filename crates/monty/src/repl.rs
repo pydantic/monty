@@ -3,6 +3,11 @@
 //! This module implements incremental snippet execution where each new snippet
 //! is compiled and executed against persistent heap/namespace state without
 //! replaying previously executed snippets.
+//!
+//! The session's compiler tables (`NameMap`, `Interns`) are append-only and are
+//! *moved* into each snippet's `Executor` and back via `commit_executor`, never
+//! cloned, so the cost of a feed depends on the snippet, not on how much the
+//! session has already run.
 
 use std::mem;
 
@@ -19,7 +24,7 @@ use crate::{
     bytecode::{FrameExit, VM, VMSnapshot},
     exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapData, HeapReader},
-    intern::{InternerBuilder, Interns},
+    intern::Interns,
     name_map::NameMap,
     object_bridge::MontyObjectExt,
     run::{CompileOptions, Executor},
@@ -46,8 +51,14 @@ pub struct MontyRepl {
     /// Counter for generated `<python-input-N>` execution filenames.
     next_input_id: u64,
     /// Stable mapping of global variable names to namespace slot IDs.
+    ///
+    /// Moved into each snippet's `Executor` rather than cloned (see
+    /// [`commit_executor`](Self::commit_executor)); empty while a snippet is in
+    /// flight or suspended, when the executor's copy is authoritative.
     global_names: NameMap,
     /// Persistent intern table across snippets so intern/function IDs remain valid.
+    ///
+    /// Same ownership hand-off as `global_names`.
     interns: Interns,
     /// Source text of every snippet that has been fed, keyed by its
     /// generated script name (`<python-input-N>`).
@@ -87,7 +98,7 @@ impl MontyRepl {
             script_name: script_name.to_owned(),
             next_input_id: 0,
             global_names: NameMap::new(),
-            interns: Interns::new(InternerBuilder::default(), Vec::new()),
+            interns: Interns::default(),
             sources: AHashMap::new(),
             options,
             heap,
@@ -169,8 +180,8 @@ impl MontyRepl {
         let executor = match Executor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
-            this.global_names.clone(),
-            &this.interns,
+            &mut this.global_names,
+            &mut this.interns,
             &input_names,
             this.options,
         ) {
@@ -209,7 +220,10 @@ impl MontyRepl {
             Ok((converted, vm_state))
         }) {
             Ok((converted, vm_state)) => build_repl_progress(converted, vm_state, executor, this),
-            Err(error) => Err(Box::new(ReplStartError { repl: this, error })),
+            Err(error) => {
+                this.commit_executor(executor);
+                Err(Box::new(ReplStartError { repl: this, error }))
+            }
         }
     }
 
@@ -244,8 +258,8 @@ impl MontyRepl {
         let executor = Executor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
-            self.global_names.clone(),
-            &self.interns,
+            &mut self.global_names,
+            &mut self.interns,
             &input_names,
             self.options,
         )?;
@@ -272,22 +286,16 @@ impl MontyRepl {
             // Reclaim globals before cleanup.
             self.globals = vm.take_globals();
             Ok(result)
-        })?;
+        });
 
         // Commit compiler metadata even on runtime errors.
         // Snippets can mutate globals before raising, and those values may contain
         // FunctionId/StringId values that must be interpreted with the updated tables.
-        let Executor {
-            globals: snippet_globals,
-            interns,
-            ..
-        } = executor;
-        self.global_names = snippet_globals;
-        self.interns = interns;
+        self.commit_executor(executor);
 
         // Resolve every traceback frame against the source of the snippet that
         // produced it — frames from earlier snippets live in `self.sources`.
-        result.map_err(|e| e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)))
+        result?.map_err(|e| e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)))
     }
 
     /// Calls a Python function defined in the session by name.
@@ -318,6 +326,8 @@ impl MontyRepl {
         }
 
         let input_script_name = self.next_input_script_name();
+        // The name map is cloned (it is small) so the temporary args slot is
+        // never committed; the interns move into the executor and back.
         let executor = Executor::new_repl_function_call(
             name,
             name_id,
@@ -325,7 +335,7 @@ impl MontyRepl {
             args.len(),
             &input_script_name,
             self.global_names.clone(),
-            &self.interns,
+            &mut self.interns,
             self.options,
         )?;
         self.sources.insert(input_script_name, executor.code.clone());
@@ -419,6 +429,20 @@ impl MontyRepl {
             let idx = ns_id.index();
             idx < self.globals.len() && is_callable(&self.globals[idx], &self.heap)
         })
+    }
+
+    /// Takes the session's compiler tables back from a finished snippet's executor.
+    ///
+    /// [`Executor::new_repl_snippet`] moves `global_names` and `interns` into the
+    /// executor instead of cloning them, so this must run on *every* path that
+    /// is done with an executor — success, runtime error, or abandoning a
+    /// suspended snippet. Skipping it would leave the session with empty
+    /// tables while globals still hold `FunctionId`/`StringId` values from
+    /// the snippet.
+    fn commit_executor(&mut self, executor: Executor) {
+        let Executor { globals, interns, .. } = executor;
+        self.global_names = globals;
+        self.interns = interns;
     }
 
     /// Grows the globals vector to at least `size` slots.
@@ -775,10 +799,18 @@ impl ReplResolveFutures {
     /// cancelled or abandoned async snippet must put those globals back so
     /// previously defined REPL bindings remain available, and releases the
     /// suspended tasks and stack so nothing leaks into the session heap.
+    /// The compiler tables are committed too: the abandoned snippet may have
+    /// rebound a global to a function or literal only they can resolve.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl {
-        let Self { mut repl, vm_state, .. } = self;
+        let Self {
+            mut repl,
+            executor,
+            vm_state,
+            ..
+        } = self;
         repl.globals = vm_state.abandon(&mut repl.heap);
+        repl.commit_executor(executor);
         repl
     }
 
@@ -843,7 +875,10 @@ impl ReplResolveFutures {
             Ok((converted, vm_state))
         }) {
             Ok((converted, vm_state)) => build_repl_progress(converted, vm_state, executor, repl),
-            Err(error) => Err(Box::new(ReplStartError { repl, error })),
+            Err(error) => {
+                repl.commit_executor(executor);
+                Err(Box::new(ReplStartError { repl, error }))
+            }
         }
     }
 }
@@ -954,10 +989,16 @@ impl ReplSnapshot {
     ///
     /// When a snapshot is taken, globals live inside the `VMSnapshot`; the rest
     /// of the in-flight state is released so the abandoned snippet leaks nothing
-    /// into the session heap.
+    /// into the session heap. The compiler tables are committed because the
+    /// restored globals may reference ids the abandoned snippet appended.
     fn into_repl(self) -> MontyRepl {
-        let Self { mut repl, vm_state, .. } = self;
+        let Self {
+            mut repl,
+            executor,
+            vm_state,
+        } = self;
         repl.globals = vm_state.abandon(&mut repl.heap);
+        repl.commit_executor(executor);
         repl
     }
 
@@ -1062,13 +1103,7 @@ fn build_repl_progress(
 
     match converted {
         ConvertedExit::Complete(obj) => {
-            let Executor {
-                globals: snippet_globals,
-                interns,
-                ..
-            } = executor;
-            repl.global_names = snippet_globals;
-            repl.interns = interns;
+            repl.commit_executor(executor);
             Ok(ReplProgress::Complete { repl, value: obj })
         }
         ConvertedExit::FunctionCall {
@@ -1112,13 +1147,7 @@ fn build_repl_progress(
             // Commit compiler metadata even on runtime errors, matching feed() behavior.
             // Snippets can create new variables or functions before raising, and those
             // values may reference FunctionId/StringId values from the new tables.
-            let Executor {
-                globals: snippet_globals,
-                interns,
-                ..
-            } = executor;
-            repl.global_names = snippet_globals;
-            repl.interns = interns;
+            repl.commit_executor(executor);
             Err(Box::new(ReplStartError { repl, error }))
         }
     }
