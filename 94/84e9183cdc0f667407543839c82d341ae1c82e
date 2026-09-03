@@ -1,0 +1,38 @@
+docs/quickstart/rust.md
+  s_34fcf3b35380bb::t_ab4de0691d32dc 85-87,94-97,100-102,193-196
+crates/monty-js/ts/worker/serve.ts
+  s_34fcf3b35380bb::t_2e32b47134f994 23-24
+crates/monty-js/ts/worker/transport.ts
+  s_34fcf3b35380bb::t_ab4de0691d32dc 72-73,83-84,233,259-264,266,293-296
+crates/monty-js/__test__/limits.spec.ts
+  s_34fcf3b35380bb::t_ab4de0691d32dc 166-178,180-181
+  s_34fcf3b35380bb::t_e3e4f33963ae2d 179
+crates/monty-js/ts/worker/component/interfaces/pydantic-monty-worker.d.ts
+  s_34fcf3b35380bb::t_7802ea3d478c13 491
+crates/monty-python/README.md
+  s_34fcf3b35380bb::t_ab4de0691d32dc 53,58-60
+crates/monty-wasm-runtime/src/lib.rs
+  s_34fcf3b35380bb::t_ab4de0691d32dc 50,52,60,78,88,112
+crates/monty-proto/src/worker.rs
+  s_34fcf3b35380bb::t_ab4de0691d32dc 155-156,163-164,335-339,352
+crates/monty-js/ts/worker/channel.ts
+  s_34fcf3b35380bb::t_2e32b47134f994 84
+crates/monty-wasm-runtime/wit/runtime.wit
+  s_34fcf3b35380bb::t_ab4de0691d32dc 352-354
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9484e9183cdc0f667407543839c82d341ae1c82e",
+  "prompts": {},
+  "sessions": {
+    "s_34fcf3b35380bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a066b5-4b72-7741-a2c9-d830a4b9fbb6",
+        "model": "gpt-daybreak-blue-latest"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
