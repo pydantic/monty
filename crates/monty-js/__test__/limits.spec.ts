@@ -163,3 +163,19 @@ test('suspension limit leaves the session usable', async () => {
   t.is(error.display('msg'), 'suspension limit exceeded: 2 > 1')
   t.is(await session.feedRun('1 + 1'), 2)
 })
+
+test('restored session keeps its suspension limit with a fresh count', async () => {
+  const fetch = () => 'ok'
+  let state: Buffer
+  {
+    await using session = await pool().checkout({ limits: { maxSuspensions: 1 } })
+    t.is(await session.feedRun("fetch('x')", { externalLookup: { fetch } }), 'ok')
+    state = await session.dump()
+  }
+
+  await using restored = await pool().checkout()
+  await restored.loadSession(state)
+  t.is(await restored.feedRun("fetch('y')", { externalLookup: { fetch } }), 'ok')
+  const error = await t.throwsAsync(() => restored.feedRun("fetch('z')", { externalLookup: { fetch } }), isRuntimeError)
+  t.is(error.display('msg'), 'suspension limit exceeded: 2 > 1')
+})

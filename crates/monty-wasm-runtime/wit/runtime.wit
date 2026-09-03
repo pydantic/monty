@@ -349,6 +349,9 @@ interface worker {
         status: status,
         /// Buffered prints followed by exactly one turn-ending event.
         events: list<event>,
+        /// The current session's suspension limit. A host uses this after
+        /// `load`, whose dump replaces the configured session limits.
+        max-suspensions: option<u64>,
     }
 
     /// Handles one semantic request using the retained child.

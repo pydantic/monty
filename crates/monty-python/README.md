@@ -50,10 +50,14 @@ installed as part of the `pydantic-monty` meta-package.
 from pydantic_monty import Monty
 
 with Monty() as pool:
-    with pool.checkout() as session:
+    with pool.checkout(limits={'max_suspensions': 100}) as session:
         print(session.feed_run('1 + 2'))
         #> 3
 ```
+
+`max_suspensions` limits external calls, OS callbacks, name lookups and future-resolution turns for one checkout.
+The pool ends the feed with an uncatchable `RuntimeError` on the suspension past the limit.
+The session remains usable for code that does not suspend, but the suspension count remains spent.
 
 or in async code:
 

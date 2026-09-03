@@ -69,8 +69,8 @@ export class WorkerTransport {
   private dead = false
 
   /** `maxSuspensions`, and how many suspensions this session has produced. */
-  private suspensionLimit: number | undefined
-  private suspensionsSeen = 0
+  private suspensionLimit: bigint | undefined
+  private suspensionsSeen = 0n
 
   /** Reports whether the worker can return to its pool when the session ends. */
   onFinish?: (reusable: boolean) => void
@@ -80,7 +80,8 @@ export class WorkerTransport {
   /** Creates a configured REPL session over `dispatcher`. */
   static async create(dispatcher: Dispatcher, config: WorkerSessionConfig = {}): Promise<WorkerTransport> {
     const transport = new WorkerTransport(dispatcher)
-    transport.suspensionLimit = config.limits?.maxSuspensions
+    transport.suspensionLimit =
+      config.limits?.maxSuspensions === undefined ? undefined : BigInt(config.limits.maxSuspensions)
     const assertMessageAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
     await transport.control(
       {
@@ -229,7 +230,7 @@ export class WorkerTransport {
     }
     const event = await this.run({ tag: 'load', val: state }, onPrint)
     if (!event) return crashed('worker exited without a turn-ending event')
-    return event.tag === 'ok' ? { kind: 'loaded' } : this.toTurn(event)
+    return event.tag === 'ok' ? { kind: 'loaded' } : this.enforceSuspensionLimit(this.toTurn(event), onPrint)
   }
 
   /** Resets a live worker for reuse and disposes a dead worker. */
@@ -255,9 +256,14 @@ export class WorkerTransport {
   /** Sends one request and converts its terminating event into a native turn. */
   private async turn(request: ComponentRequest, onPrint: OnPrint): Promise<NativeTurn> {
     const event = await this.run(request, onPrint)
-    let turn = event ? this.toTurn(event) : crashed('worker exited without a turn-ending event')
+    const turn = event ? this.toTurn(event) : crashed('worker exited without a turn-ending event')
+    return this.enforceSuspensionLimit(turn, onPrint)
+  }
+
+  /** Counts a suspension and aborts the feed when it exceeds the session limit. */
+  private async enforceSuspensionLimit(turn: NativeTurn, onPrint: OnPrint): Promise<NativeTurn> {
     if (isSuspension(turn)) {
-      this.suspensionsSeen++
+      this.suspensionsSeen += 1n
       // the suspension past `maxSuspensions` is never handed out: the feed is
       // ended in the sandbox with an uncatchable RuntimeError, as monty-pool does
       if (this.suspensionLimit !== undefined && this.suspensionsSeen > this.suspensionLimit) {
@@ -284,6 +290,10 @@ export class WorkerTransport {
     try {
       const result = await this.dispatcher(request)
       if (result.status === 'shutdown') this.dead = true
+      if (request.tag === 'load') {
+        this.suspensionLimit = result.maxSuspensions
+        this.suspensionsSeen = 0n
+      }
       events = result.events
     } catch {
       return null

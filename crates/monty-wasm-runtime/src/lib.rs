@@ -47,8 +47,9 @@ struct Component;
 impl Guest for Component {
     fn dispatch(request: Request) -> DispatchResult {
         let (result, allocator_ready) = CHILD.with_borrow_mut(|child| {
-            let result = dispatch(child, request);
+            let mut result = dispatch(child, request);
             let budget = child.session_budget();
+            result.max_suspensions = budget.max_suspensions.map(|limit| limit as u64);
             let allocator_ready = monty_alloc::set_limit(budget.max_memory, budget.type_check);
             (result, allocator_ready)
         });
@@ -56,6 +57,7 @@ impl Guest for Component {
             DispatchResult {
                 status: Status::Shutdown,
                 events: vec![Event::FatalError(error.to_owned())],
+                max_suspensions: result.max_suspensions,
             }
         } else {
             result
@@ -73,6 +75,7 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
                 events: vec![event_from_proto(protocol_violation(&format!(
                     "malformed component request: {error}"
                 )))],
+                max_suspensions: None,
             };
         }
     };
@@ -82,6 +85,7 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
             events: vec![event_from_proto(child.fatal_event(&format!(
                 "request frame of {len} bytes exceeds maximum of {MAX_FRAME_LEN} bytes"
             )))],
+            max_suspensions: None,
         };
     }
 
@@ -105,6 +109,7 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
             Status::Shutdown
         },
         events: sink.events,
+        max_suspensions: None,
     }
 }
 

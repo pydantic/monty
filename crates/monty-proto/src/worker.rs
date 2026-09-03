@@ -152,14 +152,16 @@ fn dispatch_into(child: &mut Child, request_frame: &[u8], sink: &mut VecEventSin
 }
 
 /// The sandbox budget of the child's current session, as a host outside the
-/// interpreter sees it. Both fields describe how much memory the session may
-/// need: the tracked budget, and whether type checking's untracked caches load.
+/// interpreter sees it. Hosts use the memory fields to arm their allocator and
+/// `max_suspensions` when restoring parent-side suspension accounting.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SessionBudget {
     /// `max_memory` in bytes; `None` when unlimited, or when no session exists.
     pub max_memory: Option<usize>,
     /// Whether the session type checks each fed snippet.
     pub type_check: bool,
+    /// Maximum suspensions the host may service; enforced outside the child.
+    pub max_suspensions: Option<usize>,
 }
 
 /// REPL session state of the child.
@@ -330,6 +332,11 @@ impl Child {
                     .and_then(|limits| limits.max_memory_bytes)
                     .map(|v| usize::try_from(v).unwrap_or(usize::MAX)),
                 type_check: config.type_check,
+                max_suspensions: config
+                    .limits
+                    .as_ref()
+                    .and_then(|limits| limits.max_suspensions)
+                    .map(|v| usize::try_from(v).unwrap_or(usize::MAX)),
             },
             SessionState::Configured(None) => SessionBudget::default(),
             SessionState::Ready(repl) => self.tracker_budget(repl.tracker()),
@@ -342,6 +349,7 @@ impl Child {
         SessionBudget {
             max_memory: tracker.max_memory(),
             type_check: self.type_check.is_some(),
+            max_suspensions: tracker.max_suspensions(),
         }
     }
 
