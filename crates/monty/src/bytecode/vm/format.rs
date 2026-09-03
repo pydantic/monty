@@ -7,7 +7,10 @@ use crate::{
     bytecode::op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC},
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
-    fstring::{ParsedFormatSpec, decode_format_spec, format_string, format_with_spec, validate_string_spec},
+    fstring::{
+        ParseFormatSpecError, ParsedFormatSpec, decode_format_spec, format_string, format_with_spec,
+        validate_string_spec,
+    },
     heap::HeapReadOutput,
     string_builder::StringBuilder,
     types::{
@@ -92,10 +95,9 @@ impl VM<'_> {
             if let Some(formatted) = self.try_format_temporal(value, format_spec)? {
                 Ok(formatted)
             } else {
-                let spec = {
-                    let value_type = value.py_type_name(self);
-                    Self::parse_runtime_format_spec(format_spec, &value_type)?
-                };
+                let spec = format_spec
+                    .parse::<ParsedFormatSpec>()
+                    .map_err(|err| Self::spec_error(&err, &value.py_type_name(self)))?;
                 self.format_parsed_value(value, 0, &spec)
             }
         } else {
@@ -105,7 +107,9 @@ impl VM<'_> {
 
     /// Formats an already-converted string from a runtime format spec.
     pub(crate) fn format_runtime_string(&mut self, value: &str, format_spec: &str) -> Result<String, RunError> {
-        let spec = Self::parse_runtime_format_spec(format_spec, "str")?;
+        let spec = format_spec
+            .parse::<ParsedFormatSpec>()
+            .map_err(|err| Self::spec_error(&err, "str"))?;
         self.format_parsed_string(value, &spec)
     }
 
@@ -191,16 +195,15 @@ impl VM<'_> {
         formatted.map(Some)
     }
 
-    /// Adds the value type only to errors where CPython does.
-    fn parse_runtime_format_spec(format_spec: &str, value_type: &str) -> Result<ParsedFormatSpec, RunError> {
-        format_spec.parse::<ParsedFormatSpec>().map_err(|err| {
-            let message = if err.needs_type_suffix() {
-                format!("{err} for object of type '{value_type}'")
-            } else {
-                err.to_string()
-            };
-            RunError::Exc(SimpleException::new_msg(ExcType::ValueError, message).into())
-        })
+    /// Builds CPython's `ValueError` for a bad runtime spec, adding the value
+    /// type only where CPython does; callers look the type up only on this path.
+    fn spec_error(err: &ParseFormatSpecError, value_type: &str) -> RunError {
+        let message = if err.needs_type_suffix() {
+            format!("{err} for object of type '{value_type}'")
+        } else {
+            err.to_string()
+        };
+        RunError::Exc(SimpleException::new_msg(ExcType::ValueError, message).into())
     }
 }
 

@@ -923,7 +923,14 @@ fn timeout_in_str_format_parser() {
     repl.feed_run("template = '{' + 'x' * 20_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
 
-    repl.tracker_mut().set_max_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("template.format()", vec![], PrintWriter::Stdout)
+        .expect_err("an unterminated field must fail without a time limit");
+    let full_scan = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::ValueError);
+
+    repl.tracker_mut().set_max_duration(full_scan / 10);
     let start = Instant::now();
     let exc = repl
         .feed_run("template.format()", vec![], PrintWriter::Stdout)
@@ -932,8 +939,8 @@ fn timeout_in_str_format_parser() {
 
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     assert!(
-        elapsed < Duration::from_secs(2),
-        "str.format() should terminate promptly, took {elapsed:?}"
+        elapsed < full_scan / 2,
+        "str.format() should stop during the scan; full scan {full_scan:?}, timed scan {elapsed:?}"
     );
 }
 
