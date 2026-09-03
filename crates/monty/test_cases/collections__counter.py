@@ -242,6 +242,8 @@ assert repr(Counter({'a': True})) == "Counter({'a': True})", 'a bool count is no
 # === total() sums the real values ===
 assert Counter({'a': 1.5, 'b': 2}).total() == 3.5, 'total() adds floats as floats'
 assert Counter({'a': 2**70}).total() == 1180591620717411303424, 'total() preserves big ints'
+assert Counter({'a': 3.5, 'b': 2**70}).total() == 1.1805916207174113e21
+assert Counter({'a': 2**70, 'b': 3.5}).total() == 1.1805916207174113e21
 assert Counter().total() == 0, 'total() of an empty Counter is 0'
 # A count that cannot be added raises part-way through the fold, so the running
 # total and the counts after the bad one must not leak.
@@ -253,6 +255,8 @@ except TypeError as e:
 
 # === Arithmetic uses real numeric addition ===
 assert dict(Counter({'a': 1.5}) + Counter({'a': 1.5})) == {'a': 3.0}, '+ adds floats'
+assert dict(Counter({'a': 3.5}) + Counter({'a': 2**70})) == {'a': 1.1805916207174113e21}
+assert dict(Counter({'a': 2**70}) + Counter({'a': 3.5})) == {'a': 1.1805916207174113e21}
 assert dict(Counter({'a': 3.5}) - Counter({'a': 1.0})) == {'a': 2.5}, '- subtracts floats'
 assert dict(Counter({'a': 3.5}) & Counter({'a': 1.5})) == {'a': 1.5}, '& takes the float minimum'
 assert dict(Counter({'a': 3.5}) | Counter({'a': 1.5})) == {'a': 3.5}, '| takes the float maximum'

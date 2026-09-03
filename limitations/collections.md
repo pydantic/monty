@@ -71,9 +71,6 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
   order match, but the whole sequence is built up front, so a very large count
   can hit the memory limit where CPython would stream.
 - **Crosses the host boundary as a plain `dict`.**
-- **Mixing `float` and big-int counts raises `TypeError`** (`Counter({'a': 3.5})
-  + Counter({'a': 2**70})`, and `total()` over such a mix). This is Monty's
-  general arithmetic limitation: `3.5 + 2**70` raises identically.
 - **In-place `c &= [list]`** (a non-mapping) subscripts `other[elem]` like
   CPython and raises `TypeError`, but with Monty's list-index wording (`list
   indices must be integers, not 'str'` vs CPython's `... or slices, not str`).

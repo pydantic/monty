@@ -1534,6 +1534,18 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "int too large to convert to float").into()
     }
 
+    /// Creates the OverflowError raised when converting an infinite float to an integer.
+    #[must_use]
+    fn overflow_float_infinity_to_integer() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "cannot convert float infinity to integer").into()
+    }
+
+    /// Creates the ValueError raised when converting NaN to an integer.
+    #[must_use]
+    fn value_error_float_nan_to_integer() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "cannot convert float NaN to integer").into()
+    }
+
     /// Creates a ValueError for a zero modulus passed to `pow`.
     #[must_use]
     fn value_error_pow_modulus_zero() -> RunError {
