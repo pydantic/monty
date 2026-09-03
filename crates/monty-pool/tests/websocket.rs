@@ -802,6 +802,114 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
     join_server(server).await;
 }
 
+/// A raw `Load` the child refuses (a session already exists) must not reset
+/// the suspension count: the reply's stamped limit describes the session that
+/// is still live, so its budget stays as it was.
+#[tokio::test]
+async fn rejected_raw_load_keeps_the_suspension_count() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        let function_call = |call_id: u32| {
+            event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall {
+                function_name: "fetch".to_owned(),
+                args: vec![],
+                kwargs: vec![],
+                call_id,
+                object_id: None,
+            }))
+        };
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        send_event(&mut socket, &function_call(1));
+        // the child's refusal: an ordinary Error, stamped like every reply
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
+        send_event(
+            &mut socket,
+            &pb::ChildEvent {
+                kind: Some(pb::child_event::Kind::Error(pb::Error {
+                    exception: Some(pb::RaisedException {
+                        exc_type: "RuntimeError".to_owned(),
+                        message: Some("protocol violation: Load requires a session that has not started".to_owned()),
+                        traceback: vec![],
+                        data: None,
+                    }),
+                })),
+                max_suspensions: Some(1),
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::ResumeCall(_)
+        ));
+        send_event(&mut socket, &function_call(2));
+        let pb::parent_request::Kind::AbortFeed(abort) = read_request(&mut socket) else {
+            panic!("expected AbortFeed");
+        };
+        let exception = abort.exception.expect("abort carries the exception");
+        assert_eq!(exception.message.as_deref(), Some("suspension limit exceeded: 2 > 1"));
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::Error(pb::Error {
+                exception: Some(exception),
+            })),
+        );
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(1)),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "fetch()".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let event = checkout.turn_raw(&feed, &mut on_event).await.expect("feed");
+    assert!(matches!(event.kind, Some(pb::child_event::Kind::FunctionCall(_))));
+    let load = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        ..pb::ParentRequest::default()
+    };
+    let event = checkout.turn_raw(&load, &mut on_event).await.expect("refused load");
+    assert!(matches!(event.kind, Some(pb::child_event::Kind::Error(_))));
+    let resume = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id: 1,
+            result: Some(pb::ExtFunctionResult {
+                kind: Some(pb::ext_function_result::Kind::ReturnValue(WireObject::new(
+                    MontyObject::None,
+                ))),
+            }),
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let event = checkout.turn_raw(&resume, &mut on_event).await.expect("aborted turn");
+    let Some(pb::child_event::Kind::Error(error)) = event.kind else {
+        panic!("expected the abort's Error, got {event:?}");
+    };
+    assert_eq!(
+        error.exception.and_then(|e| e.message).as_deref(),
+        Some("suspension limit exceeded: 2 > 1")
+    );
+    drop(checkout);
+    join_server(server).await;
+}
+
 /// Restores `max_suspensions` from the worker's `Load` reply.
 #[tokio::test]
 async fn restored_session_readopts_the_suspension_limit() {

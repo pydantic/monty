@@ -414,11 +414,7 @@ impl Child {
             // no repl materialized yet → no tracker to report
             SessionState::Configured(_) => return,
         };
-        event.total_execution_micros = u64::try_from(tracker.elapsed().as_micros()).unwrap_or(u64::MAX);
-        event.max_duration_micros = tracker
-            .max_duration()
-            .map(|max| u64::try_from(max.as_micros()).unwrap_or(u64::MAX));
-        event.max_suspensions = tracker.max_suspensions().map(|max| max as u64);
+        stamp_budget(event, tracker);
     }
 
     /// Stores the session config; the repl is built lazily by [`ensure_repl`]
@@ -785,11 +781,15 @@ impl Child {
                         result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
                         continue;
                     }
-                    let event = suspension_event_os_call(&mut call);
+                    let mut event = suspension_event_os_call(&mut call);
+                    let progress = ReplProgress::OsCall(call);
+                    // stamped before the size check, so the frame measured is
+                    // the frame `handle` sends
+                    stamp_budget(&mut event, progress.tracker());
                     if let Some(message) = oversize_suspension_error_message(&event) {
-                        return self.abort_feed_with_runtime_error(call.into_repl(), &message);
+                        return self.abort_feed_with_runtime_error(progress.into_repl(), &message);
                     }
-                    self.state = SessionState::Suspended(Box::new(ReplProgress::OsCall(call)));
+                    self.state = SessionState::Suspended(Box::new(progress));
                     return event;
                 }
                 Ok(ReplProgress::FunctionCall(mut call)) => {
@@ -801,11 +801,13 @@ impl Child {
                         result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
                         continue;
                     }
-                    let event = suspension_event_function_call(&mut call);
+                    let mut event = suspension_event_function_call(&mut call);
+                    let progress = ReplProgress::FunctionCall(call);
+                    stamp_budget(&mut event, progress.tracker());
                     if let Some(message) = oversize_suspension_error_message(&event) {
-                        return self.abort_feed_with_runtime_error(call.into_repl(), &message);
+                        return self.abort_feed_with_runtime_error(progress.into_repl(), &message);
                     }
-                    self.state = SessionState::Suspended(Box::new(ReplProgress::FunctionCall(call)));
+                    self.state = SessionState::Suspended(Box::new(progress));
                     return event;
                 }
                 Ok(mut progress) => {
@@ -924,10 +926,22 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
     }))
 }
 
+/// Stamps `tracker`'s timing and parent-enforced limits onto an event. Called
+/// again by [`Child::handle`] just before sending, so a suspension announcement
+/// is size-checked with the stamps it will carry.
+fn stamp_budget(event: &mut pb::ChildEvent, tracker: &ResourceTracker) {
+    event.total_execution_micros = u64::try_from(tracker.elapsed().as_micros()).unwrap_or(u64::MAX);
+    event.max_duration_micros = tracker
+        .max_duration()
+        .map(|max| u64::try_from(max.as_micros()).unwrap_or(u64::MAX));
+    event.max_suspensions = tracker.max_suspensions().map(|max| max as u64);
+}
+
 /// Describes a suspension announcement that would exceed the wire frame limit.
 ///
 /// The child turns this into a host-visible error before entering the
 /// suspension, because the parent cannot resume a call it never received.
+/// The event must already carry its session stamps (see [`stamp_budget`]).
 fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
     exceeds_max_frame_len(event)
         .map(|len| format!("argument frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"))

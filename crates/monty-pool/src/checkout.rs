@@ -460,20 +460,28 @@ impl Checkout {
         self.ensure_ready()?;
         let feed_mounts = Self::build_feed_mounts(mounts);
         // the dump carries its own limits/consumed time/script name — forget
-        // what the worker's Configure established and re-adopt from the reply
+        // what the worker's Configure established and re-adopt from the reply.
+        // Snapshotted so a rejected `Load` (the child already has a session)
+        // cannot reset the suspension count, see `turn_raw`.
         self.pending = None;
+        let saved_budget = self.budget;
         self.budget.forget();
         self.restored_script_name = None;
         self.feed_mounts = feed_mounts;
         let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
         let event = match self
             .request_turn(&request, self.pool.config.request_timeout, on_print)
-            .await?
+            .await
         {
-            ControlEvent::Ok => None,
-            ControlEvent::Turn(event) => Some(event),
-            other @ ControlEvent::Dump(_) => {
+            Ok(ControlEvent::Ok) => None,
+            Ok(ControlEvent::Turn(event)) => Some(event),
+            Ok(other @ ControlEvent::Dump(_)) => {
+                self.budget = saved_budget;
                 return Err(self.protocol_violation(format!("unexpected reply to Load: {other:?}")));
+            }
+            Err(err) => {
+                self.budget = saved_budget;
+                return Err(err);
             }
         };
         Ok((event, self.restored_script_name.take()))
@@ -926,8 +934,10 @@ impl Checkout {
             ));
         }
         // As `restore`: forget the Configure-time budget and re-adopt the
-        // dump's from the reply's budget fields. Snapshotted because the
-        // pre-send frame-size rejection leaves the session live.
+        // dump's from the reply's budget fields. Snapshotted because a `Load`
+        // the child does not act on (the pre-send frame-size rejection, or the
+        // child refusing it once a session exists) must not reset the count a
+        // hostile client is trying to escape.
         let saved_budget = matches!(request.kind, Some(pb::parent_request::Kind::Load(_))).then_some(self.budget);
         if saved_budget.is_some() {
             self.budget.forget();
@@ -945,11 +955,14 @@ impl Checkout {
             None => self.turn_io_raw(request, on_event).await,
         };
         self.turn_in_flight = false;
-        // an error with the worker still alive is the pre-send frame-size
-        // rejection: the `Load` never reached the child, put the budget back
+        // only a reply confirming the dump was adopted (idle: `Ok`, suspended:
+        // the re-announced suspension) carries the dump's budget; anything
+        // else means the session the budget belongs to is still the live one
+        let load_adopted = outcome
+            .as_ref()
+            .is_ok_and(|event| matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) || is_suspension(event));
         if let Some(budget) = saved_budget
-            && outcome.is_err()
-            && self.worker.is_some()
+            && !load_adopted
         {
             self.budget = budget;
         }

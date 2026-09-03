@@ -11,7 +11,8 @@ use std::{
 };
 
 use monty_proto::{
-    FrameError, FrameReader, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireObject, pb, write_frame,
+    FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireFunctionCall,
+    WireObject, exceeds_max_frame_len, pb, write_frame,
 };
 use monty_types::MontyObject;
 
@@ -346,7 +347,72 @@ fn abort_feed_round_trip() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "RuntimeError");
     assert_eq!(error.message.as_deref(), Some("suspension limit exceeded: 4 > 3"));
-    assert_eq!(error.traceback[0].start.map(|loc| loc.line), Some(3));
+    assert_eq!(
+        error
+            .traceback
+            .first()
+            .and_then(|frame| frame.start.map(|loc| loc.line)),
+        Some(3)
+    );
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// A suspension announcement is size-checked *with* its session stamps: one
+/// that fits `MAX_FRAME_LEN` only before the stamps are added must be refused
+/// as the clean oversized-argument error, not fail at send time and kill the
+/// worker (the parent would never learn the resume point).
+///
+/// Allocates ~256 MiB several times over (sizing here, the sandbox string, its
+/// wire copy), so it is memory-heavy; disable it if it proves flaky in CI.
+#[test]
+fn near_limit_suspension_is_refused_cleanly() {
+    let announcement = |arg_len: usize| pb::ChildEvent {
+        kind: Some(pb::child_event::Kind::FunctionCall(WireFunctionCall {
+            function_name: "f".to_owned(),
+            args: vec![MontyObject::String("x".repeat(arg_len))],
+            kwargs: vec![],
+            call_id: 1,
+            object_id: None,
+        })),
+        ..Default::default()
+    };
+    // Size the argument so the unstamped announcement is exactly
+    // `MAX_FRAME_LEN`: shrink an oversize probe by its excess, then walk up
+    // past the length varints that lose a byte as the sizes they describe
+    // drop below 2^28 (= `MAX_FRAME_LEN`).
+    let probe = MAX_FRAME_LEN as usize + 16;
+    let probe_len = exceeds_max_frame_len(&announcement(probe)).expect("probe exceeds the limit") as usize;
+    let mut arg_len = probe - (probe_len - MAX_FRAME_LEN as usize);
+    while exceeds_max_frame_len(&announcement(arg_len + 1)).is_none() {
+        arg_len += 1;
+    }
+    assert!(exceeds_max_frame_len(&announcement(arg_len)).is_none());
+
+    let mut child = ChildProc::spawn();
+    // a configured limit is stamped on every reply, so the sent frame is
+    // always larger than the unstamped announcement
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: Some(pb::ResourceLimits {
+            max_suspensions: Some(5),
+            ..Default::default()
+        }),
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        ..Default::default()
+    });
+    let (_, event) = child.feed(&format!("f('x' * {arg_len})"));
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "RuntimeError");
+    assert!(
+        error
+            .message
+            .as_deref()
+            .is_some_and(|m| m.starts_with("argument frame of ") && m.contains("exceeds the maximum of")),
+        "unexpected message: {:?}",
+        error.message
+    );
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
     child.shutdown();
 }

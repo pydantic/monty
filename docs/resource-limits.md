@@ -29,7 +29,7 @@ with Monty() as pool:
 | `max_duration_secs` | Maximum cumulative execution time in seconds |
 | `max_recursion_depth` | Maximum function call stack depth (default 1000) |
 | `gc_interval` | Run garbage collection every N allocations |
-| `max_suspensions` | Maximum host round trips (external calls, `os` callbacks, name lookups) per session |
+| `max_suspensions` | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session |
 
 Every key is optional.
 Omit `max_memory`, `max_duration_secs` or `max_suspensions`, or set them to `None`, to disable that limit.
@@ -111,6 +111,8 @@ adds an instance-store entry.
 Because `max_duration_secs` pauses during suspensions, a snippet could otherwise retry rejected calls indefinitely.
 
 The pool enforces the limit per checkout.
+A host driving the interpreter directly counts suspensions and calls `abort` itself; the limit only travels in the
+`ResourceTracker`, see the [Rust quickstart](quickstart/rust.md).
 The first suspension over the budget aborts the feed with an uncatchable
 `RuntimeError: suspension limit exceeded: 4 > 3` at the call site.
 The session stays consistent and can be dumped; later feeds run until they suspend.

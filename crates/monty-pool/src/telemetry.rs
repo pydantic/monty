@@ -292,8 +292,9 @@ impl Recorder {
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_duration_micros = max_duration,
-                    // filled in by the answering `ResumeCall`
+                    // filled in by the answering `ResumeCall`, or an `AbortFeed`
                     return_value = Empty,
+                    aborted_with = Empty,
                 ));
                 self.pending = Some(OpenSpan::new(span, cut));
             }
@@ -308,8 +309,9 @@ impl Recorder {
                     name = name,
                     total_execution_micros = micros,
                     max_duration_micros = max_duration,
-                    // filled in by the answering `ResumeNameLookup`
+                    // filled in by the answering `ResumeNameLookup`, or an `AbortFeed`
                     value = Empty,
+                    aborted_with = Empty,
                     length_limit_exceeded = cut.then_some(true),
                 ));
                 self.pending = Some(OpenSpan::new(span, cut));
@@ -323,6 +325,8 @@ impl Recorder {
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_duration_micros = max_duration,
+                    // filled in by an `AbortFeed`
+                    aborted_with = Empty,
                 ));
                 self.pending = Some(OpenSpan::new(span, cut));
             }
@@ -629,8 +633,9 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
                 call_id = call_id,
                 total_execution_micros = micros,
                 max_duration_micros = max_duration,
-                // filled in by the answering `ResumeCall`
+                // filled in by the answering `ResumeCall`, or an `AbortFeed`
                 return_value = Empty,
+                aborted_with = Empty,
                 length_limit_exceeded = Empty,
             )
         };
