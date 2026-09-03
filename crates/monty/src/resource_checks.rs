@@ -2,21 +2,6 @@ use monty_types::{ExcType, LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracke
 
 use crate::exception_private::{RunError, SimpleException};
 
-const MAX_NATIVE_ALLOCATION: usize = isize::MAX as usize;
-
-/// Rejects capacities above `isize::MAX`: `String::with_capacity` panics on them
-/// before the allocator can refuse, so `StringBuilder` fences them.
-pub(crate) fn check_native_allocation_size(size: usize) -> Result<(), ResourceError> {
-    if size > MAX_NATIVE_ALLOCATION {
-        Err(ResourceError::Memory {
-            limit: MAX_NATIVE_ALLOCATION,
-            used: size,
-        })
-    } else {
-        Ok(())
-    }
-}
-
 /// Pre-checks that an operation producing `item_len * count` bytes won't exceed resource limits.
 ///
 /// Used for sequence repeats (`'x' * 999_999_999`), padding operations

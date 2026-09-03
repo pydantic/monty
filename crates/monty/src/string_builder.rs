@@ -38,10 +38,7 @@ use std::{fmt, mem};
 
 use monty_types::{ResourceError, ResourceTracker};
 
-use crate::{
-    exception_private::RunResult, heap::Heap, resource_checks::check_native_allocation_size,
-    types::str::allocate_string, value::Value,
-};
+use crate::{exception_private::RunResult, heap::Heap, types::str::allocate_string, value::Value};
 
 /// Resource-tracked builder for a `String`.
 ///
@@ -100,7 +97,7 @@ impl<'t> StringBuilder<'t> {
     /// width). One up-front check covers pushes within `capacity`.
     pub fn with_capacity(capacity: usize, tracker: &'t ResourceTracker) -> Result<Self, ResourceError> {
         tracker.check_allocation(capacity)?;
-        check_native_allocation_size(capacity)?;
+        check_string_capacity(capacity)?;
         Ok(Self {
             inner: String::with_capacity(capacity),
             tracker,
@@ -154,9 +151,24 @@ impl<'t> StringBuilder<'t> {
             let new_capacity = self.approved_capacity.saturating_mul(2).max(needed);
             let additional = new_capacity - self.approved_capacity;
             self.tracker.check_allocation(additional)?;
-            check_native_allocation_size(new_capacity)?;
+            check_string_capacity(new_capacity)?;
             self.approved_capacity = new_capacity;
         }
+        Ok(())
+    }
+}
+
+const MAX_STRING_CAPACITY: usize = isize::MAX as usize;
+
+/// A capacity above `isize::MAX` panics inside the reservation itself, before
+/// the allocator can refuse it, so both reservation paths fence it here.
+fn check_string_capacity(capacity: usize) -> Result<(), ResourceError> {
+    if capacity > MAX_STRING_CAPACITY {
+        Err(ResourceError::Memory {
+            limit: MAX_STRING_CAPACITY,
+            used: capacity,
+        })
+    } else {
         Ok(())
     }
 }
