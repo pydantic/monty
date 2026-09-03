@@ -1,0 +1,27 @@
+docs/cli.md
+  s_271e2e5f7e6236::t_355516e6eaf8dd 35
+crates/monty-pool/src/checkout.rs
+  s_271e2e5f7e6236::t_355516e6eaf8dd 6,266-269,389-399,450,889-893,895-899,909-918,926-929,1477
+crates/monty-js/__test__/limits.spec.ts
+  s_271e2e5f7e6236::t_355516e6eaf8dd 6,177-201
+crates/monty-js/ts/worker/transport.ts
+  s_271e2e5f7e6236::t_355516e6eaf8dd 265-271
+crates/monty-pool/tests/websocket.rs
+  s_271e2e5f7e6236::t_355516e6eaf8dd 745-834
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1d995b9b35d4ba3646feac6d821b18e072a68ef3",
+  "prompts": {},
+  "sessions": {
+    "s_271e2e5f7e6236": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "28715a05-405e-4de1-b7c1-3fc083970255",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
