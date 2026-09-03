@@ -380,8 +380,8 @@ make lint-rs              Lint Rust code with clippy and import checks
 make clippy-fix           Fix Rust code with clippy
 make generate-proto       Regenerate monty-proto's checked-in code from the .proto schema
 make check-proto          Verify monty-proto's checked-in code matches the .proto schema
-make generate-api-docs    Regenerate the Rust API reference in docs/api/rust/ from rustdoc JSON
-make check-api-docs       Verify the checked-in docs/api/rust/ pages match the public Rust API
+make generate-api-docs    Generate the Rust API reference into docs/api/rust/ (gitignored) from rustdoc JSON
+make docs-dev             Preview this checkout in a sibling pydantic/unified-docs checkout (../unified-docs)
 make lint-py              Lint Python code with ruff
 make lint                 Lint the code with ruff and clippy
 make test-no-features     Run rust tests without any features enabled
@@ -992,7 +992,11 @@ The list of stdlib modules in `docs/python-subset.md` must be updated if a new s
 - `make test-docs` applies the Python checks above and compiles Rust snippets in `docs/quickstart/rust.md`.
   TypeScript snippets are not checked.
 - `make docs` builds the site with `--strict`, which fails on a broken internal link or a
-  page missing from the nav. `make docs-serve` previews it.
+  page missing from the nav. `make docs-serve` previews it. Both first run
+  `make generate-api-docs`, which writes the gitignored `docs/api/rust/` pages; CI's
+  `publish-docs` job publishes those with `docs/` to the `docs-source` branch that
+  pydantic.dev reads, and `make docs-dev` previews this checkout in a sibling
+  `unified-docs` checkout.
 - The `docs-parity-reviewer` subagent (`.agents/agents/docs-parity-reviewer.md`) is the
   documentation gate before merge. It reports; it does not edit.
 - The `review-general` skill treats a missing `docs/` or `limitations/` update as a

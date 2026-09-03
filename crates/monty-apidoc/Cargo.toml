@@ -5,13 +5,13 @@ license = { workspace = true }
 rust-version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
-description = "Generates the checked-in Rust API reference in docs/api/ from rustdoc JSON"
+description = "Generates the Rust API reference in docs/api/rust/ from rustdoc JSON"
 publish = false
 
 [dependencies]
 # Exact pin: the rustdoc JSON format is unstable and this version must match
 # the FORMAT_VERSION produced by the pinned nightly in src/main.rs — bump both
-# together so `make check-api-docs` (regenerate + git diff) is reproducible.
+# together (and the nightly installed by CI).
 rustdoc-types = "=0.61.0"
 serde_json = { workspace = true }
 

@@ -1,11 +1,13 @@
-//! Generates the checked-in Rust API reference under `docs/api/rust/`.
+//! Generates the Rust API reference under `docs/api/rust/`.
 //!
-//! Run via `make generate-api-docs`; `make check-api-docs` regenerates and
-//! diffs in CI so the pages can never drift from the code. Each crate in
-//! [`CRATES`] is documented by the pinned nightly rustdoc's JSON output and
-//! rendered to one markdown page, built into the mkdocs site and synced to
-//! pydantic.dev — so the output must be MDX-safe (signatures only inside
-//! fences or backticks) and may not contain broken links (`mkdocs --strict`).
+//! Run via `make generate-api-docs`. The output is gitignored: CI's
+//! `publish-docs` job regenerates it on every push to `main` and publishes it
+//! with the rest of `docs/` to the `docs-source` branch that pydantic.dev
+//! reads, so the pages cannot drift from the code. Each crate in [`CRATES`]
+//! is documented by the pinned nightly rustdoc's JSON output and rendered to
+//! one markdown page, built into the mkdocs site and synced to pydantic.dev —
+//! so the output must be MDX-safe (signatures only inside fences or
+//! backticks) and may not contain broken links (`mkdocs --strict`).
 
 use std::{
     fs,
