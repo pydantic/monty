@@ -58,7 +58,9 @@ pub struct ReplConfig {
     ///
     /// Output is always flushed before a suspension or a turn ends, so this
     /// only sets how long live output may lag — never what arrives, or in
-    /// what order. Sub-millisecond values round down to zero on the wire.
+    /// what order. The wire carries whole milliseconds, so a positive interval
+    /// below 1 ms is sent as 1 ms rather than rounding down into the
+    /// line-buffering sentinel.
     pub print_flush_interval: Option<Duration>,
 }
 
@@ -460,11 +462,7 @@ impl Checkout {
             protocol_version: PROTOCOL_VERSION,
             // Diagnostic only, so a rejection can report both builds.
             monty_version: MONTY_VERSION.to_owned(),
-            // Saturating: an interval past `u32::MAX` milliseconds is absurd
-            // rather than meaningful, and the turn-end flush bounds it anyway.
-            print_flush_interval_ms: repl
-                .print_flush_interval
-                .map(|interval| u32::try_from(interval.as_millis()).unwrap_or(u32::MAX)),
+            print_flush_interval_ms: repl.print_flush_interval.map(flush_interval_ms),
         }));
         let mut this = Self {
             worker: Some(worker),
@@ -1547,6 +1545,20 @@ impl Drop for Checkout {
         }
         #[cfg(feature = "telemetry")]
         self.record_finish("abandoned");
+    }
+}
+
+/// Encodes a print flush interval as whole milliseconds for the wire.
+///
+/// Zero is the explicit line-buffering sentinel, so a *positive* interval must
+/// never round down into it — anything under a millisecond is sent as 1 ms.
+/// Saturates at the top: an interval past `u32::MAX` milliseconds is absurd
+/// rather than meaningful, and the turn-end flush bounds it anyway.
+fn flush_interval_ms(interval: Duration) -> u32 {
+    if interval.is_zero() {
+        0
+    } else {
+        u32::try_from(interval.as_millis()).unwrap_or(u32::MAX).max(1)
     }
 }
 

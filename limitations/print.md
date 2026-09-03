@@ -61,7 +61,10 @@ out the flush interval (5 ms by default), so:
 Hosts can set the interval per session: `print_flush_interval` (seconds) in
 `pydantic_monty`, `printFlushInterval` (seconds) in `@pydantic/monty`, and
 `ReplConfig::print_flush_interval` in Rust. `0` turns the timer off and
-restores line buffering, one callback per completed line.
+restores line buffering, one callback per completed line. The wire carries
+whole milliseconds, so a positive interval under 1 ms is sent as 1 ms rather
+than rounding down into that sentinel, and a negative or non-finite value is
+rejected at checkout.
 
 The wasm worker takes the same setting, but it does not stream: a turn's
 frames all reach the host together when the turn ends, whatever the interval.

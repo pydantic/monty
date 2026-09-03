@@ -52,6 +52,27 @@ test('a zero flush interval delivers one callback per line', async () => {
   )
 })
 
+test('a negative or non-finite flush interval is rejected', async () => {
+  // The wasm component encodes the interval as `val >>> 0`, which would wrap a
+  // negative into a ~50-day timer, so both backends reject it at checkout.
+  for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const thrown = await t.throwsAsync(() => run('print(1)', { printFlushInterval: bad }))
+    t.true(
+      thrown.message.startsWith('invalid printFlushInterval'),
+      `expected a named rejection for ${bad}, got ${thrown.message}`,
+    )
+  }
+})
+
+test('a sub-millisecond flush interval does not become line buffering', async () => {
+  // Zero is the line-buffering sentinel, so a positive interval must not round
+  // down into it: 100 prints would arrive as 100 callbacks if it had.
+  const { output, callback } = makePrintCollector()
+  await run('for i in range(100):\n    print(i)', { printCallback: callback, printFlushInterval: 0.0004 })
+  t.is(output.join(''), Array.from({ length: 100 }, (_, i) => `${i}\n`).join(''))
+  t.true(output.length < 100, `expected batching, got one callback per line (${output.length})`)
+})
+
 test('with values', async () => {
   const { output, callback } = makePrintCollector()
   await run('print("The answer is", 42)', { printCallback: callback })

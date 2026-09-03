@@ -2105,6 +2105,33 @@ async fn dump_survives_worker_death_and_loads_elsewhere() {
     restored.finish().await.unwrap();
 }
 
+/// Zero is the explicit line-buffering sentinel, so a positive interval must
+/// never round down into it. 100 prints would arrive as 100 events if the
+/// sub-millisecond interval had truncated to zero; any batching at all proves
+/// the timer is still on.
+#[tokio::test]
+async fn a_sub_millisecond_interval_does_not_become_line_buffering() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::from_micros(400)),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let mut events = 0usize;
+    session
+        .feed(
+            "for i in range(100):\n    print(i)",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, _: &str| events += 1),
+        )
+        .await
+        .unwrap();
+    assert!(events < 100, "expected batching, got one event per line ({events})");
+    session.finish().await.unwrap();
+}
+
 /// A `Load` restores the repl without materializing the checkout's stored
 /// `Configure`, so the print flush interval has to be adopted when that config
 /// arrives — otherwise a restored session silently falls back to the default

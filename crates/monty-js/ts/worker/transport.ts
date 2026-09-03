@@ -26,6 +26,22 @@ import { decodeValue, encodeValue } from './value.js'
 
 type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
 
+/**
+ * Encodes a print flush interval (seconds) as whole milliseconds for the WIT
+ * `u32`, mirroring `monty-pool`'s `flush_interval_ms`.
+ *
+ * The component encodes a `u32` as `val >>> 0`, which would silently wrap a
+ * negative or non-finite value into a huge interval, so reject those here.
+ * Zero is the line-buffering sentinel, so a positive interval never rounds
+ * down into it.
+ */
+function flushIntervalMs(interval: number): number {
+  if (!Number.isFinite(interval) || interval < 0) {
+    throw new TypeError(`invalid printFlushInterval: expected a non-negative number of seconds, got ${interval}`)
+  }
+  return interval === 0 ? 0 : Math.min(Math.max(Math.floor(interval * 1000), 1), 0xffffffff)
+}
+
 /** Resource limits mirrored from the napi pool; the transport enforces `maxSuspensions`. */
 export interface ResourceLimits {
   maxDurationSecs?: number
@@ -97,8 +113,7 @@ export class WorkerTransport {
           typeCheckColor: config.typeCheckColor ?? false,
           ...(config.printFlushInterval === undefined
             ? {}
-            : // truncated, matching the subprocess path's `Duration::as_millis`
-              { printFlushIntervalMs: Math.floor(config.printFlushInterval * 1000) }),
+            : { printFlushIntervalMs: flushIntervalMs(config.printFlushInterval) }),
         },
       },
       'ok',
