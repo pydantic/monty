@@ -1,0 +1,55 @@
+limitations/resource_limits.md
+  s_0dddb5d39d9a85::t_b73f4be96e37fb 157
+crates/monty-python/python/pydantic_monty/__init__.py
+  s_0dddb5d39d9a85::t_5ddc3a8bf9474a 115-117
+crates/monty-runtime/tests/subprocess.rs
+  s_0dddb5d39d9a85::t_b73f4be96e37fb 341,349
+crates/monty-pool/tests/websocket.rs
+  s_0dddb5d39d9a85::t_b73f4be96e37fb 690,740,796,852,904,965,1008,1147
+  s_0dddb5d39d9a85::t_5ddc3a8bf9474a 1013-1099
+crates/monty-proto/src/worker.rs
+  s_0dddb5d39d9a85::t_5ddc3a8bf9474a 726-728
+crates/monty-runtime/src/run.rs
+  s_0dddb5d39d9a85::t_b73f4be96e37fb 585
+crates/monty/tests/abort.rs
+  s_0dddb5d39d9a85::t_b73f4be96e37fb 49,58
+  s_0dddb5d39d9a85::t_6d2ae5cb1ea85e 12
+crates/monty-pool/src/checkout.rs
+  s_0dddb5d39d9a85::t_b73f4be96e37fb 388
+  s_0dddb5d39d9a85::t_6d2ae5cb1ea85e 354-355,385,881,885
+  s_0dddb5d39d9a85::t_5ddc3a8bf9474a 267-272,363-367,435,481-482,484,488,490-495,850-864,867-870,874-879,974-977,992-993
+crates/monty-js/__test__/limits.spec.ts
+  s_0dddb5d39d9a85::t_b73f4be96e37fb 154,163,172,189
+docs/quickstart/python.md
+  s_0dddb5d39d9a85::t_6d2ae5cb1ea85e 206
+crates/monty-proto/tests/dispatch.rs
+  s_0dddb5d39d9a85::t_b73f4be96e37fb 264,277
+crates/monty-js/ts/worker/transport.ts
+  s_0dddb5d39d9a85::t_b73f4be96e37fb 262
+crates/monty-python/tests/test_limits.py
+  s_0dddb5d39d9a85::t_1511fa6938160f 142
+  s_0dddb5d39d9a85::t_b73f4be96e37fb 120,124
+docs/resource-limits.md
+  s_0dddb5d39d9a85::t_b73f4be96e37fb 118
+crates/monty-pool/tests/pool_test.rs
+  s_0dddb5d39d9a85::t_5ddc3a8bf9474a 712-730
+  s_0dddb5d39d9a85::t_b73f4be96e37fb 1530,1542,1583
+crates/monty-types/src/resource.rs
+  s_0dddb5d39d9a85::t_5ddc3a8bf9474a 79-83,268-269
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "782220053f39290175a18562fbed9321cc9496e9",
+  "prompts": {},
+  "sessions": {
+    "s_0dddb5d39d9a85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4ff5acd4-3351-4ad9-a7b8-0662afd66a41",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
