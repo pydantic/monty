@@ -1831,8 +1831,12 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Set> {
 }
 
 impl<'h> PyDeepCopy<'h> for HeapRead<'h, FrozenSet> {
-    /// Copies a frozenset. It cannot hold a mutable container, so it cannot be
-    /// part of a cycle, so its items can be made before the copy exists.
+    /// Copies a frozenset, building its members before the copy exists.
+    ///
+    /// A hashable member can point back at the frozenset, so a cycle is
+    /// possible, but CPython reduces one through `_reconstruct`, which copies
+    /// the members before it memoises and so rebuilds a second frozenset for
+    /// the back-reference. Memoising an empty shell here would diverge.
     #[inline(never)]
     fn py_deep_copy(&self, _source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
         let len = self.get(vm.heap).len();
