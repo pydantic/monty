@@ -1481,10 +1481,8 @@ async fn suspension_time_does_not_consume_the_duration_budget() {
     session.finish().await.unwrap();
 }
 
-/// `max_suspensions` is the pool's own limit: the suspension past the budget
-/// is never handed to the caller — the feed ends with an uncatchable
-/// `RuntimeError` naming the limit — and the session stays usable for feeds
-/// that do not suspend, while any later suspension fails at once.
+/// The pool aborts the first suspension past the limit uncatchably. The
+/// session remains usable, but its suspension budget stays spent.
 #[tokio::test]
 async fn suspension_limit_aborts_the_feed() {
     let pool = Pool::new(config()).await.unwrap();

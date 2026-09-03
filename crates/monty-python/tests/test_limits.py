@@ -101,9 +101,6 @@ def test_session_exhausted_after_resource_error_but_worker_reusable(pool: Monty)
 
 
 def test_suspension_limit(pool: Monty):
-    """`max_suspensions` is enforced by the pool: the suspension past the budget ends the
-    feed with an uncatchable `RuntimeError`, the session stays usable, and the count is
-    per checkout so a later suspending feed fails on its first suspension."""
     code = """
 n = 0
 while True:

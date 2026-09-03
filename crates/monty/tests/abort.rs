@@ -1,6 +1,4 @@
-//! Tests for aborting a suspended feed: the host raises an exception at the
-//! suspension point instead of answering it, uncatchably, so a snippet that
-//! retries refused calls cannot continue — how `max_suspensions` is enforced.
+//! Tests that hosts can abort suspended feeds uncatchably to enforce limits.
 
 use insta::assert_snapshot;
 use monty::{MontyRepl, MontyRun, RunProgress};
@@ -35,9 +33,7 @@ fn start(code: &str) -> RunProgress {
     progress
 }
 
-/// The issue's shape: every refused call is caught and retried. Aborting the
-/// external call ends the run even though the call sits inside `except
-/// Exception`, and the traceback points at the call.
+/// Aborting bypasses broad `Exception` handlers and records the call in the traceback.
 #[test]
 fn abort_external_call_is_uncatchable() {
     let code = "\
@@ -66,8 +62,7 @@ retry()
     "#);
 }
 
-/// OS calls abort the same way; the read's pending buffer-store effect is
-/// rolled back (checked by the refcount harness) rather than applied to nothing.
+/// Aborting an OS call rolls back its pending buffer-store effect.
 #[test]
 fn abort_os_call_after_open() {
     let code = "\
@@ -95,7 +90,7 @@ except Exception:
     assert_eq!(exc.traceback().len(), 1);
 }
 
-/// A name lookup can be aborted before it is ever resolved.
+/// Covers suspension before the host provides a lookup value.
 #[test]
 fn abort_name_lookup() {
     let run = MontyRun::new(
@@ -116,8 +111,7 @@ fn abort_name_lookup() {
     assert_eq!(exc.traceback()[0].start.line, 1);
 }
 
-/// Aborting while blocked on external futures — after a partial resolution,
-/// the re-suspension that a host would count as one more round trip.
+/// Covers a second suspension after partial future resolution.
 #[test]
 fn abort_resolve_futures_after_partial_resolution() {
     let code = "\
@@ -156,13 +150,11 @@ await main()
     assert_eq!(exc.exc_type(), ExcType::RuntimeError);
 }
 
-/// A REPL abort hands the session back usable: globals set before the
-/// aborted snippet survive, and nothing after the suspension ran.
+/// A REPL abort preserves earlier globals and skips code after the suspension.
 #[test]
 fn repl_abort_keeps_the_session_usable() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run("x = 41", vec![], PrintWriter::Stdout).unwrap();
-    // calling an unknown name suspends at FunctionCall directly
     let call = repl
         .feed_start("fetch('x')\nx = 0", vec![], PrintWriter::Stdout)
         .unwrap()

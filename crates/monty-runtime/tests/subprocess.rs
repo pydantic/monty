@@ -324,9 +324,7 @@ fn external_function_round_trip() {
     child.shutdown();
 }
 
-/// The parent's way to end a feed it will not answer: the exception is
-/// raised uncatchably at the suspended call — the retry loop from
-/// pydantic/monty#736 cannot swallow it — and the session survives.
+/// `AbortFeed` raises the supplied error uncatchably and keeps the session usable.
 #[test]
 fn abort_feed_round_trip() {
     let mut child = ChildProc::spawn();

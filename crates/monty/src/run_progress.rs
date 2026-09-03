@@ -192,8 +192,7 @@ impl FunctionCall {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 
-    /// Ends the feed by raising `exc` uncatchably at the suspended call; see
-    /// [`OsCall::abort`].
+    /// Aborts the feed with an uncatchable exception; see [`OsCall::abort`].
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
         self.snapshot.abort(exc, print)
     }
@@ -264,11 +263,8 @@ impl OsCall {
 
     /// Ends the feed by raising `exc` uncatchably at the suspended call.
     ///
-    /// The host's alternative to answering: the exception unwinds every
-    /// frame for its traceback and no `except` in the sandbox can catch it,
-    /// so a snippet retrying refused calls stops here. Any pending file effect
-    /// is rolled back. The heap stays consistent — a REPL session remains
-    /// usable afterwards. Always returns `Err`, carrying the traceback.
+    /// The exception builds a traceback but bypasses sandbox handlers. Pending
+    /// file effects roll back. Always returns `Err`.
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
         self.snapshot.abort(exc, print)
     }
@@ -364,8 +360,7 @@ impl NameLookup {
         &self.snapshot.heap.tracker
     }
 
-    /// Ends the feed by raising `exc` uncatchably at the suspended lookup; see
-    /// [`OsCall::abort`].
+    /// Aborts the feed with an uncatchable exception; see [`OsCall::abort`].
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
         self.snapshot.abort(exc, print)
     }
@@ -613,8 +608,7 @@ impl ResolveFutures {
         &self.heap.tracker
     }
 
-    /// Ends the feed by raising `exc` uncatchably in the blocked task; see
-    /// [`OsCall::abort`]. Pending futures are abandoned with the run.
+    /// Aborts with an uncatchable exception and abandons pending futures.
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
         let Self {
             executor,
@@ -799,7 +793,7 @@ impl Snapshot {
         build_run_progress(converted, vm_state, executor, heap)
     }
 
-    /// Raises `exc` uncatchably at the suspension point instead of answering it.
+    /// Raises `exc` uncatchably at the suspension point.
     pub(crate) fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
         let Self {
             executor,
@@ -810,9 +804,7 @@ impl Snapshot {
     }
 }
 
-/// Restores the suspended VM and raises `exc` as an uncatchable exception
-/// where it stopped: every frame unwinds into the traceback, no handler runs,
-/// and an armed OS effect is rolled back. Shared by every suspension kind.
+/// Restores the VM and aborts uncatchably, rolling back any armed OS effect.
 fn abort_restored(
     executor: Executor,
     vm_state: VMSnapshot,

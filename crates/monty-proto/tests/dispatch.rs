@@ -236,8 +236,7 @@ fn load_rejects_dump_with_over_deep_suspension_args() {
     assert_eq!(expect_complete(event), MontyObject::Int(2));
 }
 
-/// Decodes a turn's frames keeping the whole `ChildEvent`, for the budget
-/// fields stamped beside the kind.
+/// Decodes complete events, including their session budget fields.
 fn decode_full_events(bytes: &[u8]) -> Vec<pb::ChildEvent> {
     let mut reader = FrameReader::new(bytes);
     let mut events = Vec::new();
@@ -247,9 +246,7 @@ fn decode_full_events(bytes: &[u8]) -> Vec<pb::ChildEvent> {
     events
 }
 
-/// `AbortFeed` ends a suspended feed with the parent's exception raised
-/// uncatchably at the suspension — the `except` around the call never runs —
-/// and the session stays usable for the next feed.
+/// `AbortFeed` raises the supplied error uncatchably and leaves the session usable.
 #[test]
 fn abort_feed_ends_a_suspended_feed_uncatchably() {
     let mut child = Child::default();

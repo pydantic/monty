@@ -79,11 +79,10 @@ export interface CheckoutOptions {
 }
 
 /**
- * Sandbox resource limits. An omitted field means "unlimited", except
- * `maxRecursionDepth`, which falls back to its 1000-frame default and cannot
- * be disabled. `maxSuspensions` is enforced by the pool rather than the
- * sandbox: the suspension past the budget ends the feed with an uncatchable
- * `RuntimeError`, and the count is per checkout.
+ * Sandbox resource limits. Omitted fields are unlimited except
+ * `maxRecursionDepth`, which retains its 1000-frame default. The pool counts
+ * `maxSuspensions` per checkout and aborts an over-budget feed with an
+ * uncatchable `RuntimeError`.
  */
 export interface ResourceLimits {
   maxDurationSecs?: number

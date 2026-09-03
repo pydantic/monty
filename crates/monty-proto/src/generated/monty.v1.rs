@@ -333,12 +333,9 @@ pub struct StackFrame {
     #[prost(bool, tag = "7")]
     pub hide_frame_name: bool,
 }
-/// Sandbox resource limits. Absent fields mean "unlimited" except recursion
-/// depth, which defaults to monty's standard limit (1000) when absent. All but
-/// `max_suspensions` are enforced inside the child; `max_suspensions` is the
-/// budget the *parent* enforces by counting the suspensions it services and
-/// ending the feed with `AbortFeed` — the child only stores it (so it travels
-/// in dumps) and echoes it on `ChildEvent.max_suspensions`.
+/// Sandbox resource limits. Absent fields are unlimited except recursion depth,
+/// which defaults to 1000. The parent enforces `max_suspensions`; the child only
+/// retains it for dumps and echoes it on `ChildEvent`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResourceLimits {
     #[prost(uint64, optional, tag = "1")]
@@ -506,14 +503,9 @@ pub struct Feed {
     #[prost(bool, tag = "3")]
     pub skip_type_check: bool,
 }
-/// Ends a suspended feed instead of answering its suspension — whichever kind
-/// (`FunctionCall`, `OsCall`, `NameLookup`, `ResolveFutures`) is pending. The
-/// exception is raised at the suspension point uncatchably: every frame
-/// unwinds into its traceback and no `except` runs, so a snippet retrying
-/// refused calls cannot continue. The session survives (the reply is an
-/// `Error` turn-ender) and later feeds work. This is how the parent enforces
-/// `ResourceLimits.max_suspensions`, and a general host tool for ending a feed.
-/// Valid only while a suspension is pending.
+/// Ends a pending suspension by raising `exception` uncatchably at its site.
+/// The session returns ready in an `Error` event. Hosts use this to stop a feed,
+/// including when `max_suspensions` is exceeded.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AbortFeed {
     #[prost(message, optional, tag = "1")]
@@ -619,9 +611,8 @@ pub struct ChildEvent {
     /// state bytes) still learns the budget.
     #[prost(uint64, optional, tag = "21")]
     pub max_duration_micros: ::core::option::Option<u64>,
-    /// The session's `max_suspensions` budget, when one is configured — the
-    /// parent enforces it (see `AbortFeed`), so this is only how a parent that
-    /// restored a session via `Load` learns the budget the dump carries.
+    /// Echoes the parent-enforced budget so a host restoring an opaque dump can
+    /// recover it.
     #[prost(uint64, optional, tag = "23")]
     pub max_suspensions: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that

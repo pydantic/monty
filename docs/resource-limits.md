@@ -104,19 +104,17 @@ could abort the process.
 
 ## Suspensions
 
-`max_suspensions` bounds how many times a session may suspend to your process: every external function call,
-host-object method call or construction, lazy attribute lookup, `os` callback, name lookup and future resolution.
-Each is a round trip that costs the host memory the sandbox limits cannot see, most visibly a
-[`ClassType`](host-objects.md) with `init=True`, where every construction adds an entry to the host's instance store.
-A snippet that catches each refused call and retries forever would otherwise produce an unbounded stream of them while
-`max_duration_secs` sits paused and `max_memory` sees nothing.
+`max_suspensions` counts external calls, host-object method calls and construction, lazy attribute lookups, `os`
+callbacks, name lookups and future-resolution events.
+These host round trips are outside `max_memory`; each [`ClassType`](host-objects.md) construction with `init=True` also
+adds an instance-store entry.
+Because `max_duration_secs` pauses during suspensions, a snippet could otherwise retry rejected calls indefinitely.
 
-It is enforced by the pool, not the sandbox: the pool counts the suspensions it answers, and on the one past the budget
-it ends the feed with `RuntimeError: suspension limit exceeded: 4 > 3`, raised uncatchably at the suspending call with a
-full traceback.
-The count is per checkout and is never reset, so every later feed that suspends fails on its first suspension.
-Feeds that do not suspend keep working, the session stays consistent, and it can still be dumped.
-A restored dump keeps the limit but starts counting from zero.
+The pool enforces the limit per checkout.
+The first suspension over the budget aborts the feed with an uncatchable
+`RuntimeError: suspension limit exceeded: 4 > 3` at the call site.
+The session stays consistent and can be dumped; later feeds run until they suspend.
+Restoring a dump preserves the limit but resets the count to zero.
 
 ## What is not covered
 
@@ -141,8 +139,8 @@ A memory or time limit is **terminal**.
 Sandboxed code cannot catch it, and once it fires **no guarantees are made about heap state or reference counts** — the
 heap may hold orphaned objects with wrong refcounts.
 Discard the session rather than continuing to run code in it.
-A suspension limit is also uncatchable, but the feed ends cleanly, so reading results out of the session afterwards is
-fine; only further suspending code is refused.
+`max_suspensions` also raises uncatchably, but ends the feed cleanly.
+The session remains usable until code suspends again.
 
 The pool does **not** do this for you.
 The checkout stays open and accepts further `feed_run` calls.

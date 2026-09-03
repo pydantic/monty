@@ -2432,7 +2432,7 @@ impl RawStackFrame {
 /// Three variants:
 /// - `Internal`: Bug in interpreter implementation (static message)
 /// - `Exc`: Python exception that can be caught by try/except (when implemented)
-/// - `UncatchableExc`: Python exception from resource limits that CANNOT be caught
+/// - `UncatchableExc`: Python exception from a resource limit or host abort
 ///
 /// `Clone` is implemented so an error can be cached for later re-raising
 /// (e.g. a failed `GatherFuture` replaying the same exception on every
@@ -2444,12 +2444,9 @@ pub(crate) enum RunError {
     Internal(Cow<'static, str>),
     /// Catchable Python exception (e.g., ValueError, TypeError).
     Exc(ExceptionRaise),
-    /// Uncatchable Python exception: a resource limit (MemoryError,
-    /// TimeoutError) or a host aborting a suspended feed.
+    /// Uncatchable Python exception from a resource limit or host abort.
     ///
-    /// These exceptions display with proper tracebacks like normal Python exceptions,
-    /// but cannot be caught by try/except blocks. This prevents untrusted code from
-    /// suppressing resource limit violations or a host's decision to end the feed.
+    /// Displays a normal traceback but bypasses `try`/`except` blocks.
     UncatchableExc(ExceptionRaise),
 }
 
@@ -2494,21 +2491,14 @@ impl From<fmt::Error> for RunError {
 }
 
 impl RunError {
-    /// Whether this is a catchable `StopIteration`, i.e. a `__next__` reporting
-    /// exhaustion.
+    /// Whether this is a catchable `StopIteration` from `__next__`.
     ///
-    /// Excluding `UncatchableExc` is defensive — it is only ever built from a
-    /// `ResourceError` or a host abort — but spelled out so a future uncatchable
-    /// variant cannot read as "the iterator finished", letting sandboxed code
-    /// absorb its own limit breach.
+    /// Matching only `Exc` prevents uncatchable errors being mistaken for exhaustion.
     pub(crate) fn is_stop_iteration(&self) -> bool {
         matches!(self, Self::Exc(raise) if matches!(raise.exc.exc_type(), ExcType::StopIteration))
     }
 
-    /// Wraps a host-supplied exception so that, raised into the sandbox, it
-    /// unwinds every frame for its traceback and no `except` can catch it —
-    /// how a host ends a suspended feed for its own reasons (a suspension
-    /// budget, a policy decision) without the sandbox retrying.
+    /// Wraps a host exception so it builds a traceback but bypasses `except`.
     pub(crate) fn uncatchable(exc: MontyException) -> Self {
         Self::UncatchableExc(exc.into())
     }

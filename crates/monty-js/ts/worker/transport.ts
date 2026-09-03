@@ -26,11 +26,7 @@ import { decodeValue, encodeValue } from './value.js'
 
 type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
 
-/**
- * Resource limits, mirroring the napi pool's. All but `maxSuspensions` are
- * enforced inside the worker; that one the transport enforces itself by
- * counting the suspensions it services.
- */
+/** Resource limits mirrored from the napi pool; the transport enforces `maxSuspensions`. */
 export interface ResourceLimits {
   maxDurationSecs?: number
   maxMemory?: number
@@ -68,7 +64,6 @@ export class WorkerTransport {
   /** Whether a crash or channel error made this worker unreusable. */
   private dead = false
 
-  /** `maxSuspensions`, and how many suspensions this session has produced. */
   private suspensionLimit: bigint | undefined
   private suspensionsSeen = 0n
 
@@ -264,8 +259,7 @@ export class WorkerTransport {
   private async enforceSuspensionLimit(turn: NativeTurn, onPrint: OnPrint): Promise<NativeTurn> {
     if (isSuspension(turn)) {
       this.suspensionsSeen += 1n
-      // the suspension past `maxSuspensions` is never handed out: the feed is
-      // ended in the sandbox with an uncatchable RuntimeError, as monty-pool does
+      // Abort instead of exposing an over-budget suspension to the host.
       if (this.suspensionLimit !== undefined && this.suspensionsSeen > this.suspensionLimit) {
         const message = `suspension limit exceeded: ${this.suspensionsSeen} > ${this.suspensionLimit}`
         const aborted = await this.run({ tag: 'abort-feed', val: { excType: 'RuntimeError', message } }, onPrint)
@@ -371,7 +365,7 @@ function encodeLimits(limits: ResourceLimits): ComponentResourceLimits {
   }
 }
 
-/** Whether a turn hands the host a suspension to answer. */
+/** Identifies turns that consume the host-side suspension budget. */
 function isSuspension(turn: NativeTurn): boolean {
   return (
     turn.kind === 'functionCall' ||

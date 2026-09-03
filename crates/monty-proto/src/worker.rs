@@ -151,9 +151,10 @@ fn dispatch_into(child: &mut Child, request_frame: &[u8], sink: &mut VecEventSin
     }
 }
 
-/// The sandbox budget of the child's current session, as a host outside the
-/// interpreter sees it. Hosts use the memory fields to arm their allocator and
-/// `max_suspensions` when restoring parent-side suspension accounting.
+/// The current sandbox budget visible to an external host.
+///
+/// Hosts use the memory fields to arm their allocator and `max_suspensions` to
+/// restore their accounting.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SessionBudget {
     /// `max_memory` in bytes; `None` when unlimited, or when no session exists.
@@ -402,11 +403,10 @@ impl Child {
         }
     }
 
-    /// Stamps cumulative execution time and the `max_duration` budget onto a
-    /// turn-ending event, making the child the single source of truth for
-    /// timing (the parent's watchdog derives its backstop from these fields),
-    /// plus the `max_suspensions` budget so a parent restoring a dump learns
-    /// the limit it is to enforce. Left zero/absent when no session exists.
+    /// Stamps session timing and parent-enforced limits onto an event.
+    ///
+    /// Reported timing drives the parent's backstop. Fields are absent without
+    /// a session.
     fn stamp_session_budget(&self, event: &mut pb::ChildEvent) {
         let tracker = match &self.state {
             SessionState::Ready(repl) => repl.tracker(),
@@ -604,12 +604,10 @@ impl Child {
         event
     }
 
-    /// Ends the suspended feed by raising the parent's exception uncatchably
-    /// at the suspension point, whatever its kind (see `AbortFeed` in the
-    /// schema). The session comes back `Ready` inside the `Error` turn-ender.
+    /// Raises the parent's exception uncatchably at any pending suspension.
+    /// The `Error` reply returns the session to `Ready`.
     fn handle_abort_feed(&mut self, abort: pb::AbortFeed, sink: &mut dyn EventSink) -> pb::ChildEvent {
-        // `drive` only ever stores suspensions here, so `Complete` cannot be
-        // pending; the guard keeps that a violation rather than a crash
+        // Guard against a corrupt `Complete` state instead of crashing.
         let suspended = matches!(&self.state, SessionState::Suspended(progress)
             if !matches!(progress.as_ref(), ReplProgress::Complete { .. }));
         if !suspended {

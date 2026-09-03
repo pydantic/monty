@@ -55,9 +55,9 @@ with Monty() as pool:
         #> 3
 ```
 
-`max_suspensions` limits external calls, OS callbacks, name lookups and future-resolution turns for one checkout.
-The pool ends the feed with an uncatchable `RuntimeError` on the suspension past the limit.
-The session remains usable for code that does not suspend, but the suspension count remains spent.
+`max_suspensions` limits host-serviced suspensions per checkout. Exceeding it
+aborts the feed with an uncatchable `RuntimeError`; the session remains usable,
+but its suspension count remains spent.
 
 or in async code:
 

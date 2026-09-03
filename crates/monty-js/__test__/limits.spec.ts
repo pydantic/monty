@@ -134,8 +134,7 @@ test('time limit', async () => {
 // =============================================================================
 
 test('suspension limit', async () => {
-  // `maxSuspensions` is enforced by the pool: the suspension past the budget
-  // ends the feed with an uncatchable RuntimeError, so the retry loop dies
+  // Pool enforcement keeps sandboxed exception handling from retrying forever.
   const code = `
 n = 0
 while True:

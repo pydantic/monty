@@ -210,8 +210,7 @@ impl Recorder {
                 let (result, cut) = render_name_lookup(r.kind.as_ref());
                 self.close_pending("value", &result, cut);
             }
-            // an abort answers the suspension too, with the exception the
-            // sandbox is about to raise instead of a value
+            // An abort answers with the exception the sandbox will raise.
             Some(pb::parent_request::Kind::AbortFeed(a)) => {
                 let (result, cut) = a.exception.as_ref().map_or((MISSING.into(), false), render_raised);
                 self.close_pending("aborted_with", &result, cut);

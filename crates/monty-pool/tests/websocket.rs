@@ -663,9 +663,7 @@ async fn restored_session_rearms_the_duration_backstop() {
     join_server(server).await;
 }
 
-/// Answers `Feed` and every `ResumeCall` with a fresh `FunctionCall`, then
-/// expects the parent to give up with `AbortFeed` after `expected_calls` and
-/// replies with the sandbox-side `Error` that abort produces.
+/// Serves suspensions until the parent responds with the expected `AbortFeed`.
 fn serve_endless_suspensions(socket: &mut WebSocket<TcpStream>, expected_calls: u32) {
     let function_call = |call_id: u32| {
         event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall {
@@ -702,9 +700,7 @@ fn serve_endless_suspensions(socket: &mut WebSocket<TcpStream>, expected_calls: 
     );
 }
 
-/// The parent enforces `max_suspensions` itself: the suspension past the
-/// budget is answered with `AbortFeed` rather than surfaced, and the abort's
-/// `Error` reply is what the caller sees.
+/// The parent replaces an over-budget suspension with `AbortFeed`.
 #[tokio::test]
 async fn suspension_limit_is_enforced_by_the_parent() {
     let (listener, config) = ws_pool_config();
@@ -749,7 +745,7 @@ async fn suspension_limit_is_enforced_by_the_parent() {
     join_server(server).await;
 }
 
-/// The same enforcement on the raw path a relay drives.
+/// Enforces suspension limits when a relay uses the raw path.
 #[tokio::test]
 async fn suspension_limit_is_enforced_on_the_raw_path() {
     let (listener, config) = ws_pool_config();
@@ -806,8 +802,7 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
     join_server(server).await;
 }
 
-/// A restored session re-adopts its `max_suspensions` from the budget the
-/// worker stamps on the `Load` reply, like the duration budget.
+/// Restores `max_suspensions` from the worker's `Load` reply.
 #[tokio::test]
 async fn restored_session_readopts_the_suspension_limit() {
     let (listener, config) = ws_pool_config();

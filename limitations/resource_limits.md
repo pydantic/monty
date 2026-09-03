@@ -1,10 +1,9 @@
 # Resource limits
 
-Monty enforces limits on memory, time, and recursion to keep untrusted code
-bounded, and the host that services its suspensions enforces a suspension
-count. Memory limits surface to the host as `MemoryError`s, time limits as
-`TimeoutError`s and the suspension limit as a `RuntimeError`; sandboxed code
-cannot catch any of these. `RecursionError` is catchable, as in CPython.
+Monty limits memory, time, and recursion, while the host limits suspension
+events. Exceeding the memory, time, or suspension limit returns `MemoryError`,
+`TimeoutError`, or `RuntimeError`, respectively; sandboxed code cannot catch
+these exceptions. `RecursionError` is catchable, as in CPython.
 
 ## Compilation
 
@@ -147,21 +146,18 @@ indistinguishable from a stack overflow.
   external function calls, host-object method calls, attribute lookups and
   construction, OS calls, name lookups, and each `ResolveFutures` round trip
   (a partial future resolution that re-suspends counts again).
-- It is enforced by the host that answers suspensions — `monty-pool` (so
-  `pydantic_monty`, the JavaScript napi pool and monty-server), the wasm
-  worker pool and the CLI — not by the interpreter. A host driving `monty`
-  directly must count for itself and end the feed with `abort`.
-- The suspension past the budget is never handed to the caller: the host
-  ends the feed with `RuntimeError: suspension limit exceeded: N+1 > N`,
-  raised uncatchably at the suspension point with a traceback, at the cost of
-  one more round trip to the worker.
-- The count is per checkout and is never reset, so once spent every later
-  feed is ended on its first suspension. Feeds that do not suspend still run,
-  the heap stays consistent (the abort unwinds like any unhandled exception)
-  and the session can still be dumped.
-- The count does not travel in dumps; only the limit does. A session
-  restored from a dump keeps the dump's `max_suspensions` but starts
-  counting from zero.
+- `monty-pool` enforces it for `pydantic_monty`, the JavaScript napi pool and
+  monty-server. The wasm worker pool and CLI also enforce it. A direct host
+  must count suspensions and call `abort` itself.
+- The first suspension over budget is not returned to the caller. The host
+  uses one extra worker round trip to raise
+  `RuntimeError: suspension limit exceeded: N+1 > N` uncatchably at the
+  suspension point with a traceback.
+- The count persists for the checkout. Once spent, every later feed ends on
+  its first suspension. Non-suspending feeds still run, the heap stays
+  consistent, and the session can still be dumped.
+- Only the limit travels in dumps. A restored session keeps
+  `max_suspensions` but resets the count to zero.
 - There is no in-sandbox way to observe the budget or remaining count.
 
 ## Time

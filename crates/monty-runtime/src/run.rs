@@ -426,7 +426,7 @@ fn execute_repl_with_mounts(
     };
 
     loop {
-        // the CLI is the host here, so it enforces `--max-suspensions` itself
+        // The CLI, as host, enforces `--max-suspensions`.
         if let Some(exc) = suspensions.note(&progress) {
             let outcome = match progress {
                 ReplProgress::OsCall(call) => call.abort(exc, PrintWriter::Stdout),
@@ -481,7 +481,7 @@ fn run_until_complete(
     suspensions: &mut SuspensionBudget,
 ) -> Result<MontyObject, String> {
     loop {
-        // the CLI is the host here, so it enforces `--max-suspensions` itself
+        // The CLI, as host, enforces `--max-suspensions`.
         if let Some(exc) = suspensions.note_run(&progress) {
             progress = match progress {
                 RunProgress::OsCall(call) => call.abort(exc, PrintWriter::Stdout),
@@ -529,16 +529,14 @@ fn run_until_complete(
     }
 }
 
-/// The CLI's `--max-suspensions` accounting: the host that services
-/// suspensions enforces the limit, and here that host is the CLI. One count
-/// spans every snippet of a REPL session.
+/// Tracks the CLI-enforced suspension limit across an entire REPL session.
 struct SuspensionBudget {
     limit: Option<usize>,
     seen: usize,
 }
 
 impl SuspensionBudget {
-    /// A budget from the limits the tracker was built with.
+    /// Initializes a budget from the tracker's limits.
     fn new(tracker: &ResourceTracker) -> Self {
         Self {
             limit: tracker.max_suspensions(),
@@ -546,7 +544,7 @@ impl SuspensionBudget {
         }
     }
 
-    /// As [`Self::new`], reading the limit off a one-shot run's first progress.
+    /// Reads a one-shot run's limit from its initial progress.
     fn from_progress(progress: &RunProgress) -> Self {
         let limit = match progress {
             RunProgress::FunctionCall(call) => call.tracker().max_suspensions(),
@@ -558,8 +556,7 @@ impl SuspensionBudget {
         Self { limit, seen: 0 }
     }
 
-    /// Counts a REPL suspension, returning the exception to abort it with when
-    /// it is the one past the budget.
+    /// Counts a REPL suspension and returns the exception once over budget.
     fn note(&mut self, progress: &ReplProgress) -> Option<MontyException> {
         if matches!(progress, ReplProgress::Complete { .. }) {
             None
@@ -577,6 +574,7 @@ impl SuspensionBudget {
         }
     }
 
+    /// Counts one suspension and builds the over-budget exception.
     fn count(&mut self) -> Option<MontyException> {
         self.seen += 1;
         let limit = self.limit?;

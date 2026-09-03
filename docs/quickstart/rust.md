@@ -84,21 +84,20 @@ trusted back into the pool.
   yourself for untrusted code.
 - **Suspension limits** — the pool counts external calls, OS calls, name lookups and future-resolution turns against
   `ResourceLimits::max_suspensions`.
-  The suspension past the limit ends the feed with an uncatchable `RuntimeError`.
+  The first suspension over the limit ends the feed with an uncatchable `RuntimeError`.
 - **Untrusted children** — every frame from a possibly compromised worker is validated; wire decoding never panics, and
   a protocol violation discards the worker.
 - **Worker recycling** — `max_checkouts_per_worker` bounds the impact of a slow leak.
 
 Runtime errors inside the sandbox (`PoolError::Runtime`) are not crashes: the worker and its session stay alive and
 usable.
-Memory and time limit failures are the exception.
-They carry a `MemoryError` or `TimeoutError`, but [no guarantees hold about heap
-state afterwards](../resource-limits.md#after-a-limit-fires).
-Because `max_duration` is cumulative, every later `feed` fails immediately once it is spent.
+Memory and time limits return `PoolError::Runtime` with a `MemoryError` or `TimeoutError`, but
+[no guarantees hold about heap state afterwards](../resource-limits.md#after-a-limit-fires).
+A spent `max_duration` rejects every later `feed`.
 Finish the checkout and take a fresh one.
 
-A suspension-limit failure also arrives as `PoolError::Runtime`, but aborting the feed leaves the session consistent.
-Feeds that do not suspend still work; later suspensions fail because the checkout's count remains spent.
+`max_suspensions` also returns `PoolError::Runtime`, but leaves the session consistent.
+Later feeds run until they suspend; the count remains spent.
 
 ### Transports
 
@@ -190,8 +189,8 @@ assert_eq!(result, MontyObject::Int(42));
 Async host functions work the same way: `FunctionCall::resume_pending` continues with a pending future the sandboxed
 code can `await`, and when every task is blocked the run yields `RunProgress::ResolveFutures` for the host to settle.
 
-`FunctionCall`, `OsCall`, `NameLookup` and `ResolveFutures` each have an `abort` method.
-It raises a host-supplied `MontyException` uncatchably at the suspension point and unwinds the run with a traceback.
+`FunctionCall`, `OsCall`, `NameLookup` and `ResolveFutures` expose `abort`, which raises a host-supplied
+`MontyException` uncatchably at the suspension point and unwinds the run with a traceback.
 A host driving the interpreter directly must count suspensions and call `abort` to enforce `max_suspensions`;
 `ResourceTracker` stores that limit but does not enforce it.
 

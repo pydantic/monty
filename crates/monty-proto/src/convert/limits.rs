@@ -4,8 +4,7 @@
 //! saturates to `usize::MAX` on 32-bit hosts. Absent wire fields mean
 //! "unlimited", except recursion depth which falls back to monty's standard
 //! default — matching `ResourceLimits::default()` so an empty message is safe.
-//! `max_suspensions` rides along unchanged: the child stores it for dumps and
-//! echoes it, but the parent is what enforces it.
+//! `max_suspensions` is preserved across dumps for parent-side enforcement.
 
 use std::time::Duration;
 

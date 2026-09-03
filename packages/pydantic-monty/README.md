@@ -260,9 +260,8 @@ protocol turn, and sessions with the limit are additionally killed
 `duration_limit_grace` (1s, not currently configurable from Python) after
 the remaining budget expires, covering hangs the in-sandbox limit cannot
 catch (its check only runs at interpreter checkpoints). `max_suspensions`
-is enforced by the pool itself: it counts the host round trips (external
-functions, `os` callbacks, name lookups) it services per checkout, and the
-one past the budget ends the feed with an uncatchable `RuntimeError`.
+limits the host round trips the pool services per checkout; exceeding it ends
+the feed with an uncatchable `RuntimeError`.
 
 ```python
 from pydantic_monty import Monty, MontyRuntimeError

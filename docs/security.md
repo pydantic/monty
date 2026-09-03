@@ -129,12 +129,12 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
   cumulative, so every later feed fails with the same `TimeoutError`, while after a `max_memory` trip a later feed may
   quietly succeed against a corrupted heap.
 - Compilation is not charged against the duration budget.
-- `max_suspensions` bounds the host round trips a session may make.
-  A snippet that retries a refused host call forever costs the sandbox nothing the other limits can see, but costs
-  your process memory per round trip — and with an `init=True` host class, an instance-store entry per construction.
-  The pool enforces it by ending the feed with an uncatchable `RuntimeError`; the count is per checkout.
   It has its own structural caps (AST nesting, bytecode operand sizes, comprehension nesting, `finally` expansion), but
   a host accepting untrusted source should still isolate compilation — as the subprocess and WebAssembly runtimes do.
+- `max_suspensions` bounds suspension events per checkout.
+  A snippet can otherwise retry a rejected host call while `max_duration_secs` is paused.
+  Each allowed `ClassType(init=True)` construction adds an instance-store entry outside `max_memory`.
+  The pool aborts the first suspension over the limit with an uncatchable `RuntimeError`.
 
 ## Where the guarantees weaken
 
