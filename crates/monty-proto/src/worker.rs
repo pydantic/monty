@@ -1112,9 +1112,31 @@ impl<'a> ProtoPrint<'a> {
             return Ok(());
         }
         self.buffered_since = None;
+        let text = mem::take(&mut self.buf);
+        self.send(text)
+    }
+
+    /// Emits one `Print` event per completed line, leaving any trailing
+    /// partial line buffered. With the timer off the contract is one event per
+    /// completed line, so a single write carrying embedded newlines has to be
+    /// split rather than shipped whole.
+    fn flush_lines(&mut self) -> Result<(), MontyException> {
+        while let Some(end) = self.buf.find('\n') {
+            let rest = self.buf.split_off(end + 1);
+            let line = mem::replace(&mut self.buf, rest);
+            self.send(line)?;
+        }
+        if self.buf.is_empty() {
+            self.buffered_since = None;
+        }
+        Ok(())
+    }
+
+    /// Sends `text` as one `Print` event.
+    fn send(&mut self, text: String) -> Result<(), MontyException> {
         let event = event(pb::child_event::Kind::Print(pb::Print {
             stream: pb::PrintStream::Stdout.into(),
-            text: mem::take(&mut self.buf),
+            text,
         }));
         self.sink.send(&event).map_err(|err| {
             MontyException::new(
@@ -1124,20 +1146,19 @@ impl<'a> ProtoPrint<'a> {
         })
     }
 
+    /// Flushes whatever the buffer has earned: complete lines when the timer
+    /// is off, then a frame if it has filled or its oldest byte has waited out
+    /// `interval`.
     fn maybe_flush(&mut self) -> Result<(), MontyException> {
-        if self.flush_due() { self.flush() } else { Ok(()) }
-    }
-
-    /// Whether the buffer has earned a frame: it has filled, or its oldest
-    /// byte has waited out `interval` — or, with the timer off, it holds a
-    /// complete line.
-    fn flush_due(&self) -> bool {
-        if self.buf.len() >= Self::FLUSH_BYTES {
-            true
-        } else if self.interval.is_zero() {
-            self.buf.ends_with('\n')
+        // Lines leave first so the size threshold below cannot merge a
+        // multi-line write back into one frame.
+        if self.interval.is_zero() {
+            self.flush_lines()?;
+        }
+        if self.buf.len() >= Self::FLUSH_BYTES || (!self.interval.is_zero() && self.interval_elapsed()) {
+            self.flush()
         } else {
-            self.interval_elapsed()
+            Ok(())
         }
     }
 

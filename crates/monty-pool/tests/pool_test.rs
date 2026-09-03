@@ -1070,6 +1070,32 @@ async fn zero_flush_interval_delivers_one_event_per_line() {
     session.finish().await.unwrap();
 }
 
+/// With the timer off the contract is one event per *completed line*, not one
+/// per write: a single `print()` carrying embedded newlines must still arrive
+/// as one event per line.
+#[tokio::test]
+async fn zero_flush_interval_splits_embedded_newlines() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::ZERO),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let mut events = Vec::new();
+    session
+        .feed(
+            r#"print("a\nb")"#,
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| events.push(text.to_owned())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events, vec!["a\n".to_owned(), "b\n".to_owned()]);
+    session.finish().await.unwrap();
+}
+
 /// Output must not sit in the worker's buffer while the program computes in
 /// silence: the interpreter polls the writer at its dispatch checkpoints, so a
 /// line printed before a long stretch of quiet work is released on its own
