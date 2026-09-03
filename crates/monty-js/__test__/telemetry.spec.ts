@@ -22,6 +22,7 @@ test('installed telemetry adapter receives the session tree', async (ctx) => {
     },
     exportMetrics(payload: Uint8Array) {
       metricBatches.push(payload)
+      return Promise.reject(new Error('telemetry export failed'))
     },
   }
   t.throws(() => _installTelemetryAdapter(2, adapter), {

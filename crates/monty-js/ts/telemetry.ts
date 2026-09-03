@@ -64,7 +64,7 @@ export function _installTelemetryAdapter(version: number, value: MontyTelemetryA
     },
     (payload) => {
       try {
-        adapter?.exportMetrics?.(payload)
+        void Promise.resolve(adapter?.exportMetrics?.(payload)).catch(() => {})
       } catch {
         // A broken telemetry adapter must never affect sandbox execution.
       }

@@ -409,6 +409,8 @@ pub(crate) struct TurnMetrics {
     /// When the in-flight feed started; `None` between feeds, and for a feed
     /// restored mid-suspension (whose start this process never saw).
     feed: Option<Instant>,
+    /// Whether a feed is running, including one restored mid-suspension.
+    run_active: bool,
     /// The suspension the feed is blocked on, timing the host round-trip.
     /// While this is set, the worker counts towards [`SUSPENDED_WORKERS`].
     pending: Option<Suspension>,
@@ -425,6 +427,7 @@ impl TurnMetrics {
         Self {
             metrics,
             feed: None,
+            run_active: false,
             pending: None,
             turn: None,
             reported_micros: 0,
@@ -452,6 +455,7 @@ impl TurnMetrics {
             // the delta ratchet has to as well
             Some(pb::parent_request::Kind::Configure(_)) => {
                 self.feed = None;
+                self.run_active = false;
                 self.abandon_pending();
                 self.turn = Some(("configure", now));
                 self.reported_micros = 0;
@@ -459,10 +463,12 @@ impl TurnMetrics {
             Some(pb::parent_request::Kind::Feed(_)) => {
                 self.abandon_pending();
                 self.feed = Some(now);
+                self.run_active = true;
             }
             Some(pb::parent_request::Kind::Load(_)) => {
                 // a load adopts the dumped session's clock, which may be ahead
                 // of or behind this worker's; the first reply re-bases it
+                self.run_active = false;
                 self.reported_micros = 0;
                 self.turn = Some(("load", now));
             }
@@ -472,12 +478,14 @@ impl TurnMetrics {
             }
             Some(pb::parent_request::Kind::Reset(_)) => {
                 self.feed = None;
+                self.run_active = false;
                 self.abandon_pending();
                 self.turn = Some(("reset", now));
             }
             // no reply is awaited, so nothing is left open to close
             Some(pb::parent_request::Kind::Shutdown(_)) => {
                 self.feed = None;
+                self.run_active = false;
                 self.abandon_pending();
                 self.turn = None;
             }
@@ -492,6 +500,7 @@ impl TurnMetrics {
                 self.close_suspension(outcome);
             }
             Some(pb::parent_request::Kind::ResumeFutures(_)) => self.close_suspension("resolved"),
+            Some(pb::parent_request::Kind::AbortFeed(_)) => self.close_suspension("aborted"),
             None => {}
         }
     }
@@ -539,7 +548,9 @@ impl TurnMetrics {
             }
             Some(pb::child_event::Kind::Ok(_)) => self.end_turn("ok"),
             // the worker is about to exit; the pool counts the termination
-            Some(pb::child_event::Kind::FatalError(_) | pb::child_event::Kind::Shutdown(_)) | None => {}
+            Some(pb::child_event::Kind::FatalError(_)) => self.end_terminal("fatal_error", event),
+            Some(pb::child_event::Kind::Shutdown(_)) => self.end_terminal("shutdown", event),
+            None => {}
         }
     }
 
@@ -552,6 +563,7 @@ impl TurnMetrics {
         if matches!(self.turn, Some(("load", _))) {
             self.end_turn("ok");
         }
+        self.run_active = true;
         self.metrics.record(
             &SUSPENSIONS,
             MetricValue::I64(1),
@@ -609,6 +621,7 @@ impl TurnMetrics {
     /// A feed restored mid-suspension has no start instant in this process, so
     /// it contributes execution time but no wall time.
     fn end_run(&mut self, outcome: &'static str, event: &pb::ChildEvent) {
+        self.run_active = false;
         self.abandon_pending();
         self.end_turn(outcome);
         if let Some(start) = self.feed.take() {
@@ -625,6 +638,15 @@ impl TurnMetrics {
         self.reported_micros = self.reported_micros.max(total);
         self.metrics
             .record(&RUN_EXECUTION, MetricValue::seconds(Duration::from_micros(delta)), &[]);
+    }
+
+    /// Ends a terminal event as a run or housekeeping turn.
+    fn end_terminal(&mut self, outcome: &'static str, event: &pb::ChildEvent) {
+        if self.run_active {
+            self.end_run(outcome, event);
+        } else {
+            self.end_turn(outcome);
+        }
     }
 
     /// Ends the open housekeeping turn, if there is one.
@@ -924,6 +946,7 @@ mod tests {
             kind: Some(kind),
             total_execution_micros: 0,
             max_duration_micros: None,
+            max_suspensions: None,
             restored_script_name: None,
         }
     }
@@ -1081,6 +1104,7 @@ mod tests {
                 kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: None })),
                 total_execution_micros: total,
                 max_duration_micros: None,
+                max_suspensions: None,
                 restored_script_name: None,
             });
         }
@@ -1116,6 +1140,48 @@ mod tests {
         );
     }
 
+    /// Terminal events close the operation that received them before checkout
+    /// teardown drops the worker-side recorder.
+    #[test]
+    fn terminal_events_end_runs_and_housekeeping_turns() {
+        let terminal_events = [
+            (
+                pb::child_event::Kind::FatalError(pb::FatalError {
+                    message: "worker failed".to_owned(),
+                }),
+                "fatal_error",
+            ),
+            (
+                pb::child_event::Kind::Shutdown(pb::ShutdownDump { dump: None }),
+                "shutdown",
+            ),
+        ];
+        for (kind, outcome) in terminal_events {
+            let (mut metrics, capture) = recorder();
+            metrics.begin_turn(&feed());
+            metrics.event(&event(kind));
+            assert_eq!(
+                capture.attributes("monty.run.duration"),
+                [[("outcome".to_owned(), outcome.to_owned())]]
+            );
+            assert_eq!(capture.histograms("monty.run.execution_time")[0].0, 1);
+        }
+
+        let (mut metrics, capture) = recorder();
+        metrics.begin_turn(&request(pb::parent_request::Kind::InstallDependencies(
+            pb::InstallDependencies { requirements: vec![] },
+        )));
+        metrics.event(&event(pb::child_event::Kind::Shutdown(pb::ShutdownDump { dump: None })));
+        assert_eq!(
+            capture.attributes("monty.turn.duration"),
+            [[
+                ("outcome".to_owned(), "shutdown".to_owned()),
+                ("turn".to_owned(), "install_dependencies".to_owned())
+            ]]
+        );
+        assert!(!capture.has("monty.run.execution_time"));
+    }
+
     /// A restored session's cumulative clock was spent in another process, so
     /// the load's reply re-bases the ratchet and the next run records only
     /// its own delta — not the whole restored history.
@@ -1127,6 +1193,7 @@ mod tests {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 10_000_000,
             max_duration_micros: None,
+            max_suspensions: None,
             restored_script_name: Some("dumped.py".to_owned()),
         });
         metrics.begin_turn(&feed());
@@ -1134,6 +1201,7 @@ mod tests {
             kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: None })),
             total_execution_micros: 10_000_100,
             max_duration_micros: None,
+            max_suspensions: None,
             restored_script_name: None,
         });
 
@@ -1158,6 +1226,7 @@ mod tests {
             })),
             total_execution_micros: 10_000_000,
             max_duration_micros: None,
+            max_suspensions: None,
             restored_script_name: None,
         });
         let turns = capture.attributes("monty.turn.duration");
@@ -1178,6 +1247,7 @@ mod tests {
             kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: None })),
             total_execution_micros: 10_000_050,
             max_duration_micros: None,
+            max_suspensions: None,
             restored_script_name: None,
         });
         let execution = capture.histograms("monty.run.execution_time");
@@ -1249,7 +1319,7 @@ mod tests {
     }
 
     /// The suspended-worker count rises while the host owns a suspension and
-    /// falls however it ends — answered, or abandoned with a dead worker.
+    /// falls however it ends: answered, aborted, or abandoned with a dead worker.
     #[test]
     fn suspended_workers_tracks_host_round_trips() {
         let (mut metrics, capture) = recorder();
@@ -1261,7 +1331,19 @@ mod tests {
         )));
         assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 0);
 
+        metrics.event(&call_event("double"));
+        metrics.begin_turn(&request(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+            exception: None,
+        })));
+        assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 0);
+        assert!(capture.attributes("monty.ext.call.duration").contains(&vec![
+            ("kind".to_owned(), "function".to_owned()),
+            ("outcome".to_owned(), "aborted".to_owned()),
+        ]));
+        metrics.event(&event(pb::child_event::Kind::Error(pb::Error { exception: None })));
+
         // a worker dropped mid-suspension is no longer waiting on anyone
+        metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
         assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 1);
         drop(metrics);
