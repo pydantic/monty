@@ -116,7 +116,8 @@ A host driving the interpreter directly counts suspensions and calls `abort` its
 The first suspension over the budget aborts the feed with an uncatchable
 `RuntimeError: suspension limit exceeded: 4 > 3` at the call site.
 The session stays consistent and can be dumped; later feeds run until they suspend.
-Restoring a dump preserves the limit but resets the count to zero.
+Restoring a dump preserves the limit but resets the count to zero; a `max_suspensions` set on the restoring checkout
+caps the dump's, so a worker cannot report a looser one.
 
 ## What is not covered
 

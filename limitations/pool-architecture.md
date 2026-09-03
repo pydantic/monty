@@ -109,7 +109,9 @@ properties that real CPython does not provide, per the caveat above.
   events per checkout and answers the first one over budget with `AbortFeed`.
   The worker raises its `RuntimeError` uncatchably at the suspension point.
   The worker stores the limit for dumps but does not count, so restoring a
-  session resets the count.
+  session resets the count. The limit a restore re-adopts from the worker's
+  reply is capped by the checkout's own configured `max_suspensions`, since
+  the reply is untrusted.
 - **`max_duration` is backstopped by the host.** From the reported total the
   host bounds each execution turn by the remaining budget plus
   `duration_limit_grace` (default 1s) and kills the worker when it expires.

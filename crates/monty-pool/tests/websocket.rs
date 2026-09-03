@@ -910,6 +910,69 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
     join_server(server).await;
 }
 
+/// The checkout's configured `max_suspensions` caps whatever a `Load` reply
+/// reports: a larger reported limit is clamped, and an omitted one leaves
+/// the configured limit in force, so a compromised worker cannot lift the
+/// parent's ceiling by lying about the dump.
+#[tokio::test]
+async fn configured_suspension_limit_caps_a_restored_one() {
+    for reported in [Some(5), None] {
+        let (listener, config) = ws_pool_config();
+        let server = thread::spawn(move || {
+            let mut socket = accept_ws(&listener);
+            assert!(matches!(
+                read_request(&mut socket),
+                pb::parent_request::Kind::Configure(_)
+            ));
+            send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+            assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
+            send_event(
+                &mut socket,
+                &pb::ChildEvent {
+                    kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+                    max_suspensions: reported,
+                    ..Default::default()
+                },
+            );
+            serve_endless_suspensions(&mut socket, 2);
+            let _ = socket.read();
+        });
+
+        let pool = Pool::new(config).await.expect("pool");
+        let mut checkout = pool
+            .checkout(&ReplConfig {
+                limits: Some(ResourceLimits::default().max_suspensions(1)),
+                ..ReplConfig::default()
+            })
+            .await
+            .expect("checkout");
+        let (event, _) = checkout
+            .restore(vec![1, 2, 3], vec![], &mut no_print)
+            .await
+            .expect("restore");
+        assert!(event.is_none());
+        let event = checkout
+            .feed("fetch()", vec![], vec![], false, &mut no_print)
+            .await
+            .expect("feed");
+        assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+        let err = checkout
+            .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+            .await
+            .unwrap_err();
+        let PoolError::Runtime(exc) = err else {
+            panic!("expected Runtime, got {err:?}");
+        };
+        assert_eq!(
+            exc.message(),
+            Some("suspension limit exceeded: 2 > 1"),
+            "reported {reported:?}"
+        );
+        drop(checkout);
+        join_server(server).await;
+    }
+}
+
 /// Restores `max_suspensions` from the worker's `Load` reply.
 #[tokio::test]
 async fn restored_session_readopts_the_suspension_limit() {

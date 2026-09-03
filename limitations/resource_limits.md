@@ -157,7 +157,9 @@ indistinguishable from a stack overflow.
   its first suspension. Non-suspending feeds still run, the heap stays
   consistent, and the session can still be dumped.
 - Only the limit travels in dumps. A restored session keeps
-  `max_suspensions` but resets the count to zero.
+  `max_suspensions` but resets the count to zero; a limit configured on the
+  restoring checkout caps the dump's (the smaller of the two applies, and
+  the configured one alone if the worker's reply omits it).
 - There is no in-sandbox way to observe the budget or remaining count.
 
 ## Time

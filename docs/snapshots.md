@@ -138,7 +138,7 @@ with Monty() as pool:
 - **The accumulated time budget travels with the dump**, so a restored session resumes where it left off rather than
   getting a fresh budget.
 - **Only the suspension limit travels.** A restored session keeps `max_suspensions`, but the pool resets its count to
-  zero.
+  zero, and a `max_suspensions` set on the restoring `checkout()` caps the dump's.
 - **Mounts do not travel.** Host paths are never part of a dump.
   Pass the same `mount=` to `load_snapshot`, or the restored feed's filesystem calls degrade into unhandled OS calls.
   Any `'overlay'` writes made before the dump are gone — the restored overlay starts empty.

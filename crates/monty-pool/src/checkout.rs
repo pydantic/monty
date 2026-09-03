@@ -282,7 +282,10 @@ pub struct Checkout {
 /// Tracks limits the parent enforces or backstops.
 ///
 /// Limits come from `Configure` or the first reply after `Load`. Suspension
-/// counts are parent state and restart at zero on restore.
+/// counts are parent state and restart at zero on restore. The suspension
+/// limit survives a restore and a reply can only tighten it: the reply's
+/// value is untrusted (a compromised worker could omit or inflate it), so it
+/// never loosens what this checkout was configured with.
 #[derive(Clone, Copy)]
 struct SessionBudget {
     /// The session's `max_duration`, when configured.
@@ -290,7 +293,7 @@ struct SessionBudget {
     /// Monotonic worker-reported sandbox time, preventing a compromised worker
     /// from rewinding the parent's view.
     reported_execution: Duration,
-    /// The session's `max_suspensions`, when configured.
+    /// The session's `max_suspensions` in force, when any.
     suspension_limit: Option<u64>,
     /// Suspensions this checkout has received from the worker.
     suspensions_seen: u64,
@@ -308,12 +311,13 @@ impl SessionBudget {
         }
     }
 
-    /// Clears `Configure` state before adopting a dump's budget.
+    /// Clears `Configure` state before adopting a dump's budget. The
+    /// suspension limit stays: it is the ceiling on the dump's.
     fn forget(&mut self) {
         *self = Self {
             duration_budget: None,
             reported_execution: Duration::ZERO,
-            suspension_limit: None,
+            suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
         };
     }
@@ -321,7 +325,9 @@ impl SessionBudget {
     /// Adopts unknown limits and records an event's consumption.
     ///
     /// Reported time only ratchets up so a compromised worker cannot rewind it.
-    /// Suspension events increment the parent-owned count.
+    /// A reported suspension limit only ever tightens the one in force (an
+    /// ordinary reply echoes it; a `Load` reply carries the dump's). Suspension
+    /// events increment the parent-owned count.
     fn note(&mut self, event: &pb::ChildEvent) {
         self.reported_execution = self
             .reported_execution
@@ -329,9 +335,10 @@ impl SessionBudget {
         if self.duration_budget.is_none() {
             self.duration_budget = event.max_duration_micros.map(Duration::from_micros);
         }
-        if self.suspension_limit.is_none() {
-            self.suspension_limit = event.max_suspensions;
-        }
+        self.suspension_limit = match (self.suspension_limit, event.max_suspensions) {
+            (Some(current), Some(reported)) => Some(current.min(reported)),
+            (current, reported) => current.or(reported),
+        };
         if is_suspension(event) {
             self.suspensions_seen += 1;
         }
@@ -446,7 +453,8 @@ impl Checkout {
     /// is that same [`TurnEvent::OsCall`] — restoring never answers it here.
     /// The session's resource budget is taken from the dump, so the prior
     /// `Configure` limits are dropped here and re-adopted from the worker's
-    /// reply; the `max_suspensions` count restarts at zero.
+    /// reply — except that this checkout's configured `max_suspensions` stays
+    /// as a ceiling on the re-adopted one; the count restarts at zero.
     ///
     /// Returns the re-announced suspension (`Some` — a suspended dump) or `None`
     /// (an idle dump), paired with the worker's adopted script name (the dump's,
