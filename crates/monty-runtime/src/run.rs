@@ -582,7 +582,7 @@ impl SuspensionBudget {
         (self.seen > limit).then(|| {
             MontyException::new(
                 ExcType::RuntimeError,
-                Some(format!("suspension limit exceeded: {} > {limit}", self.seen)),
+                Some(format!("suspension limit {limit} exceeded")),
             )
         })
     }

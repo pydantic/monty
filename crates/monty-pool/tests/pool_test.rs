@@ -709,6 +709,25 @@ async fn restored_os_call_is_serviced_by_restore_mounts() {
     restored.finish().await.unwrap();
 }
 
+/// A `max_duration` near `Duration::MAX` must not overflow the parent's
+/// backstop deadline arithmetic (limit plus grace).
+#[tokio::test]
+async fn huge_max_duration_does_not_overflow_the_backstop() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_duration(Duration::MAX)),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
+}
+
 /// An over-limit frame must fail as a clean, session-preserving error rather
 /// than crashing the worker: `Worker::send` rejects it before writing any
 /// bytes, so the stream stays synced. Covers both directions — a request the
@@ -1508,7 +1527,7 @@ async fn suspension_limit_aborts_the_feed() {
         panic!("expected Runtime, got {err:?}");
     };
     assert_eq!(exc.exc_type().to_string(), "RuntimeError");
-    assert_eq!(exc.message(), Some("suspension limit exceeded: 4 > 3"));
+    assert_eq!(exc.message(), Some("suspension limit 3 exceeded"));
     // three refusals were caught before the fourth suspension was aborted
     let event = session.feed("n", vec![], vec![], false, &mut no_print).await.unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(3));
@@ -1520,7 +1539,7 @@ async fn suspension_limit_aborts_the_feed() {
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };
-    assert_eq!(exc.message(), Some("suspension limit exceeded: 5 > 3"));
+    assert_eq!(exc.message(), Some("suspension limit 3 exceeded"));
     session.finish().await.unwrap();
 }
 
@@ -1561,7 +1580,7 @@ async fn restored_session_readopts_its_suspension_limit() {
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };
-    assert_eq!(exc.message(), Some("suspension limit exceeded: 2 > 1"));
+    assert_eq!(exc.message(), Some("suspension limit 1 exceeded"));
     restored.finish().await.unwrap();
 }
 

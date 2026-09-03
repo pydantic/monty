@@ -338,7 +338,7 @@ fn abort_feed_round_trip() {
     child.send(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
-            message: Some("suspension limit exceeded: 4 > 3".to_owned()),
+            message: Some("suspension limit 3 exceeded".to_owned()),
             traceback: vec![],
             data: None,
         }),
@@ -346,7 +346,7 @@ fn abort_feed_round_trip() {
     let (_, event) = child.recv_turn();
     let error = expect_error(event);
     assert_eq!(error.exc_type, "RuntimeError");
-    assert_eq!(error.message.as_deref(), Some("suspension limit exceeded: 4 > 3"));
+    assert_eq!(error.message.as_deref(), Some("suspension limit 3 exceeded"));
     assert_eq!(
         error
             .traceback

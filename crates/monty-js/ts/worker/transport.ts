@@ -259,7 +259,7 @@ export class WorkerTransport {
       this.suspensionsSeen += 1n
       // Abort instead of exposing an over-budget suspension to the host.
       if (this.suspensionLimit !== undefined && this.suspensionsSeen > this.suspensionLimit) {
-        const message = `suspension limit exceeded: ${this.suspensionsSeen} > ${this.suspensionLimit}`
+        const message = `suspension limit ${this.suspensionLimit} exceeded`
         const aborted = await this.run({ tag: 'abort-feed', val: { excType: 'RuntimeError', message } }, onPrint)
         turn = aborted ? this.toTurn(aborted) : crashed('worker exited without a turn-ending event')
       }

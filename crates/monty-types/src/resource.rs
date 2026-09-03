@@ -76,10 +76,11 @@ impl Error for ResourceError {}
 
 /// Configuration for resource limits.
 ///
-/// The time/memory/GC/suspension limits are optional — set to `None` to
-/// disable — but recursion depth is always bounded (default
-/// [`DEFAULT_MAX_RECURSION_DEPTH`]): unbounded recursion would let sandboxed
-/// code overflow the native stack and abort the process. Use
+/// The time/memory/GC limits are optional — set to `None` to disable — but
+/// recursion depth and the suspension budget are always bounded (defaults
+/// [`DEFAULT_MAX_RECURSION_DEPTH`] and [`DEFAULT_MAX_SUSPENSIONS`]): unbounded
+/// recursion would let sandboxed code overflow the native stack and abort the
+/// process, and unbounded suspensions would let it loop on host calls. Use
 /// `ResourceLimits::default()` for the recursion-only defaults, or build
 /// custom limits with the builder pattern.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -264,7 +265,8 @@ impl ResourceTracker {
         self.limits.max_memory
     }
 
-    /// Returns the host-enforced suspension budget, if any.
+    /// Returns the host-enforced suspension budget (default
+    /// [`DEFAULT_MAX_SUSPENSIONS`]; never unlimited).
     #[must_use]
     pub fn max_suspensions(&self) -> usize {
         self.limits.max_suspensions

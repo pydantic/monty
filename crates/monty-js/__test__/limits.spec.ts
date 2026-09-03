@@ -151,7 +151,7 @@ while True:
     isRuntimeError,
   )
   t.is(error.exception.typeName, 'RuntimeError')
-  t.is(error.display('msg'), 'suspension limit exceeded: 4 > 3')
+  t.is(error.display('msg'), 'suspension limit 3 exceeded')
 })
 
 test('suspension limit defaults to 1000', async () => {
@@ -160,7 +160,7 @@ test('suspension limit defaults to 1000', async () => {
     () => session.feedRun('n = 0\nwhile True:\n    fetch()\n    n += 1', { externalLookup: { fetch: () => null } }),
     isRuntimeError,
   )
-  t.is(error.display('msg'), 'suspension limit exceeded: 1001 > 1000')
+  t.is(error.display('msg'), 'suspension limit 1000 exceeded')
   t.is(await session.feedRun('n'), 1000)
 })
 
@@ -169,7 +169,7 @@ test('suspension limit leaves the session usable', async () => {
   const fetch = () => 'ok'
   t.is(await session.feedRun("fetch('x')", { externalLookup: { fetch } }), 'ok')
   const error = await t.throwsAsync(() => session.feedRun("fetch('y')", { externalLookup: { fetch } }), isRuntimeError)
-  t.is(error.display('msg'), 'suspension limit exceeded: 2 > 1')
+  t.is(error.display('msg'), 'suspension limit 1 exceeded')
   t.is(await session.feedRun('1 + 1'), 2)
 })
 
@@ -186,5 +186,5 @@ test('restored session keeps its suspension limit with a fresh count', async () 
   await restored.loadSession(state)
   t.is(await restored.feedRun("fetch('y')", { externalLookup: { fetch } }), 'ok')
   const error = await t.throwsAsync(() => restored.feedRun("fetch('z')", { externalLookup: { fetch } }), isRuntimeError)
-  t.is(error.display('msg'), 'suspension limit exceeded: 2 > 1')
+  t.is(error.display('msg'), 'suspension limit 1 exceeded')
 })

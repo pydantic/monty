@@ -154,7 +154,7 @@ indistinguishable from a stack overflow.
   must count suspensions and call `abort` itself.
 - The first suspension over budget is not returned to the caller. The host
   uses one extra worker round trip to raise
-  `RuntimeError: suspension limit exceeded: N+1 > N` uncatchably at the
+  `RuntimeError: suspension limit N exceeded` uncatchably at the
   suspension point with a traceback.
 - The count persists for the checkout. Once spent, every later feed ends on
   its first suspension. Non-suspending feeds still run, the heap stays

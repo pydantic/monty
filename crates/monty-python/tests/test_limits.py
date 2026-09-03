@@ -117,11 +117,11 @@ while True:
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run(code, external_lookup={'fetch': fetch})
         assert isinstance(exc_info.value.exception(), RuntimeError)
-        assert exc_info.value.display(format='type-msg') == snapshot('RuntimeError: suspension limit exceeded: 4 > 3')
+        assert exc_info.value.display(format='type-msg') == snapshot('RuntimeError: suspension limit 3 exceeded')
         assert session.feed_run('n') == snapshot(3)
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run('fetch("y")', external_lookup={'fetch': fetch})
-        assert exc_info.value.display(format='type-msg') == snapshot('RuntimeError: suspension limit exceeded: 5 > 3')
+        assert exc_info.value.display(format='type-msg') == snapshot('RuntimeError: suspension limit 3 exceeded')
 
 
 def test_suspension_limit_defaults_to_one_thousand(pool: Monty):
@@ -139,9 +139,7 @@ while True:
     with pool.checkout() as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run(code, external_lookup={'fetch': fetch})
-        assert exc_info.value.display(format='type-msg') == snapshot(
-            'RuntimeError: suspension limit exceeded: 1001 > 1000'
-        )
+        assert exc_info.value.display(format='type-msg') == snapshot('RuntimeError: suspension limit 1000 exceeded')
         assert session.feed_run('n') == snapshot(1000)
 
 

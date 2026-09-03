@@ -261,7 +261,7 @@ fn abort_feed_ends_a_suspended_feed_uncatchably() {
     let request = frame_request(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
-            message: Some("suspension limit exceeded: 4 > 3".to_owned()),
+            message: Some("suspension limit 3 exceeded".to_owned()),
             traceback: vec![],
             data: None,
         }),
@@ -274,7 +274,7 @@ fn abort_feed_ends_a_suspended_feed_uncatchably() {
     };
     let exception = error.exception.expect("error carries the exception");
     assert_eq!(exception.exc_type, "RuntimeError");
-    assert_eq!(exception.message.as_deref(), Some("suspension limit exceeded: 4 > 3"));
+    assert_eq!(exception.message.as_deref(), Some("suspension limit 3 exceeded"));
     // raised where the feed stopped: the traceback names the call's line
     assert_eq!(exception.traceback.len(), 1);
     assert_eq!(exception.traceback[0].start.map(|loc| loc.line), Some(3));

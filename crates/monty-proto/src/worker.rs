@@ -723,7 +723,9 @@ impl Child {
                     if suspension_args_too_deep(&progress) {
                         protocol_violation("dump suspension arguments exceed the maximum wire depth")
                     } else {
-                        let event = suspension_event(&mut progress);
+                        let mut event = suspension_event(&mut progress);
+                        // size-checked with the stamps `handle` sends it with
+                        stamp_budget(&mut event, progress.tracker());
                         if let Some(message) = oversize_suspension_error_message(&event) {
                             protocol_violation(&message)
                         } else {

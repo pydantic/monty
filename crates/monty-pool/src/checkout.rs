@@ -264,6 +264,12 @@ pub struct Checkout {
     turn_in_flight: bool,
     /// Parent-enforced limits and the session's consumption of them.
     budget: SessionBudget,
+    /// The budget in force before an in-flight `Load`, put back by
+    /// [`Checkout::note_event`] unless the child's first reply confirms the
+    /// dump was adopted (an `Ok`, or the re-announced suspension) — so a
+    /// refused `Load` cannot reset the suspension count, and an abort of the
+    /// re-announced suspension does not discard the dump's limit.
+    pending_load_budget: Option<SessionBudget>,
     /// The deadline armed for the most recent turn, surfaced by
     /// [`PoolError::Timeout`] when it fires.
     armed_deadline: Option<Duration>,
@@ -345,9 +351,8 @@ impl SessionBudget {
     }
 
     /// Reports when this event exceeds the suspension limit.
-    fn over_suspension_limit(&self, event: &pb::ChildEvent) -> Option<(u64, u64)> {
-        (is_suspension(event) && self.suspensions_seen > self.suspension_limit)
-            .then_some((self.suspensions_seen, self.suspension_limit))
+    fn over_suspension_limit(&self, event: &pb::ChildEvent) -> Option<u64> {
+        (is_suspension(event) && self.suspensions_seen > self.suspension_limit).then_some(self.suspension_limit)
     }
 
     /// Returns the remaining `max_duration` plus grace.
@@ -355,7 +360,11 @@ impl SessionBudget {
     /// The child normally raises `TimeoutError`; this catches one that stops
     /// checking its clock.
     fn backstop_deadline(&self, grace: Option<Duration>) -> Option<Duration> {
-        Some(self.duration_budget?.saturating_sub(self.reported_execution) + grace?)
+        Some(
+            self.duration_budget?
+                .saturating_sub(self.reported_execution)
+                .saturating_add(grace?),
+        )
     }
 }
 
@@ -373,10 +382,10 @@ fn is_suspension(event: &pb::ChildEvent) -> bool {
 }
 
 /// The exception a feed is aborted with once it suspends past `max_suspensions`.
-fn suspension_limit_exceeded(seen: u64, limit: u64) -> MontyException {
+fn suspension_limit_exceeded(limit: u64) -> MontyException {
     MontyException::new(
         ExcType::RuntimeError,
-        Some(format!("suspension limit exceeded: {seen} > {limit}")),
+        Some(format!("suspension limit {limit} exceeded")),
     )
 }
 
@@ -423,6 +432,7 @@ impl Checkout {
             pending: None,
             turn_in_flight: false,
             budget: SessionBudget::from_config(repl),
+            pending_load_budget: None,
             armed_deadline: None,
             restored_script_name: None,
             feed_mounts: None,
@@ -468,28 +478,22 @@ impl Checkout {
         self.ensure_ready()?;
         let feed_mounts = Self::build_feed_mounts(mounts);
         // the dump carries its own limits/consumed time/script name — forget
-        // what the worker's Configure established and re-adopt from the reply.
-        // Snapshotted so a rejected `Load` (the child already has a session)
-        // cannot reset the suspension count, see `turn_raw`.
+        // what the worker's Configure established and re-adopt from the reply
+        // (see `pending_load_budget` for when the old budget comes back)
         self.pending = None;
-        let saved_budget = self.budget;
-        self.budget.forget();
+        self.begin_load();
         self.restored_script_name = None;
         self.feed_mounts = feed_mounts;
         let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
-        let event = match self
+        let outcome = self
             .request_turn(&request, self.pool.config.request_timeout, on_print)
-            .await
-        {
-            Ok(ControlEvent::Ok) => None,
-            Ok(ControlEvent::Turn(event)) => Some(event),
-            Ok(other @ ControlEvent::Dump(_)) => {
-                self.budget = saved_budget;
+            .await;
+        self.end_load();
+        let event = match outcome? {
+            ControlEvent::Ok => None,
+            ControlEvent::Turn(event) => Some(event),
+            other @ ControlEvent::Dump(_) => {
                 return Err(self.protocol_violation(format!("unexpected reply to Load: {other:?}")));
-            }
-            Err(err) => {
-                self.budget = saved_budget;
-                return Err(err);
             }
         };
         Ok((event, self.restored_script_name.take()))
@@ -843,17 +847,42 @@ impl Checkout {
         self.budget.backstop_deadline(self.pool.config.duration_limit_grace)
     }
 
+    /// Snapshots the budget and forgets it ahead of a `Load`, so the reply can
+    /// re-adopt the dump's.
+    fn begin_load(&mut self) {
+        self.pending_load_budget = Some(self.budget);
+        self.budget.forget();
+    }
+
+    /// Puts the pre-`Load` budget back if no reply ever decided its fate (the
+    /// pre-send frame-size rejection, or a worker that died first).
+    fn end_load(&mut self) {
+        if let Some(budget) = self.pending_load_budget.take() {
+            self.budget = budget;
+        }
+    }
+
     /// Records an event and aborts a suspension past `max_suspensions`.
+    ///
+    /// The first non-`Print` reply to a `Load` settles `pending_load_budget`:
+    /// an `Ok` or the re-announced suspension means the dump was adopted,
+    /// anything else (the child refusing it) keeps the live session's budget.
     ///
     /// Returns `true` after sending `AbortFeed`, so the caller reads its
     /// turn-ender; `false` means to handle the event normally.
     async fn note_event(&mut self, event: &pb::ChildEvent) -> Result<bool, PoolError> {
+        if !matches!(event.kind, Some(pb::child_event::Kind::Print(_)))
+            && let Some(saved) = self.pending_load_budget.take()
+            && !(matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) || is_suspension(event))
+        {
+            self.budget = saved;
+        }
         self.budget.note(event);
-        let Some((seen, limit)) = self.budget.over_suspension_limit(event) else {
+        let Some(limit) = self.budget.over_suspension_limit(event) else {
             return Ok(false);
         };
         let abort = request(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
-            exception: Some((&suspension_limit_exceeded(seen, limit)).into()),
+            exception: Some((&suspension_limit_exceeded(limit)).into()),
         }));
         let Some(worker) = self.worker.as_mut() else {
             return Err(PoolError::Finished);
@@ -942,13 +971,10 @@ impl Checkout {
             ));
         }
         // As `restore`: forget the Configure-time budget and re-adopt the
-        // dump's from the reply's budget fields. Snapshotted because a `Load`
-        // the child does not act on (the pre-send frame-size rejection, or the
-        // child refusing it once a session exists) must not reset the count a
-        // hostile client is trying to escape.
-        let saved_budget = matches!(request.kind, Some(pb::parent_request::Kind::Load(_))).then_some(self.budget);
-        if saved_budget.is_some() {
-            self.budget.forget();
+        // dump's from the reply's budget fields (see `pending_load_budget`).
+        let is_load = matches!(request.kind, Some(pb::parent_request::Kind::Load(_)));
+        if is_load {
+            self.begin_load();
         }
         self.turn_in_flight = true;
         // as `expect_turn`: `request_timeout` alone would drop the `max_duration`
@@ -963,16 +989,8 @@ impl Checkout {
             None => self.turn_io_raw(request, on_event).await,
         };
         self.turn_in_flight = false;
-        // only a reply confirming the dump was adopted (idle: `Ok`, suspended:
-        // the re-announced suspension) carries the dump's budget; anything
-        // else means the session the budget belongs to is still the live one
-        let load_adopted = outcome
-            .as_ref()
-            .is_ok_and(|event| matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) || is_suspension(event));
-        if let Some(budget) = saved_budget
-            && !load_adopted
-        {
-            self.budget = budget;
+        if is_load {
+            self.end_load();
         }
         outcome
     }

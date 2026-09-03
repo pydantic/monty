@@ -115,7 +115,7 @@ The pool enforces the limit per checkout; the default is 1000, and a host that n
 A host driving the interpreter directly counts suspensions and calls `abort` itself; the limit only travels in the
 `ResourceTracker`, see the [Rust quickstart](quickstart/rust.md).
 The first suspension over the budget aborts the feed with an uncatchable
-`RuntimeError: suspension limit exceeded: 4 > 3` at the call site.
+`RuntimeError: suspension limit 3 exceeded` at the call site.
 The session stays consistent and can be dumped; later feeds run until they suspend.
 Restoring a dump preserves the limit but resets the count to zero; a `max_suspensions` set on the restoring checkout
 caps the dump's, so a worker cannot report a looser one.

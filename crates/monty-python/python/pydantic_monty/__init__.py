@@ -112,8 +112,9 @@ class ResourceLimits(TypedDict, total=False):
     Configuration for resource limits during code execution.
 
     All limits are optional. Omit a key — or set it to `None` explicitly —
-    to disable that limit, with one exception: `max_recursion_depth` cannot
-    be disabled, and omitting it leaves the 1000-frame default in place.
+    to disable that limit, with two exceptions: `max_recursion_depth` and
+    `max_suspensions` cannot be disabled, and omitting either leaves its
+    1000 default in place.
     """
 
     max_duration_secs: float | None

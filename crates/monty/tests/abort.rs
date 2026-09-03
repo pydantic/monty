@@ -9,10 +9,7 @@ use monty_types::{
 
 /// The exception the pool aborts with once `max_suspensions` is spent.
 fn limit_exceeded() -> MontyException {
-    MontyException::new(
-        ExcType::RuntimeError,
-        Some("suspension limit exceeded: 4 > 3".to_owned()),
-    )
+    MontyException::new(ExcType::RuntimeError, Some("suspension limit 3 exceeded".to_owned()))
 }
 
 /// Starts `code` and resolves every leading name lookup to a function.
@@ -49,7 +46,7 @@ retry()
     let call = start(code).into_function_call().expect("external call");
     let exc = call.abort(limit_exceeded(), PrintWriter::Stdout).unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::RuntimeError);
-    assert_eq!(exc.message(), Some("suspension limit exceeded: 4 > 3"));
+    assert_eq!(exc.message(), Some("suspension limit 3 exceeded"));
     assert_snapshot!(exc.to_string(), @r#"
     Traceback (most recent call last):
       File "test.py", line 8, in <module>
@@ -58,7 +55,7 @@ retry()
       File "test.py", line 4, in retry
         return fetch('x')
                ~~~~~~~~~~
-    RuntimeError: suspension limit exceeded: 4 > 3
+    RuntimeError: suspension limit 3 exceeded
     "#);
 }
 

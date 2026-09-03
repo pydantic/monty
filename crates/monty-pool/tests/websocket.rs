@@ -687,10 +687,7 @@ fn serve_endless_suspensions(socket: &mut WebSocket<TcpStream>, expected_calls: 
     assert_eq!(exception.exc_type, "RuntimeError");
     assert_eq!(
         exception.message.as_deref(),
-        Some(&*format!(
-            "suspension limit exceeded: {expected_calls} > {}",
-            expected_calls - 1
-        ))
+        Some(&*format!("suspension limit {} exceeded", expected_calls - 1))
     );
     send_event(
         socket,
@@ -740,7 +737,7 @@ async fn suspension_limit_is_enforced_by_the_parent() {
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };
-    assert_eq!(exc.message(), Some("suspension limit exceeded: 3 > 2"));
+    assert_eq!(exc.message(), Some("suspension limit 2 exceeded"));
     drop(checkout);
     join_server(server).await;
 }
@@ -796,7 +793,7 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
     };
     assert_eq!(
         error.exception.and_then(|e| e.message).as_deref(),
-        Some("suspension limit exceeded: 2 > 1")
+        Some("suspension limit 1 exceeded")
     );
     drop(checkout);
     join_server(server).await;
@@ -852,7 +849,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
             panic!("expected AbortFeed");
         };
         let exception = abort.exception.expect("abort carries the exception");
-        assert_eq!(exception.message.as_deref(), Some("suspension limit exceeded: 2 > 1"));
+        assert_eq!(exception.message.as_deref(), Some("suspension limit 1 exceeded"));
         send_event(
             &mut socket,
             &event_kind(pb::child_event::Kind::Error(pb::Error {
@@ -904,7 +901,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
     };
     assert_eq!(
         error.exception.and_then(|e| e.message).as_deref(),
-        Some("suspension limit exceeded: 2 > 1")
+        Some("suspension limit 1 exceeded")
     );
     drop(checkout);
     join_server(server).await;
@@ -965,7 +962,7 @@ async fn configured_suspension_limit_caps_a_restored_one() {
         };
         assert_eq!(
             exc.message(),
-            Some("suspension limit exceeded: 2 > 1"),
+            Some("suspension limit 1 exceeded"),
             "reported {reported:?}"
         );
         drop(checkout);
@@ -1008,7 +1005,98 @@ async fn suspension_limit_defaults_to_one_thousand() {
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };
-    assert_eq!(exc.message(), Some("suspension limit exceeded: 1001 > 1000"));
+    assert_eq!(exc.message(), Some("suspension limit 1000 exceeded"));
+    drop(checkout);
+    join_server(server).await;
+}
+
+/// A suspended dump whose re-announced suspension is already over its limit
+/// is aborted at once, and the dump's limit still sticks for later turns:
+/// adoption is decided by the first reply, not by the abort's `Error`.
+#[tokio::test]
+async fn aborted_restored_suspension_keeps_the_dump_limit() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        let function_call = |call_id: u32| WireFunctionCall {
+            function_name: "fetch".to_owned(),
+            args: vec![],
+            kwargs: vec![],
+            call_id,
+            object_id: None,
+        };
+        let abort_reply = |socket: &mut WebSocket<TcpStream>| {
+            let pb::parent_request::Kind::AbortFeed(abort) = read_request(socket) else {
+                panic!("expected AbortFeed");
+            };
+            let exception = abort.exception.expect("abort carries the exception");
+            assert_eq!(exception.message.as_deref(), Some("suspension limit 0 exceeded"));
+            send_event(
+                socket,
+                &event_kind(pb::child_event::Kind::Error(pb::Error {
+                    exception: Some(exception),
+                })),
+            );
+        };
+        // the dump's limit is 0, so its re-announced suspension is over budget
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
+        send_event(
+            &mut socket,
+            &pb::ChildEvent {
+                kind: Some(pb::child_event::Kind::FunctionCall(function_call(1))),
+                max_suspensions: Some(0),
+                ..Default::default()
+            },
+        );
+        abort_reply(&mut socket);
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::FunctionCall(function_call(2))),
+        );
+        abort_reply(&mut socket);
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(1)),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let load = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        ..pb::ParentRequest::default()
+    };
+    let event = checkout.turn_raw(&load, &mut on_event).await.expect("aborted restore");
+    assert!(
+        matches!(event.kind, Some(pb::child_event::Kind::Error(_))),
+        "got {event:?}"
+    );
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "fetch()".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let event = checkout.turn_raw(&feed, &mut on_event).await.expect("aborted feed");
+    let Some(pb::child_event::Kind::Error(error)) = event.kind else {
+        panic!("expected the abort's Error, got {event:?}");
+    };
+    assert_eq!(
+        error.exception.and_then(|e| e.message).as_deref(),
+        Some("suspension limit 0 exceeded")
+    );
     drop(checkout);
     join_server(server).await;
 }
@@ -1056,7 +1144,7 @@ async fn restored_session_readopts_the_suspension_limit() {
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };
-    assert_eq!(exc.message(), Some("suspension limit exceeded: 2 > 1"));
+    assert_eq!(exc.message(), Some("suspension limit 1 exceeded"));
     drop(checkout);
     join_server(server).await;
 }
