@@ -3,12 +3,22 @@ import { t } from './assertions.js'
 
 import { CollectString, CollectStreams, MontyRuntimeError } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
+import { skipIfBrowser } from './env.js'
 
 const { run, pool } = setupPool()
 
 // =============================================================================
 // Print tests
 // =============================================================================
+
+/**
+ * Skips a test that pins `printFlushInterval: 0`. That is a subprocess-worker
+ * setting — the wasm worker's `configure` record has no such field and returns
+ * a whole turn's output at once, leaving no per-line chunks to assert on.
+ */
+function skipLineBuffered(ctx: { skip(): void }) {
+  skipIfBrowser(ctx)
+}
 
 // Collects printCallback invocations. The worker batches output, so a call
 // receives whatever was buffered — not one line and not one print(). Tests
@@ -43,7 +53,8 @@ test('batched into fewer callbacks than prints', async () => {
   t.true(output.length < 100, `expected far fewer callbacks than prints, got ${output.length}`)
 })
 
-test('a zero flush interval delivers one callback per line', async () => {
+test('a zero flush interval delivers one callback per line', async (ctx) => {
+  skipLineBuffered(ctx)
   const { output, callback } = makePrintCollector()
   await run('for i in range(20):\n    print(i)', { printCallback: callback, printFlushInterval: 0 })
   t.deepEqual(
@@ -203,7 +214,8 @@ test('CollectString accumulates', async () => {
   t.is(collector.output, 'a\nb 1\n')
 })
 
-test('CollectStreams accumulates with labels', async () => {
+test('CollectStreams accumulates with labels', async (ctx) => {
+  skipLineBuffered(ctx)
   const collector = new CollectStreams()
   // pinned to line buffering: entries follow chunk boundaries, and this test
   // is about the labels on them, not about how the worker batched them
@@ -241,7 +253,8 @@ test('CollectStreams maxBytes first write fails with overhead', async () => {
   t.deepEqual(collector.output, [])
 })
 
-test('CollectString partial success keeps prior buffer', async () => {
+test('CollectString partial success keeps prior buffer', async (ctx) => {
+  skipLineBuffered(ctx)
   // First print('a') → 'a\n' = 2 bytes; second print('x'*20) → 21 bytes; total 23 > 10.
   // Line-buffered so the two writes reach the collector separately, which is
   // what makes the first one's output survive the second one's failure.
@@ -255,7 +268,8 @@ test('CollectString partial success keeps prior buffer', async () => {
   t.is(collector.output, 'a\n')
 })
 
-test('CollectStreams partial success keeps prior entries', async () => {
+test('CollectStreams partial success keeps prior entries', async (ctx) => {
+  skipLineBuffered(ctx)
   // First entry: 2 + 64 = 66; second: 21 + 64 = 85; total 151 > 100.
   // Line-buffered for the same reason as the CollectString case above.
   const collector = new CollectStreams(100)
