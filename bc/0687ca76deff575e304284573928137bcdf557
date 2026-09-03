@@ -1,0 +1,22 @@
+crates/monty-pool/src/checkout.rs
+  s_271e2e5f7e6236::t_570c6b4c3fa661 338,873,880,1032,1126
+  s_271e2e5f7e6236::t_c1a664a4071fd4 268
+crates/monty-runtime/src/run.rs
+  s_271e2e5f7e6236::t_570c6b4c3fa661 430-432,487-489,564-566
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "bc0687ca76deff575e304284573928137bcdf557",
+  "prompts": {},
+  "sessions": {
+    "s_271e2e5f7e6236": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "28715a05-405e-4de1-b7c1-3fc083970255",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
