@@ -19,8 +19,6 @@
 > [!NOTE]
 > **Hack Monty Round 3 is live** - the last round before Monty V1. See [pydantic.dev/monty](https://pydantic.dev/monty) for details.
 
-**Experimental** - This project is still in development, and not ready for prime time.
-
 A minimal, secure Python 3.14 interpreter written in Rust for use by AI.
 
 Monty avoids the cost, latency, complexity and general faff of using a full container based sandbox for running LLM generated code.

@@ -3,9 +3,8 @@
 Monty is designed to run code that a language model wrote and nobody reviewed.
 This page describes what that buys you and what it does not.
 
-!!! warning "Experimental"
-    Monty is still in development and has not been independently audited.
-    Treat these guarantees as design intent backed by tests, not as a certification.
+!!! note "Reporting a sandbox escape"
+    The guarantees below are design intent backed by tests, rather than the findings of an independent audit.
     If you find a way out of the sandbox, please [open an issue](https://github.com/pydantic/monty/issues).
 
 ## What "secure" means here

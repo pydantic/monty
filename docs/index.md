@@ -2,10 +2,6 @@
 
 A minimal, secure Python interpreter written in Rust for use by AI.
 
-!!! warning "Experimental"
-    Monty is still in development.
-    The public API, the supported Python subset and the wire format between processes can all change between releases.
-
 Monty runs Python written by an LLM without the cost, latency and complexity of a container sandbox.
 It does not embed CPython: it parses Python with [Ruff](https://github.com/astral-sh/ruff)'s parser and executes it on
 its own bytecode VM, with no FFI and no C dependencies.

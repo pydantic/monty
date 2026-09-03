@@ -98,12 +98,8 @@ fix.
    must still state the caveat honestly. Watch for a guarantee that has quietly become
    stronger in the prose than it is in the code.
 
-9. **Experimental framing.** `README.md` and `docs/index.md` both carry the "not ready for
-   prime time" warning. Removing or softening it is blocking unless the change is
-   explicitly about that.
-
-10. **Style.** Em-dashes (the repo does not use `--`), no hype, plain claims. A page opens
-    by saying what the thing is for, before naming any internal mechanism.
+9. **Style.** Em-dashes (the repo does not use `--`), no hype, plain claims. A page opens
+   by saying what the thing is for, before naming any internal mechanism.
 
 ## Output
 
