@@ -50,6 +50,14 @@ export interface WorkerSessionConfig {
    * child's default, false disables them, and an integer customizes truncation.
    */
   assertMessageAnnotations?: AssertMessageAnnotations
+  /**
+   * How long, in seconds, the worker may hold buffered `print()` output before
+   * sending it (default 0.005). `0` restores line buffering, delivering each
+   * completed line on its own. A turn's frames all reach the host together
+   * here, but this still sets how they are split: one `printCallback` call per
+   * frame, and a print collector charges its `maxBytes` cap per frame.
+   */
+  printFlushInterval?: number
 }
 
 /** A session-shaped adapter over one semantic component dispatcher. */
@@ -87,6 +95,10 @@ export class WorkerTransport {
           ...(assertMessageAnnotations === undefined ? {} : { assertMessageAnnotations }),
           typeCheckFormat: componentTypeCheckFormat(config.typeCheckFormat ?? 'full'),
           typeCheckColor: config.typeCheckColor ?? false,
+          ...(config.printFlushInterval === undefined
+            ? {}
+            : // truncated, matching the subprocess path's `Duration::as_millis`
+              { printFlushIntervalMs: Math.floor(config.printFlushInterval * 1000) }),
         },
       },
       'ok',

@@ -54,9 +54,13 @@ out the flush interval (5 ms by default), so:
 Hosts can set the interval per session: `print_flush_interval` (seconds) in
 `pydantic_monty`, `printFlushInterval` (seconds) in `@pydantic/monty`, and
 `ReplConfig::print_flush_interval` in Rust. `0` turns the timer off and
-restores line buffering, one callback per completed line. The wasm worker does
-not expose the setting: it returns a whole turn's output at once, so there is
-no streaming schedule to tune.
+restores line buffering, one callback per completed line.
+
+The wasm worker takes the same setting, but it does not stream: a turn's
+frames all reach the host together when the turn ends, whatever the interval.
+What the setting still decides there is how that output is *split* — one print
+callback per frame, and a collector charges its cap per frame — so a snippet
+that hangs or is killed yields nothing either way.
 
 ## CollectString / CollectStreams caps
 

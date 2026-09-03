@@ -313,10 +313,10 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         type_check_format: i32::from(type_check_format_from_component(request.type_check_format)),
         type_check_color: request.type_check_color,
         protocol_version: PROTOCOL_VERSION,
-        // Not exposed by the WIT interface: this transport hands the host a
-        // whole turn's frames at once, so how the child paced them changed
-        // nothing observable. The child's default keeps the event count down.
-        print_flush_interval_ms: None,
+        // Frames arrive as one batch at the end of a turn, but their
+        // boundaries survive it: the host gets one print callback per frame,
+        // and a print collector charges its cap per frame.
+        print_flush_interval_ms: request.print_flush_interval_ms,
     }
 }
 
