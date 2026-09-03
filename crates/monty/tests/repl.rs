@@ -3,6 +3,8 @@
 //! The REPL session keeps heap/global namespace state between snippets and executes
 //! only the newly fed snippet each time.
 
+use std::fmt::Write;
+
 use insta::assert_snapshot;
 #[cfg(feature = "test-hooks")]
 use monty::FunctionMetadataFault;
@@ -679,13 +681,22 @@ fn repl_failed_snippets_keep_session_tables() {
 
 /// A snippet rejected at compile time, after prepare has allocated its
 /// global slots and the compiler has emitted its functions, must not consume
-/// those `u16` ids: more rejected snippets than there are slots or function
-/// ids still leave the session able to bind and define new things.
+/// those `u16` ids. One successful snippet takes the session to within a few
+/// ids of both caps, so a handful of rejected snippets would overflow them
+/// if their ids leaked — cheaper than 65k feeds, and just as conclusive.
 #[test]
 fn repl_rejected_snippets_do_not_consume_slots_or_function_ids() {
-    let (mut repl, _) = init_repl("");
-    for i in 0..=u16::MAX {
-        let code = format!("def g_{i}():\n    pass\nname_{i} = 1\n__name__ = 'x'");
+    const HEADROOM: usize = 8;
+    let mut prefill = String::new();
+    for i in 0..usize::from(u16::MAX) + 1 - HEADROOM {
+        write!(prefill, "def g_{i}():\n    pass\n").unwrap();
+    }
+    let (mut repl, _) = init_repl(&prefill);
+
+    // Each would take four slots (input, function, global, `__name__`) and a
+    // function id; a second rejection would overflow if the first one leaked.
+    for i in 0..4 * HEADROOM {
+        let code = format!("def bad_{i}():\n    pass\nname_{i} = 1\n__name__ = 'x'");
         let err = repl
             .feed_run(
                 &code,
@@ -695,8 +706,8 @@ fn repl_rejected_snippets_do_not_consume_slots_or_function_ids() {
             .unwrap_err();
         assert_eq!(err.exc_type(), ExcType::NotImplementedError);
     }
-    feed_run_print(&mut repl, "def h():\n    return 1\nok = h()").unwrap();
-    assert_eq!(feed_run_print(&mut repl, "ok").unwrap(), MontyObject::Int(1));
+    feed_run_print(&mut repl, "def h():\n    return g_0() is None\nok = h()").unwrap();
+    assert_eq!(feed_run_print(&mut repl, "ok").unwrap(), MontyObject::Bool(true));
 }
 
 #[test]
