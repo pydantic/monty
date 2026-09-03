@@ -3,6 +3,7 @@
 use std::{
     borrow::Cow,
     future::{Future, ready},
+    mem,
     path::Path,
     pin::Pin,
     process::ExitStatus,
@@ -262,6 +263,10 @@ pub struct Checkout {
     /// Set while a turn's I/O is in flight; still set on the next call only
     /// if the previous turn future was cancelled mid-I/O (see the type docs).
     turn_in_flight: bool,
+    /// Set between sending `AbortFeed` and its reply. The child answers an
+    /// abort with `Error` (or a crash announcement), never a suspension, so
+    /// anything else is a protocol violation rather than a turn to service.
+    abort_in_flight: bool,
     /// Parent-enforced limits and the session's consumption of them.
     budget: SessionBudget,
     /// The budget in force before an in-flight `Load`, put back by
@@ -381,6 +386,17 @@ fn is_suspension(event: &pb::ChildEvent) -> bool {
     )
 }
 
+/// Recognizes the turn-enders a child may answer `AbortFeed` with: the
+/// uncatchable exception's `Error`, or the announcement that it died.
+fn is_abort_reply(event: &pb::ChildEvent) -> bool {
+    matches!(
+        event.kind,
+        Some(
+            pb::child_event::Kind::Error(_) | pb::child_event::Kind::FatalError(_) | pb::child_event::Kind::Shutdown(_)
+        )
+    )
+}
+
 /// The exception a feed is aborted with once it suspends past `max_suspensions`.
 fn suspension_limit_exceeded(limit: u64) -> MontyException {
     MontyException::new(
@@ -431,6 +447,7 @@ impl Checkout {
             pool,
             pending: None,
             turn_in_flight: false,
+            abort_in_flight: false,
             budget: SessionBudget::from_config(repl),
             pending_load_budget: None,
             armed_deadline: None,
@@ -869,9 +886,17 @@ impl Checkout {
     /// anything else (the child refusing it) keeps the live session's budget.
     ///
     /// Returns `true` after sending `AbortFeed`, so the caller reads its
-    /// turn-ender; `false` means to handle the event normally.
+    /// turn-ender; `false` means to handle the event normally. The abort's
+    /// reply must be an `Error` or a crash announcement: a child that answers
+    /// with another suspension would otherwise be aborted again forever, and
+    /// a suspension whose payload the typed path would reject is a protocol
+    /// violation, not a feed to abort.
     async fn abort_if_over_budget(&mut self, event: &pb::ChildEvent) -> Result<bool, PoolError> {
-        if !matches!(event.kind, Some(pb::child_event::Kind::Print(_)))
+        let is_print = matches!(event.kind, Some(pb::child_event::Kind::Print(_)));
+        if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
+            return Err(self.protocol_violation("worker answered AbortFeed with something other than an Error"));
+        }
+        if !is_print
             && let Some(saved) = self.pending_load_budget.take()
             && !(matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) || is_suspension(event))
         {
@@ -881,6 +906,16 @@ impl Checkout {
         let Some(limit) = self.budget.over_suspension_limit(event) else {
             return Ok(false);
         };
+        if let Some(pb::child_event::Kind::OsCall(call)) = &event.kind {
+            match &call.call {
+                None => return Err(self.protocol_violation("OsCall event with no call")),
+                Some(kind) => {
+                    if let Err(err) = OsFunctionCall::try_from(kind.clone()) {
+                        return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
+                    }
+                }
+            }
+        }
         let abort = request(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
             exception: Some((&suspension_limit_exceeded(limit)).into()),
         }));
@@ -888,7 +923,10 @@ impl Checkout {
             return Err(PoolError::Finished);
         };
         match worker.send(&abort).await {
-            Ok(()) => Ok(true),
+            Ok(()) => {
+                self.abort_in_flight = true;
+                Ok(true)
+            }
             Err(_) => Err(self.poison("aborting a feed").await),
         }
     }
@@ -1436,6 +1474,7 @@ impl Checkout {
         self.pending = None;
         self.feed_mounts = None;
         self.turn_in_flight = false;
+        self.abort_in_flight = false;
     }
 }
 

@@ -32,7 +32,7 @@ hello world
 | `--max-memory` | Maximum heap memory, e.g. `1024`, `512KB`, `10MB`, `1GB` |
 | `--max-recursion-depth` | Maximum call-stack depth; defaults to 1000 when any limit is set |
 | `--gc-interval` | Run garbage collection every N allocations |
-| `--max-suspensions` | Maximum suspensions (OS calls, name lookups) serviced, per run or across a whole interactive session (default 1000) |
+| `--max-suspensions` | Maximum suspensions serviced, per run or across a whole interactive session (default 1000); [what counts](resource-limits.md#suspensions) |
 | `--version` | Print the version |
 
 See [resource limits](resource-limits.md) for what the limits actually bound.

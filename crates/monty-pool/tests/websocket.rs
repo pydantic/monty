@@ -742,6 +742,96 @@ async fn suspension_limit_is_enforced_by_the_parent() {
     join_server(server).await;
 }
 
+/// A child that answers `AbortFeed` with another suspension is discarded
+/// rather than aborted again: servicing or re-aborting it would let a
+/// compromised worker run past the budget for as long as the turn deadline.
+#[tokio::test]
+async fn a_suspension_answering_an_abort_is_a_protocol_violation() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "fetch()");
+        send_kind(&mut socket, function_call(1));
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::ResumeCall(_)
+        ));
+        send_kind(&mut socket, function_call(2));
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::AbortFeed(_)
+        ));
+        send_kind(&mut socket, function_call(3));
+        // no second AbortFeed: the parent hangs up instead
+        assert!(try_read_request(&mut socket).is_none());
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(1)),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let event = checkout
+        .feed("fetch()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Protocol(msg) = err else {
+        panic!("expected Protocol, got {err:?}");
+    };
+    assert_eq!(msg, "worker answered AbortFeed with something other than an Error");
+    assert!(matches!(
+        checkout.feed("1", vec![], vec![], false, &mut no_print).await,
+        Err(PoolError::Finished)
+    ));
+    join_server(server).await;
+}
+
+/// An over-budget `OsCall` is validated before the abort shortcut, so a
+/// malformed payload discards the worker as it would on the typed path
+/// instead of being aborted and reported as a runtime error.
+#[tokio::test]
+async fn a_malformed_over_budget_os_call_is_a_protocol_violation() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "open('x')");
+        // the event shrinks the limit to zero itself, so this suspension is
+        // over budget on arrival
+        send_event(
+            &mut socket,
+            &pb::ChildEvent {
+                kind: Some(pb::child_event::Kind::OsCall(pb::OsCall { call_id: 1, call: None })),
+                max_suspensions: Some(0),
+                ..Default::default()
+            },
+        );
+        // no AbortFeed: the parent hangs up instead
+        assert!(try_read_request(&mut socket).is_none());
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let err = checkout
+        .feed("open('x')", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Protocol(msg) = err else {
+        panic!("expected Protocol, got {err:?}");
+    };
+    assert_eq!(msg, "OsCall event with no call");
+    join_server(server).await;
+}
+
 /// Enforces suspension limits when a relay uses the raw path.
 #[tokio::test]
 async fn suspension_limit_is_enforced_on_the_raw_path() {

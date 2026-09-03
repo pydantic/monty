@@ -3,6 +3,7 @@ import { assertMemoryError, t } from './assertions.js'
 import { kind } from './env.js'
 
 import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
+import { WorkerTransport } from '../ts/worker/transport.js'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -171,6 +172,33 @@ test('suspension limit leaves the session usable', async () => {
   const error = await t.throwsAsync(() => session.feedRun("fetch('y')", { externalLookup: { fetch } }), isRuntimeError)
   t.is(error.display('msg'), 'suspension limit 1 exceeded')
   t.is(await session.feedRun('1 + 1'), 2)
+})
+
+test('a suspension answering abort-feed ends the wasm worker', async () => {
+  // A compromised component could answer the abort with another suspension;
+  // servicing it would let it call host functions past the budget.
+  const call = (callId: number) => ({
+    tag: 'function-call' as const,
+    val: { callId, functionName: 'fetch', args: [], kwargs: [] },
+  })
+  const requests: string[] = []
+  const transport = await WorkerTransport.create(async (request) => {
+    requests.push(request.tag)
+    return request.tag === 'configure'
+      ? { status: 'continue', events: [{ tag: 'ok' }], maxSuspensions: 1n }
+      : { status: 'continue', events: [call(requests.length)] }
+  })
+  let reusable: boolean | undefined
+  transport.onFinish = (value) => {
+    reusable = value
+  }
+  const first = await transport.feed('fetch()', null, [], true, () => {})
+  t.is(first.kind, 'functionCall')
+  const turn = await transport.resumeReturn(null, () => {})
+  t.deepEqual(turn, { kind: 'protocol', message: 'worker answered abort-feed with functionCall' })
+  t.deepEqual(requests, ['configure', 'feed', 'resume-call', 'abort-feed'])
+  await transport.finish()
+  t.is(reusable, false)
 })
 
 test('restored session keeps its suspension limit with a fresh count', async () => {

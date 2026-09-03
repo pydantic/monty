@@ -262,6 +262,13 @@ export class WorkerTransport {
         const message = `suspension limit ${this.suspensionLimit} exceeded`
         const aborted = await this.run({ tag: 'abort-feed', val: { excType: 'RuntimeError', message } }, onPrint)
         turn = aborted ? this.toTurn(aborted) : crashed('worker exited without a turn-ending event')
+        // the component answers an abort with an error, never a suspension;
+        // servicing one would let a compromised worker call the host past
+        // the budget, so it ends the worker instead
+        if (turn.kind !== 'error' && turn.kind !== 'crashed') {
+          this.dead = true
+          turn = { kind: 'protocol', message: `worker answered abort-feed with ${turn.kind}` }
+        }
       }
     }
     if (turn.kind === 'crashed') this.dead = true
