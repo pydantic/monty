@@ -4,7 +4,11 @@
 use std::collections::HashMap;
 
 use insta::assert_snapshot;
-use monty_apidoc::{docs_md::process_docs, sig::SigCtx, symbols::SymbolMap};
+use monty_apidoc::{
+    docs_md::{process_docs, strip_intra_doc_links},
+    sig::SigCtx,
+    symbols::SymbolMap,
+};
 use rustdoc_types::{
     Abi, Crate, Enum, FORMAT_VERSION, Function, FunctionHeader, FunctionSignature, GenericParamDef,
     GenericParamDefKind, Generics, Id, Item, ItemEnum, Module, Path, Struct, StructKind, Target, Trait, Type, Variant,
@@ -136,6 +140,14 @@ fn module_relative_link_text_is_trimmed() {
     assert_eq!(
         docs("See [`super::MountMode::OverlayMemory`](super::MountMode::OverlayMemory)."),
         "See `MountMode::OverlayMemory`."
+    );
+}
+
+#[test]
+fn fence_docs_trim_module_relative_shorthand() {
+    assert_eq!(
+        strip_intra_doc_links("Uses [`super::MountMode`], [`self::Local`][] and [`crate::a::B`](crate::a::B)."),
+        "Uses `MountMode`, `Local` and `a::B`."
     );
 }
 

@@ -30,6 +30,10 @@ const RUST_FENCE_TOKENS: &[&str] = &[
     "edition2024",
 ];
 
+/// Path prefixes that only mean something inside the defining module, so
+/// they are dropped from link text and code spans on the page.
+const RELATIVE_PREFIXES: &[&str] = &["crate::", "super::", "self::"];
+
 /// Renders one item's doc comment for a page position where the item's own
 /// heading is at `heading_level` (doc headings are shifted below it).
 pub fn process_docs(
@@ -202,8 +206,12 @@ pub fn strip_intra_doc_links(line: &str) -> String {
     let line = rewrite_inline_links(line, |text, target| {
         is_rust_path(target).then(|| display_text(text).into_owned())
     });
-    // `crate::` prefixes mean nothing on the page, in code spans included
-    strip_unresolved_shorthand(&line.replace("`][]", "`]")).replace("`crate::", "`")
+    // module-relative prefixes mean nothing on the page, in code spans included
+    let mut line = strip_unresolved_shorthand(&line.replace("`][]", "`]"));
+    for prefix in RELATIVE_PREFIXES {
+        line = line.replace(&format!("`{prefix}"), "`");
+    }
+    line
 }
 
 /// Scans `line` for inline `[text](target)` links, replacing each with
@@ -283,9 +291,7 @@ fn display_text(text: &str) -> Cow<'_, str> {
         Some(body) => ("`", body),
         None => ("", text),
     };
-    let stripped = ["crate::", "super::", "self::"]
-        .iter()
-        .find_map(|prefix| body.strip_prefix(prefix));
+    let stripped = RELATIVE_PREFIXES.iter().find_map(|prefix| body.strip_prefix(prefix));
     match stripped {
         Some(rest) => Cow::Owned(format!("{tick}{rest}")),
         None => Cow::Borrowed(text),
