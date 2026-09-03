@@ -46,7 +46,7 @@ export interface TelemetrySpanEvent {
 export interface TelemetryMetricEvent {
   kind: 'metric'
   /** Which instrument records this measurement. */
-  metricKind: 'counter' | 'gauge' | 'histogram'
+  metricKind: 'counter' | 'up_down_counter' | 'histogram'
   /** Dotted instrument name, e.g. `monty.pool.checkout.wait`. */
   name: string
   /** UCUM unit: `s`, `By`, `1`, or a `{thing}` annotation for counts. */

@@ -160,7 +160,7 @@ impl TelemetryAdapter for JsBridge {
     fn record_metric(&self, measurement: &Measurement<'_>) {
         let kind = match measurement.kind {
             MetricKind::Counter => "counter",
-            MetricKind::Gauge => "gauge",
+            MetricKind::UpDownCounter => "up_down_counter",
             MetricKind::Histogram => "histogram",
         };
         let value = match measurement.value {

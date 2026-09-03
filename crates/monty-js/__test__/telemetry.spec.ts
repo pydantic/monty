@@ -3,7 +3,7 @@ import { test } from 'vitest'
 import { t } from './assertions.js'
 import { skipIfBrowser } from './env.js'
 
-import { _installTelemetryAdapter, Monty, type TelemetryEvent } from '@pydantic/monty/node'
+import { _installTelemetryAdapter, Monty, type TelemetryEvent, type TelemetrySpanEvent } from '@pydantic/monty/node'
 
 test('installed telemetry adapter receives the session tree', async (ctx) => {
   skipIfBrowser(ctx)
@@ -36,7 +36,7 @@ test('installed telemetry adapter receives the session tree', async (ctx) => {
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
 
-  const starts = events.filter((event) => event.kind === 'start')
+  const starts = events.filter((event): event is TelemetrySpanEvent => event.kind === 'start')
   t.deepEqual(
     starts.map((event) => [event.traceId, event.traceFlags, event.traceState, event.name]),
     [
@@ -65,5 +65,5 @@ test('installed telemetry adapter receives the session tree', async (ctx) => {
   t.true((run?.value ?? 0) > 0)
   const workers = metrics.filter((event) => event.name === 'monty.pool.workers.live')
   t.true(workers.length > 0)
-  t.is(workers[0]?.metricKind, 'gauge')
+  t.is(workers[0]?.metricKind, 'up_down_counter')
 })

@@ -80,8 +80,8 @@ pub struct PoolConfig {
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
     /// `None` records nothing at all. Independent of tracing: metrics cover
-    /// every checkout, traced or not. Give every pool a clone of one
-    /// `Metrics` — the worker gauges total over the pools sharing it.
+    /// every checkout, traced or not. Worker up/down counters total over all
+    /// pools that record into the same host meter.
     #[cfg(feature = "telemetry")]
     pub metrics: Option<Metrics>,
 }

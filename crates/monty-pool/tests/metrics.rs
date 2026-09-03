@@ -77,8 +77,6 @@ impl Capture {
     }
 
     /// The most recent measurement recorded under `name` with `key = value`.
-    /// Gauges are re-stated on every pool change, so the last one is the
-    /// current value; counters and histograms are asserted on by count.
     #[track_caller]
     fn last(&self, name: &str, key: &str, value: &str) -> Recorded {
         self.named(name)
@@ -94,6 +92,17 @@ impl Capture {
         self.named(name)
             .pop()
             .unwrap_or_else(|| panic!("nothing recorded under {name}"))
+    }
+
+    /// Sum of the integral adjustments recorded under `name`.
+    fn total(&self, name: &str) -> i64 {
+        self.named(name)
+            .into_iter()
+            .map(|recorded| match recorded.value {
+                MetricValue::I64(value) => value,
+                MetricValue::F64(value) => panic!("expected integral {name} measurement, got {value}"),
+            })
+            .sum()
     }
 
     /// Whether anything was recorded under `name`.
@@ -119,12 +128,14 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
     config.max_processes = 2;
     let (pool, capture) = pool_with_metrics(config).await;
 
-    // pre-warming publishes the live gauge before any checkout
+    // pre-warming adds one live worker which is immediately available
     let live = capture.latest("monty.pool.workers.live");
     assert_eq!(live.value, MetricValue::I64(1));
-    assert_eq!(live.kind, MetricKind::Gauge);
+    assert_eq!(live.kind, MetricKind::UpDownCounter);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 1);
 
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    assert_eq!(capture.total("monty.pool.workers.idle"), 0);
     checkout
         .feed("print('hi')\n1 + 1", vec![], vec![], false, &mut no_print)
         .await
@@ -134,7 +145,8 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
     // the pre-warmed worker was reused, so nothing waited and nothing spawned
     assert_eq!(capture.named("monty.pool.checkout.wait").len(), 1);
     capture.last("monty.pool.checkout.wait", "outcome", "idle");
-    assert_eq!(capture.latest("monty.pool.workers.live").value, MetricValue::I64(1));
+    assert_eq!(capture.total("monty.pool.workers.live"), 1);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 1);
 
     capture.last("monty.run.duration", "outcome", "complete");
     capture.last("monty.pool.session.duration", "outcome", "ok");
@@ -156,6 +168,8 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
         capture.last("monty.pool.worker.terminated", "reason", "closed").value,
         MetricValue::I64(1)
     );
+    assert_eq!(capture.total("monty.pool.workers.live"), 0);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 0);
 }
 
 /// A checkout that cannot be served, and a session abandoned rather than
@@ -178,7 +192,8 @@ async fn saturation_and_abandonment_are_recorded() {
     drop(held);
     capture.last("monty.pool.session.duration", "outcome", "abandoned");
     capture.last("monty.pool.worker.terminated", "reason", "abandoned");
-    assert_eq!(capture.latest("monty.pool.workers.live").value, MetricValue::I64(0));
+    assert_eq!(capture.total("monty.pool.workers.live"), 0);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 0);
 }
 
 /// A worker that dies during a turn: the teardown path counts its termination
@@ -210,11 +225,12 @@ async fn a_crashed_worker_is_counted_as_it_is_torn_down() {
     // both the teardown and the drop that follows it
     assert_eq!(capture.named("monty.pool.worker.terminated").len(), 1);
     capture.last("monty.pool.worker.terminated", "reason", "crash");
-    assert_eq!(capture.latest("monty.pool.workers.live").value, MetricValue::I64(0));
+    assert_eq!(capture.total("monty.pool.workers.live"), 0);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 0);
 }
 
 /// A pool dropped without `close` — a supported shutdown — still counts its
-/// idle workers out and zeroes the live gauge.
+/// workers out of the live and idle totals.
 #[tokio::test]
 async fn a_dropped_pool_counts_its_idle_workers() {
     let mut config = PoolConfig::subprocess(monty_binary());
@@ -226,7 +242,44 @@ async fn a_dropped_pool_counts_its_idle_workers() {
     let closed = capture.named("monty.pool.worker.terminated");
     assert_eq!(closed.len(), 2);
     capture.last("monty.pool.worker.terminated", "reason", "closed");
-    assert_eq!(capture.latest("monty.pool.workers.live").value, MetricValue::I64(0));
+    assert_eq!(capture.total("monty.pool.workers.live"), 0);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 0);
+}
+
+/// Worker adjustments from multiple pools share one sum, and dropping either
+/// pool removes exactly its remaining live and idle contribution.
+#[tokio::test]
+async fn worker_counts_sum_across_pools_and_drop_cleanly() {
+    let capture = Arc::new(Capture::default());
+    let handle = configure_telemetry_adapter(Arc::clone(&capture) as Arc<dyn TelemetryAdapter>).expect("configure");
+    let metrics = handle.metrics();
+
+    let mut first_config = PoolConfig::subprocess(monty_binary());
+    first_config.min_processes = 1;
+    first_config.max_processes = 1;
+    first_config.metrics = Some(metrics.clone());
+    let first = Pool::new(first_config).await.expect("first pool");
+
+    let mut second_config = PoolConfig::subprocess(monty_binary());
+    second_config.min_processes = 1;
+    second_config.max_processes = 1;
+    second_config.metrics = Some(metrics);
+    let second = Pool::new(second_config).await.expect("second pool");
+
+    assert_eq!(capture.total("monty.pool.workers.live"), 2);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 2);
+
+    let checkout = first.checkout(&ReplConfig::default()).await.expect("checkout");
+    assert_eq!(capture.total("monty.pool.workers.live"), 2);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 1);
+    drop(checkout);
+    drop(first);
+    assert_eq!(capture.total("monty.pool.workers.live"), 1);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 1);
+
+    drop(second);
+    assert_eq!(capture.total("monty.pool.workers.live"), 0);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 0);
 }
 
 /// A relay driving wire-level turns gets the same instrumentation as a typed

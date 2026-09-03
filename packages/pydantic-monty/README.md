@@ -338,12 +338,13 @@ becomes one session span with nested feed and suspension spans recording code,
 inputs, external calls, exceptions, and `print` output. Session dumps and
 restores are recorded by size only.
 
-The same adapter also receives pool metrics — live and host-blocked worker
-counts, checkout waits, worker deaths by reason, run durations and the sandbox
-execution time of each feed. Unlike the spans these cover every checkout, and
-they record no sandbox-supplied values: metric attributes are closed sets, so
-nothing a script chooses (a called function's name, an exception class, a path)
-can become a dimension. An adapter that does not implement `record_metric`
+The same adapter also receives pool metrics — live, immediately available and
+host-blocked worker counts, checkout waits, worker deaths by reason, run
+durations and the sandbox execution time of each feed. Unlike the spans these
+cover every checkout, and they record no sandbox-supplied values: metric
+attributes are closed sets, so nothing a script chooses (a called function's
+name, an exception class, or a path) can become a dimension. An adapter that
+does not implement `record_metric`
 receives none of them.
 
 Logfire's Python SDK owns sampling, export credentials, resources, flushing,

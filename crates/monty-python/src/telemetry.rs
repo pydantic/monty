@@ -234,7 +234,7 @@ impl TelemetryAdapter for PythonBridge {
 fn metric_kind(kind: MetricKind) -> &'static str {
     match kind {
         MetricKind::Counter => "counter",
-        MetricKind::Gauge => "gauge",
+        MetricKind::UpDownCounter => "up_down_counter",
         MetricKind::Histogram => "histogram",
     }
 }

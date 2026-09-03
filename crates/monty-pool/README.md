@@ -128,7 +128,7 @@ The same handle yields a `Metrics` for `PoolConfig::metrics` — as does
 (with exponential histogram buckets) rather than pushing measurements at an adapter it would
 otherwise have to implement to receive its own data. Either turns on the aggregate
 side: pool health (`monty.pool.workers.live`, `monty.pool.workers.idle`,
-`monty.pool.checkout.wait`, `monty.pool.worker.terminated`,
+`monty.pool.workers.suspended`, `monty.pool.checkout.wait`, `monty.pool.worker.terminated`,
 `monty.pool.session.duration`) and per-turn cost (`monty.run.duration`,
 `monty.run.execution_time`, `monty.turn.duration`, `monty.run.suspensions`,
 `monty.ext.call.duration`, `monty.snapshot.bytes`, `monty.print.bytes`,
@@ -141,12 +141,12 @@ called function's name (under any outcome — a host lookup that is a callable r
 anything), an exception class and any path are all left out rather than becoming a time
 series each. The one name recorded is an os call's, which comes from the protocol's own
 fixed set. The subtraction worth knowing: `monty.run.duration` minus
-`monty.run.execution_time` is time the *host* spent answering suspensions.
+`monty.run.execution_time` is host and transport overhead, primarily time spent answering
+suspensions.
 
-Metric attributes deliberately never identify a pool. Give every pool a clone of one
-`Metrics` (the handle's `metrics()` always returns the same one): the worker gauges then
-total over the pools sharing it, and a dropped pool zeroes its contribution. Separate
-`Metrics` handles would overwrite each other's gauge observations instead.
+Metric attributes deliberately never identify a pool. The worker up/down counters therefore
+total over all pools recording into the same host meter, and a dropped pool subtracts its
+remaining contribution.
 
 Measurements reach `TelemetryAdapter::record_metric`, which defaults to dropping them, so an
 adapter written before metrics existed keeps working unchanged.

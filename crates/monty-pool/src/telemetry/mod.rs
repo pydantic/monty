@@ -41,7 +41,7 @@ pub struct TelemetryAdapterHandle {
     /// Retains the isolated provider and its processors for the handle's lifetime.
     logfire: Logfire,
     /// The one recorder every pool built from this handle shares, so the
-    /// worker gauges total over all of them. Reaches the adapter directly
+    /// worker counters total over all of them. Reaches the adapter directly
     /// rather than through the span pipeline.
     metrics: Metrics,
 }
@@ -93,7 +93,7 @@ impl TelemetryAdapterHandle {
     /// Unlike spans, metrics do not travel per checkout: they are aggregates
     /// covering untraced sessions and worker lifecycle events that belong to
     /// no session at all. Every call returns the same shared recorder, so the
-    /// worker gauges sum over all pools configured from this handle.
+    /// worker counters sum over all pools configured from this handle.
     #[must_use]
     pub fn metrics(&self) -> Metrics {
         self.metrics.clone()

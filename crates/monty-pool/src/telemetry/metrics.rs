@@ -22,10 +22,7 @@
 use std::{
     collections::HashMap,
     fmt,
-    sync::{
-        Arc, PoisonError, RwLock,
-        atomic::{AtomicIsize, AtomicUsize, Ordering},
-    },
+    sync::{Arc, PoisonError, RwLock},
     time::{Duration, Instant},
 };
 
@@ -33,23 +30,31 @@ use logfire::{ExponentialHistogram, Logfire};
 use monty_proto::{pb, pb::os_call::Call};
 use opentelemetry::{
     KeyValue,
-    metrics::{Counter, Gauge},
+    metrics::{Counter, UpDownCounter},
 };
 
 use crate::telemetry::TelemetryAdapter;
 
 /// Live workers, whatever they are doing.
 static LIVE_WORKERS: Instrument = Instrument {
-    kind: MetricKind::Gauge,
+    kind: MetricKind::UpDownCounter,
     name: "monty.pool.workers.live",
     unit: "{worker}",
     description: "Workers the pool is keeping alive: pooled, checked out, or being spawned.",
 };
 
-/// Workers stalled on the host rather than running code.
+/// Pooled workers immediately available for checkout.
 static IDLE_WORKERS: Instrument = Instrument {
-    kind: MetricKind::Gauge,
+    kind: MetricKind::UpDownCounter,
     name: "monty.pool.workers.idle",
+    unit: "{worker}",
+    description: "Workers immediately available for checkout.",
+};
+
+/// Checked-out workers blocked waiting for the host.
+static SUSPENDED_WORKERS: Instrument = Instrument {
+    kind: MetricKind::UpDownCounter,
+    name: "monty.pool.workers.suspended",
     unit: "{worker}",
     description: "Workers blocked waiting for the host to answer a suspension.",
 };
@@ -86,8 +91,8 @@ static RUN_DURATION: Instrument = Instrument {
     description: "Wall time of one feed, including time spent waiting on the host.",
 };
 
-/// Sandbox time of one execution turn. Subtracted from [`RUN_DURATION`], the
-/// remainder is what the host itself took to answer.
+/// Sandbox time of one execution turn. Subtracting it from [`RUN_DURATION`]
+/// leaves host and transport overhead, primarily suspension handling.
 static RUN_EXECUTION: Instrument = Instrument {
     kind: MetricKind::Histogram,
     name: "monty.run.execution_time",
@@ -163,13 +168,6 @@ pub struct Metrics(Arc<Shared>);
 /// What every pool holding a clone of one [`Metrics`] records through.
 struct Shared {
     sink: Sink,
-    /// Workers blocked on a suspension right now, behind [`IDLE_WORKERS`].
-    /// Shared because the gauge spans every pool recording here, while the
-    /// suspensions it counts are observed one worker at a time.
-    idle: AtomicUsize,
-    /// Live workers across every pool, behind [`LIVE_WORKERS`]. Signed so a
-    /// racing decrement can transiently pass zero without wrapping.
-    live: AtomicIsize,
 }
 
 /// Where measurements go, which is what separates a host that owns an OTel SDK
@@ -193,29 +191,30 @@ impl Metrics {
     /// The span-side equivalent is
     /// [`TelemetryContext::for_logfire`](crate::telemetry::TelemetryContext::for_logfire).
     ///
-    /// Create one and clone it per pool: the worker gauges sum over the pools
-    /// sharing a `Metrics`, and separate handles would overwrite each other's
-    /// observations instead.
+    /// Create one and clone it per pool: the worker counters then sum over all
+    /// pools and sessions that record through the handle.
     #[must_use]
     pub fn for_logfire(logfire: Logfire) -> Self {
         Self::with_sink(Sink::Logfire(Box::new(Instruments::new(logfire))))
     }
 
     fn with_sink(sink: Sink) -> Self {
-        Self(Arc::new(Shared {
-            sink,
-            idle: AtomicUsize::new(0),
-            live: AtomicIsize::new(0),
-        }))
+        Self(Arc::new(Shared { sink }))
     }
 
-    /// One pool's contribution to the shared live-worker gauge; dropped with
-    /// the pool, which zeroes its share (see [`LiveWorkersGauge`]).
-    pub(crate) fn live_workers_gauge(&self) -> LiveWorkersGauge {
-        LiveWorkersGauge {
-            metrics: self.clone(),
-            published: AtomicUsize::new(0),
-        }
+    /// Adjusts the number of live workers across all pools using this handle.
+    pub(crate) fn live_workers(&self, delta: i64) {
+        self.record(&LIVE_WORKERS, MetricValue::I64(delta), &[]);
+    }
+
+    /// Adjusts the number of workers immediately available for checkout.
+    pub(crate) fn idle_workers(&self, delta: i64) {
+        self.record(&IDLE_WORKERS, MetricValue::I64(delta), &[]);
+    }
+
+    /// Adjusts the number of workers waiting for the host to resume them.
+    fn suspended_workers(&self, delta: i64) {
+        self.record(&SUSPENDED_WORKERS, MetricValue::I64(delta), &[]);
     }
 
     /// Time [`Pool::checkout`](crate::Pool::checkout) spent obtaining a worker.
@@ -251,20 +250,6 @@ impl Metrics {
         );
     }
 
-    /// Publishes the idle count after one worker blocked or was answered;
-    /// [`record_stable`] keeps racing publishes from sticking out of order.
-    fn idle_workers(&self, delta: isize) {
-        if delta > 0 {
-            self.0.idle.fetch_add(1, Ordering::Relaxed);
-        } else {
-            self.0.idle.fetch_sub(1, Ordering::Relaxed);
-        }
-        record_stable(
-            || self.0.idle.load(Ordering::Relaxed),
-            |idle| self.record(&IDLE_WORKERS, MetricValue::count(idle), &[]),
-        );
-    }
-
     /// Hands one measurement to whichever sink this handle was built with.
     fn record(&self, instrument: &Instrument, value: MetricValue, attributes: &[KeyValue]) {
         match &self.0.sink {
@@ -284,68 +269,6 @@ impl Metrics {
 impl fmt::Debug for Metrics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Metrics")
-    }
-}
-
-/// One pool's stake in [`LIVE_WORKERS`], which totals over every pool sharing
-/// a [`Metrics`] — per-pool series would leak one per pool and go stale on
-/// drop, while a shared sum stays the number a saturation alert watches.
-///
-/// The pool re-states its own count and this publishes the delta, so within a
-/// pool the gauge keeps self-correcting: a stale contribution lasts only until
-/// that pool's next observation. Dropping it zeroes the pool's share.
-pub(crate) struct LiveWorkersGauge {
-    metrics: Metrics,
-    /// This pool's last-published contribution to the shared total.
-    published: AtomicUsize,
-}
-
-impl LiveWorkersGauge {
-    /// Publishes this pool's current live-worker count and records the total;
-    /// [`record_stable`] keeps racing publishes from sticking out of order.
-    pub(crate) fn record(&self, live: usize) {
-        let previous = self.published.swap(live, Ordering::Relaxed);
-        let delta = to_isize(live) - to_isize(previous);
-        self.metrics.0.live.fetch_add(delta, Ordering::Relaxed);
-        record_stable(
-            || self.metrics.0.live.load(Ordering::Relaxed),
-            |total| {
-                let total = usize::try_from(total).unwrap_or(0);
-                self.metrics.record(&LIVE_WORKERS, MetricValue::count(total), &[]);
-            },
-        );
-    }
-}
-
-impl Drop for LiveWorkersGauge {
-    /// A dropped pool's workers are gone; without this its last count would
-    /// sit in the shared total forever.
-    fn drop(&mut self) {
-        self.record(0);
-    }
-}
-
-/// Saturating usize→isize for gauge deltas; counts near `isize::MAX` cannot
-/// occur, this only avoids an `as` cast that could wrap.
-fn to_isize(n: usize) -> isize {
-    isize::try_from(n).unwrap_or(isize::MAX)
-}
-
-/// Records the atomic's current value, repeating until what was recorded is
-/// still current. Two racing updates can otherwise publish out of order and a
-/// stale value would stick until the *next* transition — which may never come.
-/// Every stale record is followed by a corrective one on the same thread, so
-/// the last value the host keeps is the true one, without holding a lock
-/// across the call into its SDK (the deadlock the pool avoids everywhere).
-fn record_stable<T: PartialEq + Copy>(load: impl Fn() -> T, record: impl Fn(T)) {
-    let mut value = load();
-    loop {
-        record(value);
-        let current = load();
-        if current == value {
-            break;
-        }
-        value = current;
     }
 }
 
@@ -372,8 +295,8 @@ pub struct Measurement<'a> {
 pub enum MetricKind {
     /// Monotonic sum: the value is an increment.
     Counter,
-    /// Last-value-wins observation: the value is the current absolute state.
-    Gauge,
+    /// Non-monotonic sum: the value adjusts a current count.
+    UpDownCounter,
     /// Distribution: the value is one sample.
     Histogram,
 }
@@ -412,8 +335,8 @@ impl MetricValue {
         }
     }
 
-    /// The value as a gauge observation. Only durations are `F64`, and no
-    /// gauge records one, so the saturating cast never runs.
+    /// The value as an up/down-counter adjustment. Only durations are `F64`,
+    /// and no up/down counter records one, so the saturating cast never runs.
     #[expect(clippy::cast_possible_truncation, reason = "float→int casts saturate")]
     fn as_i64(self) -> i64 {
         match self {
@@ -447,7 +370,7 @@ pub(crate) const fn outcome(ok: bool) -> &'static str {
 /// Lazy rather than a registered list built up front: an instrument then needs
 /// no bookkeeping beyond its own [`Instrument`], so one that only a rare code
 /// path records can never be forgotten and silently dropped. The read lock is
-/// the steady state — building happens at most once per instrument per pool.
+/// the steady state — building happens at most once per instrument per handle.
 struct Instruments {
     logfire: Logfire,
     built: RwLock<HashMap<&'static str, Handle>>,
@@ -491,9 +414,9 @@ impl Instruments {
                     .with_description(instrument.description)
                     .build(),
             ),
-            MetricKind::Gauge => Handle::Gauge(
+            MetricKind::UpDownCounter => Handle::UpDownCounter(
                 metrics
-                    .i64_gauge(instrument.name)
+                    .i64_up_down_counter(instrument.name)
                     .with_unit(instrument.unit)
                     .with_description(instrument.description)
                     .build(),
@@ -519,7 +442,7 @@ const MAX_HISTOGRAM_SCALE: i8 = 20;
 /// One built instrument, typed by the kind that produced it.
 enum Handle {
     Counter(Counter<u64>),
-    Gauge(Gauge<i64>),
+    UpDownCounter(UpDownCounter<i64>),
     Histogram(ExponentialHistogram<f64>),
 }
 
@@ -527,7 +450,7 @@ impl Handle {
     fn record(&self, value: MetricValue, attributes: &[KeyValue]) {
         match self {
             Self::Counter(counter) => counter.add(value.as_u64(), attributes),
-            Self::Gauge(gauge) => gauge.record(value.as_i64(), attributes),
+            Self::UpDownCounter(counter) => counter.add(value.as_i64(), attributes),
             Self::Histogram(histogram) => histogram.record(value.as_f64(), attributes),
         }
     }
@@ -545,7 +468,7 @@ pub(crate) struct TurnMetrics {
     /// restored mid-suspension (whose start this process never saw).
     feed: Option<Instant>,
     /// The suspension the feed is blocked on, timing the host round-trip.
-    /// While this is set, the worker counts towards [`IDLE_WORKERS`].
+    /// While this is set, the worker counts towards [`SUSPENDED_WORKERS`].
     pending: Option<Suspension>,
     /// The in-flight housekeeping turn: what to label it, and when it started.
     turn: Option<(&'static str, Instant)>,
@@ -679,7 +602,7 @@ impl TurnMetrics {
     }
 
     /// Counts one suspension and starts timing the host's answer, during which
-    /// this worker is idle.
+    /// this worker is suspended.
     fn suspend(&mut self, kind: SuspensionKind) {
         // a suspension answering `Load` is a restored feed re-raising it: the
         // load itself is done, and the host round-trip that follows must not
@@ -693,13 +616,13 @@ impl TurnMetrics {
             &[KeyValue::new("kind", kind.label())],
         );
         // a suspension raised while one is open would be a protocol violation
-        // the checkout rejects; releasing first keeps the gauge honest anyway
+        // the checkout rejects; releasing first keeps the count honest anyway
         self.abandon_pending();
         self.pending = Some(Suspension {
             start: Instant::now(),
             kind,
         });
-        self.metrics.idle_workers(1);
+        self.metrics.suspended_workers(1);
     }
 
     /// Records the round-trip the answering resume just closed, under its kind
@@ -729,12 +652,12 @@ impl TurnMetrics {
     }
 
     /// Takes the open suspension, releasing this worker's claim on
-    /// [`IDLE_WORKERS`]. The single place `pending` is cleared, so the gauge
+    /// [`SUSPENDED_WORKERS`]. The single place `pending` is cleared, so the count
     /// cannot drift from the state it describes.
     fn take_pending(&mut self) -> Option<Suspension> {
         let suspension = self.pending.take();
         if suspension.is_some() {
-            self.metrics.idle_workers(-1);
+            self.metrics.suspended_workers(-1);
         }
         suspension
     }
@@ -876,7 +799,8 @@ fn print_stream(stream: i32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Mutex},
+        sync::{Arc, Barrier, Mutex},
+        thread,
         time::Duration,
     };
 
@@ -1250,34 +1174,48 @@ mod tests {
         assert!(capture.values("monty.run.execution_time").is_empty());
     }
 
-    /// The live gauge totals over the pools sharing one `Metrics`, and a
-    /// dropped pool's contribution is zeroed rather than left to go stale.
+    /// Worker adjustments commute across concurrent users of one `Metrics`,
+    /// and each transition makes exactly one adapter call rather than retrying.
     #[test]
-    fn live_workers_totals_over_pools_and_drops_cleanly() {
+    fn worker_adjustments_are_bounded_and_commutative() {
+        const THREADS: usize = 8;
+        const ITERATIONS: usize = 100;
+
         let capture = Arc::new(Capture::default());
         let metrics = Metrics::new(Arc::clone(&capture) as Arc<dyn TelemetryAdapter>);
-        let first = metrics.live_workers_gauge();
-        let second = metrics.live_workers_gauge();
-        first.record(2);
-        second.record(3);
-        first.record(1);
-        drop(second);
-        assert_eq!(
-            capture.values("monty.pool.workers.live"),
-            [
-                MetricValue::I64(2),
-                MetricValue::I64(5),
-                MetricValue::I64(4),
-                MetricValue::I64(1)
-            ]
-        );
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let threads: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let metrics = metrics.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    for _ in 0..ITERATIONS {
+                        metrics.live_workers(1);
+                        metrics.idle_workers(1);
+                        metrics.idle_workers(-1);
+                        metrics.live_workers(-1);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        let expected = THREADS * ITERATIONS * 2;
+        let live = capture.values("monty.pool.workers.live");
+        let idle = capture.values("monty.pool.workers.idle");
+        assert_eq!(live.len(), expected);
+        assert_eq!(idle.len(), expected);
+        assert_eq!(live.iter().map(|value| value.as_i64()).sum::<i64>(), 0);
+        assert_eq!(idle.iter().map(|value| value.as_i64()).sum::<i64>(), 0);
     }
 
-    /// The idle gauge counts workers blocked on the host, so it rises when a
-    /// suspension opens and falls however that suspension ends — answered, or
-    /// abandoned because the worker died holding it.
+    /// The suspended-worker count rises while the host owns a suspension and
+    /// falls however it ends — answered, or abandoned with a dead worker.
     #[test]
-    fn idle_workers_counts_workers_blocked_on_the_host() {
+    fn suspended_workers_tracks_host_round_trips() {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
@@ -1285,20 +1223,20 @@ mod tests {
             MontyObject::Int(4).into(),
         )));
         assert_eq!(
-            capture.values("monty.pool.workers.idle"),
-            [MetricValue::I64(1), MetricValue::I64(0)]
+            capture.values("monty.pool.workers.suspended"),
+            [MetricValue::I64(1), MetricValue::I64(-1)]
         );
 
         // a worker dropped mid-suspension is no longer waiting on anyone
         metrics.event(&call_event("double"));
         drop(metrics);
         assert_eq!(
-            capture.values("monty.pool.workers.idle"),
+            capture.values("monty.pool.workers.suspended"),
             [
                 MetricValue::I64(1),
-                MetricValue::I64(0),
+                MetricValue::I64(-1),
                 MetricValue::I64(1),
-                MetricValue::I64(0)
+                MetricValue::I64(-1)
             ]
         );
     }
@@ -1359,7 +1297,7 @@ mod tests {
             found,
             [
                 ("monty.ext.call.duration".to_owned(), true),
-                ("monty.pool.workers.idle".to_owned(), false),
+                ("monty.pool.workers.suspended".to_owned(), false),
                 ("monty.run.duration".to_owned(), true),
                 ("monty.run.execution_time".to_owned(), true),
                 ("monty.run.suspensions".to_owned(), false),

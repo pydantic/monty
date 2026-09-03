@@ -15,7 +15,7 @@ use tokio::{
 };
 
 #[cfg(feature = "telemetry")]
-use crate::telemetry::{Metrics, TelemetryContext, metrics::LiveWorkersGauge};
+use crate::telemetry::TelemetryContext;
 use crate::{
     PoolConfig, PoolError,
     checkout::{Checkout, ReplConfig, request},
@@ -46,10 +46,6 @@ pub(crate) struct PoolInner {
     /// Signalled whenever a worker returns to the idle queue or capacity is
     /// released, waking blocked `checkout` calls.
     available: Notify,
-    /// This pool's stake in the shared live-worker gauge (`None` without
-    /// configured metrics); dropping it with the pool zeroes the stake.
-    #[cfg(feature = "telemetry")]
-    live_gauge: Option<LiveWorkersGauge>,
 }
 
 struct PoolState {
@@ -80,15 +76,13 @@ impl Pool {
         let total = idle.len();
         let pool = Self {
             inner: Arc::new(PoolInner {
-                #[cfg(feature = "telemetry")]
-                live_gauge: config.metrics.as_ref().map(Metrics::live_workers_gauge),
                 config,
                 state: Mutex::new(PoolState { idle, total }),
                 available: Notify::new(),
             }),
         };
-        // publish the pre-warmed size, so the gauge exists before any checkout
-        pool.inner.record_live_workers(pool.inner.live_workers_now());
+        let workers = worker_count(total);
+        pool.inner.record_worker_delta(workers, workers);
         Ok(pool)
     }
 
@@ -134,6 +128,7 @@ impl Pool {
         .into_iter()
         .map(|worker| (worker, CapacityGuard::new(&self.inner)))
         .collect();
+        self.inner.record_worker_delta(0, -worker_count(idle.len()));
         for _ in &idle {
             self.inner.count_termination("closed");
         }
@@ -216,10 +211,12 @@ impl PoolInner {
                 let mut state = lock_ignore_poison(&self.state);
                 let mut reused = None;
                 let mut died_idle = 0;
+                let mut removed_idle = 0;
                 if !websocket {
                     // discard workers that died while idle — their replacement
                     // is the spawn below or a later checkout's spawn
                     while let Some(mut worker) = state.idle.pop() {
+                        removed_idle += 1;
                         if worker.is_dead() {
                             state.total -= 1;
                             died_idle += 1;
@@ -235,12 +232,12 @@ impl PoolInner {
                 if below_cap {
                     state.total += 1;
                 }
-                let live = state.total;
                 drop(state); // never call into the host adapter under the lock
                 for _ in 0..died_idle {
                     self.count_termination("died_idle");
                 }
-                self.record_live_workers(live);
+                let spawned = i64::from(below_cap);
+                self.record_worker_delta(spawned - worker_count(died_idle), -worker_count(removed_idle));
                 if let Some(worker) = reused {
                     *outcome = if waited { "waited" } else { "idle" };
                     return Ok(worker);
@@ -280,23 +277,22 @@ impl PoolInner {
         let _ = reason;
     }
 
-    /// Re-states this pool's share of the live worker gauge after a change to
-    /// the pool's state. Call it with the lock already released: recording
-    /// reaches into the host's SDK (and, for a Python host, its GIL), which
-    /// must never happen under the pool mutex.
-    pub(crate) fn record_live_workers(&self, live: usize) {
+    /// Records changes to live and immediately available workers.
+    ///
+    /// Call with the pool lock released: recording reaches into the host SDK
+    /// and, for Python, acquires the GIL.
+    pub(crate) fn record_worker_delta(&self, live: i64, idle: i64) {
         #[cfg(feature = "telemetry")]
-        if let Some(gauge) = &self.live_gauge {
-            gauge.record(live);
+        if let Some(metrics) = &self.config.metrics {
+            if live != 0 {
+                metrics.live_workers(live);
+            }
+            if idle != 0 {
+                metrics.idle_workers(idle);
+            }
         }
         #[cfg(not(feature = "telemetry"))]
-        let _ = live;
-    }
-
-    /// Snapshots the live worker count, which includes one reserved for a
-    /// spawn already under way.
-    pub(crate) fn live_workers_now(&self) -> usize {
-        lock_ignore_poison(&self.state).total
+        let _ = (live, idle);
     }
 
     /// Returns a healthy worker to the idle queue (or retires it when it hit
@@ -313,26 +309,18 @@ impl PoolInner {
             self.count_termination(if websocket { "single_use" } else { "recycled" });
             self.release_capacity();
         } else {
-            let live = {
-                let mut state = lock_ignore_poison(&self.state);
-                state.idle.push(worker);
-                state.total
-            };
+            lock_ignore_poison(&self.state).idle.push(worker);
             self.available.notify_one();
-            self.record_live_workers(live);
+            self.record_worker_delta(0, 1);
         }
     }
 
     /// Records the death/retirement of a worker, freeing capacity for a
     /// future spawn.
     pub(crate) fn release_capacity(&self) {
-        let live = {
-            let mut state = lock_ignore_poison(&self.state);
-            state.total -= 1;
-            state.total
-        };
+        lock_ignore_poison(&self.state).total -= 1;
         self.available.notify_one();
-        self.record_live_workers(live);
+        self.record_worker_delta(-1, 0);
     }
 }
 
@@ -343,7 +331,12 @@ impl Drop for PoolInner {
     /// that path does not under-report worker turnover. (`close` drains the
     /// idle queue and counts, so nothing is counted twice.)
     fn drop(&mut self) {
-        for _ in 0..lock_ignore_poison(&self.state).idle.len() {
+        let (live, idle) = {
+            let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
+            (state.total, state.idle.len())
+        };
+        self.record_worker_delta(-worker_count(live), -worker_count(idle));
+        for _ in 0..idle {
             self.count_termination("closed");
         }
     }
@@ -409,6 +402,11 @@ impl Drop for CapacityGuard<'_> {
             pool.release_capacity();
         }
     }
+}
+
+/// Saturates a worker count at the largest signed metric adjustment.
+fn worker_count(count: usize) -> i64 {
+    i64::try_from(count).unwrap_or(i64::MAX)
 }
 
 /// Locks a possibly poisoned mutex; a panic elsewhere must not stop us from
