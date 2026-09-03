@@ -1,0 +1,36 @@
+docs/api/python/pools.md
+  s_4b040862e1810d::t_d21cbcb4c280fe 9-10,13-22
+  s_4b040862e1810d::t_4bc4f9987b46ce 1-7
+  s_4b040862e1810d::t_869b2f871396f5 8,11-12,23-27
+docs/api/python/suspend_resume.md
+  s_4b040862e1810d::t_73d2cef119ccf8 8-31
+  s_4b040862e1810d::t_4bc4f9987b46ce 1-7
+docs/api/python/os.md
+  s_4b040862e1810d::t_1c5f79778fc33c 8-23,26
+  s_4b040862e1810d::t_1d3c66e207b56e 24-25
+  s_4b040862e1810d::t_4bc4f9987b46ce 1-7
+docs/api/python/websocket.md
+  s_4b040862e1810d::t_97e823ec8794bb 8-17
+  s_4b040862e1810d::t_4bc4f9987b46ce 1-7
+mkdocs.yml
+  s_4b040862e1810d::t_970c78d71d0e3b 40,44-45
+docs/api/python/errors.md
+  s_4b040862e1810d::t_bb7e2e76fcc0e5 8-25
+  s_4b040862e1810d::t_4bc4f9987b46ce 1-7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "32ecc51005b58de19c7b861c023899025bac7d1a",
+  "prompts": {},
+  "sessions": {
+    "s_4b040862e1810d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a9524baf-ade1-427c-b08f-5a5595b03325",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
