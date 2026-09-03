@@ -174,6 +174,20 @@ impl NameMap {
         Ok(id)
     }
 
+    /// Drops every slot at index `len` or above, undoing allocations made since
+    /// the map had `len` slots.
+    ///
+    /// Lets the REPL roll back the names a rejected snippet appended so they
+    /// don't count against the `u16` slot limit. Names whose canonical slot is
+    /// below `len` (aliased slots) keep their forward mapping.
+    pub fn truncate(&mut self, len: usize) {
+        for name_id in self.slots.drain(len..) {
+            if self.by_name.get(&name_id).is_some_and(|slot| slot.index() >= len) {
+                self.by_name.remove(&name_id);
+            }
+        }
+    }
+
     /// Iterates over `(slot, name)` pairs in slot order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (NamespaceId, StringId)> + '_ {
         self.slots.iter().enumerate().map(|(i, &name)| {

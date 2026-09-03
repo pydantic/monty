@@ -677,6 +677,28 @@ fn repl_failed_snippets_keep_session_tables() {
     assert_eq!(feed_run_print(&mut repl, "h()").unwrap(), MontyObject::Int(2));
 }
 
+/// A snippet rejected at compile time, after prepare has allocated its
+/// global slots and the compiler has emitted its functions, must not consume
+/// those `u16` ids: more rejected snippets than there are slots or function
+/// ids still leave the session able to bind and define new things.
+#[test]
+fn repl_rejected_snippets_do_not_consume_slots_or_function_ids() {
+    let (mut repl, _) = init_repl("");
+    for i in 0..=u16::MAX {
+        let code = format!("def g_{i}():\n    pass\nname_{i} = 1\n__name__ = 'x'");
+        let err = repl
+            .feed_run(
+                &code,
+                vec![(format!("input_{i}"), MontyObject::Int(1))],
+                PrintWriter::Stdout,
+            )
+            .unwrap_err();
+        assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    }
+    feed_run_print(&mut repl, "def h():\n    return 1\nok = h()").unwrap();
+    assert_eq!(feed_run_print(&mut repl, "ok").unwrap(), MontyObject::Int(1));
+}
+
 #[test]
 fn repl_progress_dump_load_roundtrip() {
     let (repl, _) = init_repl("");

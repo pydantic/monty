@@ -283,8 +283,9 @@ impl Executor {
     /// The tables are moved into the returned executor (nothing is cloned — this
     /// is what keeps feed cost independent of session size) and must be handed
     /// back to the session once the snippet is finished with. On failure they
-    /// are left in place, extended by whatever the failed snippet interned:
-    /// ids are append-only, so the extra entries are harmless.
+    /// are left in place: the name slots and functions the rejected snippet
+    /// appended are rolled back so they can't eat into the `u16` id spaces,
+    /// while its interned strings stay (u32 ids, harmless and stable).
     ///
     /// `input_names` are pre-registered in the globals map before preparation so
     /// they receive stable namespace slots that the REPL input-injection logic
@@ -299,6 +300,7 @@ impl Executor {
     ) -> Result<Self, MontyException> {
         check_identifier(input_names)?;
 
+        let globals_len = globals.len();
         let (mut interner, mut functions) = mem::take(interns).into_builder();
         let compiled = compile_repl_snippet(
             &code,
@@ -310,8 +312,12 @@ impl Executor {
             options,
         );
         // Whether or not compilation succeeded, the extended tables are the
-        // session's tables from here on.
+        // session's tables from here on (`compile_module` has already rolled
+        // back `functions` on failure).
         *interns = Interns::new(interner, functions);
+        if compiled.is_err() {
+            globals.truncate(globals_len);
+        }
         let (module_code, input_slots) = compiled?;
 
         Ok(Self {

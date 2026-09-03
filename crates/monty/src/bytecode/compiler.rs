@@ -257,10 +257,10 @@ pub struct Compiler<'a> {
 
     /// Compiled functions, indexed by their position in this vector.
     ///
-    /// Borrowed from the caller so the table is only ever appended to: nested
-    /// compilers reborrow it (inner functions get lower indices), and a failed
-    /// compile leaves any functions it appended behind, unreferenced but harmless.
-    /// The REPL relies on this to keep its session table across a failed snippet.
+    /// Borrowed from the caller so the table is only ever appended to and nested
+    /// compilers reborrow it (inner functions get lower indices). The REPL relies
+    /// on this to keep its session table across a failed snippet;
+    /// [`compile_module`](Self::compile_module) rolls back what a failure appended.
     functions: &'a mut Vec<Function>,
 
     /// Enclosing control blocks whose cleanup is emitted by non-local exits.
@@ -533,9 +533,27 @@ impl<'a> Compiler<'a> {
     ///
     /// Every function compiled along the way is appended to `functions`, and its
     /// `FunctionId` is its index there — so a REPL passes its session table to
-    /// keep earlier ids stable, while a fresh run passes an empty vector. The
-    /// module implicitly returns the value of the last expression, or None if empty.
+    /// keep earlier ids stable, while a fresh run passes an empty vector. On
+    /// failure `functions` is restored to its original length, so a rejected
+    /// snippet can't consume `FunctionId`s. The module implicitly returns the
+    /// value of the last expression, or None if empty.
     pub fn compile_module(
+        nodes: &[PreparedNode],
+        interns: &InternerBuilder,
+        globals: &NameMap,
+        functions: &mut Vec<Function>,
+        options: CompileOptions,
+    ) -> Result<Code, CompileError> {
+        let functions_len = functions.len();
+        let result = Self::compile_module_inner(nodes, interns, globals, functions, options);
+        if result.is_err() {
+            functions.truncate(functions_len);
+        }
+        result
+    }
+
+    /// [`compile_module`](Self::compile_module) without the rollback of `functions`.
+    fn compile_module_inner(
         nodes: &[PreparedNode],
         interns: &InternerBuilder,
         globals: &NameMap,
