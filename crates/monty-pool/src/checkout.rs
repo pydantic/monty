@@ -291,7 +291,7 @@ pub struct Checkout {
     /// feed ends so overlay writes never leak into the next feed.
     feed_mounts: Option<MountTable>,
     /// When the session started, for `monty.pool.session.duration`. Taken by
-    /// whichever of `finish` / `Drop` ends the session, so it is recorded once.
+    /// `finish`, terminal worker loss, or `Drop`, so it is recorded once.
     #[cfg(feature = "telemetry")]
     started: Option<Instant>,
 }
@@ -1258,6 +1258,8 @@ impl Checkout {
             // of a version-skew exit, which a SIGKILL would replace with the
             // signal and lose
             Some(mut worker) => {
+                #[cfg(feature = "telemetry")]
+                self.record_finish("error");
                 // guard, not a trailing release: a caller dropping this future
                 // mid-reap must still release the slot and count the death
                 let _capacity = CapacityGuard::terminating(&self.pool, "fatal");
@@ -1277,6 +1279,8 @@ impl Checkout {
         let Some(mut worker) = self.worker.take() else {
             return PoolError::Finished;
         };
+        #[cfg(feature = "telemetry")]
+        self.record_finish("error");
         self.pending = None;
         self.feed_mounts = None;
         let websocket = self.pool.config.transport.is_websocket();
@@ -1322,6 +1326,8 @@ impl Checkout {
     /// so this only kills, reaps, and classifies.
     async fn poison_timeout(&mut self) -> PoolError {
         if let Some(mut worker) = self.worker.take() {
+            #[cfg(feature = "telemetry")]
+            self.record_finish("error");
             // guard, not a trailing release: a caller dropping this future
             // mid-reap must still release the slot and count the death
             let _capacity = CapacityGuard::terminating(&self.pool, "turn_timeout");
@@ -1341,6 +1347,8 @@ impl Checkout {
     /// through [`Self::fatal_error`], which reaps and classifies.
     fn discard_worker(&mut self) {
         if let Some(worker) = self.worker.take() {
+            #[cfg(feature = "telemetry")]
+            self.record_finish("error");
             drop(worker);
             self.pool.count_termination("discarded");
             self.pool.release_capacity();

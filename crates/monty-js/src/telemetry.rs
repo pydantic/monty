@@ -3,7 +3,7 @@
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+        mpsc, Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -27,14 +27,15 @@ use serde_json::{json, Map, Value as JsonValue};
 use tokio::{task::spawn_blocking, time::sleep};
 
 type SendEvent = Arc<dyn Fn(String, ThreadsafeFunctionCallMode) -> Status + Send + Sync>;
-type SendMetrics = Arc<dyn Fn(Buffer, ThreadsafeFunctionCallMode) -> Status + Send + Sync>;
+type SendMetrics = Arc<dyn Fn(Buffer) -> bool + Send + Sync>;
 
 struct JsBridge {
     send: SendEvent,
     send_metrics: SendMetrics,
-    /// Queue overflow disables the shared bridge rather than risking
-    /// cross-root gaps or an unbounded cleanup backlog.
-    disabled: AtomicBool,
+    /// Queue overflow disables tracing rather than leaving gaps in open spans.
+    tracing_disabled: AtomicBool,
+    /// Whether the metric callback can no longer receive batches.
+    metrics_disabled: AtomicBool,
     delivery: RwLock<DeliveryState>,
 }
 
@@ -77,12 +78,23 @@ pub fn install_telemetry_adapter(
         .weak::<true>()
         .max_queue_size::<64>()
         .build()?;
-    let send_metrics: SendMetrics =
-        Arc::new(move |payload, mode| metrics_callback.call(FnArgs::from((payload,)), mode));
+    let send_metrics: SendMetrics = Arc::new(move |payload| {
+        let (acknowledge, acknowledged) = mpsc::sync_channel(1);
+        let status = metrics_callback.call_with_return_value(
+            FnArgs::from((payload,)),
+            ThreadsafeFunctionCallMode::Blocking,
+            move |result, _| {
+                let _ = acknowledge.send(result.is_ok());
+                Ok(())
+            },
+        );
+        status == Status::Ok && acknowledged.recv().unwrap_or(false)
+    });
     let bridge = Arc::new(JsBridge {
         send,
         send_metrics,
-        disabled: AtomicBool::new(false),
+        tracing_disabled: AtomicBool::new(false),
+        metrics_disabled: AtomicBool::new(false),
         delivery: RwLock::new(DeliveryState {
             cleanup_requested: false,
         }),
@@ -106,10 +118,15 @@ pub async fn flush_telemetry() -> napi::Result<()> {
     Ok(())
 }
 
-/// Returns the installed handle used to construct coupled checkout context.
+/// Returns the installed handle used to configure pool metrics.
 pub(crate) fn configured_adapter() -> Option<&'static TelemetryAdapterHandle> {
+    BRIDGE.get().map(|installed| &installed.handle)
+}
+
+/// Returns the installed handle while span and log delivery remains available.
+pub(crate) fn configured_tracing_adapter() -> Option<&'static TelemetryAdapterHandle> {
     let installed = BRIDGE.get()?;
-    (!installed.bridge.disabled.load(Ordering::Relaxed)).then_some(&installed.handle)
+    (!installed.bridge.tracing_disabled.load(Ordering::Relaxed)).then_some(&installed.handle)
 }
 
 impl TelemetryAdapter for JsBridge {
@@ -180,18 +197,15 @@ impl TelemetryAdapter for JsBridge {
     }
 
     fn export_metrics(&self, payload: &[u8]) {
-        // Exports run on the periodic reader thread; blocking here makes an
-        // explicit flush wait until the Node adapter has accepted its batch.
-        let _delivery = read_lock(&self.delivery);
-        if !self.disabled.load(Ordering::Relaxed)
-            && (self.send_metrics)(Buffer::from(payload), ThreadsafeFunctionCallMode::Blocking) != Status::Ok
-        {
-            self.disabled.store(true, Ordering::Relaxed);
+        // Exports run on the periodic reader thread. The acknowledgement makes
+        // an explicit flush wait until JavaScript has invoked the adapter.
+        if !self.metrics_disabled.load(Ordering::Relaxed) && !(self.send_metrics)(Buffer::from(payload)) {
+            self.metrics_disabled.store(true, Ordering::Relaxed);
         }
     }
 
     fn disable_root(&self, trace_id: TraceId, root_span_id: SpanId) {
-        self.disabled.store(true, Ordering::Relaxed);
+        self.tracing_disabled.store(true, Ordering::Relaxed);
         let mut delivery = write_lock(&self.delivery);
         if !delivery.cleanup_requested {
             delivery.cleanup_requested = true;
@@ -218,12 +232,12 @@ impl JsBridge {
     /// Queues one ordered record without blocking a Tokio worker thread.
     fn emit(&self, event: JsonValue) -> bool {
         let _delivery = read_lock(&self.delivery);
-        if self.disabled.load(Ordering::Relaxed) {
+        if self.tracing_disabled.load(Ordering::Relaxed) {
             false
         } else {
             let sent = (self.send)(event.to_string(), ThreadsafeFunctionCallMode::NonBlocking) == Status::Ok;
             if !sent {
-                self.disabled.store(true, Ordering::Relaxed);
+                self.tracing_disabled.store(true, Ordering::Relaxed);
             }
             sent
         }

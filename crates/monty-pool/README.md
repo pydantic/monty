@@ -101,9 +101,10 @@ a worker that has already exited.
 
 ## Observability
 
-The optional `telemetry` feature records semantic execution for language bindings
-and other hosts. `monty-pool` never selects or shuts down a network exporter or reads
-exporter credentials; the host SDK owns those choices and its final flush/shutdown.
+The optional `telemetry` feature records semantic execution for language bindings and other hosts.
+The former `telemetry-adapter` feature and `telemetry_adapter` module remain compatibility aliases.
+`monty-pool` never selects or shuts down a network exporter or reads exporter credentials; the host SDK owns those
+choices and its final flush/shutdown.
 
 Recording happens in the host process, which builds every request and decodes every event
 anyway, so both transports are covered and the workers stay uninstrumented. Each instrumented checkout
@@ -133,6 +134,8 @@ aggregate over the language boundary. Either turns on the aggregate side: pool h
 `monty.run.execution_time`, `monty.turn.duration`, `monty.run.suspensions`,
 `monty.ext.call.duration`, `monty.snapshot.bytes`, `monty.print.bytes`,
 `monty.wire.frame.bytes`).
+`monty.pool.session.duration` uses `ok` for a clean finish, `error` when the worker is lost, and `abandoned` when a
+live checkout is dropped.
 
 Two differences from the spans above. Metrics cover **every** checkout, not only the ones a
 host gave a parent context — an aggregate over traced sessions alone would be misleading —

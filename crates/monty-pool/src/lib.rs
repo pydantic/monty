@@ -4,6 +4,9 @@ mod checkout;
 mod pool;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
+/// Compatibility alias for the former public module name.
+#[cfg(feature = "telemetry")]
+pub use telemetry as telemetry_adapter;
 mod worker;
 
 use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};

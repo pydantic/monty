@@ -52,7 +52,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::{
     convert::{js_to_monty, monty_to_js},
     limits::{extract_limits, JsResourceLimits},
-    telemetry::configured_adapter,
+    telemetry::{configured_adapter, configured_tracing_adapter},
 };
 
 /// Deepest *list-like* value nesting the wire protocol accepts (dicts and
@@ -322,7 +322,7 @@ impl NativeSession {
         let repl_config = self.repl_config.clone();
         let slot = Arc::clone(&self.checkout);
         let telemetry_context =
-            telemetry_context.and_then(|context| configured_adapter().map(|adapter| context.parse(adapter)));
+            telemetry_context.and_then(|context| configured_tracing_adapter().map(|adapter| context.parse(adapter)));
         env.spawn_future(async move {
             let pool = lock(&pool)
                 .as_ref()

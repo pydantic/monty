@@ -520,7 +520,7 @@ class Monty:
                 before raising `TimeoutError`. `None` waits forever.
             request_timeout: Per-turn parent-side deadline in seconds — a worker
                 that exceeds it is killed and the call raises `MontyCrashedError`
-                with `timed_out=True`. Trusted synchronous telemetry callbacks
+                with `timed_out=True`. Trusted synchronous span and log callbacks
                 delay enforcement while they run. Backstops sandbox `limits`.
             max_checkouts_per_worker: Recycle a worker after this many sessions.
         """

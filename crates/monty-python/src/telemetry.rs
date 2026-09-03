@@ -33,7 +33,10 @@ struct InstalledBridge {
 /// Python callback implementing the host side of the shared adapter.
 struct PythonBridge {
     adapter: Py<PyAny>,
-    disabled: AtomicBool,
+    /// Whether span and log delivery has failed.
+    tracing_disabled: AtomicBool,
+    /// Whether metric delivery has failed.
+    metrics_disabled: AtomicBool,
     /// Whether the adapter accepts aggregate OTLP metric batches.
     metrics: OnceLock<bool>,
 }
@@ -50,7 +53,8 @@ pub(crate) fn _install_telemetry_adapter(version: u8, adapter: Py<PyAny>) -> PyR
     }
     let bridge = Arc::new(PythonBridge {
         adapter,
-        disabled: AtomicBool::new(false),
+        tracing_disabled: AtomicBool::new(false),
+        metrics_disabled: AtomicBool::new(false),
         metrics: OnceLock::new(),
     });
     let handle = configure_telemetry_adapter(Arc::clone(&bridge) as Arc<dyn TelemetryAdapter>)
@@ -75,20 +79,19 @@ pub(crate) fn _flush_telemetry(py: Python<'_>) -> PyResult<()> {
 /// Unlike [`capture_telemetry_context`] this is not per-checkout: metrics are
 /// pool-wide, so it is read once when a pool is configured.
 pub(crate) fn pool_metrics() -> Option<Metrics> {
-    let installed = BRIDGE.get()?;
-    (!installed.bridge.disabled.load(Ordering::Relaxed)).then(|| installed.handle.metrics())
+    BRIDGE.get().map(|installed| installed.handle.metrics())
 }
 
 /// Captures serializable distributed context while Python contextvars are active.
 pub(crate) fn capture_telemetry_context(py: Python<'_>) -> Option<TelemetryContext> {
     let installed = BRIDGE.get()?;
-    if installed.bridge.disabled.load(Ordering::Relaxed) {
+    if installed.bridge.tracing_disabled.load(Ordering::Relaxed) {
         return None;
     }
     let value = match installed.bridge.adapter.bind(py).call_method0("capture_context") {
         Ok(value) => value,
         Err(err) => {
-            installed.bridge.disabled.store(true, Ordering::Relaxed);
+            installed.bridge.tracing_disabled.store(true, Ordering::Relaxed);
             err.write_unraisable(py, Some(installed.bridge.adapter.bind(py)));
             return None;
         }
@@ -111,7 +114,7 @@ pub(crate) fn capture_telemetry_context(py: Python<'_>) -> Option<TelemetryConte
     match context {
         Ok(context) => Some(context),
         Err(err) => {
-            installed.bridge.disabled.store(true, Ordering::Relaxed);
+            installed.bridge.tracing_disabled.store(true, Ordering::Relaxed);
             err.write_unraisable(py, Some(installed.bridge.adapter.bind(py)));
             None
         }
@@ -193,20 +196,28 @@ impl TelemetryAdapter for PythonBridge {
     }
 
     fn export_metrics(&self, payload: &[u8]) {
-        if self.disabled.load(Ordering::Relaxed) {
+        if self.metrics_disabled.load(Ordering::Relaxed) {
             return;
         }
         // The periodic reader can outlive Python during interpreter shutdown.
         let _ = Python::try_attach(|py| {
             let adapter = self.adapter.bind(py);
-            if !*self
-                .metrics
-                .get_or_init(|| adapter.hasattr("export_metrics").unwrap_or(false))
-            {
-                return;
-            }
-            if let Err(err) = adapter.call_method1("export_metrics", (PyBytes::new(py, payload),)) {
-                self.disabled.store(true, Ordering::Relaxed);
+            let supports_metrics = if let Some(supports_metrics) = self.metrics.get() {
+                *supports_metrics
+            } else {
+                let supports_metrics = match adapter.hasattr("export_metrics") {
+                    Ok(supports_metrics) => supports_metrics,
+                    Err(err) => {
+                        self.metrics_disabled.store(true, Ordering::Relaxed);
+                        err.write_unraisable(py, Some(adapter));
+                        return;
+                    }
+                };
+                let _ = self.metrics.set(supports_metrics);
+                *self.metrics.get().expect("metrics capability was just initialized")
+            };
+            if supports_metrics && let Err(err) = adapter.call_method1("export_metrics", (PyBytes::new(py, payload),)) {
+                self.metrics_disabled.store(true, Ordering::Relaxed);
                 err.write_unraisable(py, Some(adapter));
             }
         });
@@ -216,13 +227,13 @@ impl TelemetryAdapter for PythonBridge {
 impl PythonBridge {
     /// Invokes the adapter without allowing failures to affect sandbox execution.
     fn call(&self, f: impl FnOnce(Python<'_>, &Bound<'_, PyAny>) -> PyResult<()>) -> bool {
-        if self.disabled.load(Ordering::Relaxed) {
+        if self.tracing_disabled.load(Ordering::Relaxed) {
             return false;
         }
         Python::attach(|py| {
             let adapter = self.adapter.bind(py);
             if let Err(err) = f(py, adapter) {
-                self.disabled.store(true, Ordering::Relaxed);
+                self.tracing_disabled.store(true, Ordering::Relaxed);
                 err.write_unraisable(py, Some(adapter));
                 false
             } else {

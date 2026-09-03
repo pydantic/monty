@@ -21,6 +21,7 @@ use logfire::{Logfire, config::MetricsOptions};
 use monty_pool::{
     Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
     telemetry::{Metrics, TelemetryAdapter, configure_telemetry_adapter},
+    telemetry_adapter,
 };
 use monty_proto::pb;
 use monty_types::PrintStream;
@@ -211,6 +212,12 @@ async fn pool_with_metrics(mut config: PoolConfig) -> (Pool, Arc<Capture>) {
     (pool, capture)
 }
 
+/// The former public telemetry module remains available to existing consumers.
+#[test]
+fn former_telemetry_module_name_remains_available() {
+    assert_eq!(telemetry_adapter::TELEMETRY_ADAPTER_VERSION, 1);
+}
+
 /// The binding pipeline exports one canonical aggregate instead of replaying
 /// individual measurements through the foreign SDK.
 #[tokio::test]
@@ -351,6 +358,8 @@ async fn a_crashed_worker_is_counted_as_it_is_torn_down() {
     // both the teardown and the drop that follows it
     assert_eq!(capture.latest("monty.pool.worker.terminated").value, Value::U64(1));
     capture.last("monty.pool.worker.terminated", "reason", "crash");
+    assert_eq!(capture.named("monty.pool.session.duration").len(), 1);
+    capture.last("monty.pool.session.duration", "outcome", "error");
     assert_eq!(capture.total("monty.pool.workers.live"), 0);
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
 }
