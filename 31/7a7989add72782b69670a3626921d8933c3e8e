@@ -1,0 +1,24 @@
+limitations/classes.md
+  s_a13acbd1453eef::t_e44a6c0527510a 25-29
+  s_a13acbd1453eef::t_847e0cddce6838 156-157,160-161,164-165,168-176,179-181,193-210
+  s_a13acbd1453eef::t_00e009797e1ac1 349-350
+  s_a13acbd1453eef::t_1297d9133c222b 182-188
+  s_a13acbd1453eef::t_b5135334d3c3b5 158-159,177-178
+  s_a13acbd1453eef::t_1aaaa9e711c1d0 189-192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "317a7989add72782b69670a3626921d8933c3e8e",
+  "prompts": {},
+  "sessions": {
+    "s_a13acbd1453eef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "46b34544-930c-423e-9e81-d58970c2dcab",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

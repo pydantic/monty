@@ -1,0 +1,307 @@
+crates/monty-js/src/pool.rs
+  s_a13acbd1453eef::t_e1111adfe96d3e 44-45
+  s_a13acbd1453eef::t_f74acdfbc668bb 779,786-787
+  s_a13acbd1453eef::t_e35a6497caeb66 801,804-805
+crates/monty-js/ts/native.ts
+  s_a13acbd1453eef::t_4a5a56262a83af 49-52
+  s_a13acbd1453eef::t_7b513d1c3005a4 68-71
+crates/monty-js/ts/worker/transport.ts
+  s_a13acbd1453eef::t_7c85dc53c71fae 290
+crates/monty-python/tests/test_external_async.py
+  s_a13acbd1453eef::t_a281678949f4a4 77-79
+crates/monty-pool/tests/pool_test.rs
+  s_a13acbd1453eef::t_cc209968f29634 188,232,794
+crates/monty/src/object_bridge.rs
+  s_a13acbd1453eef::t_3d6a9ae9e89c86 19,21
+  s_a13acbd1453eef::t_97a487f4cbd40f 217-222,224,228,232-234
+  s_a13acbd1453eef::t_a1bdaf61123dfb 482-484,486-490,494,496,498,502-503,505-511,513-523
+  s_a13acbd1453eef::t_4b40b841d41787 504
+  s_a13acbd1453eef::t_1f4c545001e8fa 661
+  s_a13acbd1453eef::t_63a18bfbbbcca2 748
+crates/monty-js/ts/node.ts
+  s_a13acbd1453eef::t_065027826fc4bc 5
+crates/monty-python/tests/test_inputs.py
+  s_a13acbd1453eef::t_a281678949f4a4 53-55
+crates/monty-python/tests/test_class_instance.py
+  s_a13acbd1453eef::t_a0931053343115 1-3,6-287,291,299-402,409-421,423,428-486,488-512,514,522-526
+  s_a13acbd1453eef::t_d66698fb8b9414 5
+  s_a13acbd1453eef::t_69c0bb033f7eb5 288-290,292-293
+  s_a13acbd1453eef::t_a281678949f4a4 294-296
+  s_a13acbd1453eef::t_2e211bb74d24be 404,406
+  s_a13acbd1453eef::t_8dd8fb3e99a07c 487
+  s_a13acbd1453eef::t_224a834d5ddcef 513,515-520
+crates/monty-pool/src/checkout.rs
+  s_a13acbd1453eef::t_60f86b5b2c1a0f 149-151,157
+  s_a13acbd1453eef::t_65575bd8f679e5 171-175
+  s_a13acbd1453eef::t_f3dc7b7b690069 1022
+  s_a13acbd1453eef::t_96f2ec5cffc8e2 1062-1065
+crates/monty-proto/src/worker.rs
+  s_a13acbd1453eef::t_f0f6119974c07b 909
+  s_a13acbd1453eef::t_bde6ebc4001295 971
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_a13acbd1453eef::t_727d3fd48d3ec9 72
+  s_a13acbd1453eef::t_85b199dbfa69ac 191-195,198-204,206,208-209
+  s_a13acbd1453eef::t_eb1c7bced199f1 578-581,587-589
+  s_a13acbd1453eef::t_b75157ce71d450 675-678,681-683
+scripts/test_fixtures.py
+  s_a13acbd1453eef::t_e0be4a8e3da65d 54-57
+  s_a13acbd1453eef::t_e885e1d882b4d9 80-82
+crates/monty/test_cases/dataclass__basic.py
+  s_a13acbd1453eef::t_8ed7b1361a5064 88-90
+  s_a13acbd1453eef::t_da23f891d9430c 325-343
+crates/monty-proto/src/python/exceptions.rs
+  s_a13acbd1453eef::t_2f417fa59dd405 19
+crates/monty-pool/src/telemetry_json.rs
+  s_a13acbd1453eef::t_228d446d61cfcd 19
+  s_a13acbd1453eef::t_393e9586f80ac1 147-150
+  s_a13acbd1453eef::t_3a9525e0491977 460-461,463,470,472,475-476,478,482,484,488
+crates/monty-datatest/src/main.rs
+  s_a13acbd1453eef::t_e8e59b81922ee8 445
+  s_a13acbd1453eef::t_9c475be9df8a15 485-486,490,492-498,505,507-513,519,521-528
+  s_a13acbd1453eef::t_13f70bc7d05f41 556-558,560-636,639,642,644-647,649,653,656-660,664-667,671,673-674,683-684,688,699-710
+  s_a13acbd1453eef::t_63a027c58e49d9 1804-1807
+  s_a13acbd1453eef::t_c486aa9807e50d 1827-1829,1840
+  s_a13acbd1453eef::t_748b78d1674330 1830-1836
+  s_a13acbd1453eef::t_4ecc880b0f2278 1881-1887
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_a13acbd1453eef::t_5a5299bea8e6a5 29
+  s_a13acbd1453eef::t_8c13265cfc5f26 358-361,365-379,381
+  s_a13acbd1453eef::t_bff15036ff4cff 380
+  s_a13acbd1453eef::t_53478453e86c5d 668-670,692-693
+  s_a13acbd1453eef::t_309893e1e46650 1052-1055,1094-1096,1102-1106,1152,1179-1180
+crates/monty-python/tests/conftest.py
+  s_a13acbd1453eef::t_71ea3c1028b87f 73
+crates/monty/src/types/mod.rs
+  s_a13acbd1453eef::t_7c7738df55e14e 18
+crates/monty-python/src/pool.rs
+  s_a13acbd1453eef::t_87c63b037a504d 45,215,284,325,401,712,781,816,880,896,1200,1208,1219,1225,1245,1247,1259,1285,1289,1322,1435,1459,1504,1534,1547,1563,1728,1736,1741,1747
+  s_a13acbd1453eef::t_3d82c929785440 67
+  s_a13acbd1453eef::t_062c42a05c8a5a 202,579,698
+  s_a13acbd1453eef::t_d84903c5d284ab 344-346,366-368
+  s_a13acbd1453eef::t_c1921c417b0209 1329,1332-1333,1339-1341
+  s_a13acbd1453eef::t_748b78d1674330 1342-1351,1500-1501,1544,1558-1561
+  s_a13acbd1453eef::t_b86ea83f5c142a 1543,1551-1557
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_a13acbd1453eef::t_c36f95f0176da5 88,250-253,255,259-260,262-265,267,270,273-275,724-727,738-741,898-901,906-909
+limitations/classes.md
+  s_a13acbd1453eef::t_e44a6c0527510a 25-29
+  s_a13acbd1453eef::t_847e0cddce6838 156-157,159-160,163-164,167-175,177-179,184-201
+  s_a13acbd1453eef::t_00e009797e1ac1 340-341
+crates/monty-proto/tests/roundtrip.rs
+  s_a13acbd1453eef::t_d2a535022f13c1 226-227,229,236-245
+  s_a13acbd1453eef::t_34fe90b2f42f08 617-620,622,626
+  s_a13acbd1453eef::t_748b78d1674330 657-659
+crates/monty/src/bytecode/vm/mod.rs
+  s_a13acbd1453eef::t_0f1e933d745c4e 141-142
+  s_a13acbd1453eef::t_748b78d1674330 178-182
+  s_a13acbd1453eef::t_1cf6774780f037 185,188-199
+  s_a13acbd1453eef::t_7a284beb5f0650 263,265-267,271,275-291
+  s_a13acbd1453eef::t_6db911af8ff530 334
+crates/monty-python/src/external.rs
+  s_a13acbd1453eef::t_175c1e9ca5990e 2-3,8-11,16,23-26,29,34,40-41,44,49-51,53-73,75-78,80-100
+  s_a13acbd1453eef::t_87c63b037a504d 13,32,47,116,122,146,191,197-198,208,220,246,252-253,285,288,309,313,339-340
+  s_a13acbd1453eef::t_d84903c5d284ab 104,110-112
+  s_a13acbd1453eef::t_748b78d1674330 123
+  s_a13acbd1453eef::t_808559e8737fd1 277-279,282,287,294-296,300
+crates/monty-pool/src/telemetry.rs
+  s_a13acbd1453eef::t_32d8a667511198 284
+  s_a13acbd1453eef::t_44fe11d5f864b6 1009
+  s_a13acbd1453eef::t_60eed519aa4d84 1062,1192
+crates/monty-proto/src/generated/monty.v1.rs
+  s_a13acbd1453eef::t_c36f95f0176da5 149-152,154,158-159,161-164,166,169,172-174,778-781,786-789
+crates/monty-proto/src/python/mod.rs
+  s_a13acbd1453eef::t_a09b6790f3c448 13,17
+crates/monty-proto/src/wire.rs
+  s_a13acbd1453eef::t_8066a5b1a25a68 123-126,135-137,146-149,164,174
+  s_a13acbd1453eef::t_3045490adced69 204
+  s_a13acbd1453eef::t_94267e3cac47ae 299,301,305,308-309,313-314,322-323
+  s_a13acbd1453eef::t_1f64204b39db30 384,386,390,392-393
+  s_a13acbd1453eef::t_41562d8e49b318 541-542
+  s_a13acbd1453eef::t_f5bf8c7f5a1f18 543-550,552-553,560-561
+  s_a13acbd1453eef::t_5e860bfba9f056 769-771,773-777,779-780
+  s_a13acbd1453eef::t_178050dbf89775 1004,1006,1010,1012,1016,1019,1027,1030-1031,1036,1042,1046,1051,1055
+crates/monty/src/repl.rs
+  s_a13acbd1453eef::t_7464cb4be3e43c 26-29
+  s_a13acbd1453eef::t_6a91c45a6949b6 560,574-577
+  s_a13acbd1453eef::t_d7bf4188c07f8f 660-662,664-667,672-673,687-693,696-698,700,732-748,753
+  s_a13acbd1453eef::t_6f658b0fe06ce6 1099,1105
+  s_a13acbd1453eef::t_15c986f61a2d34 1119,1121
+crates/monty-js/ts/index.ts
+  s_a13acbd1453eef::t_85bc38a1a3a483 7
+crates/monty-python/src/async_dispatch.rs
+  s_a13acbd1453eef::t_87c63b037a504d 8,27,33,48,50,57
+  s_a13acbd1453eef::t_6a83fc6aa71a2c 15,18-20,23,30-31
+crates/monty/tests/repl.rs
+  s_a13acbd1453eef::t_7a04e9907562ef 693-694,696,698,706,711-712,719-721
+crates/monty-js/src/convert.rs
+  s_a13acbd1453eef::t_401ddcfc9952ef 25
+  s_a13acbd1453eef::t_77e2b055fbb0fa 31
+  s_a13acbd1453eef::t_0b11611dbf7b1b 85,87,91-92
+  s_a13acbd1453eef::t_0f7019fff2dd17 393-401,403,407,411,414-416,418,420-422,425-430,432,435
+  s_a13acbd1453eef::t_8b1f36b5820dd8 705,707-713,717-724,728,730,732,734,736
+  s_a13acbd1453eef::t_748b78d1674330 714-716
+  s_a13acbd1453eef::t_7fff0a94f82d8f 743-756
+crates/monty-python/python/pydantic_monty/class_instance.py
+  s_a13acbd1453eef::t_a3abab7de251b5 1-15,18-88,98,109-119,122
+  s_a13acbd1453eef::t_80533b9dedb243 16-17
+  s_a13acbd1453eef::t_313f26ffdd3c20 89-97,99-108
+  s_a13acbd1453eef::t_1724d5d02eacbe 120-121
+crates/monty/src/run_progress.rs
+  s_a13acbd1453eef::t_16d4afec63381b 106-108,119-121,133,141
+  s_a13acbd1453eef::t_3b270f9ba5b944 265-266,268-308,316-317,324-332,343-347,364,386-402,407,419-424
+  s_a13acbd1453eef::t_98a13bc5d81c80 676,682,691-692
+  s_a13acbd1453eef::t_54e22bd80e3492 731,751,760,774-777,780-790
+  s_a13acbd1453eef::t_c52aee0a4b7bca 834,840
+  s_a13acbd1453eef::t_3da7354d6330e1 854-856
+crates/monty-proto/tests/differential.rs
+  s_a13acbd1453eef::t_69e117cf7fd364 181,183,187,189,191,198
+  s_a13acbd1453eef::t_cb6d3824699525 296,298,302-303,305,309
+  s_a13acbd1453eef::t_5d0ff11316897d 401-430
+crates/monty-js/ts/worker/value.ts
+  s_a13acbd1453eef::t_7ce50d1f70c7fd 135
+  s_a13acbd1453eef::t_e1cebb33b0f6b6 165,170,173,175-176,187,189-191
+  s_a13acbd1453eef::t_6e58a36470411b 329,333-334,346
+crates/monty-pool/tests/websocket.rs
+  s_a13acbd1453eef::t_44fe11d5f864b6 707
+crates/monty/src/run.rs
+  s_a13acbd1453eef::t_6318e03deaf10e 466-472
+crates/monty/src/types/host_class.rs
+  s_a13acbd1453eef::t_e2b0f795e6eaf6 1-7,9-15,18-148,150-181,184,186-193,196-205,207-209,211-226,230-233,240-251,253-335,337-359,363-399
+  s_a13acbd1453eef::t_8d0a4a552a1bd2 183
+  s_a13acbd1453eef::t_91d21afe019092 234-239
+  s_a13acbd1453eef::t_efbefddceafc8c 360-362
+crates/monty/src/types/py_trait.rs
+  s_a13acbd1453eef::t_c178bf05c7afce 519,657
+crates/monty-python/tests/test_feed_start.py
+  s_a13acbd1453eef::t_beee9563ab8359 5,17,30-35
+  s_a13acbd1453eef::t_63ab24ba7b4915 45
+  s_a13acbd1453eef::t_7c5bbcfac19052 57-82
+crates/monty/src/builtins/getattr.rs
+  s_a13acbd1453eef::t_1497739553b369 50-57
+crates/monty-python/python/pydantic_monty/__init__.py
+  s_a13acbd1453eef::t_6d035b247cfcef 22,38
+  s_a13acbd1453eef::t_4ca821cd3f22b1 64-65,75
+limitations/pool-architecture.md
+  s_a13acbd1453eef::t_6f1caabcda23e2 381-385
+crates/monty/tests/main.rs
+  s_a13acbd1453eef::t_744fefbff3c1d0 31-32,35-36,38,46
+  s_a13acbd1453eef::t_1f8a02ad81e407 350-366,369,382,387,402,411,426
+crates/monty/src/builtins/hasattr.rs
+  s_a13acbd1453eef::t_ceaabad5c54117 53-56
+crates/monty-proto/src/python/class_instance.rs
+  s_a13acbd1453eef::t_c64db4120a409f 1-13,15-17,19-44,46-93,98-193,195-277
+  s_a13acbd1453eef::t_c16e0aeeefaafe 18
+  s_a13acbd1453eef::t_748b78d1674330 45,94-97
+crates/monty-types/src/object.rs
+  s_a13acbd1453eef::t_cad02cf2ab86dc 124,126-130,133-137,139,141,143-144
+  s_a13acbd1453eef::t_5e24636dbdad2c 240
+  s_a13acbd1453eef::t_3ee5815eee0591 497-500,503-504,507-509,511-512
+  s_a13acbd1453eef::t_748b78d1674330 558-559
+  s_a13acbd1453eef::t_aec41aa1d5671f 560
+  s_a13acbd1453eef::t_03ddb28849f3e3 595
+  s_a13acbd1453eef::t_8328756493bf2e 702,704,708,710,712,716,720,724
+  s_a13acbd1453eef::t_7eb2fa35b2f73c 829-833
+crates/monty/src/types/type.rs
+  s_a13acbd1453eef::t_c19ee3a59a7ea5 90-96
+crates/monty-proto/src/frame.rs
+  s_a13acbd1453eef::t_c70122d41e9916 38
+crates/monty-js/ts/classInstance.ts
+  s_a13acbd1453eef::t_120583ca27e71f 1-119,123-231,233-234,236-237,239-240,242-246,248,252-265,267-268,270-271,273-278,280-281,283-288,290,292-304,306-316,318-320,326-329,331-332,334-335,337-348,350-352,355-360,362-364,366-373,375-377,379-416,418-460
+  s_a13acbd1453eef::t_42bb025a59666f 120-122,249-251,321-325
+crates/monty-python/src/snapshot.rs
+  s_a13acbd1453eef::t_87c63b037a504d 36,73,93,101,113,145,147,172,174,237,433,461,483,486,494,498,530,580,585,623,632,694,699,746,757,762,831,976,1099,1106
+  s_a13acbd1453eef::t_3cefc903773087 51,60
+  s_a13acbd1453eef::t_d84903c5d284ab 61-62
+  s_a13acbd1453eef::t_21fadc8d71a191 246,254,270,274,277-285,287-295,518-520,564-565,628,678-679
+  s_a13acbd1453eef::t_524a98ab1c9443 413-423,797-799,855-861,875,910-916,930,932
+  s_a13acbd1453eef::t_41eba734654196 753
+crates/monty/tests/py_object.rs
+  s_a13acbd1453eef::t_ca5b19fc30061b 186,188,192,195
+  s_a13acbd1453eef::t_b75b2941e5635c 309,311,313,317
+limitations/dataclasses.md
+  s_a13acbd1453eef::t_968e54c4d7b6e1 4-12
+crates/monty-js/ts/worker/index.ts
+  s_a13acbd1453eef::t_cad06be030031a 81
+crates/monty-runtime/tests/subprocess.rs
+  s_a13acbd1453eef::t_44fe11d5f864b6 319
+crates/monty-python/src/build.rs
+  s_a13acbd1453eef::t_87c63b037a504d 9,59
+  s_a13acbd1453eef::t_748b78d1674330 83-84
+crates/monty/tests/inputs.rs
+  s_a13acbd1453eef::t_1a979e705211d0 590-591,593,601
+crates/monty-js/__test__/external.spec.ts
+  s_a13acbd1453eef::t_60fbb0906a9b89 402-403,406
+crates/monty-js/ts/errors.ts
+  s_a13acbd1453eef::t_ee0adc7a84813a 295
+crates/monty-proto/src/convert/mod.rs
+  s_a13acbd1453eef::t_74a0ae8749f63c 88-90
+  s_a13acbd1453eef::t_e03502de7d324c 96-97
+  s_a13acbd1453eef::t_39f075cca7c4ec 105
+  s_a13acbd1453eef::t_51be425d88c2f8 122
+crates/monty-js/__test__/class_instance.spec.ts
+  s_a13acbd1453eef::t_f55253bc2bc15e 1-7,9-232,236-293
+  s_a13acbd1453eef::t_42bb025a59666f 233-235
+crates/monty-proto/src/python/convert.rs
+  s_a13acbd1453eef::t_361aa57a1da880 23-25
+  s_a13acbd1453eef::t_5fc49714c50d33 48-49,63,126,283-284,297,317,324,355,364-365,373,380
+  s_a13acbd1453eef::t_007b2f00ee3e2d 55-59
+  s_a13acbd1453eef::t_748b78d1674330 88,107-108,115,122,129
+  s_a13acbd1453eef::t_e121d033e9a9db 151-152,154-159
+  s_a13acbd1453eef::t_aee64fbef1cb5a 183-185
+  s_a13acbd1453eef::t_dda4fe1e2cda18 280-282
+  s_a13acbd1453eef::t_f429e73d68ea54 401-403,405,407-409
+crates/monty-python/tests/test_external.py
+  s_a13acbd1453eef::t_a281678949f4a4 136-153,683-700,747-749
+crates/monty/src/heap_data.rs
+  s_a13acbd1453eef::t_c384d49fdc6e80 194,273,473
+crates/monty-python/src/lib.rs
+  s_a13acbd1453eef::t_4d0e48727858f4 82-86
+crates/monty/src/bytecode/vm/call.rs
+  s_a13acbd1453eef::t_f19147de538848 54,56-78
+  s_a13acbd1453eef::t_87d89f21fb2e78 101,105
+  s_a13acbd1453eef::t_41b31d4adcd8a1 457,459,461-463,465,467
+  s_a13acbd1453eef::t_b9b3b2d13bb5dd 464,466
+  s_a13acbd1453eef::t_d2feb83292575a 494,496
+  s_a13acbd1453eef::t_dee4eb923be079 495,497
+crates/monty/src/types/dict.rs
+  s_a13acbd1453eef::t_c178bf05c7afce 382
+crates/monty-js/README.md
+  s_a13acbd1453eef::t_00996d7e1e8a26 96-133
+  s_a13acbd1453eef::t_9c7d69a6df1622 419
+crates/monty-js/ts/session.ts
+  s_a13acbd1453eef::t_4b6424a570ba61 13
+  s_a13acbd1453eef::t_7b23c8041ba6c1 161-164
+  s_a13acbd1453eef::t_763d058bbca563 183,186,195
+  s_a13acbd1453eef::t_7c8352c1b15f84 255
+  s_a13acbd1453eef::t_1b30f146274f1f 350-351
+  s_a13acbd1453eef::t_f32a55b3c90407 454
+  s_a13acbd1453eef::t_10835cea5973aa 473-476,492
+  s_a13acbd1453eef::t_09b2e9a69343d1 506-507,525-567,569-571,579-620
+  s_a13acbd1453eef::t_30427341a2d85b 637-638,649
+  s_a13acbd1453eef::t_cdb56697ab04e9 695-702
+  s_a13acbd1453eef::t_494594b9d2542b 763-765
+  s_a13acbd1453eef::t_c1b43ee35ba49f 779
+  s_a13acbd1453eef::t_602c18d71180cd 841-849
+  s_a13acbd1453eef::t_8908afd1a9879f 907-909,919-920,923
+  s_a13acbd1453eef::t_3f7ff01642da05 981-983,992
+  s_a13acbd1453eef::t_a3a5d6db61a3aa 1039-1046
+  s_a13acbd1453eef::t_3d9d1207a6de7c 1075-1077,1079-1082,1087-1089,1093-1108
+  s_a13acbd1453eef::t_42bb025a59666f 1083-1086
+  s_a13acbd1453eef::t_ca57e22ed53fe7 1090-1092
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7179fe9c0ecfe575ea09517fc5ff44644d21bcfb",
+  "prompts": {},
+  "sessions": {
+    "s_a13acbd1453eef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "46b34544-930c-423e-9e81-d58970c2dcab",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
