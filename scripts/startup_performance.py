@@ -57,7 +57,7 @@ def run_monty_warm(rounds: int = 20):
 
 def run_pyodide():
     async def run() -> Any:
-        async with code_sandbox(dependencies=['numpy']) as sandbox:
+        async with code_sandbox() as sandbox:
             return await sandbox.eval(code)
 
     start = time.perf_counter()

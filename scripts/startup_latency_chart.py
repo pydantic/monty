@@ -4,12 +4,12 @@ The numbers come from `scripts/startup_performance.py`; update them here after r
 then `uv run scripts/startup_latency_chart.py`. The same figures are quoted in `docs/index.md`,
 `docs/alternatives.md` and `README.md`, so change all four together.
 
+The axis is linear, so the Monty bar is a sliver: that is the point of the chart.
 The SVG uses mid-grey text and axes only, so it reads on both light and dark backgrounds.
 """
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 # (label, milliseconds, is_monty): cold start plus a warm agent run of 10 REPL
@@ -18,21 +18,22 @@ ROWS: list[tuple[str, float, bool]] = [
     ('Monty', 5, True),
     ('WASI / wasmtime', 200, False),
     ('Docker', 900, False),
-    ('Sandboxing service (Daytona)', 1900, False),
-    ('Pyodide', 2900, False),
+    ('Sandboxing service', 1900, False),
+    ('Pyodide', 2700, False),
 ]
 
 OUTPUT = Path(__file__).parent.parent / 'docs' / 'img' / 'startup-latency.svg'
 
 WIDTH = 760
-LABEL_WIDTH = 230
+LABEL_WIDTH = 150
 BAR_HEIGHT = 22
 ROW_GAP = 12
-MARGIN_TOP = 20
+MARGIN_TOP = 44
 MARGIN_BOTTOM = 40
-AXIS_MIN_MS = 1
-AXIS_MAX_MS = 10_000
+AXIS_MAX_MS = 3000
+AXIS_STEP_MS = 500
 PLOT_WIDTH = WIDTH - LABEL_WIDTH - 90
+CAPTION = 'Combined cold start + agent run'
 
 TEXT = '#8a8f98'
 MONTY_BAR = '#e520e9'
@@ -46,7 +47,9 @@ def main() -> None:
     parts = [
         f"<svg xmlns='http://www.w3.org/2000/svg' width='{WIDTH}' height='{height}' "
         f"viewBox='0 0 {WIDTH} {height}' role='img' aria-labelledby='title'>",
-        "<title id='title'>Time to create a sandbox and run 10 REPL commands in it, log scale</title>",
+        "<title id='title'>Time to create a sandbox and run 10 REPL commands in it</title>",
+        f"<text x='{LABEL_WIDTH + PLOT_WIDTH / 2:.1f}' y='18' text-anchor='middle' fill='{TEXT}' "
+        f"font-size='15' font-weight='600' {FONT}>{CAPTION}</text>",
     ]
     parts.extend(axis(height))
     for i, (label, ms, is_monty) in enumerate(ROWS):
@@ -71,26 +74,23 @@ def main() -> None:
 
 
 def axis(height: int) -> list[str]:
-    """Log-scale gridlines at each decade, labelled along the bottom."""
+    """Gridlines every `AXIS_STEP_MS`, labelled along the bottom."""
     parts: list[str] = []
     bottom = height - MARGIN_BOTTOM + 6
-    decade = AXIS_MIN_MS
-    while decade <= AXIS_MAX_MS:
-        x = x_for(decade)
+    for tick in range(0, AXIS_MAX_MS + 1, AXIS_STEP_MS):
+        x = x_for(tick)
         parts.append(
             f"<line x1='{x:.1f}' y1='{MARGIN_TOP - 8}' x2='{x:.1f}' y2='{bottom}' stroke='{TEXT}' stroke-opacity='0.3'/>"
         )
         parts.append(
-            f"<text x='{x:.1f}' y='{bottom + 18}' text-anchor='middle' fill='{TEXT}' font-size='12' {FONT}>{fmt_ms(decade)}</text>"
+            f"<text x='{x:.1f}' y='{bottom + 18}' text-anchor='middle' fill='{TEXT}' font-size='12' {FONT}>{fmt_ms(tick)}</text>"
         )
-        decade *= 10
     return parts
 
 
 def x_for(ms: float) -> float:
-    """Map milliseconds onto the plot's log-scale x axis."""
-    span = math.log10(AXIS_MAX_MS) - math.log10(AXIS_MIN_MS)
-    return LABEL_WIDTH + PLOT_WIDTH * (math.log10(ms) - math.log10(AXIS_MIN_MS)) / span
+    """Map milliseconds onto the plot's linear x axis."""
+    return LABEL_WIDTH + PLOT_WIDTH * ms / AXIS_MAX_MS
 
 
 def fmt_ms(ms: float) -> str:

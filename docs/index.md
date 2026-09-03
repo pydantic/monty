@@ -26,20 +26,22 @@ each call.
 
 ## Latency
 
-![Combined time to create a sandbox and run 10 REPL commands, log scale](img/startup-latency.svg)
+![Time to create a sandbox and run 10 REPL commands](img/startup-latency.svg)
 
-| Sandbox                                              | Cold start latency | Agent run, warm† | Combined‡ |
-| ---------------------------------------------------- | ------------------ | ---------------- | --------- |
-| Monty                                                | 5 ms               | 0.4 ms           | 5 ms      |
-| WASI / wasmtime (precompiled CPython in WebAssembly) | 16 ms              | 180 ms           | 200 ms    |
-| Docker (`python:3.14-alpine`)                        | 195 ms             | 700 ms           | 900 ms    |
-| Sandboxing service (Daytona, EU region from London)  | 1500 ms            | 400 ms           | 1900 ms   |
-| Pyodide (CPython in WebAssembly, in Deno)            | 2900 ms            | 35 ms            | 2900 ms   |
+| Sandbox                      | Cold start | Agent run, warm† | Combined‡ |
+| ---------------------------- | ---------- | ---------------- | --------- |
+| Monty                        | 5 ms       | 0.4 ms           | 5 ms      |
+| WASI / wasmtime              | 16 ms      | 180 ms           | 200 ms    |
+| Docker                       | 195 ms     | 700 ms           | 900 ms    |
+| Sandboxing service (Daytona) | 1500 ms    | 400 ms           | 1900 ms   |
+| Pyodide in Deno              | 2700 ms    | 35 ms            | 2700 ms   |
 
 † 10 commands run in a REPL against a sandbox that already exists, as you might expect from a simple agent with code
 mode.
 Monty keeps the session, so each command is one feed; the others have no persistent interpreter, so command *n* re-runs
-commands 1 to *n*. ‡ The time to create the sandbox and perform the agent run: the two columns added together.
+commands 1 to *n*.
+
+‡ The time to create the sandbox and perform the agent run: the two columns added together.
 
 Learn more in the [comparison to alternatives](alternatives.md).
 
@@ -84,7 +86,7 @@ Learn more in the [comparison to alternatives](alternatives.md).
 === "Rust"
 
     ```bash
-    cargo add monty-pool monty-types
+    cargo add monty
     ```
 
 The `code` string is what a model writes when asked how long a bar of chocolate could power a lightbulb.
