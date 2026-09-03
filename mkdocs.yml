@@ -38,7 +38,12 @@ nav:
       - Type Checking: 'type-checking.md'
   - The Python Subset: 'python-subset.md'
   - API Reference:
-      - Python: 'api/python.md'
+      - Python:
+          - Pools: 'api/python/pools.md'
+          - Websocket Client: 'api/python/websocket.md'
+          - Suspend & Resume: 'api/python/suspend_resume.md'
+          - Filesystem & OS: 'api/python/os.md'
+          - Errors: 'api/python/errors.md'
       - Rust:
           - monty-pool: 'api/rust/monty-pool.md'
           - monty: 'api/rust/monty.md'
