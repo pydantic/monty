@@ -21,7 +21,7 @@ with Monty() as pool:
             #> MemoryError
 ```
 
-## The four settings
+## The five settings
 
 | Key | Meaning |
 | --- | --- |
@@ -29,15 +29,16 @@ with Monty() as pool:
 | `max_duration_secs` | Maximum cumulative execution time in seconds |
 | `max_recursion_depth` | Maximum function call stack depth (default 1000) |
 | `gc_interval` | Run garbage collection every N allocations |
+| `max_suspensions` | Maximum host round trips (external calls, `os` callbacks, name lookups) per session |
 
 Every key is optional.
-Omit `max_memory` or `max_duration_secs`, or set them to `None`, to disable that limit.
+Omit `max_memory`, `max_duration_secs` or `max_suspensions`, or set them to `None`, to disable that limit.
 `max_recursion_depth` cannot be disabled: omitting it, or passing `None`, leaves the 1000-frame default.
 `gc_interval` omitted or `None` uses the built-in schedule of every 100,000 allocations; collection cannot be turned
 off.
 
-In JavaScript the same fields are `maxMemory`, `maxDurationSecs`, `maxRecursionDepth` and `gcInterval`, passed as
-`limits` to `pool.checkout()`.
+In JavaScript the same fields are `maxMemory`, `maxDurationSecs`, `maxRecursionDepth`, `gcInterval` and
+`maxSuspensions`, passed as `limits` to `pool.checkout()`.
 In Rust they are the fields of `monty_types::ResourceLimits`, where the duration is a `Duration` named `max_duration`.
 
 ## Memory
@@ -101,6 +102,22 @@ recursive `__repr__`/`__str__` — re-enter on the native Rust stack rather than
 Those are capped independently at a lower fixed depth, so Monty raises `RecursionError` before a native stack overflow
 could abort the process.
 
+## Suspensions
+
+`max_suspensions` bounds how many times a session may suspend to your process: every external function call,
+host-object method call or construction, lazy attribute lookup, `os` callback, name lookup and future resolution.
+Each is a round trip that costs the host memory the sandbox limits cannot see, most visibly a
+[`ClassType`](host-objects.md) with `init=True`, where every construction adds an entry to the host's instance store.
+A snippet that catches each refused call and retries forever would otherwise produce an unbounded stream of them while
+`max_duration_secs` sits paused and `max_memory` sees nothing.
+
+It is enforced by the pool, not the sandbox: the pool counts the suspensions it answers, and on the one past the budget
+it ends the feed with `RuntimeError: suspension limit exceeded: 4 > 3`, raised uncatchably at the suspending call with a
+full traceback.
+The count is per checkout and is never reset, so every later feed that suspends fails on its first suspension.
+Feeds that do not suspend keep working, the session stays consistent, and it can still be dumped.
+A restored dump keeps the limit but starts counting from zero.
+
 ## What is not covered
 
 - **Compilation time.** Parsing and bytecode compilation happen before the VM exists and are not charged to the duration
@@ -124,6 +141,8 @@ A memory or time limit is **terminal**.
 Sandboxed code cannot catch it, and once it fires **no guarantees are made about heap state or reference counts** — the
 heap may hold orphaned objects with wrong refcounts.
 Discard the session rather than continuing to run code in it.
+A suspension limit is also uncatchable, but the feed ends cleanly, so reading results out of the session afterwards is
+fine; only further suspending code is refused.
 
 The pool does **not** do this for you.
 The checkout stays open and accepts further `feed_run` calls.

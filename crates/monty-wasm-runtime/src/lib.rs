@@ -277,6 +277,9 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
                 })
                 .collect::<Result<_, String>>()?,
         }),
+        Request::AbortFeed(error) => pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+            exception: Some(raised_exception_from_component(error)),
+        }),
         Request::Dump => pb::parent_request::Kind::Dump(pb::Dump {}),
         Request::Load(state) => pb::parent_request::Kind::Load(pb::Load { state }),
         Request::Reset => pb::parent_request::Kind::Reset(pb::Reset {}),
@@ -296,6 +299,7 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
             max_memory_bytes: limits.max_memory_bytes,
             gc_interval: limits.gc_interval,
             max_recursion_depth: limits.max_recursion_depth,
+            max_suspensions: limits.max_suspensions,
         }),
         type_check: request.type_check,
         type_check_stubs: request.type_check_stubs,

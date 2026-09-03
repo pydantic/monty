@@ -2444,11 +2444,12 @@ pub(crate) enum RunError {
     Internal(Cow<'static, str>),
     /// Catchable Python exception (e.g., ValueError, TypeError).
     Exc(ExceptionRaise),
-    /// Uncatchable Python exception from resource limits (MemoryError, TimeoutError).
+    /// Uncatchable Python exception: a resource limit (MemoryError,
+    /// TimeoutError) or a host aborting a suspended feed.
     ///
     /// These exceptions display with proper tracebacks like normal Python exceptions,
     /// but cannot be caught by try/except blocks. This prevents untrusted code from
-    /// suppressing resource limit violations.
+    /// suppressing resource limit violations or a host's decision to end the feed.
     UncatchableExc(ExceptionRaise),
 }
 
@@ -2497,11 +2498,19 @@ impl RunError {
     /// exhaustion.
     ///
     /// Excluding `UncatchableExc` is defensive — it is only ever built from a
-    /// `ResourceError` — but spelled out so a future uncatchable variant cannot
-    /// read as "the iterator finished", letting sandboxed code absorb its own
-    /// limit breach.
+    /// `ResourceError` or a host abort — but spelled out so a future uncatchable
+    /// variant cannot read as "the iterator finished", letting sandboxed code
+    /// absorb its own limit breach.
     pub(crate) fn is_stop_iteration(&self) -> bool {
         matches!(self, Self::Exc(raise) if matches!(raise.exc.exc_type(), ExcType::StopIteration))
+    }
+
+    /// Wraps a host-supplied exception so that, raised into the sandbox, it
+    /// unwinds every frame for its traceback and no `except` can catch it —
+    /// how a host ends a suspended feed for its own reasons (a suspension
+    /// budget, a policy decision) without the sandbox retrying.
+    pub(crate) fn uncatchable(exc: MontyException) -> Self {
+        Self::UncatchableExc(exc.into())
     }
 
     /// Converts this runtime error to a `MontyException` for the public API.

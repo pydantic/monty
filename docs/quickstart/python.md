@@ -203,6 +203,8 @@ The pool leaves the checkout open, but the heap behind it is no longer trustwort
 again.
 A spent `max_duration_secs` budget is cumulative, so later feeds re-raise `TimeoutError` anyway; after a `max_memory`
 trip they may quietly succeed.
+A `RuntimeError` reading `suspension limit exceeded` is the pool's own `max_suspensions` limit on host round trips;
+that one leaves the session consistent, and only further suspending feeds fail.
 
 The print-collector cap is not one of these, though it looks identical from the outside: same `MontyRuntimeError`, same
 `MemoryError`, same `memory limit exceeded: ...` message.

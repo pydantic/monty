@@ -139,7 +139,8 @@ print(result)
 Every wrapper the hook creates is kept by the session's instance store until the session ends.
 A method that returns a fresh object per call grows host memory by one entry per call, and
 [`max_memory`](resource-limits.md#what-is-not-covered) does not count it.
-Bound what a long-lived session hands out, or recycle sessions periodically.
+Every such call is a suspension, so [`max_suspensions`](resource-limits.md#suspensions) bounds how many entries a
+session can create; set it for untrusted code, and recycle long-lived sessions.
 
 ## Sandbox instances
 

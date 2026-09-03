@@ -324,6 +324,35 @@ fn external_function_round_trip() {
     child.shutdown();
 }
 
+/// The parent's way to end a feed it will not answer: the exception is
+/// raised uncatchably at the suspended call — the retry loop from
+/// pydantic/monty#736 cannot swallow it — and the session survives.
+#[test]
+fn abort_feed_round_trip() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let (_, event) =
+        child.feed("while True:\n    try:\n        open('/etc/passwd')\n    except Exception:\n        pass");
+    let pb::child_event::Kind::OsCall(_) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    child.send(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+        exception: Some(pb::RaisedException {
+            exc_type: "RuntimeError".to_owned(),
+            message: Some("suspension limit exceeded: 4 > 3".to_owned()),
+            traceback: vec![],
+            data: None,
+        }),
+    }));
+    let (_, event) = child.recv_turn();
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "RuntimeError");
+    assert_eq!(error.message.as_deref(), Some("suspension limit exceeded: 4 > 3"));
+    assert_eq!(error.traceback[0].start.map(|loc| loc.line), Some(3));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
 #[test]
 fn name_lookup_round_trip() {
     let mut child = ChildProc::spawn();

@@ -245,6 +245,7 @@ impl Child {
             pb::parent_request::Kind::ResumeCall(resume) => self.handle_resume_call(resume, sink),
             pb::parent_request::Kind::ResumeNameLookup(resume) => self.handle_resume_name_lookup(resume, sink),
             pb::parent_request::Kind::ResumeFutures(resume) => self.handle_resume_futures(resume, sink),
+            pb::parent_request::Kind::AbortFeed(abort) => self.handle_abort_feed(abort, sink),
             pb::parent_request::Kind::Dump(_) => self.handle_dump(),
             pb::parent_request::Kind::Load(load) => self.handle_load(&load),
             pb::parent_request::Kind::Reset(_) => match self.reset() {
@@ -264,7 +265,7 @@ impl Child {
                 return Ok(HandleOutcome::Shutdown);
             }
         };
-        self.stamp_execution_time(&mut event);
+        self.stamp_session_budget(&mut event);
         let sent = sink.send(&event);
         // a suspension announcement was *lent* the payload it announces, so
         // take it back before anything can observe the stored suspension
@@ -352,7 +353,7 @@ impl Child {
         let mut event = fatal_error_event(message);
         // fatal paths bypass `handle`, so stamp timing here to keep the
         // "every turn-ending event carries timing" contract intact
-        self.stamp_execution_time(&mut event);
+        self.stamp_session_budget(&mut event);
         event
     }
 
@@ -386,7 +387,7 @@ impl Child {
                     ExcType::RuntimeError,
                     &format!("result frame of {len} bytes exceeds the maximum of {max} bytes"),
                 );
-                self.stamp_execution_time(&mut event);
+                self.stamp_session_budget(&mut event);
                 sink.send(&event)
             }
             other => Err(other),
@@ -395,9 +396,10 @@ impl Child {
 
     /// Stamps cumulative execution time and the `max_duration` budget onto a
     /// turn-ending event, making the child the single source of truth for
-    /// timing (the parent's watchdog derives its backstop from these fields).
-    /// Left zero/absent when no session exists.
-    fn stamp_execution_time(&self, event: &mut pb::ChildEvent) {
+    /// timing (the parent's watchdog derives its backstop from these fields),
+    /// plus the `max_suspensions` budget so a parent restoring a dump learns
+    /// the limit it is to enforce. Left zero/absent when no session exists.
+    fn stamp_session_budget(&self, event: &mut pb::ChildEvent) {
         let tracker = match &self.state {
             SessionState::Ready(repl) => repl.tracker(),
             SessionState::Suspended(progress) => progress.tracker(),
@@ -408,6 +410,7 @@ impl Child {
         event.max_duration_micros = tracker
             .max_duration()
             .map(|max| u64::try_from(max.as_micros()).unwrap_or(u64::MAX));
+        event.max_suspensions = tracker.max_suspensions().map(|max| max as u64);
     }
 
     /// Stores the session config; the repl is built lazily by [`ensure_repl`]
@@ -588,6 +591,40 @@ impl Child {
         };
         let mut print = ProtoPrint::new(sink);
         let outcome = lookup.resume(result, PrintWriter::Callback(&mut print));
+        let event = self.drive(outcome, &mut print);
+        print.drain();
+        event
+    }
+
+    /// Ends the suspended feed by raising the parent's exception uncatchably
+    /// at the suspension point, whatever its kind (see `AbortFeed` in the
+    /// schema). The session comes back `Ready` inside the `Error` turn-ender.
+    fn handle_abort_feed(&mut self, abort: pb::AbortFeed, sink: &mut dyn EventSink) -> pb::ChildEvent {
+        // `drive` only ever stores suspensions here, so `Complete` cannot be
+        // pending; the guard keeps that a violation rather than a crash
+        let suspended = matches!(&self.state, SessionState::Suspended(progress)
+            if !matches!(progress.as_ref(), ReplProgress::Complete { .. }));
+        if !suspended {
+            return protocol_violation("AbortFeed without a suspended feed");
+        }
+        let Some(exception) = abort.exception else {
+            return protocol_violation("AbortFeed has no exception");
+        };
+        let exc = match MontyException::try_from(exception) {
+            Ok(exc) => exc,
+            Err(err) => return protocol_violation(&format!("invalid exception: {err}")),
+        };
+        let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
+            unreachable!("checked above");
+        };
+        let mut print = ProtoPrint::new(sink);
+        let outcome = match *progress {
+            ReplProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Callback(&mut print)),
+            ReplProgress::OsCall(call) => call.abort(exc, PrintWriter::Callback(&mut print)),
+            ReplProgress::NameLookup(lookup) => lookup.abort(exc, PrintWriter::Callback(&mut print)),
+            ReplProgress::ResolveFutures(state) => state.abort(exc, PrintWriter::Callback(&mut print)),
+            ReplProgress::Complete { .. } => unreachable!("checked above"),
+        };
         let event = self.drive(outcome, &mut print);
         print.drain();
         event

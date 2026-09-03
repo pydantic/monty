@@ -544,7 +544,8 @@ class Monty:
 
         Arguments:
             script_name: Name used in tracebacks and error messages.
-            limits: Resource limits enforced inside the worker.
+            limits: Resource limits enforced inside the worker, plus `max_suspensions`,
+                which the pool enforces itself.
             type_check: Type-check each fed snippet before executing it; each
                 successfully executed snippet is appended to the accumulated
                 context used for type-checking subsequent snippets.

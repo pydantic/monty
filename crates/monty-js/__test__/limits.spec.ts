@@ -5,7 +5,7 @@ import { kind } from './env.js'
 import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
-const { run } = setupPool()
+const { run, pool } = setupPool()
 
 const isRuntimeError = { instanceOf: MontyRuntimeError }
 
@@ -19,6 +19,7 @@ test('resource limits custom', async () => {
     maxMemory: 64 * 1024,
     gcInterval: 10,
     maxRecursionDepth: 500,
+    maxSuspensions: 20,
   }
   // Just verify the object is valid and can be passed
   t.is(await run('1 + 1', { limits }), 2)
@@ -126,4 +127,39 @@ test('time limit', async () => {
   t.is(error.exception.typeName, 'TimeoutError')
   // The reported elapsed time varies from run to run; the limit is fixed.
   t.regex(error.display('msg'), /^time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+})
+
+// =============================================================================
+// Suspension limit tests
+// =============================================================================
+
+test('suspension limit', async () => {
+  // `maxSuspensions` is enforced by the pool: the suspension past the budget
+  // ends the feed with an uncatchable RuntimeError, so the retry loop dies
+  const code = `
+n = 0
+while True:
+    try:
+        fetch('x')
+    except Exception:
+        n += 1
+`
+  const fetch = () => {
+    throw new Error('refused')
+  }
+  const error = await t.throwsAsync(
+    () => run(code, { limits: { maxSuspensions: 3 }, externalLookup: { fetch } }),
+    isRuntimeError,
+  )
+  t.is(error.exception.typeName, 'RuntimeError')
+  t.is(error.display('msg'), 'suspension limit exceeded: 4 > 3')
+})
+
+test('suspension limit leaves the session usable', async () => {
+  await using session = await pool().checkout({ limits: { maxSuspensions: 1 } })
+  const fetch = () => 'ok'
+  t.is(await session.feedRun("fetch('x')", { externalLookup: { fetch } }), 'ok')
+  const error = await t.throwsAsync(() => session.feedRun("fetch('y')", { externalLookup: { fetch } }), isRuntimeError)
+  t.is(error.display('msg'), 'suspension limit exceeded: 2 > 1')
+  t.is(await session.feedRun('1 + 1'), 2)
 })

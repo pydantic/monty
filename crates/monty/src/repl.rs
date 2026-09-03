@@ -613,6 +613,12 @@ impl ReplFunctionCall {
     pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
+
+    /// Ends the snippet by raising `exc` uncatchably at the suspended call;
+    /// see [`ReplOsCall::abort`].
+    pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot.abort(exc, print)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +667,13 @@ impl ReplOsCall {
         let result = handler(self.function_call);
         self.snapshot.run(result, print)
     }
+
+    /// REPL mirror of [`crate::OsCall::abort`]: raises `exc` uncatchably at
+    /// the suspended call. Always `Err`, with the session inside it ready for
+    /// further feeds.
+    pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot.abort(exc, print)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -699,6 +712,12 @@ impl ReplNameLookup {
     #[must_use]
     pub fn object_id(&self) -> Option<MontyUuid> {
         self.scope.object_id()
+    }
+
+    /// Ends the snippet by raising `exc` uncatchably at the suspended lookup;
+    /// see [`ReplOsCall::abort`].
+    pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot.abort(exc, print)
     }
 
     /// Resumes execution after name resolution.
@@ -786,6 +805,18 @@ impl ReplResolveFutures {
     #[must_use]
     pub fn pending_call_ids(&self) -> &[u32] {
         &self.pending_call_ids
+    }
+
+    /// Ends the snippet by raising `exc` uncatchably in the blocked task; see
+    /// [`ReplOsCall::abort`]. Pending futures are abandoned with the snippet.
+    pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
+        let Self {
+            repl,
+            executor,
+            vm_state,
+            ..
+        } = self;
+        abort_restored(repl, executor, vm_state, exc, print)
     }
 
     /// Resumes snippet execution with zero or more resolved futures.
@@ -937,6 +968,34 @@ fn starts_with_triple_quote(source: &str) -> bool {
 
 /// REPL execution state that can be resumed after an external call.
 ///
+/// REPL counterpart of `run_progress::abort_restored`: restores the suspended
+/// VM, raises `exc` uncatchably where it stopped (rolling back any armed OS
+/// effect), and hands the globals back to the session.
+fn abort_restored(
+    mut repl: MontyRepl,
+    executor: Executor,
+    vm_state: VMSnapshot,
+    exc: MontyException,
+    print: PrintWriter<'_>,
+) -> Result<ReplProgress, Box<ReplStartError>> {
+    let converted = HeapReader::with(&mut repl.heap, &mut (&executor, print), |reader, (executor, print)| {
+        let mut vm = VM::restore(
+            vm_state,
+            &executor.module_code,
+            reader,
+            &executor.interns,
+            print.reborrow(),
+            executor.assert_repr_max_bytes,
+        );
+        let vm_result = vm.resume_with_exception(RunError::uncatchable(exc));
+        let converted = convert_frame_exit(vm_result, &mut vm);
+        // an uncatchable exception never suspends, so no snapshot is needed
+        repl.globals = vm.take_globals();
+        converted
+    });
+    build_repl_progress(converted, None, executor, repl)
+}
+
 /// This is the REPL-aware counterpart to `Snapshot`. It is `pub(crate)` —
 /// callers interact with the per-variant structs (`ReplFunctionCall`, etc.).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -950,6 +1009,16 @@ pub(crate) struct ReplSnapshot {
 }
 
 impl ReplSnapshot {
+    /// Raises `exc` uncatchably at the suspension point instead of answering it.
+    fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
+        let Self {
+            repl,
+            executor,
+            vm_state,
+        } = self;
+        abort_restored(repl, executor, vm_state, exc, print)
+    }
+
     /// Extracts the REPL session, restoring globals from the VM snapshot.
     ///
     /// When a snapshot is taken, globals live inside the `VMSnapshot`; the rest

@@ -26,12 +26,17 @@ import { decodeValue, encodeValue } from './value.js'
 
 type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
 
-/** Resource limits enforced inside the worker, mirroring the napi pool's. */
+/**
+ * Resource limits, mirroring the napi pool's. All but `maxSuspensions` are
+ * enforced inside the worker; that one the transport enforces itself by
+ * counting the suspensions it services.
+ */
 export interface ResourceLimits {
   maxDurationSecs?: number
   maxMemory?: number
   gcInterval?: number
   maxRecursionDepth?: number
+  maxSuspensions?: number
 }
 
 /** Session-creation options sent to the component worker. */
@@ -63,6 +68,10 @@ export class WorkerTransport {
   /** Whether a crash or channel error made this worker unreusable. */
   private dead = false
 
+  /** `maxSuspensions`, and how many suspensions this session has produced. */
+  private suspensionLimit: number | undefined
+  private suspensionsSeen = 0
+
   /** Reports whether the worker can return to its pool when the session ends. */
   onFinish?: (reusable: boolean) => void
 
@@ -71,6 +80,7 @@ export class WorkerTransport {
   /** Creates a configured REPL session over `dispatcher`. */
   static async create(dispatcher: Dispatcher, config: WorkerSessionConfig = {}): Promise<WorkerTransport> {
     const transport = new WorkerTransport(dispatcher)
+    transport.suspensionLimit = config.limits?.maxSuspensions
     const assertMessageAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
     await transport.control(
       {
@@ -245,7 +255,17 @@ export class WorkerTransport {
   /** Sends one request and converts its terminating event into a native turn. */
   private async turn(request: ComponentRequest, onPrint: OnPrint): Promise<NativeTurn> {
     const event = await this.run(request, onPrint)
-    const turn = event ? this.toTurn(event) : crashed('worker exited without a turn-ending event')
+    let turn = event ? this.toTurn(event) : crashed('worker exited without a turn-ending event')
+    if (isSuspension(turn)) {
+      this.suspensionsSeen++
+      // the suspension past `maxSuspensions` is never handed out: the feed is
+      // ended in the sandbox with an uncatchable RuntimeError, as monty-pool does
+      if (this.suspensionLimit !== undefined && this.suspensionsSeen > this.suspensionLimit) {
+        const message = `suspension limit exceeded: ${this.suspensionsSeen} > ${this.suspensionLimit}`
+        const aborted = await this.run({ tag: 'abort-feed', val: { excType: 'RuntimeError', message } }, onPrint)
+        turn = aborted ? this.toTurn(aborted) : crashed('worker exited without a turn-ending event')
+      }
+    }
     if (turn.kind === 'crashed') this.dead = true
     return turn
   }
@@ -337,7 +357,18 @@ function encodeLimits(limits: ResourceLimits): ComponentResourceLimits {
     ...(limits.maxMemory === undefined ? {} : { maxMemoryBytes: BigInt(limits.maxMemory) }),
     ...(limits.gcInterval === undefined ? {} : { gcInterval: BigInt(limits.gcInterval) }),
     ...(limits.maxRecursionDepth === undefined ? {} : { maxRecursionDepth: BigInt(limits.maxRecursionDepth) }),
+    ...(limits.maxSuspensions === undefined ? {} : { maxSuspensions: BigInt(limits.maxSuspensions) }),
   }
+}
+
+/** Whether a turn hands the host a suspension to answer. */
+function isSuspension(turn: NativeTurn): boolean {
+  return (
+    turn.kind === 'functionCall' ||
+    turn.kind === 'osCall' ||
+    turn.kind === 'nameLookup' ||
+    turn.kind === 'resolveFutures'
+  )
 }
 
 /** Converts a host return value, turning conversion failures into Python `TypeError`. */

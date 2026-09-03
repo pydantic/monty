@@ -102,6 +102,7 @@ impl Recorder {
                 pb::parent_request::Kind::ResumeCall(_)
                     | pb::parent_request::Kind::ResumeNameLookup(_)
                     | pb::parent_request::Kind::ResumeFutures(_)
+                    | pb::parent_request::Kind::AbortFeed(_)
             )
         );
         if !is_resume {
@@ -133,6 +134,7 @@ impl Recorder {
                     max_memory_bytes = limits.and_then(|l| l.max_memory_bytes),
                     gc_interval = limits.and_then(|l| l.gc_interval),
                     max_recursion_depth = limits.and_then(|l| l.max_recursion_depth),
+                    max_suspensions = limits.and_then(|l| l.max_suspensions),
                     // i64: `tracing` has no typed u32 value, so a u32 would be
                     // recorded as its debug string
                     worker_pid = self.worker_pid.map(i64::from),
@@ -207,6 +209,12 @@ impl Recorder {
             Some(pb::parent_request::Kind::ResumeNameLookup(r)) => {
                 let (result, cut) = render_name_lookup(r.kind.as_ref());
                 self.close_pending("value", &result, cut);
+            }
+            // an abort answers the suspension too, with the exception the
+            // sandbox is about to raise instead of a value
+            Some(pb::parent_request::Kind::AbortFeed(a)) => {
+                let (result, cut) = a.exception.as_ref().map_or((MISSING.into(), false), render_raised);
+                self.close_pending("aborted_with", &result, cut);
             }
             Some(pb::parent_request::Kind::ResumeFutures(r)) => {
                 let pending = self.take_pending();
@@ -979,6 +987,7 @@ mod tests {
             kind: Some(kind),
             total_execution_micros: 42,
             max_duration_micros: None,
+            max_suspensions: None,
             restored_script_name: None,
         }
     }
@@ -1118,6 +1127,7 @@ mod tests {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 42,
             max_duration_micros: None,
+            max_suspensions: None,
             restored_script_name: Some("dumped.py".to_owned()),
         });
         recorder.begin_turn(&request(pb::parent_request::Kind::Dump(pb::Dump {})));
@@ -1165,6 +1175,7 @@ mod tests {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 42,
             max_duration_micros: None,
+            max_suspensions: None,
             restored_script_name: Some("restored.py".to_owned()),
         });
         recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {

@@ -137,6 +137,8 @@ with Monty() as pool:
   See [`limitations/pool-architecture.md`](https://github.com/pydantic/monty/blob/main/limitations/pool-architecture.md#host-api-behaviour-notes).
 - **The accumulated time budget travels with the dump**, so a restored session resumes where it left off rather than
   getting a fresh budget.
+- **The suspension count does not.** A restored session keeps the dump's `max_suspensions` but the pool counts from
+  zero again, because the count is kept by the pool rather than the sandbox.
 - **Mounts do not travel.** Host paths are never part of a dump.
   Pass the same `mount=` to `load_snapshot`, or the restored feed's filesystem calls degrade into unhandled OS calls.
   Any `'overlay'` writes made before the dump are gone — the restored overlay starts empty.

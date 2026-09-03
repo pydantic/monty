@@ -399,6 +399,11 @@ remaining budget expires, covering cases where the in-sandbox limit cannot
 fire (its check only runs at interpreter checkpoints). Set
 `durationLimitGrace: null` to disable it.
 
+`maxSuspensions` is enforced by the pool rather than the sandbox: it counts
+the host round trips (external functions, `os` callbacks, name lookups) it
+services per checkout, and the one past the budget ends the feed with an
+uncatchable `RuntimeError`.
+
 ## Assert message annotations
 
 Failed `assert` statements carry a pytest-style introspected message by

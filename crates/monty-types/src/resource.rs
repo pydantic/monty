@@ -76,8 +76,8 @@ impl Error for ResourceError {}
 
 /// Configuration for resource limits.
 ///
-/// The time/memory/GC limits are optional — set to `None` to disable — but
-/// recursion depth is always bounded (default
+/// The time/memory/GC/suspension limits are optional — set to `None` to
+/// disable — but recursion depth is always bounded (default
 /// [`DEFAULT_MAX_RECURSION_DEPTH`]): unbounded recursion would let sandboxed
 /// code overflow the native stack and abort the process. Use
 /// `ResourceLimits::default()` for the recursion-only defaults, or build
@@ -94,6 +94,15 @@ pub struct ResourceLimits {
     pub gc_interval: Option<usize>,
     /// Maximum recursion depth (function call stack depth).
     pub max_recursion_depth: usize,
+    /// Maximum number of suspensions (external calls, OS calls, name lookups,
+    /// future resolution) a session may hand to the host.
+    ///
+    /// Enforced by the host that services suspensions — `monty-pool` and the
+    /// wasm worker pool — not by the interpreter: the host counts the
+    /// suspensions it answers and aborts the feed with an uncatchable
+    /// `RuntimeError` on the one past the budget. A host driving the
+    /// interpreter directly must count for itself.
+    pub max_suspensions: Option<usize>,
 }
 
 /// Recommended maximum recursion depth if not otherwise specified.
@@ -107,6 +116,7 @@ impl Default for ResourceLimits {
             max_memory: None,
             gc_interval: None,
             max_recursion_depth: DEFAULT_MAX_RECURSION_DEPTH,
+            max_suspensions: None,
         }
     }
 }
@@ -140,6 +150,14 @@ impl ResourceLimits {
     #[must_use]
     pub fn max_recursion_depth(mut self, limit: usize) -> Self {
         self.max_recursion_depth = limit;
+        self
+    }
+
+    /// Sets the maximum number of suspensions the host will service; see the
+    /// field docs for who enforces it.
+    #[must_use]
+    pub fn max_suspensions(mut self, limit: usize) -> Self {
+        self.max_suspensions = Some(limit);
         self
     }
 }
@@ -244,6 +262,13 @@ impl ResourceTracker {
     #[must_use]
     pub fn max_memory(&self) -> Option<usize> {
         self.limits.max_memory
+    }
+
+    /// Returns the configured suspension budget, if any. The interpreter never
+    /// reads it; a worker echoes it to the host that enforces it.
+    #[must_use]
+    pub fn max_suspensions(&self) -> Option<usize> {
+        self.limits.max_suspensions
     }
 
     /// Returns whether the VM has a memory or time limit configured.

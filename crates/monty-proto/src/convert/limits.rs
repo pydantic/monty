@@ -4,6 +4,8 @@
 //! saturates to `usize::MAX` on 32-bit hosts. Absent wire fields mean
 //! "unlimited", except recursion depth which falls back to monty's standard
 //! default — matching `ResourceLimits::default()` so an empty message is safe.
+//! `max_suspensions` rides along unchanged: the child stores it for dumps and
+//! echoes it, but the parent is what enforces it.
 
 use std::time::Duration;
 
@@ -20,6 +22,7 @@ impl From<&ResourceLimits> for pb::ResourceLimits {
             max_memory_bytes: limits.max_memory.map(|v| v as u64),
             gc_interval: limits.gc_interval.map(|v| v as u64),
             max_recursion_depth: Some(limits.max_recursion_depth as u64),
+            max_suspensions: limits.max_suspensions.map(|v| v as u64),
         }
     }
 }
@@ -31,6 +34,7 @@ impl From<pb::ResourceLimits> for ResourceLimits {
             max_memory: usize_field(limits.max_memory_bytes),
             gc_interval: usize_field(limits.gc_interval),
             max_recursion_depth: usize_field(limits.max_recursion_depth).unwrap_or(DEFAULT_MAX_RECURSION_DEPTH),
+            max_suspensions: usize_field(limits.max_suspensions),
         }
     }
 }

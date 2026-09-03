@@ -74,7 +74,9 @@ properties that real CPython does not provide, per the caveat above.
   divergences below).
 - Resource exhaustion (e.g. `max_duration_secs`) is terminal for the
   *session*: later feeds keep failing with the same resource error. The
-  worker process is reused for the next checkout.
+  worker process is reused for the next checkout. `max_suspensions` is the
+  exception: only feeds that suspend keep failing, since the pool ends each
+  of them on its first suspension.
 - Asyncio cancellation of an in-flight call (`feed_run`, `dump`, ...)
   **loses the session**: the protocol turn was abandoned mid-flight, so its
   worker can no longer be trusted. It is killed immediately, or, when the
@@ -104,6 +106,12 @@ properties that real CPython does not provide, per the caveat above.
   host (external functions, OS callbacks) or between feeds, accumulates
   across feeds, and travels inside dumps. The worker reports its total on
   every protocol turn; the host never keeps a second clock.
+- **`max_suspensions` is enforced by the host alone.** The pool counts the
+  suspensions it services per checkout and answers the one past the budget
+  with an `AbortFeed` request instead of a value, which the worker raises
+  as an uncatchable `RuntimeError` at the suspension point. The worker only
+  stores the limit (so it travels in dumps and is re-adopted on restore) and
+  never counts; a restored session starts from zero.
 - **`max_duration` is backstopped by the host.** From the reported total the
   host bounds each execution turn by the remaining budget plus
   `duration_limit_grace` (default 1s) and kills the worker when it expires.

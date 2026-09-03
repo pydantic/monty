@@ -191,6 +191,12 @@ impl FunctionCall {
     pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
+
+    /// Ends the feed by raising `exc` uncatchably at the suspended call; see
+    /// [`OsCall::abort`].
+    pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
+        self.snapshot.abort(exc, print)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +260,17 @@ impl OsCall {
     ) -> Result<RunProgress, MontyException> {
         let result = handler(self.function_call);
         self.snapshot.run(result, print)
+    }
+
+    /// Ends the feed by raising `exc` uncatchably at the suspended call.
+    ///
+    /// The host's alternative to answering: the exception unwinds every
+    /// frame for its traceback and no `except` in the sandbox can catch it,
+    /// so a snippet retrying refused calls stops here. Any pending file effect
+    /// is rolled back. The heap stays consistent — a REPL session remains
+    /// usable afterwards. Always returns `Err`, carrying the traceback.
+    pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
+        self.snapshot.abort(exc, print)
     }
 
     /// Returns the resource tracker while execution is suspended.
@@ -345,6 +362,12 @@ impl NameLookup {
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
         &self.snapshot.heap.tracker
+    }
+
+    /// Ends the feed by raising `exc` uncatchably at the suspended lookup; see
+    /// [`OsCall::abort`].
+    pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
+        self.snapshot.abort(exc, print)
     }
 
     /// Resumes execution after name resolution.
@@ -590,6 +613,18 @@ impl ResolveFutures {
         &self.heap.tracker
     }
 
+    /// Ends the feed by raising `exc` uncatchably in the blocked task; see
+    /// [`OsCall::abort`]. Pending futures are abandoned with the run.
+    pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
+        let Self {
+            executor,
+            vm_state,
+            heap,
+            ..
+        } = self;
+        abort_restored(executor, vm_state, heap, exc, print)
+    }
+
     /// Forces a GC cycle against the exact root walk used by the live VM.
     ///
     /// This is test-only support for reproducing GC bugs while execution is
@@ -763,6 +798,43 @@ impl Snapshot {
             });
         build_run_progress(converted, vm_state, executor, heap)
     }
+
+    /// Raises `exc` uncatchably at the suspension point instead of answering it.
+    pub(crate) fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
+        let Self {
+            executor,
+            vm_state,
+            heap,
+        } = self;
+        abort_restored(executor, vm_state, heap, exc, print)
+    }
+}
+
+/// Restores the suspended VM and raises `exc` as an uncatchable exception
+/// where it stopped: every frame unwinds into the traceback, no handler runs,
+/// and an armed OS effect is rolled back. Shared by every suspension kind.
+fn abort_restored(
+    executor: Executor,
+    vm_state: VMSnapshot,
+    mut heap: Heap,
+    exc: MontyException,
+    print: PrintWriter<'_>,
+) -> Result<RunProgress, MontyException> {
+    let (converted, vm_state) = HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
+        let mut vm = VM::restore(
+            vm_state,
+            &executor.module_code,
+            reader,
+            &executor.interns,
+            print.reborrow(),
+            executor.assert_repr_max_bytes,
+        );
+        let vm_result = vm.resume_with_exception(RunError::uncatchable(exc));
+        let converted = convert_frame_exit(vm_result, &mut vm);
+        let vm_state = check_snapshot_from_converted(&converted, vm);
+        (converted, vm_state)
+    });
+    build_run_progress(converted, vm_state, executor, heap)
 }
 
 pub use monty_types::{ExtFunctionResult, NameLookupResult};

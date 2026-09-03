@@ -176,12 +176,15 @@ interface worker {
         value: value,
     }
 
-    /// Resource limits enforced by the sandbox.
+    /// Resource limits. All but `max-suspensions` are enforced by the
+    /// sandbox; that one is the budget the host enforces by counting the
+    /// suspensions it services and ending the feed with `abort-feed`.
     record resource-limits {
         max-duration-micros: option<u64>,
         max-memory-bytes: option<u64>,
         gc-interval: option<u64>,
         max-recursion-depth: option<u64>,
+        max-suspensions: option<u64>,
     }
 
     /// Available renderings for type-check diagnostics.
@@ -259,6 +262,9 @@ interface worker {
         resume-call(resume-call-request),
         resume-name-lookup(name-lookup-result),
         resume-futures(list<future-result>),
+        /// Ends the pending suspension (whatever its kind) by raising the
+        /// error uncatchably at that point; the session stays usable.
+        abort-feed(raised-error),
         dump,
         load(list<u8>),
         reset,

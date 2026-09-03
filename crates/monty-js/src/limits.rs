@@ -25,6 +25,8 @@ pub struct JsResourceLimits {
     pub gc_interval: Option<f64>,
     /// Maximum function call stack depth (default: 1000).
     pub max_recursion_depth: Option<f64>,
+    /// Maximum suspensions (host round trips) the pool will service.
+    pub max_suspensions: Option<f64>,
 }
 
 /// Extracts a Rust resource-limit configuration from a JS resource-limit object.
@@ -56,6 +58,9 @@ pub fn extract_limits(js_limits: JsResourceLimits) -> Result<ResourceLimits> {
     }
     if let Some(interval) = js_limits.gc_interval {
         limits = limits.gc_interval(js_number_to_usize(interval, "gcInterval")?);
+    }
+    if let Some(max) = js_limits.max_suspensions {
+        limits = limits.max_suspensions(js_number_to_usize(max, "maxSuspensions")?);
     }
 
     Ok(limits)

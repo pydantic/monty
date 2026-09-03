@@ -16,7 +16,8 @@ implementation**.
   (file reads/writes, `open()`, `os.getenv`, ...), plus the `stat_result`
   builders hosts use to answer them.
 - `ResourceTracker` / `ResourceLimits` — the resource tracker the
-  interpreter uses to enforce time/memory/recursion limits.
+  interpreter uses to enforce time/memory/recursion limits, plus the
+  `max_suspensions` budget hosts enforce themselves.
 - `PrintStream` / `PrintWriter` — `print()` output capture.
 - `CompileOptions`, `ExtFunctionResult`, `NameLookupResult`, `FileMode`, and
   the CPython-compatible formatting helpers behind their `repr()`s.

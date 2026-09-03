@@ -1,9 +1,10 @@
 # Resource limits
 
 Monty enforces limits on memory, time, and recursion to keep untrusted code
-bounded. Memory limits surface to the host as `MemoryError`s and time limits as
-`TimeoutError`s; sandboxed code cannot catch either resource error.
-`RecursionError` is catchable, as in CPython.
+bounded, and the host that services its suspensions enforces a suspension
+count. Memory limits surface to the host as `MemoryError`s, time limits as
+`TimeoutError`s and the suspension limit as a `RuntimeError`; sandboxed code
+cannot catch any of these. `RecursionError` is catchable, as in CPython.
 
 ## Compilation
 
@@ -139,6 +140,29 @@ indistinguishable from a stack overflow.
   limit, so Monty raises `RecursionError` before a native stack overflow would
   abort the process. See the `__repr__`/`__str__` entry in ./classes.md for
   the main user-visible divergence this causes.
+
+## Suspensions
+
+- `max_suspensions` bounds how many times a session may suspend to the host:
+  external function calls, host-object method calls, attribute lookups and
+  construction, OS calls, name lookups, and each `ResolveFutures` round trip
+  (a partial future resolution that re-suspends counts again).
+- It is enforced by the host that answers suspensions — `monty-pool` (so
+  `pydantic_monty`, the JavaScript napi pool and monty-server), the wasm
+  worker pool and the CLI — not by the interpreter. A host driving `monty`
+  directly must count for itself and end the feed with `abort`.
+- The suspension past the budget is never handed to the caller: the host
+  ends the feed with `RuntimeError: suspension limit exceeded: N+1 > N`,
+  raised uncatchably at the suspension point with a traceback, at the cost of
+  one more round trip to the worker.
+- The count is per checkout and is never reset, so once spent every later
+  feed is ended on its first suspension. Feeds that do not suspend still run,
+  the heap stays consistent (the abort unwinds like any unhandled exception)
+  and the session can still be dumped.
+- The count does not travel in dumps; only the limit does. A session
+  restored from a dump keeps the dump's `max_suspensions` but starts
+  counting from zero.
+- There is no in-sandbox way to observe the budget or remaining count.
 
 ## Time
 

@@ -262,17 +262,9 @@ pub struct Checkout {
     /// Set while a turn's I/O is in flight; still set on the next call only
     /// if the previous turn future was cancelled mid-I/O (see the type docs).
     turn_in_flight: bool,
-    /// The session's `max_duration` budget for the parent-side backstop, when
-    /// configured. Set from the config on `create`; for `restore`d sessions it
-    /// is adopted from the timing fields on the worker's first reply (the limits
-    /// travel inside the opaque dump).
-    duration_budget: Option<Duration>,
-    /// Cumulative sandbox execution time as last reported by the worker —
-    /// the child's clock is the single source of truth (it runs only while
-    /// the interpreter executes, never during suspensions or between feeds,
-    /// and survives dump/load). Monotonic max across turns so a compromised
-    /// worker cannot rewind the parent's view of its consumed budget.
-    reported_execution: Duration,
+    /// The limits this checkout enforces or backstops itself, and what the
+    /// session has consumed of them.
+    budget: SessionBudget,
     /// The deadline armed for the most recent turn, surfaced by
     /// [`PoolError::Timeout`] when it fires.
     armed_deadline: Option<Duration>,
@@ -286,6 +278,112 @@ pub struct Checkout {
     /// Consulted only by [`Checkout::resume_from_mounts`]. Dropped when the
     /// feed ends so overlay writes never leak into the next feed.
     feed_mounts: Option<MountTable>,
+}
+
+/// The parent-side view of a session's resource budget: the `max_duration`
+/// backstop and the `max_suspensions` limit, which the parent alone enforces.
+///
+/// Set from the config on `create`; a `restore`d session forgets that and
+/// re-adopts the limits from the budget fields the worker stamps on its first
+/// reply (they travel inside the opaque dump). The suspension count is parent
+/// state and restarts at zero on restore.
+#[derive(Clone, Copy)]
+struct SessionBudget {
+    /// The session's `max_duration`, when configured.
+    duration_budget: Option<Duration>,
+    /// Cumulative sandbox execution time as last reported by the worker —
+    /// the child's clock is the single source of truth (it runs only while
+    /// the interpreter executes, never during suspensions or between feeds,
+    /// and survives dump/load). Monotonic max across turns so a compromised
+    /// worker cannot rewind the parent's view of its consumed budget.
+    reported_execution: Duration,
+    /// The session's `max_suspensions`, when configured.
+    suspension_limit: Option<u64>,
+    /// Suspensions this checkout has received from the worker.
+    suspensions_seen: u64,
+}
+
+impl SessionBudget {
+    /// The budget a fresh checkout starts with, from its `Configure` limits.
+    fn from_config(repl: &ReplConfig) -> Self {
+        let limits = repl.limits.as_ref();
+        Self {
+            duration_budget: limits.and_then(|limits| limits.max_duration),
+            reported_execution: Duration::ZERO,
+            suspension_limit: limits.and_then(|limits| limits.max_suspensions.map(|max| max as u64)),
+            suspensions_seen: 0,
+        }
+    }
+
+    /// Drops everything `Configure` established, ahead of a `Load` whose reply
+    /// carries the dump's own limits.
+    fn forget(&mut self) {
+        *self = Self {
+            duration_budget: None,
+            reported_execution: Duration::ZERO,
+            suspension_limit: None,
+            suspensions_seen: 0,
+        };
+    }
+
+    /// Adopts the budget fields the worker stamps onto every turn-ending
+    /// event, and counts the event if it is a suspension. The reported time
+    /// only ever ratchets up (a compromised worker can still under-report, but
+    /// each turn stays bounded by `budget + grace`); the limits are adopted only
+    /// when the parent doesn't already know them, i.e. after a restore. Print
+    /// events carry zero timing, so the ratchet makes them a no-op.
+    fn note(&mut self, event: &pb::ChildEvent) {
+        self.reported_execution = self
+            .reported_execution
+            .max(Duration::from_micros(event.total_execution_micros));
+        if self.duration_budget.is_none() {
+            self.duration_budget = event.max_duration_micros.map(Duration::from_micros);
+        }
+        if self.suspension_limit.is_none() {
+            self.suspension_limit = event.max_suspensions;
+        }
+        if is_suspension(event) {
+            self.suspensions_seen += 1;
+        }
+    }
+
+    /// `Some((seen, limit))` when `event` is the suspension that overran the
+    /// budget — the caller aborts the feed instead of surfacing it.
+    fn over_suspension_limit(&self, event: &pb::ChildEvent) -> Option<(u64, u64)> {
+        let limit = self.suspension_limit?;
+        (is_suspension(event) && self.suspensions_seen > limit).then_some((self.suspensions_seen, limit))
+    }
+
+    /// Parent-side kill deadline derived from the session's `max_duration`:
+    /// the execution budget remaining after the time the worker has reported
+    /// consuming so far, plus the configured grace. The child enforces the
+    /// limit itself with a clean `TimeoutError`; this deadline only fires
+    /// when that enforcement fails (e.g. a wedged or compromised child that
+    /// stops checking its clock).
+    fn backstop_deadline(&self, grace: Option<Duration>) -> Option<Duration> {
+        Some(self.duration_budget?.saturating_sub(self.reported_execution) + grace?)
+    }
+}
+
+/// Whether a turn-ending event hands the parent a suspension to answer.
+fn is_suspension(event: &pb::ChildEvent) -> bool {
+    matches!(
+        event.kind,
+        Some(
+            pb::child_event::Kind::FunctionCall(_)
+                | pb::child_event::Kind::OsCall(_)
+                | pb::child_event::Kind::NameLookup(_)
+                | pb::child_event::Kind::ResolveFutures(_)
+        )
+    )
+}
+
+/// The exception a feed is aborted with once it suspends past `max_suspensions`.
+fn suspension_limit_exceeded(seen: u64, limit: u64) -> MontyException {
+    MontyException::new(
+        ExcType::RuntimeError,
+        Some(format!("suspension limit exceeded: {seen} > {limit}")),
+    )
 }
 
 /// Which kind of suspension is awaiting an answer.
@@ -330,8 +428,7 @@ impl Checkout {
             pool,
             pending: None,
             turn_in_flight: false,
-            duration_budget: repl.limits.as_ref().and_then(|limits| limits.max_duration),
-            reported_execution: Duration::ZERO,
+            budget: SessionBudget::from_config(repl),
             armed_deadline: None,
             restored_script_name: None,
             feed_mounts: None,
@@ -362,7 +459,7 @@ impl Checkout {
     /// is that same [`TurnEvent::OsCall`] — restoring never answers it here.
     /// The session's resource budget is taken from the dump, so the prior
     /// `Configure` limits are dropped here and re-adopted from the worker's
-    /// reply.
+    /// reply; the `max_suspensions` count restarts at zero.
     ///
     /// Returns the re-announced suspension (`Some` — a suspended dump) or `None`
     /// (an idle dump), paired with the worker's adopted script name (the dump's,
@@ -378,8 +475,7 @@ impl Checkout {
         // the dump carries its own limits/consumed time/script name — forget
         // what the worker's Configure established and re-adopt from the reply
         self.pending = None;
-        self.duration_budget = None;
-        self.reported_execution = Duration::ZERO;
+        self.budget.forget();
         self.restored_script_name = None;
         self.feed_mounts = feed_mounts;
         let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
@@ -739,30 +835,31 @@ impl Checkout {
         }
     }
 
-    /// Parent-side kill deadline derived from the session's `max_duration`:
-    /// the execution budget remaining after the time the worker has reported
-    /// consuming so far, plus the configured grace. The child enforces the
-    /// limit itself with a clean `TimeoutError`; this deadline only fires
-    /// when that enforcement fails (e.g. a wedged or compromised child that
-    /// stops checking its clock).
+    /// The `max_duration` backstop deadline; see [`SessionBudget::backstop_deadline`].
     fn backstop_deadline(&self) -> Option<Duration> {
-        let budget = self.duration_budget?;
-        let grace = self.pool.config.duration_limit_grace?;
-        Some(budget.saturating_sub(self.reported_execution) + grace)
+        self.budget.backstop_deadline(self.pool.config.duration_limit_grace)
     }
 
-    /// Adopts the timing fields the worker stamps onto every turn-ending
-    /// event. The reported total only ever ratchets up — a compromised worker
-    /// must not rewind the parent's view of its consumed budget (it can still
-    /// under-report, but each turn stays bounded by `budget + grace`). The
-    /// budget itself is only adopted when the parent doesn't already know it,
-    /// i.e. after [`Checkout::restore`].
-    fn note_reported_time(&mut self, event: &pb::ChildEvent) {
-        self.reported_execution = self
-            .reported_execution
-            .max(Duration::from_micros(event.total_execution_micros));
-        if self.duration_budget.is_none() {
-            self.duration_budget = event.max_duration_micros.map(Duration::from_micros);
+    /// Records a worker event against the session budget and, when it is the
+    /// suspension past `max_suspensions`, sends `AbortFeed` so the sandbox
+    /// raises the limit uncatchably instead of the caller seeing the
+    /// suspension. Returns `Ok(true)` when the feed was aborted — the caller
+    /// keeps reading for the abort's turn-ender — and `Ok(false)` to handle
+    /// the event as usual.
+    async fn note_event(&mut self, event: &pb::ChildEvent) -> Result<bool, PoolError> {
+        self.budget.note(event);
+        let Some((seen, limit)) = self.budget.over_suspension_limit(event) else {
+            return Ok(false);
+        };
+        let abort = request(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+            exception: Some((&suspension_limit_exceeded(seen, limit)).into()),
+        }));
+        let Some(worker) = self.worker.as_mut() else {
+            return Err(PoolError::Finished);
+        };
+        match worker.send(&abort).await {
+            Ok(()) => Ok(true),
+            Err(_) => Err(self.poison("aborting a feed").await),
         }
     }
 
@@ -804,9 +901,10 @@ impl Checkout {
     ///
     /// **Bypasses this checkout's suspension bookkeeping** (`pending`,
     /// `feed_mounts`, `restored_script_name`) — never interleave with
-    /// `feed`/`resume`/`restore`. Worker lifecycle, poisoning and the
-    /// `max_duration` backstop work as on the typed path; a raw `Load`
-    /// re-adopts the dump's budget like [`Checkout::restore`]. A `FatalError`
+    /// `feed`/`resume`/`restore`. Worker lifecycle, poisoning, the
+    /// `max_duration` backstop and `max_suspensions` enforcement work as on
+    /// the typed path; a raw `Load` re-adopts the dump's budget like
+    /// [`Checkout::restore`]. A `FatalError`
     /// (or WebSocket `ShutdownDump`) turn-ender is returned so the driver can
     /// forward it, but discards the worker first — later calls report
     /// [`PoolError::Finished`].
@@ -844,13 +942,11 @@ impl Checkout {
             ));
         }
         // As `restore`: forget the Configure-time budget and re-adopt the
-        // dump's from the reply's timing fields. Snapshotted because the
+        // dump's from the reply's budget fields. Snapshotted because the
         // pre-send frame-size rejection leaves the session live.
-        let saved_timing = matches!(request.kind, Some(pb::parent_request::Kind::Load(_)))
-            .then(|| (self.duration_budget, self.reported_execution));
-        if saved_timing.is_some() {
-            self.duration_budget = None;
-            self.reported_execution = Duration::ZERO;
+        let saved_budget = matches!(request.kind, Some(pb::parent_request::Kind::Load(_))).then_some(self.budget);
+        if saved_budget.is_some() {
+            self.budget.forget();
         }
         self.turn_in_flight = true;
         // as `expect_turn`: `request_timeout` alone would drop the `max_duration`
@@ -867,12 +963,11 @@ impl Checkout {
         self.turn_in_flight = false;
         // an error with the worker still alive is the pre-send frame-size
         // rejection: the `Load` never reached the child, put the budget back
-        if let Some((budget, reported)) = saved_timing
+        if let Some(budget) = saved_budget
             && outcome.is_err()
             && self.worker.is_some()
         {
-            self.duration_budget = budget;
-            self.reported_execution = reported;
+            self.budget = budget;
         }
         outcome
     }
@@ -911,7 +1006,9 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
-            self.note_reported_time(&event);
+            if self.note_event(&event).await? {
+                continue;
+            }
             // strict alternation: zero or more `Print`s, then exactly one
             // turn-ender — so anything that is not a print ends the turn
             if matches!(event.kind, Some(pb::child_event::Kind::Print(_))) {
@@ -1001,9 +1098,11 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
-            // Print events carry no timing (the fields are zero), so this is
-            // a no-op for them thanks to the monotonic-max ratchet.
-            self.note_reported_time(&event);
+            // a suspension past `max_suspensions` is aborted here and never
+            // reaches the caller; the abort's reply is the next event
+            if self.note_event(&event).await? {
+                continue;
+            }
             // Only a `Load` reply carries this; it lets `restore` report the
             // dump's script name without parsing the opaque dump bytes.
             if let Some(name) = &event.restored_script_name {
