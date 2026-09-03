@@ -1,0 +1,45 @@
+crates/monty-apidoc/Cargo.toml
+  s_7756ceac6333e7::t_287217115fd1da 18-20
+crates/monty-apidoc/src/docs_md.rs
+  s_7756ceac6333e7::t_9d2836e3eb12b6 278-280,282-291
+  s_7756ceac6333e7::t_287217115fd1da 45-47,49-51,60,62-63,73-89,255-256,260-264
+.github/workflows/ci.yml
+  s_7756ceac6333e7::t_287217115fd1da 100-101,538-542
+crates/monty-apidoc/tests/render.rs
+  s_7756ceac6333e7::t_a71f3a86bd48ab 10-11,14-16,18,95,150,175-182,190-225,233,253-285,287-289
+  s_7756ceac6333e7::t_9d2836e3eb12b6 135-142
+  s_7756ceac6333e7::t_b744338f0a3d05 1-9,12-13,17,19-94,96-134,143-149,151-174,183-189,226-232,234-252,286,290-301
+crates/monty-apidoc/src/symbols.rs
+  s_7756ceac6333e7::t_287217115fd1da 12,71,81-106,144-156
+crates/monty-apidoc/src/lib.rs
+  s_7756ceac6333e7::t_f4e26ee60c1533 1-8,18-40
+  s_7756ceac6333e7::t_6ebcadd14bfd21 9-17
+crates/monty-apidoc/src/render.rs
+  s_7756ceac6333e7::t_287217115fd1da 34-37
+  s_7756ceac6333e7::t_3f8088a301bb5a 125-128
+Cargo.lock
+  ai_agent 2457
+crates/monty-apidoc/src/main.rs
+  s_7756ceac6333e7::t_9d2836e3eb12b6 68-86
+  s_7756ceac6333e7::t_287217115fd1da 18,60,87,96,104,113,121,127,130,144-149,151-156,165,179-193
+crates/monty-apidoc/src/sig.rs
+  s_7756ceac6333e7::t_3c0a5db1a019ed 434
+  s_7756ceac6333e7::t_a71f3a86bd48ab 703-707
+  s_7756ceac6333e7::t_287217115fd1da 211-215,222-223,430-433,435-437,443-446,451,682-683,688-702
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "91bbba2c3cdd48dbd025a316c9ca463c6070a847",
+  "prompts": {},
+  "sessions": {
+    "s_7756ceac6333e7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1bf56986-bf24-4723-833c-bf5ea29f861c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
