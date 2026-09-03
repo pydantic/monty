@@ -9,9 +9,9 @@ use std::fmt::Write;
 
 use rustdoc_types::{
     Abi, AssocItemConstraintKind, Constant, Crate, DynTrait, Enum, Function, FunctionHeader, FunctionPointer,
-    GenericArg, GenericArgs, GenericBound, GenericParamDef, GenericParamDefKind, Generics, Id, Item, ItemEnum, Path,
-    PolyTrait, PreciseCapturingArg, Struct, StructKind, Term, Trait, TraitBoundModifier, Type, Variant, VariantKind,
-    WherePredicate,
+    GenericArg, GenericArgs, GenericBound, GenericParamDef, GenericParamDefKind, Generics, Id, Item, ItemEnum,
+    MacroKind, Path, PolyTrait, PreciseCapturingArg, ProcMacro, Struct, StructKind, Term, Trait, TraitBoundModifier,
+    Type, Variant, VariantKind, WherePredicate,
 };
 
 /// Renders the full declaration block for a rendered item under `name` (the
@@ -32,7 +32,25 @@ pub fn item_decl(name: &str, item: &Item, krate: &Crate) -> String {
             format!("pub static {mut_}{name}: {};", type_str(&s.type_))
         }
         ItemEnum::Macro(source) => macro_decl(source),
+        ItemEnum::ProcMacro(pm) => proc_macro_decl(name, pm),
         inner => panic!("no declaration renderer for {name}: {:?}", inner.item_kind()),
+    }
+}
+
+/// Proc macros render as their use-site form, with derive helper attributes
+/// noted alongside.
+fn proc_macro_decl(name: &str, pm: &ProcMacro) -> String {
+    match pm.kind {
+        MacroKind::Derive => {
+            let mut out = format!("#[derive({name})]");
+            if !pm.helpers.is_empty() {
+                let helpers: Vec<String> = pm.helpers.iter().map(|h| format!("#[{h}(...)]")).collect();
+                write!(out, "\n// helper attributes: {}", helpers.join(", ")).unwrap();
+            }
+            out
+        }
+        MacroKind::Attr => format!("#[{name}]"),
+        MacroKind::Bang => format!("{name}!()"),
     }
 }
 

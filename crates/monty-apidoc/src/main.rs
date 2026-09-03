@@ -31,17 +31,17 @@ const NIGHTLY: &str = "nightly-2026-08-31";
 /// The crates rendered into `docs/api/rust/`, in the order of the mkdocs nav.
 const CRATES: &[CrateConfig] = &[
     CrateConfig {
-        name: "monty-pool",
-        intro: "An async pool of `monty` worker subprocesses: crash isolation, hard per-turn \
-                timeouts and elastic scaling for running untrusted Python. This is the recommended \
-                Rust embedding surface — see the [Rust quickstart](../../quickstart/rust.md).",
-        render_crate_docs: false,
-    },
-    CrateConfig {
         name: "monty",
         intro: "The in-process interpreter: compile, run, suspend and resume sandboxed Python \
                 inside your own process. Most hosts should use [`monty-pool`](monty-pool.md) \
                 instead, which keeps a sandbox crash from taking the host process down.",
+        render_crate_docs: false,
+    },
+    CrateConfig {
+        name: "monty-pool",
+        intro: "An async pool of `monty` worker subprocesses: crash isolation, hard per-turn \
+                timeouts and elastic scaling for running untrusted Python. This is the recommended \
+                Rust embedding surface — see the [Rust quickstart](../../quickstart/rust.md).",
         render_crate_docs: false,
     },
     CrateConfig {
@@ -57,9 +57,22 @@ const CRATES: &[CrateConfig] = &[
                 sandbox at virtual paths and services the sandbox's OS calls.",
         render_crate_docs: true,
     },
+    CrateConfig {
+        name: "monty-proto",
+        intro: "The wire protocol between pool parents and `monty` workers: the protobuf-generated \
+                messages, 4-byte length-prefixed framing, and validated conversions between wire \
+                frames and [`monty-types`](monty-types.md) values.",
+        render_crate_docs: false,
+    },
+    CrateConfig {
+        name: "monty-type-checking",
+        intro: "Type checking for Monty sessions, powered by [ty](https://github.com/astral-sh/ty): \
+                checks code against Monty's trimmed typeshed before execution.",
+        render_crate_docs: false,
+    },
 ];
 
-/// One crate page. Three of the four crates use
+/// One crate page. Most of the crates use
 /// `#![doc = include_str!("../README.md")]` as crate docs, which would
 /// duplicate install instructions and crates.io links into the reference —
 /// so every page opens with a short hand-written `intro` instead, and

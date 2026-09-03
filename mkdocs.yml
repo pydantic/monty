@@ -45,10 +45,12 @@ nav:
           - Filesystem & OS: 'api/python/os.md'
           - Errors: 'api/python/errors.md'
       - Rust:
-          - monty-pool: 'api/rust/monty-pool.md'
           - monty: 'api/rust/monty.md'
+          - monty-pool: 'api/rust/monty-pool.md'
           - monty-types: 'api/rust/monty-types.md'
           - monty-fs: 'api/rust/monty-fs.md'
+          - monty-proto: 'api/rust/monty-proto.md'
+          - monty-type-checking: 'api/rust/monty-type-checking.md'
   - Command Line: 'cli.md'
   - Running monty-server: 'server.md'
 

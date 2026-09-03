@@ -147,7 +147,7 @@ by the pool's `request_timeout`, so raise it for large dependency sets.
 Each requirement is validated here, at the pool boundary, before any
 frame is sent: a string that uv would parse as an option rather than a
 package specifier is rejected with [`PoolError::Runtime`](#poolerror) (a
-`ValueError`). See `validate_requirement` for the rationale.
+`ValueError`). See [`validate_requirement`](monty-proto.md#validate_requirement) for the rationale.
 
 ### dump
 
@@ -677,5 +677,5 @@ Implements: `Debug`.
 
 ## Re-exports
 
-- `MAX_VALUE_DEPTH` — re-exported from `monty_proto`.
-- `exceeds_max_value_depth` — re-exported from `monty_proto`.
+- [`MAX_VALUE_DEPTH`](monty-proto.md#max_value_depth) — re-exported from `monty_proto`.
+- [`exceeds_max_value_depth`](monty-proto.md#exceeds_max_value_depth) — re-exported from `monty_proto`.

@@ -48,17 +48,23 @@ pub fn render_page(cfg: &CrateConfig, krate: &Crate, symbols: &SymbolMap) -> Str
                 if let ItemEnum::Use(use_) = &krate.index[entry].inner {
                     let defining = use_.id.and_then(|id| krate.paths.get(&id));
                     let source_crate = defining.and_then(|d| d.path.first().cloned());
-                    external.push((use_.name.clone(), source_crate));
+                    // when the defining crate has a page of its own, link there
+                    let url = use_.id.and_then(|id| symbols.resolve(&ctx.rustdoc_name, krate, id));
+                    external.push((use_.name.clone(), source_crate, url));
                 }
             }
         }
     }
     if !external.is_empty() {
         out.push_str("\n## Re-exports\n\n");
-        for (name, source_crate) in external {
+        for (name, source_crate, url) in external {
+            let name = match url {
+                Some(url) => format!("[`{name}`]({url})"),
+                None => format!("`{name}`"),
+            };
             match source_crate {
-                Some(source) => writeln!(out, "- `{name}` — re-exported from `{source}`.").unwrap(),
-                None => writeln!(out, "- `{name}`.").unwrap(),
+                Some(source) => writeln!(out, "- {name} — re-exported from `{source}`.").unwrap(),
+                None => writeln!(out, "- {name}.").unwrap(),
             }
         }
     }
