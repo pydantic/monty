@@ -985,46 +985,46 @@ fn timeout_in_deepcopy_fill_loop() {
     );
 }
 
-/// `copy.copy` reaches no dispatch checkpoint either. Its per-item work is far
-/// cheaper than `deepcopy`'s, so the loop that can actually overshoot is the
-/// dict one, where every pair is re-hashed into the copy. Built in an earlier
-/// feed for the reason above.
+/// `copy.copy` reaches no dispatch checkpoint either, and a dict copy has two
+/// Rust loops to get past: the snapshot of every pair, then the re-hashing
+/// fill. Both poll, so the copy stops a budget in whatever the dict costs per
+/// entry — the claim the tests above make, and what makes a fixed threshold
+/// safe here. Unpolled it copies all 4M entries first, which takes seconds.
 ///
-/// Measured against an unlimited copy of the same dict rather than against a
-/// wall-clock constant. Without the poll the limited run *is* the unlimited
-/// one, since nothing stops it early, so the two times converge; with it the
-/// run ends a budget in. A fixed threshold has to sit between two numbers that
-/// both move with the machine, and this one did: it passed locally and failed
-/// under the coverage build, which is several times slower.
+/// Run at two budgets because the snapshot comes first: a short one stops
+/// inside it and never reaches the fill, so only a budget past the snapshot
+/// exercises the fill's own poll. Neither can flake — the passing time is a
+/// budget plus one poll interval either way.
+///
+/// What this cannot see on its own is the snapshot's poll going missing: the
+/// fill's would still stop the copy, a snapshot's worth of work later, which
+/// is under the threshold at this size. That poll shows up instead in what
+/// the passing time does — flat at a budget here, and proportional to the
+/// dict without it, which is what made the earlier version of this test fail
+/// under the coverage build.
 #[test]
 fn timeout_in_shallow_copy_fill_loop() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run(
-        "import copy\nx = {}\nfor i in range(600_000):\n    x['key-that-is-fairly-long-to-hash-' + str(i)] = i",
+        "import copy\nx = {i: i for i in range(4_000_000)}",
         vec![],
         PrintWriter::Stdout,
     )
     .unwrap();
 
-    // What the whole copy costs on this machine, in this build.
-    let start = Instant::now();
-    repl.feed_run("copy.copy(x)", vec![], PrintWriter::Stdout)
-        .expect("an unlimited copy should succeed");
-    let unlimited = start.elapsed();
-
-    repl.tracker_mut().set_max_duration(Duration::from_millis(50));
-    let start = Instant::now();
-    let exc = repl
-        .feed_run("copy.copy(x)", vec![], PrintWriter::Stdout)
-        .expect_err("the copy must hit the time limit");
-    let limited = start.elapsed();
-    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
-    // Half is a wide margin on the ~4x the poll actually buys, and it holds
-    // whether a step costs a nanosecond or a microsecond.
-    assert!(
-        limited * 2 < unlimited,
-        "the limit should cut the copy short: {limited:?} against {unlimited:?} unlimited"
-    );
+    for budget in [50, 600] {
+        repl.tracker_mut().set_max_duration(Duration::from_millis(budget));
+        let start = Instant::now();
+        let exc = repl
+            .feed_run("copy.copy(x)", vec![], PrintWriter::Stdout)
+            .expect_err("the copy must hit the time limit");
+        let elapsed = start.elapsed();
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "budget {budget}ms");
+        assert!(
+            elapsed < Duration::from_millis(budget + 500),
+            "budget {budget}ms: should stop promptly, took {elapsed:?}"
+        );
+    }
 }
 
 /// Feeds shorter than the dispatch-checkpoint interval never probe GC inside
