@@ -39,8 +39,15 @@ out the flush interval (5 ms by default), so:
   argument.
 - Output that is printed and then followed by silence is released by the
   interpreter's periodic checkpoint, so it does not wait for the next
-  `print()`. Native code that runs for a long time without reaching a
-  checkpoint can still delay it.
+  `print()`.
+- That checkpoint sits in the bytecode dispatch loop, so it only fires between
+  instructions. One long native operation — a large `sort`, a regex scan,
+  `json.dumps` over a big structure — holds whatever was buffered for as long
+  as it runs, however short the interval. This is the one case where the
+  interval does not bound the wait. The output is late, never dropped: the
+  buffer is still drained before the next host call and at the end of the
+  turn, so a host that needs liveness here can set the interval to 0 and get a
+  callback as each line is written.
 - Ordering is exact, and the buffer is always drained before a host call or the
   end of a run, so output cannot arrive after the event it preceded.
 - Buffered output is lost if the worker dies *hard*: the pool killing it on
