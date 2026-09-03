@@ -265,7 +265,7 @@ pub struct Checkout {
     /// Parent-enforced limits and the session's consumption of them.
     budget: SessionBudget,
     /// The budget in force before an in-flight `Load`, put back by
-    /// [`Checkout::note_event`] unless the child's first reply confirms the
+    /// [`Checkout::abort_if_over_budget`] unless the child's first reply confirms the
     /// dump was adopted (an `Ok`, or the re-announced suspension) — so a
     /// refused `Load` cannot reset the suspension count, and an abort of the
     /// re-announced suspension does not discard the dump's limit.
@@ -335,7 +335,7 @@ impl SessionBudget {
     /// A reported suspension limit only ever tightens the one in force (an
     /// ordinary reply echoes it; a `Load` reply carries the dump's). Suspension
     /// events increment the parent-owned count.
-    fn note(&mut self, event: &pb::ChildEvent) {
+    fn update_from(&mut self, event: &pb::ChildEvent) {
         self.reported_execution = self
             .reported_execution
             .max(Duration::from_micros(event.total_execution_micros));
@@ -870,14 +870,14 @@ impl Checkout {
     ///
     /// Returns `true` after sending `AbortFeed`, so the caller reads its
     /// turn-ender; `false` means to handle the event normally.
-    async fn note_event(&mut self, event: &pb::ChildEvent) -> Result<bool, PoolError> {
+    async fn abort_if_over_budget(&mut self, event: &pb::ChildEvent) -> Result<bool, PoolError> {
         if !matches!(event.kind, Some(pb::child_event::Kind::Print(_)))
             && let Some(saved) = self.pending_load_budget.take()
             && !(matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) || is_suspension(event))
         {
             self.budget = saved;
         }
-        self.budget.note(event);
+        self.budget.update_from(event);
         let Some(limit) = self.budget.over_suspension_limit(event) else {
             return Ok(false);
         };
@@ -1029,7 +1029,7 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
-            if self.note_event(&event).await? {
+            if self.abort_if_over_budget(&event).await? {
                 continue;
             }
             // strict alternation: zero or more `Print`s, then exactly one
@@ -1123,7 +1123,7 @@ impl Checkout {
             };
             // a suspension past `max_suspensions` is aborted here and never
             // reaches the caller; the abort's reply is the next event
-            if self.note_event(&event).await? {
+            if self.abort_if_over_budget(&event).await? {
                 continue;
             }
             // Only a `Load` reply carries this; it lets `restore` report the

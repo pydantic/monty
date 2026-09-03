@@ -427,7 +427,9 @@ fn execute_repl_with_mounts(
 
     loop {
         // The CLI, as host, enforces `--max-suspensions`.
-        if let Some(exc) = suspensions.note(&progress) {
+        if !matches!(progress, ReplProgress::Complete { .. })
+            && let Some(exc) = suspensions.record_suspension()
+        {
             let outcome = match progress {
                 ReplProgress::OsCall(call) => call.abort(exc, PrintWriter::Stdout),
                 ReplProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Stdout),
@@ -482,7 +484,9 @@ fn run_until_complete(
 ) -> Result<MontyObject, String> {
     loop {
         // The CLI, as host, enforces `--max-suspensions`.
-        if let Some(exc) = suspensions.note_run(&progress) {
+        if !matches!(progress, RunProgress::Complete(_))
+            && let Some(exc) = suspensions.record_suspension()
+        {
             progress = match progress {
                 RunProgress::OsCall(call) => call.abort(exc, PrintWriter::Stdout),
                 RunProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Stdout),
@@ -557,26 +561,9 @@ impl SuspensionBudget {
         Self { limit, seen: 0 }
     }
 
-    /// Counts a REPL suspension and returns the exception once over budget.
-    fn note(&mut self, progress: &ReplProgress) -> Option<MontyException> {
-        if matches!(progress, ReplProgress::Complete { .. }) {
-            None
-        } else {
-            self.count()
-        }
-    }
-
-    /// [`Self::note`] for one-shot runs.
-    fn note_run(&mut self, progress: &RunProgress) -> Option<MontyException> {
-        if matches!(progress, RunProgress::Complete(_)) {
-            None
-        } else {
-            self.count()
-        }
-    }
-
-    /// Counts one suspension and builds the over-budget exception.
-    fn count(&mut self) -> Option<MontyException> {
+    /// Counts one suspension and returns the exception to abort it with once
+    /// the count is over budget.
+    fn record_suspension(&mut self) -> Option<MontyException> {
         self.seen += 1;
         let limit = self.limit;
         (self.seen > limit).then(|| {
