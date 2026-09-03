@@ -429,6 +429,14 @@ impl Child {
     /// not-yet-configured worker.
     fn handle_configure(&mut self, configure: pb::Configure) -> pb::ChildEvent {
         if matches!(self.state, SessionState::Configured(None)) {
+            // Applied on arrival rather than in `ensure_repl`, which a `Load`
+            // never reaches: a dump restores the repl directly, and print
+            // pacing is a delivery setting the dump does not carry.
+            // Absent means an older parent, or one with no opinion; both get
+            // the default rather than the line buffering that predates it.
+            self.print_flush_interval = configure
+                .print_flush_interval_ms
+                .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
             self.state = SessionState::Configured(Some(Box::new(configure)));
             ok_event()
         } else {
@@ -466,14 +474,11 @@ impl Child {
             protocol_version: _,
             // informational only — never checked
             monty_version: _,
-            print_flush_interval_ms,
+            // applied when the `Configure` arrived, so a `Load` honors it too
+            print_flush_interval_ms: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;
-        // Absent means an older parent, or one with no opinion; both get the
-        // default rather than the line buffering that predates the field.
-        self.print_flush_interval =
-            print_flush_interval_ms.map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
         self.type_check = type_check.then(|| TypeCheckState {
             committed_stubs: type_check_stubs.unwrap_or_default(),
             pending_snippet: None,

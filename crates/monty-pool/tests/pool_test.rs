@@ -2105,6 +2105,44 @@ async fn dump_survives_worker_death_and_loads_elsewhere() {
     restored.finish().await.unwrap();
 }
 
+/// A `Load` restores the repl without materializing the checkout's stored
+/// `Configure`, so the print flush interval has to be adopted when that config
+/// arrives — otherwise a restored session silently falls back to the default
+/// and ignores the line buffering its host asked for.
+#[tokio::test]
+async fn a_restored_session_honors_its_checkout_flush_interval() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    session
+        .feed("base = 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    let state = session.dump().await.unwrap();
+    drop(session);
+
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::ZERO),
+        ..ReplConfig::default()
+    };
+    let mut restored = pool.checkout(&repl).await.unwrap();
+    restored.restore(state, vec![], &mut no_print).await.unwrap();
+    let mut lines = Vec::new();
+    restored
+        .feed(
+            "for i in range(20):\n    print(base + i)",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| lines.push(text.to_owned())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(lines.len(), 20);
+    assert_eq!(lines[0], "1\n");
+    assert_eq!(lines[19], "20\n");
+    restored.finish().await.unwrap();
+}
+
 // =============================================================================
 // Environment isolation
 // =============================================================================
