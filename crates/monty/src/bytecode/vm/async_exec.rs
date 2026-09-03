@@ -947,6 +947,27 @@ impl<'h> VM<'h> {
         self.scheduler.pending_call_ids()
     }
 
+    /// Raises `exc` uncatchably at the suspension point, for hosts enforcing
+    /// a limit while execution is suspended.
+    ///
+    /// A `ResolveFutures` snapshot is parked when the last runnable task
+    /// finished with the rest still blocked, so the VM holds a placeholder
+    /// frame and every real frame lives in the scheduler. Raising there would
+    /// point the traceback at line 1, so the main task is reloaded first: it
+    /// is always alive while futures are pending, and its `await` is the
+    /// suspension the user sees.
+    pub fn abort(&mut self, exc: MontyException) -> RunResult<FrameExit> {
+        let main = TaskId::default();
+        if self.current_frame.is_parked
+            && self.scheduler.has_task(main)
+            && !self.scheduler.get_task_mut(main).frames.is_empty()
+        {
+            self.scheduler.set_current_task(Some(main));
+            self.load_or_init_task(main)?;
+        }
+        self.resume_with_exception(RunError::uncatchable(exc))
+    }
+
     /// Resolves external futures and resumes execution.
     ///
     /// This is the standard sequence for resuming after a `FrameExit::ResolveFutures`:

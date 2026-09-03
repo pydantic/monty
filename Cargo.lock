@@ -2451,6 +2451,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "monty-apidoc"
+version = "0.0.21"
+dependencies = [
+ "insta",
+ "rustdoc-types",
+ "serde_json",
+]
+
+[[package]]
 name = "monty-bench"
 version = "0.0.21"
 dependencies = [
@@ -3987,6 +3996,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
 dependencies = [
  "semver",
+]
+
+[[package]]
+name = "rustdoc-types"
+version = "0.61.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa251f75d3b9d5d5d8317ce526dfa4a040c15938d82fd3a5443d103f30a66932"
+dependencies = [
+ "serde",
+ "serde_derive",
 ]
 
 [[package]]

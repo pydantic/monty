@@ -431,9 +431,10 @@ pub struct StackFrame {
     #[prost(bool, tag = "7")]
     pub hide_frame_name: bool,
 }
-/// Sandbox resource limits, enforced inside the child. Absent fields mean
-/// "unlimited" except recursion depth, which defaults to monty's standard
-/// limit (1000) when absent.
+/// Sandbox resource limits. Absent fields are unlimited except recursion depth
+/// and `max_suspensions`, which both default to 1000. The parent enforces
+/// `max_suspensions`; the child only retains it for dumps and echoes it on
+/// `ChildEvent`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResourceLimits {
     #[prost(uint64, optional, tag = "1")]
@@ -444,6 +445,8 @@ pub struct ResourceLimits {
     pub gc_interval: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "4")]
     pub max_recursion_depth: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    pub max_suspensions: ::core::option::Option<u64>,
 }
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
@@ -506,7 +509,7 @@ pub struct ParentRequest {
     /// not depend on it, and it is absent whenever the parent is not tracing.
     #[prost(string, optional, tag = "20")]
     pub trace_parent: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
+    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
     pub kind: ::core::option::Option<parent_request::Kind>,
 }
 /// Nested message and enum types in `ParentRequest`.
@@ -533,6 +536,8 @@ pub mod parent_request {
         Reset(super::Reset),
         #[prost(message, tag = "10")]
         Shutdown(super::Shutdown),
+        #[prost(message, tag = "11")]
+        AbortFeed(super::AbortFeed),
     }
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
@@ -596,6 +601,14 @@ pub struct Feed {
     /// Skip type checking for this feed even when the session enables it.
     #[prost(bool, tag = "3")]
     pub skip_type_check: bool,
+}
+/// Ends a pending suspension by raising `exception` uncatchably at its site.
+/// The session returns ready in an `Error` event. Hosts use this to stop a feed,
+/// including when `max_suspensions` is exceeded.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AbortFeed {
+    #[prost(message, optional, tag = "1")]
+    pub exception: ::core::option::Option<RaisedException>,
 }
 /// Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the
 /// suspension event.
@@ -697,6 +710,10 @@ pub struct ChildEvent {
     /// state bytes) still learns the budget.
     #[prost(uint64, optional, tag = "21")]
     pub max_duration_micros: ::core::option::Option<u64>,
+    /// Echoes the parent-enforced budget so a host restoring an opaque dump can
+    /// recover it.
+    #[prost(uint64, optional, tag = "23")]
+    pub max_suspensions: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only

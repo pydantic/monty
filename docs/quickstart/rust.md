@@ -2,10 +2,10 @@
 
 There are two ways to run Monty from Rust.
 
-- **[`monty-pool`](https://crates.io/crates/monty-pool)** runs the interpreter only in `monty` worker subprocesses.
+- **[`monty-pool`](../api/rust/monty-pool.md)** runs the interpreter only in `monty` worker subprocesses.
   Use this for untrusted code.
   It is the same engine the Python and JavaScript packages are built on.
-- **[`monty`](https://crates.io/crates/monty)** is the in-process interpreter.
+- **[`monty`](../api/rust/monty.md)** is the in-process interpreter.
   Use it when you control the code being run, or when subprocesses are impossible.
 
 A Monty process can never be made fully crash-proof against memory errors — a stack-overflow abort or an allocator abort
@@ -82,17 +82,22 @@ trusted back into the pool.
   With a `max_duration` budget the deadline also enforces that from outside the child, plus `duration_limit_grace`.
   `PoolConfig::subprocess` sets neither `request_timeout` nor `checkout_timeout` by default; set `request_timeout`
   yourself for untrusted code.
+- **Suspension limits** — the pool counts external calls, OS calls, name lookups and future-resolution turns against
+  `ResourceLimits::max_suspensions`.
+  The first suspension over the limit ends the feed with an uncatchable `RuntimeError`.
 - **Untrusted children** — every frame from a possibly compromised worker is validated; wire decoding never panics, and
   a protocol violation discards the worker.
 - **Worker recycling** — `max_checkouts_per_worker` bounds the impact of a slow leak.
 
 Runtime errors inside the sandbox (`PoolError::Runtime`) are not crashes: the worker and its session stay alive and
 usable.
-Resource-limit failures are the exception.
-They arrive as `PoolError::Runtime` too, carrying a `MemoryError` or `TimeoutError`, but [no guarantees hold about heap
-state afterwards](../resource-limits.md#after-a-limit-fires) — and because `max_duration` is a cumulative budget, once
-it is spent every later `feed` fails immediately.
+Memory and time limits return `PoolError::Runtime` with a `MemoryError` or `TimeoutError`, but
+[no guarantees hold about heap state afterwards](../resource-limits.md#after-a-limit-fires).
+A spent `max_duration` rejects every later `feed`.
 Finish the checkout and take a fresh one.
+
+`max_suspensions` also returns `PoolError::Runtime`, but leaves the session consistent.
+Later feeds run until they suspend; the count remains spent.
 
 ### Transports
 
@@ -184,6 +189,11 @@ assert_eq!(result, MontyObject::Int(42));
 Async host functions work the same way: `FunctionCall::resume_pending` continues with a pending future the sandboxed
 code can `await`, and when every task is blocked the run yields `RunProgress::ResolveFutures` for the host to settle.
 
+`FunctionCall`, `OsCall`, `NameLookup` and `ResolveFutures` expose `abort`, which raises a host-supplied
+`MontyException` uncatchably at the suspension point and unwinds the run with a traceback.
+A host driving the interpreter directly must count suspensions and call `abort` to enforce `max_suspensions`;
+`ResourceTracker` stores that limit but does not enforce it.
+
 ### Serialization
 
 The free function `monty::dump` serializes a session — idle between feeds (`SessionRef::Idle`) or suspended mid-run
@@ -220,6 +230,6 @@ assert_eq!(result, MontyObject::Int(42));
 ## Which crate depends on what
 
 Host-side crates (`monty-fs`, `monty-pool`, `monty-proto` without its `worker` feature, the Python and JavaScript
-bindings) depend on [`monty-types`](https://crates.io/crates/monty-types), never on `monty`.
+bindings) depend on [`monty-types`](../api/rust/monty-types.md), never on `monty`.
 That keeps the interpreter out of the parent process entirely.
 Only the worker side links it.

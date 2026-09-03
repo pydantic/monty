@@ -37,6 +37,20 @@ nav:
       - Snapshots: 'snapshots.md'
       - Type Checking: 'type-checking.md'
   - The Python Subset: 'python-subset.md'
+  - API Reference:
+      - Python:
+          - Pools: 'api/python/pools.md'
+          - Websocket Client: 'api/python/websocket.md'
+          - Suspend & Resume: 'api/python/suspend_resume.md'
+          - Filesystem & OS: 'api/python/os.md'
+          - Errors: 'api/python/errors.md'
+      - Rust:
+          - monty: 'api/rust/monty.md'
+          - monty-pool: 'api/rust/monty-pool.md'
+          - monty-types: 'api/rust/monty-types.md'
+          - monty-fs: 'api/rust/monty-fs.md'
+          - monty-proto: 'api/rust/monty-proto.md'
+          - monty-type-checking: 'api/rust/monty-type-checking.md'
   - Command Line: 'cli.md'
   - Running monty-server: 'server.md'
 
@@ -47,3 +61,22 @@ markdown_extensions:
       use_pygments: true
       pygments_lang_class: true
   - pymdownx.superfences
+
+# The `::: pydantic_monty` block in docs/api/python.md is expanded by
+# mkdocstrings here and by the pydantic.dev docs pipeline, which reads the
+# handler options below from this file — keep them in this file only.
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [crates/monty-python/python]
+          options:
+            members_order: source
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            group_by_category: false
+            heading_level: 3
+            docstring_options:
+              warn_unknown_params: false

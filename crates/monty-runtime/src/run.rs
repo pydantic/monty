@@ -23,8 +23,8 @@ use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    CompileOptions, ExtFunctionResult, MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits,
-    ResourceTracker, TypeCheckingConfig,
+    CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
+    OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
@@ -222,7 +222,8 @@ fn run_script(
             }
         };
 
-        match run_until_complete(progress, &mut mount_table) {
+        let mut suspensions = SuspensionBudget::from_progress(&progress);
+        match run_until_complete(progress, &mut mount_table, &mut suspensions) {
             Ok(value) => {
                 let elapsed = start.elapsed();
                 eprintln!(
@@ -273,10 +274,11 @@ fn run_script(
 /// Returns `ExitCode::SUCCESS` on EOF or `exit`, and `ExitCode::FAILURE` on
 /// initialization or I/O errors.
 fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut mount_table: Option<MountTable>) -> ExitCode {
+    let mut suspensions = SuspensionBudget::new(&tracker);
     let mut repl = Some(MontyRepl::new(file_path, tracker, CompileOptions::default()));
 
     if !code.is_empty() {
-        execute_repl_snippet(&mut repl, code, &mut mount_table);
+        execute_repl_snippet(&mut repl, code, &mut mount_table, &mut suspensions);
     }
 
     eprintln!("Monty v{} REPL. Type `exit` to exit.", env!("CARGO_PKG_VERSION"));
@@ -335,7 +337,7 @@ fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut mount_tab
 
         if continuation_mode == ReplContinuationMode::IncompleteBlock && snippet.is_empty() {
             let _ = rl.add_history_entry(pending_snippet.trim_end());
-            execute_repl_snippet(&mut repl, &pending_snippet, &mut mount_table);
+            execute_repl_snippet(&mut repl, &pending_snippet, &mut mount_table, &mut suspensions);
             pending_snippet.clear();
             continuation_mode = ReplContinuationMode::Complete;
             continue;
@@ -348,7 +350,7 @@ fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut mount_tab
                     continue;
                 }
                 let _ = rl.add_history_entry(pending_snippet.trim_end());
-                execute_repl_snippet(&mut repl, &pending_snippet, &mut mount_table);
+                execute_repl_snippet(&mut repl, &pending_snippet, &mut mount_table, &mut suspensions);
                 pending_snippet.clear();
                 continuation_mode = ReplContinuationMode::Complete;
             }
@@ -369,11 +371,16 @@ fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut mount_tab
 ///
 /// Takes `&mut Option<MontyRepl>` because `feed_start` consumes the repl —
 /// we `take()` it out, run to completion, then put it back.
-fn execute_repl_snippet(repl: &mut Option<MontyRepl>, snippet: &str, mount_table: &mut Option<MountTable>) {
+fn execute_repl_snippet(
+    repl: &mut Option<MontyRepl>,
+    snippet: &str,
+    mount_table: &mut Option<MountTable>,
+    suspensions: &mut SuspensionBudget,
+) {
     let r = repl.take().expect("repl must be present");
 
     if mount_table.is_some() {
-        match execute_repl_with_mounts(r, snippet, mount_table) {
+        match execute_repl_with_mounts(r, snippet, mount_table, suspensions) {
             Ok((returned_repl, output)) => {
                 if output != MontyObject::None {
                     println!("{output}");
@@ -411,6 +418,7 @@ fn execute_repl_with_mounts(
     r: MontyRepl,
     snippet: &str,
     mount_table: &mut Option<MountTable>,
+    suspensions: &mut SuspensionBudget,
 ) -> Result<(MontyRepl, MontyObject), (MontyRepl, String)> {
     let mut progress = match r.feed_start(snippet, vec![], PrintWriter::Stdout) {
         Ok(p) => p,
@@ -418,6 +426,23 @@ fn execute_repl_with_mounts(
     };
 
     loop {
+        // The CLI, as host, enforces `--max-suspensions`.
+        if !matches!(progress, ReplProgress::Complete { .. })
+            && let Some(exc) = suspensions.record_suspension()
+        {
+            let outcome = match progress {
+                ReplProgress::OsCall(call) => call.abort(exc, PrintWriter::Stdout),
+                ReplProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Stdout),
+                ReplProgress::NameLookup(lookup) => lookup.abort(exc, PrintWriter::Stdout),
+                ReplProgress::ResolveFutures(state) => state.abort(exc, PrintWriter::Stdout),
+                ReplProgress::Complete { .. } => unreachable!("only suspensions are counted"),
+            };
+            match outcome {
+                Ok(p) => progress = p,
+                Err(err) => return Err((err.repl, format!("{}", err.error))),
+            }
+            continue;
+        }
         match progress {
             ReplProgress::Complete { repl, value } => return Ok((repl, value)),
             ReplProgress::OsCall(call) => {
@@ -452,8 +477,26 @@ fn execute_repl_with_mounts(
 /// When a mount table is provided, filesystem `OsCall`s are handled via the
 /// mount table. Non-filesystem `OsCall`s and `OsCall`s without a mount table
 /// produce an error.
-fn run_until_complete(mut progress: RunProgress, mount_table: &mut Option<MountTable>) -> Result<MontyObject, String> {
+fn run_until_complete(
+    mut progress: RunProgress,
+    mount_table: &mut Option<MountTable>,
+    suspensions: &mut SuspensionBudget,
+) -> Result<MontyObject, String> {
     loop {
+        // The CLI, as host, enforces `--max-suspensions`.
+        if !matches!(progress, RunProgress::Complete(_))
+            && let Some(exc) = suspensions.record_suspension()
+        {
+            progress = match progress {
+                RunProgress::OsCall(call) => call.abort(exc, PrintWriter::Stdout),
+                RunProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Stdout),
+                RunProgress::NameLookup(lookup) => lookup.abort(exc, PrintWriter::Stdout),
+                RunProgress::ResolveFutures(state) => state.abort(exc, PrintWriter::Stdout),
+                RunProgress::Complete(_) => unreachable!("only suspensions are counted"),
+            }
+            .map_err(|err| format!("{err}"))?;
+            continue;
+        }
         match progress {
             RunProgress::Complete(value) => return Ok(value),
             RunProgress::FunctionCall(call) => {
@@ -487,6 +530,48 @@ fn run_until_complete(mut progress: RunProgress, mount_table: &mut Option<MountT
                     .map_err(|err| format!("{err}"))?;
             }
         }
+    }
+}
+
+/// Tracks the CLI-enforced suspension limit across an entire REPL session.
+struct SuspensionBudget {
+    limit: usize,
+    seen: usize,
+}
+
+impl SuspensionBudget {
+    /// Initializes a budget from the tracker's limits.
+    fn new(tracker: &ResourceTracker) -> Self {
+        Self {
+            limit: tracker.max_suspensions(),
+            seen: 0,
+        }
+    }
+
+    /// Reads a one-shot run's limit from its initial progress.
+    fn from_progress(progress: &RunProgress) -> Self {
+        let limit = match progress {
+            RunProgress::FunctionCall(call) => call.tracker().max_suspensions(),
+            RunProgress::OsCall(call) => call.tracker().max_suspensions(),
+            RunProgress::NameLookup(lookup) => lookup.tracker().max_suspensions(),
+            RunProgress::ResolveFutures(state) => state.tracker().max_suspensions(),
+            // never counted, so the value is immaterial
+            RunProgress::Complete(_) => DEFAULT_MAX_SUSPENSIONS,
+        };
+        Self { limit, seen: 0 }
+    }
+
+    /// Counts one suspension and returns the exception to abort it with once
+    /// the count is over budget.
+    fn record_suspension(&mut self) -> Option<MontyException> {
+        self.seen += 1;
+        let limit = self.limit;
+        (self.seen > limit).then(|| {
+            MontyException::new(
+                ExcType::RuntimeError,
+                Some(format!("suspension limit {limit} exceeded")),
+            )
+        })
     }
 }
 

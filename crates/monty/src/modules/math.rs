@@ -342,7 +342,7 @@ fn math_floor(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     match value {
-        Value::Float(f) => float_to_int_checked(f.floor(), *f, vm.heap),
+        Value::Float(f) => LongInt::value_from_f64(f.floor(), vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         _ => Err(ExcType::type_error(format!(
@@ -361,7 +361,7 @@ fn math_ceil(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     match value {
-        Value::Float(f) => float_to_int_checked(f.ceil(), *f, vm.heap),
+        Value::Float(f) => LongInt::value_from_f64(f.ceil(), vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         _ => Err(ExcType::type_error(format!(
@@ -379,7 +379,7 @@ fn math_trunc(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     match value {
-        Value::Float(f) => float_to_int_checked(f.trunc(), *f, vm.heap),
+        Value::Float(f) => LongInt::value_from_f64(f.trunc(), vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         _ => Err(ExcType::type_error(format!(
@@ -1304,40 +1304,6 @@ fn math_erfc(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 // ==========================
 // Helper functions
 // ==========================
-
-/// Converts a rounded float to an integer `Value`, checking for infinity/NaN.
-///
-/// `rounded` is the already-rounded float value (e.g., from `floor()`, `ceil()`, `trunc()`).
-/// `original` is the original input float, used only to determine the error type:
-/// infinity produces `OverflowError`, NaN produces `ValueError`.
-///
-/// For finite values outside the i64 range, promotes to `LongInt` to match CPython's
-/// behavior of returning arbitrary-precision integers from `math.floor`/`ceil`/`trunc`.
-fn float_to_int_checked(rounded: f64, original: f64, heap: &mut Heap) -> RunResult<Value> {
-    if original.is_infinite() {
-        Err(SimpleException::new_msg(ExcType::OverflowError, "cannot convert float infinity to integer").into())
-    } else if original.is_nan() {
-        Err(SimpleException::new_msg(ExcType::ValueError, "cannot convert float NaN to integer").into())
-    } else if rounded >= i64::MIN as f64 && rounded < i64::MAX as f64 {
-        // Note: `i64::MAX as f64` rounds up to 2^63 (9223372036854775808.0), so we use
-        // strict less-than to exclude that value. `i64::MIN as f64` is exact (-2^63).
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "intentional: value is within i64 range after bounds check"
-        )]
-        let result = rounded as i64;
-        Ok(Value::Int(result))
-    } else {
-        // Value exceeds i64 range — promote to LongInt.
-        // Format with no decimal places and parse as BigInt. This is correct because
-        // `rounded` is already an integer-valued float from floor/ceil/trunc.
-        let s = format!("{rounded:.0}");
-        let bi = s
-            .parse::<BigInt>()
-            .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "float too large to convert to integer"))?;
-        Ok(LongInt::new(bi).into_value(heap))
-    }
-}
 
 /// Converts a `Value` to `f64`, raising `TypeError` if the value is not numeric.
 ///

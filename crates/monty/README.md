@@ -46,7 +46,9 @@ Errors are returned as `MontyException`, with a traceback matching what CPython 
 
 ## Resource limits
 
-Untrusted code shouldn't be able to hog the host. `ResourceTracker` enforces execution-time and recursion limits and configures GC scheduling. Memory limits additionally require `monty-alloc` as the executable's global allocator:
+Untrusted code shouldn't be able to hog the host. `ResourceTracker` enforces execution-time and recursion limits and configures GC scheduling. Memory limits additionally require `monty-alloc` as the executable's global allocator.
+
+Hosts enforce `max_suspensions`: count answered suspensions, then call `abort` on `FunctionCall`, `OsCall`, `NameLookup`, or `ResolveFutures` at the first excess. The supplied exception bypasses sandbox exception handlers:
 
 ```rust
 use std::time::Duration;

@@ -104,6 +104,9 @@ See the [Rust quickstart](quickstart/rust.md) for both, and for when the in-proc
 Host-side crates depend on `monty-types`, never on `monty`, so the interpreter is not linked into your parent process at
 all.
 
+The [Rust API](api/rust/monty.md) pages document `monty`, `monty-pool`, `monty-types`, `monty-fs`, `monty-proto` and
+`monty-type-checking`.
+
 ## Command line
 
 The `monty` binary is a REPL and a file runner.

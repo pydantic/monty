@@ -50,10 +50,15 @@ installed as part of the `pydantic-monty` meta-package.
 from pydantic_monty import Monty
 
 with Monty() as pool:
-    with pool.checkout() as session:
+    with pool.checkout(limits={'max_suspensions': 100}) as session:
         print(session.feed_run('1 + 2'))
         #> 3
 ```
+
+`max_suspensions` limits host-serviced suspensions per checkout (default
+1000; it cannot be disabled). Exceeding it
+aborts the feed with an uncatchable `RuntimeError`; the session remains usable,
+but its suspension count remains spent.
 
 or in async code:
 

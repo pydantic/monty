@@ -176,12 +176,14 @@ interface worker {
         value: value,
     }
 
-    /// Resource limits enforced by the sandbox.
+    /// Resource limits. The host enforces `max-suspensions`; the sandbox
+    /// enforces the others.
     record resource-limits {
         max-duration-micros: option<u64>,
         max-memory-bytes: option<u64>,
         gc-interval: option<u64>,
         max-recursion-depth: option<u64>,
+        max-suspensions: option<u64>,
     }
 
     /// Available renderings for type-check diagnostics.
@@ -259,6 +261,8 @@ interface worker {
         resume-call(resume-call-request),
         resume-name-lookup(name-lookup-result),
         resume-futures(list<future-result>),
+        /// Raises an error uncatchably at any pending suspension; the session stays usable.
+        abort-feed(raised-error),
         dump,
         load(list<u8>),
         reset,
@@ -343,6 +347,9 @@ interface worker {
         status: status,
         /// Buffered prints followed by exactly one turn-ending event.
         events: list<event>,
+        /// The current session's suspension limit. A host uses this after
+        /// `load`, whose dump replaces the configured session limits.
+        max-suspensions: option<u64>,
     }
 
     /// Handles one semantic request using the retained child.

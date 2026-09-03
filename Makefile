@@ -113,6 +113,10 @@ generate-proto: ## Regenerate monty-proto's checked-in code from the .proto sche
 check-proto: generate-proto ## Verify monty-proto's checked-in code matches the .proto schema
 	git diff --exit-code crates/monty-proto/src/generated crates/monty-proto/tests/oracle
 
+.PHONY: generate-api-docs
+generate-api-docs: ## Generate the Rust API reference into docs/api/rust/ (gitignored) from rustdoc JSON
+	cargo run -p monty-apidoc
+
 .PHONY: lint-py
 lint-py: dev-py ## Lint Python code with ruff
 	uv run ruff format --check
@@ -173,12 +177,16 @@ test-docs: dev-py ## Test docs examples only (docs/, README.md, crates/monty-pyt
 	cargo test --doc --workspace
 
 .PHONY: docs
-docs: ## Build the docs site from docs/ and mkdocs.yml
+docs: generate-api-docs ## Build the docs site from docs/ and mkdocs.yml
 	uv run --group docs mkdocs build --strict
 
 .PHONY: docs-serve
-docs-serve: ## Serve the docs site locally with live reload
+docs-serve: generate-api-docs ## Serve the docs site locally with live reload
 	uv run --group docs mkdocs serve
+
+.PHONY: docs-dev
+docs-dev: generate-api-docs ## Preview this checkout in a sibling pydantic/unified-docs checkout (../unified-docs)
+	pnpm --dir ../unified-docs docs:dev --library monty --source $(CURDIR)
 
 .PHONY: test
 test: test-memory-model-checks test-ref-count-return test-no-features test-type-checking test-subprocess test-py miri ## Run rust tests

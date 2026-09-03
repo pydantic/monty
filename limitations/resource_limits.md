@@ -1,9 +1,9 @@
 # Resource limits
 
-Monty enforces limits on memory, time, and recursion to keep untrusted code
-bounded. Memory limits surface to the host as `MemoryError`s and time limits as
-`TimeoutError`s; sandboxed code cannot catch either resource error.
-`RecursionError` is catchable, as in CPython.
+Monty limits memory, time, and recursion, while the host limits suspension
+events. Exceeding the memory, time, or suspension limit returns `MemoryError`,
+`TimeoutError`, or `RuntimeError`, respectively; sandboxed code cannot catch
+these exceptions. `RecursionError` is catchable, as in CPython.
 
 ## Compilation
 
@@ -139,6 +139,31 @@ indistinguishable from a stack overflow.
   limit, so Monty raises `RecursionError` before a native stack overflow would
   abort the process. See the `__repr__`/`__str__` entry in ./classes.md for
   the main user-visible divergence this causes.
+
+## Suspensions
+
+- `max_suspensions` bounds how many times a session may suspend to the host:
+  external function calls, host-object method calls, attribute lookups and
+  construction, OS calls, name lookups, and each `ResolveFutures` round trip
+  (a partial future resolution that re-suspends counts again).
+- It defaults to 1000 and cannot be disabled (like `max_recursion_depth`):
+  omitting it, or passing `None`, keeps the default; set a larger number
+  for sessions that legitimately make more host calls.
+- `monty-pool` enforces it for `pydantic_monty`, the JavaScript napi pool and
+  monty-server. The wasm worker pool and CLI also enforce it. A direct host
+  must count suspensions and call `abort` itself.
+- The first suspension over budget is not returned to the caller. The host
+  uses one extra worker round trip to raise
+  `RuntimeError: suspension limit N exceeded` uncatchably at the
+  suspension point with a traceback.
+- The count persists for the checkout. Once spent, every later feed ends on
+  its first suspension. Non-suspending feeds still run, the heap stays
+  consistent, and the session can still be dumped.
+- Only the limit travels in dumps. A restored session keeps
+  `max_suspensions` but resets the count to zero; a limit configured on the
+  restoring checkout caps the dump's (the smaller of the two applies, and
+  the configured one alone if the worker's reply omits it).
+- There is no in-sandbox way to observe the budget or remaining count.
 
 ## Time
 

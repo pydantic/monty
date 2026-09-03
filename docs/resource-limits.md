@@ -21,7 +21,7 @@ with Monty() as pool:
             #> MemoryError
 ```
 
-## The four settings
+## The five settings
 
 | Key | Meaning |
 | --- | --- |
@@ -29,15 +29,17 @@ with Monty() as pool:
 | `max_duration_secs` | Maximum cumulative execution time in seconds |
 | `max_recursion_depth` | Maximum function call stack depth (default 1000) |
 | `gc_interval` | Run garbage collection every N allocations |
+| `max_suspensions` | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
 
 Every key is optional.
 Omit `max_memory` or `max_duration_secs`, or set them to `None`, to disable that limit.
-`max_recursion_depth` cannot be disabled: omitting it, or passing `None`, leaves the 1000-frame default.
+`max_recursion_depth` and `max_suspensions` cannot be disabled: omitting either, or passing `None`, leaves its 1000
+default.
 `gc_interval` omitted or `None` uses the built-in schedule of every 100,000 allocations; collection cannot be turned
 off.
 
-In JavaScript the same fields are `maxMemory`, `maxDurationSecs`, `maxRecursionDepth` and `gcInterval`, passed as
-`limits` to `pool.checkout()`.
+In JavaScript the same fields are `maxMemory`, `maxDurationSecs`, `maxRecursionDepth`, `gcInterval` and
+`maxSuspensions`, passed as `limits` to `pool.checkout()`.
 In Rust they are the fields of `monty_types::ResourceLimits`, where the duration is a `Duration` named `max_duration`.
 
 ## Memory
@@ -101,6 +103,23 @@ recursive `__repr__`/`__str__` — re-enter on the native Rust stack rather than
 Those are capped independently at a lower fixed depth, so Monty raises `RecursionError` before a native stack overflow
 could abort the process.
 
+## Suspensions
+
+`max_suspensions` counts external calls, host-object method calls and construction, lazy attribute lookups, `os`
+callbacks, name lookups and future-resolution events.
+These host round trips are outside `max_memory`; each [`ClassType`](host-objects.md) construction with `init=True` also
+adds an instance-store entry.
+Because `max_duration_secs` pauses during suspensions, a snippet could otherwise retry rejected calls indefinitely.
+
+The pool enforces the limit per checkout; the default is 1000, and a host that needs more sets a larger number.
+A host driving the interpreter directly counts suspensions and calls `abort` itself; the limit only travels in the
+`ResourceTracker`, see the [Rust quickstart](quickstart/rust.md).
+The first suspension over the budget aborts the feed with an uncatchable
+`RuntimeError: suspension limit 3 exceeded` at the call site.
+The session stays consistent and can be dumped; later feeds run until they suspend.
+Restoring a dump preserves the limit but resets the count to zero; a `max_suspensions` set on the restoring checkout
+caps the dump's, so a worker cannot report a looser one.
+
 ## What is not covered
 
 - **Compilation time.** Parsing and bytecode compilation happen before the VM exists and are not charged to the duration
@@ -124,6 +143,8 @@ A memory or time limit is **terminal**.
 Sandboxed code cannot catch it, and once it fires **no guarantees are made about heap state or reference counts** — the
 heap may hold orphaned objects with wrong refcounts.
 Discard the session rather than continuing to run code in it.
+`max_suspensions` also raises uncatchably, but ends the feed cleanly.
+The session remains usable until code suspends again.
 
 The pool does **not** do this for you.
 The checkout stays open and accepts further `feed_run` calls.

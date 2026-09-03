@@ -77,9 +77,10 @@ impl Error for ResourceError {}
 /// Configuration for resource limits.
 ///
 /// The time/memory/GC limits are optional — set to `None` to disable — but
-/// recursion depth is always bounded (default
-/// [`DEFAULT_MAX_RECURSION_DEPTH`]): unbounded recursion would let sandboxed
-/// code overflow the native stack and abort the process. Use
+/// recursion depth and the suspension budget are always bounded (defaults
+/// [`DEFAULT_MAX_RECURSION_DEPTH`] and [`DEFAULT_MAX_SUSPENSIONS`]): unbounded
+/// recursion would let sandboxed code overflow the native stack and abort the
+/// process, and unbounded suspensions would let it loop on host calls. Use
 /// `ResourceLimits::default()` for the recursion-only defaults, or build
 /// custom limits with the builder pattern.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -94,12 +95,22 @@ pub struct ResourceLimits {
     pub gc_interval: Option<usize>,
     /// Maximum recursion depth (function call stack depth).
     pub max_recursion_depth: usize,
+    /// Maximum suspensions the host may service (default
+    /// [`DEFAULT_MAX_SUSPENSIONS`]; always bounded, like recursion depth).
+    /// The interpreter only stores this limit; hosts must enforce it.
+    pub max_suspensions: usize,
 }
 
 /// Recommended maximum recursion depth if not otherwise specified.
 pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 
-/// Creates a new ResourceLimits with all limits disabled, except max recursion which is set to 1000.
+/// Maximum suspensions a host services per session if not otherwise
+/// specified: a backstop against a sandbox looping on host calls while
+/// `max_duration` is paused.
+pub const DEFAULT_MAX_SUSPENSIONS: usize = 1000;
+
+/// Creates a new ResourceLimits with all limits disabled, except max recursion
+/// depth and max suspensions, which are set to 1000.
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
@@ -107,6 +118,7 @@ impl Default for ResourceLimits {
             max_memory: None,
             gc_interval: None,
             max_recursion_depth: DEFAULT_MAX_RECURSION_DEPTH,
+            max_suspensions: DEFAULT_MAX_SUSPENSIONS,
         }
     }
 }
@@ -140,6 +152,13 @@ impl ResourceLimits {
     #[must_use]
     pub fn max_recursion_depth(mut self, limit: usize) -> Self {
         self.max_recursion_depth = limit;
+        self
+    }
+
+    /// Sets the host-enforced maximum number of suspensions.
+    #[must_use]
+    pub fn max_suspensions(mut self, limit: usize) -> Self {
+        self.max_suspensions = limit;
         self
     }
 }
@@ -244,6 +263,13 @@ impl ResourceTracker {
     #[must_use]
     pub fn max_memory(&self) -> Option<usize> {
         self.limits.max_memory
+    }
+
+    /// Returns the host-enforced suspension budget (default
+    /// [`DEFAULT_MAX_SUSPENSIONS`]; never unlimited).
+    #[must_use]
+    pub fn max_suspensions(&self) -> usize {
+        self.limits.max_suspensions
     }
 
     /// Returns whether the VM has a memory or time limit configured.
@@ -369,7 +395,7 @@ impl ResourceTracker {
     ///
     /// This allows pre-emptive rejection of operations like `2 ** 10_000_000`
     /// before the memory is actually allocated. The check only happens for
-    /// estimated result sizes above `LARGE_RESULT_THRESHOLD` to avoid overhead
+    /// estimated result sizes above [`LARGE_RESULT_THRESHOLD`] to avoid overhead
     /// on small operations.
     #[inline]
     pub fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError> {

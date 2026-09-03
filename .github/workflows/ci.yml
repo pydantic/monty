@@ -86,6 +86,19 @@ jobs:
       - name: Check vendored typeshed stubs are in sync
         run: make check-typeshed
 
+      # rustdoc JSON is nightly-only and format-unstable, so the API reference
+      # is generated with the exact nightly matching monty-apidoc's pinned
+      # `rustdoc-types` (see crates/monty-apidoc/src/main.rs)
+      - name: Install the nightly pinned for rustdoc JSON
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal
+
+      # the pages are not checked in (publish-docs below pushes them to the
+      # `docs-source` branch); this only proves generation still succeeds
+      - name: Generate the Rust API reference
+        run: make generate-api-docs
+
+      - run: cargo test -p monty-apidoc
+
   # The interpreter itself, under every feature config. Each `--features` flag
   # forces a full rebuild of `monty`, so the three configs are kept together
   # here; the crates layered on top run in parallel in `test-rust-crates`.
@@ -510,6 +523,89 @@ jobs:
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
           jobs: ${{ toJSON(needs) }}
+
+  # Publish the docs source read by pydantic/unified-docs: docs/, mkdocs.yml,
+  # the Python package (for the `::: pydantic_monty` autodoc block) and the
+  # generated Rust API reference, as a single-commit orphan `docs-source`
+  # branch. unified-docs clones that branch instead of `main`, so the Rust
+  # pages never need committing here. The docs-update dispatch then rebuilds
+  # the site; with no source pin it resolves monty to the branch tip.
+  publish-docs:
+    needs: [check, inspect-python-assets]
+    if: success() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    # the branch is force-pushed as a whole, so a slower run for an older
+    # commit must never finish after a newer one
+    concurrency:
+      group: publish-docs
+      cancel-in-progress: true
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+
+      # rustdoc JSON is nightly-only and format-unstable, see the lint job
+      - name: Install the nightly pinned for rustdoc JSON
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts; it pushes generated markdown only
+          cache-on-failure: true
+          prefix-key: 'v1-rust'
+
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        with:
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts; it pushes generated markdown only
+
+      - name: Generate the Rust API reference
+        run: make generate-api-docs
+
+      - name: Push the docs-source branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          out="$(mktemp -d)"
+          # keep the same paths as the checkout so unified-docs' sparse list works unchanged
+          for path in docs mkdocs.yml crates/monty-python/python; do
+            mkdir -p "$out/$(dirname "$path")"
+            cp -R "$path" "$out/$path"
+          done
+          cd "$out"
+          git init --initial-branch=docs-source
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit --quiet -m "Docs source for pydantic/monty@${SOURCE_SHA}"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:docs-source
+
+      - name: Generate app token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ vars.DOCS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DOCS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: unified-docs
+          # repository_dispatch needs contents:write; nothing else is granted
+          permission-contents: write
+
+      - name: Trigger unified-docs deployment
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh api repos/pydantic/unified-docs/dispatches --method POST -f event_type=docs-update
 
   # Build source distribution
   build-sdist:

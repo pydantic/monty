@@ -1534,6 +1534,18 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "int too large to convert to float").into()
     }
 
+    /// Creates the OverflowError raised when converting an infinite float to an integer.
+    #[must_use]
+    fn overflow_float_infinity_to_integer() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "cannot convert float infinity to integer").into()
+    }
+
+    /// Creates the ValueError raised when converting NaN to an integer.
+    #[must_use]
+    fn value_error_float_nan_to_integer() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "cannot convert float NaN to integer").into()
+    }
+
     /// Creates a ValueError for a zero modulus passed to `pow`.
     #[must_use]
     fn value_error_pow_modulus_zero() -> RunError {
@@ -2420,7 +2432,7 @@ impl RawStackFrame {
 /// Three variants:
 /// - `Internal`: Bug in interpreter implementation (static message)
 /// - `Exc`: Python exception that can be caught by try/except (when implemented)
-/// - `UncatchableExc`: Python exception from resource limits that CANNOT be caught
+/// - `UncatchableExc`: Python exception from a resource limit or host abort
 ///
 /// `Clone` is implemented so an error can be cached for later re-raising
 /// (e.g. a failed `GatherFuture` replaying the same exception on every
@@ -2432,11 +2444,9 @@ pub(crate) enum RunError {
     Internal(Cow<'static, str>),
     /// Catchable Python exception (e.g., ValueError, TypeError).
     Exc(ExceptionRaise),
-    /// Uncatchable Python exception from resource limits (MemoryError, TimeoutError).
+    /// Uncatchable Python exception from a resource limit or host abort.
     ///
-    /// These exceptions display with proper tracebacks like normal Python exceptions,
-    /// but cannot be caught by try/except blocks. This prevents untrusted code from
-    /// suppressing resource limit violations.
+    /// Displays a normal traceback but bypasses `try`/`except` blocks.
     UncatchableExc(ExceptionRaise),
 }
 
@@ -2481,15 +2491,16 @@ impl From<fmt::Error> for RunError {
 }
 
 impl RunError {
-    /// Whether this is a catchable `StopIteration`, i.e. a `__next__` reporting
-    /// exhaustion.
+    /// Whether this is a catchable `StopIteration` from `__next__`.
     ///
-    /// Excluding `UncatchableExc` is defensive — it is only ever built from a
-    /// `ResourceError` — but spelled out so a future uncatchable variant cannot
-    /// read as "the iterator finished", letting sandboxed code absorb its own
-    /// limit breach.
+    /// Matching only `Exc` prevents uncatchable errors being mistaken for exhaustion.
     pub(crate) fn is_stop_iteration(&self) -> bool {
         matches!(self, Self::Exc(raise) if matches!(raise.exc.exc_type(), ExcType::StopIteration))
+    }
+
+    /// Wraps a host exception so it builds a traceback but bypasses `except`.
+    pub(crate) fn uncatchable(exc: MontyException) -> Self {
+        Self::UncatchableExc(exc.into())
     }
 
     /// Converts this runtime error to a `MontyException` for the public API.

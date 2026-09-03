@@ -131,6 +131,10 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
 - Compilation is not charged against the duration budget.
   It has its own structural caps (AST nesting, bytecode operand sizes, comprehension nesting, `finally` expansion), but
   a host accepting untrusted source should still isolate compilation — as the subprocess and WebAssembly runtimes do.
+- `max_suspensions` bounds suspension events per checkout.
+  A snippet can otherwise retry a rejected host call while `max_duration_secs` is paused.
+  Each allowed `ClassType(init=True)` construction adds an instance-store entry outside `max_memory`.
+  The pool aborts the first suspension over the limit with an uncatchable `RuntimeError`.
 
 ## Where the guarantees weaken
 

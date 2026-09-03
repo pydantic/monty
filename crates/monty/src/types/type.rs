@@ -588,27 +588,6 @@ impl Type {
     }
 }
 
-/// Truncates f64 to i64 with clamping for out-of-range values.
-///
-/// Python's `int(float)` truncates toward zero. For values outside i64 range,
-/// we clamp to i64::MAX/MIN (Python would use arbitrary precision ints, which
-/// we don't support).
-fn f64_to_i64_truncate(value: f64) -> i64 {
-    // trunc() rounds toward zero, matching Python's int(float) behavior
-    let truncated = value.trunc();
-    if truncated >= i64::MAX as f64 {
-        i64::MAX
-    } else if truncated <= i64::MIN as f64 {
-        i64::MIN
-    } else {
-        // SAFETY for clippy: truncated is guaranteed to be in (i64::MIN, i64::MAX)
-        // after the bounds checks above, so truncation cannot overflow
-        #[expect(clippy::cast_possible_truncation, reason = "bounds checked above")]
-        let result = truncated as i64;
-        result
-    }
-}
-
 /// Parses a Python `float()` string argument into an `f64`.
 ///
 /// This supports:
@@ -699,7 +678,7 @@ fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let interns = vm.interns;
     match x {
         Value::Int(i) => Ok(Value::Int(*i)),
-        Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
+        Value::Float(f) => LongInt::value_from_f64(*f, vm.heap),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), 10, vm.heap),
         Value::InternBytes(bytes_id) => parse_int_from_bytes(interns.get_bytes(*bytes_id), 10, vm.heap),

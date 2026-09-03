@@ -23,10 +23,7 @@ use monty_pool::{Checkout, Pool, PoolConfig, PrintFuture, ReplConfig, ResumeValu
 use monty_types::{MontyObject, PrintStream};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
-use tokio::{
-    runtime::{Builder, Runtime},
-    sync::Mutex,
-};
+use tokio::runtime::{Builder, Runtime};
 
 /// Locates (building once if needed) the `monty` CLI binary the workers run.
 /// Mirrors the resolution used by `monty-pool`'s integration tests: honour
@@ -150,24 +147,23 @@ for i in range(1000):
 ";
 
 /// Wire-protocol throughput: 1,000 external-call round trips over the framed
-/// protobuf channel on a single warm session. Reuses the session across
-/// iterations so only the messaging cost is measured, not checkout.
+/// protobuf channel on a warm session. The suspension budget is per checkout,
+/// so each iteration checks out its own session; that handshake is a fixed
+/// cost `session_checkout_run` measures alone.
 fn ext_calls_1000(bench: &mut Bencher) {
     let runtime = runtime();
     let pool = runtime
         .block_on(Pool::new(PoolConfig::subprocess(monty_binary())))
         .unwrap();
-    let session = runtime.block_on(pool.checkout(&ReplConfig::default())).unwrap();
-    let session = Mutex::new(session);
     bench.to_async(&runtime).iter(|| async {
-        let mut session = session.lock().await;
+        let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
         let event = session
             .feed(EXT_CALL_LOOP, vec![], vec![], false, &mut no_print)
             .await
             .unwrap();
         black_box(drive_answering_calls(&mut session, event).await);
+        session.finish().await.unwrap();
     });
-    runtime.block_on(session.into_inner().finish()).unwrap();
 }
 
 /// Sums `amount * quantity` over every row of every external-call result —
@@ -223,11 +219,10 @@ fn ext_call_rows(bench: &mut Bencher) {
     let pool = runtime
         .block_on(Pool::new(PoolConfig::subprocess(monty_binary())))
         .unwrap();
-    let session = runtime.block_on(pool.checkout(&ReplConfig::default())).unwrap();
-    let session = Mutex::new(session);
 
+    // A fresh checkout per iteration, as in `ext_calls_1000`.
     bench.to_async(&runtime).iter(|| async {
-        let mut session = session.lock().await;
+        let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
         let mut event = session
             .feed(EXT_ROWS_LOOP, vec![], vec![], false, &mut no_print)
             .await
@@ -246,8 +241,8 @@ fn ext_call_rows(bench: &mut Bencher) {
         };
         assert_eq!(value, expected);
         black_box(value);
+        session.finish().await.unwrap();
     });
-    runtime.block_on(session.into_inner().finish()).unwrap();
 }
 
 /// Configures the pool benchmarks.

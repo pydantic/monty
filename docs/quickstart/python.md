@@ -203,6 +203,8 @@ The pool leaves the checkout open, but the heap behind it is no longer trustwort
 again.
 A spent `max_duration_secs` budget is cumulative, so later feeds re-raise `TimeoutError` anyway; after a `max_memory`
 trip they may quietly succeed.
+`max_suspensions` limits host calls and raises a pool-generated `RuntimeError` such as `suspension limit 1000 exceeded`.
+The feed ends cleanly; later code runs until it suspends again.
 
 The print-collector cap is not one of these, though it looks identical from the outside: same `MontyRuntimeError`, same
 `MemoryError`, same `memory limit exceeded: ...` message.
@@ -306,7 +308,8 @@ A loop of quick host calls resets it each turn; set [`max_duration_secs`](../res
 
 ## Where next
 
-- [Host functions](../host-functions.md) — how code in the sandbox calls functions on the host.
+- [`pydantic_monty` API reference](../api/python/pools.md) — every class, method and option.
+- [Host functions](../host-functions.md) — the only way code in the sandbox reaches anything outside it.
 - [Host objects](../host-objects.md) — exposing objects and classes with per-attribute and per-method policies.
 - [Filesystem access](../filesystem.md) — mounts and the `os` callback.
 - [Snapshots](../snapshots.md) — `feed_start`, `dump()` and resuming later.

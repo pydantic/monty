@@ -113,14 +113,30 @@ assert int(False) == 0
 x = 12345678901234567890
 assert int(x) is x
 
-# int() with extreme float values (should clamp to i64 range in Monty)
-# Note: Python uses arbitrary precision; Monty clamps to i64
+# Float conversion truncates toward zero and promotes beyond the immediate i64 range.
 assert isinstance(int(1e18), int)
 assert isinstance(int(-1e18), int)
+assert int(9.223372036854776e18) == 9223372036854775808
+assert int(1e20) == 100000000000000000000
+assert int(-1e20) == -100000000000000000000
+assert int(1.7976931348623157e308) == (2**53 - 1) * 2**971
 assert int(0.0) == 0
 assert int(-0.0) == 0
 assert int(0.9) == 0
 assert int(-0.9) == 0
+
+for infinity in (float('inf'), float('-inf')):
+    try:
+        int(infinity)
+        assert False, 'expected int(infinity) to fail'
+    except OverflowError as exc:
+        assert str(exc) == 'cannot convert float infinity to integer'
+
+try:
+    int(float('nan'))
+    assert False, 'expected int(NaN) to fail'
+except ValueError as exc:
+    assert str(exc) == 'cannot convert float NaN to integer'
 
 # === float() constructor ===
 assert float() == 0.0

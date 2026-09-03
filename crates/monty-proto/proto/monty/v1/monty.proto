@@ -345,14 +345,16 @@ message StackFrame {
 // Configuration
 // ============================================================================
 
-// Sandbox resource limits, enforced inside the child. Absent fields mean
-// "unlimited" except recursion depth, which defaults to monty's standard
-// limit (1000) when absent.
+// Sandbox resource limits. Absent fields are unlimited except recursion depth
+// and `max_suspensions`, which both default to 1000. The parent enforces
+// `max_suspensions`; the child only retains it for dumps and echoes it on
+// `ChildEvent`.
 message ResourceLimits {
   optional uint64 max_duration_micros = 1;
   optional uint64 max_memory_bytes = 2;
   optional uint64 gc_interval = 3;
   optional uint64 max_recursion_depth = 4;
+  optional uint64 max_suspensions = 5;
 }
 
 // ============================================================================
@@ -413,6 +415,7 @@ message ParentRequest {
     Load load = 8;
     Reset reset = 9;
     Shutdown shutdown = 10;
+    AbortFeed abort_feed = 11;
   }
 
   // W3C `traceparent` identifying the caller's span, so a child that exports
@@ -486,6 +489,13 @@ message Feed {
   repeated NamedValue inputs = 2;
   // Skip type checking for this feed even when the session enables it.
   bool skip_type_check = 3;
+}
+
+// Ends a pending suspension by raising `exception` uncatchably at its site.
+// The session returns ready in an `Error` event. Hosts use this to stop a feed,
+// including when `max_suspensions` is exceeded.
+message AbortFeed {
+  RaisedException exception = 1;
 }
 
 // Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the
@@ -591,6 +601,10 @@ message ChildEvent {
   // restored a session via `Load` (where the limits travel inside the opaque
   // state bytes) still learns the budget.
   optional uint64 max_duration_micros = 21;
+
+  // Echoes the parent-enforced budget so a host restoring an opaque dump can
+  // recover it.
+  optional uint64 max_suspensions = 23;
 
   // The session's script name, surfaced on a `Load` reply so a parent that
   // restored a session (whose script name, like the limits above, travels

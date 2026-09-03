@@ -87,10 +87,10 @@ impl PrintWriter<'_> {
         PrintWriter::CollectStreams(buf, Some(DEFAULT_MAX_PRINT_COLLECT_BYTES))
     }
 
-    /// Creates a new `PrintWriter` that reborrows the same underlying target.
+    /// Creates a new [`PrintWriter`] that reborrows the same underlying target.
     ///
     /// This is useful in iterative execution (`start`/`resume` loops) where each
-    /// step takes `PrintWriter` by value but you want all steps to write to the
+    /// step takes [`PrintWriter`] by value but you want all steps to write to the
     /// same output target. The original writer remains valid after the reborrowed
     /// copy is dropped.
     pub fn reborrow(&mut self) -> PrintWriter<'_> {

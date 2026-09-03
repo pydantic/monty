@@ -3,9 +3,10 @@ import { assertMemoryError, t } from './assertions.js'
 import { kind } from './env.js'
 
 import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
+import { WorkerTransport } from '../ts/worker/transport.js'
 import { setupPool } from './helpers.js'
 
-const { run } = setupPool()
+const { run, pool } = setupPool()
 
 const isRuntimeError = { instanceOf: MontyRuntimeError }
 
@@ -19,6 +20,7 @@ test('resource limits custom', async () => {
     maxMemory: 64 * 1024,
     gcInterval: 10,
     maxRecursionDepth: 500,
+    maxSuspensions: 20,
   }
   // Just verify the object is valid and can be passed
   t.is(await run('1 + 1', { limits }), 2)
@@ -126,4 +128,91 @@ test('time limit', async () => {
   t.is(error.exception.typeName, 'TimeoutError')
   // The reported elapsed time varies from run to run; the limit is fixed.
   t.regex(error.display('msg'), /^time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+})
+
+// =============================================================================
+// Suspension limit tests
+// =============================================================================
+
+test('suspension limit', async () => {
+  // Pool enforcement keeps sandboxed exception handling from retrying forever.
+  const code = `
+n = 0
+while True:
+    try:
+        fetch('x')
+    except Exception:
+        n += 1
+`
+  const fetch = () => {
+    throw new Error('refused')
+  }
+  const error = await t.throwsAsync(
+    () => run(code, { limits: { maxSuspensions: 3 }, externalLookup: { fetch } }),
+    isRuntimeError,
+  )
+  t.is(error.exception.typeName, 'RuntimeError')
+  t.is(error.display('msg'), 'suspension limit 3 exceeded')
+})
+
+test('suspension limit defaults to 1000', async () => {
+  await using session = await pool().checkout()
+  const error = await t.throwsAsync(
+    () => session.feedRun('n = 0\nwhile True:\n    fetch()\n    n += 1', { externalLookup: { fetch: () => null } }),
+    isRuntimeError,
+  )
+  t.is(error.display('msg'), 'suspension limit 1000 exceeded')
+  t.is(await session.feedRun('n'), 1000)
+})
+
+test('suspension limit leaves the session usable', async () => {
+  await using session = await pool().checkout({ limits: { maxSuspensions: 1 } })
+  const fetch = () => 'ok'
+  t.is(await session.feedRun("fetch('x')", { externalLookup: { fetch } }), 'ok')
+  const error = await t.throwsAsync(() => session.feedRun("fetch('y')", { externalLookup: { fetch } }), isRuntimeError)
+  t.is(error.display('msg'), 'suspension limit 1 exceeded')
+  t.is(await session.feedRun('1 + 1'), 2)
+})
+
+test('a suspension answering abort-feed ends the wasm worker', async () => {
+  // A compromised component could answer the abort with another suspension;
+  // servicing it would let it call host functions past the budget.
+  const call = (callId: number) => ({
+    tag: 'function-call' as const,
+    val: { callId, functionName: 'fetch', args: [], kwargs: [] },
+  })
+  const requests: string[] = []
+  const transport = await WorkerTransport.create(async (request) => {
+    requests.push(request.tag)
+    return request.tag === 'configure'
+      ? { status: 'continue', events: [{ tag: 'ok' }], maxSuspensions: 1n }
+      : { status: 'continue', events: [call(requests.length)] }
+  })
+  let reusable: boolean | undefined
+  transport.onFinish = (value) => {
+    reusable = value
+  }
+  const first = await transport.feed('fetch()', null, [], true, () => {})
+  t.is(first.kind, 'functionCall')
+  const turn = await transport.resumeReturn(null, () => {})
+  t.deepEqual(turn, { kind: 'protocol', message: 'worker answered abort-feed with functionCall' })
+  t.deepEqual(requests, ['configure', 'feed', 'resume-call', 'abort-feed'])
+  await transport.finish()
+  t.is(reusable, false)
+})
+
+test('restored session keeps its suspension limit with a fresh count', async () => {
+  const fetch = () => 'ok'
+  let state: Buffer
+  {
+    await using session = await pool().checkout({ limits: { maxSuspensions: 1 } })
+    t.is(await session.feedRun("fetch('x')", { externalLookup: { fetch } }), 'ok')
+    state = await session.dump()
+  }
+
+  await using restored = await pool().checkout()
+  await restored.loadSession(state)
+  t.is(await restored.feedRun("fetch('y')", { externalLookup: { fetch } }), 'ok')
+  const error = await t.throwsAsync(() => restored.feedRun("fetch('z')", { externalLookup: { fetch } }), isRuntimeError)
+  t.is(error.display('msg'), 'suspension limit 1 exceeded')
 })

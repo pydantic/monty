@@ -709,6 +709,25 @@ async fn restored_os_call_is_serviced_by_restore_mounts() {
     restored.finish().await.unwrap();
 }
 
+/// A `max_duration` near `Duration::MAX` must not overflow the parent's
+/// backstop deadline arithmetic (limit plus grace).
+#[tokio::test]
+async fn huge_max_duration_does_not_overflow_the_backstop() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_duration(Duration::MAX)),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
+}
+
 /// An over-limit frame must fail as a clean, session-preserving error rather
 /// than crashing the worker: `Worker::send` rejects it before writing any
 /// bytes, so the stream stays synced. Covers both directions — a request the
@@ -1479,6 +1498,90 @@ async fn suspension_time_does_not_consume_the_duration_budget() {
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::String("body!".to_owned()));
     session.finish().await.unwrap();
+}
+
+/// The pool aborts the first suspension past the limit uncatchably. The
+/// session remains usable, but its suspension budget stays spent.
+#[tokio::test]
+async fn suspension_limit_aborts_the_feed() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(3)),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let code = "n = 0\nwhile True:\n    try:\n        open('/etc/passwd')\n    except Exception:\n        n += 1";
+    let mut event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    for _ in 0..2 {
+        assert!(matches!(event, TurnEvent::OsCall { .. }), "got {event:?}");
+        event = session.resume(ResumeValue::NotHandled, &mut no_print).await.unwrap();
+    }
+    assert!(matches!(event, TurnEvent::OsCall { .. }), "got {event:?}");
+    let err = session
+        .resume(ResumeValue::NotHandled, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type().to_string(), "RuntimeError");
+    assert_eq!(exc.message(), Some("suspension limit 3 exceeded"));
+    // three refusals were caught before the fourth suspension was aborted
+    let event = session.feed("n", vec![], vec![], false, &mut no_print).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(3));
+    // the budget stays spent: a fresh feed's first suspension is aborted too
+    let err = session
+        .feed("fetch('x')", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("suspension limit 3 exceeded"));
+    session.finish().await.unwrap();
+}
+
+/// The `max_suspensions` budget travels in the dump and is re-adopted on
+/// restore, but the count is parent state and restarts at zero.
+#[tokio::test]
+async fn restored_session_readopts_its_suspension_limit() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(1)),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let event = session
+        .feed("fetch('x')", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+    let state = session.dump().await.unwrap();
+    drop(session);
+
+    let mut restored = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let (event, _script_name) = restored.restore(state, vec![], &mut no_print).await.unwrap();
+    // the re-announced suspension is the restored checkout's first
+    assert!(matches!(event, Some(TurnEvent::FunctionCall { .. })), "got {event:?}");
+    let event = restored
+        .resume(ResumeValue::Return(MontyObject::Int(1)), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(1));
+    // the dump's limit of one applies to the next suspension
+    let err = restored
+        .feed("fetch('y')", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("suspension limit 1 exceeded"));
+    restored.finish().await.unwrap();
 }
 
 #[tokio::test]

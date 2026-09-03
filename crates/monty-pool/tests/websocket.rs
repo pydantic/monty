@@ -17,7 +17,7 @@ use std::{
 use monty_pool::{
     Checkout, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
-use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb};
+use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, WireObject, decode_frame, encode_to_capped_vec, pb};
 use monty_types::{MontyObject, PrintStream, ResourceLimits};
 use tokio::task::spawn_blocking;
 #[cfg(not(windows))]
@@ -364,6 +364,7 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
             &pb::ChildEvent {
                 total_execution_micros: 0,
                 max_duration_micros: Some(100_000),
+                max_suspensions: None,
                 restored_script_name: None,
                 kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             },
@@ -635,6 +636,7 @@ async fn restored_session_rearms_the_duration_backstop() {
                 restored_script_name: Some("restored.py".to_owned()),
                 total_execution_micros: 0,
                 max_duration_micros: Some(100_000),
+                max_suspensions: None,
             },
         );
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
@@ -658,6 +660,582 @@ async fn restored_session_rearms_the_duration_backstop() {
         panic!("expected Timeout, got {err:?}");
     };
     assert!(timeout <= Duration::from_millis(400), "deadline was {timeout:?}");
+    join_server(server).await;
+}
+
+/// Serves suspensions until the parent responds with the expected `AbortFeed`.
+fn serve_endless_suspensions(socket: &mut WebSocket<TcpStream>, expected_calls: u32) {
+    let function_call = |call_id: u32| {
+        event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall {
+            function_name: "fetch".to_owned(),
+            args: vec![],
+            kwargs: vec![],
+            call_id,
+            object_id: None,
+        }))
+    };
+    assert!(matches!(read_request(socket), pb::parent_request::Kind::Feed(_)));
+    send_event(socket, &function_call(1));
+    for call_id in 2..=expected_calls {
+        assert!(matches!(read_request(socket), pb::parent_request::Kind::ResumeCall(_)));
+        send_event(socket, &function_call(call_id));
+    }
+    let pb::parent_request::Kind::AbortFeed(abort) = read_request(socket) else {
+        panic!("expected AbortFeed");
+    };
+    let exception = abort.exception.expect("abort carries the exception");
+    assert_eq!(exception.exc_type, "RuntimeError");
+    assert_eq!(
+        exception.message.as_deref(),
+        Some(&*format!("suspension limit {} exceeded", expected_calls - 1))
+    );
+    send_event(
+        socket,
+        &event_kind(pb::child_event::Kind::Error(pb::Error {
+            exception: Some(exception),
+        })),
+    );
+}
+
+/// The parent replaces an over-budget suspension with `AbortFeed`.
+#[tokio::test]
+async fn suspension_limit_is_enforced_by_the_parent() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        serve_endless_suspensions(&mut socket, 3);
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(2)),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let mut event = checkout
+        .feed("fetch()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+    event = checkout
+        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .await
+        .expect("second suspension");
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("suspension limit 2 exceeded"));
+    drop(checkout);
+    join_server(server).await;
+}
+
+/// A child that answers `AbortFeed` with another suspension is discarded
+/// rather than aborted again: servicing or re-aborting it would let a
+/// compromised worker run past the budget for as long as the turn deadline.
+#[tokio::test]
+async fn a_suspension_answering_an_abort_is_a_protocol_violation() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "fetch()");
+        send_kind(&mut socket, function_call(1));
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::ResumeCall(_)
+        ));
+        send_kind(&mut socket, function_call(2));
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::AbortFeed(_)
+        ));
+        send_kind(&mut socket, function_call(3));
+        // no second AbortFeed: the parent hangs up instead
+        assert!(try_read_request(&mut socket).is_none());
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(1)),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let event = checkout
+        .feed("fetch()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Protocol(msg) = err else {
+        panic!("expected Protocol, got {err:?}");
+    };
+    assert_eq!(msg, "worker answered AbortFeed with something other than an Error");
+    assert!(matches!(
+        checkout.feed("1", vec![], vec![], false, &mut no_print).await,
+        Err(PoolError::Finished)
+    ));
+    join_server(server).await;
+}
+
+/// An over-budget `OsCall` is validated before the abort shortcut, so a
+/// malformed payload discards the worker as it would on the typed path
+/// instead of being aborted and reported as a runtime error.
+#[tokio::test]
+async fn a_malformed_over_budget_os_call_is_a_protocol_violation() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "open('x')");
+        // the event shrinks the limit to zero itself, so this suspension is
+        // over budget on arrival
+        send_event(
+            &mut socket,
+            &pb::ChildEvent {
+                kind: Some(pb::child_event::Kind::OsCall(pb::OsCall { call_id: 1, call: None })),
+                max_suspensions: Some(0),
+                ..Default::default()
+            },
+        );
+        // no AbortFeed: the parent hangs up instead
+        assert!(try_read_request(&mut socket).is_none());
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let err = checkout
+        .feed("open('x')", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Protocol(msg) = err else {
+        panic!("expected Protocol, got {err:?}");
+    };
+    assert_eq!(msg, "OsCall event with no call");
+    join_server(server).await;
+}
+
+/// Enforces suspension limits when a relay uses the raw path.
+#[tokio::test]
+async fn suspension_limit_is_enforced_on_the_raw_path() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        serve_endless_suspensions(&mut socket, 2);
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(1)),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "fetch()".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let event = checkout.turn_raw(&feed, &mut on_event).await.expect("feed");
+    assert!(matches!(event.kind, Some(pb::child_event::Kind::FunctionCall(_))));
+    let resume = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id: 1,
+            result: Some(pb::ExtFunctionResult {
+                kind: Some(pb::ext_function_result::Kind::ReturnValue(WireObject::new(
+                    MontyObject::None,
+                ))),
+            }),
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let event = checkout.turn_raw(&resume, &mut on_event).await.expect("aborted turn");
+    let Some(pb::child_event::Kind::Error(error)) = event.kind else {
+        panic!("expected the abort's Error, got {event:?}");
+    };
+    assert_eq!(
+        error.exception.and_then(|e| e.message).as_deref(),
+        Some("suspension limit 1 exceeded")
+    );
+    drop(checkout);
+    join_server(server).await;
+}
+
+/// A raw `Load` the child refuses (a session already exists) must not reset
+/// the suspension count: the reply's stamped limit describes the session that
+/// is still live, so its budget stays as it was.
+#[tokio::test]
+async fn rejected_raw_load_keeps_the_suspension_count() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        let function_call = |call_id: u32| {
+            event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall {
+                function_name: "fetch".to_owned(),
+                args: vec![],
+                kwargs: vec![],
+                call_id,
+                object_id: None,
+            }))
+        };
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        send_event(&mut socket, &function_call(1));
+        // the child's refusal: an ordinary Error, stamped like every reply
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
+        send_event(
+            &mut socket,
+            &pb::ChildEvent {
+                kind: Some(pb::child_event::Kind::Error(pb::Error {
+                    exception: Some(pb::RaisedException {
+                        exc_type: "RuntimeError".to_owned(),
+                        message: Some("protocol violation: Load requires a session that has not started".to_owned()),
+                        traceback: vec![],
+                        data: None,
+                    }),
+                })),
+                max_suspensions: Some(1),
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::ResumeCall(_)
+        ));
+        send_event(&mut socket, &function_call(2));
+        let pb::parent_request::Kind::AbortFeed(abort) = read_request(&mut socket) else {
+            panic!("expected AbortFeed");
+        };
+        let exception = abort.exception.expect("abort carries the exception");
+        assert_eq!(exception.message.as_deref(), Some("suspension limit 1 exceeded"));
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::Error(pb::Error {
+                exception: Some(exception),
+            })),
+        );
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(1)),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "fetch()".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let event = checkout.turn_raw(&feed, &mut on_event).await.expect("feed");
+    assert!(matches!(event.kind, Some(pb::child_event::Kind::FunctionCall(_))));
+    let load = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        ..pb::ParentRequest::default()
+    };
+    let event = checkout.turn_raw(&load, &mut on_event).await.expect("refused load");
+    assert!(matches!(event.kind, Some(pb::child_event::Kind::Error(_))));
+    let resume = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id: 1,
+            result: Some(pb::ExtFunctionResult {
+                kind: Some(pb::ext_function_result::Kind::ReturnValue(WireObject::new(
+                    MontyObject::None,
+                ))),
+            }),
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let event = checkout.turn_raw(&resume, &mut on_event).await.expect("aborted turn");
+    let Some(pb::child_event::Kind::Error(error)) = event.kind else {
+        panic!("expected the abort's Error, got {event:?}");
+    };
+    assert_eq!(
+        error.exception.and_then(|e| e.message).as_deref(),
+        Some("suspension limit 1 exceeded")
+    );
+    drop(checkout);
+    join_server(server).await;
+}
+
+/// The checkout's configured `max_suspensions` caps whatever a `Load` reply
+/// reports: a larger reported limit is clamped, and an omitted one leaves
+/// the configured limit in force, so a compromised worker cannot lift the
+/// parent's ceiling by lying about the dump.
+#[tokio::test]
+async fn configured_suspension_limit_caps_a_restored_one() {
+    for reported in [Some(5), None] {
+        let (listener, config) = ws_pool_config();
+        let server = thread::spawn(move || {
+            let mut socket = accept_ws(&listener);
+            assert!(matches!(
+                read_request(&mut socket),
+                pb::parent_request::Kind::Configure(_)
+            ));
+            send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+            assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
+            send_event(
+                &mut socket,
+                &pb::ChildEvent {
+                    kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+                    max_suspensions: reported,
+                    ..Default::default()
+                },
+            );
+            serve_endless_suspensions(&mut socket, 2);
+            let _ = socket.read();
+        });
+
+        let pool = Pool::new(config).await.expect("pool");
+        let mut checkout = pool
+            .checkout(&ReplConfig {
+                limits: Some(ResourceLimits::default().max_suspensions(1)),
+                ..ReplConfig::default()
+            })
+            .await
+            .expect("checkout");
+        let (event, _) = checkout
+            .restore(vec![1, 2, 3], vec![], &mut no_print)
+            .await
+            .expect("restore");
+        assert!(event.is_none());
+        let event = checkout
+            .feed("fetch()", vec![], vec![], false, &mut no_print)
+            .await
+            .expect("feed");
+        assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+        let err = checkout
+            .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+            .await
+            .unwrap_err();
+        let PoolError::Runtime(exc) = err else {
+            panic!("expected Runtime, got {err:?}");
+        };
+        assert_eq!(
+            exc.message(),
+            Some("suspension limit 1 exceeded"),
+            "reported {reported:?}"
+        );
+        drop(checkout);
+        join_server(server).await;
+    }
+}
+
+/// A checkout with no limits configured still enforces the 1000 default.
+#[tokio::test]
+async fn suspension_limit_defaults_to_one_thousand() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        serve_endless_suspensions(&mut socket, 1001);
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let mut event = checkout
+        .feed("fetch()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    for _ in 1..1000 {
+        assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+        event = checkout
+            .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+            .await
+            .expect("resume");
+    }
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("suspension limit 1000 exceeded"));
+    drop(checkout);
+    join_server(server).await;
+}
+
+/// A suspended dump whose re-announced suspension is already over its limit
+/// is aborted at once, and the dump's limit still sticks for later turns:
+/// adoption is decided by the first reply, not by the abort's `Error`.
+#[tokio::test]
+async fn aborted_restored_suspension_keeps_the_dump_limit() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        let function_call = |call_id: u32| WireFunctionCall {
+            function_name: "fetch".to_owned(),
+            args: vec![],
+            kwargs: vec![],
+            call_id,
+            object_id: None,
+        };
+        let abort_reply = |socket: &mut WebSocket<TcpStream>| {
+            let pb::parent_request::Kind::AbortFeed(abort) = read_request(socket) else {
+                panic!("expected AbortFeed");
+            };
+            let exception = abort.exception.expect("abort carries the exception");
+            assert_eq!(exception.message.as_deref(), Some("suspension limit 0 exceeded"));
+            send_event(
+                socket,
+                &event_kind(pb::child_event::Kind::Error(pb::Error {
+                    exception: Some(exception),
+                })),
+            );
+        };
+        // the dump's limit is 0, so its re-announced suspension is over budget
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
+        send_event(
+            &mut socket,
+            &pb::ChildEvent {
+                kind: Some(pb::child_event::Kind::FunctionCall(function_call(1))),
+                max_suspensions: Some(0),
+                ..Default::default()
+            },
+        );
+        abort_reply(&mut socket);
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::FunctionCall(function_call(2))),
+        );
+        abort_reply(&mut socket);
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(1)),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let load = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        ..pb::ParentRequest::default()
+    };
+    let event = checkout.turn_raw(&load, &mut on_event).await.expect("aborted restore");
+    assert!(
+        matches!(event.kind, Some(pb::child_event::Kind::Error(_))),
+        "got {event:?}"
+    );
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "fetch()".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let event = checkout.turn_raw(&feed, &mut on_event).await.expect("aborted feed");
+    let Some(pb::child_event::Kind::Error(error)) = event.kind else {
+        panic!("expected the abort's Error, got {event:?}");
+    };
+    assert_eq!(
+        error.exception.and_then(|e| e.message).as_deref(),
+        Some("suspension limit 0 exceeded")
+    );
+    drop(checkout);
+    join_server(server).await;
+}
+
+/// Restores `max_suspensions` from the worker's `Load` reply.
+#[tokio::test]
+async fn restored_session_readopts_the_suspension_limit() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
+        send_event(
+            &mut socket,
+            &pb::ChildEvent {
+                kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+                max_suspensions: Some(1),
+                ..Default::default()
+            },
+        );
+        serve_endless_suspensions(&mut socket, 2);
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let (event, _) = checkout
+        .restore(vec![1, 2, 3], vec![], &mut no_print)
+        .await
+        .expect("restore");
+    assert!(event.is_none());
+    let event = checkout
+        .feed("fetch()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("suspension limit 1 exceeded"));
+    drop(checkout);
     join_server(server).await;
 }
 

@@ -27,9 +27,9 @@ use crate::{
 
 /// Primary interface for running Monty code.
 ///
-/// `MontyRun` supports two execution modes:
-/// - **Simple execution**: Use `run()` or `run_no_limits()` to run code to completion
-/// - **Iterative execution**: Use `start()` to start execution which will pause at external function calls and
+/// [`MontyRun`] supports two execution modes:
+/// - **Simple execution**: Use [`run`](Self::run) or [`run_no_limits`](Self::run_no_limits) to run code to completion
+/// - **Iterative execution**: Use [`start`](Self::start) to start execution which will pause at external function calls and
 ///   can be resumed later
 ///
 /// # Example
@@ -57,7 +57,7 @@ impl MontyRun {
     /// Creates a new run snapshot by parsing the given code.
     ///
     /// This only parses and prepares the code - no heap or namespaces are created yet.
-    /// Call `run_snapshot()` with inputs to start execution.
+    /// Call [`run`](Self::run) or [`start`](Self::start) with inputs to execute it.
     ///
     /// # Arguments
     /// * `code` - The Python code to execute
@@ -66,7 +66,7 @@ impl MontyRun {
     /// * `options` - [`CompileOptions`] controlling CPython divergences; usually `CompileOptions::default()`
     ///
     /// # Errors
-    /// Returns `MontyException` if the code cannot be parsed.
+    /// Returns [`MontyException`] if the code cannot be parsed.
     pub fn new(
         code: String,
         script_name: &str,
@@ -126,22 +126,22 @@ impl MontyRun {
     ///
     /// Creates the heap and namespaces, then begins execution.
     ///
-    /// For iterative execution, `start()` consumes self and returns a `RunProgress`:
-    /// - `RunProgress::FunctionCall(call)` - external function call, call `call.resume(return_value)` to resume
-    /// - `RunProgress::Complete(value)` - execution finished
+    /// For iterative execution, [`start`](Self::start) consumes self and returns a [`RunProgress`]:
+    /// - [`RunProgress::FunctionCall`] - external function call, call [`FunctionCall::resume`](crate::FunctionCall::resume) to resume
+    /// - [`RunProgress::Complete`] - execution finished
     ///
     /// This enables snapshotting execution state and returning control to the host
     /// application during long-running computations.
     ///
     /// # Arguments
-    /// * `inputs` - Initial input values (must match length of `input_names` from `new()`)
+    /// * `inputs` - Initial input values (must match length of `input_names` from [`new`](Self::new))
     /// * `resource_tracker` - Resource tracker for the execution
     /// * `print` - Writer for print output
     ///
     /// # Errors
-    /// Returns `MontyException` if:
+    /// Returns [`MontyException`] if:
     /// - The number of inputs doesn't match the expected count
-    /// - An input value is invalid (e.g., `MontyObject::Repr`)
+    /// - An input value is invalid (e.g., [`MontyObject::Repr`])
     /// - A runtime error occurs during execution
     ///
     /// # Panics

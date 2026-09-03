@@ -80,6 +80,8 @@ and restored later — including on a different worker or machine — with `Chec
   and catching hangs those limits cannot see. Synchronous host telemetry processors delay
   enforcement while they run because the timer cannot be polled. When a session has a `max_duration` budget,
   the deadline also enforces it (plus `duration_limit_grace`) from outside the child.
+  A `max_suspensions` budget is enforced by the pool alone: it counts the suspensions it services
+  and ends the feed past the budget with an uncatchable `RuntimeError` in the sandbox.
   `PoolConfig::subprocess` sets neither `request_timeout` nor `checkout_timeout` by
   default; set `request_timeout` yourself for untrusted code.
 - **Untrusted children** — the parent treats every frame from a (possibly compromised)

@@ -81,7 +81,7 @@ export class WorkerChannel implements PooledWorker {
     if (!pending) return
     this.pending.delete(reply.id)
     if (pending.timer) clearTimeout(pending.timer)
-    pending.resolve({ status: reply.status, events: reply.events })
+    pending.resolve({ status: reply.status, events: reply.events, maxSuspensions: reply.maxSuspensions })
   }
 
   private onTimeout(): void {
