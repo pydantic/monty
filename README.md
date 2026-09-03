@@ -36,7 +36,7 @@ npm install @pydantic/monty  # JavaScript / TypeScript
 cargo add monty              # Rust
 ```
 
-The commercial [`monty-server`](https://pydantic.dev/docs/monty/install/docker/) runs the same workers as a container
+The commercial [`monty-server`](https://pydantic.dev/docs/monty/commercial-support/server/) runs the same workers as a container
 image.
 
 ## Example
@@ -67,12 +67,9 @@ with Monty() as pool:
 ## Documentation
 
 - [Introduction](https://pydantic.dev/docs/monty/) with the latency measurements
-- [Comparison to alternatives](https://pydantic.dev/docs/monty/get-started/alternatives/): Docker, Pyodide, WASI,
+- [Comparison to alternatives](https://pydantic.dev/docs/monty/reference/alternatives/): Docker, Pyodide, WASI,
   sandboxing services
-- Install for [Python](https://pydantic.dev/docs/monty/install/python/),
-  [JavaScript](https://pydantic.dev/docs/monty/install/javascript/),
-  [Rust](https://pydantic.dev/docs/monty/install/rust/) or [Docker](https://pydantic.dev/docs/monty/install/docker/)
-- QuickStart for [Python](https://pydantic.dev/docs/monty/quickstart/python/),
+- Getting started with [Python](https://pydantic.dev/docs/monty/quickstart/python/),
   [JavaScript](https://pydantic.dev/docs/monty/quickstart/javascript/) or
   [Rust](https://pydantic.dev/docs/monty/quickstart/rust/)
 - [Security model](https://pydantic.dev/docs/monty/concepts/security/), [resource

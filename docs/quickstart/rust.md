@@ -1,6 +1,40 @@
-# Rust QuickStart
+# Getting Started with Rust
 
-There are two ways to run Monty from Rust.
+## Installation
+
+For running untrusted code, use [`monty-pool`](https://crates.io/crates/monty-pool):
+
+```bash
+cargo add monty-pool monty-types tokio --features tokio/macros,tokio/rt-multi-thread
+```
+
+Workers are `monty` CLI binaries: build one with `cargo build -p monty-runtime` from the
+[Monty repository](https://github.com/pydantic/monty), or install it from PyPI as
+[`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/).
+
+The in-process interpreter is the [`monty`](https://crates.io/crates/monty) crate:
+
+```bash
+cargo add monty monty-types
+```
+
+| Crate | What it is |
+| --- | --- |
+| [`monty`](https://crates.io/crates/monty) | The core interpreter: Python parser, bytecode VM, sandbox |
+| [`monty-types`](https://crates.io/crates/monty-types) | Shared boundary types: values, exceptions, OS calls, limits |
+| [`monty-fs`](https://crates.io/crates/monty-fs) | Host-side filesystem mounts |
+| [`monty-runtime`](https://crates.io/crates/monty-runtime) | The `monty` binary: REPL, file runner, subprocess worker |
+| [`monty-pool`](https://crates.io/crates/monty-pool) | Elastic pool of crash-isolated worker subprocesses |
+| [`monty-proto`](https://crates.io/crates/monty-proto) | The protobuf wire protocol between pool parents and workers |
+| [`monty-type-checking`](https://crates.io/crates/monty-type-checking) | Type checking, powered by ty |
+| [`monty-typeshed`](https://crates.io/crates/monty-typeshed) | Trimmed typeshed stubs for Monty's stdlib subset |
+
+Host-side crates depend on `monty-types`, never on `monty`, so the interpreter is not linked into your parent process
+at all.
+The [Rust API](../api/rust/monty.md) pages document `monty`, `monty-pool`, `monty-types`, `monty-fs`, `monty-proto` and
+`monty-type-checking`.
+
+## Two ways to run Monty
 
 - **[`monty-pool`](../api/rust/monty-pool.md)** runs the interpreter only in `monty` worker subprocesses.
   Use this for untrusted code.
@@ -14,14 +48,6 @@ That is the entire reason `monty-pool` exists: the crash kills a worker, the poo
 process is untouched.
 
 ## Running untrusted code with `monty-pool`
-
-```bash
-cargo add monty-pool monty-types tokio --features tokio/macros,tokio/rt-multi-thread
-```
-
-Workers are `monty` CLI binaries.
-Build one with `cargo build -p monty-runtime` from the [Monty repository](https://github.com/pydantic/monty), or install
-it from PyPI as [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/).
 
 ```rust,no_run
 use std::time::Duration;
@@ -110,10 +136,6 @@ responsibility.
 See [the security model](../security.md#remote-workers) before using it.
 
 ## The in-process interpreter
-
-```bash
-cargo add monty monty-types
-```
 
 `MontyRun` parses and compiles code once; `run` executes it with input values and returns the value of the final
 expression as a `MontyObject`:
@@ -226,10 +248,3 @@ assert_eq!(result, MontyObject::Int(42));
   intercepts.
 - `FunctionCall::object_id` and `NameLookup::object_id` — set for method calls and lazy attribute lookups routed to a
   host object sent as `MontyObject::ClassInstance` or `MontyObject::Type`; the receiver is not in `args`.
-
-## Which crate depends on what
-
-Host-side crates (`monty-fs`, `monty-pool`, `monty-proto` without its `worker` feature, the Python and JavaScript
-bindings) depend on [`monty-types`](../api/rust/monty-types.md), never on `monty`.
-That keeps the interpreter out of the parent process entirely.
-Only the worker side links it.

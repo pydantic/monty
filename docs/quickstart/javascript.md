@@ -1,11 +1,20 @@
-# JavaScript QuickStart
+# Getting Started with JavaScript
+
+## Installation
 
 ```bash
 npm install @pydantic/monty
 ```
 
 Under Node, `@pydantic/monty` is a native (napi) binding over the same Rust worker pool the Python package uses.
+The binding and the `monty` worker binary ship as platform-specific packages selected through `optionalDependencies`,
+so a plain `npm install` gets you everything.
 Execution happens in `monty` worker subprocesses, so a crash triggered by adversarial code kills only the worker.
+
+For browsers, or anywhere subprocesses are impossible, the same package exposes an in-process WebAssembly build under
+the `@pydantic/monty/wasm` subpath; see [browsers and WebAssembly](#browsers-and-webassembly).
+
+## First run
 
 ```ts
 import { Monty } from '@pydantic/monty'

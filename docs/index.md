@@ -2,13 +2,9 @@
 title: Monty
 description: "A sandboxed Python interpreter written in Rust for code written by AI. Start latency <1ms. Pause and resume. Resource limits. Available from PyPI, NPM and crates.io."
 ---
+# Monty
 
-# Monty {.hide}
-
-<p style="text-align: center; font-size: 1.15em">
-  <em>A sandboxed Python interpreter, written in Rust, for code written by AI.</em>
-</p>
-<p style="text-align: center">
+<p>
   <a href="https://github.com/pydantic/monty/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/pydantic/monty/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://codecov.io/gh/pydantic/monty"><img src="https://codecov.io/gh/pydantic/monty/graph/badge.svg?token=HX4RDQX5OG" alt="Coverage"></a>
   <a href="https://pypi.python.org/pypi/pydantic-monty"><img src="https://img.shields.io/pypi/v/pydantic-monty.svg" alt="PyPI"></a>
@@ -17,12 +13,9 @@ description: "A sandboxed Python interpreter written in Rust for code written by
   <a href="https://logfire.pydantic.dev/docs/join-slack/"><img src="https://img.shields.io/badge/Slack-Join%20Slack-4A154B?logo=slack" alt="Join Slack"></a>
 </p>
 
-Monty runs Python written by a model with no container, VM or sandboxing service in the loop.
-It parses with [Ruff](https://github.com/astral-sh/ruff)'s parser and executes on its own bytecode VM inside a worker
-subprocess: creating a sandbox and running ten commands in it takes 5 ms, and each further command about 40 µs.
-Filesystem, environment variables and network do not exist inside that VM.
-The sandbox reaches the host only through the [functions](host-functions.md) and [mounts](filesystem.md) you pass to
-each call.
+A minimal, secure Python 3.14 interpreter written in Rust for use by AI.
+
+Monty avoids the latency, complexity and cost of using a full container based sandbox for running LLM generated code.
 
 ## Latency
 
@@ -56,20 +49,20 @@ Learn more in the [comparison to alternatives](alternatives.md).
    later on another machine.
    There are no file descriptors, sockets or threads inside the sandbox, so nothing has to be reconstructed.
    See [snapshots](snapshots.md).
-3. **Limits that fire before the damage.** `max_memory`, `max_duration_secs`, `max_recursion_depth` and
+3. **Strict resource limits** `max_memory`, `max_duration_secs`, `max_recursion_depth` and
    `max_suspensions` are enforced by the VM itself; `'x' * 10**12` raises `MemoryError` before the allocation is
    attempted.
-   A worker that crashes anyway takes only itself down and the pool replaces it.
    See [resource limits](resource-limits.md).
 4. **A package, not infrastructure.** `uv add pydantic-monty`, `npm install @pydantic/monty` or `cargo add monty-pool`:
    about 4.5 MB, no daemon, no image, no API key, and a worker baseline of about 2 MB so one machine runs hundreds.
-   See [install](install/python.md).
-5. **MIT licensed, with a commercial server when you need one.** The interpreter, the pool and every binding are open
-   source.
-   [`monty-server`](server.md) runs the same workers behind a WebSocket as a container image, adding per-caller quotas,
-   tracing and horizontal scaling.
+   See [getting started](quickstart/python.md).
+5. **MIT licensed, with commercial options.** The interpreter, the pool and bindings are open source.
+   [`monty-server`](server.md) runs the same workers behind a WebSocket as a container image, adding OS-level isolation,
+   and horizontal scaling.
 
 ## Example
+
+Installation
 
 === "Python"
 
@@ -98,7 +91,7 @@ from pydantic_monty import Monty
 code = """
 kcal = nutrition('chocolate bar')['kcal']
 hours = kcal * 4184 / (bulb_watts * 3600)
-print(f'a chocolate bar powers a {bulb_watts} W bulb for {hours:.1f} hours')
+print(f'a chocolate bar could power a {bulb_watts}W bulb for {hours:.1f} hours')
 """
 
 with Monty() as pool:
@@ -108,13 +101,34 @@ with Monty() as pool:
             inputs={'bulb_watts': 10},
             external_lookup={'nutrition': lambda food: {'kcal': 230}},
         )
-        #> a chocolate bar powers a 10 W bulb for 26.7 hours
+        #> a chocolate bar could power a 10W bulb for 26.7 hours
+```
+
+Or in TypeScript:
+
+```ts
+import { Monty } from '@pydantic/monty'
+
+const code = `
+kcal = nutrition('chocolate bar')['kcal']
+hours = kcal * 4184 / (bulb_watts * 3600)
+print(f'a chocolate bar could power a {bulb_watts}W bulb for {hours:.1f} hours')
+`
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+await session.feedRun(code, {
+  inputs: { bulb_watts: 10 },
+  externalLookup: { nutrition: (food: string) => ({ kcal: 230 }) },
+})
+// a chocolate bar could power a 10W bulb for 26.7 hours
 ```
 
 `nutrition` ran on the host and the sandbox saw only its return value; the sandbox has no filesystem, environment or
 network with which to reach anything else.
 The [Python](quickstart/python.md), [JavaScript](quickstart/javascript.md) and [Rust](quickstart/rust.md) quickstarts
 take it from here.
+Monty can do much more than this, see [Examples](examples.md).
 
 ## Where the code comes from
 
@@ -125,31 +139,10 @@ making a sequence of individual tool calls: [code mode](https://blog.cloudflare.
 [smolagents](https://github.com/huggingface/smolagents) from Hugging Face.
 All of them need somewhere safe to run the generated code, and Monty is that place.
 
-## What Monty is not for
-
-Code that needs the Python ecosystem: `import pandas`, a notebook, a user-supplied script.
-The sandbox has no `sys.path`, no site-packages and a [subset of the standard library](python-subset.md); class
-inheritance, generators and `match` are rejected at parse time.
-For those workloads use a container or a sandboxing service, or the CPython option planned for
-[`monty-server`](server.md); the [comparison to alternatives](alternatives.md) says which fits which case.
-
-## Who uses it
-
-Monty runs [Code Mode](https://pydantic.dev/docs/ai/harness/code-mode/) in Pydantic AI.
-Community bindings exist for Go ([gomonty](https://github.com/ewhauser/gomonty/)) and Dart
-([dart_monty](https://github.com/runyaga/dart_monty)).
-[Hack Monty](https://pydantic.dev/monty) offers a $20,000 bounty for escaping the sandbox; round 3 is open.
-
 ## Next steps
 
-- [Install](install/python.md) for Python, [JavaScript](install/javascript.md), [Rust](install/rust.md) or
-  [Docker](install/docker.md).
-- QuickStart for [Python](quickstart/python.md), [JavaScript](quickstart/javascript.md) or [Rust](quickstart/rust.md).
+- Getting started with [Python](quickstart/python.md), [JavaScript](quickstart/javascript.md) or
+  [Rust](quickstart/rust.md).
+- [Commercial support](server.md): `monty-server`, the same workers behind a WebSocket as a container image.
 - [Security model](security.md) for what "secure" does and does not mean here.
 - [Examples](examples.md), including Code Mode in Pydantic AI.
-
-## Part of the Pydantic Stack
-
-- [Pydantic AI](https://pydantic.dev/pydantic-ai) — type-safe agent framework
-- [Pydantic Logfire](https://pydantic.dev/logfire) — AI-first, full-stack observability
-- [Logfire AI Gateway](https://pydantic.dev/ai-gateway) — unified LLM proxy

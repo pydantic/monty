@@ -930,7 +930,7 @@ the project describing behaviour it no longer has.
 | Surface | Reader | Contains |
 | --- | --- | --- |
 | `README.md` | GitHub, PyPI, npm landing page | A short pitch with the latency numbers, install commands, one example, links into `docs/` — nothing else |
-| `docs/` | the docs site (`pydantic.dev/docs/monty`), nav in `mkdocs.yml` | The landing page (`index.md`: numbers, why, example), comparison to alternatives, install per target (Python, JavaScript, Rust, Docker for `monty-server`), per-language quickstarts, examples, security model, host functions, resource limits, filesystem, snapshots, type checking, the subset, CLI, `monty-server` |
+| `docs/` | the docs site (`pydantic.dev/docs/monty`), nav in `mkdocs.yml` | The landing page (`index.md`: numbers, why, example), commercial support (`server.md`), getting started per language (install then examples), concepts (security model, host functions, resource limits, filesystem, snapshots, type checking), reference (comparison to alternatives, the subset, examples, CLI) |
 | `limitations/` | users and contributors chasing a specific behaviour | The exhaustive per-feature record of CPython divergences (see the section below) |
 | `crates/*/README.md` | crates.io, and PyPI/npm for the binding crates | Per-crate API documentation; `monty-python/README.md` and `monty-js/README.md` are the binding references |
 

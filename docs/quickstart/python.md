@@ -1,8 +1,38 @@
-# Python QuickStart
+# Getting Started with Python
+
+## Installation
 
 ```bash
 uv add pydantic-monty
 ```
+
+Or with pip:
+
+```bash
+pip install pydantic-monty
+```
+
+Requires Python 3.10 or newer.
+The download is about 4.5 MB and there is nothing else to run: no daemon, no image, no API key.
+
+`pydantic-monty` is a metapackage with no code of its own; it pins two distributions:
+
+- [`pydantic-monty-client`](https://pypi.org/project/pydantic-monty-client/), the `pydantic_monty` module you import.
+- [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/), the `monty` binary that the worker
+  subprocesses run, shipped the same way `uv` and `ruff` ship theirs.
+
+Installing the wheel places the binary in the environment's scripts directory, so there is no extra setup step.
+Install `pydantic-monty-client` alone when the binary comes from somewhere else, such as a base image or a system
+package.
+
+`Monty(binary_path=...)` overrides binary resolution.
+When it is omitted, the binary is resolved from the `MONTY_BIN` environment variable, then the environment's scripts
+directory (where `pydantic-monty-runtime` installs it), then `PATH`.
+If you are running untrusted code, pin `binary_path` explicitly rather than relying on `PATH`.
+
+The same binary is also a REPL and a file runner; see [command line](../cli.md).
+
+## First run
 
 Everything in `pydantic_monty` starts with a pool of worker subprocesses.
 Execution never happens in your process: a Monty process can never be made fully crash-proof against memory errors
