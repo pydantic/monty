@@ -23,8 +23,8 @@ use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, OsFunctionCall,
-    PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig,
+    CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
+    OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
@@ -531,7 +531,7 @@ fn run_until_complete(
 
 /// Tracks the CLI-enforced suspension limit across an entire REPL session.
 struct SuspensionBudget {
-    limit: Option<usize>,
+    limit: usize,
     seen: usize,
 }
 
@@ -551,7 +551,8 @@ impl SuspensionBudget {
             RunProgress::OsCall(call) => call.tracker().max_suspensions(),
             RunProgress::NameLookup(lookup) => lookup.tracker().max_suspensions(),
             RunProgress::ResolveFutures(state) => state.tracker().max_suspensions(),
-            RunProgress::Complete(_) => None,
+            // never counted, so the value is immaterial
+            RunProgress::Complete(_) => DEFAULT_MAX_SUSPENSIONS,
         };
         Self { limit, seen: 0 }
     }
@@ -577,7 +578,7 @@ impl SuspensionBudget {
     /// Counts one suspension and builds the over-budget exception.
     fn count(&mut self) -> Option<MontyException> {
         self.seen += 1;
-        let limit = self.limit?;
+        let limit = self.limit;
         (self.seen > limit).then(|| {
             MontyException::new(
                 ExcType::RuntimeError,

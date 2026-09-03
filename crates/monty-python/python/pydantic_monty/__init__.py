@@ -129,7 +129,7 @@ class ResourceLimits(TypedDict, total=False):
     """Maximum function call stack depth (default: 1000)."""
 
     max_suspensions: int | None
-    """Maximum external calls, `os` callbacks, name lookups and future resolutions per checkout.
+    """Maximum external calls, `os` callbacks, name lookups and future resolutions per checkout (default: 1000).
 
     The pool aborts an over-budget feed with an uncatchable `RuntimeError`; the
     session remains usable. Restoring a dump resets the count."""

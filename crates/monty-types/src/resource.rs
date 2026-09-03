@@ -94,15 +94,22 @@ pub struct ResourceLimits {
     pub gc_interval: Option<usize>,
     /// Maximum recursion depth (function call stack depth).
     pub max_recursion_depth: usize,
-    /// Maximum suspensions the host may service.
+    /// Maximum suspensions the host may service (default
+    /// [`DEFAULT_MAX_SUSPENSIONS`]; always bounded, like recursion depth).
     /// The interpreter only stores this limit; hosts must enforce it.
-    pub max_suspensions: Option<usize>,
+    pub max_suspensions: usize,
 }
 
 /// Recommended maximum recursion depth if not otherwise specified.
 pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 
-/// Creates a new ResourceLimits with all limits disabled, except max recursion which is set to 1000.
+/// Maximum suspensions a host services per session if not otherwise
+/// specified: a backstop against a sandbox looping on host calls while
+/// `max_duration` is paused.
+pub const DEFAULT_MAX_SUSPENSIONS: usize = 1000;
+
+/// Creates a new ResourceLimits with all limits disabled, except max recursion
+/// depth and max suspensions, which are set to 1000.
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
@@ -110,7 +117,7 @@ impl Default for ResourceLimits {
             max_memory: None,
             gc_interval: None,
             max_recursion_depth: DEFAULT_MAX_RECURSION_DEPTH,
-            max_suspensions: None,
+            max_suspensions: DEFAULT_MAX_SUSPENSIONS,
         }
     }
 }
@@ -150,7 +157,7 @@ impl ResourceLimits {
     /// Sets the host-enforced maximum number of suspensions.
     #[must_use]
     pub fn max_suspensions(mut self, limit: usize) -> Self {
-        self.max_suspensions = Some(limit);
+        self.max_suspensions = limit;
         self
     }
 }
@@ -259,7 +266,7 @@ impl ResourceTracker {
 
     /// Returns the host-enforced suspension budget, if any.
     #[must_use]
-    pub fn max_suspensions(&self) -> Option<usize> {
+    pub fn max_suspensions(&self) -> usize {
         self.limits.max_suspensions
     }
 

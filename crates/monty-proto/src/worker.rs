@@ -22,7 +22,7 @@ use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, 
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
-    PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckState, TypeCheckingConfig,
+    PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
@@ -162,6 +162,7 @@ pub struct SessionBudget {
     /// Whether the session type checks each fed snippet.
     pub type_check: bool,
     /// Maximum suspensions the host may service; enforced outside the child.
+    /// `None` only when no session exists.
     pub max_suspensions: Option<usize>,
 }
 
@@ -333,11 +334,8 @@ impl Child {
                     .and_then(|limits| limits.max_memory_bytes)
                     .map(|v| usize::try_from(v).unwrap_or(usize::MAX)),
                 type_check: config.type_check,
-                max_suspensions: config
-                    .limits
-                    .as_ref()
-                    .and_then(|limits| limits.max_suspensions)
-                    .map(|v| usize::try_from(v).unwrap_or(usize::MAX)),
+                // the wire default applies before the repl exists too
+                max_suspensions: Some(ResourceLimits::from(config.limits.unwrap_or_default()).max_suspensions),
             },
             SessionState::Configured(None) => SessionBudget::default(),
             SessionState::Ready(repl) => self.tracker_budget(repl.tracker()),
@@ -350,7 +348,7 @@ impl Child {
         SessionBudget {
             max_memory: tracker.max_memory(),
             type_check: self.type_check.is_some(),
-            max_suspensions: tracker.max_suspensions(),
+            max_suspensions: Some(tracker.max_suspensions()),
         }
     }
 
@@ -934,7 +932,7 @@ fn stamp_budget(event: &mut pb::ChildEvent, tracker: &ResourceTracker) {
     event.max_duration_micros = tracker
         .max_duration()
         .map(|max| u64::try_from(max.as_micros()).unwrap_or(u64::MAX));
-    event.max_suspensions = tracker.max_suspensions().map(|max| max as u64);
+    event.max_suspensions = Some(tracker.max_suspensions() as u64);
 }
 
 /// Describes a suspension announcement that would exceed the wire frame limit.

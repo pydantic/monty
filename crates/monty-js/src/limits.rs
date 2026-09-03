@@ -11,7 +11,8 @@ use napi_derive::napi;
 
 /// Resource limits configuration from JavaScript.
 ///
-/// All limits are optional. Omit a key to disable that limit.
+/// All limits are optional. Omit a key to disable that limit, except
+/// `maxRecursionDepth` and `maxSuspensions`, which keep their 1000 defaults.
 /// Numeric limits are received as JS `number`s, so the boundary uses `f64`
 /// and validates them before converting into Rust `usize` values.
 #[napi(object, js_name = "ResourceLimits")]
@@ -25,7 +26,7 @@ pub struct JsResourceLimits {
     pub gc_interval: Option<f64>,
     /// Maximum function call stack depth (default: 1000).
     pub max_recursion_depth: Option<f64>,
-    /// Maximum suspensions (host round trips) the pool will service.
+    /// Maximum suspensions (host round trips) the pool will service (default: 1000).
     pub max_suspensions: Option<f64>,
 }
 

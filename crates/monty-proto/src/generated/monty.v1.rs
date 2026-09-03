@@ -333,9 +333,10 @@ pub struct StackFrame {
     #[prost(bool, tag = "7")]
     pub hide_frame_name: bool,
 }
-/// Sandbox resource limits. Absent fields are unlimited except recursion depth,
-/// which defaults to 1000. The parent enforces `max_suspensions`; the child only
-/// retains it for dumps and echoes it on `ChildEvent`.
+/// Sandbox resource limits. Absent fields are unlimited except recursion depth
+/// and `max_suspensions`, which both default to 1000. The parent enforces
+/// `max_suspensions`; the child only retains it for dumps and echoes it on
+/// `ChildEvent`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResourceLimits {
     #[prost(uint64, optional, tag = "1")]

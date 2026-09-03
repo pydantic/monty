@@ -124,6 +124,27 @@ while True:
         assert exc_info.value.display(format='type-msg') == snapshot('RuntimeError: suspension limit exceeded: 5 > 3')
 
 
+def test_suspension_limit_defaults_to_one_thousand(pool: Monty):
+    """A checkout with no limits still stops a sandbox looping on host calls."""
+    code = """
+n = 0
+while True:
+    fetch('x')
+    n += 1
+"""
+
+    def fetch(url: str) -> None:
+        return None
+
+    with pool.checkout() as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run(code, external_lookup={'fetch': fetch})
+        assert exc_info.value.display(format='type-msg') == snapshot(
+            'RuntimeError: suspension limit exceeded: 1001 > 1000'
+        )
+        assert session.feed_run('n') == snapshot(1000)
+
+
 def test_limits_with_inputs(monty_run: RunMonty):
     assert monty_run('x * 2', inputs={'x': 21}, limits={'max_duration_secs': 5.0}) == snapshot(42)
 

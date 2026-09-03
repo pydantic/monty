@@ -11,10 +11,10 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 /// - `max_memory`: Maximum heap memory in bytes (int)
 /// - `gc_interval`: Run garbage collection every N allocations (int)
 /// - `max_recursion_depth`: Maximum function call stack depth (int, default: 1000)
-/// - `max_suspensions`: Maximum host round trips the pool will service (int)
+/// - `max_suspensions`: Maximum host round trips the pool will service (int, default: 1000)
 ///
 /// If a key is missing or set to `None`, that limit is not applied
-/// (except `max_recursion_depth` which defaults to 1000).
+/// (except `max_recursion_depth` and `max_suspensions`, which default to 1000).
 ///
 /// Raises `TypeError` if a value is present but has the wrong type.
 /// Raises `ValueError` if the dict contains an unknown key — limits are a

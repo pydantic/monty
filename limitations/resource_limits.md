@@ -146,6 +146,9 @@ indistinguishable from a stack overflow.
   external function calls, host-object method calls, attribute lookups and
   construction, OS calls, name lookups, and each `ResolveFutures` round trip
   (a partial future resolution that re-suspends counts again).
+- It defaults to 1000 and cannot be disabled (like `max_recursion_depth`):
+  omitting it, or passing `None`, keeps the default; set a larger number
+  for sessions that legitimately make more host calls.
 - `monty-pool` enforces it for `pydantic_monty`, the JavaScript napi pool and
   monty-server. The wasm worker pool and CLI also enforce it. A direct host
   must count suspensions and call `abort` itself.

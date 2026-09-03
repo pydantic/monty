@@ -72,7 +72,7 @@ pub(crate) struct Cli {
     #[arg(long)]
     max_recursion_depth: Option<usize>,
 
-    /// Maximum suspensions serviced in one CLI session.
+    /// Maximum suspensions serviced in one CLI session (defaults to 1000).
     #[arg(long)]
     max_suspensions: Option<usize>,
 

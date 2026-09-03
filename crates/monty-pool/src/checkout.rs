@@ -13,8 +13,8 @@ use std::{
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{FrameError, PROTOCOL_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 use monty_types::{
-    AssertMessageAnnotations, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid, NameLookupResult,
-    OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig,
+    AssertMessageAnnotations, DEFAULT_MAX_SUSPENSIONS, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid,
+    NameLookupResult, OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig,
 };
 use tokio::{task::spawn_blocking, time::timeout};
 
@@ -293,8 +293,9 @@ struct SessionBudget {
     /// Monotonic worker-reported sandbox time, preventing a compromised worker
     /// from rewinding the parent's view.
     reported_execution: Duration,
-    /// The session's `max_suspensions` in force, when any.
-    suspension_limit: Option<u64>,
+    /// The session's `max_suspensions` in force (the configured one, else
+    /// [`DEFAULT_MAX_SUSPENSIONS`]).
+    suspension_limit: u64,
     /// Suspensions this checkout has received from the worker.
     suspensions_seen: u64,
 }
@@ -306,7 +307,7 @@ impl SessionBudget {
         Self {
             duration_budget: limits.and_then(|limits| limits.max_duration),
             reported_execution: Duration::ZERO,
-            suspension_limit: limits.and_then(|limits| limits.max_suspensions.map(|max| max as u64)),
+            suspension_limit: limits.map_or(DEFAULT_MAX_SUSPENSIONS as u64, |limits| limits.max_suspensions as u64),
             suspensions_seen: 0,
         }
     }
@@ -335,10 +336,9 @@ impl SessionBudget {
         if self.duration_budget.is_none() {
             self.duration_budget = event.max_duration_micros.map(Duration::from_micros);
         }
-        self.suspension_limit = match (self.suspension_limit, event.max_suspensions) {
-            (Some(current), Some(reported)) => Some(current.min(reported)),
-            (current, reported) => current.or(reported),
-        };
+        if let Some(reported) = event.max_suspensions {
+            self.suspension_limit = self.suspension_limit.min(reported);
+        }
         if is_suspension(event) {
             self.suspensions_seen += 1;
         }
@@ -346,8 +346,8 @@ impl SessionBudget {
 
     /// Reports when this event exceeds the suspension limit.
     fn over_suspension_limit(&self, event: &pb::ChildEvent) -> Option<(u64, u64)> {
-        let limit = self.suspension_limit?;
-        (is_suspension(event) && self.suspensions_seen > limit).then_some((self.suspensions_seen, limit))
+        (is_suspension(event) && self.suspensions_seen > self.suspension_limit)
+            .then_some((self.suspensions_seen, self.suspension_limit))
     }
 
     /// Returns the remaining `max_duration` plus grace.

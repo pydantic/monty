@@ -973,6 +973,46 @@ async fn configured_suspension_limit_caps_a_restored_one() {
     }
 }
 
+/// A checkout with no limits configured still enforces the 1000 default.
+#[tokio::test]
+async fn suspension_limit_defaults_to_one_thousand() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        serve_endless_suspensions(&mut socket, 1001);
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let mut event = checkout
+        .feed("fetch()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    for _ in 1..1000 {
+        assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+        event = checkout
+            .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+            .await
+            .expect("resume");
+    }
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("suspension limit exceeded: 1001 > 1000"));
+    drop(checkout);
+    join_server(server).await;
+}
+
 /// Restores `max_suspensions` from the worker's `Load` reply.
 #[tokio::test]
 async fn restored_session_readopts_the_suspension_limit() {

@@ -75,8 +75,6 @@ export class WorkerTransport {
   /** Creates a configured REPL session over `dispatcher`. */
   static async create(dispatcher: Dispatcher, config: WorkerSessionConfig = {}): Promise<WorkerTransport> {
     const transport = new WorkerTransport(dispatcher)
-    transport.suspensionLimit =
-      config.limits?.maxSuspensions === undefined ? undefined : BigInt(config.limits.maxSuspensions)
     const assertMessageAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
     await transport.control(
       {
@@ -284,7 +282,9 @@ export class WorkerTransport {
     try {
       const result = await this.dispatcher(request)
       if (result.status === 'shutdown') this.dead = true
-      if (request.tag === 'load') {
+      // the component reports the limit in force (the configured one, else
+      // the 1000 default; a dump's on load), so it is adopted from the reply
+      if (request.tag === 'configure' || request.tag === 'load') {
         this.suspensionLimit = result.maxSuspensions
         this.suspensionsSeen = 0n
       }

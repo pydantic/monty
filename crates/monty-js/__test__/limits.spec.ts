@@ -154,6 +154,16 @@ while True:
   t.is(error.display('msg'), 'suspension limit exceeded: 4 > 3')
 })
 
+test('suspension limit defaults to 1000', async () => {
+  await using session = await pool().checkout()
+  const error = await t.throwsAsync(
+    () => session.feedRun('n = 0\nwhile True:\n    fetch()\n    n += 1', { externalLookup: { fetch: () => null } }),
+    isRuntimeError,
+  )
+  t.is(error.display('msg'), 'suspension limit exceeded: 1001 > 1000')
+  t.is(await session.feedRun('n'), 1000)
+})
+
 test('suspension limit leaves the session usable', async () => {
   await using session = await pool().checkout({ limits: { maxSuspensions: 1 } })
   const fetch = () => 'ok'

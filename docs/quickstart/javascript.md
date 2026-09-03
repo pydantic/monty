@@ -160,8 +160,8 @@ await using session = await pool.checkout({
 })
 ```
 
-Omitted `maxMemory` / `maxDurationSecs` / `maxSuspensions` means unlimited.
-`maxRecursionDepth` defaults to 1000 and cannot be disabled.
+Omitted `maxMemory` / `maxDurationSecs` means unlimited.
+`maxRecursionDepth` and `maxSuspensions` default to 1000 and cannot be disabled.
 `gcInterval` defaults to every 100,000 allocations.
 The pool enforces `maxSuspensions`: the first suspension over the budget ends the feed with an uncatchable
 `RuntimeError`.
