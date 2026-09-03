@@ -1,0 +1,22 @@
+crates/monty-apidoc/src/docs_md.rs
+  s_7756ceac6333e7::t_7066445fcc4a59 33-36,209-214,294
+crates/monty-apidoc/tests/render.rs
+  s_7756ceac6333e7::t_c17552af10e1db 150
+  s_7756ceac6333e7::t_7066445fcc4a59 7-11,146-149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b6059945339abb5036583a7c52f7de756599df01",
+  "prompts": {},
+  "sessions": {
+    "s_7756ceac6333e7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1bf56986-bf24-4723-833c-bf5ea29f861c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
