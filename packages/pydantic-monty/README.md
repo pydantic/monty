@@ -250,8 +250,8 @@ expose the same `feed_start` / `load_session` / `load_snapshot`, with awaitable
 ### Resource limits
 
 Limits are enforced inside the worker; the pool's `request_timeout` is a
-host-side backstop that kills a hung worker outright. An installed telemetry
-adapter invokes trusted Python SDK callbacks synchronously; enforcement is
+host-side backstop that kills a hung worker outright. Installed telemetry
+invokes trusted Python SDK callbacks synchronously; enforcement is
 delayed while such a callback runs. `max_duration_secs`
 limits cumulative *execution* time — the clock runs only while the
 interpreter executes, never while suspended waiting on the host, and
@@ -334,27 +334,45 @@ with Monty() as pool:
 
 ### Observability
 
-The Python Logfire integration instruments the pool through a private adapter
-hook. It propagates the active Python OTel context into each checkout, which
-becomes one session span with nested feed and suspension spans recording code,
-inputs, external calls, exceptions, and `print` output. Session dumps and
-restores are recorded by size only.
+Install the optional OpenTelemetry API support, then call
+`instrument_telemetry` with standard Python OpenTelemetry components before
+creating a pool:
 
-The same adapter also receives pool metrics — live, immediately available and
-host-blocked worker counts, checkout waits, worker deaths by reason, run
-durations and the sandbox execution time of each feed. Unlike the spans these
-cover every checkout, and they record no sandbox-supplied values: metric
+```bash
+pip install 'pydantic-monty[opentelemetry]'
+```
+
+```python test="skip"
+from opentelemetry import _logs, metrics, trace
+
+from pydantic_monty import instrument_telemetry
+
+instrument_telemetry(
+    tracer=trace.get_tracer('pydantic-monty'),
+    meter=metrics.get_meter('pydantic-monty'),
+    logger=_logs.get_logger('pydantic-monty'),
+)
+```
+
+Each component is optional. A configured tracer records each checkout as a
+session span with nested feed and suspension spans. A logger records exceptions
+and `print` output under those spans. A meter records live, immediately
+available and host-blocked worker counts, checkout waits, worker deaths by
+reason, run durations and the sandbox execution time of each feed.
+
+The supplied OpenTelemetry providers own IDs, sampling, metric views and
+aggregation, resources, readers, exporters, flushing, and shutdown. Logfire and
+other OpenTelemetry distributions can therefore use the same instrumentation
+path. [`logfire.instrument_monty()`](https://logfire.pydantic.dev/docs/reference/api/logfire/#logfire.Logfire.instrument_monty)
+supplies components bound to its configured `Logfire` instance.
+
+Metrics cover every checkout and record no sandbox-supplied values: their
 attributes are closed sets, so nothing a script chooses (a called function's
-name, an exception class, or a path) can become a dimension.
-Rust's statically linked Logfire pipeline aggregates these instruments and
-passes standard OTLP protobuf batches to the Python adapter, rather than
-replaying individual measurements through Python instruments.
-
-Logfire's Python SDK owns sampling, export credentials, resources, and final
-export. Its flush path first collects the Rust metric pipeline. Workers receive
-no credentials. Instrumentation is disabled unless an adapter
-is explicitly installed. Enabled instrumentation captures content, truncating
-large values at the telemetry attribute size limit.
+name, an exception class, or a path) can become a dimension. Traces and logs do
+record code, inputs, external calls, exceptions, and printed output; session
+dumps and restores are recorded by size only. Instrumentation is disabled until
+`instrument_telemetry` is called, and enabled instrumentation truncates large
+values at the telemetry attribute size limit.
 
 See `limitations/pool-architecture.md` in the repository for the behavioural
 details of subprocess execution (host-side mounts, buffered print callbacks,

@@ -119,17 +119,18 @@ explicit opt-in to recording potentially sensitive values.
 
 The adapter configures a process-global Rust pipeline and returns a handle that creates each
 checkout's serialized parent context. Span and log records are emitted through
-`TelemetryAdapter`; metrics are aggregated by that pipeline and exported through the adapter
-as standard OTLP protobuf batches. Python, Node, and third-party bindings retain ownership of
-their native SDK and exporter. Without the feature, workers contain no telemetry recorder or
-telemetry hot path.
+`TelemetryAdapter`. A binding can either receive standard OTLP protobuf batches aggregated by
+the Rust pipeline or receive each raw measurement for aggregation by its native SDK. Python,
+Node, and third-party bindings retain ownership of their native SDK and exporter. Without the
+feature, workers contain no telemetry recorder or telemetry hot path.
 
 ### Metrics
 
 The same handle yields a `Metrics` for `PoolConfig::metrics` — as does
-`Metrics::for_logfire` for a Rust host. Both record into real Logfire instruments, with
-exponential histogram buckets; the adapter pipeline differs only in exporting its resulting
-aggregate over the language boundary. Either turns on the aggregate side: pool health
+`Metrics::for_logfire` for a Rust host. `Metrics::for_logfire` records directly into the Rust
+host's configured Logfire instruments. A language adapter either records into the statically
+linked SDK or streams raw measurements to the foreign host. Either turns on the aggregate side:
+pool health
 (`monty.pool.workers.live`, `monty.pool.workers.idle`,
 `monty.pool.workers.suspended`, `monty.pool.checkout.wait`, `monty.pool.worker.terminated`,
 `monty.pool.session.duration`) and per-turn cost (`monty.run.duration`,
@@ -153,10 +154,13 @@ Metric attributes deliberately never identify a pool. The worker up/down counter
 total over all pools recording into the same host meter, and a dropped pool subtracts its
 remaining contribution.
 
-A foreign SDK receives aggregated `ExportMetricsServiceRequest` protobufs through
-`TelemetryAdapter::export_metrics`, which defaults to dropping them so a span-only adapter
-continues to work. Its flush path should call `TelemetryAdapterHandle::force_flush` before
-flushing the host exporter.
+`configure_telemetry_adapter` delivers aggregated `ExportMetricsServiceRequest` protobufs
+through `TelemetryAdapter::export_metrics`; its flush path should call
+`TelemetryAdapterHandle::force_flush`. `configure_telemetry_adapter_with_host_metrics` instead
+delivers every `Measurement` through `TelemetryAdapter::record_metric`, allowing the foreign
+SDK's views, readers, temporality, and exporters to apply. Raw measurements are synchronous, so
+only the foreign SDK needs flushing. Both callbacks default to dropping their input so adapters
+that do not support metrics continue to work.
 
 ## Transports
 

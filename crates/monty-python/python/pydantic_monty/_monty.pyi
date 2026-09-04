@@ -18,8 +18,7 @@ from .os_access import AbstractOS, OsFunction
 
 __all__ = [
     '__version__',
-    '_flush_telemetry',
-    '_install_telemetry_adapter',
+    '_install_telemetry',
     'NOT_HANDLED',
     'AsyncMonty',
     'AsyncMontySession',
@@ -51,9 +50,8 @@ __all__ = [
 ]
 __version__: str
 
-# Private hooks used by the Python Logfire integration.
-def _flush_telemetry() -> None: ...
-def _install_telemetry_adapter(version: int, adapter: Any) -> None: ...
+# Private native hook behind pydantic_monty.instrument_telemetry.
+def _install_telemetry(tracer: Any | None, meter: Any | None, logger: Any | None) -> None: ...
 
 NOT_HANDLED = object()
 

@@ -18,4 +18,4 @@ mod telemetry;
 pub use exceptions::{ExceptionInfo, Frame, JsMontyException};
 pub use limits::JsResourceLimits;
 pub use pool::{NativeCheckoutOptions, NativeMount, NativePool, NativePoolOptions, NativeSession, MAX_VALUE_DEPTH};
-pub use telemetry::{flush_telemetry, install_telemetry_adapter};
+pub use telemetry::{flush_telemetry, install_telemetry};

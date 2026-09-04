@@ -5,9 +5,9 @@
 //!
 //! Recorded for *every* checkout, not only those a host gave a
 //! [`TelemetryContext`](crate::telemetry::TelemetryContext) to: an aggregate
-//! covering only traced sessions would mislead. All measurements use Logfire
-//! instruments; a foreign host receives the resulting aggregated OTLP batches
-//! through its configured telemetry adapter.
+//! covering only traced sessions would mislead. Rust hosts record into Logfire
+//! instruments directly. A foreign adapter can instead receive each raw
+//! measurement so its host metrics SDK controls aggregation.
 //!
 //! **No value the sandbox controls may become an attribute.** Every attribute
 //! here is a closed set fixed by this crate, because one time series per value
@@ -31,6 +31,8 @@ use opentelemetry::{
     KeyValue,
     metrics::{Counter, UpDownCounter},
 };
+
+use super::TelemetryAdapter;
 
 /// Live workers, whatever they are doing.
 static LIVE_WORKERS: Instrument = Instrument {
@@ -153,23 +155,36 @@ struct Instrument {
     description: &'static str,
 }
 
-/// Records pool measurements into one Logfire metrics SDK.
+/// Records pool measurements into a Rust or foreign-host metrics SDK.
 ///
 /// Put on [`PoolConfig::metrics`](crate::PoolConfig::metrics); cheap to clone
 /// (one `Arc`). Foreign-language bindings obtain it from
 /// [`TelemetryAdapterHandle::metrics`](crate::telemetry::TelemetryAdapterHandle::metrics),
 /// while Rust hosts construct one with [`Metrics::for_logfire`].
 #[derive(Clone)]
-pub struct Metrics(Arc<Instruments>);
+pub struct Metrics(Arc<Sink>);
+
+/// Where raw measurements are recorded.
+enum Sink {
+    /// Pushed one at a time to the foreign host that owns aggregation.
+    Adapter(Arc<dyn TelemetryAdapter>),
+    /// Recorded directly into a Rust host's configured instruments.
+    Logfire(Instruments),
+}
 
 impl Metrics {
+    /// Sends each measurement to a foreign host's telemetry adapter.
+    pub(super) fn for_adapter(adapter: Arc<dyn TelemetryAdapter>) -> Self {
+        Self(Arc::new(Sink::Adapter(adapter)))
+    }
+
     /// Builds Monty's instruments on a configured `Logfire` meter.
     ///
     /// Create one and clone it per pool: the worker counters then sum over all
     /// pools and sessions that record through the handle.
     #[must_use]
     pub fn for_logfire(logfire: Logfire) -> Self {
-        Self(Arc::new(Instruments::new(logfire)))
+        Self(Arc::new(Sink::Logfire(Instruments::new(logfire))))
     }
 
     /// Adjusts the number of live workers across all pools using this handle.
@@ -220,9 +235,19 @@ impl Metrics {
         );
     }
 
-    /// Records one measurement into its lazily built instrument.
+    /// Records one measurement into its configured host.
     fn record(&self, instrument: &Instrument, value: MetricValue, attributes: &[KeyValue]) {
-        self.0.record(instrument, value, attributes);
+        match self.0.as_ref() {
+            Sink::Adapter(adapter) => adapter.record_metric(&Measurement {
+                kind: instrument.kind,
+                name: instrument.name,
+                unit: instrument.unit,
+                description: instrument.description,
+                value,
+                attributes,
+            }),
+            Sink::Logfire(instruments) => instruments.record(instrument, value, attributes),
+        }
     }
 }
 
@@ -232,9 +257,25 @@ impl fmt::Debug for Metrics {
     }
 }
 
-/// The kind of Logfire instrument a definition builds.
-#[derive(Clone, Copy)]
-enum MetricKind {
+/// One raw measurement and the metadata needed to create its instrument.
+pub struct Measurement<'a> {
+    /// Which kind of instrument records this measurement.
+    pub kind: MetricKind,
+    /// Dotted instrument name, e.g. `monty.pool.checkout.wait`.
+    pub name: &'static str,
+    /// UCUM unit: `s`, `By`, `1`, or a `{thing}` annotation for counts.
+    pub unit: &'static str,
+    /// One-line description of what the instrument measures.
+    pub description: &'static str,
+    /// The measured value.
+    pub value: MetricValue,
+    /// Low-cardinality dimensions to record it under.
+    pub attributes: &'a [KeyValue],
+}
+
+/// The kind of host instrument a definition builds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MetricKind {
     /// Monotonic sum: the value is an increment.
     Counter,
     /// Non-monotonic sum: the value adjusts a current count.
@@ -245,8 +286,8 @@ enum MetricKind {
 
 /// A measured value, integral for counts and byte sizes, floating for
 /// durations and ratios.
-#[derive(Clone, Copy)]
-enum MetricValue {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MetricValue {
     /// An integral count.
     I64(i64),
     /// A duration in seconds, or a ratio.

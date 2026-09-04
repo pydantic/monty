@@ -286,11 +286,12 @@ impl NativeTelemetryContext {
             .zip(self.span_id)
             .and_then(|(trace_id, span_id)| {
                 adapter
-                    .context(
+                    .context_with_remote(
                         &trace_id,
                         &span_id,
                         self.trace_flags.unwrap_or_default(),
                         self.trace_state.as_deref().unwrap_or_default(),
+                        false,
                     )
                     .ok()
             })
