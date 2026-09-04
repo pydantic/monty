@@ -1,6 +1,6 @@
 //! Runtime replacement-field handling for `str.format()`.
 
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
@@ -193,14 +193,14 @@ fn render_field(
             if recursion_remaining <= 1 {
                 return Err(value_error("Max string recursion exceeded"));
             }
-            render(raw_spec, arguments, numbering, recursion_remaining - 1, vm)?
+            Cow::Owned(render(raw_spec, arguments, numbering, recursion_remaining - 1, vm)?)
         } else {
-            raw_spec.to_owned()
+            Cow::Borrowed(raw_spec)
         };
         let formatted = if let Some(converted) = &converted {
-            vm.format_runtime_string(converted, &spec)?
+            vm.format_runtime_string(converted, spec.as_ref())?
         } else {
-            vm.format_runtime_value(value, 0, Some(&spec))?
+            vm.format_runtime_value(value, 0, Some(spec.as_ref()))?
         };
         Ok((formatted, spec_end + 1))
     } else if let Some(converted) = converted {

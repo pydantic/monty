@@ -356,6 +356,14 @@ pub enum ParseFormatSpecReason {
 }
 
 impl ParseFormatSpecReason {
+    /// Whether CPython appends the formatted value's type to this error.
+    pub(crate) fn needs_type_suffix(&self) -> bool {
+        matches!(
+            self,
+            Self::Malformed | Self::NumberOverflow | Self::UnknownFormatCode(_)
+        )
+    }
+
     /// Builds the [`Self::GroupingConflict`] wording for an integer grouping
     /// `g` immediately followed by the unrecognised trailing char `c`,
     /// reproducing CPython's two distinct messages: `Cannot specify both ','
@@ -390,21 +398,6 @@ impl ParseFormatSpecError {
             spec: spec.to_owned(),
             reason,
         }
-    }
-
-    /// Whether the runtime should append `" for object of type 'T'"` to the
-    /// `Display` message, matching CPython's wording.
-    ///
-    /// CPython suffixes the type for `Invalid format specifier` and `Unknown
-    /// format code` but not for `Format specifier missing precision` or the
-    /// `Cannot specify …` grouping conflicts, which are self-contained.
-    pub fn needs_type_suffix(&self) -> bool {
-        matches!(
-            self.reason,
-            ParseFormatSpecReason::Malformed
-                | ParseFormatSpecReason::NumberOverflow
-                | ParseFormatSpecReason::UnknownFormatCode(_)
-        )
     }
 
     /// Whether this error should be deferred to the runtime (dynamic-spec) path
@@ -444,15 +437,12 @@ impl fmt::Display for ParseFormatSpecError {
     }
 }
 
-impl FromStr for ParsedFormatSpec {
-    type Err = ParseFormatSpecError;
-
+impl ParsedFormatSpec {
     /// Parses a format specification string into its components.
     ///
-    /// Returns a [`ParseFormatSpecError`] for malformed specs, specs that
-    /// rely on flags Monty doesn't implement yet (`#`), or specs whose
-    /// width/precision overflows [`usize`].
-    fn from_str(spec: &str) -> Result<Self, Self::Err> {
+    /// Runtime callers keep the reason separate from the borrowed source so a
+    /// failed parse does not duplicate a guest-sized format spec.
+    pub(crate) fn parse_runtime(spec: &str) -> Result<Self, ParseFormatSpecReason> {
         if spec.is_empty() {
             return Ok(Self {
                 fill: ' ',
@@ -509,7 +499,7 @@ impl FromStr for ParsedFormatSpec {
 
         // Parse width
         result.width = consume_decimal_usize(&mut chars)
-            .map_err(|()| ParseFormatSpecError::new(spec, ParseFormatSpecReason::NumberOverflow))?
+            .map_err(|()| ParseFormatSpecReason::NumberOverflow)?
             .unwrap_or(0);
 
         // Grouping option (`,` or `_` thousands separator). Whether it's
@@ -527,8 +517,7 @@ impl FromStr for ParsedFormatSpec {
         // digits; its legality for the presentation type is checked at format
         // time alongside the integer grouping.
         if chars.next_if_eq(&'.').is_some() {
-            result.precision = consume_decimal_usize(&mut chars)
-                .map_err(|()| ParseFormatSpecError::new(spec, ParseFormatSpecReason::NumberOverflow))?;
+            result.precision = consume_decimal_usize(&mut chars).map_err(|()| ParseFormatSpecReason::NumberOverflow)?;
             result.frac_grouping = chars.next_if(|c| matches!(c, ',' | '_')).map(|c| match c {
                 ',' => Grouping::Comma,
                 _ => Grouping::Underscore,
@@ -536,7 +525,7 @@ impl FromStr for ParsedFormatSpec {
             // A `.` must introduce either precision digits or a fractional
             // grouping option; `.f`/`.`/`.d` are CPython's "missing precision".
             if result.precision.is_none() && result.frac_grouping.is_none() {
-                return Err(ParseFormatSpecError::new(spec, ParseFormatSpecReason::MissingPrecision));
+                return Err(ParseFormatSpecReason::MissingPrecision);
             }
         }
 
@@ -548,7 +537,7 @@ impl FromStr for ParsedFormatSpec {
         // are genuinely malformed.
         let type_pos = chars.next();
         if chars.peek().is_some() {
-            return Err(ParseFormatSpecError::new(spec, ParseFormatSpecReason::Malformed));
+            return Err(ParseFormatSpecReason::Malformed);
         }
         if let Some(c) = type_pos {
             if let Some(tc) = TypeChar::from_char(c) {
@@ -561,11 +550,19 @@ impl FromStr for ParsedFormatSpec {
                     Some(g) => ParseFormatSpecReason::grouping_conflict(g, c),
                     None => ParseFormatSpecReason::UnknownFormatCode(c),
                 };
-                return Err(ParseFormatSpecError::new(spec, reason));
+                return Err(reason);
             }
         }
 
         Ok(result)
+    }
+}
+
+impl FromStr for ParsedFormatSpec {
+    type Err = ParseFormatSpecError;
+
+    fn from_str(spec: &str) -> Result<Self, Self::Err> {
+        Self::parse_runtime(spec).map_err(|reason| ParseFormatSpecError::new(spec, reason))
     }
 }
 

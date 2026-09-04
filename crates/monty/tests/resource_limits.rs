@@ -945,6 +945,33 @@ fn timeout_in_str_format_parser() {
 }
 
 #[test]
+fn timeout_in_str_format_receiver_snapshot() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("template = '{missing}' + 'x' * 20_000_000", vec![], PrintWriter::Stdout)
+        .unwrap();
+
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("template.format()", vec![], PrintWriter::Stdout)
+        .expect_err("the missing field must fail after snapshotting the receiver");
+    let full_snapshot = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::KeyError);
+
+    repl.tracker_mut().set_max_duration(full_snapshot / 10);
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("template.format()", vec![], PrintWriter::Stdout)
+        .expect_err("the receiver snapshot must hit the time limit before field lookup");
+    let elapsed = start.elapsed();
+
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < full_snapshot / 2,
+        "str.format() should stop while copying the receiver; full snapshot {full_snapshot:?}, timed snapshot {elapsed:?}"
+    );
+}
+
+#[test]
 fn timeout_in_str_format_escaped_braces() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run("template = '{{' * 5_000_000", vec![], PrintWriter::Stdout)

@@ -8,7 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
     fstring::{
-        ParseFormatSpecError, ParsedFormatSpec, decode_format_spec, format_string, format_with_spec,
+        ParseFormatSpecReason, ParsedFormatSpec, decode_format_spec, format_string, format_with_spec,
         validate_string_spec,
     },
     heap::HeapReadOutput,
@@ -95,9 +95,8 @@ impl VM<'_> {
             if let Some(formatted) = self.try_format_temporal(value, format_spec)? {
                 Ok(formatted)
             } else {
-                let spec = format_spec
-                    .parse::<ParsedFormatSpec>()
-                    .map_err(|err| Self::spec_error(&err, &value.py_type_name(self)))?;
+                let value_type = value.py_type_name(self);
+                let spec = self.parse_runtime_spec(format_spec, &value_type)?;
                 self.format_parsed_value(value, 0, &spec)
             }
         } else {
@@ -107,9 +106,7 @@ impl VM<'_> {
 
     /// Formats an already-converted string from a runtime format spec.
     pub(crate) fn format_runtime_string(&mut self, value: &str, format_spec: &str) -> Result<String, RunError> {
-        let spec = format_spec
-            .parse::<ParsedFormatSpec>()
-            .map_err(|err| Self::spec_error(&err, "str"))?;
+        let spec = self.parse_runtime_spec(format_spec, "str")?;
         self.format_parsed_string(value, &spec)
     }
 
@@ -195,15 +192,41 @@ impl VM<'_> {
         formatted.map(Some)
     }
 
-    /// Builds CPython's `ValueError` for a bad runtime spec, adding the value
-    /// type only where CPython does; callers look the type up only on this path.
-    fn spec_error(err: &ParseFormatSpecError, value_type: &str) -> RunError {
-        let message = if err.needs_type_suffix() {
-            format!("{err} for object of type '{value_type}'")
-        } else {
-            err.to_string()
+    /// Parses a runtime spec without copying it onto an error path.
+    fn parse_runtime_spec(&self, spec: &str, value_type: &str) -> Result<ParsedFormatSpec, RunError> {
+        let reason = match ParsedFormatSpec::parse_runtime(spec) {
+            Ok(parsed) => return Ok(parsed),
+            Err(reason) => reason,
         };
-        RunError::Exc(SimpleException::new_msg(ExcType::ValueError, message).into())
+        let mut message = StringBuilder::new(&self.heap.tracker);
+        match &reason {
+            ParseFormatSpecReason::Malformed => {
+                message.push_str("Invalid format specifier '")?;
+                message.push_str(spec)?;
+                message.push('\'')?;
+            }
+            ParseFormatSpecReason::NumberOverflow => {
+                message.push_str("Invalid format specifier '")?;
+                message.push_str(spec)?;
+                message.push_str("': width or precision overflows usize")?;
+            }
+            ParseFormatSpecReason::MissingPrecision => {
+                message.push_str("Format specifier missing precision")?;
+            }
+            ParseFormatSpecReason::UnknownFormatCode(code) => {
+                message.push_str("Unknown format code '")?;
+                message.push(*code)?;
+                message.push('\'')?;
+            }
+            ParseFormatSpecReason::GroupingConflict(detail) => message.push_str(detail)?,
+        }
+        if reason.needs_type_suffix() {
+            message.push_str(" for object of type '")?;
+            message.push_str(value_type)?;
+            message.push('\'')?;
+        }
+        let message = message.finish_raw()?;
+        Err(SimpleException::new_msg(ExcType::ValueError, message).into())
     }
 }
 

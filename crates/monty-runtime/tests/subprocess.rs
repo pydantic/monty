@@ -5,6 +5,7 @@
 
 use std::{
     io::{Read, Write},
+    iter::repeat_n,
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     thread,
     time::{Duration, Instant},
@@ -721,6 +722,31 @@ fn impossible_format_capacity_preserves_the_worker() {
 }
 
 #[test]
+fn large_unnested_format_spec_preserves_the_worker() {
+    const SPEC_LEN: usize = 5_500_000;
+    let mut template = String::with_capacity(SPEC_LEN + 4);
+    template.push_str("{0:");
+    template.extend(repeat_n('x', SPEC_LEN));
+    template.push('}');
+
+    for junk_len in [5_000_000, 10_000_000] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(16 * 1024 * 1024));
+        let inputs = vec![pb::NamedValue {
+            name: "template".to_owned(),
+            value: Some(str_value(&template)),
+        }];
+        // The smaller filler reaches tracked error rendering without room for
+        // another spec copy. The larger one requires a preflighted receiver copy.
+        let code = format!("junk = 'j' * {junk_len}\ntemplate.format(0)");
+        let (_, event) = child.feed_with(&code, inputs);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "junk_len {junk_len}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+        child.shutdown();
+    }
+}
+
+#[test]
 fn numeric_formatting_peak_memory_preserves_the_worker() {
     for code in ["'{:08000000d}'.format(1)", "'{:.8000000f}'.format(1.0)"] {
         let mut child = ChildProc::spawn();
@@ -792,7 +818,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("'x' * 10_000_000", 10_031_137),
         // Each formatter builder must fail softly before the worker reaches its hard ceiling.
         ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_231_000),
-        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_430_760),
+        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_431_791),
         ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_230_835),
         ("b'x' * 10_000_000", 10_031_269),
         ("[None] * 1_000_000", 16_031_391),
