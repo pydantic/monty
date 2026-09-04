@@ -1,0 +1,36 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='760' height='288' viewBox='0 0 760 288' role='img' aria-labelledby='title'>
+<title id='title'>Time to create a sandbox and run 10 REPL commands in it</title>
+<text x='410.0' y='18' text-anchor='middle' fill='#8a8f98' font-size='15' font-weight='600' font-family='ui-sans-serif, system-ui, sans-serif'>Combined cold start + agent run</text>
+<line x1='150.0' y1='36' x2='150.0' y2='254' stroke='#8a8f98' stroke-opacity='0.3'/>
+<text x='150.0' y='272' text-anchor='middle' fill='#8a8f98' font-size='12' font-family='ui-sans-serif, system-ui, sans-serif'>0 ms</text>
+<line x1='236.7' y1='36' x2='236.7' y2='254' stroke='#8a8f98' stroke-opacity='0.3'/>
+<text x='236.7' y='272' text-anchor='middle' fill='#8a8f98' font-size='12' font-family='ui-sans-serif, system-ui, sans-serif'>500 ms</text>
+<line x1='323.3' y1='36' x2='323.3' y2='254' stroke='#8a8f98' stroke-opacity='0.3'/>
+<text x='323.3' y='272' text-anchor='middle' fill='#8a8f98' font-size='12' font-family='ui-sans-serif, system-ui, sans-serif'>1,000 ms</text>
+<line x1='410.0' y1='36' x2='410.0' y2='254' stroke='#8a8f98' stroke-opacity='0.3'/>
+<text x='410.0' y='272' text-anchor='middle' fill='#8a8f98' font-size='12' font-family='ui-sans-serif, system-ui, sans-serif'>1,500 ms</text>
+<line x1='496.7' y1='36' x2='496.7' y2='254' stroke='#8a8f98' stroke-opacity='0.3'/>
+<text x='496.7' y='272' text-anchor='middle' fill='#8a8f98' font-size='12' font-family='ui-sans-serif, system-ui, sans-serif'>2,000 ms</text>
+<line x1='583.3' y1='36' x2='583.3' y2='254' stroke='#8a8f98' stroke-opacity='0.3'/>
+<text x='583.3' y='272' text-anchor='middle' fill='#8a8f98' font-size='12' font-family='ui-sans-serif, system-ui, sans-serif'>2,500 ms</text>
+<line x1='670.0' y1='36' x2='670.0' y2='254' stroke='#8a8f98' stroke-opacity='0.3'/>
+<text x='670.0' y='272' text-anchor='middle' fill='#8a8f98' font-size='12' font-family='ui-sans-serif, system-ui, sans-serif'>3,000 ms</text>
+<text x='140' y='59.4' text-anchor='end' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>Monty</text>
+<rect x='150' y='44' width='2.0' height='22' rx='3' fill='#e520e9'/>
+<text x='160.0' y='59.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>5 ms</text>
+<text x='140' y='93.4' text-anchor='end' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>Full Monty</text>
+<rect x='150' y='78' width='2.0' height='22' rx='3' fill='#e520e9'/>
+<text x='160.0' y='93.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>7 ms</text>
+<text x='140' y='127.4' text-anchor='end' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>WASI / wasmtime</text>
+<rect x='150' y='112' width='34.7' height='22' rx='3' fill='#7c8592'/>
+<text x='192.7' y='127.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>200 ms</text>
+<text x='140' y='161.4' text-anchor='end' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>Docker</text>
+<rect x='150' y='146' width='156.0' height='22' rx='3' fill='#7c8592'/>
+<text x='314.0' y='161.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>900 ms</text>
+<text x='140' y='195.4' text-anchor='end' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>Sandboxing service</text>
+<rect x='150' y='180' width='329.3' height='22' rx='3' fill='#7c8592'/>
+<text x='487.3' y='195.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>1,900 ms</text>
+<text x='140' y='229.4' text-anchor='end' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>Pyodide</text>
+<rect x='150' y='214' width='468.0' height='22' rx='3' fill='#7c8592'/>
+<text x='626.0' y='229.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>2,700 ms</text>
+</svg>

@@ -19,23 +19,23 @@ Cover the changes **and any code they touch** — a caller made unsafe by a chan
 is in scope even if it isn't in the diff. Ask:
 
 - **Sandbox escape?** Filesystem access outside a mount, path traversal, symlinks
-  resolving out of bounds, network, subprocesses, import-system abuse, callback misuse,
-  leaks through error messages or timing.
+    resolving out of bounds, network, subprocesses, import-system abuse, callback misuse,
+    leaks through error messages or timing.
 - **Memory errors?** Worse than panics: nothing stops, state is silently corrupt, and it
-  can become arbitrary execution. `unsafe`, refcount errors causing use-after-free or
-  double-free, unchecked indexing, aliasing violations, integer overflow feeding a
-  length or index.
+    can become arbitrary execution. `unsafe`, refcount errors causing use-after-free or
+    double-free, unchecked indexing, aliasing violations, integer overflow feeding a
+    length or index.
 - **Resource limits bypassed?** Allocations dodging the `ResourceTracker` (`String`
-  without `StringBuilder`), loops with no fuel check, small input → huge allocation.
+    without `StringBuilder`), loops with no fuel check, small input → huge allocation.
 - **Untrusted input still untrusted?** Wire frames from a child are hostile: decoding
-  and proto→Rust conversion must validate everything and never panic. (Snapshots and
-  dumps are trusted by contract — hosts sign and verify them.)
+    and proto→Rust conversion must validate everything and never panic. (Snapshots and
+    dumps are trusted by contract — hosts sign and verify them.)
 - **Panics or aborts?** `unwrap`/`expect` reachable from sandboxed input, unbounded
-  recursion hitting a stack-overflow abort.
+    recursion hitting a stack-overflow abort.
 - **Mount escapes?** Any behaviour that allows sandbox code to escape a filesystem mount
-  and read or alter files outside the mount point. This is particularly severe since
-  mounts are run on the host/client connecting to a sandbox - accessing that environment
-  is a very serious breach of the sandbox and security issue.
+    and read or alter files outside the mount point. This is particularly severe since
+    mounts are run on the host/client connecting to a sandbox - accessing that environment
+    is a very serious breach of the sandbox and security issue.
 
 Weight both classes by where they land. In a pool worker the process dies, the parent
 replaces the child and raises an exception — contained. Nothing else is: in host/parent

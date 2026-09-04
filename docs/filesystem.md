@@ -14,32 +14,60 @@ an **`os` callback**, which answers filesystem operations in host code.
 A `MountDir` maps a host directory to a virtual path inside the sandbox.
 Mounts are per-feed, and all arguments are keyword-only:
 
-```python
-import tempfile
-from pathlib import Path
+=== "Python"
 
-from pydantic_monty import Monty, MountDir
+    ```python
+    import tempfile
+    from pathlib import Path
 
-with tempfile.TemporaryDirectory() as tmp:
-    Path(tmp, 'greeting.txt').write_text('hello from the host')
+    from pydantic_monty import Monty, MountDir
 
-    mount = MountDir(host_path=tmp, virtual_path='/data', mode='read-only')
-    code = "from pathlib import Path\nPath('/data/greeting.txt').read_text()"
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, 'greeting.txt').write_text('hello from the host')
 
-    with Monty() as pool:
-        with pool.checkout() as session:
-            print(session.feed_run(code, mount=mount))
-            #> hello from the host
-```
+        code = "from pathlib import Path\nPath('/data/greeting.txt').read_text()"
+
+        with MountDir(host_path=tmp, virtual_path='/data', mode='read-only') as mount:
+            with Monty() as pool:
+                with pool.checkout() as session:
+                    print(session.feed_run(code, mount=mount))
+                    #> hello from the host
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+    import { tmpdir } from 'node:os'
+    import { join } from 'node:path'
+
+    import { Monty } from '@pydantic/monty'
+    import { MountDir } from '@pydantic/monty/node'
+
+    const tmp = mkdtempSync(join(tmpdir(), 'monty-'))
+    writeFileSync(join(tmp, 'greeting.txt'), 'hello from the host')
+
+    const code = "from pathlib import Path\nPath('/data/greeting.txt').read_text()"
+
+    {
+      using mount = new MountDir({ hostPath: tmp, virtualPath: '/data', mode: 'read-only' })
+      await using pool = await Monty.create()
+      await using session = await pool.checkout()
+      console.log(await session.feedRun(code, { mount })) // hello from the host
+    }
+    rmSync(tmp, { recursive: true })
+    ```
 
 Pass a list to `mount=` for several at once.
+In JavaScript `MountDir` comes from the `@pydantic/monty/node` subpath and `using` closes it at the end of scope; the
+WebAssembly build rejects mounts outright, because a browser has no host filesystem.
 
 ### Modes
 
-| Mode | Reads | Writes |
-| --- | --- | --- |
-| `'read-only'` | from the host directory | raise `PermissionError` |
-| `'read-write'` | from the host directory | written through to the host |
+| Mode                  | Reads                    | Writes                                           |
+| --------------------- | ------------------------ | ------------------------------------------------ |
+| `'read-only'`         | from the host directory  | raise `PermissionError`                          |
+| `'read-write'`        | from the host directory  | written through to the host                      |
 | `'overlay'` (default) | fall through to the host | captured in memory, discarded when the feed ends |
 
 `'overlay'` is the default: writes are kept in memory and discarded when the feed ends, and sandboxed code still reads
@@ -47,6 +75,7 @@ back its own writes.
 Each feed starts with a fresh overlay.
 
 !!! warning "`'read-write'` writes files from untrusted code to your real filesystem"
+
     Those files are untrusted input; do not execute them.
     Importing counts as executing, and the import can be indirect: with a directory on `sys.path` mounted, sandboxed
     code can write `json.py`, or any module not yet imported, and the host's next `import` runs it — including imports
@@ -56,13 +85,13 @@ Each feed starts with a fresh overlay.
 
 ### Options
 
-| Argument | Default | Meaning |
-| --- | --- | --- |
-| `host_path` | required | Real host directory; canonicalized at construction, raises if missing or not a directory |
-| `virtual_path` | required | Absolute POSIX-style path prefix inside the sandbox, whatever the host OS |
-| `mode` | `'overlay'` | One of the three above |
-| `write_bytes_limit` | `None` | Cap on bytes written through the mount per feed; exceeding it raises `OSError` |
-| `memory_usage_limit` | `100_000_000` | Byte budget for overlay data and transient results; exceeding it raises `MemoryError` |
+| Argument             | Default       | Meaning                                                                                  |
+| -------------------- | ------------- | ---------------------------------------------------------------------------------------- |
+| `host_path`          | required      | Real host directory; canonicalized at construction, raises if missing or not a directory |
+| `virtual_path`       | required      | Absolute POSIX-style path prefix inside the sandbox, whatever the host OS                |
+| `mode`               | `'overlay'`   | One of the three above                                                                   |
+| `write_bytes_limit`  | `None`        | Cap on bytes written through the mount per feed; exceeding it raises `OSError`           |
+| `memory_usage_limit` | `100_000_000` | Byte budget for overlay data and transient results; exceeding it raises `MemoryError`    |
 
 Validation happens at construction, not at feed time — a bad `virtual_path` raises immediately.
 
@@ -85,39 +114,56 @@ Relative symlinks that stay inside the mount are followed in the non-overlay mod
 ### Things that differ from CPython
 
 - **Virtual paths are always POSIX**, on every host OS.
-  `Path('C:/Users/foo')` is a literal POSIX path, and `repr` is always `PosixPath(...)`.
+    `Path('C:/Users/foo')` is a literal POSIX path, and `repr` is always `PosixPath(...)`.
 - **No live file descriptors.** `open()` keeps no OS handle between calls; each read or write is a separate one-shot
-  host operation.
-  This is what makes mid-execution [snapshots](snapshots.md) safe.
-  It also means `for line in f` is not supported.
+    host operation.
+    This is what makes mid-execution [snapshots](snapshots.md) safe.
+    It also means `for line in f` is not supported.
 - **Only regular files** can be read, written or opened.
-  FIFOs, sockets and device nodes raise `PermissionError`, because mount I/O must never block on sandbox-reachable
-  input.
-  Existence checks and `stat()` still work on them.
+    FIFOs, sockets and device nodes raise `PermissionError`, because mount I/O must never block on sandbox-reachable
+    input.
+    Existence checks and `stat()` still work on them.
 
-The full list is in [`limitations/filesystem.md`](https://github.com/pydantic/monty/blob/main/limitations/filesystem.md)
-and [`limitations/open.md`](https://github.com/pydantic/monty/blob/main/limitations/open.md).
+The full list is in [`limitations/filesystem.md`](limitations/filesystem.md)
+and [`limitations/open.md`](limitations/open.md).
 
 ## The `os` callback
 
 Operations no mount covers fall through to the `os=` handler.
 It is called as `(function_name, args, kwargs)` and its return value is handed back to the sandbox:
 
-```python
-from pydantic_monty import NOT_HANDLED, Monty
+=== "Python"
+
+    ```python
+    from pydantic_monty import NOT_HANDLED, Monty
 
 
-def handle_os(function_name, args, kwargs):
-    if function_name == 'os.getenv' and args[0] == 'STAGE':
-        return 'production'
-    return NOT_HANDLED
+    def handle_os(function_name, args, kwargs):
+        if function_name == 'os.getenv' and args[0] == 'STAGE':
+            return 'production'
+        return NOT_HANDLED
 
 
-with Monty() as pool:
-    with pool.checkout() as session:
-        print(session.feed_run("import os\nos.getenv('STAGE')", os=handle_os))
-        #> production
-```
+    with Monty() as pool:
+        with pool.checkout() as session:
+            print(session.feed_run("import os\nos.getenv('STAGE')", os=handle_os))
+            #> production
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty, NOT_HANDLED } from '@pydantic/monty'
+
+    function handleOs(functionName: string, args: unknown[]) {
+      if (functionName === 'os.getenv' && args[0] === 'STAGE') return 'production'
+      return NOT_HANDLED
+    }
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    console.log(await session.feedRun("import os\nos.getenv('STAGE')", { os: handleOs })) // production
+    ```
 
 Returning the `NOT_HANDLED` sentinel declines the call, and the sandbox raises whatever it would have raised with no
 handler at all.
@@ -139,28 +185,52 @@ sandbox's own no-handler error.
 `snapshot.resume_auto()` applies the same mounts-then-`os` order, and `snapshot.resume_not_handled()` applies the
 no-handler default explicitly.
 
-## A virtual filesystem in Python
+## A virtual filesystem
 
 `pydantic_monty` ships a ready-made `AbstractOS` implementation for when you want a filesystem with no host directory
-behind it at all:
+behind it at all.
+JavaScript has no equivalent class, so the TypeScript tab answers the same operations from a `Map` in an `os` callback:
 
-```python
-from pydantic_monty import MemoryFile, Monty, OSAccess
+=== "Python"
 
-fs = OSAccess(
-    [
-        MemoryFile('/data/report.csv', content='name,total\nada,42\n'),
-    ],
-    environ={'STAGE': 'test'},
-)
+    ```python
+    from pydantic_monty import MemoryFile, Monty, OSAccess
 
-code = "from pathlib import Path\nPath('/data/report.csv').read_text().count(chr(10))"
+    fs = OSAccess(
+        [
+            MemoryFile('/data/report.csv', content='name,total\nada,42\n'),
+        ],
+        environ={'STAGE': 'test'},
+    )
 
-with Monty() as pool:
-    with pool.checkout() as session:
-        print(session.feed_run(code, os=fs))
-        #> 2
-```
+    code = "from pathlib import Path\nPath('/data/report.csv').read_text().count(chr(10))"
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            print(session.feed_run(code, os=fs))
+            #> 2
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty, NOT_HANDLED } from '@pydantic/monty'
+
+    const files = new Map([['/data/report.csv', 'name,total\nada,42\n']])
+    const environ: Record<string, string> = { STAGE: 'test' }
+
+    function fs(functionName: string, args: unknown[]) {
+      if (functionName === 'Path.read_text') return files.get(args[0] as string) ?? NOT_HANDLED
+      if (functionName === 'os.getenv') return environ[args[0] as string] ?? null
+      return NOT_HANDLED
+    }
+
+    const code = "from pathlib import Path\nPath('/data/report.csv').read_text().count(chr(10))"
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    console.log(await session.feedRun(code, { os: fs })) // 2
+    ```
 
 `OSAccess` backed by `MemoryFile` objects is fully sandboxed: content lives in host memory, path traversal cannot escape
 to real files, and `os.getenv` sees only the `environ` mapping you passed.
@@ -169,14 +239,11 @@ to real files, and `os.getenv` sees only the `environ` mapping you passed.
 That is the point of it, but it means an `OSAccess` containing a `CallbackFile` is exactly as sandboxed as the callback
 you wrote.
 
-For anything more specific, subclass `AbstractOS` and implement the methods you want; anything you leave raising
-`NotImplementedError` is reported to Monty as `NOT_HANDLED`.
+For anything more specific, subclass `OSAccess` and override the methods you want to change, or implement every
+abstract method of `AbstractOS` yourself; the optional hooks (`path_open`, the append methods, `date_today`,
+`datetime_now`) report `NOT_HANDLED` to Monty if you make them raise `NotImplementedError`.
 
-## In other languages
-
-JavaScript exposes `MountDir` from the `@pydantic/monty/node` subpath with the same options in camelCase (`hostPath`,
-`virtualPath`, `mode`, `writeBytesLimit`, `memoryUsageLimit`), plus the same `os` callback and `NOT_HANDLED` sentinel.
-The WebAssembly build rejects mounts outright, because a browser has no host filesystem.
+## Rust
 
 Rust hosts hold a `MountTable` from [`monty-fs`](https://crates.io/crates/monty-fs) and service suspensions with
 `MountTable::handle_os_call`; `monty-pool` does this for you when you pass `MountSpec`s to `Checkout::feed`.

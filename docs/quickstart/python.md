@@ -1,8 +1,38 @@
-# Python QuickStart
+# Getting Started with Python
+
+## Installation
 
 ```bash
 uv add pydantic-monty
 ```
+
+Or with pip:
+
+```bash
+pip install pydantic-monty
+```
+
+Requires Python 3.10 or newer.
+The download is about 4.5 MB and there is nothing else to run: no daemon, no image, no API key.
+
+`pydantic-monty` is a metapackage with no code of its own; it pins two distributions:
+
+- [`pydantic-monty-client`](https://pypi.org/project/pydantic-monty-client/), the `pydantic_monty` module you import.
+- [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/), the `monty` binary that the worker
+    subprocesses run, shipped the same way `uv` and `ruff` ship theirs.
+
+Installing the wheel places the binary in the environment's scripts directory, so there is no extra setup step.
+Install `pydantic-monty-client` alone when the binary comes from somewhere else, such as a base image or a system
+package.
+
+`Monty(binary_path=...)` overrides binary resolution.
+When it is omitted, the binary is resolved from the `MONTY_BIN` environment variable, then the environment's scripts
+directory (where `pydantic-monty-runtime` installs it), then `PATH`.
+If you are running untrusted code, pin `binary_path` explicitly rather than relying on `PATH`.
+
+The same binary is also a REPL and a file runner; see [command line](../cli.md).
+
+## First run
 
 Everything in `pydantic_monty` starts with a pool of worker subprocesses.
 Execution never happens in your process: a Monty process can never be made fully crash-proof against memory errors
@@ -14,13 +44,19 @@ from pydantic_monty import Monty
 
 with Monty() as pool:
     with pool.checkout() as session:
-        print(session.feed_run('1 + 2'))
-        #> 3
+        result = session.feed_run(
+            'double(x) + y',
+            inputs={'x': 5, 'y': 1},
+            external_lookup={'double': lambda x: x * 2},
+        )
+        print(result)
+        #> 11
 ```
 
 `Monty()` configures the pool; the workers are spawned by `with`.
 `pool.checkout()` dedicates one worker to one REPL session.
 `feed_run` executes a snippet and returns the value of its trailing expression.
+`inputs` are values the snippet can read; `external_lookup` holds the host functions it can call.
 
 ## Sessions keep state
 
@@ -48,20 +84,8 @@ Every entry is converted and bound once, whether or not the code uses it.
 `external_lookup` resolves names lazily, when the code reads them.
 A callable entry becomes a [host function](../host-functions.md) the sandbox can call; any other value is converted and
 returned when the name is read; a name that is absent raises `NameError` inside the sandbox.
-
-```python
-from pydantic_monty import Monty
-
-with Monty() as pool:
-    with pool.checkout() as session:
-        result = session.feed_run(
-            'double(x) + y',
-            inputs={'x': 5, 'y': 1},
-            external_lookup={'double': lambda x: x * 2},
-        )
-        print(result)
-        #> 11
-```
+In the first example, `x` and `y` were bound before the snippet ran, and `double` was resolved when the snippet called
+it.
 
 A name present in both is served by the eager `inputs` binding.
 
@@ -100,6 +124,56 @@ with Monty() as pool:
             """
 ```
 
+## What the sandbox cannot reach
+
+With nothing mounted, the sandbox has no filesystem; `open()` raises `PermissionError` because no mount exists, not
+because a check blocked it.
+Resource limits are set per session on `checkout()`; operations whose size is predictable are refused before the
+allocation is attempted:
+
+```python
+from pydantic_monty import Monty, MontyRuntimeError
+
+code = """
+try:
+    open('/etc/passwd')
+except PermissionError as e:
+    denied = str(e)
+denied
+"""
+
+with Monty() as pool:
+    with pool.checkout(
+        limits={'max_memory': 10_000_000, 'max_duration_secs': 1.0}
+    ) as session:
+        print(session.feed_run(code))
+        #> Permission denied: '/etc/passwd'
+        try:
+            session.feed_run("'x' * 10**12")
+        except MontyRuntimeError as exc:
+            print(exc.display(format='type-msg').split(':')[0])
+            #> MemoryError
+```
+
+An infinite loop hits `max_duration_secs` the same way, raising a `MontyRuntimeError` whose `exception()` is a
+`TimeoutError`.
+Type checking is also configured on `checkout()`:
+
+```python
+from pydantic_monty import Monty, MontyTypingError
+
+with Monty() as pool:
+    with pool.checkout(type_check=True) as session:
+        try:
+            session.feed_run("x: int = 'not an int'")
+        except MontyTypingError as exc:
+            print('invalid-assignment' in exc.display())
+            #> True
+```
+
+See [resource limits](../resource-limits.md), [type checking](../type-checking.md) and the [security
+model](../security.md).
+
 ## Async
 
 `AsyncMonty` is the asyncio counterpart.
@@ -134,7 +208,31 @@ There is no event loop inside the sandbox — the host is the loop.
 Sandboxed `async def` and `await` work, and `asyncio` exposes exactly `run` and `gather`, the latter running host calls
 concurrently.
 `asyncio.create_task`, `asyncio.sleep` and everything else in the module do not exist.
-See [`limitations/asyncio.md`](https://github.com/pydantic/monty/blob/main/limitations/asyncio.md).
+See [`limitations/asyncio.md`](../limitations/asyncio.md).
+
+## Pausing at host calls
+
+`feed_run` answers every host call for you.
+`feed_start` hands control back at each one instead, as a snapshot you can inspect, store with `dump()`, or resume:
+
+```python
+from pydantic_monty import FunctionSnapshot, Monty, MontyComplete
+
+with Monty() as pool:
+    with pool.checkout() as session:
+        snapshot = session.feed_start('greet(name) + "!"', inputs={'name': 'Ada'})
+        assert isinstance(snapshot, FunctionSnapshot)
+        print(snapshot.function_name, snapshot.args)
+        #> greet ('Ada',)
+        result = snapshot.resume({'return_value': 'hello Ada'})
+        assert isinstance(result, MontyComplete)
+        print(result.output)
+        #> hello Ada!
+```
+
+`snapshot.dump()` returns bytes that a fresh session's `load_snapshot()` turns back into the same paused snapshot, in
+another process or on another machine.
+See [snapshots](../snapshots.md).
 
 ## Capturing printed output
 
@@ -187,13 +285,13 @@ Whatever the interval, output is flushed before a host call and before a feed en
 
 Every Monty error subclasses `MontyError`:
 
-| Exception | Raised when | Session survives |
-| --- | --- | --- |
-| `MontySyntaxError` | The snippet does not parse | yes |
-| `MontyTypingError` | Type checking rejected the snippet | yes |
-| `MontyRuntimeError` | The code raised at runtime | yes — but discard it after a resource limit |
-| `MontyConversionError` | A host value cannot cross the boundary | from `inputs` yes, from `external_lookup` no |
-| `MontyCrashedError` | The worker died, or hit `request_timeout` | no |
+| Exception              | Raised when                               | Session survives                             |
+| ---------------------- | ----------------------------------------- | -------------------------------------------- |
+| `MontySyntaxError`     | The snippet does not parse                | yes                                          |
+| `MontyTypingError`     | Type checking rejected the snippet        | yes                                          |
+| `MontyRuntimeError`    | The code raised at runtime                | yes — but discard it after a resource limit  |
+| `MontyConversionError` | A host value cannot cross the boundary    | from `inputs` yes, from `external_lookup` no |
+| `MontyCrashedError`    | The worker died, or hit `request_timeout` | no                                           |
 
 `inputs` are converted before the snippet runs, so a rejected value leaves the session untouched.
 An `external_lookup` value is converted mid-execution, while the worker is suspended on the name read, so the checkout
@@ -213,7 +311,7 @@ The print-collector cap is not one of these, though it looks identical from the 
 `MemoryError`, same `memory limit exceeded: ...` message.
 If you collect printed output at all — and the collectors are capped by default — you cannot tell the two apart from the
 exception alone, and in the collector case nothing is wrong with the session.
-See [`limitations/print.md`](https://github.com/pydantic/monty/blob/main/limitations/print.md).
+See [`limitations/print.md`](../limitations/print.md).
 
 `MontySyntaxError` and `MontyRuntimeError` carry a Monty traceback:
 
@@ -257,36 +355,6 @@ with Monty() as pool:
             ...  # the worker died; the pool already replaced it
 ```
 
-## Limits and type checking
-
-Both are configured per session, on `checkout()`:
-
-```python
-from pydantic_monty import Monty, MontyRuntimeError
-
-with Monty(request_timeout=10) as pool:
-    with pool.checkout(limits={'max_duration_secs': 0.1}) as session:
-        try:
-            session.feed_run('while True:\n    pass')
-        except MontyRuntimeError as exc:
-            print(exc.display(format='type-msg').split(':')[0])
-            #> TimeoutError
-```
-
-```python
-from pydantic_monty import Monty, MontyTypingError
-
-with Monty() as pool:
-    with pool.checkout(type_check=True) as session:
-        try:
-            session.feed_run("x: int = 'not an int'")
-        except MontyTypingError as exc:
-            print('invalid-assignment' in exc.display())
-            #> True
-```
-
-See [resource limits](../resource-limits.md) and [type checking](../type-checking.md).
-
 ## Configuring the pool
 
 ```python test="skip"
@@ -316,6 +384,6 @@ A loop of quick host calls resets it each turn; set [`max_duration_secs`](../res
 - [Host objects](../host-objects.md) — exposing objects and classes with per-attribute and per-method policies.
 - [Filesystem access](../filesystem.md) — mounts and the `os` callback.
 - [Snapshots](../snapshots.md) — `feed_start`, `dump()` and resuming later.
-- [The Python subset](../python-subset.md) — what the sandbox can actually run.
+- [The Python subset](../limitations/index.md) — what the sandbox can actually run.
 
 Worked examples using Pydantic AI live in [`examples/`](https://github.com/pydantic/monty/tree/main/examples).

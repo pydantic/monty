@@ -1,21 +1,39 @@
-# JavaScript QuickStart
+# Getting Started with JavaScript
+
+## Installation
 
 ```bash
 npm install @pydantic/monty
 ```
 
 Under Node, `@pydantic/monty` is a native (napi) binding over the same Rust worker pool the Python package uses.
+The binding and the `monty` worker binary ship as platform-specific packages selected through `optionalDependencies`,
+so a plain `npm install` gets you everything.
 Execution happens in `monty` worker subprocesses, so a crash triggered by adversarial code kills only the worker.
+
+For browsers, or anywhere subprocesses are impossible, the same package exposes a WebAssembly build under the
+`@pydantic/monty/wasm` subpath, running in a Web Worker in browsers and in-process under Node; see
+[browsers and WebAssembly](#browsers-and-webassembly).
+
+## First run
 
 ```ts
 import { Monty } from '@pydantic/monty'
 
 await using pool = await Monty.create()
-await using session = await pool.checkout()
+await using session = await pool.checkout({ limits: { maxMemory: 10_000_000, maxDurationSecs: 1 } })
 
-console.log(await session.feedRun('1 + 2')) // 3
+const result = await session.feedRun('double(x) + y', {
+  inputs: { x: 5, y: 1 },
+  externalLookup: { double: (x: number) => x * 2 },
+})
+console.log(result) // 11
 ```
 
+`Monty.create()` spawns the pool and `pool.checkout()` dedicates one worker to one REPL session, with its resource
+limits.
+`feedRun` executes a snippet and returns the value of its trailing expression; `inputs` are values it can read and
+`externalLookup` holds the host functions it can call.
 `await using` closes the session and the pool at the end of scope.
 Without it, call `session.close()` and `pool.close()` yourself.
 
@@ -24,6 +42,11 @@ Without it, call `session.close()` and `pool.close()` yourself.
 Session state persists across `feedRun` calls on the same checkout:
 
 ```ts
+import { Monty } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+
 await session.feedRun('x = 21')
 console.log(await session.feedRun('x * 2')) // 42
 ```
@@ -35,20 +58,18 @@ console.log(await session.feedRun('x * 2')) // 42
 function](../host-functions.md) (sync or async), any other value is converted and returned on read, and a name absent
 from the lookup raises `NameError` inside the sandbox.
 
-```ts
-const result = await session.feedRun('double(x) + y', {
-  inputs: { x: 5, y: 1 },
-  externalLookup: { double: (x: number) => x * 2 },
-})
-console.log(result) // 11
-```
-
 Host functions may be async; the drive loop awaits them:
 
 ```ts
+import { Monty } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+
 const data = await session.feedRun('await fetch_data()', {
   externalLookup: { fetch_data: async () => 'data' },
 })
+console.log(data) // data
 ```
 
 Keyword arguments from the sandbox arrive as a trailing object on the call.
@@ -57,20 +78,20 @@ matches a Python exception type and `RuntimeError` otherwise.
 
 ### Value conversion
 
-| Python | JavaScript |
-| --- | --- |
-| `None` | `null` |
-| `bool` | `boolean` |
-| `int` | `number` within ±2^53, otherwise `BigInt` |
-| `float` | `number` |
-| `str` | `string` |
-| `bytes` | `Buffer` |
-| `list` | `Array` |
-| `tuple` | `Array` with a non-enumerable `__tuple__: true` |
-| `dict` | `Map` |
-| `set` / `frozenset` | `Set` |
-| `datetime` family | marker objects carrying `__monty_type__` |
-| file handles | `MontyFileHandle` |
+| Python              | JavaScript                                      |
+| ------------------- | ----------------------------------------------- |
+| `None`              | `null`                                          |
+| `bool`              | `boolean`                                       |
+| `int`               | `number` within ±2^53, otherwise `BigInt`       |
+| `float`             | `number`                                        |
+| `str`               | `string`                                        |
+| `bytes`             | `Buffer`                                        |
+| `list`              | `Array`                                         |
+| `tuple`             | `Array` with a non-enumerable `__tuple__: true` |
+| `dict`              | `Map`                                           |
+| `set` / `frozenset` | `Set`                                           |
+| `datetime` family   | marker objects carrying `__monty_type__`        |
+| file handles        | `MontyFileHandle`                               |
 
 Plain objects with string keys are accepted as `dict` inputs.
 
@@ -80,7 +101,7 @@ Wrap a host object in `ClassInstance`, or a class in `ClassType`, to expose it u
 Nothing is wrapped automatically, so a method that returns another object needs a `convertValue` hook:
 
 ```ts
-import { ClassInstance, ClassType } from '@pydantic/monty'
+import { ClassInstance, ClassType, Monty } from '@pydantic/monty'
 
 class Wallet {
   constructor(public balance: number) {}
@@ -97,9 +118,12 @@ function wrapWallet(wallet: Wallet): ClassInstance {
   })
 }
 
-await session.feedRun('w.pay(30).balance', { inputs: { w: wrapWallet(new Wallet(100)) } }) // 70
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+
+console.log(await session.feedRun('w.pay(30).balance', { inputs: { w: wrapWallet(new Wallet(100)) } })) // 70
 const WalletClass = new ClassType(Wallet, { init: true, instanceEagerAttrs: 'all' })
-await session.feedRun('Wallet(5).balance', { inputs: { Wallet: WalletClass } }) // 5
+console.log(await session.feedRun('Wallet(5).balance', { inputs: { Wallet: WalletClass } })) // 5
 ```
 
 Instances defined inside the sandbox arrive as read-only `MontyClassProxy` stand-ins.
@@ -109,7 +133,10 @@ See [host objects](../host-objects.md) and the
 ## Capturing printed output
 
 ```ts
-import { CollectString } from '@pydantic/monty'
+import { CollectString, Monty } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
 
 const collector = new CollectString()
 await session.feedRun("print('from the sandbox')", { printCallback: collector })
@@ -131,24 +158,25 @@ chunk per line — and output is always flushed before a host call and before a 
 import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } from '@pydantic/monty'
 ```
 
-| Class | Raised when | Session survives |
-| --- | --- | --- |
-| `MontySyntaxError` | The snippet does not parse | yes |
-| `MontyTypingError` | Type checking rejected the snippet | yes |
-| `MontyRuntimeError` | The code raised at runtime | yes |
-| `MontyCrashedError` | The worker died, or the watchdog killed it | no |
-| `ProtocolError` | The worker, or a caller misusing the session, violated the wire protocol | no |
+| Class               | Raised when                                                              | Session survives |
+| ------------------- | ------------------------------------------------------------------------ | ---------------- |
+| `MontySyntaxError`  | The snippet does not parse                                               | yes              |
+| `MontyTypingError`  | Type checking rejected the snippet                                       | yes              |
+| `MontyRuntimeError` | The code raised at runtime                                               | yes              |
+| `MontyCrashedError` | The worker died, or the watchdog killed it                               | no               |
+| `ProtocolError`     | The worker, or a caller misusing the session, violated the wire protocol | no               |
 
 `MontyError` is the base class of everything above except `ProtocolError`, which extends `Error`.
 `err.exception` carries `{ typeName, message }`, and `err.display(format)` renders the error.
-Which formats a class accepts differs, and passing one a class does not accept throws:
+Which formats a class accepts differs; passing one a class does not accept throws, except `MontyTypingError.display()`,
+which ignores any argument:
 
-| Class | `display` formats |
-| --- | --- |
-| `MontyError`, `MontyCrashedError` | `'msg'` (default), `'type-msg'` |
-| `MontySyntaxError` | `'msg'` (default), `'type-msg'`, `'traceback'` |
-| `MontyRuntimeError` | `'traceback'` (default), `'type-msg'`, `'msg'` |
-| `MontyTypingError` | takes no argument; returns the diagnostics |
+| Class                             | `display` formats                              |
+| --------------------------------- | ---------------------------------------------- |
+| `MontyError`, `MontyCrashedError` | `'msg'` (default), `'type-msg'`                |
+| `MontySyntaxError`                | `'msg'` (default), `'type-msg'`, `'traceback'` |
+| `MontyRuntimeError`               | `'traceback'` (default), `'type-msg'`, `'msg'` |
+| `MontyTypingError`                | takes no argument; returns the diagnostics     |
 
 `MontyCrashedError` adds `timedOut` and `exitStatus`.
 
@@ -157,11 +185,16 @@ Which formats a class accepts differs, and passing one a class does not accept t
 Both are per-session options on `checkout()`:
 
 ```ts
+import { Monty } from '@pydantic/monty'
+
+await using pool = await Monty.create()
 await using session = await pool.checkout({
   limits: { maxMemory: 10_000_000, maxDurationSecs: 1, maxRecursionDepth: 100 },
   typeCheck: true,
   typeCheckStubs: 'def fetch_data() -> str: ...',
 })
+
+console.log(await session.feedRun('fetch_data()', { externalLookup: { fetch_data: () => 'data' } })) // data
 ```
 
 Omitted `maxMemory` / `maxDurationSecs` means unlimited.
@@ -169,6 +202,7 @@ Omitted `maxMemory` / `maxDurationSecs` means unlimited.
 `gcInterval` defaults to every 100,000 allocations.
 The pool enforces `maxSuspensions`: the first suspension over the budget ends the feed with an uncatchable
 `RuntimeError`.
+`typeCheckFormat` picks a ty diagnostic format and `typeCheckColor` colours it with ANSI escapes.
 See [resource limits](../resource-limits.md) and [type checking](../type-checking.md).
 
 ## Filesystem mounts
@@ -176,21 +210,33 @@ See [resource limits](../resource-limits.md) and [type checking](../type-checkin
 `MountDir` is exported from the Node subpath, because mounts need a host filesystem:
 
 ```ts
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { Monty } from '@pydantic/monty'
 import { MountDir } from '@pydantic/monty/node'
 
-const mount = new MountDir({ hostPath: '/tmp/data', virtualPath: '/data', mode: 'read-write' })
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+
+using mount = new MountDir({ hostPath: mkdtempSync(join(tmpdir(), 'monty-')), virtualPath: '/data', mode: 'read-write' })
 const text = await session.feedRun(
   "from pathlib import Path\np = Path('/data/new.txt')\np.write_text('hello')\np.read_text()",
   { mount },
 )
+console.log(text) // hello
 ```
 
 `mode` is `'read-only'`, `'read-write'` or `'overlay'` (the default).
+`using` closes the mount's directory handle at the end of scope, which Windows needs before the directory can be removed.
 See [filesystem access](../filesystem.md).
 
 ## Configuring the pool
 
 ```ts
+import { Monty } from '@pydantic/monty'
+
 await using pool = await Monty.create({
   binaryPath: undefined, // explicit path to the `monty` worker binary
   minProcesses: 1, // workers spawned up front
@@ -203,7 +249,7 @@ await using pool = await Monty.create({
 ```
 
 The worker binary is resolved from `binaryPath`, then the `MONTY_BIN` environment variable, then the installed platform
-package, then `PATH`.
+package, then `PATH`, and in a checkout of the Monty repository finally a cargo-built `target/` binary.
 
 ## Snapshots
 
@@ -222,10 +268,10 @@ Anywhere subprocesses are impossible, the same public API is available under `@p
 WebAssembly build.
 In a browser it runs in a Web Worker; under Node, which has no global `Worker`, it runs in-process:
 
-```ts
+```ts test="skip"
 import { Monty } from '@pydantic/monty/wasm'
 
-const pool = await Monty.create()
+await using pool = await Monty.create()
 ```
 
 A bundler resolving the `browser` condition on the main entry point gets this build automatically.
@@ -234,17 +280,16 @@ Differences from the native path:
 
 - **Filesystem mounts are unsupported** — a non-empty `mount` list is rejected, because there is no host filesystem.
 - **`bytes` arrive as `Uint8Array`** wherever there is no `Buffer` global, which is every browser.
-  Under Node the wasm build still hands back a `Buffer`.
+    Under Node the wasm build still hands back a `Buffer`.
 - **No crash isolation without `Worker`.** Where a real `Worker` exists, it runs off-thread and `Worker.terminate()` is
-  the watchdog's hard kill.
-  Where one does not, the same API degrades to in-process execution: no crash isolation and no preemption, so a runaway
-  turn cannot be interrupted.
+    the watchdog's hard kill.
+    Where one does not, the same API degrades to in-process execution: no crash isolation and no preemption, so a runaway
+    turn cannot be interrupted.
 - **`maxProcesses` defaults to 4**, not the CPU count.
 - **`checkoutTimeout`, `durationLimitGrace` and `binaryPath` are accepted and ignored.** A checkout on an exhausted pool
-  waits forever rather than failing, nothing backs up `maxDurationSecs` from outside the worker, and the bundled wasm
-  asset is always used.
-  `requestTimeout` does apply, wherever a real `Worker` exists.
-- **Prints are buffered per turn** rather than streamed live, and rendered traceback strings are not produced yet
-  (frames still decode).
+    waits forever rather than failing, nothing backs up `maxDurationSecs` from outside the worker, and the bundled wasm
+    asset is always used.
+    `requestTimeout` does apply, wherever a real `Worker` exists.
+- **Prints are buffered per turn** rather than streamed live.
 
 Full API documentation lives in the [package README](https://github.com/pydantic/monty/tree/main/crates/monty-js).

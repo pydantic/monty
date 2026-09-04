@@ -20,10 +20,10 @@ pip install pydantic-monty
 distributions that make up a working sandbox:
 
 - [`pydantic-monty-client`](https://pypi.org/project/pydantic-monty-client/) —
-  the `pydantic_monty` module you import (pool, sessions, value conversion)
+    the `pydantic_monty` module you import (pool, sessions, value conversion)
 - [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/) —
-  the `monty` worker binary the pool spawns, shipped the same way `uv` and
-  `ruff` ship their binaries
+    the `monty` worker binary the pool spawns, shipped the same way `uv` and
+    `ruff` ship their binaries
 
 Install `pydantic-monty-client` on its own when the worker binary comes from
 somewhere else — a base image, a system package, a build of this repo — and
