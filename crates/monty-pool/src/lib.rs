@@ -11,15 +11,15 @@ mod worker;
 
 use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
 
-pub use monty_proto::{MAX_VALUE_DEPTH, exceeds_max_value_depth};
+pub use monty_proto::{DEFAULT_PRINT_FLUSH_INTERVAL, MAX_VALUE_DEPTH, exceeds_max_value_depth};
 use monty_types::MontyException;
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::Metrics;
 pub use crate::{
     checkout::{
-        Checkout, MountSpec, MountSpecMode, OnPrint, OnRawEvent, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
-        on_print_sync,
+        Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, PrintFuture, ReplConfig, ResumeValue,
+        TurnEvent, on_print_sync,
     },
     pool::Pool,
 };

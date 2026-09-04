@@ -356,9 +356,12 @@ instrument_telemetry(
 
 Each component is optional. A configured tracer records each checkout as a
 session span with nested feed and suspension spans. A logger records exceptions
-and `print` output under those spans. A meter records live, immediately
-available and host-blocked worker counts, checkout waits, worker deaths by
-reason, run durations and the sandbox execution time of each feed.
+and `print` output under those spans. An `AsyncMontyWebsocket` checkout also
+sends the active context as W3C `traceparent`/`tracestate` headers on its
+upgrade request, so a server that honours them can join the same trace. A meter
+records live, immediately available and host-blocked worker counts, checkout
+waits, worker deaths by reason, run durations and the sandbox execution time of
+each feed.
 
 The supplied OpenTelemetry providers own IDs, sampling, metric views and
 aggregation, resources, readers, exporters, flushing, and shutdown. Logfire and

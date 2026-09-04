@@ -157,6 +157,27 @@ impl TelemetryContext {
         self.logfire.clone()
     }
 
+    /// W3C `traceparent` (and `tracestate`, when non-empty) headers naming the
+    /// propagated span, for a remote worker's WebSocket upgrade request; empty
+    /// when the host captured no span.
+    pub(crate) fn propagation_headers(&self) -> Vec<(String, String)> {
+        let Some(parent) = &self.parent else {
+            return Vec::new();
+        };
+        let traceparent = format!(
+            "00-{}-{}-{:02x}",
+            parent.trace_id(),
+            parent.span_id(),
+            parent.trace_flags().to_u8()
+        );
+        let mut headers = vec![("traceparent".to_owned(), traceparent)];
+        let tracestate = parent.trace_state().header();
+        if !tracestate.is_empty() {
+            headers.push(("tracestate".to_owned(), tracestate));
+        }
+        headers
+    }
+
     /// Converts the propagated span into the remote OTel parent context.
     pub(crate) fn into_parent(self) -> Option<Context> {
         self.parent
