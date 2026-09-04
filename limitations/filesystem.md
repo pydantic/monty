@@ -27,6 +27,24 @@ Each mount is configured by the host as one of:
   pool, the changes are discarded when the feed ends; each feed starts with
   a fresh overlay.
 
+### Overlapping host directories cannot both be mounted
+
+A mount whose host directory is the same as, contains, or is contained by
+another mount's is refused with a `ValueError` naming both mounts — at
+registration, which via the pool means when the feed starts, since that is
+where the per-feed mount table is assembled.
+
+The access mode is checked against whichever mount the *virtual* path selects
+(longest prefix), so a host file reachable through two mounts would take the
+weaker mount's mode. In particular, mounting a directory read-write and a
+subdirectory of it read-only would **not** protect the subdirectory — every
+file in it would still be writable under the parent mount's spelling — so
+that configuration is rejected rather than half-honoured. To expose parts of
+a tree with different modes, mount disjoint directories.
+
+Disjoint host directories at nested virtual paths (`/data`, `/data/sub`)
+remain fine: each virtual path routes to exactly one mount.
+
 ## Only regular files can be read, written, or opened
 
 Reading, writing, appending to, or `open()`ing a path that resolves to an

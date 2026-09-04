@@ -50,6 +50,8 @@ pub(crate) struct Cli {
     /// Uses `::` as separator to avoid ambiguity with Windows drive letters.
     /// Modes: `ro` (read-only, default), `rw` (read-write), `overlay` (in-memory overlay).
     /// `write_limit_bytes` is optional and applies to all write modes.
+    /// Host directories must be disjoint: mounting a directory and a
+    /// subdirectory of it (or the same directory twice) is rejected.
     ///
     /// WARNING: with `rw`, files written by sandboxed code persist on the
     /// host, where your own tools may later execute them. Prefer `overlay`.

@@ -412,6 +412,23 @@ b = Path('/rw/file2.txt').read_text()
         assert result == snapshot(('hello world', 'from mount2'))
 
 
+def test_overlapping_mounts_rejected(monty_run: RunMonty, test_dir: Path):
+    """Mounts over overlapping host directories are refused: the path spelling
+    would pick which mount's mode applies, so the weaker mode would win."""
+    mounts = [
+        MountDir(host_path=test_dir, virtual_path='/m', mode='read-write'),
+        MountDir(host_path=test_dir / 'subdir', virtual_path='/m/subdir', mode='read-only'),
+    ]
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('1', mount=mounts)
+    resolved = test_dir.resolve()
+    assert str(exc_info.value) == (
+        f"ValueError: cannot mount '{resolved / 'subdir'}' at '/m/subdir': its host directory overlaps the "
+        f"mount of '{resolved}' at '/m', which would let the less restrictive mount's mode apply to the "
+        "other's files"
+    )
+
+
 # =============================================================================
 # Session (multi-feed) mount support
 # =============================================================================

@@ -1628,9 +1628,10 @@ fn empty_mount_table() {
 #[test]
 fn mount_table_len() {
     let dir = create_test_dir();
+    let dir2 = TempDir::new().unwrap();
     let mut mt = MountTable::new();
     mt.mount("/a", dir.path(), MountMode::ReadWrite, None).unwrap();
-    mt.mount("/b", dir.path(), MountMode::ReadOnly, None).unwrap();
+    mt.mount("/b", dir2.path(), MountMode::ReadOnly, None).unwrap();
     assert_eq!(mt.len(), 2);
     assert!(!mt.is_empty());
 }
@@ -1752,7 +1753,7 @@ fn mount_at_mnt_with_memory_limit(tmpdir: &TempDir, mode: MountMode, limit: u64)
         .unwrap()
         .with_memory_usage_limit(limit);
     let mut table = MountTable::new();
-    table.push_mount(mount);
+    table.push_mount(mount).unwrap();
     table
 }
 

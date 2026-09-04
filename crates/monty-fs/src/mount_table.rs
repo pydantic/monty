@@ -70,6 +70,8 @@ impl MountTable {
     /// the host path doesn't exist or isn't a directory, or it cannot be opened
     /// — on macOS/BSD that includes a search-only (`0o111`) directory, which
     /// Linux accepts because it opens directories with `O_PATH`.
+    /// Returns [`MountError::OverlappingMounts`] if the host directory overlaps
+    /// an already-registered mount's (see [`Self::push_mount`]).
     pub fn mount(
         &mut self,
         virtual_path: &str,
@@ -77,21 +79,47 @@ impl MountTable {
         mode: MountMode,
         write_bytes_limit: Option<u64>,
     ) -> Result<(), MountError> {
-        let mount = Mount::new(virtual_path, host_path, mode, write_bytes_limit)?;
-        self.push_mount(mount);
-        Ok(())
+        self.push_mount(Mount::new(virtual_path, host_path, mode, write_bytes_limit)?)
     }
 
     /// Adds a pre-built [`Mount`] to the table.
     ///
     /// Use this when a mount was validated before the table was assembled.
-    pub fn push_mount(&mut self, mount: Mount) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MountError::OverlappingMounts`] if the mount's canonical host
+    /// directory equals, contains, or is contained by an existing mount's.
+    /// Access mode is checked only against the mount the *virtual* path
+    /// selects, so a host file reachable through two mounts would take the
+    /// weaker mode — e.g. a read-write mount of a directory silently defeats a
+    /// read-only mount of its subdirectory. Mounting disjoint host directories
+    /// at nested virtual paths (`/data`, `/data/sub`) remains fine: the
+    /// longest-prefix rule routes each path to exactly one mount.
+    pub fn push_mount(&mut self, mount: Mount) -> Result<(), MountError> {
+        // Canonical host paths cannot see two routes to the same file through a
+        // hard link or bind mount, but the sandbox can create neither — that
+        // would need pre-existing host state, i.e. a hostile *host*, which
+        // mount configuration already trusts.
+        if let Some(existing) = self
+            .mounts
+            .iter()
+            .find(|existing| host_paths_overlap(existing.host_path(), mount.host_path()))
+        {
+            return Err(MountError::OverlappingMounts {
+                virtual_path: mount.virtual_path().to_owned(),
+                host_path: mount.host_path().to_owned(),
+                existing_virtual_path: existing.virtual_path().to_owned(),
+                existing_host_path: existing.host_path().to_owned(),
+            });
+        }
         // Keep mounts sorted longest-prefix-first so dispatch can stop at the
         // first match without re-sorting the whole table on every insertion.
         let insert_at = self
             .mounts
             .partition_point(|existing| existing.virtual_path().len() > mount.virtual_path().len());
         self.mounts.insert(insert_at, mount);
+        Ok(())
     }
 
     /// Handles an OS call using the mount table.
@@ -258,7 +286,9 @@ impl Mount {
         self.root.virtual_path()
     }
 
-    /// Returns the canonical host directory path. Diagnostics only.
+    /// Returns the canonical host directory path. Used for diagnostics and the
+    /// overlap check in [`MountTable::push_mount`]; operations never resolve
+    /// through it.
     #[must_use]
     pub fn host_path(&self) -> &Path {
         self.root.host_path()
@@ -318,8 +348,9 @@ impl Mount {
     }
 }
 
-/// A host directory opened once, mountable as often as the host likes; cloning
-/// shares the descriptor.
+/// A host directory opened once, mountable as often as the host likes — though
+/// at most once per table, see [`MountTable::push_mount`]; cloning shares the
+/// descriptor.
 ///
 /// Reuse one instead of re-deriving a mount from its path: sandbox code that
 /// can rename inside a parent mount redirects that name between rebuilds, and
@@ -328,7 +359,8 @@ impl Mount {
 pub struct MountRoot {
     /// Virtual path prefix (absolute, normalized).
     virtual_path: String,
-    /// Canonical host directory path. Diagnostics only — see `dir`.
+    /// Canonical host directory path. Diagnostics and the overlap check only —
+    /// operations resolve through `dir`, never this path.
     host_path: PathBuf,
     /// Descriptor for the mounted directory — the sandbox boundary, which
     /// resolution cannot leave. Shared, so every mount built from this root is
@@ -362,11 +394,12 @@ impl MountRoot {
         let dir = Dir::open_ambient_dir(host_path, ambient_authority())
             .map_err(|e| MountError::InvalidMount(format!("cannot open host path '{}': {e}", host_path.display())))?;
 
-        // Diagnostics only — nothing resolves through this path. Resolved after
-        // the open, so a host racing it leaves a stale label on the right
-        // descriptor, never the reverse. Still fatal on failure: callers copy
-        // this out as a mount's durable identity, and a relative path would
-        // later re-resolve against the process CWD.
+        // Nothing resolves through this path — it labels the descriptor for
+        // diagnostics and keys the overlap check in `MountTable::push_mount`.
+        // Resolved after the open, so a host racing it leaves a stale label on
+        // the right descriptor, never the reverse. Still fatal on failure:
+        // callers copy this out as a mount's durable identity, and a relative
+        // path would later re-resolve against the process CWD.
         let canonical_host = fs::canonicalize(host_path).map_err(|e| {
             MountError::InvalidMount(format!("cannot resolve host path '{}': {e}", host_path.display()))
         })?;
@@ -384,11 +417,18 @@ impl MountRoot {
         &self.virtual_path
     }
 
-    /// Returns the canonical host directory path. Diagnostics only.
+    /// Returns the canonical host directory path. Diagnostics and the overlap
+    /// check only — operations never resolve through it.
     #[must_use]
     pub fn host_path(&self) -> &Path {
         &self.host_path
     }
+}
+
+/// Whether two canonical host paths name the same directory or nest one inside
+/// the other. Component-wise, so `/a/bc` does not overlap `/a/b`.
+fn host_paths_overlap(a: &Path, b: &Path) -> bool {
+    a.starts_with(b) || b.starts_with(a)
 }
 
 /// Checks whether `normalized_path` falls under `mount_virtual_path`.

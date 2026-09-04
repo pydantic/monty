@@ -1,4 +1,4 @@
-//! Regression tests for three mount-confinement defects.
+//! Regression tests for mount-confinement defects.
 
 use std::{fs, io::ErrorKind};
 
@@ -81,7 +81,9 @@ fn mount_root_stays_pinned_across_rebuilds() {
 
     // Feed 2: the same configuration, rebuilt into a fresh table.
     let mut rebuilt = MountTable::new();
-    rebuilt.push_mount(Mount::with_root(child_root, MountMode::ReadOnly, None));
+    rebuilt
+        .push_mount(Mount::with_root(child_root, MountMode::ReadOnly, None))
+        .unwrap();
 
     // The rebuild still serves the directory that was validated, and the file
     // the redirect aimed at is simply not in it.
@@ -100,6 +102,85 @@ fn mount_root_stays_pinned_across_rebuilds() {
         .unwrap();
     let leaked = read_text(&mut from_path, "/child/secret.txt").unwrap();
     assert_eq!(leaked, MontyObject::String("HOST SECRET".to_owned()));
+}
+
+/// One host file reachable through two mounts lets the *spelling* of a path
+/// pick which mount's mode applies, so the weaker mode wins (Hack Monty
+/// round 3): a read-write mount of a directory silently defeated a read-only
+/// mount of its subdirectory, directly or through a host-planted symlink.
+/// Overlap is therefore refused at registration — in host-path space, since
+/// the colliding mounts' virtual paths need not be related at all.
+#[test]
+fn overlapping_host_mounts_are_rejected() {
+    let base = TempDir::new().unwrap();
+    let protected = base.path().join("protected");
+    fs::create_dir(&protected).unwrap();
+
+    // The same directory twice, at unrelated virtual paths — the modes need
+    // not even differ, and rejection does not depend on them.
+    let mut mt = MountTable::new();
+    mt.mount("/m", base.path(), MountMode::ReadWrite, None).unwrap();
+    let err = mt.mount("/ro", base.path(), MountMode::ReadOnly, None).unwrap_err();
+    assert_overlap(&err, "/ro", "/m");
+    let canonical_base = fs::canonicalize(base.path()).unwrap();
+    assert_eq!(
+        err.into_exception().message().unwrap(),
+        format!(
+            "cannot mount '{0}' at '/ro': its host directory overlaps the mount of '{0}' at '/m', which would \
+             let the less restrictive mount's mode apply to the other's files",
+            canonical_base.display()
+        )
+    );
+
+    // A subdirectory of an already-mounted directory — the "keep this
+    // subdirectory read-only" configuration, which cannot deliver what it
+    // promises and so must refuse rather than half-work.
+    let mut mt = MountTable::new();
+    mt.mount("/m", base.path(), MountMode::ReadWrite, None).unwrap();
+    let err = mt
+        .mount("/m/protected", &protected, MountMode::ReadOnly, None)
+        .unwrap_err();
+    assert_overlap(&err, "/m/protected", "/m");
+
+    // The ancestor arriving second is caught the same way.
+    let mut mt = MountTable::new();
+    mt.mount("/m/protected", &protected, MountMode::ReadOnly, None).unwrap();
+    let err = mt.mount("/m", base.path(), MountMode::ReadWrite, None).unwrap_err();
+    assert_overlap(&err, "/m", "/m/protected");
+}
+
+/// Asserts registration failed as [`MountError::OverlappingMounts`] naming the
+/// expected added/existing virtual-path pair.
+fn assert_overlap(err: &MountError, added: &str, existing: &str) {
+    match err {
+        MountError::OverlappingMounts {
+            virtual_path,
+            existing_virtual_path,
+            ..
+        } => {
+            assert_eq!(virtual_path, added);
+            assert_eq!(existing_virtual_path, existing);
+        }
+        other => panic!("expected OverlappingMounts, got {other:?}"),
+    }
+}
+
+/// Overlap means the same host directory or an ancestor of one, measured in
+/// path components: siblings sharing a name prefix are disjoint, and disjoint
+/// host directories may sit at nested *virtual* paths — the longest-prefix
+/// rule routes every path to exactly one mount, so no file has two spellings.
+#[test]
+fn disjoint_host_mounts_still_register() {
+    let base = TempDir::new().unwrap();
+    let sub = base.path().join("sub");
+    let sub2 = base.path().join("sub2");
+    fs::create_dir(&sub).unwrap();
+    fs::create_dir(&sub2).unwrap();
+
+    let mut mt = MountTable::new();
+    mt.mount("/data", &sub, MountMode::ReadWrite, None).unwrap();
+    mt.mount("/data/nested", &sub2, MountMode::ReadOnly, None).unwrap();
+    assert_eq!(mt.len(), 2);
 }
 
 /// Once either side of a rename is covered, the table owns the call: the
