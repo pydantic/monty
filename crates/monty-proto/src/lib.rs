@@ -21,7 +21,7 @@ pub mod worker;
 /// or repurposing a field, changing a field's meaning, or adding one the child
 /// requires. Purely additive changes an older peer can ignore do not need a
 /// bump.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 2;
@@ -39,20 +39,24 @@ pub fn check_protocol_version(version: u32) -> Result<(), String> {
     if SUPPORTED_PROTOCOL_VERSIONS.contains(&version) {
         Ok(())
     } else {
-        Err(format!(
-            "unsupported protocol version {version} ({})",
-            supported_versions()
-        ))
-    }
-}
+        // Singular while the window is one version wide — "2 to 2" reads as a range it is not.
+        // `let`-bound so the `format_args!` temporaries live long enough to be formatted below.
+        // use "server" since this error should only ever happen when using a client/server architecture
+        let supported = if MIN_SUPPORTED_PROTOCOL_VERSION == PROTOCOL_VERSION {
+            format_args!("server supports protocol version {PROTOCOL_VERSION}")
+        } else {
+            format_args!("server supports protocol versions {MIN_SUPPORTED_PROTOCOL_VERSION} to {PROTOCOL_VERSION}")
+        };
 
-/// Names [`SUPPORTED_PROTOCOL_VERSIONS`] for the refusal above, singular while
-/// the window is one version wide — "1 to 1" reads as a range it is not.
-fn supported_versions() -> String {
-    if MIN_SUPPORTED_PROTOCOL_VERSION == PROTOCOL_VERSION {
-        format!("this build supports protocol version {PROTOCOL_VERSION}")
-    } else {
-        format!("this build supports protocol versions {MIN_SUPPORTED_PROTOCOL_VERSION} to {PROTOCOL_VERSION}")
+        // Points the reader at the client for the refusal above: the worker is typically a deployed build the
+        // reader cannot change, so the client is the half to move.
+        let tip = if version < MIN_SUPPORTED_PROTOCOL_VERSION {
+            "try updating to a newer client version"
+        } else {
+            "make sure you are using the correct client version"
+        };
+
+        Err(format!("unsupported protocol version {version} ({supported}, {tip})"))
     }
 }
 

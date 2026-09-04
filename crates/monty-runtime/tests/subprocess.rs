@@ -1454,6 +1454,11 @@ fn unsupported_protocol_version_on_create_is_a_fatal_error() {
         message.contains(&supported),
         "message should name the supported range: {message}"
     );
+    // Ahead of the range, so the client is on the wrong version rather than behind.
+    assert!(
+        message.contains("make sure you are using the correct client version."),
+        "message should point at the client version: {message}"
+    );
 }
 
 /// Zero means the parent declared nothing — it predates the field, or is not a
@@ -1469,6 +1474,11 @@ fn undeclared_protocol_version_is_a_fatal_error() {
     assert!(
         message.contains("unsupported protocol version 0"),
         "message should name the rejected version: {message}"
+    );
+    // Below the range, so the client needs to move forward.
+    assert!(
+        message.contains("try updating to a newer version of the client."),
+        "message should tell the client to update: {message}"
     );
 }
 
