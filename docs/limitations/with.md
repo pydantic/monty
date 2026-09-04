@@ -2,14 +2,14 @@
 
 Monty supports the `with` statement for built-in types that implement
 `__enter__` / `__exit__` (currently just file objects produced by `open()`,
-see ./open.md) **and for user-defined classes** that define the two
+see [open.md](open.md)) **and for user-defined classes** that define the two
 dunders. Semantics follow CPython for the supported subset: `__enter__` runs
 before the body, `__exit__` runs on every exit path (normal completion,
 exception, `return`, `break`, `continue`), and a truthy return from
 `__exit__` suppresses an in-flight exception.
 
 User-class `__enter__` / `__exit__` run as real frames, so unlike
-`__repr__` / `__str__` (see ./classes.md) they may suspend on
+`__repr__` / `__str__` (see [classes.md](classes.md)) they may suspend on
 external/OS calls and resume mid-`with`. The protocol check matches CPython:
 a value whose class lacks `__exit__` raises `TypeError: '...' object does
 not support the context manager protocol (missed __exit__ method)`; one with
@@ -28,7 +28,7 @@ explicit `obj.__enter__()` call, which is an ordinary method call.
 
   Each extra item counts against the parser's nesting budget as if it were
   written as explicitly nested `with` blocks; see
-  ./language.md.
+  [language.md](language.md).
 
 ## Not supported
 
@@ -76,7 +76,7 @@ explicit `obj.__enter__()` call, which is an ordinary method call.
 
 | Type           | Notes                                                     |
 | -------------- | --------------------------------------------------------- |
-| `open()`       | Closes the file on exit; see ./open.md for details.       |
+| `open()`       | Closes the file on exit; see [open.md](open.md) for details.       |
 | user classes   | Class must define `__exit__` (and `__enter__`); see above. |
 
 Adding a new context-manager-capable built-in takes three pieces on the

@@ -930,8 +930,8 @@ the project describing behaviour it no longer has.
 | Surface | Reader | Contains |
 | --- | --- | --- |
 | `README.md` | GitHub, PyPI, npm landing page | A short pitch with the latency numbers, install commands, one example, links into `docs/` — nothing else |
-| `docs/` | the docs site (`pydantic.dev/docs/monty`), nav in `mkdocs.yml` | The landing page (`index.md`: numbers, why, example), commercial support (`server.md`), getting started per language (install then examples), concepts (security model, host functions, resource limits, filesystem, snapshots, type checking), reference (comparison to alternatives, the subset, examples, CLI) |
-| `limitations/` | users and contributors chasing a specific behaviour | The exhaustive per-feature record of CPython divergences (see the section below) |
+| `docs/` | the docs site (`pydantic.dev/docs/monty`), nav in `mkdocs.yml` | The landing page (`index.md`: numbers, why, example), commercial support (`server.md`), getting started per language (install then examples), concepts (security model, host functions, resource limits, filesystem, snapshots, type checking), reference (comparison to alternatives, examples, CLI), limitations (the subset on `limitations/index.md`, then one page per feature) |
+| `limitations/` (a symlink to `docs/limitations/`, published as the site's Limitations section) | agents and contributors chasing a specific behaviour | `index.md` gives the shape of the subset; the other pages are the exhaustive per-feature record of CPython divergences (see the section below) |
 | `crates/*/README.md` | crates.io, and PyPI/npm for the binding crates | Per-crate API documentation; `monty-python/README.md` and `monty-js/README.md` are the binding references |
 
 **`docs/` does not duplicate `limitations/`.** `docs/` describes the *shape* of what Monty
@@ -942,7 +942,7 @@ a `docs/` page instead of `limitations/` is a defect — move it and link.
 
 - **A CPython divergence** — `limitations/<file>.md`, per the mandatory rule below.
 - **The subset changes shape** (a stdlib module becomes importable, a parse-time
-  rejection lands or is lifted, a language feature ships) — also `docs/python-subset.md`
+  rejection lands or is lifted, a language feature ships) — also `docs/limitations/index.md`
   and the "What Monty is not for" section of `docs/index.md`.
 - **Python binding API** (`crates/monty-python/`) — the `_monty.pyi` docstrings,
   `crates/monty-python/README.md`, and the `docs/` page that covers the feature.
@@ -960,7 +960,7 @@ These facts are stated in more than one place on purpose, because a reader needs
 where they are. Change one and you must change all of them:
 
 - **The importable stdlib module list** — `limitations/modules.md` (authoritative),
-  `docs/python-subset.md`.
+  `docs/limitations/index.md`.
 - **The start-latency numbers** — `ROWS` in `scripts/startup_latency_chart.py` (which renders
   `docs/img/startup-latency.svg`), `docs/index.md`, `docs/alternatives.md`, `README.md`.
   Re-measure with `scripts/startup_performance.py`, then update all four.
@@ -975,17 +975,20 @@ where they are. Change one and you must change all of them:
 Monty implements a limited subset of CPython.
 Its behaviour should match CPython 3.14 except where documented in `limitations`.
 
-The list of stdlib modules in `docs/python-subset.md` must be updated if a new standard library module is implemented.
+The list of stdlib modules in `docs/limitations/index.md` must be updated if a new standard library module is implemented.
 
 ### Rules for `docs/`
 
 - `make test-docs` checks every Python snippet in `docs/`, `README.md`,
   `packages/pydantic-monty/README.md`, and `crates/monty-python/README.md`.
   It executes each snippet unless marked ```` ```python test="skip" ````; skipped snippets are still ruff-linted.
+  This includes `docs/limitations/`, whose snippets are all sandbox-side and so all `test="skip"`.
 - Sandbox-side Python (code fed to Monty, not host code) belongs inside a host snippet as
   a string, or in a `test="skip"` block. It must never be a runnable top-level block —
   CPython would execute it.
 - New pages go in the `mkdocs.yml` `nav:`; the nav is what orders the docs site.
+  That includes a new `limitations/` file, which goes in the flat Limitations section (nested groups would change
+  the page URLs and break the relative links between limitations pages).
 - Prose style follows [`.agents/skills/writing-style`](.agents/skills/writing-style/SKILL.md):
   one sentence per line, claims traceable to source, no hype.
   Do not state a behaviour you have not read in the code, the tests or `limitations/`.
@@ -1006,6 +1009,11 @@ The list of stdlib modules in `docs/python-subset.md` must be updated if a new s
   finding.
 
 ## Limitations documentation (`./limitations/`)
+
+`./limitations/` is a symlink to `docs/limitations/`, so the files are published verbatim as the
+Limitations section of the docs site (`docs/limitations/index.md` is the subset overview) while every
+`limitations/<file>.md` path in this file, the skills and the agents keeps working.
+The contributor rules below are also in `docs/limitations/AGENTS.md`, which is excluded from the build.
 
 Every pull request that adds, changes, or removes user-visible behavior MUST
 land (or update) a markdown document under `./limitations/` describing how
@@ -1035,6 +1043,10 @@ Structure each file around what a Python user would actually try:
 - Error types / messages that differ from CPython.
 
 Avoid implementation detail unless it explains a user-visible quirk.
+
+Refer to other limitations pages with relative markdown links (`see [classes.md](classes.md)`),
+never a bare file name in prose, so the reference resolves on the site as well as on GitHub.
+`mkdocs build --strict` fails on a link to a page that does not exist.
 
 ## NOTES
 

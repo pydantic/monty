@@ -26,4 +26,4 @@ access raises `AttributeError`.
 Production builds do not expose `sys.setrecursionlimit`. Test builds expose a
 lowering-only hook so shared fixtures can force deterministic recursion errors;
 it cannot raise the host-configured ceiling. See
-./resource_limits.md.
+[resource_limits.md](resource_limits.md).

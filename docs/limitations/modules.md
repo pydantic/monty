@@ -8,26 +8,26 @@ and no way for sandboxed code to load additional modules.
 
 | Module         | See              |
 | -------------- | ---------------- |
-| `asyncio`      | ./asyncio.md     |
+| `asyncio`      | [asyncio.md](asyncio.md)     |
 | `base64`       | ./base64.md      |
 | `binascii`     | ./base64.md      |
-| `collections`  | ./collections.md |
-| `dataclasses`  | ./dataclasses.md |
-| `datetime`     | ./datetime.md    |
-| `functools`    | ./functools.md   |
-| `itertools`    | ./itertools.md   |
-| `json`         | ./json.md        |
-| `math`         | ./math.md        |
-| `os`           | ./os.md          |
-| `pathlib`      | ./pathlib.md     |
-| `re`           | ./re.md          |
-| `sys`          | ./sys.md         |
-| `typing`       | ./typing.md      |
-| `unicodedata`  | ./unicodedata.md |
+| `collections`  | [collections.md](collections.md) |
+| `dataclasses`  | [dataclasses.md](dataclasses.md) |
+| `datetime`     | [datetime.md](datetime.md)    |
+| `functools`    | [functools.md](functools.md)   |
+| `itertools`    | [itertools.md](itertools.md)   |
+| `json`         | [json.md](json.md)        |
+| `math`         | [math.md](math.md)        |
+| `os`           | [os.md](os.md)          |
+| `pathlib`      | [pathlib.md](pathlib.md)     |
+| `re`           | [re.md](re.md)          |
+| `sys`          | [sys.md](sys.md)         |
+| `typing`       | [typing.md](typing.md)      |
+| `unicodedata`  | [unicodedata.md](unicodedata.md) |
 
 `collections` is importable and exposes `deque`, `Counter`, `defaultdict`,
 and `namedtuple`; `OrderedDict`, `ChainMap`, and the `UserDict` / `UserList`
-/ `UserString` wrappers are missing (see ./collections.md).
+/ `UserString` wrappers are missing (see [collections.md](collections.md)).
 
 A `gc` module exposing `collect()` / `enable()` / `disable()` is compiled
 in only under the `test-hooks` Cargo feature, for Monty's own test suite;

@@ -2,7 +2,7 @@
 
 Output always goes to the host via a print callback (`vm.print_writer`). The
 host decides where it ends up; there is no real `sys.stdout` underneath (see
-./sys.md).
+[sys.md](sys.md)).
 
 ## Supported keyword arguments
 
@@ -15,7 +15,7 @@ host decides where it ends up; there is no real `sys.stdout` underneath (see
 
 - `file=...` — rejected with `TypeError: "print() 'file' argument is not
   supported"`. Code that does `print(..., file=sys.stderr)` will not work;
-  `sys.stderr` is an opaque marker (see ./sys.md).
+  `sys.stderr` is an opaque marker (see [sys.md](sys.md)).
 - `flush=...` — accepted and ignored. Output is delivered to the host through
   the subprocess protocol on its own schedule (see "Chunk boundaries" below);
   a `print()` cannot make it arrive sooner.

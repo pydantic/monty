@@ -188,4 +188,4 @@ See the [JavaScript quickstart](quickstart/javascript.md#host-objects).
 
 Divergences from CPython objects (`type(x)`, equality, hashing, frozen dataclasses, inheritance, what `'all'` exposes,
 lazy attribute errors) are listed in
-[`limitations/classes.md`](https://github.com/pydantic/monty/blob/main/limitations/classes.md).
+[`limitations/classes.md`](limitations/classes.md).

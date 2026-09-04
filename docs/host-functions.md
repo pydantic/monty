@@ -142,7 +142,7 @@ with Monty() as pool:
 ```
 
 If the sandbox does not catch it, `feed_run` raises `MontyRuntimeError` with the sandbox traceback.
-Only [the exception types Monty implements](python-subset.md) can cross; the type name is what carries over, not your
+Only [the exception types Monty implements](limitations/index.md) can cross; the type name is what carries over, not your
 exception class.
 
 ## Async host functions

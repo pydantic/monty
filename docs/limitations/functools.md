@@ -31,7 +31,7 @@ These names are absent from the module namespace rather than stubbed, so they ar
 - **Calling a `partial` charges the native re-entry budget.** A partial stored as a class attribute binds as a bound
   method whose `__func__` is another partial, so a chain of them nests on the interpreter's own call stack without
   pushing a Python frame. Monty bounds that chain at the fixed native re-entry depth (see
-  ./resource_limits.md), raising `RecursionError: maximum recursion depth exceeded` beyond roughly a dozen
+  [resource_limits.md](resource_limits.md)), raising `RecursionError: maximum recursion depth exceeded` beyond roughly a dozen
   levels; CPython runs such a chain into the thousands before its own C stack gives out. Ordinary use is unaffected —
   nested `partial(partial(f, 1), 2)` is flattened at construction, and a partial passed to `map()` or `sorted(key=)`
   costs one level.
@@ -51,7 +51,7 @@ These names are absent from the module namespace rather than stubbed, so they ar
   CPython has a method-wrapper and the type's docstring respectively.
 - **`partial[int]` is not subscriptable at runtime.** CPython returns a `types.GenericAlias`; Monty raises
   `TypeError: 'type' object is not subscriptable`, as it does for `list[int]` — there are no runtime generic aliases
-  at all (see ./typing.md). The type checker accepts the expression, so this is one of the few divergences the stubs
+  at all (see [typing.md](typing.md)). The type checker accepts the expression, so this is one of the few divergences the stubs
   cannot reject up front. Annotations are unaffected, Monty stringizing them rather than evaluating them.
 - **A `partial` crossing the host boundary marshals as its `repr`.** Python and JavaScript hosts receive
   `MontyObject::Repr("functools.partial(...)")` rather than a callable, since neither side can call back into a value

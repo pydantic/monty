@@ -95,8 +95,8 @@ Relative symlinks that stay inside the mount are followed in the non-overlay mod
   input.
   Existence checks and `stat()` still work on them.
 
-The full list is in [`limitations/filesystem.md`](https://github.com/pydantic/monty/blob/main/limitations/filesystem.md)
-and [`limitations/open.md`](https://github.com/pydantic/monty/blob/main/limitations/open.md).
+The full list is in [`limitations/filesystem.md`](limitations/filesystem.md)
+and [`limitations/open.md`](limitations/open.md).
 
 ## The `os` callback
 

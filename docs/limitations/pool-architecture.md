@@ -130,7 +130,7 @@ properties that real CPython does not provide, per the caveat above.
   frame (~1s worst case) can delay enforcement by that long.
 - **`max_memory` is also enforced in the worker's allocator.** It caps the live
   bytes the worker's allocator will hand out, plus headroom (see
-  ./resource_limits.md, which covers how exceeding it surfaces); a
+  [resource_limits.md](resource_limits.md), which covers how exceeding it surfaces); a
   session without a limit is uncapped. The worker derives it from the session it
   holds, so nothing travels outside the protocol, and the wasm worker counts the
   same way (not the linear memory it has grown to, which never shrinks).

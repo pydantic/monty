@@ -38,9 +38,42 @@ nav:
       - Type Checking: 'type-checking.md'
   - Reference:
       - Comparison to Alternatives: 'alternatives.md'
-      - The Python Subset: 'python-subset.md'
       - Examples: 'examples.md'
       - Command Line: 'cli.md'
+  - Limitations:
+      - Overview: 'limitations/index.md'
+      - Python language / parser: 'limitations/language.md'
+      - Built-in functions: 'limitations/builtins.md'
+      - Classes: 'limitations/classes.md'
+      - dataclasses: 'limitations/dataclasses.md'
+      - Named tuples: 'limitations/namedtuple.md'
+      - Exceptions: 'limitations/exceptions.md'
+      - iter() and iterators: 'limitations/iter.md'
+      - Comprehensions: 'limitations/comprehensions.md'
+      - with statement: 'limitations/with.md'
+      - assert: 'limitations/assert.md'
+      - print(): 'limitations/print.md'
+      - Format mini-language: 'limitations/format.md'
+      - str.encode() / bytes.decode(): 'limitations/encoding.md'
+      - typing: 'limitations/typing.md'
+      - asyncio: 'limitations/asyncio.md'
+      - Standard library modules: 'limitations/modules.md'
+      - base64: 'limitations/base64.md'
+      - collections: 'limitations/collections.md'
+      - datetime: 'limitations/datetime.md'
+      - functools: 'limitations/functools.md'
+      - itertools: 'limitations/itertools.md'
+      - json: 'limitations/json.md'
+      - math: 'limitations/math.md'
+      - os: 'limitations/os.md'
+      - pathlib: 'limitations/pathlib.md'
+      - re: 'limitations/re.md'
+      - sys: 'limitations/sys.md'
+      - unicodedata: 'limitations/unicodedata.md'
+      - open() and file objects: 'limitations/open.md'
+      - Filesystem and sandbox boundary: 'limitations/filesystem.md'
+      - Resource limits: 'limitations/resource_limits.md'
+      - Worker execution: 'limitations/pool-architecture.md'
   - API Docs:
       - Python:
           - Pools: 'api/python/pools.md'
@@ -55,6 +88,10 @@ nav:
           - monty-fs: 'api/rust/monty-fs.md'
           - monty-proto: 'api/rust/monty-proto.md'
           - monty-type-checking: 'api/rust/monty-type-checking.md'
+
+# contributor notes for docs/limitations/, not a page
+exclude_docs: |
+  limitations/AGENTS.md
 
 markdown_extensions:
   - admonition

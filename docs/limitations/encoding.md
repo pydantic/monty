@@ -43,12 +43,12 @@ everywhere, since the BOM's order wins.
   raises `LookupError: unknown error handler name '{name}'`.
 - All other built-in handlers behave as in CPython, in both directions.
   `namereplace` output for recently-added code points is subject to the
-  Unicode version skew described in ./unicodedata.md.
+  Unicode version skew described in [unicodedata.md](unicodedata.md).
 
 ## `UnicodeEncodeError` / `UnicodeDecodeError`
 
 **Inside the sandbox** both are message-only, like every other Monty
-exception; see ./exceptions.md.
+exception; see [exceptions.md](exceptions.md).
 CPython's `encoding`/`object`/`start`/`end`/`reason` attributes are not
 exposed to sandboxed code, and the in-sandbox constructor accepts only a
 single message argument.

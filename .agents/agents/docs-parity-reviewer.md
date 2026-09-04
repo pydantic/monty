@@ -14,7 +14,9 @@ documentation surfaces, none generated from another:
 - **`docs/`** — the docs site (`pydantic.dev/docs/monty`), ordered by the `nav:` in
   `mkdocs.yml`. Conceptual and how-to. Describes the *shape* of what Monty implements.
 - **`limitations/`** — the single source of truth for every CPython divergence. One file
-  per builtin, module or construct.
+  per builtin, module or construct. A symlink to `docs/limitations/`, published verbatim as
+  the site's Limitations section, so a new file also needs a `mkdocs.yml` nav entry and
+  cross-references are relative markdown links, not bare file names.
 - **`crates/*/README.md`** — per-crate API docs published to crates.io, and to PyPI/npm
   for `monty-python` and `monty-js`.
 
@@ -48,7 +50,7 @@ fix.
 
 3. **The obliged surfaces are updated.** Match the change against the table in
    `CLAUDE.md` "Documentation surfaces that must stay in sync":
-   - subset shape change → `docs/python-subset.md` and the "What Monty is not for"
+   - subset shape change → `docs/limitations/index.md` and the "What Monty is not for"
      section of `docs/index.md`
    - Python API → `_monty.pyi` docstrings, `crates/monty-python/README.md`, the covering
      `docs/` page
@@ -65,7 +67,7 @@ fix.
    verify they still match each other and the source:
    - the importable stdlib module list — `limitations/modules.md` (authoritative, and
      itself checked against `StandardLib` in `crates/monty/src/modules/mod.rs`),
-     `docs/python-subset.md`
+     `docs/limitations/index.md`
    - the start-latency numbers — `scripts/startup_latency_chart.py` (`ROWS`, which renders
      `docs/img/startup-latency.svg`), `docs/index.md`, `docs/alternatives.md`, `README.md`
    - default limits (1000 recursion frames, 100 MB per-mount memory, 10 MiB print

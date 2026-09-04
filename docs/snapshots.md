@@ -134,7 +134,7 @@ with Monty() as pool:
 - **The instance store does not travel.** Host objects sent before the dump are unknown to the restored session: they
   come back as `MontyClassProxy` (a host class, `type(x)` included, as `MontyClassTypeProxy`), method calls on them
   raise `RuntimeError`, lazy attributes raise `AttributeError`, and `ClassType` construction raises `RuntimeError`.
-  See [`limitations/pool-architecture.md`](https://github.com/pydantic/monty/blob/main/limitations/pool-architecture.md#host-api-behaviour-notes).
+  See [`limitations/pool-architecture.md`](limitations/pool-architecture.md#host-api-behaviour-notes).
 - **The accumulated time budget travels with the dump**, so a restored session resumes where it left off rather than
   getting a fresh budget.
 - **Only the suspension limit travels.** A restored session keeps `max_suspensions`, but the pool resets its count to

@@ -101,7 +101,7 @@ methods and attributes are:
 - `write(data)` — full-file or appending write.
 - `close()`, `flush()`, `readable()`, `writable()`, `seekable()`.
 - `__enter__()` / `__exit__()` — `with open(...) as f:` works; see
-  ./with.md for the shared protocol divergences.
+  [with.md](with.md) for the shared protocol divergences.
 - `name`, `mode`, `closed` attributes.
 - `encoding` attribute on text files (always `"utf-8"`).
 

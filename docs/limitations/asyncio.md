@@ -29,7 +29,7 @@ surface.
 
 `asyncio.timeout()` / `asyncio.timeout_at()` would be unreachable in any
 case: they are async context managers, and `async with` is rejected at parse
-time (see ./language.md).
+time (see [language.md](language.md)).
 
 ## `async def` / `await`
 
@@ -39,7 +39,7 @@ time (see ./language.md).
   it again.
 - `await` on a non-awaitable raises `TypeError`.
 - `async for` and `async with` are **rejected at parse time** (see
-  ./language.md). Async iteration and async context-manager
+  [language.md](language.md)). Async iteration and async context-manager
   protocols do not exist.
 - Async comprehensions (`[x async for x in ...]`) are rejected at parse
   time.
@@ -61,15 +61,27 @@ They resume only when a host result arrives or when another task awaits, because
 to turn.
 Code that catches the error and then returns without awaiting again leaves them parked where they were:
 
-```python
+```python test="skip"
+import asyncio
+
+
+async def tick(): ...  # awaits a host call
+
+
+async def raises():
+    raise ValueError('x')
+
+
 async def sibling():
     await asyncio.gather(tick())
     print('sibling finished')
 
-try:
-    await asyncio.gather(sibling(), raises())
-except ValueError:
-    pass
+
+async def main():
+    try:
+        await asyncio.gather(sibling(), raises())
+    except ValueError:
+        pass
 ```
 
 CPython prints `sibling finished` here, Monty prints nothing.
@@ -90,10 +102,14 @@ ever awaited.
 Monty holds the awaitables and spawns nothing until the `await`, so a `gather(...)` whose result is discarded runs no
 code at all:
 
-```python
+```python test="skip"
+import asyncio
+
+
 async def boom():
     print('boom ran')
     raise ValueError('x')
+
 
 asyncio.gather(boom())  # CPython prints `boom ran`, Monty runs nothing
 ```
@@ -113,6 +129,6 @@ CPython nests gathers as deeply as memory allows, and the depth costs nothing be
 Monty holds a walk frame per level while it commits the nest, so awaiting a deep nest costs memory on top of what the
 nest already occupies.
 A session with `max_memory` set can therefore build a nest it cannot await: the `await` ends the run with
-`MemoryError: memory limit exceeded`, which sandboxed code cannot catch (see ./resource_limits.md).
+`MemoryError: memory limit exceeded`, which sandboxed code cannot catch (see [resource_limits.md](resource_limits.md)).
 The nesting is not charged against the recursion limit in either interpreter, and a session with no memory limit has
 no bound to hit.

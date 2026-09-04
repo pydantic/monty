@@ -35,11 +35,13 @@ CPython's PEP 563 stringizer the expression is *unparsed* rather than sliced out
 of the file, so original spacing, line breaks and quote style are normalized
 away (`x: dict[str,int]` gives `'dict[str, int]'`):
 
-```python
+```python test="skip"
 class C:
     x: int
     y: list[int]
-C.__annotations__        # {'x': 'int', 'y': 'list[int]'}  -- strings
+
+
+C.__annotations__  # {'x': 'int', 'y': 'list[int]'}  -- strings
 ```
 
 This is a known temporary divergence; see `class__annotations.py`.
@@ -70,7 +72,7 @@ This is a known temporary divergence; see `class__annotations.py`.
   binds the name but annotates nothing is accepted, and its binding stands.
 - **`from __future__ import annotations`** is accepted as a **no-op**, since it
   describes what Monty already does. See
-  ./language.md for the other features.
+  [language.md](language.md) for the other features.
 - Consequences: `get_type_hints()` (which would evaluate the strings) is still
   not implemented, and code that reads `__annotations__` expecting type
   *objects* sees strings. CPython 3.14's `@dataclass` reads evaluated objects

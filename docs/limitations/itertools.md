@@ -54,7 +54,7 @@ raise `AttributeError` at runtime.
   `NotImplementedError: takewhile(): external function 'f' is not yet supported
   in this context` where CPython would simply call it. This is the same
   restriction that applies to `__init__`, `__next__` and `__repr__` (see
-  `limitations/classes.md`); ordinary sandbox-defined functions and lambdas are
+  [classes.md](classes.md)); ordinary sandbox-defined functions and lambdas are
   unaffected.
 - **Crossing the host boundary loses the repr.** A `count` / `repeat` object
   returned to the host arrives as `<itertools.count object>` /
@@ -69,10 +69,12 @@ source into a list and returns a concrete result, rather than the lazy iterator
 CPython returns. Applied to an infinite `itertools` iterator they therefore
 never return, where CPython yields lazily:
 
-```python
-map(f, itertools.count())        # CPython: lazy. Monty: runs until a limit trips.
-filter(p, itertools.repeat(1))   # likewise
-enumerate(itertools.count())     # likewise
+```python test="skip"
+import itertools
+
+map(str, itertools.count())  # CPython: lazy. Monty: runs until a limit trips.
+filter(bool, itertools.repeat(1))  # likewise
+enumerate(itertools.count())  # likewise
 ```
 
 `zip()` stops at the shortest input, so `zip(itertools.count(), 'ab')` behaves

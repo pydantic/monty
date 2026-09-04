@@ -207,7 +207,7 @@ There is no event loop inside the sandbox — the host is the loop.
 Sandboxed `async def` and `await` work, and `asyncio` exposes exactly `run` and `gather`, the latter running host calls
 concurrently.
 `asyncio.create_task`, `asyncio.sleep` and everything else in the module do not exist.
-See [`limitations/asyncio.md`](https://github.com/pydantic/monty/blob/main/limitations/asyncio.md).
+See [`limitations/asyncio.md`](../limitations/asyncio.md).
 
 ## Pausing at host calls
 
@@ -310,7 +310,7 @@ The print-collector cap is not one of these, though it looks identical from the 
 `MemoryError`, same `memory limit exceeded: ...` message.
 If you collect printed output at all — and the collectors are capped by default — you cannot tell the two apart from the
 exception alone, and in the collector case nothing is wrong with the session.
-See [`limitations/print.md`](https://github.com/pydantic/monty/blob/main/limitations/print.md).
+See [`limitations/print.md`](../limitations/print.md).
 
 `MontySyntaxError` and `MontyRuntimeError` carry a Monty traceback:
 
@@ -383,6 +383,6 @@ A loop of quick host calls resets it each turn; set [`max_duration_secs`](../res
 - [Host objects](../host-objects.md) — exposing objects and classes with per-attribute and per-method policies.
 - [Filesystem access](../filesystem.md) — mounts and the `os` callback.
 - [Snapshots](../snapshots.md) — `feed_start`, `dump()` and resuming later.
-- [The Python subset](../python-subset.md) — what the sandbox can actually run.
+- [The Python subset](../limitations/index.md) — what the sandbox can actually run.
 
 Worked examples using Pydantic AI live in [`examples/`](https://github.com/pydantic/monty/tree/main/examples).

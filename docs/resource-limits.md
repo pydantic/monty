@@ -154,4 +154,4 @@ Ending the session is your job.
 A caught `RecursionError` is the exception; it does not invalidate anything and execution may continue.
 
 Full details, including the exact pre-check thresholds, live in
-[`limitations/resource_limits.md`](https://github.com/pydantic/monty/blob/main/limitations/resource_limits.md).
+[`limitations/resource_limits.md`](limitations/resource_limits.md).

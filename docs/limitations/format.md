@@ -6,7 +6,7 @@ interpolations. The mini-language is only reachable through f-strings.
 The other CPython formatting mechanisms are not implemented:
 
 - The `format()` builtin raises `NameError` and the `str.format()` method
-  raises `AttributeError` (see ./builtins.md).
+  raises `AttributeError` (see [builtins.md](builtins.md)).
 - Printf-style `%` formatting (`'%5.3f' % math.pi`, `'%s %s' % (a, b)`) is not
   implemented. `str` has no `__mod__`, so `str % value` raises
   `TypeError: unsupported operand type(s) for %: 'str' and '...'`. Use an
@@ -16,8 +16,8 @@ The other CPython formatting mechanisms are not implemented:
 
 f-strings dispatch to a type's `__format__` only for `date`, `datetime` and
 `time`, which interpret the spec as a `strftime` string (`f'{dt:%Y-%m-%d}'`); see
-./datetime.md. There is no general `__format__` protocol: user
-classes can't customise formatting (see ./classes.md), and all
+[datetime.md](datetime.md). There is no general `__format__` protocol: user
+classes can't customise formatting (see [classes.md](classes.md)), and all
 other types use the builtin mini-language formatter. A format spec on a
 user-class instance is silently applied to `str(obj)` (`f'{obj:>10}'` pads),
 where CPython raises `TypeError: unsupported format string passed to
@@ -43,7 +43,7 @@ CPython prints it literally, or the reverse. Common text is unaffected.
   `SyntaxError: Invalid format specifier '...': width or precision overflows
   usize` rather than being accepted. CPython is bounded only by memory.
 - Very large widths/precisions are additionally bounded by the resource
-  tracker; see ./resource_limits.md.
+  tracker; see [resource_limits.md](resource_limits.md).
 
 ## When spec errors are raised
 

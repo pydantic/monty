@@ -1,4 +1,4 @@
-# The Python Subset
+# Limitations
 
 Monty is not a Python implementation aiming for completeness.
 It implements enough Python for a model to express what it wants to do, and deliberately stops there.
@@ -6,12 +6,14 @@ Everything it does implement is meant to behave exactly like CPython 3.14; every
 written down.
 
 This page gives you the shape of the subset.
-The exhaustive, per-feature list lives in [`limitations/`](https://github.com/pydantic/monty/tree/main/limitations) in
-the repository, and that directory — not this page — is the source of truth.
+The other pages in this section are the exhaustive record, one per builtin, module or construct.
+They list every known divergence, including the ones that feel obvious, so a behaviour missing from them can be
+assumed to match CPython 3.14.
+They exist for development and for agents debugging code that runs on Monty; most users need only this page.
 
 !!! tip
-    Turn on [type checking](type-checking.md) rather than memorising this page.
-    Unsupported APIs generally fail before they run; see [the caveats](type-checking.md#caveats) for the exceptions.
+    Turn on [type checking](../type-checking.md) rather than memorising this page.
+    Unsupported APIs generally fail before they run; see [the caveats](../type-checking.md#caveats) for the exceptions.
 
 ## Language features
 
@@ -62,22 +64,22 @@ The following modules are present:
 
 | Module | Divergences |
 | --- | --- |
-| `asyncio` | [asyncio.md](https://github.com/pydantic/monty/blob/main/limitations/asyncio.md) |
-| `base64` | [base64.md](https://github.com/pydantic/monty/blob/main/limitations/base64.md) |
-| `binascii` | [base64.md](https://github.com/pydantic/monty/blob/main/limitations/base64.md) |
-| `collections` | [collections.md](https://github.com/pydantic/monty/blob/main/limitations/collections.md) |
-| `dataclasses` | [dataclasses.md](https://github.com/pydantic/monty/blob/main/limitations/dataclasses.md) |
-| `datetime` | [datetime.md](https://github.com/pydantic/monty/blob/main/limitations/datetime.md) |
-| `functools` | [functools.md](https://github.com/pydantic/monty/blob/main/limitations/functools.md) |
-| `itertools` | [itertools.md](https://github.com/pydantic/monty/blob/main/limitations/itertools.md) |
-| `json` | [json.md](https://github.com/pydantic/monty/blob/main/limitations/json.md) |
-| `math` | [math.md](https://github.com/pydantic/monty/blob/main/limitations/math.md) |
-| `os` | [os.md](https://github.com/pydantic/monty/blob/main/limitations/os.md) |
-| `pathlib` | [pathlib.md](https://github.com/pydantic/monty/blob/main/limitations/pathlib.md) |
-| `re` | [re.md](https://github.com/pydantic/monty/blob/main/limitations/re.md) |
-| `sys` | [sys.md](https://github.com/pydantic/monty/blob/main/limitations/sys.md) |
-| `typing` | [typing.md](https://github.com/pydantic/monty/blob/main/limitations/typing.md) |
-| `unicodedata` | [unicodedata.md](https://github.com/pydantic/monty/blob/main/limitations/unicodedata.md) |
+| `asyncio` | [asyncio.md](asyncio.md) |
+| `base64` | [base64.md](base64.md) |
+| `binascii` | [base64.md](base64.md) |
+| `collections` | [collections.md](collections.md) |
+| `dataclasses` | [dataclasses.md](dataclasses.md) |
+| `datetime` | [datetime.md](datetime.md) |
+| `functools` | [functools.md](functools.md) |
+| `itertools` | [itertools.md](itertools.md) |
+| `json` | [json.md](json.md) |
+| `math` | [math.md](math.md) |
+| `os` | [os.md](os.md) |
+| `pathlib` | [pathlib.md](pathlib.md) |
+| `re` | [re.md](re.md) |
+| `sys` | [sys.md](sys.md) |
+| `typing` | [typing.md](typing.md) |
+| `unicodedata` | [unicodedata.md](unicodedata.md) |
 
 Each covers only part of its CPython surface — often a small part.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
@@ -88,34 +90,35 @@ Notably absent: `enum`, `contextlib`, `random`, `time`, `io`, `copy`, `string`, 
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.
 
-The authoritative list is
-[`limitations/modules.md`](https://github.com/pydantic/monty/blob/main/limitations/modules.md).
+The authoritative list is [modules.md](modules.md).
 
 ## Things that work but not quite like CPython
 
 A few divergences are worth knowing up front because they change how code behaves rather than whether it runs.
-Each links to the `limitations/` file that owns it, which is where the full account lives:
+Each links to the page that owns it, which is where the full account lives:
 
 - **`assert` failures get pytest-style messages.** `assert 2 == 5` raises `AssertionError: assert 2 == 5`, not CPython's
   empty `AssertionError`.
   Turn it off with `assert_message_annotations=False` on `checkout()`
-  ([assert.md](https://github.com/pydantic/monty/blob/main/limitations/assert.md)).
+  ([assert.md](assert.md)).
 - **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager**, not lazy.
   So `map(f, itertools.count())` runs until a resource limit trips
-  ([builtins.md](https://github.com/pydantic/monty/blob/main/limitations/builtins.md)).
+  ([builtins.md](builtins.md)).
 - **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `VERBOSE` flag, and some
-  error messages differ ([re.md](https://github.com/pydantic/monty/blob/main/limitations/re.md)).
+  error messages differ ([re.md](re.md)).
 - **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes exactly two functions:
   `run` and `gather`, the latter running host calls concurrently.
   `create_task`, `sleep` and everything else do not exist
-  ([asyncio.md](https://github.com/pydantic/monty/blob/main/limitations/asyncio.md)).
+  ([asyncio.md](asyncio.md)).
 - **`str.format()` and `%`-formatting are not implemented.** Use f-strings
-  ([format.md](https://github.com/pydantic/monty/blob/main/limitations/format.md)).
+  ([format.md](format.md)).
 - **Only UTF-8, ASCII, UTF-16 and UTF-32 codecs exist.** `latin-1` and friends raise `LookupError`
-  ([encoding.md](https://github.com/pydantic/monty/blob/main/limitations/encoding.md)).
+  ([encoding.md](encoding.md)).
 
 ## How to go deeper
 
-For a specific feature, open the `limitations/` file named after the builtin, module or construct.
-If you hit something that is neither in the subset nor in `limitations/`, [open an
+For a specific feature, open the page in this section named after the builtin, module or construct.
+The pages are the `limitations/` directory of the [repository](https://github.com/pydantic/monty), published
+verbatim.
+If you hit something that is neither in the subset nor on these pages, [open an
 issue](https://github.com/pydantic/monty/issues).

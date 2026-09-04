@@ -108,7 +108,7 @@ Numbers are rounded to two significant figures.
 ## Monty
 
 - **Language completeness**: no class inheritance, limited stdlib, no third-party libraries.
-  See [the Python subset](python-subset.md).
+  See [the Python subset](limitations/index.md).
 - **Security**: explicitly controlled filesystem, network and environment access; strict limits on execution time and
   memory usage.
   See the [security model](security.md).

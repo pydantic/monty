@@ -2,7 +2,7 @@
 
 The sandbox exposes a small, host-mediated subset of `os`. Filesystem
 functions route through the same OS-call mechanism as `pathlib` and
-`open()` (see ./pathlib.md, ./open.md): the host's mount table (or `os` callback) decides
+`open()` (see [pathlib.md](pathlib.md), [open.md](open.md)): the host's mount table (or `os` callback) decides
 whether each call is permitted.
 
 ## Implemented
@@ -75,7 +75,7 @@ whether each call is permitted.
   from `Path.iterdir`.
 - **`os.stat` results** print as `StatResult(...)`, not
   `os.stat_result(...)`, and carry only the 10 core fields, same as
-  `Path.stat()` (see ./filesystem.md).
+  `Path.stat()` (see [filesystem.md](filesystem.md)).
 - **Error side-effects differ slightly for `os.makedirs`**: Monty validates
   `mode` up front, while CPython only fails when it reaches the final
   `mkdir`, after creating parent directories.
@@ -92,4 +92,4 @@ Everything else, including but not limited to: `os.path.*` (use
 `os.getuid`, `os.getgid`, `os.uname`, `os.terminal_size`, `os.get_terminal_size`.
 
 `subprocess`, `signal`, `socket`, `threading`, `multiprocessing` are not
-importable either (see ./modules.md).
+importable either (see [modules.md](modules.md)).

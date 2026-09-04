@@ -6,7 +6,7 @@ and class variables works. The class body has a real scope (like CPython's
 class-body code object), so class variables may be arbitrary expressions
 and may reference earlier class variables:
 
-```python
+```python test="skip"
 class Foo:
     count = 0
 
@@ -39,9 +39,9 @@ and function-attributes-become-methods), bound methods, class variables
 `__repr__`/`__str__`/`__enter__`/`__exit__`/`__eq__`/`__hash__` dispatch,
 `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
 `Foo.__annotations__` (ordered; values stringized and provisional, see
-./typing.md), `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
+[typing.md](typing.md)), `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
 `type()` constructor. The `__enter__`/`__exit__` divergences are in
-./with.md.
+[with.md](with.md).
 
 ## Dynamic class creation — `type(name, bases, dict)`
 
@@ -136,7 +136,7 @@ order and error wording, but with these divergences:
   `RecursionError` in Monty. The same cap applies to synchronous callback
   evaluation such as `map()`, `filter()`, `sorted()`/`list.sort(key=...)`,
   `min()`/`max(key=...)`, and exotic `__init__` recursion (see the "Recursion"
-  section of ./resource_limits.md).
+  section of [resource_limits.md](resource_limits.md)).
 - **Comprehensions in the class body** can see class variables, because Monty
   inlines comprehensions into the enclosing scope. In CPython a comprehension
   has its own scope that skips the class scope, so only the *leftmost iterable*
@@ -174,9 +174,14 @@ with these divergences:
   sandbox object to resolve to: passing it back re-enters as a host-backed
   copy built from its `attributes`, not the host's original object.
 
-```python
-result = session.feed_run('class A:\n    def __init__(self):\n        self.x = 1\nA()')
-# result is MontyClassProxy(name='A', attributes={'x': 1})
+```python test="skip"
+from pydantic_monty import Monty
+
+with Monty() as pool, pool.checkout() as session:
+    result = session.feed_run(
+        'class A:\n    def __init__(self):\n        self.x = 1\nA()'
+    )
+    # result is MontyClassProxy(name='A', attributes={'x': 1})
 ```
 
 A sandbox-defined class **object** (`A` itself) still has no structural host
@@ -287,7 +292,7 @@ value). Divergences from real CPython objects:
   `convert_value` wrap adds an entry to the host-side instance store that
   `max_memory` does not count; re-sending a wrapper with the same id
   overwrites its entry rather than adding one. See the class-instance store
-  note in ./pool-architecture.md.
+  note in [pool-architecture.md](pool-architecture.md).
 
 ## Host classes (`ClassType` wrapper)
 
@@ -356,7 +361,7 @@ every construction request. Divergences:
   on classes and on non-method functions are supported.
 - **Classes are barely introspectable**: `__dict__`, `__bases__` and `dir()`
   are all unavailable (`cls.__name__` and `cls.__annotations__` work, the
-  latter with stringized values, see ./typing.md). A class decorator
+  latter with stringized values, see [typing.md](typing.md)). A class decorator
   can therefore discover fields and nothing else.
 - **Tracebacks from decorator application point at the whole `class` statement**
   (a span from the first decorator through the body, with the body elided as
@@ -406,7 +411,7 @@ every construction request. Divergences:
   - the legacy `__getitem__`-only fallback: CPython iterates a class defining
     `__getitem__` but not `__iter__` from index 0 until `IndexError`, while
     Monty reports it as not iterable. (`monty -t` accepts `iter(obj)` for
-    such a class, so this fails only at runtime, see ./iter.md.)
+    such a class, so this fails only at runtime, see [iter.md](iter.md).)
   - `__reversed__`, so `reversed(obj)` on any user instance raises
     `TypeError: '{cls}' object is not reversible`. That matches CPython for a
     class defining neither `__reversed__` nor `__len__` + `__getitem__`, and
@@ -450,7 +455,7 @@ every construction request. Divergences:
   expressions are captured as source text (stringized) and never evaluated, so
   the walrus never binds; CPython raises `SyntaxError`. This follows from
   annotations never being evaluated, so it would change if they ever are (see
-  ./typing.md).
+  [typing.md](typing.md)).
 - `del obj.attr` (the `del` statement is unsupported generally).
 
 ## `object`
@@ -480,7 +485,7 @@ type: Monty has no inheritance, so there is no base class for it to be.
 ## `FrozenInstanceError`
 
 Raised when assigning to a field of a dataclass declared in the sandbox with
-`@dataclass(frozen=True)` (see ./dataclasses.md); host-supplied instances
+`@dataclass(frozen=True)` (see [dataclasses.md](dataclasses.md)); host-supplied instances
 are never frozen in the sandbox (see "Host class instances" above). Subclass
 of `AttributeError`, so `except AttributeError:` catches it, as in CPython's
 `dataclasses` module. A plain `class` is never frozen, and

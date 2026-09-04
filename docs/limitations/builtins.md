@@ -32,7 +32,7 @@ These raise `NameError`:
 - **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
 
 `super()` is the biggest practical omission: with no class inheritance either
-(see ./classes.md), there is no inheritance mechanism at all.
+(see [classes.md](classes.md)), there is no inheritance mechanism at all.
 
 ## Behavioural divergences
 
@@ -69,7 +69,7 @@ These raise `NameError`:
   `collections.deque`) will not raise when looped over via one of these. `zip`
   and multi-iterable `map` stop at the shortest input, so pairing an infinite
   iterable with a finite or empty one stays bounded. A plain `for x in
-  container` is lazy and does detect mutation. See ./itertools.md.
+  container` is lazy and does detect mutation. See [itertools.md](itertools.md).
 - **Arity-error wording for some str/bytes methods** — a handful of
   keyword-accepting methods (e.g. `str.split`, `str.rsplit` and the `bytes`
   equivalents) report too-many-arguments as `split expected at most 2
@@ -93,13 +93,13 @@ These raise `NameError`:
   not CPython's `OverflowError: cannot fit 'int' into an index-sized integer`.
 - **`isinstance(obj, T)`** — `T` must be a built-in type (`int`, `str`,
   `list`, ...), a built-in exception class, a sandbox-defined class (see
-  ./classes.md), or a tuple of those. Passing a host-supplied
+  [classes.md](classes.md)), or a tuple of those. Passing a host-supplied
   dataclass / namedtuple as the second argument raises `TypeError`.
-- **`iter()`** — see ./iter.md for iterator and `iter(callable, sentinel)` divergences.
+- **`iter()`** — see [iter.md](iter.md) for iterator and `iter(callable, sentinel)` divergences.
 - **`pow(base, exp, mod)`** — the three-argument form requires all integers and
   rejects negative exponents with `ValueError` instead of computing a modular
   inverse. Non-modular exponents whose result cannot be materialized raise
-  `OverflowError` (see ./resource_limits.md).
+  `OverflowError` (see [resource_limits.md](resource_limits.md)).
 - **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
   must be passed by keyword; positional forms raise `TypeError`.
 - **`round(n, ndigits)`** — `ndigits` values outside the i64 range are

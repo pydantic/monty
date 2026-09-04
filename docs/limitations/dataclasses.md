@@ -53,7 +53,7 @@ default_factory`), and so is a non-default field after a defaulted one
 
 - **Annotations are stringized.** Fields come from the class's
   `__annotations__`, which Monty stores as never-evaluated source text (always
-  PEP 563); see ./typing.md. Field
+  PEP 563); see [typing.md](typing.md). Field
   discovery and the generated methods are unaffected, the field *type* being
   inert metadata, but `C.__dataclass_fields__['x'].type` is the string `'int'`,
   not the `int` type object.
@@ -78,11 +78,11 @@ default_factory`), and so is a non-default field after a defaulted one
   Conversely any dotted spelling matches, so a same-named attribute on an
   unrelated module (`mymod.ClassVar`) is treated as `typing.ClassVar`.
 - **A field holding a function or bound method reprs differently**, since
-  Monty's own `repr` for those differs (see ./classes.md). Only the
+  Monty's own `repr` for those differs (see [classes.md](classes.md)). Only the
   text differs; the value and its equality match CPython.
 - **A class-body `__setattr__` never runs for the synthesized `__init__`**,
   which writes fields straight into the instance `__dict__`. This is the
-  never-dispatched attribute hook described in ./classes.md rather than
+  never-dispatched attribute hook described in [classes.md](classes.md) rather than
   something dataclass-specific, so `@dataclass` does not reject it.
 - **`@dataclass` on a non-class** (e.g. `dataclasses.dataclass(5)`) raises
   `TypeError: dataclass() should be called on a class, not '<type>'`. CPython
