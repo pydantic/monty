@@ -238,6 +238,7 @@ const exceptionTypes: Array<[string, string]> = [
   ['json.JSONDecodeError', 'json.JSONDecodeError'],
   ['re.PatternError', 're.PatternError'],
   ['binascii.Error', 'binascii.Error'],
+  ['binascii.Incomplete', 'binascii.Incomplete'],
   ['SomeCustomError', 'RuntimeError'],
 ]
 
@@ -302,6 +303,7 @@ caught
 // and an `except <module>.<Name>:` handler silently misses.
 const dottedTypes: Array<[string, string, string]> = [
   ['binascii.Error', 'binascii', 'ValueError'],
+  ['binascii.Incomplete', 'binascii', 'Exception'],
   ['json.JSONDecodeError', 'json', 'ValueError'],
   ['re.PatternError', 're', 'Exception'],
 ]

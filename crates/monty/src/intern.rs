@@ -1145,6 +1145,36 @@ pub enum StaticStrings {
     /// `ignorechars` parameter of `base64.a85decode()`.
     #[strum(serialize = "ignorechars")]
     Ignorechars,
+    /// `binascii.crc_hqx()` function.
+    #[strum(serialize = "crc_hqx")]
+    CrcHqx,
+    /// `binascii.b2a_uu()` function.
+    #[strum(serialize = "b2a_uu")]
+    B2aUu,
+    /// `binascii.a2b_uu()` function.
+    #[strum(serialize = "a2b_uu")]
+    A2bUu,
+    /// `binascii.b2a_qp()` function.
+    #[strum(serialize = "b2a_qp")]
+    B2aQp,
+    /// `binascii.a2b_qp()` function.
+    #[strum(serialize = "a2b_qp")]
+    A2bQp,
+    /// `binascii.Incomplete` exception class.
+    #[strum(serialize = "Incomplete")]
+    IncompleteClass,
+    /// `backtick` parameter of `binascii.b2a_uu()`.
+    #[strum(serialize = "backtick")]
+    Backtick,
+    /// `quotetabs` parameter of `binascii.b2a_qp()`.
+    #[strum(serialize = "quotetabs")]
+    Quotetabs,
+    /// `istext` parameter of `binascii.b2a_qp()`.
+    #[strum(serialize = "istext")]
+    Istext,
+    /// `header` parameter of the `binascii` quoted-printable pair.
+    #[strum(serialize = "header")]
+    Header,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.
