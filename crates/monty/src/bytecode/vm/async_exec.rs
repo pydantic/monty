@@ -514,9 +514,11 @@ impl<'h> VM<'h> {
                 call_offset: f.call_offset,
                 is_initializer: f.is_initializer,
                 namespace: f.namespace,
+                cache_stores: f.cache_stores,
             })
             .collect();
-        // The namespace moves across so the frame left behind releases nothing.
+        // The namespace and the pending cache stores move across so the frame
+        // left behind releases nothing.
         let current = &mut self.current_frame;
         frames.push(SerializedTaskFrame {
             function_id: current.function_id,
@@ -527,6 +529,9 @@ impl<'h> VM<'h> {
             call_offset: current.call_offset,
             is_initializer: current.is_initializer,
             namespace: mem::take(&mut current.namespace),
+            // Moved, not copied: a store owns a reference to the cache and
+            // the key, and the saved task is now its only owner.
+            cache_stores: mem::take(&mut current.cache_stores),
         });
 
         // Count this task's recursion depth contribution and subtract it from
@@ -598,6 +603,7 @@ impl<'h> VM<'h> {
                         is_parked: false,
                         namespace: sf.namespace,
                         is_initializer: sf.is_initializer,
+                        cache_stores: sf.cache_stores,
                     }
                 })
                 .collect();

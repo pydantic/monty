@@ -28,6 +28,10 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// interpreter's own types *and* everything reachable from [`Dump`] — notably
 /// [`TypeCheckingConfig`](monty_types::TypeCheckingConfig) in `monty-types`.
 ///
+/// Adding or removing a serialized struct field needs a bump too: postcard is
+/// not self-describing, so the fields either side of it are read at the wrong
+/// offsets. The fingerprints below cover discriminants only, not field layout.
+///
 /// Before bumping, check there's already been a bump since the last release - multiple bumps
 /// between releases is unnecessary and can lead to confusion.
 pub const DUMP_VERSION: u16 = 12;
@@ -294,13 +298,13 @@ mod tests {
 
         assert_eq!(
             variant_order_fingerprint(Type::VARIANTS),
-            0xdb83_e6a5_fcb3_9768,
+            0xec8c_4034_f905_3dd7,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_order_fingerprint(Type::VARIANTS))
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0x0e43_247e_0759_a195,
+            0x6b9f_985a_aece_0a58,
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_order_fingerprint(MontyType::VARIANTS))
         );

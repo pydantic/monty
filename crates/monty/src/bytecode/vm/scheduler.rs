@@ -16,6 +16,7 @@ use crate::{
     exception_private::RunResult,
     heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},
     intern::FunctionId,
+    types::lru_cache::CacheStore,
     value::Value,
 };
 
@@ -64,8 +65,11 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
     fn drop_with(mut self, heap: &mut C) {
         self.stack.drain(..).drop_with(heap);
         self.exception_stack.drain(..).drop_with(heap);
+        // A frame parked mid-way through a cached call still owns its pending
+        // stores; abandoning the task drops them without storing anything.
         for frame in self.frames.drain(..) {
             frame.namespace.drop_with(heap);
+            frame.cache_stores.drop_with(heap);
         }
         self.state.drop_with(heap);
         if let Some(coro_id) = self.coroutine_id.take() {
@@ -102,6 +106,10 @@ pub(crate) struct SerializedTaskFrame {
     pub is_initializer: bool,
     /// Frame namespace, owning its dict references (see `CallFrame.namespace`).
     pub namespace: Option<Box<FrameNamespace>>,
+    /// The pending `functools.lru_cache` stores of this frame's cached calls
+    /// (see `CallFrame.cache_stores`).
+    #[serde(default)]
+    pub cache_stores: Vec<CacheStore>,
 }
 
 impl Task {

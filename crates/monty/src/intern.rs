@@ -677,6 +677,17 @@ pub enum StaticStrings {
     BytesPerSep,
     /// `sys.flags.bytes_warning` field.
     BytesWarning,
+    /// `functools.cache()` function.
+    Cache,
+    /// `cache_clear()` method of a cached function.
+    CacheClear,
+    /// `cache_info()` method of a cached function.
+    CacheInfo,
+    /// Type name of the `CacheInfo` named tuple `cache_info()` returns.
+    #[strum(serialize = "CacheInfo")]
+    CacheInfoName,
+    /// `cache_parameters()` method of a cached function.
+    CacheParameters,
     /// `typing.Callable` marker.
     #[strum(serialize = "Callable")]
     Callable,
@@ -770,6 +781,8 @@ pub enum StaticStrings {
     CumWeights,
     /// `os.curdir` constant name.
     Curdir,
+    /// `CacheInfo.currsize` field.
+    Currsize,
     /// `Path.cwd()` classmethod: answered from the VM's working directory, no host call.
     Cwd,
     /// `itertools.cycle()` function.
@@ -890,6 +903,9 @@ pub enum StaticStrings {
     /// `__qualname__` — the qualified class name, exposed on namedtuple classes.
     #[strum(serialize = "__qualname__")]
     DunderQualname,
+    /// `__wrapped__` attribute of a cached function.
+    #[strum(serialize = "__wrapped__")]
+    DunderWrapped,
     /// `Counter.elements()` method.
     Elements,
     /// `repr()`/`str()` text of `Ellipsis`, interned so rendering allocates nothing.
@@ -1104,6 +1120,8 @@ pub enum StaticStrings {
     Hexversion,
     /// `high` parameter of `random.triangular()`.
     High,
+    /// `CacheInfo.hits` field.
+    Hits,
     /// `datetime` / `time` `hour` attribute and constructor kwarg.
     Hour,
     /// `timedelta(hours=...)` constructor kwarg.
@@ -1288,6 +1306,8 @@ pub enum StaticStrings {
     Low,
     /// `lower()` method, shared by `str` and `bytes`.
     Lower,
+    /// `functools.lru_cache()` function.
+    LruCache,
     /// `lstrip()` method, shared by `str` and `bytes`.
     Lstrip,
     /// `sys.version_info.major` field.
@@ -1361,6 +1381,8 @@ pub enum StaticStrings {
     Minute,
     /// `timedelta(minutes=...)` constructor kwarg.
     Minutes,
+    /// `CacheInfo.misses` field.
+    Misses,
     /// `Path.mkdir()` and `os.mkdir()` — yields a host call.
     Mkdir,
     /// `time.mktime()` function.
@@ -1895,6 +1917,8 @@ pub enum StaticStrings {
     /// `typing.TypeVar` marker.
     #[strum(serialize = "TypeVar")]
     TypeVar,
+    /// `typed` argument of `functools.lru_cache()`.
+    Typed,
     /// `namedtuple(typename=...)` keyword argument.
     Typename,
     /// Module name for `import typing`.
