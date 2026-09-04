@@ -1446,9 +1446,9 @@ fn unsupported_protocol_version_on_create_is_a_fatal_error() {
     // Spelled out rather than taken from `check_protocol_version`, so rewording
     // the refusal a parent actually reads fails here.
     let supported = if MIN_SUPPORTED_PROTOCOL_VERSION == PROTOCOL_VERSION {
-        format!("this build supports protocol version {PROTOCOL_VERSION}")
+        format!("server supports protocol version {PROTOCOL_VERSION}")
     } else {
-        format!("this build supports protocol versions {MIN_SUPPORTED_PROTOCOL_VERSION} to {PROTOCOL_VERSION}")
+        format!("server supports protocol versions {MIN_SUPPORTED_PROTOCOL_VERSION} to {PROTOCOL_VERSION}")
     };
     assert!(
         message.contains(&supported),
@@ -1456,7 +1456,7 @@ fn unsupported_protocol_version_on_create_is_a_fatal_error() {
     );
     // Ahead of the range, so the client is on the wrong version rather than behind.
     assert!(
-        message.contains("make sure you are using the correct client version."),
+        message.contains("make sure you are using the correct client version"),
         "message should point at the client version: {message}"
     );
 }
@@ -1477,7 +1477,7 @@ fn undeclared_protocol_version_is_a_fatal_error() {
     );
     // Below the range, so the client needs to move forward.
     assert!(
-        message.contains("try updating to a newer version of the client."),
+        message.contains("try updating to a newer client version"),
         "message should tell the client to update: {message}"
     );
 }
