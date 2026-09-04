@@ -1,0 +1,25 @@
+docs/filesystem.md
+  s_a1f481cef90e33::t_cb6fe2e32a65bf 105,115,121,158,164
+docs/host-objects.md
+  s_a1f481cef90e33::t_72d5e1df7bc64c 75,78,108
+docs/type-checking.md
+  s_a1f481cef90e33::t_a22726c85b4391 51,54-55
+docs/host-functions.md
+  s_a1f481cef90e33::t_4fc5ad0d7d527d 30,34,37,44,90,97,121,154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c57e0f61e4a589fa39b8503ba889a0ba0497f28d",
+  "prompts": {},
+  "sessions": {
+    "s_a1f481cef90e33": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7fa23c1-b658-4a6b-aed6-13a3b8a7da35",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
