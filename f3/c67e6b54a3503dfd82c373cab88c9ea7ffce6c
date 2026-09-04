@@ -1,0 +1,46 @@
+docs/quickstart/javascript.md
+  s_a1f481cef90e33::t_9aa856d5b5052e 191
+  s_a1f481cef90e33::t_ef3ef09764b7d1 44-48,63-67,71,103,120-123,125,135-138,182-184,190,206-210,213-216,221,225,231-232,264,267
+crates/monty-js/.gitignore
+  s_a1f481cef90e33::t_adea86ecc5cb1f 156-157
+crates/monty-js/__test__/node_docs.spec.ts
+  s_a1f481cef90e33::t_bd65945899af6c 1-60,63-65,67-86
+  s_a1f481cef90e33::t_3e9e605ec0d1f1 61-62,66
+docs/security.md
+  s_a1f481cef90e33::t_2effa6bbb36ea5 44,46-47,50-51,53-76,97-112,114,117-121,123-127,129,131-132,134-144,146-153,162,164-166,168,170-177,179,181-184,186-187,189-198,200-270
+docs/host-functions.md
+  s_a1f481cef90e33::t_4fc5ad0d7d527d 13,15-16,19-20,22-48,54-66,68-75,79-93,95-106,132-139,142-147,149,151-162,188-210,212,214-215,217-221,223-229,231-234,245,248-266,269-273,276-277,279,281-282,284-287,289-290,292-294,296-299,310-340,343
+docs/type-checking.md
+  s_a1f481cef90e33::t_a22726c85b4391 10-37,61,63-64,66-68,71-72,74-104,121-150,154-155
+docs/filesystem.md
+  s_a1f481cef90e33::t_cb6fe2e32a65bf 17,19-21,23,25-26,28-59,62-63,135-144,147-151,153,155-166,188,191-204,206,208-212,214,216-233,246
+docs/snapshots.md
+  s_a1f481cef90e33::t_175d209d7608c4 25-55,76-77,87-120,131-176,181-195,197,199-215,247
+CLAUDE.md
+  s_a1f481cef90e33::t_6258f3f48ebb4d 1001-1007,1026
+  s_a1f481cef90e33::t_917ec322d59235 907-910
+docs/host-objects.md
+  s_a1f481cef90e33::t_72d5e1df7bc64c 12,14-15,17,20-23,25-26,28-61,72-75,78-81,84-116,126-131,134-137,140-147,149-167,179-187,190-192,194-195,198-202,205-211,213,215-237,247-288
+crates/monty-js/__test__/tsconfig.json
+  s_a1f481cef90e33::t_adea86ecc5cb1f 19-20
+docs/alternatives.md
+  s_a1f481cef90e33::t_6e5b5863fcdc70 67
+docs/resource-limits.md
+  s_a1f481cef90e33::t_605386c2d88fd1 6-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f3c67e6b54a3503dfd82c373cab88c9ea7ffce6c",
+  "prompts": {},
+  "sessions": {
+    "s_a1f481cef90e33": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7fa23c1-b658-4a6b-aed6-13a3b8a7da35",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
