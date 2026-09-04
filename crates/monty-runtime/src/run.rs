@@ -35,10 +35,10 @@ use crate::Cli;
 /// The clock the CLI lends to sandboxed code for `date.today()` and
 /// `datetime.now()`.
 ///
-/// The same clock a fresh [`MontyRun`] already has, set explicitly so the CLI's
-/// choice does not quietly follow a change to that default — and so
-/// [`handle_os_call`] can answer the suspended calls the mounted REPL path
-/// produces from the same source.
+/// The same clock a fresh [`MontyRun`] already has, named here so the CLI's
+/// choice does not quietly follow a change to that default.
+/// [`handle_os_call`] reads it too, so the mounted REPL path answers the
+/// suspended calls from the same source.
 const CLI_CLOCK: HostClock = HostClock::System;
 
 /// Dim/gray text (timings). `{DIM}` opens the style, `{DIM:#}` closes it.

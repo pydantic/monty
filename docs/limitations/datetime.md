@@ -68,27 +68,29 @@ clock, and Monty has none of its own. What answers them depends on how the
 sandbox is driven.
 
 Under the suspend/resume path — every pool session (`pydantic_monty`,
-`@pydantic/monty`, `monty-pool`) and `MontyRun::start` — both reach the
-host, and a host that answers neither makes them raise `RuntimeError:
-'date.today' is not supported in this environment` (`'datetime.now'`
-likewise), where CPython would return a time.
+`@pydantic/monty`, `monty-pool`) and `MontyRun::start` — both reach the host.
+A host that answers neither makes them raise
+`RuntimeError: 'date.today' is not supported in this environment`
+(`'datetime.now'` likewise), where CPython would return a time.
 
 Standard (non-suspending) execution — `MontyRun::run`, `MontyRepl::feed_run`
-and `MontyRepl::call_function` in Rust, and the `monty` CLI — has no host to
-ask and reads this machine's clock, so it matches CPython.
+and `MontyRepl::call_function` in Rust — has no host to ask and reads this
+machine's clock, so it matches CPython. The `monty` CLI reads the same clock,
+though there it is the host answering: it serves both calls itself rather than
+passing them on.
 `MontyRun::with_host_clock` / `MontyRepl::with_host_clock` choose otherwise:
 
 - `HostClock::Denied` makes both raise `NotImplementedError` — a different
-  exception from the suspend path's `RuntimeError` for the same refusal.
-  Through `MontyRun::run` and `MontyRepl::feed_run` the message is `OS
-  function 'datetime.now' not implemented with standard execution`; through
-  `MontyRepl::call_function` it is `MontyRepl::call_function: OS function
-  'datetime.now' is not yet supported in this context`.
+    exception from the suspend path's `RuntimeError` for the same refusal.
+    Through `MontyRun::run` and `MontyRepl::feed_run` the message is
+    `OS function 'datetime.now' not implemented with standard execution`;
+    through `MontyRepl::call_function` it is
+    `MontyRepl::call_function: OS function 'datetime.now' is not yet supported in this context`.
 - `HostClock::Fixed` answers every call with one frozen instant, so
-  `datetime.now() == datetime.now()` is `True`, a loop polling
-  `datetime.now()` never sees it move, and `(datetime.now() - start)` is
-  always a zero `timedelta`. An instant outside `datetime`'s 1..=9999 years
-  reads as `Denied` rather than failing some other way.
+    `datetime.now() == datetime.now()` is `True`, a loop polling
+    `datetime.now()` never sees it move, and `(datetime.now() - start)` is
+    always a zero `timedelta`. An instant outside `datetime`'s 1..=9999 years
+    reads as `Denied` rather than failing some other way.
 
 Whatever answers them, both calls read local wall time for `date.today()`
 and a naive `datetime.now()`, and convert into the argument for

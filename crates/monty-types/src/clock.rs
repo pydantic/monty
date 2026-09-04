@@ -4,24 +4,19 @@
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeDelta, Timelike};
 
 use crate::{
-    object::{MontyDate, MontyDateTime, MontyObject, MontyTimeZone},
+    object::{MontyDate, MontyDateTime, MontyObject},
     os::OsFunctionCall,
 };
 
 /// Where `date.today()` and `datetime.now()` read the time under standard
-/// (non-suspending) execution.
+/// (non-suspending) execution, which has no host to deliver their
+/// [`OsFunctionCall`] to.
 ///
-/// Both calls reach the host as an [`OsFunctionCall`], which standard execution
-/// has no way to deliver — so it answers them from this clock instead, which is
-/// what makes ordinary date-handling scripts run on the plain `run` path.
-///
-/// Only standard execution consults it. Under the suspend/resume path the call
-/// reaches the host like any other OS call and a clock set here is ignored, so
-/// this type is absent from the wire protocol. It does travel inside a session
-/// dump, though, which is why adding it bumped `DUMP_VERSION`.
-/// Deliberately not [`Default`]: a fresh runner gets [`System`](Self::System)
-/// (see `monty`'s `default_clock`), and a type-level default of
-/// [`Denied`](Self::Denied) would quietly disagree with that.
+/// Only standard execution consults it — under suspend/resume the host answers
+/// both calls and a clock set here is ignored, so this is absent from the wire
+/// protocol. Deliberately not [`Default`]: a fresh runner gets
+/// [`System`](Self::System) (see `monty`'s `default_clock`), which a type-level
+/// [`Denied`](Self::Denied) would quietly contradict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HostClock {
     /// No clock: both calls raise `NotImplementedError`, as every other OS
@@ -82,7 +77,7 @@ impl HostClock {
                     second: u8::try_from(local.second()).ok()?,
                     microsecond: local.nanosecond() / 1_000,
                     offset_seconds: tz.as_ref().map(|tz| tz.offset_seconds),
-                    timezone_name: tz.as_ref().and_then(|tz: &MontyTimeZone| tz.name.clone()),
+                    timezone_name: tz.as_ref().and_then(|tz| tz.name.clone()),
                 }))
             }
             _ => None,
@@ -118,7 +113,7 @@ impl HostClock {
     }
 }
 
-/// Reads a UTC wall clock at `offset_seconds` from UTC, rejecting anything
+/// Shifts a UTC wall clock by `offset_seconds`, rejecting anything
 /// outside the 1..=9999 years Python's `datetime` can hold.
 fn shift(utc: NaiveDateTime, offset_seconds: i32) -> Option<NaiveDateTime> {
     let shifted = utc.checked_add_signed(TimeDelta::seconds(i64::from(offset_seconds)))?;

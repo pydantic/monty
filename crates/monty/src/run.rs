@@ -95,28 +95,17 @@ impl MontyRun {
     /// [`start`](Self::start) the host answers both calls itself, so a clock
     /// set here is ignored.
     ///
-    /// Reading the wall clock is a capability, weak but real — it is what makes
-    /// elapsed time measurable from inside the sandbox, and it discloses the
-    /// host's UTC offset. [`Denied`](HostClock::Denied) takes it away;
-    /// [`Fixed`](HostClock::Fixed) freezes an instant, for runs that have to be
-    /// reproducible.
+    /// [`Denied`](HostClock::Denied) takes the clock away; [`Fixed`](HostClock::Fixed)
+    /// freezes an instant, for runs that have to be reproducible. Reading the
+    /// wall clock is a weak but real capability — see `docs/security.md`.
     ///
     /// ```
     /// use monty::MontyRun;
     /// use monty_types::{CompileOptions, HostClock, MontyObject};
     ///
-    /// let runner = MontyRun::new(
-    ///     "from datetime import date\ndate.today().year".to_owned(),
-    ///     "today.py",
-    ///     vec![],
-    ///     CompileOptions::default(),
-    /// )
-    /// .unwrap()
-    /// .with_host_clock(HostClock::Fixed {
-    ///     unix_seconds: 1_700_000_000,
-    ///     microsecond: 0,
-    ///     local_offset_seconds: 0,
-    /// });
+    /// let code = "from datetime import date\ndate.today().year".to_owned();
+    /// let clock = HostClock::Fixed { unix_seconds: 1_700_000_000, microsecond: 0, local_offset_seconds: 0 };
+    /// let runner = MontyRun::new(code, "today.py", vec![], CompileOptions::default()).unwrap().with_host_clock(clock);
     /// assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::Int(2023));
     /// ```
     #[must_use]
@@ -251,11 +240,7 @@ pub(crate) struct Executor {
     /// Stored with the compiled program and passed to every VM.
     pub(crate) assert_repr_max_bytes: u32,
     /// Clock serving `date.today()` / `datetime.now()` on the non-suspending
-    /// path; `System` unless the embedder chose otherwise. The serde default
-    /// matches the constructors, so a host serializing this in a
-    /// self-describing format that omits the field gets the same clock a fresh
-    /// runner has; dumps are postcard, so adding this field bumped
-    /// `DUMP_VERSION`.
+    /// path; `System` unless the embedder chose otherwise.
     #[serde(default = "default_clock")]
     pub(crate) clock: HostClock,
     /// Estimated heap capacity for pre-allocation on subsequent runs.
@@ -383,7 +368,7 @@ impl Executor {
             code,
             input_slots,
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
-            // overwritten by `with_clock` from the owning `MontyRepl`
+            // Fail-closed placeholder; the owning `MontyRepl` overwrites it via `with_clock`.
             clock: HostClock::Denied,
             heap_capacity: AtomicUsize::new(0),
         })
@@ -450,7 +435,7 @@ impl Executor {
             code,
             input_slots: vec![args_slot],
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
-            // overwritten by `with_clock` from the owning `MontyRepl`
+            // Fail-closed placeholder; the owning `MontyRepl` overwrites it via `with_clock`.
             clock: HostClock::Denied,
             heap_capacity: AtomicUsize::new(0),
         })
@@ -549,12 +534,11 @@ impl Executor {
     /// Answers `date.today()` / `datetime.now()` from [`Executor::clock`], for
     /// the execution paths that have no host loop to suspend to.
     ///
-    /// `Continue` carries the exit the VM reached after the time was resumed
-    /// into it; `Break` hands the exit straight back, which is every OS call
-    /// the clock does not serve — including a clock call carrying a
-    /// `PendingOsEffect`, which these two never do. Callers keep their own
-    /// handling of the exits they get back, which differs between `run` and
-    /// `MontyRepl::call_function`.
+    /// `Continue` carries the exit the VM reached after resuming with the time.
+    /// `Break` hands back everything else: every non-`OsCall` exit, every OS
+    /// call that is not a clock call, and a clock call carrying a
+    /// `PendingOsEffect`, which these two never do. Callers handle those
+    /// themselves, differently in `run` and `MontyRepl::call_function`.
     pub(crate) fn resolve_clock_call(
         &self,
         vm: &mut VM<'_>,
