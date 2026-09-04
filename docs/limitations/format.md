@@ -64,8 +64,6 @@ characters after the type field (`f'{1:kk}'`, `f'{1:10xyz}'`) and `usize`
 overflow, raising `SyntaxError` instead of CPython's runtime `ValueError`. The
 message text otherwise matches, minus CPython's `for object of type '...'`
 suffix, which needs the runtime value type. Specs whose error *is*
-value-type-dependent or only resolvable at format time (`Unknown format code
-'k'`, the `Cannot specify …` grouping conflicts, and `Format specifier missing
-precision`) are deferred to runtime and raise the exact CPython `ValueError`,
+value-type-dependent or only resolvable at format time (`Unknown format code 'k'`, the `Cannot specify …` grouping conflicts, and `Format specifier missing precision`) are deferred to runtime and raise the exact CPython `ValueError`,
 as do all dynamically-built specs (`f'{1:{spec}}'`) and all `str.format()`
 specs.
