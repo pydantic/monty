@@ -3,7 +3,7 @@
 # dependencies = [
 #     "daytona>=0.136.0",
 #     "mcp-run-python>=0.0.22",
-#     "pydantic-monty>=0.0.1",
+#     "pydantic-monty>=0.0.22",
 #     "starlark-pyo3>=2025.2.5",
 #     "wasmtime>=38",
 # ]
@@ -12,15 +12,18 @@ import asyncio
 import os
 import statistics
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 from mcp_run_python import code_sandbox
 
-from pydantic_monty import Monty
+from pydantic_monty import AsyncMontyWebsocket, Monty
 
 code = '1 + 1'
+# a running Full Monty server, e.g. the container image from docs/server.md
+FULL_MONTY_URL = os.environ.get('FULL_MONTY_URL', 'ws://localhost:8000/')
 
 # The numbers these produce are quoted in docs/index.md, docs/alternatives.md and
 # README.md; regenerate docs/img/startup-latency.svg with scripts/startup_latency_chart.py
@@ -53,6 +56,40 @@ def run_monty_warm(rounds: int = 20):
             samples.append(time.perf_counter() - start)
             assert result == 2, f'Unexpected result: {result!r}'
     print(f'Monty warm pool time: {(statistics.median(samples) * 1000):.3f} milliseconds (median of {rounds})')
+
+
+def run_full_monty():
+    async def run() -> Any:
+        # cold start dials the server, which spawns a worker for the session
+        async with AsyncMontyWebsocket(FULL_MONTY_URL) as pool:
+            async with pool.checkout() as session:
+                return await session.feed_run(code)
+
+    start = time.perf_counter()
+    result = asyncio.run(run())
+    diff = time.perf_counter() - start
+    assert result == 2, f'Unexpected result: {result!r}'
+    print(f'Full Monty cold start time: {(diff * 1000):.3f} milliseconds')
+
+
+def run_full_monty_warm(rounds: int = 20):
+    async def run() -> list[float]:
+        # each checkout is a new connection and a new worker: the server never
+        # lets one process serve two clients, so only the client side is warm
+        samples: list[float] = []
+        async with AsyncMontyWebsocket(FULL_MONTY_URL) as pool:
+            async with pool.checkout() as session:
+                await session.feed_run(code)
+            for _ in range(rounds):
+                start = time.perf_counter()
+                async with pool.checkout() as session:
+                    result = await session.feed_run(code)
+                samples.append(time.perf_counter() - start)
+                assert result == 2, f'Unexpected result: {result!r}'
+        return samples
+
+    samples = asyncio.run(run())
+    print(f'Full Monty warm time: {(statistics.median(samples) * 1000):.3f} milliseconds (median of {rounds})')
 
 
 def run_pyodide():
@@ -246,6 +283,32 @@ def agent_monty(warm: bool):
         report_agent('Monty cold start', diff, output)
 
 
+def agent_full_monty(warm: bool):
+    from pydantic_monty import CollectString
+
+    async def feeds(pool: AsyncMontyWebsocket) -> str:
+        collector = CollectString()
+        async with pool.checkout() as session:
+            for block in AGENT_BLOCKS:
+                await session.feed_run(block, print_callback=collector)
+        return collector.output
+
+    async def run() -> tuple[float, str]:
+        if warm:
+            async with AsyncMontyWebsocket(FULL_MONTY_URL) as pool:
+                await feeds(pool)
+                start = time.perf_counter()
+                output = await feeds(pool)
+                return time.perf_counter() - start, output
+        start = time.perf_counter()
+        async with AsyncMontyWebsocket(FULL_MONTY_URL) as pool:
+            output = await feeds(pool)
+        return time.perf_counter() - start, output
+
+    diff, output = asyncio.run(run())
+    report_agent('Full Monty warm' if warm else 'Full Monty cold start', diff, output)
+
+
 def agent_wasmtime():
     from wasmtime import Engine, ExitTrap, Linker, Module, Store, WasiConfig
 
@@ -365,24 +428,45 @@ def agent_exec_python():
     report_agent('Exec Python', diff, buffer.getvalue())
 
 
-if __name__ == '__main__':
-    run_monty()
-    run_monty_warm()
-    run_pyodide()
-    run_docker()
-    run_starlark()
-    run_daytona()
-    run_wasmer()
-    run_wasmtime()
-    run_subprocess_python()
-    run_exec_python()
+# (name, measurement); `uv run scripts/startup_performance.py full_monty docker` runs
+# only the measurements whose name is one of the arguments, all with no arguments
+MEASUREMENTS = [
+    ('monty', run_monty),
+    ('monty', run_monty_warm),
+    ('full_monty', run_full_monty),
+    ('full_monty', run_full_monty_warm),
+    ('pyodide', run_pyodide),
+    ('docker', run_docker),
+    ('starlark', run_starlark),
+    ('daytona', run_daytona),
+    ('wasmer', run_wasmer),
+    ('wasmtime', run_wasmtime),
+    ('python', run_subprocess_python),
+    ('python', run_exec_python),
+]
+AGENT_MEASUREMENTS = [
+    ('monty', lambda: agent_monty(warm=True)),
+    ('monty', lambda: agent_monty(warm=False)),
+    ('full_monty', lambda: agent_full_monty(warm=True)),
+    ('full_monty', lambda: agent_full_monty(warm=False)),
+    ('wasmtime', agent_wasmtime),
+    ('docker', agent_docker),
+    ('pyodide', agent_pyodide),
+    ('daytona', agent_daytona),
+    ('python', agent_subprocess_python),
+    ('python', agent_exec_python),
+]
 
+
+def selected(name: str) -> bool:
+    return not sys.argv[1:] or name in sys.argv[1:]
+
+
+if __name__ == '__main__':
+    for name, measure in MEASUREMENTS:
+        if selected(name):
+            measure()
     print()
-    agent_monty(warm=True)
-    agent_monty(warm=False)
-    agent_wasmtime()
-    agent_docker()
-    agent_pyodide()
-    agent_daytona()
-    agent_subprocess_python()
-    agent_exec_python()
+    for name, measure in AGENT_MEASUREMENTS:
+        if selected(name):
+            measure()

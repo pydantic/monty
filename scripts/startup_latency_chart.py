@@ -16,6 +16,7 @@ from pathlib import Path
 # commands, the "Combined" column of the table in docs/index.md
 ROWS: list[tuple[str, float, bool]] = [
     ('Monty', 5, True),
+    ('Full Monty', 7, True),
     ('WASI / wasmtime', 200, False),
     ('Docker', 900, False),
     ('Sandboxing service', 1900, False),

@@ -17,15 +17,16 @@ Most were not conceived as an LLM sandbox, which is why they are not necessarily
 
 The chart is the time to create a sandbox and then run ten REPL commands in it; both halves are measured below.
 
-| Tech               | Language completeness | Security     | Start latency                | FOSS       | Setup complexity | File mounting  | Snapshotting |
-| ------------------ | --------------------- | ------------ | ---------------------------- | ---------- | ---------------- | -------------- | ------------ |
-| Monty              | partial               | strict       | 0.08 ms warm pool, 5 ms cold | free / OSS | easy             | easy           | easy         |
-| Docker             | full                  | good         | 195 ms                       | free / OSS | intermediate     | easy           | intermediate |
-| Pyodide            | full                  | poor         | 2700 ms                      | free / OSS | intermediate     | easy           | hard         |
-| starlark-rust      | very limited          | good         | 1.3 ms                       | free / OSS | easy             | not available? | impossible?  |
-| WASI / wasmtime    | partial, almost full  | strict       | 16 ms                        | free / OSS | intermediate     | easy           | intermediate |
-| sandboxing service | full                  | strict       | 1500 ms                      | not free   | intermediate     | hard           | intermediate |
-| YOLO Python        | full                  | non-existent | 0.1 ms / 30 ms               | free / OSS | easy             | easy / scary   | hard         |
+| Tech               | Language completeness      | Security             | Start latency                | FOSS       | Setup complexity | File mounting  | Snapshotting |
+| ------------------ | -------------------------- | -------------------- | ---------------------------- | ---------- | ---------------- | -------------- | ------------ |
+| Monty              | partial                    | strict               | 0.08 ms warm pool, 5 ms cold | free / OSS | easy             | easy           | easy         |
+| Full Monty         | partial, or full via proxy | strict, OS-level too | 2 ms warm, 4 ms cold         | not free   | easy             | easy           | easy         |
+| Docker             | full                       | good                 | 195 ms                       | free / OSS | intermediate     | easy           | intermediate |
+| Pyodide            | full                       | poor                 | 2700 ms                      | free / OSS | intermediate     | easy           | hard         |
+| starlark-rust      | very limited               | good                 | 1.3 ms                       | free / OSS | easy             | not available? | impossible?  |
+| WASI / wasmtime    | partial, almost full       | strict               | 16 ms                        | free / OSS | intermediate     | easy           | intermediate |
+| sandboxing service | full                       | strict               | 1500 ms                      | not free   | intermediate     | hard           | intermediate |
+| YOLO Python        | full                       | non-existent         | 0.1 ms / 30 ms               | free / OSS | easy             | easy / scary   | hard         |
 
 Start latency is the time from requesting a sandbox to receiving the result of `1 + 1`.
 The agent run below is ten REPL commands against a sandbox that already exists.
@@ -43,15 +44,19 @@ ten REPL feeds against a sandbox that already exists, and the chart above adds t
 | -------------------------------------------- | ---------- | ---------------- | -------- |
 | Monty, warm pool                             | 0.08 ms    | 0.4 ms           | 0.5 ms   |
 | Monty, cold start                            | 5 ms       | 0.4 ms           | 5 ms     |
+| Full Monty, client pool already open         | 2 ms       | 4 ms             | 6 ms     |
+| Full Monty, cold start                       | 4 ms       | 4 ms             | 7 ms     |
 | WASI / wasmtime, precompiled CPython         | 16 ms      | 180 ms           | 200 ms   |
 | Docker, running container, `docker exec`     | 195 ms     | 700 ms           | 900 ms   |
 | Sandboxing service, existing Daytona sandbox | 1500 ms    | 400 ms           | 1900 ms  |
 | Pyodide, running Deno sandbox                | 2700 ms    | 35 ms            | 2700 ms  |
 
 The two Monty rows differ only in whether a worker already exists in the pool; the chart uses the cold one.
+Full Monty gives every session a fresh worker, so its two rows differ only on the client side: whether the pool
+object and event loop already exist.
 
 † 10 commands run in a REPL, as you might expect from a simple agent with code mode.
-Monty keeps the session, so each command is one `feed_run`.
+Monty and Full Monty keep the session, so each command is one `feed_run`.
 None of the others has a persistent interpreter to feed: `python.wasm` is a WASI command module whose `_start` runs
 once, a container or a service runs one program per request, and the Pyodide sandbox evaluates each call in fresh
 globals.
@@ -62,8 +67,8 @@ an f-string report; every setup must print the same report.
 
 ### How each setup was measured
 
-Every row was measured on 2026-09-03 on an Apple M3 Max (96 GB, macOS 26.5.2) in London, from CPython 3.14.7, with a
-single sample per cold start unless stated.
+Every row was measured on 2026-09-03 (Full Monty on 2026-09-04) on an Apple M3 Max (96 GB, macOS 26.5.2) in London,
+from CPython 3.14.7, with a single sample per cold start unless stated.
 The tables round the numbers; the measured cold-start values are in the text below.
 
 - **Monty**: `pydantic-monty` 0.0.21 with a release build of the `monty` worker binary, driven through `Monty()` /
@@ -72,6 +77,18 @@ The tables round the numbers; the measured cold-start values are in the text bel
     session and runs `1 + 1`; the median of 7 runs is 4.5 ms.
     Warm pool is the median of 20 `checkout()` + `feed_run()` round trips against a pool whose worker already exists.
     The agent run is ten `feed_run` calls on one checkout, so state persists and nothing is replayed.
+- **Full Monty**: the [Full Monty](server.md) container image (0.0.22, a native `linux/arm64` build) running in Docker
+    Desktop 29.6.2 on the same machine, dialled with `pydantic-monty` 0.0.22's `AsyncMontyWebsocket` over
+    `ws://localhost`.
+    The client runs in a second container on the same host so the figure is the server's own overhead over loopback,
+    not Docker Desktop's port-forwarding proxy.
+    Cold start creates the client pool and opens the WebSocket connection, on which the server spawns a worker for the
+    session, then checks out a session and runs `1 + 1`; the median of 7 runs is 3.5 ms.
+    The second row is the median of 20 further `checkout()` + `feed_run()` round trips on that client pool, at 1.6 ms;
+    each is a new connection and a new worker, because the server never lets one process serve two clients.
+    The worker spawns inside the Linux container, where Monty's own cold start measures 2.4 ms against 4.5 ms on
+    macOS, so the Full Monty rows are not directly comparable with the macOS rows above.
+    The agent run is ten `feed_run` calls on one checkout, each a WebSocket round trip to the same worker.
 - **WASI / wasmtime**: the [CPython 3.14.7 WASI build](https://github.com/brettcannon/cpython-wasi-build) (`python.wasm`
     plus its `lib/` directory, preopened as `/` with `PYTHONHOME=/`) run in-process through the
     [`wasmtime`](https://pypi.org/project/wasmtime/) 48.0.0 Python package.
@@ -117,6 +134,22 @@ The tables round the numbers; the measured cold-start values are in the text bel
 - **File mounting**: strictly controlled, see [filesystem access](filesystem.md).
 - **Snapshotting**: `feed_start()` and `dump()` pause, resume and fork execution.
     See [snapshots](snapshots.md).
+
+## Full Monty
+
+[Full Monty](server.md) is the commercial server: the same `monty` workers behind a WebSocket, as a container image.
+
+- **Language completeness**: the same subset as Monty, or full CPython when the server proxies a session to a CPython
+    sandbox.
+- **Security**: the Monty sandbox plus OS-level isolation; escaping the sandbox reaches an empty container, not the
+    machine running your application.
+- **Start latency**: a WebSocket connection plus a worker spawn for the session, 4 ms measured over loopback inside
+    a Linux container; a deployment adds its network round trip.
+- **FOSS**: closed-source and commercial; the client, `AsyncMontyWebsocket`, ships in the MIT `pydantic-monty`
+    package.
+- **Setup complexity**: run the container image with one environment variable, the dump-signing key.
+- **File mounting**: client directories are mounted over the wire, the same `MountDir` as a local pool.
+- **Snapshotting**: as Monty, and a draining server hands each session a signed dump to restore elsewhere.
 
 ## Docker
 

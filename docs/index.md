@@ -25,7 +25,8 @@ Monty avoids the latency, complexity and cost of using a full container based sa
 
 | Sandbox                      | Cold start | Agent run, warm† | Combined‡ |
 | ---------------------------- | ---------- | ---------------- | --------- |
-| Monty                        | 5 ms       | 0.4 ms           | 5 ms      |
+| Monty                        | 4.50 ms    | 0.40 ms          | 4.90 ms   |
+| Full Monty (WebSocket)       | 3.50 ms    | 3.90 ms          | 7.40 ms   |
 | WASI / wasmtime              | 16 ms      | 180 ms           | 200 ms    |
 | Docker                       | 195 ms     | 700 ms           | 900 ms    |
 | Sandboxing service (Daytona) | 1500 ms    | 400 ms           | 1900 ms   |
@@ -33,8 +34,8 @@ Monty avoids the latency, complexity and cost of using a full container based sa
 
 † 10 commands run in a REPL against a sandbox that already exists, as you might expect from a simple agent with code
 mode.
-Monty keeps the session, so each command is one feed; the others have no persistent interpreter, so command *n* re-runs
-commands 1 to *n*.
+Monty and Full Monty keep the session, so each command is one feed; the others have no persistent interpreter, so
+command *n* re-runs commands 1 to *n*.
 
 ‡ The time to create the sandbox and perform the agent run: the two columns added together.
 
