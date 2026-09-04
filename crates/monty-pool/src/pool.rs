@@ -94,10 +94,16 @@ impl Pool {
     /// host context `options` carries.
     ///
     /// Takes an idle worker when one exists, spawns or dials a new one (with
-    /// `options.connect_headers`) while below `max_processes`, and otherwise
-    /// waits up to `checkout_timeout` (forever when `None`) before failing
-    /// with [`PoolError::Exhausted`].
-    pub async fn checkout_with(&self, repl: &ReplConfig, options: CheckoutOptions) -> Result<Checkout, PoolError> {
+    /// `options.connect_headers`, preceded by the W3C trace headers of
+    /// `options.telemetry`) while below `max_processes`, and otherwise waits
+    /// up to `checkout_timeout` (forever when `None`) before failing with
+    /// [`PoolError::Exhausted`].
+    pub async fn checkout_with(&self, repl: &ReplConfig, mut options: CheckoutOptions) -> Result<Checkout, PoolError> {
+        // ahead of the caller's headers, which stay last-wins
+        #[cfg(feature = "telemetry")]
+        if let Some(telemetry) = &options.telemetry {
+            options.connect_headers.splice(0..0, telemetry.propagation_headers());
+        }
         let worker = self.inner.acquire_worker(&options.connect_headers).await?;
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(options.telemetry);

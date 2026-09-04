@@ -887,12 +887,13 @@ class AsyncMontyWebsocket:
             connect_headers: Called once per session, as it is entered and before
                 any wait for pool capacity, to produce extra `str` to `str`
                 headers for that connection's WebSocket upgrade request — e.g. a
-                `traceparent` so server-side spans join the caller's trace, or a
                 token for infrastructure in front of the worker. It runs
                 synchronously on the checking-out task, so it sees that task's
                 contextvars and must not block. Monty never interprets the
-                values; duplicate names are last-wins, and a malformed name or
-                value raises `RuntimeError` as the session is entered.
+                values; duplicate names are last-wins, also over the default
+                `user-agent` and the `traceparent` the Logfire integration
+                adds, and a malformed name or value raises `RuntimeError` as
+                the session is entered.
         """
 
     async def __aenter__(self) -> Self: ...

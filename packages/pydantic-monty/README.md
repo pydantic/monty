@@ -338,7 +338,9 @@ The Python Logfire integration instruments the pool through a private adapter
 hook. It propagates the active Python OTel context into each checkout, which
 becomes one session span with nested feed and suspension spans recording code,
 inputs, external calls, exceptions, and `print` output. Session dumps and
-restores are recorded by size only.
+restores are recorded by size only. An `AsyncMontyWebsocket` checkout also
+sends that context as W3C `traceparent`/`tracestate` headers on its upgrade
+request, so a server that honours them can join the same trace.
 
 The same adapter also receives pool metrics — live, immediately available and
 host-blocked worker counts, checkout waits, worker deaths by reason, run

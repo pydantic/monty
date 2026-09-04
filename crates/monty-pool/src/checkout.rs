@@ -72,14 +72,17 @@ impl Default for ReplConfig {
 #[derive(Default)]
 #[non_exhaustive]
 pub struct CheckoutOptions {
-    /// Distributed trace context captured by a host adapter.
+    /// Distributed trace context captured by a host adapter. Its span also
+    /// goes out as `traceparent`/`tracestate` on a WebSocket dial, so a remote
+    /// worker's own spans join the host's trace.
     #[cfg(feature = "telemetry")]
     pub telemetry: Option<TelemetryContext>,
     /// Extra headers for this checkout's WebSocket upgrade request; the
     /// subprocess transport makes no request and ignores them. Duplicate
     /// names are last-wins, even against the default `user-agent`
-    /// (`monty-pool/<version>`), `host` and the other handshake headers,
-    /// and a malformed name or value fails the dial.
+    /// (`monty-pool/<version>`), the `traceparent` from `telemetry`, `host`
+    /// and the other handshake headers, and a malformed name or value fails
+    /// the dial.
     pub connect_headers: Vec<(String, String)>,
 }
 

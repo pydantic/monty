@@ -3,6 +3,8 @@
 //! session. This exercises `Worker::websocket` (the async dial) and the WS
 //! send/recv path end-to-end without needing a real remote child.
 
+#[cfg(feature = "telemetry")]
+use std::sync::Arc;
 use std::{
     fs,
     future::ready,
@@ -12,12 +14,18 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "telemetry")]
+use monty_pool::telemetry::{TelemetryAdapter, configure_telemetry_adapter};
 use monty_pool::{
     Checkout, CheckoutOptions, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
     ResumeValue, TurnEvent,
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, WireObject, decode_frame, encode_to_capped_vec, pb};
 use monty_types::{MontyObject, PrintStream, ResourceLimits};
+#[cfg(feature = "telemetry")]
+use opentelemetry::trace::{SpanId, TraceId};
+#[cfg(feature = "telemetry")]
+use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
 use tokio::task::spawn_blocking;
 #[cfg(not(windows))]
 use tokio::time::timeout;
@@ -56,25 +64,54 @@ fn answer_requests(socket: &mut WebSocket<TcpStream>) {
     }
 }
 
-/// A mock child that also reports `header`'s value from each of `connections`
-/// upgrade requests — the handshake callback is where a server reads them.
-fn serve_capturing_header(listener: &TcpListener, header: &str, connections: usize, tx: &mpsc::Sender<Option<String>>) {
+/// A mock child that also reports each of `headers`' values (in order, `None`
+/// when absent) from each of `connections` upgrade requests — the handshake
+/// callback is where a server reads them.
+fn serve_capturing_headers(
+    listener: &TcpListener,
+    headers: &[&str],
+    connections: usize,
+    tx: &mpsc::Sender<Vec<Option<String>>>,
+) {
     for _ in 0..connections {
         let (stream, _peer) = listener.accept().expect("accept");
         // the Err type (an ErrorResponse) is tungstenite's callback contract
         #[expect(clippy::result_large_err)]
         let callback = |req: &Request, resp: Response| {
-            let seen = req
-                .headers()
-                .get(header)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned);
-            tx.send(seen).expect("send captured header");
+            let seen = headers
+                .iter()
+                .map(|header| {
+                    req.headers()
+                        .get(*header)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_owned)
+                })
+                .collect();
+            tx.send(seen).expect("send captured headers");
             Ok(resp)
         };
         let mut socket = tungstenite::accept_hdr(stream, callback).expect("ws handshake");
         answer_requests(&mut socket);
     }
+}
+
+/// A telemetry adapter accepting every record, for tests that only care what
+/// an installed adapter makes the pool do (e.g. the headers it dials with).
+#[cfg(feature = "telemetry")]
+struct AcceptAll;
+
+#[cfg(feature = "telemetry")]
+impl TelemetryAdapter for AcceptAll {
+    fn start_span(&self, _: &SpanData) -> bool {
+        true
+    }
+    fn end_span(&self, _: &SpanData) -> bool {
+        true
+    }
+    fn emit_log(&self, _: SpanId, _: &SdkLogRecord) -> bool {
+        true
+    }
+    fn disable_root(&self, _: TraceId, _: SpanId) {}
 }
 
 /// A discard-everything print callback, coercible to `OnPrint` at each callsite.
@@ -136,7 +173,7 @@ async fn drives_a_session_over_websocket() {
 async fn connect_headers_are_per_checkout() {
     let (header_tx, header_rx) = mpsc::channel();
     let (listener, mut config) = ws_pool_config();
-    let server = thread::spawn(move || serve_capturing_header(&listener, "traceparent", 2, &header_tx));
+    let server = thread::spawn(move || serve_capturing_headers(&listener, &["traceparent"], 2, &header_tx));
 
     config.request_timeout = Some(Duration::from_secs(10));
     let pool = Pool::new(config).await.expect("pool");
@@ -150,8 +187,8 @@ async fn connect_headers_are_per_checkout() {
             CheckoutOptions::default().with_connect_headers(vec![("traceparent".to_owned(), trace.to_owned())]);
         let mut checkout = pool.checkout_with(&repl, options).await.expect("checkout");
         assert_eq!(
-            header_rx.recv().expect("captured header"),
-            Some(trace.to_owned()),
+            header_rx.recv().expect("captured headers"),
+            vec![Some(trace.to_owned())],
             "each dial must carry the headers of the checkout that made it"
         );
         // the session still works normally with extra headers on the dial
@@ -173,7 +210,7 @@ async fn connect_headers_are_per_checkout() {
 async fn duplicate_connect_headers_are_last_wins() {
     let (header_tx, header_rx) = mpsc::channel();
     let (listener, mut config) = ws_pool_config();
-    let server = thread::spawn(move || serve_capturing_header(&listener, "traceparent", 1, &header_tx));
+    let server = thread::spawn(move || serve_capturing_headers(&listener, &["traceparent"], 1, &header_tx));
     config.request_timeout = Some(Duration::from_secs(10));
     let pool = Pool::new(config).await.expect("pool");
 
@@ -185,7 +222,10 @@ async fn duplicate_connect_headers_are_last_wins() {
         .checkout_with(&ReplConfig::default(), options)
         .await
         .expect("checkout");
-    assert_eq!(header_rx.recv().expect("captured header").as_deref(), Some("second"));
+    assert_eq!(
+        header_rx.recv().expect("captured headers"),
+        vec![Some("second".to_owned())]
+    );
     checkout.finish().await.expect("finish");
     join_server(server).await;
 }
@@ -197,14 +237,14 @@ async fn duplicate_connect_headers_are_last_wins() {
 async fn user_agent_is_set_and_overridable() {
     let (header_tx, header_rx) = mpsc::channel();
     let (listener, mut config) = ws_pool_config();
-    let server = thread::spawn(move || serve_capturing_header(&listener, "user-agent", 2, &header_tx));
+    let server = thread::spawn(move || serve_capturing_headers(&listener, &["user-agent"], 2, &header_tx));
     config.request_timeout = Some(Duration::from_secs(10));
     let pool = Pool::new(config).await.expect("pool");
 
     let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     assert_eq!(
-        header_rx.recv().expect("captured header"),
-        Some(format!("monty-pool/{}", env!("CARGO_PKG_VERSION")))
+        header_rx.recv().expect("captured headers"),
+        vec![Some(format!("monty-pool/{}", env!("CARGO_PKG_VERSION")))]
     );
     checkout.finish().await.expect("finish");
 
@@ -215,8 +255,62 @@ async fn user_agent_is_set_and_overridable() {
         .await
         .expect("checkout");
     assert_eq!(
-        header_rx.recv().expect("captured header").as_deref(),
-        Some("my-app/1.0")
+        header_rx.recv().expect("captured headers"),
+        vec![Some("my-app/1.0".to_owned())]
+    );
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+/// A host trace context captured through the telemetry adapter goes out as
+/// W3C `traceparent`/`tracestate` on the dial, so a remote worker's spans join
+/// the host's trace with no header plumbing by the binding; an explicit
+/// `connect_headers` entry still wins.
+#[cfg(feature = "telemetry")]
+#[tokio::test]
+async fn telemetry_context_is_propagated_on_the_dial() {
+    let handle = configure_telemetry_adapter(Arc::new(AcceptAll)).expect("configure");
+    let context = || {
+        handle
+            .context(
+                "0af7651916cd43dd8448eb211c80319c",
+                "b7ad6b7169203331",
+                1,
+                "congo=t61rcWkgMzE",
+            )
+            .expect("context")
+    };
+    let (header_tx, header_rx) = mpsc::channel();
+    let (listener, mut config) = ws_pool_config();
+    let server =
+        thread::spawn(move || serve_capturing_headers(&listener, &["traceparent", "tracestate"], 2, &header_tx));
+    config.request_timeout = Some(Duration::from_secs(10));
+    let pool = Pool::new(config).await.expect("pool");
+
+    let options = CheckoutOptions::default().with_telemetry(Some(context()));
+    let checkout = pool
+        .checkout_with(&ReplConfig::default(), options)
+        .await
+        .expect("checkout");
+    assert_eq!(
+        header_rx.recv().expect("captured headers"),
+        vec![
+            Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".to_owned()),
+            Some("congo=t61rcWkgMzE".to_owned()),
+        ]
+    );
+    checkout.finish().await.expect("finish");
+
+    let options = CheckoutOptions::default()
+        .with_telemetry(Some(context()))
+        .with_connect_headers(vec![("traceparent".to_owned(), "00-explicit".to_owned())]);
+    let checkout = pool
+        .checkout_with(&ReplConfig::default(), options)
+        .await
+        .expect("checkout");
+    assert_eq!(
+        header_rx.recv().expect("captured headers"),
+        vec![Some("00-explicit".to_owned()), Some("congo=t61rcWkgMzE".to_owned())]
     );
     checkout.finish().await.expect("finish");
     join_server(server).await;
