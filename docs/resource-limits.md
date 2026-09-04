@@ -23,13 +23,13 @@ with Monty() as pool:
 
 ## The five settings
 
-| Key | Meaning |
-| --- | --- |
-| `max_memory` | Maximum heap memory in bytes |
-| `max_duration_secs` | Maximum cumulative execution time in seconds |
-| `max_recursion_depth` | Maximum function call stack depth (default 1000) |
-| `gc_interval` | Run garbage collection every N allocations |
-| `max_suspensions` | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
+| Key                   | Meaning                                                                                                               |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `max_memory`          | Maximum heap memory in bytes                                                                                          |
+| `max_duration_secs`   | Maximum cumulative execution time in seconds                                                                          |
+| `max_recursion_depth` | Maximum function call stack depth (default 1000)                                                                      |
+| `gc_interval`         | Run garbage collection every N allocations                                                                            |
+| `max_suspensions`     | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
 
 Every key is optional.
 Omit `max_memory` or `max_duration_secs`, or set them to `None`, to disable that limit.
@@ -61,7 +61,7 @@ A few integer operations carry their own caps regardless of `max_memory`:
 
 - `base ** exp` with an exponent above `u32::MAX` raises `OverflowError`.
 - `int(s, base)` rejects strings over 4,300 digits before the quadratic BigInt parse, matching CPython's
-  `sys.int_info.default_max_str_digits`.
+    `sys.int_info.default_max_str_digits`.
 
 ## Time
 
@@ -69,23 +69,23 @@ A few integer operations carry their own caps regardless of `max_memory`:
 
 - The clock runs only while the interpreter executes bytecode.
 - It is paused while execution is suspended waiting on the host — a [host function](host-functions.md) that takes a
-  minute costs nothing.
+    minute costs nothing.
 - It accumulates across `feed_run` calls for the life of the session.
 - It is serialized into [snapshots](snapshots.md), so a restored session resumes its budget rather than restarting from
-  zero.
+    zero.
 - There is no way for sandboxed code to observe the budget or the time remaining.
 
 The in-sandbox check runs at interpreter checkpoints, so it cannot catch code that wedges the interpreter itself.
 Two host-side backstops cover that:
 
 - **`request_timeout`** on the pool is a hard per-turn deadline.
-  A worker that exceeds it is killed and the call raises `MontyCrashedError` with `timed_out=True`.
-  Each resume after a host-function or mount call starts a new deadline, so a program that suspends often can outlive
-  any single timeout.
+    A worker that exceeds it is killed and the call raises `MontyCrashedError` with `timed_out=True`.
+    Each resume after a host-function or mount call starts a new deadline, so a program that suspends often can outlive
+    any single timeout.
 - **The duration backstop.** For sessions with a `max_duration_secs` limit, the worker reports its execution time on
-  every protocol turn, and the host kills the worker a grace period after the budget expires.
-  The grace period defaults to 1 second; in JavaScript it is the `durationLimitGrace` pool option (`null` disables it),
-  and from Python it is not currently configurable.
+    every protocol turn, and the host kills the worker a grace period after the budget expires.
+    The grace period defaults to 1 second; in JavaScript it is the `durationLimitGrace` pool option (`null` disables it),
+    and from Python it is not currently configurable.
 
 Set `max_duration_secs` for untrusted code that may suspend repeatedly; `request_timeout` alone does not bound the
 overall call.
@@ -123,19 +123,19 @@ caps the dump's, so a worker cannot report a looser one.
 ## What is not covered
 
 - **Compilation time.** Parsing and bytecode compilation happen before the VM exists and are not charged to the duration
-  budget; memory retained by compiled code does count toward `max_memory` in workers.
-  Compilation has its own structural caps (AST nesting at 200 levels, bytecode operand sizes, comprehension nesting, and
-  a 1,024-copy cap on `finally` expansion that raises `SyntaxError`).
-  A host accepting untrusted source should still isolate compilation, as the subprocess and WebAssembly runtimes do.
+    budget; memory retained by compiled code does count toward `max_memory` in workers.
+    Compilation has its own structural caps (AST nesting at 200 levels, bytecode operand sizes, comprehension nesting, and
+    a 1,024-copy cap on `finally` expansion that raises `SyntaxError`).
+    A host accepting untrusted source should still isolate compilation, as the subprocess and WebAssembly runtimes do.
 - **Print collectors.** `CollectString` and `CollectStreams` live in the host process, so their 10 MiB default cap is
-  separate from `max_memory`.
+    separate from `max_memory`.
 - **Mount memory.** Each [mount](filesystem.md) has its own `memory_usage_limit`, defaulting to 100 MB, shared between
-  retained overlay data and transient results.
+    retained overlay data and transient results.
 - **`json.loads` nesting**, capped at 200 levels independently of the recursion limit.
 - **The host instance store.** Every `ClassInstance`/`ClassType` wrapper sent into a session (nested wrappers,
-  `init=True` constructions and `convert_value` wraps included) is retained in the host process until the session
-  ends; re-sending a wrapper with the same id reuses its entry, distinct wrappers accumulate; see
-  [host objects](host-objects.md#values-returned-by-methods).
+    `init=True` constructions and `convert_value` wraps included) is retained in the host process until the session
+    ends; re-sending a wrapper with the same id reuses its entry, distinct wrappers accumulate; see
+    [host objects](host-objects.md#values-returned-by-methods).
 
 ## After a limit fires
 

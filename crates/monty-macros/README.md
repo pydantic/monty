@@ -54,13 +54,13 @@ CPython. It selects both the error *wording* and the error *ordering*
 `crates/monty/src/args/bind_native.rs` for the exact contracts). Pick it by
 looking at how the function is implemented in CPython:
 
-| CPython implementation | `style` | tell-tale error wording |
-|---|---|---|
-| pure-Python `def` (`re` module, `json.dumps`, `Path.mkdir`) | `def` | `f() takes from 1 to 2 positional arguments but 3 were given` |
-| Argument Clinic — most modern builtins/methods (look for clinic blocks / `*.c.h` includes in the CPython source) | `clinic` (the default — omit it) | `replace() takes at least 2 positional arguments (1 given)` |
-| `PyArg_ParseTupleAndKeywords`, no `:name` in the format string | `c` | `function missing required argument 'day' (pos 3)` |
-| `PyArg_ParseTupleAndKeywords` with `:name` | `c_named` | `timezone() missing required argument 'offset' (pos 1)` |
-| `PyArg_UnpackTuple` (positional-only, fixed `min..max`) | `unpack` | `name expected at most 2 arguments, got 3` (`expected N …` when min == max) |
+| CPython implementation                                                                                           | `style`                          | tell-tale error wording                                                     |
+| ---------------------------------------------------------------------------------------------------------------- | -------------------------------- | --------------------------------------------------------------------------- |
+| pure-Python `def` (`re` module, `json.dumps`, `Path.mkdir`)                                                      | `def`                            | `f() takes from 1 to 2 positional arguments but 3 were given`               |
+| Argument Clinic — most modern builtins/methods (look for clinic blocks / `*.c.h` includes in the CPython source) | `clinic` (the default — omit it) | `replace() takes at least 2 positional arguments (1 given)`                 |
+| `PyArg_ParseTupleAndKeywords`, no `:name` in the format string                                                   | `c`                              | `function missing required argument 'day' (pos 3)`                          |
+| `PyArg_ParseTupleAndKeywords` with `:name`                                                                       | `c_named`                        | `timezone() missing required argument 'offset' (pos 1)`                     |
+| `PyArg_UnpackTuple` (positional-only, fixed `min..max`)                                                          | `unpack`                         | `name expected at most 2 arguments, got 3` (`expected N …` when min == max) |
 
 Style-derived behaviour that used to be separate flags: the C
 "… positional arguments …" overflow pivot turns on automatically for
@@ -86,29 +86,26 @@ are all incompatible.
 ### Modifiers
 
 - `at_most_total` — pre-count positionals + kwargs against the positional
-  maximum before dispatch (`{name}() takes at most N arguments (M given)`).
-  This is a per-function empirical fact, not derivable from the fields or
-  the style. Litmus test: call the CPython function with valid positionals
-  plus one bogus kwarg — if it reports `takes at most N arguments (M
-  given)`, set the flag; if it reports `unexpected keyword argument`,
-  don't. Only meaningful for the C-parser families (`clinic`/`c`/`c_named`)
-  on signatures with a fixed maximum — rejected under `style = def` /
-  `style = unpack` and with `varargs`/`varkwargs`.
+    maximum before dispatch (`{name}() takes at most N arguments (M given)`).
+    This is a per-function empirical fact, not derivable from the fields or
+    the style. Litmus test: call the CPython function with valid positionals
+    plus one bogus kwarg — if it reports `takes at most N arguments (M given)`, set the flag; if it reports `unexpected keyword argument`,
+    don't. Only meaningful for the C-parser families (`clinic`/`c`/`c_named`)
+    on signatures with a fixed maximum — rejected under `style = def` /
+    `style = unpack` and with `varargs`/`varkwargs`.
 - `vectorcall` — kwarg-free calls check positional arity first with
-  `_PyArg_CheckPositional` wording (`{name} expected at most N arguments,
-  got M`), modeling `tp_vectorcall` fast paths (`int`, `str`) that only
-  fall back to the clinic parser when keywords are present. Requires the
-  default `clinic` style plus `at_most_total` (which supplies the
-  parenthesised wording for the kwargs path).
+    `_PyArg_CheckPositional` wording (`{name} expected at most N arguments, got M`), modeling `tp_vectorcall` fast paths (`int`, `str`) that only
+    fall back to the clinic parser when keywords are present. Requires the
+    default `clinic` style plus `at_most_total` (which supplies the
+    parenthesised wording for the kwargs path).
 - `bad_arg` / `bad_arg_named` — report `FromValue` wrong-type failures in
-  CPython's `_PyArg_BadArgument` wording (`{name}() argument {pos|'arg'}
-  must be {expected}, not {got}`).
+    CPython's `_PyArg_BadArgument` wording (`{name}() argument {pos|'arg'} must be {expected}, not {got}`).
 - `kwarg_error_name = "..."` — override the function name in the
-  unknown-kwarg error only (`json.dumps` reports `JSONEncoder.__init__`).
-  Under `style = unpack` it instead names the function in the blanket
-  `takes no keyword arguments` rejection (`unicodedata.name()`).
+    unknown-kwarg error only (`json.dumps` reports `JSONEncoder.__init__`).
+    Under `style = unpack` it instead names the function in the blanket
+    `takes no keyword arguments` rejection (`unicodedata.name()`).
 - `kwargs_not_supported_yet` — reject every kwarg with a
-  `NotImplementedError`; a Monty TODO marker.
+    `NotImplementedError`; a Monty TODO marker.
 
 Field-level attributes: `pos_only`, `kw_only` (must carry a `default` — the
 runtime binder's fast paths skip the missing-keyword check, so required
@@ -122,8 +119,7 @@ unit tests for every attribute-validation error.
 
 ## `#[derive(ToArgs)]`
 
-Inverse of `FromArgs`: projects a struct into the `(Vec<MontyObject>,
-kwargs)` pair host callbacks expect. Reuses the `#[from_args(...)]` field
+Inverse of `FromArgs`: projects a struct into the `(Vec<MontyObject>, kwargs)` pair host callbacks expect. Reuses the `#[from_args(...)]` field
 attributes so a struct that derives both stays consistent in both
 directions. Field types must implement `monty::args::ToMontyObject`.
 

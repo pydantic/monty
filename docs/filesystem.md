@@ -36,10 +36,10 @@ Pass a list to `mount=` for several at once.
 
 ### Modes
 
-| Mode | Reads | Writes |
-| --- | --- | --- |
-| `'read-only'` | from the host directory | raise `PermissionError` |
-| `'read-write'` | from the host directory | written through to the host |
+| Mode                  | Reads                    | Writes                                           |
+| --------------------- | ------------------------ | ------------------------------------------------ |
+| `'read-only'`         | from the host directory  | raise `PermissionError`                          |
+| `'read-write'`        | from the host directory  | written through to the host                      |
 | `'overlay'` (default) | fall through to the host | captured in memory, discarded when the feed ends |
 
 `'overlay'` is the default: writes are kept in memory and discarded when the feed ends, and sandboxed code still reads
@@ -47,6 +47,7 @@ back its own writes.
 Each feed starts with a fresh overlay.
 
 !!! warning "`'read-write'` writes files from untrusted code to your real filesystem"
+
     Those files are untrusted input; do not execute them.
     Importing counts as executing, and the import can be indirect: with a directory on `sys.path` mounted, sandboxed
     code can write `json.py`, or any module not yet imported, and the host's next `import` runs it — including imports
@@ -56,13 +57,13 @@ Each feed starts with a fresh overlay.
 
 ### Options
 
-| Argument | Default | Meaning |
-| --- | --- | --- |
-| `host_path` | required | Real host directory; canonicalized at construction, raises if missing or not a directory |
-| `virtual_path` | required | Absolute POSIX-style path prefix inside the sandbox, whatever the host OS |
-| `mode` | `'overlay'` | One of the three above |
-| `write_bytes_limit` | `None` | Cap on bytes written through the mount per feed; exceeding it raises `OSError` |
-| `memory_usage_limit` | `100_000_000` | Byte budget for overlay data and transient results; exceeding it raises `MemoryError` |
+| Argument             | Default       | Meaning                                                                                  |
+| -------------------- | ------------- | ---------------------------------------------------------------------------------------- |
+| `host_path`          | required      | Real host directory; canonicalized at construction, raises if missing or not a directory |
+| `virtual_path`       | required      | Absolute POSIX-style path prefix inside the sandbox, whatever the host OS                |
+| `mode`               | `'overlay'`   | One of the three above                                                                   |
+| `write_bytes_limit`  | `None`        | Cap on bytes written through the mount per feed; exceeding it raises `OSError`           |
+| `memory_usage_limit` | `100_000_000` | Byte budget for overlay data and transient results; exceeding it raises `MemoryError`    |
 
 Validation happens at construction, not at feed time — a bad `virtual_path` raises immediately.
 
@@ -85,15 +86,15 @@ Relative symlinks that stay inside the mount are followed in the non-overlay mod
 ### Things that differ from CPython
 
 - **Virtual paths are always POSIX**, on every host OS.
-  `Path('C:/Users/foo')` is a literal POSIX path, and `repr` is always `PosixPath(...)`.
+    `Path('C:/Users/foo')` is a literal POSIX path, and `repr` is always `PosixPath(...)`.
 - **No live file descriptors.** `open()` keeps no OS handle between calls; each read or write is a separate one-shot
-  host operation.
-  This is what makes mid-execution [snapshots](snapshots.md) safe.
-  It also means `for line in f` is not supported.
+    host operation.
+    This is what makes mid-execution [snapshots](snapshots.md) safe.
+    It also means `for line in f` is not supported.
 - **Only regular files** can be read, written or opened.
-  FIFOs, sockets and device nodes raise `PermissionError`, because mount I/O must never block on sandbox-reachable
-  input.
-  Existence checks and `stat()` still work on them.
+    FIFOs, sockets and device nodes raise `PermissionError`, because mount I/O must never block on sandbox-reachable
+    input.
+    Existence checks and `stat()` still work on them.
 
 The full list is in [`limitations/filesystem.md`](limitations/filesystem.md)
 and [`limitations/open.md`](limitations/open.md).

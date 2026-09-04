@@ -90,8 +90,20 @@ format-py: ## Format Python code - WARNING be careful about this command as it m
 format-js: install-js ## Format JS code with prettier
 	cd crates/monty-js && npm run format
 
+# tracked markdown, minus the vendored typeshed, the `.macroscope/` config files that only
+# look like markdown, and the AGENTS.md symlink (CLAUDE.md is formatted directly)
+MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macroscope/**' ':!:AGENTS.md')
+
+.PHONY: format-md
+format-md: ## Format markdown with mdformat (tables, mkdocs admonitions, frontmatter)
+	uv run --group docs mdformat $(MD_FILES)
+
+.PHONY: lint-md
+lint-md: ## Check markdown formatting with mdformat
+	uv run --group docs mdformat --check $(MD_FILES)
+
 .PHONY: format
-format: format-rs format-py format-js ## Format Rust code, this does not format Python code as we have to be careful with that
+format: format-rs format-py format-js format-md ## Format Rust code, this does not format Python code as we have to be careful with that
 
 .PHONY: lint-rs
 lint-rs:  ## Lint Rust code with clippy and import checks
@@ -126,7 +138,7 @@ lint-py: dev-py ## Lint Python code with ruff
 	uv run -m mypy.stubtest pydantic_monty._monty --ignore-disjoint-bases
 
 .PHONY: lint
-lint: lint-rs lint-py ## Lint the code with ruff and clippy
+lint: lint-rs lint-py lint-md ## Lint the code with ruff, clippy and mdformat
 
 .PHONY: test-no-features
 test-no-features: ## Run rust tests without any features enabled

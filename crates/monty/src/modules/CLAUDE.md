@@ -22,13 +22,13 @@ CPython-family table and the `at_most_total` litmus test).
 
 ### 1. Pick the `style` by how CPython implements the function
 
-| CPython implementation | `style` |
-|---|---|
-| pure-Python `def` (the `re` functions, `json.dumps`) | `style = def` |
-| Argument Clinic (most modern C builtins/methods) | default — omit `style` |
-| `PyArg_ParseTupleAndKeywords`, anonymous `function` errors | `style = c` |
-| same, with the name embedded (`timezone() missing …`) | `style = c_named` |
-| `PyArg_UnpackTuple` (positional-only, `min..max` arity, kwargs rejected wholesale with `takes no keyword arguments`) | `style = unpack` |
+| CPython implementation                                                                                                                                                                            | `style`                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| pure-Python `def` (the `re` functions, `json.dumps`)                                                                                                                                              | `style = def`                               |
+| Argument Clinic (most modern C builtins/methods)                                                                                                                                                  | default — omit `style`                      |
+| `PyArg_ParseTupleAndKeywords`, anonymous `function` errors                                                                                                                                        | `style = c`                                 |
+| same, with the name embedded (`timezone() missing …`)                                                                                                                                             | `style = c_named`                           |
+| `PyArg_UnpackTuple` (positional-only, `min..max` arity, kwargs rejected wholesale with `takes no keyword arguments`)                                                                              | `style = unpack`                            |
 | `tp_vectorcall` fast path in front of a clinic parser (`int`, `str`: kwarg-free overflow says `int expected at most 2 arguments, got 3`, with kwargs `int() takes at most 2 arguments (3 given)`) | default style + `at_most_total, vectorcall` |
 
 The style controls wording *and* ordering (e.g. C families report leftover
@@ -101,30 +101,30 @@ fn call_normalize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ### 3. Field rules
 
 - Declaration order = Python signature order:
-  `[pos_only…] [pos_or_keyword…] [varargs] [kw_only…] [varkwargs]`, required
-  fields before defaulted ones in the positional region.
+    `[pos_only…] [pos_or_keyword…] [varargs] [kw_only…] [varkwargs]`, required
+    fields before defaulted ones in the positional region.
 - **Typed fields** (`i64`, `i32`, `bool`, `StrArg`, `Option<T>`, custom
-  `FromValue` impls) are only for functions implemented in C in CPython —
-  pair with `bad_arg` / `bad_arg_named` when CPython uses
-  `_PyArg_BadArgument` wording (`f() argument 1 must be str, not int`).
+    `FromValue` impls) are only for functions implemented in C in CPython —
+    pair with `bad_arg` / `bad_arg_named` when CPython uses
+    `_PyArg_BadArgument` wording (`f() argument 1 must be str, not int`).
 - **`style = def` fields must be raw `Value`** (coerce in the body so the
-  error message matches what CPython's function body raises).
+    error message matches what CPython's function body raises).
 - Prefer `StrArg` over `String` for str params the function only reads — it
-  validates without copying and lends `&str` via `.as_str(vm)`.
+    validates without copying and lends `&str` via `.as_str(vm)`.
 - Field names that aren't single ASCII chars need a `StaticStrings` variant
-  (in `crate::intern`) for kwarg matching — add one, or point
-  `static_string = "ExistingVariant"` at an existing one.
+    (in `crate::intern`) for kwarg matching — add one, or point
+    `static_string = "ExistingVariant"` at an existing one.
 - `Value` / `StrArg` / `Option<Value>` fields hold heap references: bind
-  them with `defer_drop!` in the body, or otherwise guarantee
-  `drop_with` on every path.
+    them with `defer_drop!` in the body, or otherwise guarantee
+    `drop_with` on every path.
 - `varargs` fields must be `Vec<Value>`; convert elements in the body.
 
 ### 4. Tests and docs
 
 - Add behaviour tests to `crates/monty/test_cases/` (dual-run against
-  CPython — asserts must pass on both engines; exact `==` messages, never
-  `in`). Signature-error orderings belong in `args__macro_errors.py`.
+    CPython — asserts must pass on both engines; exact `==` messages, never
+    `in`). Signature-error orderings belong in `args__macro_errors.py`.
 - Document every remaining CPython divergence in `./limitations/<module>.md`
-  — including "obvious" ones.
+    — including "obvious" ones.
 - Run `make test-cases`, `make format-rs`, `make lint-rs` (and
-  `make lint-py` for test changes) before finishing.
+    `make lint-py` for test changes) before finishing.

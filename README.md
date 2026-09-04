@@ -15,7 +15,7 @@
   <a href="https://logfire.pydantic.dev/docs/join-slack/"><img src="https://img.shields.io/badge/Slack-Join%20Slack-4A154B?logo=slack" alt="Join Slack" /></a>
 </div>
 
----
+______________________________________________________________________
 
 > [!NOTE]
 > **Hack Monty Round 3 is live** - the last round before Monty V1. See [pydantic.dev/monty](https://pydantic.dev/monty) for details.
@@ -69,14 +69,14 @@ with Monty() as pool:
 
 - [Introduction](https://pydantic.dev/docs/monty/) with the latency measurements
 - [Comparison to alternatives](https://pydantic.dev/docs/monty/reference/alternatives/): Docker, Pyodide, WASI,
-  sandboxing services
+    sandboxing services
 - Getting started with [Python](https://pydantic.dev/docs/monty/quickstart/python/),
-  [JavaScript](https://pydantic.dev/docs/monty/quickstart/javascript/) or
-  [Rust](https://pydantic.dev/docs/monty/quickstart/rust/)
+    [JavaScript](https://pydantic.dev/docs/monty/quickstart/javascript/) or
+    [Rust](https://pydantic.dev/docs/monty/quickstart/rust/)
 - [Security model](https://pydantic.dev/docs/monty/concepts/security/), [resource
-  limits](https://pydantic.dev/docs/monty/concepts/resource-limits/),
-  [snapshots](https://pydantic.dev/docs/monty/concepts/snapshots/), [the Python
-  subset](https://pydantic.dev/docs/monty/limitations/)
+    limits](https://pydantic.dev/docs/monty/concepts/resource-limits/),
+    [snapshots](https://pydantic.dev/docs/monty/concepts/snapshots/), [the Python
+    subset](https://pydantic.dev/docs/monty/limitations/)
 - [`docs/`](./docs): the source of the documentation site
 
 Monty runs [Code Mode](https://pydantic.dev/docs/ai/harness/code-mode/) in [Pydantic
@@ -89,8 +89,8 @@ Community bindings: [gomonty](https://github.com/ewhauser/gomonty/) (Go) and
 The Pydantic Stack is everything you need to ship production-grade AI agents:
 
 - [Pydantic AI](https://pydantic.dev/pydantic-ai?utm_source=github&utm_medium=readme&utm_campaign=monty) - Type-safe
-  agent framework
+    agent framework
 - [Pydantic Logfire](https://pydantic.dev/logfire?utm_source=github&utm_medium=readme&utm_campaign=monty) - AI-first,
-  full-stack observability
+    full-stack observability
 - [Logfire AI Gateway](https://pydantic.dev/ai-gateway?utm_source=github&utm_medium=readme&utm_campaign=monty) - Unified
-  LLM proxy
+    LLM proxy

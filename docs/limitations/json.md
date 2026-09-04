@@ -14,15 +14,15 @@ implemented (no file-object protocol).
 
 - Accepts `str` or `bytes` as input.
 - **No keyword arguments are accepted.** Passing any of `cls`,
-  `object_hook`, `parse_float`, `parse_int`, `parse_constant`, or
-  `object_pairs_hook` raises `TypeError: ... unexpected keyword argument`.
+    `object_hook`, `parse_float`, `parse_int`, `parse_constant`, or
+    `object_pairs_hook` raises `TypeError: ... unexpected keyword argument`.
 - `NaN`, `Infinity`, `-Infinity` are *always* accepted, with no toggle to
-  reject them.
+    reject them.
 - Nesting depth is capped at 200 levels; deeper inputs raise
-  `json.JSONDecodeError`.
+    `json.JSONDecodeError`.
 - JSON integers that would exceed Monty's BigInt digit limit are rejected
-  with `ValueError` (matching CPython's `int_max_str_digits` behaviour)
-  rather than `JSONDecodeError`.
+    with `ValueError` (matching CPython's `int_max_str_digits` behaviour)
+    rather than `JSONDecodeError`.
 
 ## `json.dumps(obj, **kwargs)`
 
@@ -33,7 +33,7 @@ Rejected with `TypeError` if passed:
 
 - `cls` — custom encoder classes are not supported.
 - `default` — there is no fallback encoder callback. Non-serializable
-  values raise `TypeError` instead of routing through one.
+    values raise `TypeError` instead of routing through one.
 - `check_circular` — circular reference detection is always on.
 
 ## `JSONDecodeError`

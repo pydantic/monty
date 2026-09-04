@@ -8,33 +8,31 @@ any code runs.
 ## Statements rejected at parse time
 
 - **`class` definitions** — simple classes are supported (instance methods,
-  `__init__`/`__repr__`/`__str__`, class variables of arbitrary expressions).
-  Rejected at parse time: base classes / metaclasses (`class Foo(Bar):`) and
-  class-body statements other than `def`, a simple `name [: T] = <expr>`
-  assignment, `pass`, or a docstring. There is no inheritance and no general
-  dunder protocol. See [classes.md](classes.md).
+    `__init__`/`__repr__`/`__str__`, class variables of arbitrary expressions).
+    Rejected at parse time: base classes / metaclasses (`class Foo(Bar):`) and
+    class-body statements other than `def`, a simple `name [: T] = <expr>`
+    assignment, `pass`, or a docstring. There is no inheritance and no general
+    dunder protocol. See [classes.md](classes.md).
 - **Decorators** (`@deco`) — supported on classes and on top-level or nested
-  `def`/`async def`, taking any callable in scope, evaluated in the enclosing
-  scope and applied bottom-up. Rejected at parse time on **methods**, so
-  `@classmethod`, `@staticmethod`, `@property` and any decorator on a `def`
-  inside a class body are unavailable. See [classes.md](classes.md).
+    `def`/`async def`, taking any callable in scope, evaluated in the enclosing
+    scope and applied bottom-up. Rejected at parse time on **methods**, so
+    `@classmethod`, `@staticmethod`, `@property` and any decorator on a `def`
+    inside a class body are unavailable. See [classes.md](classes.md).
 - **`async with` statements** — not yet supported.
 - **`yield` / `yield from` expressions** — no generator functions. Generator
-  *expressions* (`(x for x in ...)`) parse but currently materialize to a
-  `list` rather than a lazy iterator, a known temporary divergence; see
-  `iter__generator_expr_type.py`.
+    *expressions* (`(x for x in ...)`) parse but currently materialize to a
+    `list` rather than a lazy iterator, a known temporary divergence; see
+    `iter__generator_expr_type.py`.
 - **`match` statements** — structural pattern matching is not supported.
 - **`del` statements** — neither `del x` nor `del d[k]` parse.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).
 - **`async for` loops** and **async comprehensions**.
-- **Wildcard imports** (`from m import *`) — raises `NotImplementedError:
-  "Wildcard imports (\`from ... import *\`) are not supported"`.
+- **Wildcard imports** (`from m import *`) — raises `NotImplementedError: "Wildcard imports (\`from ... import \*\`) are not supported"\`.
 
 ## Expressions rejected at parse time
 
-- **Complex number literals** (`1j`, `2+3j`) — `NotImplementedError: The monty
-  syntax parser does not yet support complex constants`.
+- **Complex number literals** (`1j`, `2+3j`) — `NotImplementedError: The monty syntax parser does not yet support complex constants`.
 - **Template strings (t-strings)** — PEP 750.
 
 ## Starred unpacking
@@ -63,10 +61,9 @@ exactly.
 ## Imports
 
 - Only the bundled stdlib modules listed in [modules.md](modules.md) can be
-  imported. Importing anything else raises `ModuleNotFoundError`.
-- Relative imports (`from . import x`) raise `ImportError: "attempted
-  relative import with no known parent package"`; there is no package
-  system.
+    imported. Importing anything else raises `ModuleNotFoundError`.
+- Relative imports (`from . import x`) raise `ImportError: "attempted relative import with no known parent package"`; there is no package
+    system.
 - `__import__` is not defined.
 
 ## `__future__` imports
@@ -77,21 +74,17 @@ became mandatory in Python 3.7 or earlier and so are inert there too, and
 `annotations` is a no-op here because Monty already stringizes annotations
 (see [typing.md](typing.md)). Divergences:
 
-- **`barry_as_FLUFL`** (PEP 401) raises `NotImplementedError: "The monty
-  syntax parser does not yet support the 'barry_as_FLUFL' future feature"`.
-  CPython accepts it, making `<>` the inequality operator and `!=` a
-  `SyntaxError`; Monty parses neither differently, so the import is rejected
-  rather than silently ignored.
+- **`barry_as_FLUFL`** (PEP 401) raises `NotImplementedError: "The monty syntax parser does not yet support the 'barry_as_FLUFL' future feature"`.
+    CPython accepts it, making `<>` the inequality operator and `!=` a
+    `SyntaxError`; Monty parses neither differently, so the import is rejected
+    rather than silently ignored.
 - **Aliasing is rejected.** `from __future__ import annotations as ann` raises
-  `NotImplementedError: "The monty syntax parser does not yet support aliasing
-  a \`__future__\` feature"`. CPython binds `ann` to a `__future__._Feature`
-  object; a no-op would bind nothing and surface as a `NameError` far from the
-  import, so it is rejected at the import instead.
+    `NotImplementedError: "The monty syntax parser does not yet support aliasing a \`__future__\` feature"`. CPython binds `ann`to a`__future__.\_Feature`object; a no-op would bind nothing and surface as a`NameError\` far from the
+    import, so it is rejected at the import instead.
 - **Position is not enforced.** CPython requires `__future__` imports to
-  precede all other statements (`SyntaxError: "from __future__ imports must
-  occur at the beginning of the file"`); Monty accepts them anywhere.
+    precede all other statements (`SyntaxError: "from __future__ imports must occur at the beginning of the file"`); Monty accepts them anywhere.
 - `import __future__` (as opposed to `from __future__ import ...`) raises
-  `ModuleNotFoundError`; there is no `__future__` module object.
+    `ModuleNotFoundError`; there is no `__future__` module object.
 
 ## Module-level dunder variables
 
@@ -136,10 +129,7 @@ leak into the sandbox.
 ## Function objects
 
 A function exposes **no** attributes: `__name__`, `__doc__`, `__qualname__` and
-`__module__` all raise `AttributeError: 'function' object has no attribute
-'<name>'`, and new ones cannot be set — `fn.tag = True` raises `AttributeError:
-'function' object has no attribute 'tag' and no __dict__ for setting new
-attributes`. CPython supports all of these.
+`__module__` all raise `AttributeError: 'function' object has no attribute '<name>'`, and new ones cannot be set — `fn.tag = True` raises `AttributeError: 'function' object has no attribute 'tag' and no __dict__ for setting new attributes`. CPython supports all of these.
 
 This bounds what a decorator can do: it can call, wrap, store or replace the
 function it receives, but cannot ask the function about itself, so
@@ -168,13 +158,13 @@ to `==`. Monty has no object identity for immediate floats, so it asks `==`, and
 a `NaN` is never equal to itself. Every container operation built on element
 comparison therefore differs when the *same* `NaN` object appears on both sides:
 
-| with `x = float('nan')` | CPython | Monty |
-|---|---|---|
-| `(x,) == (x,)`, `[x] == [x]` | `True` | `False` |
-| `x in [x]` | `True` | `False` |
-| `[x].count(x)` | `1` | `0` |
-| `[x].index(x)` | `0` | `ValueError` |
-| `[1, x] < [1, x, 3]` | `True` | `False` |
+| with `x = float('nan')`      | CPython | Monty        |
+| ---------------------------- | ------- | ------------ |
+| `(x,) == (x,)`, `[x] == [x]` | `True`  | `False`      |
+| `x in [x]`                   | `True`  | `False`      |
+| `[x].count(x)`               | `1`     | `0`          |
+| `[x].index(x)`               | `0`     | `ValueError` |
+| `[1, x] < [1, x, 3]`         | `True`  | `False`      |
 
 `NaN` is the only practical way to reach this, being the one built-in value
 unequal to itself. *Distinct* `NaN` objects agree on both
@@ -184,12 +174,12 @@ direct `x == x` (`False` on both). Named tuples inherit all of this from `tuple`
 ## What *does* work
 
 - Functions (`def`, `async def`), nested functions, closures, and decorators on
-  them, but not on methods (see above).
+    them, but not on methods (see above).
 - List / dict / set comprehensions; generator comprehensions degrade to
-  lists (see above).
+    lists (see above).
 - `try` / `except` / `else` / `finally`, `raise ... from ...`.
 - `for` / `while` / `if` / `elif` / `else`, `break`, `continue`, `pass`,
-  `assert`, `global`, `nonlocal`, `return`.
+    `assert`, `global`, `nonlocal`, `return`.
 - `import x`, `import x.y`, `from x import y, z as w`.
 - f-strings including `=` debug specifier, `!r`/`!s`/`!a` conversions, and
-  format specs.
+    format specs.

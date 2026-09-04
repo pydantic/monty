@@ -60,12 +60,12 @@ with Monty() as pool:
 
 Both put host values in front of the sandbox, but they differ in *when*:
 
-| | `inputs` | `external_lookup` |
-| --- | --- | --- |
-| Bound | eagerly, before the snippet runs | lazily, when the name is read |
-| Converted | every entry, used or not | only what the code touches |
-| Callables | a reference, not a host function | become host functions |
-| Missing name | not applicable | `NameError` in the sandbox |
+|              | `inputs`                         | `external_lookup`             |
+| ------------ | -------------------------------- | ----------------------------- |
+| Bound        | eagerly, before the snippet runs | lazily, when the name is read |
+| Converted    | every entry, used or not         | only what the code touches    |
+| Callables    | a reference, not a host function | become host functions         |
+| Missing name | not applicable                   | `NameError` in the sandbox    |
 
 A name present in both is served by the eager `inputs` binding.
 
@@ -205,8 +205,7 @@ with Monty() as pool:
         #> hello Ada!
 ```
 
-`resume` also takes `{'exception': SomeError('...')}` to raise into the sandbox, or `{'exc_type': 'ValueError',
-'message': '...'}` when you only have the type by name.
+`resume` also takes `{'exception': SomeError('...')}` to raise into the sandbox, or `{'exc_type': 'ValueError', 'message': '...'}` when you only have the type by name.
 See [snapshots](snapshots.md) for the full set of snapshot kinds.
 
 ## Designing a safe tool surface
@@ -216,11 +215,11 @@ It cannot guarantee that what you handed it is safe, because a host function run
 authority.
 
 - **Validate arguments as untrusted input.** A host function taking a path, a URL, a SQL fragment or a shell string is a
-  filesystem, network, database or shell primitive that you built.
-  The model writing the code is not adversarial by assumption, but the code it writes is not reviewed.
+    filesystem, network, database or shell primitive that you built.
+    The model writing the code is not adversarial by assumption, but the code it writes is not reviewed.
 - **Keep the surface narrow.** `read_customer(id)` is a tool; `read_file(path)` is a filesystem.
 - **Prefer mounts for file access.** [Mounts](filesystem.md) already enforce canonicalization, boundary checks and
-  symlink rejection.
-  A hand-rolled `read_file` host function does not.
+    symlink rejection.
+    A hand-rolled `read_file` host function does not.
 - **Make callbacks idempotent if you plan to restore snapshots across a restart.** When a suspended session is dumped
-  while the host is answering a call, restoring it re-announces that call and it runs again.
+    while the host is answering a call, restoring it re-announces that call and it runs again.

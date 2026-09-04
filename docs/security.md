@@ -15,19 +15,20 @@ The isolation comes from the interpreter itself: sandboxed code cannot express a
 because the interpreter implements no such operation.
 
 !!! note
+
     If you want Monty combined with OS-level isolation, see [monty-server](server.md), the commercial version of Monty.
 
 Concretely:
 
 - **There is no ambient authority.** With no mounts and no host functions configured, the sandbox cannot read a file,
-  read an environment variable, open a socket, or spawn a process.
-  Not "it is blocked" — the capability does not exist in the bytecode VM.
+    read an environment variable, open a socket, or spawn a process.
+    Not "it is blocked" — the capability does not exist in the bytecode VM.
 - **The interpreter performs no filesystem I/O at all.** It suspends with a description of the operation it wants, and a
-  host component decides what to do about it.
-  All filesystem code lives in a separate crate (`monty-fs`) that worker artifacts do not even link in some builds.
+    host component decides what to do about it.
+    All filesystem code lives in a separate crate (`monty-fs`) that worker artifacts do not even link in some builds.
 - **The dangerous modules are absent.** `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes`
-  are not importable, and are also missing from the bundled typeshed, so [type checking](type-checking.md) rejects code
-  that uses them before it runs.
+    are not importable, and are also missing from the bundled typeshed, so [type checking](type-checking.md) rejects code
+    that uses them before it runs.
 - **No FFI, no C dependencies.** Nothing in the sandbox can call into native code.
 
 ## The three host-access mechanisms
@@ -166,14 +167,14 @@ See [filesystem access](filesystem.md).
 Confinement is structural rather than checked:
 
 - Each mount opens a `cap_std::fs::Dir` descriptor once, at mount time, and every operation runs relative to it — `..`,
-  symlinks and directories swapped mid-operation cannot reach outside the mount, because no resolution step could leave
-  it.
+    symlinks and directories swapped mid-operation cannot reach outside the mount, because no resolution step could leave
+    it.
 - `..` and `.` are collapsed in the virtual namespace before anything touches the filesystem.
 - Symlinks with absolute targets are refused in read-only and read-write mounts, even when the target is inside the
-  mount; overlay mounts refuse symlinks entirely.
+    mount; overlay mounts refuse symlinks entirely.
 - Null bytes in any path component are rejected.
 - Paths handed back to the sandbox (from `Path.resolve()`, for example) are virtual paths.
-  A host path never leaks in.
+    A host path never leaks in.
 
 `/tmp`, `/etc`, `/proc`, `/dev`, `~` and the host working directory are not reachable unless you mount them.
 
@@ -196,10 +197,10 @@ The session is lost; your process is not.
 Two more properties of the worker boundary matter:
 
 - **Workers spawn with an empty environment** (Windows keeps only `SystemRoot`), so host secrets are never in a worker's
-  memory to begin with.
+    memory to begin with.
 - **The parent treats every frame from a worker as untrusted input.** A worker could in principle be compromised, so
-  wire decoding validates everything, enforces depth and size budgets, and never panics on malformed data.
-  A worker that violates the protocol is discarded.
+    wire decoding validates everything, enforces depth and size budgets, and never panics on malformed data.
+    A worker that violates the protocol is discarded.
 
 From Rust, this is why [`monty-pool`](quickstart/rust.md) is the recommended entry point rather than the in-process
 `monty` crate.
@@ -210,29 +211,29 @@ Untrusted code will try to allocate forever or loop forever.
 See [resource limits](resource-limits.md) for the full picture; the security-relevant parts:
 
 - `max_memory` budgets the bytes a worker requests from its global allocator, not process RSS.
-  Per-allocation overhead, fragmentation, and memory obtained without the allocator sit outside the count.
-  Size the limit with headroom, and keep the worker-level backstop.
+    Per-allocation overhead, fragmentation, and memory obtained without the allocator sit outside the count.
+    Size the limit with headroom, and keep the worker-level backstop.
 - `max_duration_secs` counts **cumulative execution time**, not wall clock.
-  The clock is paused while the sandbox waits on a host function, so a slow host function does not consume the budget.
-  It accumulates across feeds for the life of the session.
+    The clock is paused while the sandbox waits on a host function, so a slow host function does not consume the budget.
+    It accumulates across feeds for the life of the session.
 - The in-sandbox time check only runs at interpreter checkpoints.
-  Two host-side backstops cover a wedged worker: `request_timeout` (a per-turn deadline; a loop of quick host calls
-  resets it) and `duration_limit_grace` (fires only if the session also set `max_duration_secs`).
-  Set both `request_timeout` and `max_duration_secs` for untrusted code.
-  Every local pool (`Monty`, `AsyncMonty`, JavaScript `Monty.create()`, `PoolConfig::subprocess`) defaults
-  `request_timeout` to no deadline; only `AsyncMontyWebsocket` sets one, at 10 seconds.
+    Two host-side backstops cover a wedged worker: `request_timeout` (a per-turn deadline; a loop of quick host calls
+    resets it) and `duration_limit_grace` (fires only if the session also set `max_duration_secs`).
+    Set both `request_timeout` and `max_duration_secs` for untrusted code.
+    Every local pool (`Monty`, `AsyncMonty`, JavaScript `Monty.create()`, `PoolConfig::subprocess`) defaults
+    `request_timeout` to no deadline; only `AsyncMontyWebsocket` sets one, at 10 seconds.
 - **After a memory or time limit fires, no guarantees are made about heap state or reference counts.** Discard the
-  session rather than continuing to run code in it.
-  The pool does not do this for you, and the two limits do not even fail alike: a spent `max_duration_secs` budget is
-  cumulative, so every later feed fails with the same `TimeoutError`, while after a `max_memory` trip a later feed may
-  quietly succeed against a corrupted heap.
+    session rather than continuing to run code in it.
+    The pool does not do this for you, and the two limits do not even fail alike: a spent `max_duration_secs` budget is
+    cumulative, so every later feed fails with the same `TimeoutError`, while after a `max_memory` trip a later feed may
+    quietly succeed against a corrupted heap.
 - Compilation is not charged against the duration budget.
-  It has its own structural caps (AST nesting, bytecode operand sizes, comprehension nesting, `finally` expansion), but
-  a host accepting untrusted source should still isolate compilation — as the subprocess and WebAssembly runtimes do.
+    It has its own structural caps (AST nesting, bytecode operand sizes, comprehension nesting, `finally` expansion), but
+    a host accepting untrusted source should still isolate compilation — as the subprocess and WebAssembly runtimes do.
 - `max_suspensions` bounds suspension events per checkout.
-  A snippet can otherwise retry a rejected host call while `max_duration_secs` is paused.
-  Each allowed `ClassType(init=True)` construction adds an instance-store entry outside `max_memory`.
-  The pool aborts the first suspension over the limit with an uncatchable `RuntimeError`.
+    A snippet can otherwise retry a rejected host call while `max_duration_secs` is paused.
+    Each allowed `ClassType(init=True)` construction adds an instance-store entry outside `max_memory`.
+    The pool aborts the first suspension over the limit with an uncatchable `RuntimeError`.
 
 ## Where the guarantees weaken
 
@@ -278,7 +279,7 @@ If you are reviewing or contributing to Monty, two files carry most of the weigh
 
 - `crates/monty/src/heap.rs` — the heap and reference counting.
 - `crates/monty-fs/src/mount_table.rs` — the mount boundary: the `Dir` descriptor every filesystem operation runs
-  against, with `path_security.rs` beside it holding the virtual-path policy.
+    against, with `path_security.rs` beside it holding the virtual-path policy.
 
 Changes to any of them need careful security review.
 The repository's [`review-security` skill](https://github.com/pydantic/monty/tree/main/.agents/skills/review-security)

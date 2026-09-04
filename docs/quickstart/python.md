@@ -19,7 +19,7 @@ The download is about 4.5 MB and there is nothing else to run: no daemon, no ima
 
 - [`pydantic-monty-client`](https://pypi.org/project/pydantic-monty-client/), the `pydantic_monty` module you import.
 - [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/), the `monty` binary that the worker
-  subprocesses run, shipped the same way `uv` and `ruff` ship theirs.
+    subprocesses run, shipped the same way `uv` and `ruff` ship theirs.
 
 Installing the wheel places the binary in the environment's scripts directory, so there is no extra setup step.
 Install `pydantic-monty-client` alone when the binary comes from somewhere else, such as a base image or a system

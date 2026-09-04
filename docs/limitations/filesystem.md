@@ -20,12 +20,12 @@ Bytes paths are accepted but decoded as strict UTF-8 (no `surrogateescape`
 Each mount is configured by the host as one of:
 
 - **`ReadOnly`** — reads allowed; any write (open with `w`/`a`, `mkdir`,
-  `unlink`, `write_text`, ...) raises `PermissionError`.
+    `unlink`, `write_text`, ...) raises `PermissionError`.
 - **`ReadWrite`** — full read/write into the underlying host directory.
 - **`OverlayMemory`** — copy-on-write: reads fall through to the host
-  directory, writes are captured in memory and never touch the host. Via the
-  pool, the changes are discarded when the feed ends; each feed starts with
-  a fresh overlay.
+    directory, writes are captured in memory and never touch the host. Via the
+    pool, the changes are discarded when the feed ends; each feed starts with
+    a fresh overlay.
 
 ## Only regular files can be read, written, or opened
 
@@ -55,13 +55,13 @@ equivalent default limit.
 Consequences of the shared budget that have no CPython analogue:
 
 - Reading a file back needs transient budget for the result alongside the
-  retained copy, so an overlay file larger than roughly half the budget can be
-  written but not read back.
+    retained copy, so an overlay file larger than roughly half the budget can be
+    written but not read back.
 - Overlay deletions (`unlink`, `rmdir`, and the tombstones a `rename` leaves
-  behind) record in-memory entries, so they too can raise `MemoryError` when
-  the budget is exhausted.
+    behind) record in-memory entries, so they too can raise `MemoryError` when
+    the budget is exhausted.
 - The `monty` CLI's `-m` mounts always use the default limit; there is no CLI
-  flag to change it.
+    flag to change it.
 
 ## Write limits
 
@@ -77,27 +77,27 @@ every operation runs relative to it, so nothing resolves from the filesystem
 root.
 
 - The mount is pinned to the **directory**, not its path: renaming the host
-  directory does not detach the mount, and replacing it with a symlink does
-  not redirect reads.
+    directory does not detach the mount, and replacing it with a symlink does
+    not redirect reads.
 - `..` cannot escape, and neither can a symlink or an intermediate directory
-  swapped for one mid-operation; such paths raise `PermissionError`.
+    swapped for one mid-operation; such paths raise `PermissionError`.
 - Path segments a host parser reads as absolute are rejected
-  (`PermissionError`) on every OS and in every mount mode: any segment
-  containing a backslash or starting with `X:`. So names CPython allows on
-  Unix (`a\b.txt`, `a:b.txt`) are refused there too, since Windows would
-  read them as drive-relative. Colons elsewhere are fine (`note:2026.txt`).
+    (`PermissionError`) on every OS and in every mount mode: any segment
+    containing a backslash or starting with `X:`. So names CPython allows on
+    Unix (`a\b.txt`, `a:b.txt`) are refused there too, since Windows would
+    read them as drive-relative. Colons elsewhere are fine (`note:2026.txt`).
 - The mount root itself cannot be renamed or removed: `rename` and `rmdir` on
-  the mount's own path raise `PermissionError` in every mode, where CPython on
-  an ordinary empty directory would succeed. The root has no name inside the
-  mount, so there is nothing to detach it from.
+    the mount's own path raise `PermissionError` in every mode, where CPython on
+    an ordinary empty directory would succeed. The root has no name inside the
+    mount, so there is nothing to detach it from.
 - A rename is only serviced when source and destination land in the *same*
-  mount. Any other combination (different mounts, or one side under no mount
-  at all) raises `OSError` `[Errno 18] Invalid cross-device link`, including
-  where CPython would report `FileNotFoundError` for a missing destination
-  directory. Neither side moves.
+    mount. Any other combination (different mounts, or one side under no mount
+    at all) raises `OSError` `[Errno 18] Invalid cross-device link`, including
+    where CPython would report `FileNotFoundError` for a missing destination
+    directory. Neither side moves.
 - Null bytes in any path component are rejected (`ValueError`).
 - Resolved paths returned to the sandbox (e.g. via `Path.resolve()`) are
-  virtual paths, never host paths.
+    virtual paths, never host paths.
 
 `/tmp`, `/etc`, `/proc`, `/dev`, `~`, and the host current working
 directory are **not** available unless the host explicitly mounts them.
@@ -127,21 +127,20 @@ The check runs before anything else looks at the path, which has three visible
 consequences:
 
 - `resolve()` and `absolute()` raise, where CPython returns the path. They are
-  the only operations that would otherwise succeed on an over-long path, since
-  they never reach the filesystem. Collapsing a path costs memory proportional
-  to its length, so an unbounded one is refused rather than normalized.
+    the only operations that would otherwise succeed on an over-long path, since
+    they never reach the filesystem. Collapsing a path costs memory proportional
+    to its length, so an unbounded one is refused rather than normalized.
 - The rejection applies even where no mount covers the path, so an over-long
-  path never reaches the `os` callback.
+    path never reaches the `os` callback.
 - `exists()`, `is_file()`, `is_dir()` and `is_symlink()` answer `False`, as
-  CPython's do; `pathlib` swallows `ENAMETOOLONG` in the predicates.
+    CPython's do; `pathlib` swallows `ENAMETOOLONG` in the predicates.
 
 The error quotes the path with its middle elided, the first and last 20
 characters around a `…`, where CPython quotes it whole.
 
 ### At most 64 path components
 
-A path naming more than 64 components raises the same `OSError` `[Errno 36]
-File name too long`, with the same three consequences as the length limit
+A path naming more than 64 components raises the same `OSError` `[Errno 36] File name too long`, with the same three consequences as the length limit
 above. CPython has no such limit: it hands the path to the kernel, which
 counts bytes, not levels.
 

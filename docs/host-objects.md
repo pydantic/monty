@@ -94,8 +94,7 @@ print(result)
 #> Person(name='Ada', age=36)
 ```
 
-`init=True` grants construction; without it, calling the class raises `TypeError: cannot instantiate host class
-'Person'` in the sandbox.
+`init=True` grants construction; without it, calling the class raises `TypeError: cannot instantiate host class 'Person'` in the sandbox.
 The construction runs on the host, and the new instance crosses back governed by the `instance_*` policies.
 A constructed instance keeps the `ClassType` that built it, so `type(p)` is the class the sandbox was given.
 On a `ClassType` itself, `eager_attrs`, `lazy_attrs` and `allowed_methods` expose class constants, classmethods and

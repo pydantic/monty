@@ -9,10 +9,10 @@ matters is in the interpreter's own heap.
 
 ## Two things you can snapshot
 
-| | Taken when | Restored with | Contains |
-| --- | --- | --- | --- |
-| **Session dump** | between feeds, nothing running | `load_session` | globals, functions, classes, time budget |
-| **Snapshot** | mid-feed, at a suspension | `load_snapshot` | all of the above, plus the paused call stack |
+|                  | Taken when                     | Restored with   | Contains                                     |
+| ---------------- | ------------------------------ | --------------- | -------------------------------------------- |
+| **Session dump** | between feeds, nothing running | `load_session`  | globals, functions, classes, time budget     |
+| **Snapshot**     | mid-feed, at a suspension      | `load_snapshot` | all of the above, plus the paused call stack |
 
 Both come from `dump()` and are opaque bytes.
 Using the wrong loader for a dump's kind raises, and both loaders are valid only on a fresh session, before any feed.
@@ -39,22 +39,22 @@ with Monty() as pool:
 
 ### The snapshot kinds
 
-| Kind | Why execution stopped | Resume with |
-| --- | --- | --- |
-| `FunctionSnapshot` | A host function or OS call, or with `object_id` set a method call on a [host object](host-objects.md) (construction arrives as `__call__`) | `resume(result)`, `resume_not_handled()`, `resume_auto()` |
-| `NameLookupSnapshot` | An undefined name was read, or with `object_id` set a lazy attribute of a host object | `resume(value=...)`, `resume()` to raise `NameError` (`AttributeError` when `object_id` is set), `resume_auto()` |
-| `FutureSnapshot` | Every sandbox task is blocked on host futures | `resume({call_id: result})` |
-| `MontyComplete` | Nothing — the snippet finished | nothing; read `.output` |
+| Kind                 | Why execution stopped                                                                                                                      | Resume with                                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `FunctionSnapshot`   | A host function or OS call, or with `object_id` set a method call on a [host object](host-objects.md) (construction arrives as `__call__`) | `resume(result)`, `resume_not_handled()`, `resume_auto()`                                                        |
+| `NameLookupSnapshot` | An undefined name was read, or with `object_id` set a lazy attribute of a host object                                                      | `resume(value=...)`, `resume()` to raise `NameError` (`AttributeError` when `object_id` is set), `resume_auto()` |
+| `FutureSnapshot`     | Every sandbox task is blocked on host futures                                                                                              | `resume({call_id: result})`                                                                                      |
+| `MontyComplete`      | Nothing — the snippet finished                                                                                                             | nothing; read `.output`                                                                                          |
 
 `FunctionSnapshot.resume` accepts four shapes of answer:
 
 - `{'return_value': value}` — the call returned this.
 - `{'exception': ValueError('...')}` — the call raised this exception instance.
 - `{'exc_type': 'ValueError', 'message': '...'}` — the call raised this exception, named by type.
-  Useful when you do not have the original exception object, for example when resuming a snapshot that was created
-  elsewhere.
+    Useful when you do not have the original exception object, for example when resuming a snapshot that was created
+    elsewhere.
 - `{'future': ...}` — the call returns a pending future the sandbox can `await`; settle it later at the resulting
-  `FutureSnapshot`.
+    `FutureSnapshot`.
 
 Each snapshot resumes at most once.
 
@@ -130,23 +130,23 @@ with Monty() as pool:
 ## What restoring does and does not carry
 
 - **The dump carries its own configuration.** `script_name`, resource limits and type-check state come from the dump,
-  not from the `checkout()` that restored it.
+    not from the `checkout()` that restored it.
 - **The instance store does not travel.** Host objects sent before the dump are unknown to the restored session: they
-  come back as `MontyClassProxy` (a host class, `type(x)` included, as `MontyClassTypeProxy`), method calls on them
-  raise `RuntimeError`, lazy attributes raise `AttributeError`, and `ClassType` construction raises `RuntimeError`.
-  See [`limitations/pool-architecture.md`](limitations/pool-architecture.md#host-api-behaviour-notes).
+    come back as `MontyClassProxy` (a host class, `type(x)` included, as `MontyClassTypeProxy`), method calls on them
+    raise `RuntimeError`, lazy attributes raise `AttributeError`, and `ClassType` construction raises `RuntimeError`.
+    See [`limitations/pool-architecture.md`](limitations/pool-architecture.md#host-api-behaviour-notes).
 - **The accumulated time budget travels with the dump**, so a restored session resumes where it left off rather than
-  getting a fresh budget.
+    getting a fresh budget.
 - **Only the suspension limit travels.** A restored session keeps `max_suspensions`, but the pool resets its count to
-  zero, and a `max_suspensions` set on the restoring `checkout()` caps the dump's.
+    zero, and a `max_suspensions` set on the restoring `checkout()` caps the dump's.
 - **Mounts do not travel.** Host paths are never part of a dump.
-  Pass the same `mount=` to `load_snapshot`, or the restored feed's filesystem calls degrade into unhandled OS calls.
-  Any `'overlay'` writes made before the dump are gone — the restored overlay starts empty.
+    Pass the same `mount=` to `load_snapshot`, or the restored feed's filesystem calls degrade into unhandled OS calls.
+    Any `'overlay'` writes made before the dump are gone — the restored overlay starts empty.
 - **A restored `FutureSnapshot` cannot be driven with `resume_auto()`.** Its pending coroutines lived in the previous
-  process.
-  Resolve them by hand with `resume({call_id: ...})`.
+    process.
+    Resolve them by hand with `resume({call_id: ...})`.
 - **Dumps are version- and transport-specific.** The bytes use a subprocess-specific envelope and carry a dump-format
-  version; a build with a different one refuses them, so treat dumps as valid only within a single Monty version.
+    version; a build with a different one refuses them, so treat dumps as valid only within a single Monty version.
 
 ## Async
 
@@ -170,7 +170,7 @@ In JavaScript the API mirrors Python's: `session.feedStart`, `snapshot.dump()`, 
 ## Uses
 
 - **Long-running agents.** Suspend at a tool call, persist the blob, resume when the tool answers, possibly on a
-  different host.
+    different host.
 - **Approval gates.** Pause at a sensitive call, store the snapshot, resume once a human approves.
 - **Forking.** One snapshot restored into several sessions explores several branches from the same state.
 - **Surviving restarts.** A remote server draining for deploy answers with a dump you can restore elsewhere.

@@ -18,16 +18,16 @@ The in-process interpreter is the [`monty`](https://crates.io/crates/monty) crat
 cargo add monty monty-types
 ```
 
-| Crate | What it is |
-| --- | --- |
-| [`monty`](https://crates.io/crates/monty) | The core interpreter: Python parser, bytecode VM, sandbox |
-| [`monty-types`](https://crates.io/crates/monty-types) | Shared boundary types: values, exceptions, OS calls, limits |
-| [`monty-fs`](https://crates.io/crates/monty-fs) | Host-side filesystem mounts |
-| [`monty-runtime`](https://crates.io/crates/monty-runtime) | The `monty` binary: REPL, file runner, subprocess worker |
-| [`monty-pool`](https://crates.io/crates/monty-pool) | Elastic pool of crash-isolated worker subprocesses |
-| [`monty-proto`](https://crates.io/crates/monty-proto) | The protobuf wire protocol between pool parents and workers |
-| [`monty-type-checking`](https://crates.io/crates/monty-type-checking) | Type checking, powered by ty |
-| [`monty-typeshed`](https://crates.io/crates/monty-typeshed) | Trimmed typeshed stubs for Monty's stdlib subset |
+| Crate                                                                 | What it is                                                  |
+| --------------------------------------------------------------------- | ----------------------------------------------------------- |
+| [`monty`](https://crates.io/crates/monty)                             | The core interpreter: Python parser, bytecode VM, sandbox   |
+| [`monty-types`](https://crates.io/crates/monty-types)                 | Shared boundary types: values, exceptions, OS calls, limits |
+| [`monty-fs`](https://crates.io/crates/monty-fs)                       | Host-side filesystem mounts                                 |
+| [`monty-runtime`](https://crates.io/crates/monty-runtime)             | The `monty` binary: REPL, file runner, subprocess worker    |
+| [`monty-pool`](https://crates.io/crates/monty-pool)                   | Elastic pool of crash-isolated worker subprocesses          |
+| [`monty-proto`](https://crates.io/crates/monty-proto)                 | The protobuf wire protocol between pool parents and workers |
+| [`monty-type-checking`](https://crates.io/crates/monty-type-checking) | Type checking, powered by ty                                |
+| [`monty-typeshed`](https://crates.io/crates/monty-typeshed)           | Trimmed typeshed stubs for Monty's stdlib subset            |
 
 Host-side crates depend on `monty-types`, never on `monty`, so the interpreter is not linked into your parent process
 at all.
@@ -37,10 +37,10 @@ The [Rust API](../api/rust/monty.md) pages document `monty`, `monty-pool`, `mont
 ## Two ways to run Monty
 
 - **[`monty-pool`](../api/rust/monty-pool.md)** runs the interpreter only in `monty` worker subprocesses.
-  Use this for untrusted code.
-  It is the same engine the Python and JavaScript packages are built on.
+    Use this for untrusted code.
+    It is the same engine the Python and JavaScript packages are built on.
 - **[`monty`](../api/rust/monty.md)** is the in-process interpreter.
-  Use it when you control the code being run, or when subprocesses are impossible.
+    Use it when you control the code being run, or when subprocesses are impossible.
 
 A Monty process can never be made fully crash-proof against memory errors — a stack-overflow abort or an allocator abort
 takes the whole process down.
@@ -85,13 +85,13 @@ async fn main() -> Result<(), PoolError> {
 (`MountSpec`), a `skip_type_check` flag and a print sink.
 It returns a `TurnEvent`:
 
-| `TurnEvent` | Meaning | Answer with |
-| --- | --- | --- |
-| `Complete(value)` | The snippet finished | nothing; feed again |
-| `FunctionCall { object_id, .. }` | The sandbox called a host function, or with `object_id` (the wrapper's uuid) `Some`, a method on a host object or a host class's construction (arriving as `__call__`) | `Checkout::resume` |
-| `OsCall { .. }` | The sandbox performed an OS operation | `Checkout::resume_from_mounts` or `resume` |
-| `NameLookup { name, object_id }` | The sandbox read an undefined name, or a lazy attribute of a host object when `object_id` is `Some` | `Checkout::resume_name_lookup` |
-| `ResolveFutures { .. }` | Every sandbox task is blocked on host futures | `Checkout::resume_futures` |
+| `TurnEvent`                      | Meaning                                                                                                                                                                | Answer with                                |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `Complete(value)`                | The snippet finished                                                                                                                                                   | nothing; feed again                        |
+| `FunctionCall { object_id, .. }` | The sandbox called a host function, or with `object_id` (the wrapper's uuid) `Some`, a method on a host object or a host class's construction (arriving as `__call__`) | `Checkout::resume`                         |
+| `OsCall { .. }`                  | The sandbox performed an OS operation                                                                                                                                  | `Checkout::resume_from_mounts` or `resume` |
+| `NameLookup { name, object_id }` | The sandbox read an undefined name, or a lazy attribute of a host object when `object_id` is `Some`                                                                    | `Checkout::resume_name_lookup`             |
+| `ResolveFutures { .. }`          | Every sandbox task is blocked on host futures                                                                                                                          | `Checkout::resume_futures`                 |
 
 A `Checkout` dropped without `finish()` kills its worker rather than returning it — mid-execution state cannot be
 trusted back into the pool.
@@ -102,17 +102,17 @@ trusted back into the pool.
 ### What the pool adds over in-process execution
 
 - **Crash isolation** — a segfault, stack-overflow abort or allocator abort in the sandbox becomes `PoolError::Crashed`;
-  the pool discards the worker and spawns a replacement.
+    the pool discards the worker and spawns a replacement.
 - **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds `request_timeout`
-  (`PoolError::Timeout`), catching hangs the in-sandbox limits cannot see.
-  With a `max_duration` budget the deadline also enforces that from outside the child, plus `duration_limit_grace`.
-  `PoolConfig::subprocess` sets neither `request_timeout` nor `checkout_timeout` by default; set `request_timeout`
-  yourself for untrusted code.
+    (`PoolError::Timeout`), catching hangs the in-sandbox limits cannot see.
+    With a `max_duration` budget the deadline also enforces that from outside the child, plus `duration_limit_grace`.
+    `PoolConfig::subprocess` sets neither `request_timeout` nor `checkout_timeout` by default; set `request_timeout`
+    yourself for untrusted code.
 - **Suspension limits** — the pool counts external calls, OS calls, name lookups and future-resolution turns against
-  `ResourceLimits::max_suspensions`.
-  The first suspension over the limit ends the feed with an uncatchable `RuntimeError`.
+    `ResourceLimits::max_suspensions`.
+    The first suspension over the limit ends the feed with an uncatchable `RuntimeError`.
 - **Untrusted children** — every frame from a possibly compromised worker is validated; wire decoding never panics, and
-  a protocol violation discards the worker.
+    a protocol violation discards the worker.
 - **Worker recycling** — `max_checkouts_per_worker` bounds the impact of a slow leak.
 
 Runtime errors inside the sandbox (`PoolError::Runtime`) are not crashes: the worker and its session stay alive and
@@ -159,8 +159,7 @@ assert_eq!(result, MontyObject::Int(55));
 ```
 
 Errors come back as `MontyException`, with a traceback matching what CPython would produce.
-`PrintWriter` controls where `print()` output goes: `Stdout`, `Disabled`, or collected into a `String` or `(stream,
-text)` tuples.
+`PrintWriter` controls where `print()` output goes: `Stdout`, `Disabled`, or collected into a `String` or `(stream, text)` tuples.
 
 ### Resource limits
 
@@ -242,9 +241,9 @@ assert_eq!(result, MontyObject::Int(42));
 
 - `MontyRepl` — feed code snippet by snippet with state persisting between snippets.
 - The `fs` module — mount host directories into the sandbox at virtual paths, with path resolution hardened against
-  escapes.
-  See [filesystem access](../filesystem.md).
+    escapes.
+    See [filesystem access](../filesystem.md).
 - `RunProgress::OsCall` and `RunProgress::NameLookup` — the filesystem/`os` operations and undefined-name reads the host
-  intercepts.
+    intercepts.
 - `FunctionCall::object_id` and `NameLookup::object_id` — set for method calls and lazy attribute lookups routed to a
-  host object sent as `MontyObject::ClassInstance` or `MontyObject::Type`; the receiver is not in `args`.
+    host object sent as `MontyObject::ClassInstance` or `MontyObject::Type`; the receiver is not in `args`.

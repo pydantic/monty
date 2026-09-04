@@ -21,8 +21,7 @@ Everything else: `accumulate`, `batched`, `combinations`,
 `chain.from_iterable` is also absent, even though `chain` itself is
 implemented: it is a classmethod reached through an attribute on the `chain`
 builtin, and Monty's module functions expose no attributes
-(`itertools.chain.from_iterable` raises `AttributeError: 'builtin_function_or_method'
-object has no attribute 'from_iterable'`). Use `chain(*iterables)` instead.
+(`itertools.chain.from_iterable` raises `AttributeError: 'builtin_function_or_method' object has no attribute 'from_iterable'`). Use `chain(*iterables)` instead.
 
 These names are absent from the module namespace rather than stubbed, so they
 are rejected at type-check time (`Module 'itertools' has no member 'chain'`) and
@@ -31,36 +30,35 @@ raise `AttributeError` at runtime.
 ## Behavioural divergences
 
 - **`repeat.__length_hint__()` raises `AttributeError`.** CPython exposes the
-  number of remaining yields through it (`repeat(9, 3).__length_hint__() == 3`).
-  Monty uses the remaining count internally to size the target of `list()` /
-  `tuple()`, but does not expose it as a Python-visible attribute.
+    number of remaining yields through it (`repeat(9, 3).__length_hint__() == 3`).
+    Monty uses the remaining count internally to size the target of `list()` /
+    `tuple()`, but does not expose it as a Python-visible attribute.
 - **`count` and `repeat` objects are unhashable.** `hash(itertools.count())`
-  raises `TypeError: unhashable type: 'itertools.count'`, where CPython falls
-  back to identity hashing. This applies to Monty's iterators generally, not
-  just these two.
+    raises `TypeError: unhashable type: 'itertools.count'`, where CPython falls
+    back to identity hashing. This applies to Monty's iterators generally, not
+    just these two.
 - **`count` accepts only `int`, `float` and `bool`.** CPython accepts anything
-  satisfying `PyNumber_Check` (e.g. `Decimal`, `Fraction`, complex). Monty has
-  no other numeric types, so the same `TypeError: a number is required` covers
-  them all.
+    satisfying `PyNumber_Check` (e.g. `Decimal`, `Fraction`, complex). Monty has
+    no other numeric types, so the same `TypeError: a number is required` covers
+    them all.
 - **Nested-cycle `repr()` unwinds one level earlier.** For a container that
-  reaches back to the `repeat` holding it, Monty prints `repeat([...])` where
-  CPython prints `repeat([repeat([...])])`. This is Monty's general cycle
-  detection in `repr()`, not specific to `itertools`.
+    reaches back to the `repeat` holding it, Monty prints `repeat([...])` where
+    CPython prints `repeat([repeat([...])])`. This is Monty's general cycle
+    detection in `repr()`, not specific to `itertools`.
 - **A callable that suspends is rejected, not paused.** `takewhile`,
-  `dropwhile`, `filterfalse` and `starmap` apply their callable through the
-  synchronous `evaluate_function` path, which runs a frame to completion and
-  cannot yield to the host. A callable that reaches an external function, an
-  `os` operation, or a host method call therefore raises
-  `NotImplementedError: takewhile(): external function 'f' is not yet supported
-  in this context` where CPython would simply call it. This is the same
-  restriction that applies to `__init__`, `__next__` and `__repr__` (see
-  [classes.md](classes.md)); ordinary sandbox-defined functions and lambdas are
-  unaffected.
+    `dropwhile`, `filterfalse` and `starmap` apply their callable through the
+    synchronous `evaluate_function` path, which runs a frame to completion and
+    cannot yield to the host. A callable that reaches an external function, an
+    `os` operation, or a host method call therefore raises
+    `NotImplementedError: takewhile(): external function 'f' is not yet supported in this context` where CPython would simply call it. This is the same
+    restriction that applies to `__init__`, `__next__` and `__repr__` (see
+    [classes.md](classes.md)); ordinary sandbox-defined functions and lambdas are
+    unaffected.
 - **Crossing the host boundary loses the repr.** A `count` / `repeat` object
-  returned to the host arrives as `<itertools.count object>` /
-  `<itertools.repeat object>` rather than its in-sandbox `repr()`
-  (`count(0)`, `repeat(7, 3)`). Monty represents all iterators this way rather
-  than recursing into what they hold.
+    returned to the host arrives as `<itertools.count object>` /
+    `<itertools.repeat object>` rather than its in-sandbox `repr()`
+    (`count(0)`, `repeat(7, 3)`). Monty represents all iterators this way rather
+    than recursing into what they hold.
 
 ## Infinite iterators and the eager builtins
 

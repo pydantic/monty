@@ -18,22 +18,22 @@ hello world
 - `monty file.py` — run a Python file
 - `monty -c "<code>"` — run a program passed as a string (like `python -c`)
 - `-i` / `--interactive` — run the file or `-c` program in a REPL session
-  (like `python -i`)
+    (like `python -i`)
 - `-t` / `--type-check` — type check (powered by [ty](https://docs.astral.sh/ty/))
-  before executing
+    before executing
 - `-m` / `--mount /host/path::/virtual/path[::mode[::write_limit_bytes]]` —
-  mount a host directory into the sandbox (`ro`, `rw`, or `overlay`)
+    mount a host directory into the sandbox (`ro`, `rw`, or `overlay`)
 - `--max-memory 10MB`, `--max-duration 0.5`, `--max-recursion-depth`,
-  `--gc-interval`, `--max-suspensions` — sandbox resource limits
+    `--gc-interval`, `--max-suspensions` — sandbox resource limits
 
 ## Features
 
 - `standalone` (default) — the `monty <file>` / `-c` / REPL path and its
-  terminal stack (`rustyline`, `anstream`, `anstyle`). Without it the binary
-  serves `monty subprocess` alone, which is all a pool ever spawns; the flags
-  still parse, but anything other than `subprocess` is refused.
+    terminal stack (`rustyline`, `anstream`, `anstyle`). Without it the binary
+    serves `monty subprocess` alone, which is all a pool ever spawns; the flags
+    still parse, but anything other than `subprocess` is refused.
 - `telemetry` — see below. Implies `standalone`, since it only instruments that
-  path.
+    path.
 
 ## Observability
 

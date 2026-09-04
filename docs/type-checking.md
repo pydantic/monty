@@ -121,19 +121,19 @@ diagnostic formats; on the CLI the flag is `--type-check-format`.
 ## Elsewhere
 
 - **JavaScript**: `pool.checkout({ typeCheck: true, typeCheckStubs: '...' })`, raising `MontyTypingError` with the same
-  `.display()`.
+    `.display()`.
 - **Rust**: `ReplConfig` on `monty-pool`, or the [`monty-type-checking`](https://crates.io/crates/monty-type-checking)
-  crate directly.
+    crate directly.
 - **CLI**: `monty --type-check file.py`.
-  See [command line](cli.md).
+    See [command line](cli.md).
 
 ## Caveats
 
 - **Type checking is static only.** The `typing` module inside the sandbox provides markers, not runtime enforcement —
-  no annotation is ever checked at runtime, and class annotations are stored in stringized form.
-  See [`limitations/typing.md`](limitations/typing.md).
+    no annotation is ever checked at runtime, and class annotations are stored in stringized form.
+    See [`limitations/typing.md`](limitations/typing.md).
 - **Passing the type check does not mean the code runs.** Parser-rejected constructs (`match`, `yield`) are not
-  modelled.
-  Five stub-only modules (`abc`, `types`, `typing_extensions`, `_collections_abc`, `_typeshed`) resolve during checking
-  because the stubs need them, then raise `ModuleNotFoundError` at runtime.
-  See [`limitations/modules.md`](limitations/modules.md).
+    modelled.
+    Five stub-only modules (`abc`, `types`, `typing_extensions`, `_collections_abc`, `_typeshed`) resolve during checking
+    because the stubs need them, then raise `ModuleNotFoundError` at runtime.
+    See [`limitations/modules.md`](limitations/modules.md).

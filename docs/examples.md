@@ -90,20 +90,19 @@ Swap `CodeModeToolset(weather_toolset)` for `weather_toolset` to see the same ta
 
 ## Worked examples in the repository
 
-Each directory under [`examples/`](https://github.com/pydantic/monty/tree/main/examples) is runnable after `make
-dev-py`; its README has the command.
+Each directory under [`examples/`](https://github.com/pydantic/monty/tree/main/examples) is runnable after `make dev-py`; its README has the command.
 
 - [`sql_playground`](https://github.com/pydantic/monty/tree/main/examples/sql_playground): customer purchase data in CSV
-  joined with tweets in JSON, with sentiment analysis called in a loop from the sandbox.
-  With JSON tool calling the 50+ per-tweet results would flood the context window; in Monty they stay inside the sandbox
-  and only the aggregate comes out.
-  Also shows file sandboxing via the `os` callback and type checking against a stub file.
+    joined with tweets in JSON, with sentiment analysis called in a loop from the sandbox.
+    With JSON tool calling the 50+ per-tweet results would flood the context window; in Monty they stay inside the sandbox
+    and only the aggregate comes out.
+    Also shows file sandboxing via the `os` callback and type checking against a stub file.
 - [`expense_analysis`](https://github.com/pydantic/monty/tree/main/examples/expense_analysis): Anthropic's [programmatic
-  tool calling](https://platform.claude.com/cookbook/tool-use-programmatic-tool-calling-ptc) cookbook example, run on
-  Monty.
+    tool calling](https://platform.claude.com/cookbook/tool-use-programmatic-tool-calling-ptc) cookbook example, run on
+    Monty.
 - [`web_scraper`](https://github.com/pydantic/monty/tree/main/examples/web_scraper): Playwright and BeautifulSoup
-  exposed to the sandbox as [host objects](host-objects.md) so the model can extract prices from model labs' websites;
-  `example_code.py` is the code Claude Sonnet 4.5 wrote for it.
+    exposed to the sandbox as [host objects](host-objects.md) so the model can extract prices from model labs' websites;
+    `example_code.py` is the code Claude Sonnet 4.5 wrote for it.
 - [`classes`](https://github.com/pydantic/monty/tree/main/examples/classes): one short file per behaviour of [host
-  objects](host-objects.md), in Python and TypeScript: explicit policies, lazy attributes, sandbox-side copies,
-  `convert_value` hooks, constructing host classes from the sandbox, and round-tripping sandbox-defined classes.
+    objects](host-objects.md), in Python and TypeScript: explicit policies, lazy attributes, sandbox-side copies,
+    `convert_value` hooks, constructing host classes from the sandbox, and round-tripping sandbox-defined classes.

@@ -9,14 +9,14 @@ loop.
 The `asyncio` module exposes exactly two functions:
 
 - `asyncio.run(coro)` — runs a coroutine to completion. Returns the value
-  the coroutine `return`s, or re-raises an exception from it.
+    the coroutine `return`s, or re-raises an exception from it.
 - `asyncio.gather(*awaitables)` — runs awaitables concurrently and returns
-  a list of results. Always behaves as `return_exceptions=False`.
-  Any keyword argument is rejected with
-  `NotImplementedError: gather() does not yet support keyword arguments`,
-  where CPython raises
-  `TypeError: gather() got an unexpected keyword argument 'X'` because
-  `return_exceptions` is a real kwarg there.
+    a list of results. Always behaves as `return_exceptions=False`.
+    Any keyword argument is rejected with
+    `NotImplementedError: gather() does not yet support keyword arguments`,
+    where CPython raises
+    `TypeError: gather() got an unexpected keyword argument 'X'` because
+    `return_exceptions` is a real kwarg there.
 
 Not implemented (raise `AttributeError`):
 
@@ -35,17 +35,17 @@ time (see [language.md](language.md)).
 
 - `async def` functions and `await` work; coroutines can call each other.
 - **Coroutines are single-shot.** Awaiting the same coroutine object twice
-  raises `RuntimeError`. Store the *result*, not the coroutine, if you need
-  it again.
+    raises `RuntimeError`. Store the *result*, not the coroutine, if you need
+    it again.
 - `await` on a non-awaitable raises `TypeError`.
 - `async for` and `async with` are **rejected at parse time** (see
-  [language.md](language.md)). Async iteration and async context-manager
-  protocols do not exist.
+    [language.md](language.md)). Async iteration and async context-manager
+    protocols do not exist.
 - Async comprehensions (`[x async for x in ...]`) are rejected at parse
-  time.
+    time.
 - There is no `__await__` protocol. Awaitables are only the things Monty
-  knows internally: coroutines from `async def`, gather futures, and external
-  function call futures returned by host bindings.
+    knows internally: coroutines from `async def`, gather futures, and external
+    function call futures returned by host bindings.
 
 ## Concurrency model
 

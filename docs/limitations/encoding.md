@@ -30,20 +30,20 @@ everywhere, since the BOM's order wins.
 ## Error handlers
 
 - **`bytes.decode(..., errors='surrogateescape')` raises
-  `NotImplementedError`** when a byte actually needs handling: CPython maps
-  undecodable bytes to lone surrogates (U+DC80–U+DCFF), which Monty's
-  strict-UTF-8 strings cannot contain.
+    `NotImplementedError`** when a byte actually needs handling: CPython maps
+    undecodable bytes to lone surrogates (U+DC80–U+DCFF), which Monty's
+    strict-UTF-8 strings cannot contain.
 - **`errors='surrogatepass'` on decode raises `NotImplementedError`** in the
-  cases where CPython would produce a lone surrogate (a CESU-8 surrogate
-  triple in UTF-8 input; a lone surrogate unit/code point in UTF-16/32
-  input). For any other invalid input it re-raises the strict
-  `UnicodeDecodeError`, matching CPython.
+    cases where CPython would produce a lone surrogate (a CESU-8 surrogate
+    triple in UTF-8 input; a lone surrogate unit/code point in UTF-16/32
+    input). For any other invalid input it re-raises the strict
+    `UnicodeDecodeError`, matching CPython.
 - Custom handlers registered via `codecs.register_error` do not exist
-  (there is no `codecs` module); any name outside CPython's built-in set
-  raises `LookupError: unknown error handler name '{name}'`.
+    (there is no `codecs` module); any name outside CPython's built-in set
+    raises `LookupError: unknown error handler name '{name}'`.
 - All other built-in handlers behave as in CPython, in both directions.
-  `namereplace` output for recently-added code points is subject to the
-  Unicode version skew described in [unicodedata.md](unicodedata.md).
+    `namereplace` output for recently-added code points is subject to the
+    Unicode version skew described in [unicodedata.md](unicodedata.md).
 
 ## `UnicodeEncodeError` / `UnicodeDecodeError`
 
@@ -60,10 +60,10 @@ to a plain `ValueError` carrying the formatted message (both are caught by
 `except ValueError:`) in two cases:
 
 - the failing object is larger than 64 KiB, where the payload is dropped so an
-  exception cannot pin a huge input in memory outside the sandbox's
-  resource limits (CPython's exception always references the full object);
+    exception cannot pin a huge input in memory outside the sandbox's
+    resource limits (CPython's exception always references the full object);
 - the exception was raised manually inside the sandbox
-  (`raise UnicodeDecodeError('msg')`), where no structured fields exist.
+    (`raise UnicodeDecodeError('msg')`), where no structured fields exist.
 
 The structured fields only travel with a *raised* exception that escapes the
 sandbox. A codec exception handled as a **value** (caught in the sandbox and

@@ -14,26 +14,26 @@ hello world
 
 ## Usage
 
-| Invocation | What it does |
-| --- | --- |
-| `monty` | Start an interactive REPL |
-| `monty file.py` | Run a Python file |
+| Invocation          | What it does                                       |
+| ------------------- | -------------------------------------------------- |
+| `monty`             | Start an interactive REPL                          |
+| `monty file.py`     | Run a Python file                                  |
 | `monty -c "<code>"` | Run a program passed as a string, like `python -c` |
 
 ## Flags
 
-| Flag | Meaning |
-| --- | --- |
-| `-i`, `--interactive` | Run the file or `-c` program, then drop into a REPL, like `python -i` |
-| `-t`, `--type-check` | [Type check](type-checking.md) before executing |
-| `--type-check-format` | Diagnostic format: `full` (default), `concise`, `json`, `github` and the other ty formats |
-| `-m`, `--mount` | Mount a host directory into the sandbox (see below) |
-| `--max-duration` | Maximum execution time in seconds, e.g. `0.5` |
-| `--max-memory` | Maximum heap memory, e.g. `1024`, `512KB`, `10MB`, `1GB` |
-| `--max-recursion-depth` | Maximum call-stack depth; defaults to 1000 when any limit is set |
-| `--gc-interval` | Run garbage collection every N allocations |
-| `--max-suspensions` | Maximum suspensions serviced, per run or across a whole interactive session (default 1000); [what counts](resource-limits.md#suspensions) |
-| `--version` | Print the version |
+| Flag                    | Meaning                                                                                                                                   |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `-i`, `--interactive`   | Run the file or `-c` program, then drop into a REPL, like `python -i`                                                                     |
+| `-t`, `--type-check`    | [Type check](type-checking.md) before executing                                                                                           |
+| `--type-check-format`   | Diagnostic format: `full` (default), `concise`, `json`, `github` and the other ty formats                                                 |
+| `-m`, `--mount`         | Mount a host directory into the sandbox (see below)                                                                                       |
+| `--max-duration`        | Maximum execution time in seconds, e.g. `0.5`                                                                                             |
+| `--max-memory`          | Maximum heap memory, e.g. `1024`, `512KB`, `10MB`, `1GB`                                                                                  |
+| `--max-recursion-depth` | Maximum call-stack depth; defaults to 1000 when any limit is set                                                                          |
+| `--gc-interval`         | Run garbage collection every N allocations                                                                                                |
+| `--max-suspensions`     | Maximum suspensions serviced, per run or across a whole interactive session (default 1000); [what counts](resource-limits.md#suspensions) |
+| `--version`             | Print the version                                                                                                                         |
 
 See [resource limits](resource-limits.md) for what the limits actually bound.
 

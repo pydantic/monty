@@ -12,6 +12,7 @@ assumed to match CPython 3.14.
 They exist for development and for agents debugging code that runs on Monty; most users need only this page.
 
 !!! tip
+
     Turn on [type checking](../type-checking.md) rather than memorising this page.
     Unsupported APIs generally fail before they run; see [the caveats](../type-checking.md#caveats) for the exceptions.
 
@@ -22,7 +23,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `def`, `async def`, nested functions, closures, `lambda`
 - Decorators on functions and classes
 - Simple classes: instance methods, `__init__`, `__repr__`/`__str__`, `__eq__`/`__hash__`, `__iter__`/`__next__`,
-  `__contains__`, class variables
+    `__contains__`, class variables
 - `@dataclass`, including the `eq=` and `frozen=` options, plus host class instances passed in and out (and host classes the sandbox may instantiate when granted)
 - List, dict and set comprehensions
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
@@ -38,7 +39,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - Class inheritance and metaclasses (`class Foo(Bar):`)
 - Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
 - `yield` / `yield from` — there are no generator functions.
-  Generator *expressions* parse, but currently materialise to a `list`
+    Generator *expressions* parse, but currently materialise to a `list`
 - `match` statements
 - `del`, both `del x` and `del d[k]`
 - `try*` / `except*` exception groups
@@ -50,35 +51,35 @@ They exist for development and for agents debugging code that runs on Monty; mos
 **Missing in other ways:**
 
 - User-defined exception classes.
-  The built-in exception types are a fixed set, and without inheritance you cannot add to it.
+    The built-in exception types are a fixed set, and without inheritance you cannot add to it.
 - Function attributes.
-  `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
-  `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.
+    `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
+    `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.
 - `eval`, `exec`, `compile`, `globals`, `locals`, `__import__` and `super` — all raise `NameError`.
 - Third-party packages.
-  There is no `sys.path` and no site-packages.
+    There is no `sys.path` and no site-packages.
 
 ## Standard library
 
 The following modules are present:
 
-| Module | Divergences |
-| --- | --- |
-| `asyncio` | [asyncio.md](asyncio.md) |
-| `base64` | [base64.md](base64.md) |
-| `binascii` | [base64.md](base64.md) |
+| Module        | Divergences                      |
+| ------------- | -------------------------------- |
+| `asyncio`     | [asyncio.md](asyncio.md)         |
+| `base64`      | [base64.md](base64.md)           |
+| `binascii`    | [base64.md](base64.md)           |
 | `collections` | [collections.md](collections.md) |
 | `dataclasses` | [dataclasses.md](dataclasses.md) |
-| `datetime` | [datetime.md](datetime.md) |
-| `functools` | [functools.md](functools.md) |
-| `itertools` | [itertools.md](itertools.md) |
-| `json` | [json.md](json.md) |
-| `math` | [math.md](math.md) |
-| `os` | [os.md](os.md) |
-| `pathlib` | [pathlib.md](pathlib.md) |
-| `re` | [re.md](re.md) |
-| `sys` | [sys.md](sys.md) |
-| `typing` | [typing.md](typing.md) |
+| `datetime`    | [datetime.md](datetime.md)       |
+| `functools`   | [functools.md](functools.md)     |
+| `itertools`   | [itertools.md](itertools.md)     |
+| `json`        | [json.md](json.md)               |
+| `math`        | [math.md](math.md)               |
+| `os`          | [os.md](os.md)                   |
+| `pathlib`     | [pathlib.md](pathlib.md)         |
+| `re`          | [re.md](re.md)                   |
+| `sys`         | [sys.md](sys.md)                 |
+| `typing`      | [typing.md](typing.md)           |
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
 
 Each covers only part of its CPython surface — often a small part.
@@ -98,22 +99,22 @@ A few divergences are worth knowing up front because they change how code behave
 Each links to the page that owns it, which is where the full account lives:
 
 - **`assert` failures get pytest-style messages.** `assert 2 == 5` raises `AssertionError: assert 2 == 5`, not CPython's
-  empty `AssertionError`.
-  Turn it off with `assert_message_annotations=False` on `checkout()`
-  ([assert.md](assert.md)).
+    empty `AssertionError`.
+    Turn it off with `assert_message_annotations=False` on `checkout()`
+    ([assert.md](assert.md)).
 - **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager**, not lazy.
-  So `map(f, itertools.count())` runs until a resource limit trips
-  ([builtins.md](builtins.md)).
+    So `map(f, itertools.count())` runs until a resource limit trips
+    ([builtins.md](builtins.md)).
 - **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `VERBOSE` flag, and some
-  error messages differ ([re.md](re.md)).
+    error messages differ ([re.md](re.md)).
 - **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes exactly two functions:
-  `run` and `gather`, the latter running host calls concurrently.
-  `create_task`, `sleep` and everything else do not exist
-  ([asyncio.md](asyncio.md)).
+    `run` and `gather`, the latter running host calls concurrently.
+    `create_task`, `sleep` and everything else do not exist
+    ([asyncio.md](asyncio.md)).
 - **`str.format()` and `%`-formatting are not implemented.** Use f-strings
-  ([format.md](format.md)).
+    ([format.md](format.md)).
 - **Only UTF-8, ASCII, UTF-16 and UTF-32 codecs exist.** `latin-1` and friends raise `LookupError`
-  ([encoding.md](encoding.md)).
+    ([encoding.md](encoding.md)).
 
 ## How to go deeper
 

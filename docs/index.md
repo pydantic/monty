@@ -2,6 +2,7 @@
 title: Monty
 description: "A sandboxed Python interpreter written in Rust for code written by AI. Start latency <1ms. Pause and resume. Resource limits. Available from PyPI, NPM and crates.io."
 ---
+
 # Monty
 
 <p>
@@ -42,24 +43,24 @@ Learn more in the [comparison to alternatives](alternatives.md).
 ## Why Monty
 
 1. **Latency in microseconds, not seconds.** A sandbox plus ten REPL commands takes 5 ms against 900 ms for Docker and
-   1900 ms for a sandboxing service, because the sandbox is a subprocess, a command is one message each way, and the
-   session persists so nothing is re-run.
-   See [start latency](#latency).
-2. **Suspend and resume from bytes.** Every host call suspends the interpreter; `feed_start` returns the suspension and
-   `dump()` serialises the whole interpreter, paused call stack included, to bytes you can store and `load_snapshot`
-   later on another machine.
-   There are no file descriptors, sockets or threads inside the sandbox, so nothing has to be reconstructed.
-   See [snapshots](snapshots.md).
-3. **Strict resource limits** `max_memory`, `max_duration_secs`, `max_recursion_depth` and
-   `max_suspensions` are enforced by the VM itself; `'x' * 10**12` raises `MemoryError` before the allocation is
-   attempted.
-   See [resource limits](resource-limits.md).
-4. **A package, not infrastructure.** `uv add pydantic-monty`, `npm install @pydantic/monty` or `cargo add monty-pool`:
-   about 4.5 MB, no daemon, no image, no API key, and a worker baseline of about 2 MB so one machine runs hundreds.
-   See [getting started](quickstart/python.md).
-5. **MIT licensed, with commercial options.** The interpreter, the pool and bindings are open source.
-   [`monty-server`](server.md) runs the same workers behind a WebSocket as a container image, adding OS-level isolation,
-   and horizontal scaling.
+    1900 ms for a sandboxing service, because the sandbox is a subprocess, a command is one message each way, and the
+    session persists so nothing is re-run.
+    See [start latency](#latency).
+1. **Suspend and resume from bytes.** Every host call suspends the interpreter; `feed_start` returns the suspension and
+    `dump()` serialises the whole interpreter, paused call stack included, to bytes you can store and `load_snapshot`
+    later on another machine.
+    There are no file descriptors, sockets or threads inside the sandbox, so nothing has to be reconstructed.
+    See [snapshots](snapshots.md).
+1. **Strict resource limits** `max_memory`, `max_duration_secs`, `max_recursion_depth` and
+    `max_suspensions` are enforced by the VM itself; `'x' * 10**12` raises `MemoryError` before the allocation is
+    attempted.
+    See [resource limits](resource-limits.md).
+1. **A package, not infrastructure.** `uv add pydantic-monty`, `npm install @pydantic/monty` or `cargo add monty-pool`:
+    about 4.5 MB, no daemon, no image, no API key, and a worker baseline of about 2 MB so one machine runs hundreds.
+    See [getting started](quickstart/python.md).
+1. **MIT licensed, with commercial options.** The interpreter, the pool and bindings are open source.
+    [`monty-server`](server.md) runs the same workers behind a WebSocket as a container image, adding OS-level isolation,
+    and horizontal scaling.
 
 ## Example
 
@@ -143,7 +144,7 @@ All of them need somewhere safe to run the generated code, and Monty is that pla
 ## Next steps
 
 - Getting started with [Python](quickstart/python.md), [JavaScript](quickstart/javascript.md) or
-  [Rust](quickstart/rust.md).
+    [Rust](quickstart/rust.md).
 - [Commercial support](server.md): `monty-server`, the same workers behind a WebSocket as a container image.
 - [Security model](security.md) for what "secure" does and does not mean here.
 - [Examples](examples.md), including Code Mode in Pydantic AI.

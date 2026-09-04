@@ -66,20 +66,20 @@ matches a Python exception type and `RuntimeError` otherwise.
 
 ### Value conversion
 
-| Python | JavaScript |
-| --- | --- |
-| `None` | `null` |
-| `bool` | `boolean` |
-| `int` | `number` within ±2^53, otherwise `BigInt` |
-| `float` | `number` |
-| `str` | `string` |
-| `bytes` | `Buffer` |
-| `list` | `Array` |
-| `tuple` | `Array` with a non-enumerable `__tuple__: true` |
-| `dict` | `Map` |
-| `set` / `frozenset` | `Set` |
-| `datetime` family | marker objects carrying `__monty_type__` |
-| file handles | `MontyFileHandle` |
+| Python              | JavaScript                                      |
+| ------------------- | ----------------------------------------------- |
+| `None`              | `null`                                          |
+| `bool`              | `boolean`                                       |
+| `int`               | `number` within ±2^53, otherwise `BigInt`       |
+| `float`             | `number`                                        |
+| `str`               | `string`                                        |
+| `bytes`             | `Buffer`                                        |
+| `list`              | `Array`                                         |
+| `tuple`             | `Array` with a non-enumerable `__tuple__: true` |
+| `dict`              | `Map`                                           |
+| `set` / `frozenset` | `Set`                                           |
+| `datetime` family   | marker objects carrying `__monty_type__`        |
+| file handles        | `MontyFileHandle`                               |
 
 Plain objects with string keys are accepted as `dict` inputs.
 
@@ -140,24 +140,24 @@ chunk per line — and output is always flushed before a host call and before a 
 import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } from '@pydantic/monty'
 ```
 
-| Class | Raised when | Session survives |
-| --- | --- | --- |
-| `MontySyntaxError` | The snippet does not parse | yes |
-| `MontyTypingError` | Type checking rejected the snippet | yes |
-| `MontyRuntimeError` | The code raised at runtime | yes |
-| `MontyCrashedError` | The worker died, or the watchdog killed it | no |
-| `ProtocolError` | The worker, or a caller misusing the session, violated the wire protocol | no |
+| Class               | Raised when                                                              | Session survives |
+| ------------------- | ------------------------------------------------------------------------ | ---------------- |
+| `MontySyntaxError`  | The snippet does not parse                                               | yes              |
+| `MontyTypingError`  | Type checking rejected the snippet                                       | yes              |
+| `MontyRuntimeError` | The code raised at runtime                                               | yes              |
+| `MontyCrashedError` | The worker died, or the watchdog killed it                               | no               |
+| `ProtocolError`     | The worker, or a caller misusing the session, violated the wire protocol | no               |
 
 `MontyError` is the base class of everything above except `ProtocolError`, which extends `Error`.
 `err.exception` carries `{ typeName, message }`, and `err.display(format)` renders the error.
 Which formats a class accepts differs, and passing one a class does not accept throws:
 
-| Class | `display` formats |
-| --- | --- |
-| `MontyError`, `MontyCrashedError` | `'msg'` (default), `'type-msg'` |
-| `MontySyntaxError` | `'msg'` (default), `'type-msg'`, `'traceback'` |
-| `MontyRuntimeError` | `'traceback'` (default), `'type-msg'`, `'msg'` |
-| `MontyTypingError` | takes no argument; returns the diagnostics |
+| Class                             | `display` formats                              |
+| --------------------------------- | ---------------------------------------------- |
+| `MontyError`, `MontyCrashedError` | `'msg'` (default), `'type-msg'`                |
+| `MontySyntaxError`                | `'msg'` (default), `'type-msg'`, `'traceback'` |
+| `MontyRuntimeError`               | `'traceback'` (default), `'type-msg'`, `'msg'` |
+| `MontyTypingError`                | takes no argument; returns the diagnostics     |
 
 `MontyCrashedError` adds `timedOut` and `exitStatus`.
 
@@ -243,17 +243,17 @@ Differences from the native path:
 
 - **Filesystem mounts are unsupported** — a non-empty `mount` list is rejected, because there is no host filesystem.
 - **`bytes` arrive as `Uint8Array`** wherever there is no `Buffer` global, which is every browser.
-  Under Node the wasm build still hands back a `Buffer`.
+    Under Node the wasm build still hands back a `Buffer`.
 - **No crash isolation without `Worker`.** Where a real `Worker` exists, it runs off-thread and `Worker.terminate()` is
-  the watchdog's hard kill.
-  Where one does not, the same API degrades to in-process execution: no crash isolation and no preemption, so a runaway
-  turn cannot be interrupted.
+    the watchdog's hard kill.
+    Where one does not, the same API degrades to in-process execution: no crash isolation and no preemption, so a runaway
+    turn cannot be interrupted.
 - **`maxProcesses` defaults to 4**, not the CPU count.
 - **`checkoutTimeout`, `durationLimitGrace` and `binaryPath` are accepted and ignored.** A checkout on an exhausted pool
-  waits forever rather than failing, nothing backs up `maxDurationSecs` from outside the worker, and the bundled wasm
-  asset is always used.
-  `requestTimeout` does apply, wherever a real `Worker` exists.
+    waits forever rather than failing, nothing backs up `maxDurationSecs` from outside the worker, and the bundled wasm
+    asset is always used.
+    `requestTimeout` does apply, wherever a real `Worker` exists.
 - **Prints are buffered per turn** rather than streamed live, and rendered traceback strings are not produced yet
-  (frames still decode).
+    (frames still decode).
 
 Full API documentation lives in the [package README](https://github.com/pydantic/monty/tree/main/crates/monty-js).
