@@ -56,14 +56,14 @@ Instead of driving a snippet to completion it hands control back at every suspen
 
 ### The snapshot kinds
 
-| Kind                 | Why execution stopped                                                                                                                      | Resume with                                                                                                      |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `FunctionSnapshot`   | A host function or OS call, or with `object_id` set a method call on a [host object](host-objects.md) (construction arrives as `__call__`) | `resume(result)`, `resume_not_handled()`, `resume_auto()`                                                        |
-| `NameLookupSnapshot` | An undefined name was read, or with `object_id` set a lazy attribute of a host object                                                      | `resume(value=...)`, `resume()` to raise `NameError` (`AttributeError` when `object_id` is set), `resume_auto()` |
-| `FutureSnapshot`     | Every sandbox task is blocked on host futures                                                                                              | `resume({call_id: result})`                                                                                      |
-| `MontyComplete`      | Nothing — the snippet finished                                                                                                             | nothing; read `.output`                                                                                          |
+| Kind                                                      | Why execution stopped                                                                                                                      | Resume with                                                                                                      |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| [`FunctionSnapshot`][pydantic_monty.FunctionSnapshot]     | A host function or OS call, or with `object_id` set a method call on a [host object](host-objects.md) (construction arrives as `__call__`) | `resume(result)`, `resume_not_handled()`, `resume_auto()`                                                        |
+| [`NameLookupSnapshot`][pydantic_monty.NameLookupSnapshot] | An undefined name was read, or with `object_id` set a lazy attribute of a host object                                                      | `resume(value=...)`, `resume()` to raise `NameError` (`AttributeError` when `object_id` is set), `resume_auto()` |
+| [`FutureSnapshot`][pydantic_monty.FutureSnapshot]         | Every sandbox task is blocked on host futures                                                                                              | `resume({call_id: result})`                                                                                      |
+| [`MontyComplete`][pydantic_monty.MontyComplete]           | Nothing — the snippet finished                                                                                                             | nothing; read `.output`                                                                                          |
 
-`FunctionSnapshot.resume` accepts four shapes of answer:
+[`FunctionSnapshot.resume`][pydantic_monty.FunctionSnapshot.resume] accepts four shapes of answer:
 
 - `{'return_value': value}` — the call returned this.
 - `{'exception': ValueError('...')}` — the call raised this exception instance.
@@ -219,9 +219,9 @@ feeding:
 - **The dump carries its own configuration.** `script_name`, resource limits and type-check state come from the dump,
     not from the `checkout()` that restored it.
 - **The instance store does not travel.** Host objects sent before the dump are unknown to the restored session: they
-    come back as `MontyClassProxy` (a host class, `type(x)` included, as `MontyClassTypeProxy` in Python and as a plain
+    come back as [`MontyClassProxy`][pydantic_monty.MontyClassProxy] (a host class, `type(x)` included, as [`MontyClassTypeProxy`][pydantic_monty.MontyClassTypeProxy] in Python and as a plain
     `{ __monty_type__: 'Type', ... }` marker in JavaScript), method calls on them
-    raise `RuntimeError`, lazy attributes raise `AttributeError`, and `ClassType` construction raises `RuntimeError`.
+    raise `RuntimeError`, lazy attributes raise `AttributeError`, and [`ClassType`][pydantic_monty.ClassType] construction raises `RuntimeError`.
     See [`limitations/pool-architecture.md`](limitations/pool-architecture.md#host-api-behaviour-notes).
 - **The accumulated time budget travels with the dump**, so a restored session resumes where it left off rather than
     getting a fresh budget.
@@ -230,7 +230,7 @@ feeding:
 - **Mounts do not travel.** Host paths are never part of a dump.
     Pass the same `mount=` to `load_snapshot`, or the restored feed's filesystem calls degrade into unhandled OS calls.
     Any `'overlay'` writes made before the dump are gone — the restored overlay starts empty.
-- **A restored `FutureSnapshot` cannot be driven with `resume_auto()`.** Its pending coroutines lived in the previous
+- **A restored [`FutureSnapshot`][pydantic_monty.FutureSnapshot] cannot be driven with `resume_auto()`.** Its pending coroutines lived in the previous
     process.
     Resolve them by hand with `resume({call_id: ...})`.
 - **Dumps are version-specific.** The bytes are Monty's own dump format, a `MONTY\0` magic followed by a dump-format
@@ -240,18 +240,18 @@ feeding:
 
 ## Async
 
-`AsyncMonty` sessions expose the same `feed_start`, `load_session`, `load_snapshot` and `dump`, with awaitable
+[`AsyncMonty`][pydantic_monty.AsyncMonty] sessions expose the same `feed_start`, `load_session`, `load_snapshot` and `dump`, with awaitable
 `resume(...)` and `resume_auto()`.
-A coroutine host function answered by `resume_auto()` is awaited concurrently: it yields an `AsyncFutureSnapshot` whose
+A coroutine host function answered by `resume_auto()` is awaited concurrently: it yields an [`AsyncFutureSnapshot`][pydantic_monty.AsyncFutureSnapshot] whose
 `resume_auto()` settles the pending coroutines.
 
-The sync `FutureSnapshot.resume_auto()` always raises — a sync session cannot drive coroutine host functions.
+The sync [`FutureSnapshot.resume_auto()`][pydantic_monty.FutureSnapshot.resume_auto] always raises — a sync session cannot drive coroutine host functions.
 
 ## Rust
 
 In Rust the in-process API serializes through the free function `monty::dump`, which takes an idle or suspended session
-by reference, and `Dump::load`, which returns the session plus its script name and type-check state.
-Through `monty-pool` it is `Checkout::dump` and `Checkout::restore`.
+by reference, and [`Dump::load`](api/rust/monty.md#dump), which returns the session plus its script name and type-check state.
+Through `monty-pool` it is [`Checkout::dump`](api/rust/monty-pool.md#checkout) and [`Checkout::restore`](api/rust/monty-pool.md#checkout).
 See the [Rust quickstart](quickstart/rust.md#serialization).
 
 ## Uses

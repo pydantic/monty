@@ -63,7 +63,7 @@ off.
 
 In JavaScript the same fields are `maxMemory`, `maxDurationSecs`, `maxRecursionDepth`, `gcInterval` and
 `maxSuspensions`, passed as `limits` to `pool.checkout()`.
-In Rust they are the fields of `monty_types::ResourceLimits`, where the duration is a `Duration` named `max_duration`.
+In Rust they are the fields of [`monty_types::ResourceLimits`](api/rust/monty-types.md#resourcelimits), where the duration is a `Duration` named `max_duration`.
 
 ## Memory
 
@@ -103,7 +103,7 @@ The in-sandbox check runs at interpreter checkpoints, so it cannot catch code th
 Two host-side backstops cover that:
 
 - **`request_timeout`** on the pool is a hard per-turn deadline.
-    A worker that exceeds it is killed and the call raises `MontyCrashedError` with `timed_out=True`.
+    A worker that exceeds it is killed and the call raises [`MontyCrashedError`][pydantic_monty.MontyCrashedError] with `timed_out=True`.
     Each resume after a host-function or mount call starts a new deadline, so a program that suspends often can outlive
     any single timeout.
 - **The duration backstop.** For sessions with a `max_duration_secs` limit, the worker reports its execution time on
@@ -137,7 +137,7 @@ Because `max_duration_secs` pauses during suspensions, a snippet could otherwise
 
 The pool enforces the limit per checkout; the default is 1000, and a host that needs more sets a larger number.
 A host driving the interpreter directly counts suspensions and calls `abort` itself; the limit only travels in the
-`ResourceTracker`, see the [Rust quickstart](quickstart/rust.md).
+[`ResourceTracker`](api/rust/monty-types.md#resourcetracker), see the [Rust quickstart](quickstart/rust.md).
 The first suspension over the budget aborts the feed with an uncatchable
 `RuntimeError: suspension limit 3 exceeded` at the call site.
 The session stays consistent and can be dumped; later feeds run until they suspend.
@@ -151,12 +151,12 @@ caps the dump's, so a worker cannot report a looser one.
     Compilation has its own structural caps (AST nesting at 200 levels, bytecode operand sizes, comprehension nesting, and
     a 1,024-copy cap on `finally` expansion that raises `SyntaxError`).
     A host accepting untrusted source should still isolate compilation, as the subprocess and WebAssembly runtimes do.
-- **Print collectors.** `CollectString` and `CollectStreams` live in the host process, so their 10 MiB default cap is
+- **Print collectors.** [`CollectString`][pydantic_monty.CollectString] and [`CollectStreams`][pydantic_monty.CollectStreams] live in the host process, so their 10 MiB default cap is
     separate from `max_memory`.
 - **Mount memory.** Each [mount](filesystem.md) has its own `memory_usage_limit`, defaulting to 100 MB, shared between
     retained overlay data and transient results.
 - **`json.loads` nesting**, capped at 200 levels independently of the recursion limit.
-- **The host instance store.** Every `ClassInstance`/`ClassType` wrapper sent into a session (nested wrappers,
+- **The host instance store.** Every [`ClassInstance`][pydantic_monty.ClassInstance]/[`ClassType`][pydantic_monty.ClassType] wrapper sent into a session (nested wrappers,
     `init=True` constructions and `convert_value` wraps included) is retained in the host process until the session
     ends; re-sending a wrapper with the same id reuses its entry, distinct wrappers accumulate; see
     [host objects](host-objects.md#values-returned-by-methods).

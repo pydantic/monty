@@ -53,7 +53,7 @@ with Monty() as pool:
         #> 11
 ```
 
-`Monty()` configures the pool; the workers are spawned by `with`.
+[`Monty()`][pydantic_monty.Monty] configures the pool; the workers are spawned by `with`.
 `pool.checkout()` dedicates one worker to one REPL session.
 `feed_run` executes a snippet and returns the value of its trailing expression.
 `inputs` are values the snippet can read; `external_lookup` holds the host functions it can call.
@@ -95,8 +95,8 @@ A name present in both is served by the eager `inputs` binding.
 `Ellipsis`, `NotImplemented`, `datetime.date`, `datetime.datetime`, `datetime.timedelta`, `datetime.timezone`, named
 tuples, exception instances, and the type objects Monty models (`int`, `str`, `datetime.date`, ...) all convert in both
 directions.
-Class instances differ in each direction: a host instance enters only wrapped in `ClassInstance`, and a sandbox-defined
-instance comes out as a read-only `MontyClassProxy`.
+Class instances differ in each direction: a host instance enters only wrapped in [`ClassInstance`][pydantic_monty.ClassInstance], and a sandbox-defined
+instance comes out as a read-only [`MontyClassProxy`][pydantic_monty.MontyClassProxy].
 See [host objects](../host-objects.md).
 Put callables in `external_lookup`, where they become [host functions](../host-functions.md); a callable in `inputs`
 binds only a reference the sandbox still resolves through `external_lookup` when it is called.
@@ -106,7 +106,7 @@ macOS.
 They come back as `PurePosixPath`, and a `PureWindowsPath` / `WindowsPath` is rejected, because paths inside the sandbox
 are always POSIX.
 
-Anything else is rejected with `MontyConversionError` before it reaches the sandbox:
+Anything else is rejected with [`MontyConversionError`][pydantic_monty.MontyConversionError] before it reaches the sandbox:
 
 ```python
 from decimal import Decimal
@@ -155,7 +155,7 @@ with Monty() as pool:
             #> MemoryError
 ```
 
-An infinite loop hits `max_duration_secs` the same way, raising a `MontyRuntimeError` whose `exception()` is a
+An infinite loop hits `max_duration_secs` the same way, raising a [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] whose `exception()` is a
 `TimeoutError`.
 Type checking is also configured on `checkout()`:
 
@@ -176,7 +176,7 @@ model](../security.md).
 
 ## Async
 
-`AsyncMonty` is the asyncio counterpart.
+[`AsyncMonty`][pydantic_monty.AsyncMonty] is the asyncio counterpart.
 Worker I/O runs off the event loop, and host functions may be coroutines:
 
 ```python
@@ -250,12 +250,12 @@ with Monty() as pool:
         #> 'from the sandbox\n'
 ```
 
-`CollectStreams` collects `(stream, text)` tuples instead, so you can tell stdout from stderr.
+[`CollectStreams`][pydantic_monty.CollectStreams] collects `(stream, text)` tuples instead, so you can tell stdout from stderr.
 Both cap collected output at 10 MiB by default; pass `max_bytes=None` to disable the cap.
 That cap is separate from [`max_memory`](../resource-limits.md), and it is enforced in your process as the output
 arrives, not by the worker.
 
-Exceeding it fails the feed with `MontyRuntimeError` wrapping a `MemoryError`; call `exc.exception()` for the
+Exceeding it fails the feed with [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] wrapping a `MemoryError`; call `exc.exception()` for the
 `MemoryError` itself.
 Sandboxed code cannot catch it, so a `print()` loop cannot swallow the cap.
 
@@ -283,15 +283,15 @@ Whatever the interval, output is flushed before a host call and before a feed en
 
 ## Errors
 
-Every Monty error subclasses `MontyError`:
+Every Monty error subclasses [`MontyError`][pydantic_monty.MontyError]:
 
-| Exception              | Raised when                               | Session survives                             |
-| ---------------------- | ----------------------------------------- | -------------------------------------------- |
-| `MontySyntaxError`     | The snippet does not parse                | yes                                          |
-| `MontyTypingError`     | Type checking rejected the snippet        | yes                                          |
-| `MontyRuntimeError`    | The code raised at runtime                | yes — but discard it after a resource limit  |
-| `MontyConversionError` | A host value cannot cross the boundary    | from `inputs` yes, from `external_lookup` no |
-| `MontyCrashedError`    | The worker died, or hit `request_timeout` | no                                           |
+| Exception                                                     | Raised when                               | Session survives                             |
+| ------------------------------------------------------------- | ----------------------------------------- | -------------------------------------------- |
+| [`MontySyntaxError`][pydantic_monty.MontySyntaxError]         | The snippet does not parse                | yes                                          |
+| [`MontyTypingError`][pydantic_monty.MontyTypingError]         | Type checking rejected the snippet        | yes                                          |
+| [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError]       | The code raised at runtime                | yes — but discard it after a resource limit  |
+| [`MontyConversionError`][pydantic_monty.MontyConversionError] | A host value cannot cross the boundary    | from `inputs` yes, from `external_lookup` no |
+| [`MontyCrashedError`][pydantic_monty.MontyCrashedError]       | The worker died, or hit `request_timeout` | no                                           |
 
 `inputs` are converted before the snippet runs, so a rejected value leaves the session untouched.
 An `external_lookup` value is converted mid-execution, while the worker is suspended on the name read, so the checkout
@@ -371,11 +371,11 @@ pool = Monty(
 ```
 
 `request_timeout` is a per-turn host-side backstop: a worker that exceeds it is killed and the call raises
-`MontyCrashedError` with `timed_out=True`.
+[`MontyCrashedError`][pydantic_monty.MontyCrashedError] with `timed_out=True`.
 It catches hangs the in-sandbox limits cannot see, because those are only checked at interpreter checkpoints.
 A loop of quick host calls resets it each turn; set [`max_duration_secs`](../resource-limits.md) as well.
 
-`AsyncMonty` takes the same arguments.
+[`AsyncMonty`][pydantic_monty.AsyncMonty] takes the same arguments.
 
 ## Where next
 

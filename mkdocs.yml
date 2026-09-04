@@ -79,6 +79,7 @@ nav:
           - Pools: 'api/python/pools.md'
           - Websocket Client: 'api/python/websocket.md'
           - Suspend & Resume: 'api/python/suspend_resume.md'
+          - Host Objects: 'api/python/host_objects.md'
           - Filesystem & OS: 'api/python/os.md'
           - Errors: 'api/python/errors.md'
       - Rust:

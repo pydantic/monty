@@ -1,6 +1,6 @@
 # Host Objects
 
-`ClassInstance` and `ClassType` put a host object, or a host class, in front of the sandbox.
+[`ClassInstance`][pydantic_monty.ClassInstance] and [`ClassType`][pydantic_monty.ClassType] put a host object, or a host class, in front of the sandbox.
 Each wrapper is a policy: it lists which attributes cross eagerly, which the sandbox may fetch on demand, and which
 methods it may call.
 Every policy defaults to nothing, and `'all'` never exposes underscore-prefixed names.
@@ -168,7 +168,7 @@ where sandbox code can catch it; only `AttributeError` reads as absent.
 
 `init=True` grants construction; without it, calling the class raises `TypeError: cannot instantiate host class 'Person'` in the sandbox.
 The construction runs on the host, and the new instance crosses back governed by the `instance_*` policies.
-A constructed instance keeps the `ClassType` that built it, so `type(p)` is the class the sandbox was given.
+A constructed instance keeps the [`ClassType`][pydantic_monty.ClassType] that built it, so `type(p)` is the class the sandbox was given.
 On a `ClassType` itself, `eager_attrs`, `lazy_attrs` and `allowed_methods` expose class constants, classmethods and
 staticmethods.
 
@@ -176,7 +176,7 @@ staticmethods.
 
 Nothing is wrapped automatically: a method that returns another object fails conversion unless a `convert_value` hook
 wraps it with a policy you chose.
-In Python the hook is a method on a `ClassInstance` subclass; in JavaScript it is the `convertValue` option.
+In Python the hook is a method on a [`ClassInstance`][pydantic_monty.ClassInstance] subclass; in JavaScript it is the `convertValue` option.
 
 === "Python"
 
@@ -287,17 +287,17 @@ Set it for untrusted code, and recycle long-lived sessions.
     console.log(await session.feedRun('back is counter', { inputs: { back: proxy } })) // true
     ```
 
-A sandbox-defined instance reaches the host as a read-only `MontyClassProxy` with `name`, `attributes`, `is_dataclass`
+A sandbox-defined instance reaches the host as a read-only [`MontyClassProxy`][pydantic_monty.MontyClassProxy] with `name`, `attributes`, `is_dataclass`
 and `id`; the host cannot call its methods.
 Passing the proxy back hands the sandbox its original object, and a proxy whose object the sandbox has freed raises.
 
 ## Snapshots
 
-`feed_start` suspends on a method call or a lazy attribute read as it does on a host function: `FunctionSnapshot` and
-`NameLookupSnapshot` carry `object_id`, the uuid of the wrapper involved (`ClassInstance.id` or `ClassType.id`), not
+`feed_start` suspends on a method call or a lazy attribute read as it does on a host function: [`FunctionSnapshot`][pydantic_monty.FunctionSnapshot] and
+[`NameLookupSnapshot`][pydantic_monty.NameLookupSnapshot] carry `object_id`, the uuid of the wrapper involved ([`ClassInstance.id`][pydantic_monty.ClassInstance.id] or [`ClassType.id`][pydantic_monty.ClassType.id]), not
 the host object's `id()`; it is `None` for plain host functions and name lookups.
-The instance store does not travel with a dump: a restored session returns a host instance as `MontyClassProxy` and a
-host class, `type(x)` included, as a read-only `MontyClassTypeProxy` (`name`, `id`, `is_dataclass`, `attributes`) that
+The instance store does not travel with a dump: a restored session returns a host instance as [`MontyClassProxy`][pydantic_monty.MontyClassProxy] and a
+host class, `type(x)` included, as a read-only [`MontyClassTypeProxy`][pydantic_monty.MontyClassTypeProxy] (`name`, `id`, `is_dataclass`, `attributes`) that
 re-enters as the same class; JavaScript has no such class and returns a plain `{ __monty_type__: 'Type', ... }` marker
 instead.
 On those objects, method calls and `init=True` construction raise `RuntimeError` inside the sandbox and lazy attribute

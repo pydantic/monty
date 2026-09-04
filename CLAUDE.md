@@ -1010,6 +1010,14 @@ The list of stdlib modules in `docs/limitations/index.md` must be updated if a n
 - Sandbox-side Python (code fed to Monty, not host code) belongs inside a host snippet as
     a string, or in a `test="skip"` block. It must never be a runnable top-level block —
     CPython would execute it.
+- Link the first mention of a `pydantic_monty` type, method or attribute in each section to its API page with the
+    autorefs form `[`Monty`][pydantic_monty.Monty]` / `[`MountDir.close()`][pydantic_monty.MountDir.close]`;
+    mkdocs-autorefs resolves it locally and the pydantic.dev pipeline resolves it from the `::: pydantic_monty` blocks
+    under `docs/api/python/`, so `make docs` fails on a name neither page documents (add it to a `:::` block first);
+    `.mdformat.toml` sets `ignore_missing_references` so `make format-md` leaves the syntax alone.
+    Rust items have no symbol map: link them explicitly as `[`Pool`](api/rust/monty-pool.md#pool)` (the anchor is
+    the lowercased top-level item name; methods, fields and variants share their parent's anchor).
+    JavaScript types have no API pages, so leave them as plain code spans.
 - New pages go in the `mkdocs.yml` `nav:`; the nav is what orders the docs site.
     That includes a new `limitations/` file, which goes in the flat Limitations section (nested groups would change
     the page URLs and break the relative links between limitations pages).

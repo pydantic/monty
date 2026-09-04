@@ -34,20 +34,20 @@ properties that real CPython does not provide, per the caveat above.
     REPL session in a dedicated worker, and a one-shot run is a checkout plus a
     single feed. `feed_run` drives external function calls, OS callbacks, and
     print callbacks automatically. `feed_start` instead returns a *snapshot* at
-    each suspension (`FunctionSnapshot` / `NameLookupSnapshot` / `FutureSnapshot`,
-    or `MontyComplete`) for the caller to inspect, `dump()`, and `resume(...)`;
+    each suspension ([`FunctionSnapshot`][pydantic_monty.FunctionSnapshot] / [`NameLookupSnapshot`][pydantic_monty.NameLookupSnapshot] / [`FutureSnapshot`][pydantic_monty.FutureSnapshot],
+    or [`MontyComplete`][pydantic_monty.MontyComplete]) for the caller to inspect, `dump()`, and `resume(...)`;
     see the snapshot divergences below.
 - A session whose worker crashed is lost: subsequent calls raise
-    `MontyCrashedError`, which also carries a worker's own account when it
-    announced a `FatalError` before exiting (e.g. an unsupported protocol
+    [`MontyCrashedError`][pydantic_monty.MontyCrashedError], which also carries a worker's own account when it
+    announced a [`FatalError`](../api/rust/monty-proto.md#fatalerror) before exiting (e.g. an unsupported protocol
     version), plus the exit status when the process could be reaped. The pool
     itself recovers by replacing the worker.
 - **WebSocket sessions are lost in two additional ways.** A connection that
-    closes mid-session raises `MontyDisconnectError`: the client cannot tell a
+    closes mid-session raises [`MontyDisconnectError`][pydantic_monty.MontyDisconnectError]: the client cannot tell a
     dead remote sandbox from a server-side policy drop (idle/session/turn
     timeout, over capacity), so the error claims no more than that the
     connection went away. A server that is shutting down instead answers the
-    session's next request with `MontyShutdown`. That request did **not** run,
+    session's next request with [`MontyShutdown`][pydantic_monty.MontyShutdown]. That request did **not** run,
     and its `dump` (when present) restores the session onto a fresh checkout
     via `session.load_session` / `session.load_snapshot`. If the interrupted
     request was answering a suspension (external function or `os` callback),
@@ -55,7 +55,7 @@ properties that real CPython does not provide, per the caveat above.
     it runs twice unless the callback is idempotent. Neither error occurs on
     the local subprocess transport; a local child claiming shutdown is a
     protocol violation.
-- **The session `Configure` request carries the parent's `protocol_version`,
+- **The session [`Configure`](../api/rust/monty-proto.md#configure) request carries the parent's `protocol_version`,
     and the worker rejects one it does not serve.** The protocol has no in-band
     negotiation, so a parent outside the child's supported range
     (`MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION`) gets a `FatalError`
@@ -108,7 +108,7 @@ properties that real CPython does not provide, per the caveat above.
     across feeds, and travels inside dumps. The worker reports its total on
     every protocol turn; the host never keeps a second clock.
 - **`max_suspensions` is enforced by the host.** The pool counts suspension
-    events per checkout and answers the first one over budget with `AbortFeed`.
+    events per checkout and answers the first one over budget with [`AbortFeed`](../api/rust/monty-proto.md#abortfeed).
     The worker raises its `RuntimeError` uncatchably at the suspension point.
     The worker stores the limit for dumps but does not count, so restoring a
     session resets the count. The limit a restore re-adopts from the worker's
@@ -123,7 +123,7 @@ properties that real CPython does not provide, per the caveat above.
     losing the session. Mount I/O runs on the host between protocol turns and
     does not count against the worker's deadline. The budget and consumed time
     are also stamped onto the worker's replies, so sessions restored via the
-    Rust `Checkout::restore` regain the backstop too. A *compromised* worker
+    Rust [`Checkout::restore`](../api/rust/monty-pool.md#checkout) regain the backstop too. A *compromised* worker
     could under-report its total, stretching each turn to the full budget plus
     grace; turns stay bounded, and `request_timeout` applies independently.
     Both deadlines fire between the turn's polls, so decoding one maximal reply
@@ -142,7 +142,7 @@ properties that real CPython does not provide, per the caveat above.
     worker's allocator exits 65 (`EX_DATAERR`: the fed snippet asked for more than
     it may have) rather than letting Rust abort (`SIGABRT`, which a stack overflow
     also produces and which would be unclassifiable), so the host gets
-    `MontyRuntimeError`/`MemoryError` with a
+    [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError]/`MemoryError` with a
     distinct message instead of `MontyCrashedError`. The worker is already
     dead and later calls on that checkout report `Finished`. An ordinary in-sandbox
     exception leaves the session usable; a failed `load_session` / `load_snapshot`
@@ -169,11 +169,11 @@ properties that real CPython does not provide, per the caveat above.
 - Process/WebSocket transports encode values as protobuf
     (`proto/monty/v1/monty.proto`). The browser component instead uses semantic
     flat node arenas because WIT cannot express recursive types. Every
-    `MontyObject` variant round-trips through either representation, with the
+    [`MontyObject`](../api/rust/monty-types.md#montyobject) variant round-trips through either representation, with the
     same nesting bound: roughly 48 nested list-like containers, 32 nested dicts,
     or 24 nested class instances. Deeper values fail the turn rather than
     crossing the boundary.
-- `Cycle` markers (self-referential containers) can be *received* from a
+- [`Cycle`](../api/rust/monty-proto.md#cycle) markers (self-referential containers) can be *received* from a
     worker but are rejected as inputs.
 - A sandbox value with no `MontyObject` equivalent — a class, a class
     instance, a function, a compiled `re` pattern — is **silently degraded to
@@ -226,11 +226,11 @@ properties that real CPython does not provide, per the caveat above.
     sandbox, not host-side.** An unrepresentable type becomes a catchable
     `TypeError: Cannot convert X to Monty value`; one nested past the wire depth
     bound becomes a catchable `RuntimeError: Max input depth exceeded`. Either
-    reaches the host as `MontyRuntimeError` only when the sandbox does not catch
+    reaches the host as [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] only when the sandbox does not catch
     it. The same holds for an `os=` callback's return value, and for the JS
-    client. `MontyConversionError` covers only values the host supplies up
+    client. [`MontyConversionError`][pydantic_monty.MontyConversionError] covers only values the host supplies up
     front, in `inputs` or `external_lookup`.
-- **Typing errors** (`checkout(type_check=True)`) raise `MontyTypingError`
+- **Typing errors** (`checkout(type_check=True)`) raise [`MontyTypingError`][pydantic_monty.MontyTypingError]
     whose diagnostics were rendered *in the worker*, so the format is a
     checkout argument (`type_check_format=`, `type_check_color=`; JS
     `typeCheckFormat` / `typeCheckColor`) and `display()` takes no arguments:
@@ -246,10 +246,10 @@ properties that real CPython does not provide, per the caveat above.
     protocol turn, not mid-`print`; if that turn had suspended (an external
     function, OS call, or name lookup), the binding resets/discards the
     suspension before surfacing the print error so later feeds can continue.
-- **The sync API adapts to the caller's Tokio context.** `Monty` methods block
+- **The sync API adapts to the caller's Tokio context.** [`Monty`][pydantic_monty.Monty] methods block
     the calling thread on the binding's Tokio runtime. Called from a worker
     thread of a multi-thread runtime, e.g. a sync external function or
-    `print_callback` invoked by an `AsyncMonty` drive, the wait is wrapped in
+    `print_callback` invoked by an [`AsyncMonty`][pydantic_monty.AsyncMonty] drive, the wait is wrapped in
     `tokio::task::block_in_place`, so opening an independent nested sync
     pool/session works (each concurrent nested call occupies an extra OS thread
     while it waits). Called from any *current-thread* Tokio runtime context,
@@ -258,7 +258,7 @@ properties that real CPython does not provide, per the caveat above.
     nested pools/sessions are
     supported: re-entering the *same* session from its own callback deadlocks
     on the session's internal lock.
-- **Mounts are host-side.** `MountDir` objects contribute configuration only;
+- **Mounts are host-side.** [`MountDir`][pydantic_monty.MountDir] objects contribute configuration only;
     the pool builds a fresh mount table per feed on the *host* and services the
     worker's filesystem OS calls itself. The worker never sees host paths, so
     mounts work identically for local subprocess and remote WebSocket workers.
@@ -279,14 +279,14 @@ properties that real CPython does not provide, per the caveat above.
     lives.** It holds an open descriptor, and Windows refuses to rename or delete
     a directory while a handle to it is open, so the host gets
     `ERROR_SHARING_VIOLATION` until the mount is closed, not just until the feed
-    ends. `MountDir.close()` releases it (also `with` in Python, `using` in
+    ends. [`MountDir.close()`][pydantic_monty.MountDir.close] releases it (also `with` in Python, `using` in
     JavaScript); a feed already running keeps its own reference, and feeding a
     closed mount raises. Unix is unaffected, and closing is optional there.
 - **Mounts only answer calls on the automatic path.** Every OS call the sandbox
     makes surfaces as a suspension; the pool consults the mount table only when
     the caller asks it to. `feed_run` (and the JS `feedRun`) asks on every OS
     call, so mounted I/O is transparent there. `feed_start` never does: a mounted
-    read comes back as a `FunctionSnapshot` with `is_os_function` set, and it is
+    read comes back as a [`FunctionSnapshot`][pydantic_monty.FunctionSnapshot] with `is_os_function` set, and it is
     `resume_auto()` that offers the call to the mounts and then to `os=`.
     Answering such a snapshot with an explicit `resume(...)` bypasses the mount
     entirely; the value you supply is what the sandbox sees.
@@ -333,7 +333,7 @@ properties that real CPython does not provide, per the caveat above.
     present in both is served by the `inputs` binding, so no lookup fires). A
     non-callable value that cannot be converted rejects the turn host-side:
     because `external_lookup` (and `inputs`) may hold untrusted values, an
-    unrepresentable *type* surfaces as a dedicated `MontyError` subclass (in
+    unrepresentable *type* surfaces as a dedicated [`MontyError`][pydantic_monty.MontyError] subclass (in
     `pydantic_monty`, `MontyConversionError`; its `exception()` reconstructs a
     native `TypeError`), **never** as a masquerading `NameError`; other converter
     failures, such as exceeding the max input nesting depth, keep their own type
@@ -368,8 +368,8 @@ properties that real CPython does not provide, per the caveat above.
     `uv run`. The Monty sandbox worker has no such behavior: a `# /// script`
     block is just a comment and its dependencies are never installed.
 - **`dump()`** bytes carry monty's own versioned session format and can only be
-    restored into a worker built with the same `DUMP_VERSION`, via
-    `session.load_session` / `session.load_snapshot` (Rust `Checkout::restore`).
+    restored into a worker built with the same [`DUMP_VERSION`](../api/rust/monty.md#dump_version), via
+    `session.load_session` / `session.load_snapshot` (Rust [`Checkout::restore`](../api/rust/monty-pool.md#checkout)).
     A version mismatch is reported as such, naming both versions, so a stale
     snapshot is distinguishable from a corrupt one.
 - **`feed_start` snapshots are live cursors, not owned state.** The execution
@@ -390,11 +390,11 @@ properties that real CPython does not provide, per the caveat above.
     its own `script_name` / limits / type-check state (the `checkout()` config
     for those is not applied). The session's class-instance store is host-side
     and NOT part of the dump: restoring into a fresh session/process starts with
-    an empty store, so a returned host instance becomes a `MontyClassProxy`
+    an empty store, so a returned host instance becomes a [`MontyClassProxy`][pydantic_monty.MontyClassProxy]
     stand-in (a returned host class, `type(x)` included, a
-    `MontyClassTypeProxy`), a lazy attribute lookup raises `AttributeError`,
+    [`MontyClassTypeProxy`][pydantic_monty.MontyClassTypeProxy]), a lazy attribute lookup raises `AttributeError`,
     and a method call on it — as well as a construction or classmethod call on a
-    `ClassType`-granted class — raises `RuntimeError` ("no host object
+    [`ClassType`][pydantic_monty.ClassType]-granted class — raises `RuntimeError` ("no host object
     registered for method call '...' (id ...) — the instance store is empty
     after loading a dump into a fresh session").
 - **The class-instance store retains every wrapper sent into the sandbox until
@@ -438,7 +438,7 @@ properties that real CPython does not provide, per the caveat above.
     subprocess boundary as structured protocol values; the old
     `MontyComplete.output_json()` / `FunctionSnapshot.args_json()` /
     `kwargs_json()` helper format is not part of the pool API. (`feed_start`
-    snapshots and `MontyComplete` expose `args` / `kwargs` / `output` as
+    snapshots and [`MontyComplete`][pydantic_monty.MontyComplete] expose `args` / `kwargs` / `output` as
     converted Python objects only.)
 
 ## JavaScript client (`@pydantic/monty`)
@@ -453,8 +453,8 @@ same protocol in TypeScript over a WASM worker. Everything above applies, plus:
     (`TypeError`, `ValueError`, `KeyError`, ...); anything else becomes
     `RuntimeError`. Tracebacks of host errors are not preserved.
 - **Snapshots mirror `pydantic_monty`.** `session.feedStart(code, opts)`
-    returns a `FunctionSnapshot` / `NameLookupSnapshot` / `FutureSnapshot` (or a
-    `MontyComplete`); `session.dump()` / `snapshot.dump()` serialize the worker,
+    returns a [`FunctionSnapshot`][pydantic_monty.FunctionSnapshot] / [`NameLookupSnapshot`][pydantic_monty.NameLookupSnapshot] / [`FutureSnapshot`][pydantic_monty.FutureSnapshot] (or a
+    [`MontyComplete`][pydantic_monty.MontyComplete]); `session.dump()` / `snapshot.dump()` serialize the worker,
     and `session.loadSnapshot(bytes, opts)` restores it (fresh-session-only,
     returning the re-announced snapshot or `null`). Differences from Python: a
     name lookup resolves only to an external *function* (`resume(functionName?)`,
@@ -465,7 +465,7 @@ same protocol in TypeScript over a WASM worker. Everything above applies, plus:
     `FutureSnapshot.resume([{callId, value}|{callId, error}])`).
 - **Wrapper policies never reach JS object machinery.** `constructor`,
     `__proto__`, `prototype`, `arguments` and `caller` are refused under every
-    `ClassInstance` / `ClassType` policy, explicit lists included, and members
+    [`ClassInstance`][pydantic_monty.ClassInstance] / [`ClassType`][pydantic_monty.ClassType] policy, explicit lists included, and members
     found on `Object.prototype` / `Function.prototype` (`toString`,
     `hasOwnProperty`, `call`, `bind`, ...) count as absent. A string policy
     other than `'all'` throws `TypeError` at construction. Keyword arguments
