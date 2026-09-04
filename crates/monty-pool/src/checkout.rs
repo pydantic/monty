@@ -1263,11 +1263,15 @@ impl Checkout {
             }
             match event.kind {
                 Some(pb::child_event::Kind::Print(print)) => {
-                    let stream = match print.stream() {
-                        pb::PrintStream::Stderr => PrintStream::Stderr,
-                        pb::PrintStream::Stdout | pb::PrintStream::Unspecified => PrintStream::Stdout,
-                    };
-                    on_print(stream, &print.text).await;
+                    // One event can carry several runs: hand each to the host
+                    // in order, so the callback shape stays per-stream.
+                    for segment in &print.segments {
+                        let stream = match segment.stream() {
+                            pb::PrintStream::Stderr => PrintStream::Stderr,
+                            pb::PrintStream::Stdout | pb::PrintStream::Unspecified => PrintStream::Stdout,
+                        };
+                        on_print(stream, &segment.text).await;
+                    }
                 }
                 Some(pb::child_event::Kind::FunctionCall(call)) => {
                     self.pending = Some(Pending::Call {

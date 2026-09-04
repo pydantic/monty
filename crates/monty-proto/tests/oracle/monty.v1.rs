@@ -763,14 +763,23 @@ pub mod child_event {
         Shutdown(super::ShutdownDump),
     }
 }
-/// Streamed sandbox print() output. Zero or more of these precede each
-/// turn-ending event; text is flushed at line granularity.
+/// One run of print() output on a single stream, as one `Print` event may
+/// carry several.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Print {
+pub struct PrintSegment {
     #[prost(enumeration = "PrintStream", tag = "1")]
     pub stream: i32,
     #[prost(string, tag = "2")]
     pub text: ::prost::alloc::string::String,
+}
+/// Streamed sandbox print() output. Zero or more of these precede each
+/// turn-ending event, and each carries the runs the worker had buffered, in
+/// the order the sandbox produced them — so output alternating between the
+/// streams batches into one event without losing that order.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Print {
+    #[prost(message, repeated, tag = "3")]
+    pub segments: ::prost::alloc::vec::Vec<PrintSegment>,
 }
 /// Suspension: the sandbox called an external function, or — when `object_id`
 /// is set — a method on a host-backed object (the receiver is NOT included in

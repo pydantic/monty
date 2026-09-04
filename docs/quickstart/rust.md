@@ -137,8 +137,8 @@ assert_eq!(result, MontyObject::Int(55));
 ```
 
 Errors come back as `MontyException`, with a traceback matching what CPython would produce.
-`PrintWriter` controls where `print()` output goes: `Stdout`, `Disabled`, or collected into a `String` or `(stream,
-text)` tuples.
+`PrintWriter` controls where `print()` output goes: `Stdout`, `Disabled`, or collected — into a `String`, or into a
+`CollectedStreams` buffer whose `entries()` label each run `stdout` or `stderr`.
 
 ### Resource limits
 

@@ -628,11 +628,23 @@ enum PrintStream {
   PRINT_STREAM_STDERR = 2;
 }
 
-// Streamed sandbox print() output. Zero or more of these precede each
-// turn-ending event; text is flushed at line granularity.
-message Print {
+// One run of print() output on a single stream, as one `Print` event may
+// carry several.
+message PrintSegment {
   PrintStream stream = 1;
   string text = 2;
+}
+
+// Streamed sandbox print() output. Zero or more of these precede each
+// turn-ending event, and each carries the runs the worker had buffered, in
+// the order the sandbox produced them — so output alternating between the
+// streams batches into one event without losing that order.
+message Print {
+  // 1 and 2 were the single stream and text this event carried before it
+  // could hold more than one run.
+  reserved 1, 2;
+  reserved "stream", "text";
+  repeated PrintSegment segments = 3;
 }
 
 // Suspension: the sandbox called an external function, or — when `object_id`

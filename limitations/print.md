@@ -1,8 +1,8 @@
 # `print()`
 
 Output always goes to the host via a print callback (`vm.print_writer`). The
-host decides where it ends up; there is no real `sys.stdout` underneath (see
-./sys.md).
+host decides where it ends up; there is no real `sys.stdout` or `sys.stderr`
+underneath (see ./sys.md).
 
 ## Supported keyword arguments
 
@@ -13,9 +13,12 @@ host decides where it ends up; there is no real `sys.stdout` underneath (see
 
 ## Rejected / ignored
 
-- `file=...` — rejected with `TypeError: "print() 'file' argument is not
-  supported"`. Code that does `print(..., file=sys.stderr)` will not work;
-  `sys.stderr` is an opaque marker (see ./sys.md).
+- `file=...` — only `sys.stdout` and `sys.stderr` are accepted; both are
+  opaque markers matched by identity (see ./sys.md). Anything else raises
+  `TypeError: "print() 'file' argument must be sys.stdout or sys.stderr, not
+  {type}"`, including an object defining `write()`, which CPython would call.
+  CPython instead raises `AttributeError: '{type}' object has no attribute
+  'write'` for an object without one.
 - `flush=...` — accepted and ignored. Output is delivered to the host through
   the subprocess protocol on its own schedule (see "Chunk boundaries" below);
   a `print()` cannot make it arrive sooner.
@@ -27,6 +30,9 @@ host decides where it ends up; there is no real `sys.stdout` underneath (see
   before being written.
 - The host callback receives formatted chunks. There is no atomicity guarantee
   across multiple `print()` calls if the host interleaves with other output.
+- Stderr output is delivered through the same callback with `stream='stderr'`.
+  `CollectString` keeps no labels and interleaves both streams in one buffer;
+  `CollectStreams` labels each entry.
 
 ## Chunk boundaries
 
@@ -48,8 +54,12 @@ out the flush interval (5 ms by default), so:
   buffer is still drained before the next host call and at the end of the
   turn, so a host that needs liveness here can set the interval to 0 and get a
   callback as each line is written.
-- Ordering is exact, and the buffer is always drained before a host call or the
-  end of a run, so output cannot arrive after the event it preceded.
+- Both streams share that one buffer, so output alternating between them is
+  batched like any other; the callback is still called once per run, so a
+  chunk never mixes the two.
+- Ordering is exact, between the streams as well, and the buffer is always
+  drained before a host call or the end of a run, so output cannot arrive after
+  the event it preceded.
 - Buffered output is lost if the worker dies *hard*: the pool killing it on
   `request_timeout`, the allocator ending the process at its hard memory
   ceiling, or a crash. A graceful turn drains first, so this only affects a

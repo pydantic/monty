@@ -515,11 +515,17 @@ impl TurnMetrics {
             self.reported_micros = self.reported_micros.max(event.total_execution_micros);
         }
         match &event.kind {
-            Some(pb::child_event::Kind::Print(p)) => self.metrics.record(
-                &PRINT_BYTES,
-                MetricValue::bytes(p.text.len()),
-                &[KeyValue::new("stream", print_stream(p.stream))],
-            ),
+            Some(pb::child_event::Kind::Print(p)) => {
+                // One sample per run rather than per event: a run is the
+                // largest span of output that has a single stream to name.
+                for segment in &p.segments {
+                    self.metrics.record(
+                        &PRINT_BYTES,
+                        MetricValue::bytes(segment.text.len()),
+                        &[KeyValue::new("stream", print_stream(segment.stream))],
+                    );
+                }
+            }
             Some(pb::child_event::Kind::FunctionCall(_)) => self.suspend(SuspensionKind::FunctionCall),
             Some(pb::child_event::Kind::OsCall(c)) => self.suspend(SuspensionKind::OsCall(os_call(c.call.as_ref()))),
             Some(pb::child_event::Kind::NameLookup(_)) => self.suspend(SuspensionKind::NameLookup),

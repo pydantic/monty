@@ -25,7 +25,10 @@ pub use crate::{
     },
     file_mode::FileMode,
     format::{FormatFloat, StringRepr, bytes_repr, bytes_repr_fmt, string_repr_fmt, utf8_error_reason},
-    io::{DEFAULT_MAX_PRINT_COLLECT_BYTES, PrintStream, PrintWriter, PrintWriterCallback, check_print_collect_limit},
+    io::{
+        CollectedStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, PrintStream, PrintWriter, PrintWriterCallback,
+        check_print_collect_limit,
+    },
     object::{
         ConversionError, DictPairs, InvalidInputError, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
         MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,

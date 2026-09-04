@@ -12,8 +12,10 @@ access raises `AttributeError`.
   `"win32"`. Code that branches on the host OS will not work; the sandbox
   does not expose which OS it runs on.
 - `sys.stdout` / `sys.stderr` — opaque marker objects with no methods. They
-  cannot be written to via `.write()`; printing always goes through the host
-  print callback regardless.
+  cannot be written to via `.write()`, and `sys.stdout.flush()` and the rest
+  raise `AttributeError`. They are useful only as `print(..., file=...)`,
+  which routes output to that stream through the host print callback (see
+  ./print.md).
 
 ## Not implemented
 

@@ -53,6 +53,11 @@ fn split_turn(bytes: &[u8]) -> (Vec<pb::Print>, pb::child_event::Kind) {
 }
 
 fn create_repl(child: &mut Child) {
+    create_repl_with_flush_interval(child, None);
+}
+
+/// `create_repl`, naming the print flush interval the session runs with.
+fn create_repl_with_flush_interval(child: &mut Child, print_flush_interval_ms: Option<u32>) {
     let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: "main.py".to_owned(),
         limits: None,
@@ -61,6 +66,7 @@ fn create_repl(child: &mut Child) {
         assert_message_annotations: None,
         monty_version: MONTY_VERSION.to_owned(),
         protocol_version: PROTOCOL_VERSION,
+        print_flush_interval_ms,
         ..Default::default()
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
@@ -80,6 +86,21 @@ fn feed(child: &mut Child, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     split_turn(&bytes)
+}
+
+/// The runs each `Print` event carried, as `(stream, text)` per event, so a
+/// test can assert both what was batched together and in what order.
+fn segments_per_event(prints: &[pb::Print]) -> Vec<Vec<(pb::PrintStream, &str)>> {
+    prints
+        .iter()
+        .map(|print| {
+            print
+                .segments
+                .iter()
+                .map(|segment| (segment.stream(), segment.text.as_str()))
+                .collect()
+        })
+        .collect()
 }
 
 fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
@@ -120,9 +141,78 @@ fn print_output_is_streamed_before_the_terminator() {
     create_repl(&mut child);
 
     let (prints, event) = feed(&mut child, "print('hello'); print('world')");
-    let streamed: String = prints.into_iter().map(|print| print.text).collect();
+    let streamed: String = prints
+        .into_iter()
+        .flat_map(|print| print.segments)
+        .map(|segment| segment.text)
+        .collect();
     assert_eq!(streamed, "hello\nworld\n");
     assert_eq!(expect_complete(event), MontyObject::None);
+}
+
+/// Output alternating between the streams batches into one event, holding a
+/// segment per run: the worker never has to flush to change stream, so the
+/// debounce applies to mixed output as much as to plain stdout.
+#[test]
+fn alternating_streams_batch_into_one_event() {
+    let mut child = Child::default();
+    // an interval no test will wait out leaves the flush to `drain`, so this
+    // asserts how output is segmented rather than how the timer fires
+    create_repl_with_flush_interval(&mut child, Some(60_000));
+
+    let (prints, event) = feed(
+        &mut child,
+        "import sys\nprint('a')\nprint('b', file=sys.stderr)\nprint('c')",
+    );
+    assert_eq!(expect_complete(event), MontyObject::None);
+    assert_eq!(
+        segments_per_event(&prints),
+        vec![vec![
+            (pb::PrintStream::Stdout, "a\n"),
+            (pb::PrintStream::Stderr, "b\n"),
+            (pb::PrintStream::Stdout, "c\n"),
+        ]]
+    );
+}
+
+/// With the timer off, a completed line still ends the event whichever stream
+/// wrote it, so a host that asked for line buffering gets one event per line.
+#[test]
+fn line_buffering_gives_each_line_its_own_event() {
+    let mut child = Child::default();
+    create_repl_with_flush_interval(&mut child, Some(0));
+
+    let (prints, event) = feed(&mut child, "import sys\nprint('a')\nprint('b', file=sys.stderr)");
+    assert_eq!(expect_complete(event), MontyObject::None);
+    assert_eq!(
+        segments_per_event(&prints),
+        vec![
+            vec![(pb::PrintStream::Stdout, "a\n")],
+            vec![(pb::PrintStream::Stderr, "b\n")],
+        ]
+    );
+}
+
+/// A line the sandbox wrote across both streams is one line, so line buffering
+/// ships the runs it spans in one event rather than cutting at the switch. The
+/// trailing partial line waits for the drain at the end of the turn.
+#[test]
+fn line_buffering_keeps_a_line_spanning_the_streams_together() {
+    let mut child = Child::default();
+    create_repl_with_flush_interval(&mut child, Some(0));
+
+    let (prints, event) = feed(
+        &mut child,
+        "import sys\nprint('out', end='')\nprint('err', file=sys.stderr)\nprint('next', end='')",
+    );
+    assert_eq!(expect_complete(event), MontyObject::None);
+    assert_eq!(
+        segments_per_event(&prints),
+        vec![
+            vec![(pb::PrintStream::Stdout, "out"), (pb::PrintStream::Stderr, "err\n")],
+            vec![(pb::PrintStream::Stdout, "next")],
+        ]
+    );
 }
 
 #[test]

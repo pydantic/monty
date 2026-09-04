@@ -279,10 +279,11 @@ fn print_output_is_streamed_in_order() {
     child.create_repl();
     let (prints, event) = child.feed("print('one')\nprint('two')\nprint('three', end='')\n'done'");
     expect_complete(event);
-    let text: String = prints.iter().map(|p| p.text.as_str()).collect();
+    let segments = || prints.iter().flat_map(|print| print.segments.iter());
+    let text: String = segments().map(|segment| segment.text.as_str()).collect();
     // the partial (no-newline) third line must still arrive before the turn ends
     assert_eq!(text, "one\ntwo\nthree");
-    assert!(prints.iter().all(|p| p.stream == i32::from(pb::PrintStream::Stdout)));
+    assert!(segments().all(|segment| segment.stream == i32::from(pb::PrintStream::Stdout)));
     child.shutdown();
 }
 

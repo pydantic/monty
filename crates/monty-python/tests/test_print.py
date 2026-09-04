@@ -268,6 +268,56 @@ list(map(print, [1, 2, 3]))
     assert ''.join(output) == snapshot('1\n2\n3\n')
 
 
+# === print(file=sys.stderr) ===
+
+
+def test_print_file_stderr_is_labelled(monty_run: RunMonty) -> None:
+    collector = CollectStreams()
+
+    monty_run('import sys\nprint("out")\nprint("err", file=sys.stderr)', print_callback=collector)
+
+    assert collector.output == snapshot([('stdout', 'out\n'), ('stderr', 'err\n')])
+
+
+def test_print_streams_are_not_reordered(monty_run: RunMonty) -> None:
+    """The worker buffers a run per stream in order, so a switch cannot reorder output."""
+    collector = CollectStreams()
+
+    code = 'import sys\nfor i in range(3):\n    print(i)\n    print(i, file=sys.stderr)'
+    monty_run(code, print_callback=collector)
+
+    assert collector.output == snapshot(
+        [
+            ('stdout', '0\n'),
+            ('stderr', '0\n'),
+            ('stdout', '1\n'),
+            ('stderr', '1\n'),
+            ('stdout', '2\n'),
+            ('stderr', '2\n'),
+        ]
+    )
+
+
+def test_print_file_callback_receives_stderr(monty_run: RunMonty) -> None:
+    received: list[tuple[str, str]] = []
+
+    def callback(stream: Literal['stdout', 'stderr'], text: str) -> None:
+        received.append((stream, text))
+
+    monty_run('import sys\nprint("warning", file=sys.stderr)', print_callback=callback)
+
+    assert received == snapshot([('stderr', 'warning\n')])
+
+
+def test_print_file_unsupported_object(monty_run: RunMonty) -> None:
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('print("x", file=42)')
+
+    assert str(exc_info.value) == snapshot(
+        "TypeError: print() 'file' argument must be sys.stdout or sys.stderr, not int"
+    )
+
+
 # === CollectStreams / CollectString ===
 
 
