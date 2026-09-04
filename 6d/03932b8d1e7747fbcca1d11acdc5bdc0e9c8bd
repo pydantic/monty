@@ -1,0 +1,19 @@
+docs/alternatives.md
+  s_a1f481cef90e33::t_f50515c3d08eb2 24-27,29-36,142-143,171-172,184,195,214,231-233,244
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6d03932b8d1e7747fbcca1d11acdc5bdc0e9c8bd",
+  "prompts": {},
+  "sessions": {
+    "s_a1f481cef90e33": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7fa23c1-b658-4a6b-aed6-13a3b8a7da35",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
