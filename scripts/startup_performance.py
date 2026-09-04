@@ -463,6 +463,9 @@ def selected(name: str) -> bool:
 
 
 if __name__ == '__main__':
+    names = sorted({name for name, _ in MEASUREMENTS + AGENT_MEASUREMENTS})
+    if unknown := sorted(set(sys.argv[1:]) - set(names)):
+        sys.exit(f'unknown measurement {", ".join(unknown)}; choose from {", ".join(names)}')
     for name, measure in MEASUREMENTS:
         if selected(name):
             measure()
