@@ -1,0 +1,121 @@
+docs/limitations/modules.md
+  s_a1f481cef90e33::t_d44582e825237d 1-64
+docs/limitations/AGENTS.md
+  s_a1f481cef90e33::t_0820bd37dc5c3a 1-51
+docs/limitations/open.md
+  s_a1f481cef90e33::t_d44582e825237d 1-210
+mkdocs.yml
+  s_a1f481cef90e33::t_72c91e0d810f35 43-76
+  s_a1f481cef90e33::t_0820bd37dc5c3a 92-94
+docs/limitations/assert.md
+  s_a1f481cef90e33::t_d44582e825237d 1-83
+docs/limitations/unicodedata.md
+  s_a1f481cef90e33::t_d44582e825237d 1-36
+docs/limitations/asyncio.md
+  s_a1f481cef90e33::t_d44582e825237d 1-64,75-77,79,85-105,109-111,113-134
+  s_a1f481cef90e33::t_5d19c5c2be60e6 65-74,78,80-84,106-108,112
+docs/alternatives.md
+  s_a1f481cef90e33::t_0820bd37dc5c3a 111
+docs/limitations/exceptions.md
+  s_a1f481cef90e33::t_d44582e825237d 1-121
+docs/limitations/functools.md
+  s_a1f481cef90e33::t_d44582e825237d 1-63
+docs/limitations/itertools.md
+  s_a1f481cef90e33::t_d44582e825237d 1-72,78-113
+  s_a1f481cef90e33::t_5d19c5c2be60e6 73-77
+docs/limitations/index.md
+  s_a1f481cef90e33::t_72c91e0d810f35 121-122
+  s_a1f481cef90e33::t_0820bd37dc5c3a 9-12,15-16,67-82,93,98,103,106,108,112,114,116,120,123
+  s_a1f481cef90e33::t_d44582e825237d 1
+docs/limitations/json.md
+  s_a1f481cef90e33::t_d44582e825237d 1-59
+docs/limitations/base64.md
+  s_a1f481cef90e33::t_d44582e825237d 1-30
+docs/limitations/collections.md
+  s_a1f481cef90e33::t_d44582e825237d 1-91
+docs/limitations/pool-architecture.md
+  s_a1f481cef90e33::t_d44582e825237d 1-477
+docs/limitations/re.md
+  s_a1f481cef90e33::t_d44582e825237d 1-92
+docs/limitations/typing.md
+  s_a1f481cef90e33::t_5d19c5c2be60e6 42-44
+  s_a1f481cef90e33::t_d44582e825237d 1-41,45-84
+docs/limitations/filesystem.md
+  s_a1f481cef90e33::t_d44582e825237d 1-278
+docs/limitations/comprehensions.md
+  s_a1f481cef90e33::t_d44582e825237d 1-22
+docs/limitations/pathlib.md
+  s_a1f481cef90e33::t_d44582e825237d 1-65
+docs/limitations/print.md
+  s_a1f481cef90e33::t_d44582e825237d 1-70
+docs/filesystem.md
+  s_a1f481cef90e33::t_d44582e825237d 98-99
+docs/limitations/builtins.md
+  s_a1f481cef90e33::t_d44582e825237d 1-138
+docs/limitations/resource_limits.md
+  s_a1f481cef90e33::t_d44582e825237d 1-218
+docs/limitations/datetime.md
+  s_a1f481cef90e33::t_d44582e825237d 1-182
+docs/limitations/format.md
+  s_a1f481cef90e33::t_d44582e825237d 1-60
+docs/limitations/classes.md
+  s_a1f481cef90e33::t_3b7c6595930c33 181-183
+  s_a1f481cef90e33::t_d44582e825237d 1-177,185-492
+  s_a1f481cef90e33::t_5d19c5c2be60e6 178-180,184
+docs/limitations/os.md
+  s_a1f481cef90e33::t_d44582e825237d 1-95
+docs/quickstart/python.md
+  s_a1f481cef90e33::t_d44582e825237d 210,310
+  s_a1f481cef90e33::t_0820bd37dc5c3a 383
+docs/limitations/sys.md
+  s_a1f481cef90e33::t_d44582e825237d 1-29
+docs/limitations/namedtuple.md
+  s_a1f481cef90e33::t_d44582e825237d 1-32
+docs/limitations/dataclasses.md
+  s_a1f481cef90e33::t_d44582e825237d 1-123
+docs/limitations/iter.md
+  s_a1f481cef90e33::t_d44582e825237d 1-10
+docs/snapshots.md
+  s_a1f481cef90e33::t_d44582e825237d 137
+docs/resource-limits.md
+  s_a1f481cef90e33::t_d44582e825237d 157
+docs/limitations/with.md
+  s_a1f481cef90e33::t_d44582e825237d 1-97
+docs/type-checking.md
+  s_a1f481cef90e33::t_d44582e825237d 134,139
+  s_a1f481cef90e33::t_0820bd37dc5c3a 26
+CLAUDE.md
+  s_a1f481cef90e33::t_0820bd37dc5c3a 933-934,945,963,978,1014,1016
+  s_a1f481cef90e33::t_bc7a07219b770b 985,990-991,1013,1015,1017,1047-1049
+docs/limitations/encoding.md
+  s_a1f481cef90e33::t_d44582e825237d 1-76
+.agents/agents/docs-parity-reviewer.md
+  s_a1f481cef90e33::t_bc7a07219b770b 17-19
+  s_a1f481cef90e33::t_0820bd37dc5c3a 53,70
+docs/limitations/math.md
+  s_a1f481cef90e33::t_d44582e825237d 1-36
+README.md
+  s_a1f481cef90e33::t_0820bd37dc5c3a 79
+docs/limitations/language.md
+  s_a1f481cef90e33::t_d44582e825237d 1-195
+docs/host-objects.md
+  s_a1f481cef90e33::t_d44582e825237d 191
+docs/host-functions.md
+  s_a1f481cef90e33::t_0820bd37dc5c3a 145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d0c976227ed79b9dfedc967905ee038d7324da46",
+  "prompts": {},
+  "sessions": {
+    "s_a1f481cef90e33": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7fa23c1-b658-4a6b-aed6-13a3b8a7da35",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
