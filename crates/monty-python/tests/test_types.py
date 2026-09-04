@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import collections
 import datetime
+import functools
 import itertools
 import pathlib
 import re
@@ -134,7 +135,7 @@ def test_type_object_output(monty_run: RunMonty):
     """A type object returned from the sandbox reconstructs as the matching host
     class; modeled stdlib types resolve from their real module (`Path` → `PurePosixPath`)."""
     code = """
-import datetime, re
+import datetime, functools, re
 from pathlib import Path
 from collections import deque
 [
@@ -143,6 +144,7 @@ from collections import deque
     datetime.datetime, datetime.date, datetime.time, datetime.timedelta, datetime.timezone,
     type(re.compile('a')), type(re.match('a', 'a')),
     type(deque()),
+    type(functools.partial(int)), type(functools.cache(int)),
 ]
 """
     # Type objects have no `__eq__` override, so `==` compares them by identity.
@@ -164,6 +166,8 @@ from collections import deque
         re.Pattern,
         re.Match,
         collections.deque,
+        functools.partial,
+        functools._lru_cache_wrapper,  # pyright: ignore[reportPrivateUsage]
     ]
 
 
@@ -191,6 +195,8 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         re.Match,
         collections.deque,
         types.GenericAlias,
+        functools.partial,
+        functools._lru_cache_wrapper,  # pyright: ignore[reportPrivateUsage]
     ]
     for ty in type_objects:
         # The pathlib family all collapses to a single Monty path type, which

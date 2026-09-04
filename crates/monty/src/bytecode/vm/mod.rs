@@ -45,6 +45,7 @@ use crate::{
     types::{
         Dict, LongInt, PyTrait, Random,
         file::{apply_buffer_store, apply_open_name, apply_write_position},
+        lru_cache::{CacheStore, store_results},
         str::allocate_string,
     },
     value::{EitherStr, Value},
@@ -399,6 +400,16 @@ pub struct CallFrame<'code> {
     /// construction. Threaded through serialization (`SerializedFrame`) so a
     /// suspended initializer resumes correctly.
     is_initializer: bool,
+
+    /// One entry per `functools.lru_cache`-wrapped call this frame runs: the
+    /// return value is stored in each cache before it reaches the caller.
+    ///
+    /// Usually empty, and holds more than one only for stacked wrappers
+    /// (`cache(cache(f))`), which all tag the single frame `f` pushed. Each
+    /// entry owns a reference to its cache and to the key, so every path that
+    /// abandons a frame — a normal return, an unwind, task teardown — must
+    /// release them exactly once (see [`VM::cleanup_frame_state`]).
+    cache_stores: Vec<CacheStore>,
 }
 
 impl<'code> CallFrame<'code> {
@@ -419,6 +430,7 @@ impl<'code> CallFrame<'code> {
             should_return: false,
             is_parked: false,
             is_initializer: false,
+            cache_stores: Vec::new(),
         }
     }
 
@@ -457,6 +469,7 @@ impl<'code> CallFrame<'code> {
             should_return: false,
             is_parked: false,
             is_initializer: false,
+            cache_stores: Vec::new(),
         }
     }
 }
@@ -542,7 +555,7 @@ impl CallFrame<'_> {
 ///
 /// Cannot store `&Code` (a reference) — instead stores `FunctionId` to look up
 /// the pre-compiled Code object on resume. Module-level code uses `None`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SerializedFrame {
     /// Which function's code this frame executes (None = module-level).
     function_id: Option<FunctionId>,
@@ -572,11 +585,20 @@ pub struct SerializedFrame {
     /// `None` instead of leaving the instance on the stack.
     #[serde(default)]
     is_initializer: bool,
+
+    /// The pending cache stores of this frame's cached calls (see
+    /// `CallFrame.cache_stores`). Round-trip for the same reason
+    /// `is_initializer` does: a cached function may suspend mid-call.
+    #[serde(default)]
+    cache_stores: Vec<CacheStore>,
 }
 
 impl CallFrame<'_> {
     /// Converts this frame to a serializable representation.
-    fn serialize(&self) -> SerializedFrame {
+    ///
+    /// Consumes the frame because `cache_store` owns heap references: they move
+    /// into the snapshot rather than being cloned.
+    fn into_serialized(self) -> SerializedFrame {
         assert!(!self.is_parked, "cannot serialize a parked frame");
         assert!(
             !self.should_return,
@@ -590,6 +612,7 @@ impl CallFrame<'_> {
             exception_stack_base: self.exception_stack_base,
             call_offset: self.call_offset,
             is_initializer: self.is_initializer,
+            cache_stores: self.cache_stores,
         }
     }
 }
@@ -926,6 +949,7 @@ impl<'h> VM<'h> {
                     should_return: false,
                     is_parked: false,
                     is_initializer: sf.is_initializer,
+                    cache_stores: sf.cache_stores,
                 }
             })
             .collect();
@@ -991,20 +1015,32 @@ impl<'h> VM<'h> {
         // included in the snapshot and their refcounts must be decremented.
         self.json_string_cache.drop_all(self.heap);
 
+        // Frames move into the snapshot rather than being copied, because
+        // `cache_stores` owns heap references. A frame that is not serialized
+        // must therefore release its stores instead of being dropped, and a
+        // parked VM has no live call stack to serialize at all.
+        let suspended = mem::take(&mut self.suspended_frames);
+        let frames_snapshot = if self.current_frame.is_parked {
+            for mut frame in suspended {
+                mem::take(&mut frame.cache_stores).drop_with(&mut *self.heap);
+            }
+            Vec::new()
+        } else {
+            let code = self.current_frame.code;
+            let current = mem::replace(&mut self.current_frame, CallFrame::new_parked(code));
+            suspended
+                .into_iter()
+                .chain([current])
+                .map(CallFrame::into_serialized)
+                .collect()
+        };
+
         VMSnapshot {
             // Move values directly — no clone, no refcount increment needed
             // (the VM owned them, now the snapshot owns them)
             stack: mem::take(&mut self.stack),
             globals: mem::take(&mut self.globals),
-            frames: if self.current_frame.is_parked {
-                Vec::new()
-            } else {
-                self.suspended_frames
-                    .iter()
-                    .chain([&self.current_frame])
-                    .map(CallFrame::serialize)
-                    .collect()
-            },
+            frames: frames_snapshot,
             exception_stack: mem::take(&mut self.exception_stack),
             instruction_ip: self.instruction_ip,
             scheduler: mem::take(&mut self.scheduler),
@@ -1873,11 +1909,24 @@ impl<'h> VM<'h> {
                         }
                         continue;
                     }
-                    // Read the initializer flag before popping the frame.
+                    // Read the initializer flag and take the pending cache
+                    // stores before popping the frame (popping releases them).
                     let is_init = self.current_frame().is_initializer;
+                    let cache_stores = mem::take(&mut self.current_frame_mut().cache_stores);
                     // Pop current frame; `stop` requests returning to the host
                     // (e.g. `evaluate_function`).
                     let stop = self.pop_frame();
+                    // A cached call stores its result before the caller sees
+                    // it, so a recursive cached function finds the inner
+                    // results already in place.
+                    if let Err(err) = store_results(cache_stores, &value, self) {
+                        value.drop_with(self);
+                        if stop {
+                            return Err(err);
+                        }
+                        catch!(self, err);
+                        continue;
+                    }
                     if is_init {
                         if !matches!(value, Value::None) {
                             // CPython raises at the `Foo(...)` call site: the
@@ -2135,11 +2184,11 @@ impl<'h> VM<'h> {
     /// Pushes the given frame onto the call stack.
     ///
     /// Returns an error if the recursion depth limit is exceeded by pushing this frame.
-    pub(super) fn push_frame(&mut self, frame: CallFrame<'h>) -> RunResult<()> {
+    pub(super) fn push_frame(&mut self, mut frame: CallFrame<'h>) -> RunResult<()> {
         if !self.current_frame.is_parked
             && let Err(e) = self.incr_recursion()
         {
-            self.cleanup_frame_state(&frame);
+            self.cleanup_frame_state(&mut frame);
             return Err(e.into());
         }
         let caller = mem::replace(&mut self.current_frame, frame);
@@ -2156,8 +2205,8 @@ impl<'h> VM<'h> {
     /// Returns `true` if this frame indicated evaluation should stop when popped.
     pub(super) fn pop_frame(&mut self) -> bool {
         let caller = self.suspended_frames.pop().expect("cannot pop the root frame");
-        let frame = mem::replace(&mut self.current_frame, caller);
-        self.cleanup_frame_state(&frame);
+        let mut frame = mem::replace(&mut self.current_frame, caller);
+        self.cleanup_frame_state(&mut frame);
         // Sync instruction_ip to the restored caller so exception table lookups
         // target the correct frame after returning from a nested run() call.
         self.instruction_ip = self.current_frame.ip;
@@ -2167,13 +2216,27 @@ impl<'h> VM<'h> {
         frame.should_return
     }
 
-    fn cleanup_frame_state(&mut self, frame: &CallFrame<'_>) {
+    /// Releases everything a frame owns: its stack region and, if the frame was
+    /// running a cached call that never returned, the pending cache store.
+    fn cleanup_frame_state(&mut self, frame: &mut CallFrame<'_>) {
         // Clean up frame's stack region (locals + operand stack, which now
         // includes any in-flight comprehension variables — the operand-stack
         // drain naturally covers them).
         self.stack
             .drain(frame.stack_base..)
             .for_each(|value| value.drop_with(&mut *self.heap));
+        // An abandoned frame stores nothing: a raising call leaves the cache
+        // untouched, as CPython's does.
+        mem::take(&mut frame.cache_stores).drop_with(&mut *self.heap);
+    }
+
+    /// Tags the frame just pushed by a cached call, so its return value is
+    /// stored under `store`'s key on the way out.
+    ///
+    /// Appends rather than replaces: stacked wrappers (`cache(cache(f))`) each
+    /// tag the same frame, and every one of them expects the result.
+    pub(crate) fn push_frame_cache_store(&mut self, store: CacheStore) {
+        self.current_frame_mut().cache_stores.push(store);
     }
 
     /// Drops the current task's operand and exception stacks and discards its frames.
@@ -2181,9 +2244,12 @@ impl<'h> VM<'h> {
     pub(super) fn cleanup_current_task(&mut self) {
         self.stack.drain(..).drop_with(self.heap);
         self.exception_stack.drain(..).drop_with(self.heap);
-        self.suspended_frames.clear();
+        for mut frame in self.suspended_frames.drain(..) {
+            mem::take(&mut frame.cache_stores).drop_with(&mut *self.heap);
+        }
         let code = self.module_code.unwrap_or(self.current_frame.code);
-        self.current_frame = CallFrame::new_parked(code);
+        let mut abandoned = mem::replace(&mut self.current_frame, CallFrame::new_parked(code));
+        mem::take(&mut abandoned.cache_stores).drop_with(&mut *self.heap);
     }
 
     /// Runs the trial-deletion cycle collector.
