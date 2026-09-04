@@ -166,8 +166,9 @@ Return values must be types Monty can represent — the same set `inputs` and `e
 Arguments come the other way, out of the sandbox.
 A sandbox-defined class instance arrives as a read-only `MontyClassProxy`; see
 [host objects](host-objects.md#sandbox-instances).
-A sandbox value with no host equivalent (a class object, a function, a compiled `re` pattern) arrives silently as its
-repr *string* rather than raising, so a host function cannot tell it from a sandbox `str` of the same text.
+A sandbox value with no host equivalent arrives silently as a *string* rather than raising: the repr of a sandbox
+class object, function or compiled `re` pattern, or the bare name of a host function handed back in.
+A host function cannot tell it from a sandbox `str` of the same text.
 
 A return value Monty cannot represent does not raise `MontyConversionError`.
 It is delivered into the sandbox as `TypeError: Cannot convert X to Monty value`, which sandboxed code can catch;

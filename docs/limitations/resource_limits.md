@@ -29,8 +29,10 @@ WebAssembly runtimes do.
 - Operations whose result is bounded by simple arithmetic on input sizes
     are **pre-checked** before allocating: integer multiplication, left
     shift, integer power, sequence repeat (`'x' * n`), replacement
-    (`str.replace`, `bytes.replace`), padding (`str.ljust`, `str.center`,
-    `str.zfill`, `bytes.ljust`, …), and f-string formatting
+    (`str.replace`, `bytes.replace`), `re.sub`, padding (`str.ljust`, `str.center`,
+    `str.zfill`, `bytes.ljust`, …), integer division and `divmod`, deque
+    rotation, slicing and repeat, materialising an iterator into a
+    container, and f-string formatting
     (both dynamic width `f"{v:>{w}}"` and dynamic precision on float
     formats `f"{v:.{p}f}"` / `e` / `%`). The pre-check threshold is 100 KB:
     estimates above that are checked against the remaining budget and rejected
@@ -110,7 +112,8 @@ indistinguishable from a stack overflow.
 ## Integer-specific caps
 
 - `pow(base, exp)` / `base ** exp` with an exponent larger than `u32::MAX`
-    (≈ 4.3 × 10⁹) raises `OverflowError: "exponent too large"`.
+    (≈ 4.3 × 10⁹) raises `OverflowError: "exponent too large"`, except for
+    bases 0, 1 and -1, which are computed.
 - `pow(base, exp, mod)` requires all integer arguments and rejects negative
     exponents (`ValueError`).
 - `int(str_or_bytes, base)` rejects inputs over 4,300 digits before the

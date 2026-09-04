@@ -298,7 +298,8 @@ Passing the proxy back hands the sandbox its original object, and a proxy whose 
 the host object's `id()`; it is `None` for plain host functions and name lookups.
 The instance store does not travel with a dump: a restored session returns a host instance as `MontyClassProxy` and a
 host class, `type(x)` included, as a read-only `MontyClassTypeProxy` (`name`, `id`, `is_dataclass`, `attributes`) that
-re-enters as the same class.
+re-enters as the same class; JavaScript has no such class and returns a plain `{ __monty_type__: 'Type', ... }` marker
+instead.
 On those objects, method calls and `init=True` construction raise `RuntimeError` inside the sandbox and lazy attribute
 reads raise `AttributeError`.
 See [what restoring carries](snapshots.md#what-restoring-does-and-does-not-carry).

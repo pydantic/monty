@@ -11,8 +11,9 @@ The binding and the `monty` worker binary ship as platform-specific packages sel
 so a plain `npm install` gets you everything.
 Execution happens in `monty` worker subprocesses, so a crash triggered by adversarial code kills only the worker.
 
-For browsers, or anywhere subprocesses are impossible, the same package exposes an in-process WebAssembly build under
-the `@pydantic/monty/wasm` subpath; see [browsers and WebAssembly](#browsers-and-webassembly).
+For browsers, or anywhere subprocesses are impossible, the same package exposes a WebAssembly build under the
+`@pydantic/monty/wasm` subpath, running in a Web Worker in browsers and in-process under Node; see
+[browsers and WebAssembly](#browsers-and-webassembly).
 
 ## First run
 
@@ -167,7 +168,8 @@ import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } fr
 
 `MontyError` is the base class of everything above except `ProtocolError`, which extends `Error`.
 `err.exception` carries `{ typeName, message }`, and `err.display(format)` renders the error.
-Which formats a class accepts differs, and passing one a class does not accept throws:
+Which formats a class accepts differs; passing one a class does not accept throws, except `MontyTypingError.display()`,
+which ignores any argument:
 
 | Class                             | `display` formats                              |
 | --------------------------------- | ---------------------------------------------- |
@@ -200,6 +202,7 @@ Omitted `maxMemory` / `maxDurationSecs` means unlimited.
 `gcInterval` defaults to every 100,000 allocations.
 The pool enforces `maxSuspensions`: the first suspension over the budget ends the feed with an uncatchable
 `RuntimeError`.
+`typeCheckFormat` picks a ty diagnostic format and `typeCheckColor` colours it with ANSI escapes.
 See [resource limits](../resource-limits.md) and [type checking](../type-checking.md).
 
 ## Filesystem mounts
@@ -246,7 +249,7 @@ await using pool = await Monty.create({
 ```
 
 The worker binary is resolved from `binaryPath`, then the `MONTY_BIN` environment variable, then the installed platform
-package, then `PATH`.
+package, then `PATH`, and in a checkout of the Monty repository finally a cargo-built `target/` binary.
 
 ## Snapshots
 
@@ -287,7 +290,6 @@ Differences from the native path:
     waits forever rather than failing, nothing backs up `maxDurationSecs` from outside the worker, and the bundled wasm
     asset is always used.
     `requestTimeout` does apply, wherever a real `Worker` exists.
-- **Prints are buffered per turn** rather than streamed live, and rendered traceback strings are not produced yet
-    (frames still decode).
+- **Prints are buffered per turn** rather than streamed live.
 
 Full API documentation lives in the [package README](https://github.com/pydantic/monty/tree/main/crates/monty-js).

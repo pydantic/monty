@@ -68,7 +68,7 @@ pub(crate) struct Cli {
     #[arg(long)]
     gc_interval: Option<usize>,
 
-    /// Maximum call-stack depth (defaults to 1000 when any limit is set).
+    /// Maximum call-stack depth (defaults to 1000).
     #[arg(long)]
     max_recursion_depth: Option<usize>,
 

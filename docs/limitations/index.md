@@ -23,9 +23,10 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `def`, `async def`, nested functions, closures, `lambda`
 - Decorators on functions and classes
 - Simple classes: instance methods, `__init__`, `__repr__`/`__str__`, `__eq__`/`__hash__`, `__iter__`/`__next__`,
-    `__contains__`, class variables
-- `@dataclass`, including the `eq=` and `frozen=` options, plus host class instances passed in and out (and host classes
-    the sandbox may instantiate when granted)
+    `__contains__`, `__index__`, class variables
+- `@dataclass`, with the `eq=` and `frozen=` options only (every other option raises `NotImplementedError`, and
+    there is no `field()`, `fields()` or `asdict()`), plus host class instances passed in and out (and host classes the
+    sandbox may instantiate when granted)
 - List, dict and set comprehensions
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
@@ -108,6 +109,9 @@ Each links to the page that owns it, which is where the full account lives:
     ([builtins.md](builtins.md)).
 - **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `VERBOSE` flag, and some
     error messages differ ([re.md](re.md)).
+- **Only the class dunders listed above are dispatched.** `__lt__`, `__len__`, `__getitem__`, `__call__` and the
+    arithmetic dunders raise `TypeError` as if undefined, while `__bool__` and the `__getattr__` family are ignored
+    silently, so an instance is always truthy ([classes.md](classes.md)).
 - **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes exactly two functions:
     `run` and `gather`, the latter running host calls concurrently.
     `create_task`, `sleep` and everything else do not exist

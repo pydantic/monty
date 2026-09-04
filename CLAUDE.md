@@ -849,8 +849,9 @@ recovery, framing and value conversion all live in Rust.
     `@pydantic/monty/wasm`): `value.ts` (JS ↔ flat semantic WIT values),
     `transport.ts` (WorkerTransport, the `NativeSession`-shaped seam),
     `host.ts`/`channel.ts` (in-process and message-channel dispatch),
-    `pool.ts` (WorkerPool, the TS `monty-pool` analog), `nodeFactory.ts` /
-    `browserFactory.ts` (Worker backends), `index.ts` (`createWorkerPool`)
+    `pool.ts` (WorkerPool, the TS `monty-pool` analog), `browserFactory.ts` (the
+    browser `Worker` backend; `nodeFactory.ts` is a `worker_threads` backend no
+    entry point exports), `index.ts` (`createWorkerPool`)
 - `index.js` / `index.d.ts` - napi-generated loader (created by
     `npm run build:napi`; gitignored)
 - `crates/monty-js/npm/` - generated platform packages shipping the napi
@@ -924,9 +925,10 @@ transport differs. The pieces:
     `max_memory` to component allocations; exceeding the hard limit traps.
 - `crates/monty-js/ts/worker/` — the TS pool/transport that drives it
     (`createWorkerPool`): a browser `Worker` backend (`browserFactory.ts`, whose
-    `Worker.terminate()` is the watchdog's hard kill), a Node `worker_threads`
-    backend (`nodeFactory.ts`), and an in-process degrade for environments with
-    no `Worker` (same API, but no crash isolation or preemption). Semantic WIT
+    `Worker.terminate()` is the watchdog's hard kill) and an in-process degrade for
+    environments with no global `Worker`, which includes Node (same API, but no
+    crash isolation or preemption; `nodeFactory.ts` is a `worker_threads` backend
+    that no package entry point exports). Semantic WIT
     requests and events cross the component's typed `dispatch` export; recursive
     Python values use flat node arenas because WIT types cannot be recursive.
     Protobuf remains internal to Rust's shared `monty-proto` child state machine.

@@ -3,8 +3,8 @@
 Monty is designed to run code that a language model wrote and nobody reviewed.
 This page describes what that buys you and what it does not.
 
-The sandbox has been run through three rounds of the [Hack Monty](https://pydantic.dev/articles/hack-monty-3) bounty
-program.
+The sandbox has been through two completed rounds of the [Hack Monty](https://pydantic.dev/articles/hack-monty-3)
+bounty program, and a third is under way.
 If you find a way out of it, please [open an issue](https://github.com/pydantic/monty/issues) or claim the bounty.
 
 ## What "secure" means here

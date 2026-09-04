@@ -175,7 +175,8 @@ error[unsupported-operator]: Unsupported `+` operation
 user.
 Checking runs inside the worker, so the diagnostics arrive as pre-rendered text.
 `type_check_format` on `checkout()` selects a different rendering — `'concise'`, `'json'`, `'github'` and the other ty
-diagnostic formats; on the CLI the flag is `--type-check-format`.
+diagnostic formats — and `type_check_color` (`typeCheckColor` in JavaScript) colours it with ANSI escapes; on the CLI
+the flag is `--type-check-format`.
 
 ## Elsewhere
 

@@ -76,15 +76,16 @@ obtained without the allocator: thread stacks, the binary's mapped image, a dire
 Size the limit with headroom, and use an OS or cgroup limit to bound the process itself.
 
 Operations whose result size is predictable from their inputs are **pre-checked before allocating**, above a 100 KB
-threshold: integer multiplication, left shift, integer power, sequence repeat (`'x' * n`), `str.replace` /
-`bytes.replace`, the padding methods, and f-string formatting with a dynamic width or precision.
+threshold, including integer multiplication, division and `divmod`, left shift, integer power, sequence repeat
+(`'x' * n`), `str.replace` / `bytes.replace`, `re.sub`, the padding methods, deque rotation and slicing, materialising
+an iterator into a container, and f-string formatting with a dynamic width or precision.
 So `'x' * 10**12` fails immediately rather than after consuming the machine's memory.
 
 A few integer operations carry their own caps regardless of `max_memory`:
 
-- `base ** exp` with an exponent above `u32::MAX` raises `OverflowError`.
-- `int(s, base)` rejects strings over 4,300 digits before the quadratic BigInt parse, matching CPython's
-    `sys.int_info.default_max_str_digits`.
+- `base ** exp` with an exponent above `u32::MAX` raises `OverflowError`, except for bases 0, 1 and -1.
+- `int(s, base)` rejects strings over 4,300 digits before the quadratic BigInt parse when the base is not a power of
+    two, matching CPython's `sys.int_info.default_max_str_digits`.
 
 ## Time
 

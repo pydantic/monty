@@ -30,7 +30,7 @@ hello world
 | `-m`, `--mount`         | Mount a host directory into the sandbox (see below)                                                                                       |
 | `--max-duration`        | Maximum execution time in seconds, e.g. `0.5`                                                                                             |
 | `--max-memory`          | Maximum heap memory, e.g. `1024`, `512KB`, `10MB`, `1GB`                                                                                  |
-| `--max-recursion-depth` | Maximum call-stack depth; defaults to 1000 when any limit is set                                                                          |
+| `--max-recursion-depth` | Maximum call-stack depth (default 1000)                                                                                                   |
 | `--gc-interval`         | Run garbage collection every N allocations                                                                                                |
 | `--max-suspensions`     | Maximum suspensions serviced, per run or across a whole interactive session (default 1000); [what counts](resource-limits.md#suspensions) |
 | `--version`             | Print the version                                                                                                                         |
