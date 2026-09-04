@@ -51,21 +51,28 @@ pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// The 1-arg `type(obj)` form.
+fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
+    defer_drop!(value, vm);
+    type_of_ref(vm, value)
+}
+
+/// The type of a borrowed value.
 ///
 /// For an instance of a user-defined class the type *is* the class object
 /// itself, so `type(x) is Foo` holds via reference identity; a host class
 /// instance returns the `HostClassType` entry it owns (one per host class, so
 /// identity holds there too); everything else returns the builtin `Type`
-/// marker.
-fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
-    defer_drop!(value, vm);
-    if let Value::Ref(id) = &value
+/// marker. Borrowing rather than consuming so callers that only need the type
+/// of a value they still own (e.g. `functools.lru_cache(typed=True)` keying)
+/// don't have to clone it first.
+pub(crate) fn type_of_ref(vm: &mut VM<'_>, value: &Value) -> Value {
+    if let Value::Ref(id) = value
         && let HeapData::Instance(inst) = vm.heap.get(*id)
     {
         let class_id = inst.class();
         vm.heap.inc_ref(class_id);
         Value::Ref(class_id)
-    } else if let Value::Ref(id) = &value
+    } else if let Value::Ref(id) = value
         && let HeapData::NamedTuple(nt) = vm.heap.get(*id)
         && let Some(class_id) = nt.class_id()
     {
@@ -74,7 +81,7 @@ fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
         // tuples like `sys.version_info` have no class and fall through).
         vm.heap.inc_ref(class_id);
         Value::Ref(class_id)
-    } else if let Value::Ref(id) = &value
+    } else if let Value::Ref(id) = value
         && let HeapData::HostClass(hc) = vm.heap.get(*id)
     {
         let class_id = hc.class_id();

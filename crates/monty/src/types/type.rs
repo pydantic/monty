@@ -230,6 +230,11 @@ pub enum Type {
     /// `type(p)` reads `<class 'functools.partial'>`.
     #[strum(serialize = "functools.partial")]
     Partial,
+    /// The wrapper `functools.lru_cache` / `functools.cache` returns. Private
+    /// in CPython too: the name is reachable through `type(f)`, never as a
+    /// `functools` attribute.
+    #[strum(serialize = "functools._lru_cache_wrapper")]
+    LruCacheWrapper,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)

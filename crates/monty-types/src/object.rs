@@ -952,6 +952,9 @@ pub enum MontyType {
     /// `functools.partial`, qualified the way CPython's `tp_name` is.
     #[strum(serialize = "functools.partial")]
     Partial,
+    /// The wrapper `functools.lru_cache` / `functools.cache` returns.
+    #[strum(serialize = "functools._lru_cache_wrapper")]
+    LruCacheWrapper,
 }
 
 impl fmt::Display for MontyType {
