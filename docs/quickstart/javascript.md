@@ -41,6 +41,11 @@ Without it, call `session.close()` and `pool.close()` yourself.
 Session state persists across `feedRun` calls on the same checkout:
 
 ```ts
+import { Monty } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+
 await session.feedRun('x = 21')
 console.log(await session.feedRun('x * 2')) // 42
 ```
@@ -55,9 +60,15 @@ from the lookup raises `NameError` inside the sandbox.
 Host functions may be async; the drive loop awaits them:
 
 ```ts
+import { Monty } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+
 const data = await session.feedRun('await fetch_data()', {
   externalLookup: { fetch_data: async () => 'data' },
 })
+console.log(data) // data
 ```
 
 Keyword arguments from the sandbox arrive as a trailing object on the call.
@@ -89,7 +100,7 @@ Wrap a host object in `ClassInstance`, or a class in `ClassType`, to expose it u
 Nothing is wrapped automatically, so a method that returns another object needs a `convertValue` hook:
 
 ```ts
-import { ClassInstance, ClassType } from '@pydantic/monty'
+import { ClassInstance, ClassType, Monty } from '@pydantic/monty'
 
 class Wallet {
   constructor(public balance: number) {}
@@ -106,9 +117,12 @@ function wrapWallet(wallet: Wallet): ClassInstance {
   })
 }
 
-await session.feedRun('w.pay(30).balance', { inputs: { w: wrapWallet(new Wallet(100)) } }) // 70
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+
+console.log(await session.feedRun('w.pay(30).balance', { inputs: { w: wrapWallet(new Wallet(100)) } })) // 70
 const WalletClass = new ClassType(Wallet, { init: true, instanceEagerAttrs: 'all' })
-await session.feedRun('Wallet(5).balance', { inputs: { Wallet: WalletClass } }) // 5
+console.log(await session.feedRun('Wallet(5).balance', { inputs: { Wallet: WalletClass } })) // 5
 ```
 
 Instances defined inside the sandbox arrive as read-only `MontyClassProxy` stand-ins.
@@ -118,7 +132,10 @@ See [host objects](../host-objects.md) and the
 ## Capturing printed output
 
 ```ts
-import { CollectString } from '@pydantic/monty'
+import { CollectString, Monty } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
 
 const collector = new CollectString()
 await session.feedRun("print('from the sandbox')", { printCallback: collector })
@@ -166,11 +183,16 @@ Which formats a class accepts differs, and passing one a class does not accept t
 Both are per-session options on `checkout()`:
 
 ```ts
+import { Monty } from '@pydantic/monty'
+
+await using pool = await Monty.create()
 await using session = await pool.checkout({
   limits: { maxMemory: 10_000_000, maxDurationSecs: 1, maxRecursionDepth: 100 },
   typeCheck: true,
   typeCheckStubs: 'def fetch_data() -> str: ...',
 })
+
+console.log(await session.feedRun('fetch_data()', { externalLookup: { fetch_data: () => 'data' } })) // data
 ```
 
 Omitted `maxMemory` / `maxDurationSecs` means unlimited.
@@ -185,21 +207,33 @@ See [resource limits](../resource-limits.md) and [type checking](../type-checkin
 `MountDir` is exported from the Node subpath, because mounts need a host filesystem:
 
 ```ts
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { Monty } from '@pydantic/monty'
 import { MountDir } from '@pydantic/monty/node'
 
-const mount = new MountDir({ hostPath: '/tmp/data', virtualPath: '/data', mode: 'read-write' })
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+
+using mount = new MountDir({ hostPath: mkdtempSync(join(tmpdir(), 'monty-')), virtualPath: '/data', mode: 'read-write' })
 const text = await session.feedRun(
   "from pathlib import Path\np = Path('/data/new.txt')\np.write_text('hello')\np.read_text()",
   { mount },
 )
+console.log(text) // hello
 ```
 
 `mode` is `'read-only'`, `'read-write'` or `'overlay'` (the default).
+`using` closes the mount's directory handle at the end of scope, which Windows needs before the directory can be removed.
 See [filesystem access](../filesystem.md).
 
 ## Configuring the pool
 
 ```ts
+import { Monty } from '@pydantic/monty'
+
 await using pool = await Monty.create({
   binaryPath: undefined, // explicit path to the `monty` worker binary
   minProcesses: 1, // workers spawned up front
@@ -231,10 +265,10 @@ Anywhere subprocesses are impossible, the same public API is available under `@p
 WebAssembly build.
 In a browser it runs in a Web Worker; under Node, which has no global `Worker`, it runs in-process:
 
-```ts
+```ts test="skip"
 import { Monty } from '@pydantic/monty/wasm'
 
-const pool = await Monty.create()
+await using pool = await Monty.create()
 ```
 
 A bundler resolving the `browser` condition on the main entry point gets this build automatically.

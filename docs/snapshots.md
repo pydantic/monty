@@ -22,20 +22,37 @@ Using the wrong loader for a dump's kind raises, and both loaders are valid only
 `feed_start` is the suspendable counterpart of `feed_run`.
 Instead of driving a snippet to completion it hands control back at every suspension:
 
-```python
-from pydantic_monty import FunctionSnapshot, Monty, MontyComplete
+=== "Python"
 
-with Monty() as pool:
-    with pool.checkout() as session:
-        snapshot = session.feed_start('greet(name) + "!"', inputs={'name': 'Ada'})
-        assert isinstance(snapshot, FunctionSnapshot)
-        print(snapshot.function_name, snapshot.args)
-        #> greet ('Ada',)
-        result = snapshot.resume({'return_value': 'hello Ada'})
-        assert isinstance(result, MontyComplete)
-        print(result.output)
-        #> hello Ada!
-```
+    ```python
+    from pydantic_monty import FunctionSnapshot, Monty, MontyComplete
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            snapshot = session.feed_start('greet(name) + "!"', inputs={'name': 'Ada'})
+            assert isinstance(snapshot, FunctionSnapshot)
+            print(snapshot.function_name, snapshot.args)
+            #> greet ('Ada',)
+            result = snapshot.resume({'return_value': 'hello Ada'})
+            assert isinstance(result, MontyComplete)
+            print(result.output)
+            #> hello Ada!
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { FunctionSnapshot, Monty, MontyComplete } from '@pydantic/monty'
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    const snapshot = await session.feedStart('greet(name) + "!"', { inputs: { name: 'Ada' } })
+    if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
+    console.log(snapshot.functionName, snapshot.args) // greet [ 'Ada' ]
+    const result = await snapshot.resume('hello Ada')
+    if (!(result instanceof MontyComplete)) throw new Error('expected completion')
+    console.log(result.output) // hello Ada!
+    ```
 
 ### The snapshot kinds
 
@@ -56,6 +73,8 @@ with Monty() as pool:
 - `{'future': ...}` — the call returns a pending future the sandbox can `await`; settle it later at the resulting
     `FutureSnapshot`.
 
+In JavaScript those are separate methods: `resume(value)`, `resumeError(err)` and `resumeFuture()`.
+
 Each snapshot resumes at most once.
 
 ### Driving automatically
@@ -65,21 +84,40 @@ you need one) to `feed_start` and drive with `resume_auto()`.
 It resolves each suspension the same way `feed_run` would, one step at a time, so you can inspect or `dump()` each one
 along the way:
 
-```python
-from pydantic_monty import Monty, MontyComplete
+=== "Python"
 
-with Monty() as pool:
-    with pool.checkout() as session:
-        snapshot = session.feed_start(
-            'greet(name) + "!"',
-            inputs={'name': 'Ada'},
-            external_lookup={'greet': lambda n: f'hello {n}'},
-        )
-        while not isinstance(snapshot, MontyComplete):
-            snapshot = snapshot.resume_auto()
-        print(snapshot.output)
-        #> hello Ada!
-```
+    ```python
+    from pydantic_monty import Monty, MontyComplete
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            snapshot = session.feed_start(
+                'greet(name) + "!"',
+                inputs={'name': 'Ada'},
+                external_lookup={'greet': lambda n: f'hello {n}'},
+            )
+            while not isinstance(snapshot, MontyComplete):
+                snapshot = snapshot.resume_auto()
+            print(snapshot.output)
+            #> hello Ada!
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty, MontyComplete } from '@pydantic/monty'
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    let snapshot = await session.feedStart('greet(name) + "!"', {
+      inputs: { name: 'Ada' },
+      externalLookup: { greet: (n: string) => `hello ${n}` },
+    })
+    while (!(snapshot instanceof MontyComplete)) {
+      snapshot = await snapshot.resumeAuto()
+    }
+    console.log(snapshot.output) // hello Ada!
+    ```
 
 `external_lookup` and `os` passed to `feed_start` are captured **for `resume_auto()` only**.
 The initial drive still surfaces every external call and name lookup as a snapshot, and a plain `resume(...)` ignores
@@ -90,42 +128,91 @@ them.
 `snapshot.dump()` serializes the paused worker.
 A fresh session's `load_snapshot` restores it and returns the snapshot to resume:
 
-```python
-from pydantic_monty import FunctionSnapshot, Monty, MontyComplete
+=== "Python"
 
-with Monty() as pool:
-    with pool.checkout() as session:
-        snapshot = session.feed_start(
-            'fetch(url)', inputs={'url': 'https://example.com'}
-        )
-        blob = snapshot.dump()
+    ```python
+    from pydantic_monty import FunctionSnapshot, Monty, MontyComplete
 
-    # later — restore into a fresh session and resume
-    with pool.checkout() as session:
-        snapshot = session.load_snapshot(blob)
-        assert isinstance(snapshot, FunctionSnapshot)
-        result = snapshot.resume({'return_value': 'page contents'})
-        assert isinstance(result, MontyComplete)
-        print(result.output)
-        #> page contents
-```
+    with Monty() as pool:
+        with pool.checkout() as session:
+            snapshot = session.feed_start(
+                'fetch(url)', inputs={'url': 'https://example.com'}
+            )
+            blob = snapshot.dump()
+
+        # later — restore into a fresh session and resume
+        with pool.checkout() as session:
+            snapshot = session.load_snapshot(blob)
+            assert isinstance(snapshot, FunctionSnapshot)
+            result = snapshot.resume({'return_value': 'page contents'})
+            assert isinstance(result, MontyComplete)
+            print(result.output)
+            #> page contents
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { FunctionSnapshot, Monty, MontyComplete } from '@pydantic/monty'
+
+    await using pool = await Monty.create()
+    let blob: Buffer
+    {
+      await using session = await pool.checkout()
+      const snapshot = await session.feedStart('fetch(url)', { inputs: { url: 'https://example.com' } })
+      if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
+      blob = await snapshot.dump()
+    }
+
+    // later — restore into a fresh session and resume
+    {
+      await using session = await pool.checkout()
+      const snapshot = await session.loadSnapshot(blob)
+      if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
+      const result = await snapshot.resume('page contents')
+      if (!(result instanceof MontyComplete)) throw new Error('expected completion')
+      console.log(result.output) // page contents
+    }
+    ```
 
 `session.dump()` between feeds serializes an idle session instead; restore it with `session.load_session(blob)` and keep
 feeding:
 
-```python
-from pydantic_monty import Monty
+=== "Python"
 
-with Monty() as pool:
-    with pool.checkout() as session:
-        session.feed_run('x = 40')
-        blob = session.dump()
+    ```python
+    from pydantic_monty import Monty
 
-    with pool.checkout() as session:
-        session.load_session(blob)
-        print(session.feed_run('x + 2'))
-        #> 42
-```
+    with Monty() as pool:
+        with pool.checkout() as session:
+            session.feed_run('x = 40')
+            blob = session.dump()
+
+        with pool.checkout() as session:
+            session.load_session(blob)
+            print(session.feed_run('x + 2'))
+            #> 42
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty } from '@pydantic/monty'
+
+    await using pool = await Monty.create()
+    let blob: Buffer
+    {
+      await using session = await pool.checkout()
+      await session.feedRun('x = 40')
+      blob = await session.dump()
+    }
+
+    {
+      await using session = await pool.checkout()
+      await session.loadSession(blob)
+      console.log(await session.feedRun('x + 2')) // 42
+    }
+    ```
 
 ## What restoring does and does not carry
 
@@ -157,15 +244,12 @@ A coroutine host function answered by `resume_auto()` is awaited concurrently: i
 
 The sync `FutureSnapshot.resume_auto()` always raises — a sync session cannot drive coroutine host functions.
 
-## Rust and JavaScript
+## Rust
 
 In Rust the in-process API serializes through the free function `monty::dump`, which takes an idle or suspended session
 by reference, and `Dump::load`, which returns the session plus its script name and type-check state.
 Through `monty-pool` it is `Checkout::dump` and `Checkout::restore`.
 See the [Rust quickstart](quickstart/rust.md#serialization).
-
-In JavaScript the API mirrors Python's: `session.feedStart`, `snapshot.dump()`, `session.loadSnapshot(blob)`,
-`session.dump()` and `session.loadSession(blob)`.
 
 ## Uses
 

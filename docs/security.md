@@ -41,22 +41,39 @@ Names the sandbox does not define are resolved against the `external_lookup` you
 A callable entry becomes a function the sandbox can call: execution suspends, **your** code runs on the host with your
 process's full authority, and execution resumes with the result.
 
-```python
-from pydantic_monty import Monty
+=== "Python"
+
+    ```python
+    from pydantic_monty import Monty
 
 
-def get_price(sku: str) -> float:
-    return {'A1': 3.5, 'B2': 12.0}[sku]
+    def get_price(sku: str) -> float:
+        return {'A1': 3.5, 'B2': 12.0}[sku]
 
 
-with Monty() as pool:
-    with pool.checkout() as session:
-        result = session.feed_run(
-            "get_price('B2') * 2", external_lookup={'get_price': get_price}
-        )
-        print(result)
-        #> 24.0
-```
+    with Monty() as pool:
+        with pool.checkout() as session:
+            result = session.feed_run(
+                "get_price('B2') * 2", external_lookup={'get_price': get_price}
+            )
+            print(result)
+            #> 24.0
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty } from '@pydantic/monty'
+
+    function getPrice(sku: string): number {
+      return { A1: 3.5, B2: 12.0 }[sku]!
+    }
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    const result = await session.feedRun("get_price('B2') * 2", { externalLookup: { get_price: getPrice } })
+    console.log(result) // 24
+    ```
 
 See [host functions](host-functions.md).
 
@@ -77,35 +94,63 @@ exposes only the functions the class defines.
 Nothing is wrapped for you: a method that returns another object fails conversion unless a `convert_value` hook wraps
 it with a policy you chose.
 
-```python
-from dataclasses import dataclass
+=== "Python"
 
-from pydantic_monty import ClassInstance, Monty
+    ```python
+    from dataclasses import dataclass
 
-
-@dataclass
-class Account:
-    owner: str
-    balance: float
-
-    def withdraw(self, amount: float) -> float:
-        self.balance -= amount
-        return self.balance
-
-    def close(self) -> None: ...
+    from pydantic_monty import ClassInstance, Monty
 
 
-account = Account(owner='ada', balance=100.0)
-# the sandbox sees `owner` and `balance`, may call `withdraw`, and cannot call `close`
-wrapper = ClassInstance(
-    account, eager_attrs={'owner', 'balance'}, allowed_methods={'withdraw'}
-)
+    @dataclass
+    class Account:
+        owner: str
+        balance: float
 
-with Monty() as pool:
-    with pool.checkout() as session:
-        print(session.feed_run('account.withdraw(30)', inputs={'account': wrapper}))
-        #> 70.0
-```
+        def withdraw(self, amount: float) -> float:
+            self.balance -= amount
+            return self.balance
+
+        def close(self) -> None: ...
+
+
+    account = Account(owner='ada', balance=100.0)
+    # the sandbox sees `owner` and `balance`, may call `withdraw`, and cannot call `close`
+    wrapper = ClassInstance(
+        account, eager_attrs={'owner', 'balance'}, allowed_methods={'withdraw'}
+    )
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            print(session.feed_run('account.withdraw(30)', inputs={'account': wrapper}))
+            #> 70.0
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { ClassInstance, Monty } from '@pydantic/monty'
+
+    class Account {
+      constructor(
+        public owner: string,
+        public balance: number,
+      ) {}
+      withdraw(amount: number): number {
+        this.balance -= amount
+        return this.balance
+      }
+      close(): void {}
+    }
+
+    const account = new Account('ada', 100)
+    // the sandbox sees `owner` and `balance`, may call `withdraw`, and cannot call `close`
+    const wrapper = new ClassInstance(account, { eagerAttrs: ['owner', 'balance'], allowedMethods: ['withdraw'] })
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    console.log(await session.feedRun('account.withdraw(30)', { inputs: { account: wrapper } })) // 70
+    ```
 
 See [host objects](host-objects.md).
 
@@ -114,52 +159,115 @@ See [host objects](host-objects.md).
 Host directories are mounted into the sandbox at virtual paths, and only inside a mount can `open()` and `pathlib` do
 anything.
 
-```python
-import tempfile
-from pathlib import Path
+=== "Python"
 
-from pydantic_monty import Monty, MountDir
+    ```python
+    import tempfile
+    from pathlib import Path
 
-with tempfile.TemporaryDirectory() as tmp:
-    Path(tmp, 'notes.txt').write_text('mounted from the host')
-    with MountDir(host_path=tmp, virtual_path='/data', mode='read-only') as mount:
-        with Monty() as pool:
-            with pool.checkout() as session:
-                print(session.feed_run("open('/data/notes.txt').read()", mount=mount))
-                #> mounted from the host
-```
+    from pydantic_monty import Monty, MountDir
+
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, 'notes.txt').write_text('mounted from the host')
+        with MountDir(host_path=tmp, virtual_path='/data', mode='read-only') as mount:
+            with Monty() as pool:
+                with pool.checkout() as session:
+                    print(session.feed_run("open('/data/notes.txt').read()", mount=mount))
+                    #> mounted from the host
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+    import { tmpdir } from 'node:os'
+    import { join } from 'node:path'
+
+    import { Monty } from '@pydantic/monty'
+    import { MountDir } from '@pydantic/monty/node'
+
+    const tmp = mkdtempSync(join(tmpdir(), 'monty-'))
+    writeFileSync(join(tmp, 'notes.txt'), 'mounted from the host')
+    {
+      using mount = new MountDir({ hostPath: tmp, virtualPath: '/data', mode: 'read-only' })
+      await using pool = await Monty.create()
+      await using session = await pool.checkout()
+      console.log(await session.feedRun("open('/data/notes.txt').read()", { mount })) // mounted from the host
+    }
+    rmSync(tmp, { recursive: true })
+    ```
 
 A separate `os=` callback handles operations no mount covers: the remaining `pathlib` operations, `os.getenv`,
 `os.environ`, `date.today()` and `datetime.now()`.
 `AbstractOS` is the typed form of that callback; `OSAccess` implements it over in-memory files and an `environ` mapping
-you supply, and overriding one of its methods replaces one operation:
+you supply, and overriding one of its methods replaces one operation.
+JavaScript has only the callback form, so the TypeScript tab answers the same three operations by hand:
 
-```python
-from datetime import datetime
+=== "Python"
 
-from pydantic_monty import MemoryFile, Monty, OSAccess
+    ```python
+    from datetime import datetime
 
-
-class FrozenClock(OSAccess):
-    def datetime_now(self, tz=None) -> datetime:
-        return datetime(2026, 1, 1, 9, 30, tzinfo=tz)
+    from pydantic_monty import MemoryFile, Monty, OSAccess
 
 
-fs = FrozenClock(
-    [MemoryFile('/config.json', content='{"stage": "test"}')], environ={'STAGE': 'test'}
-)
-code = """
-import json, os
-from datetime import datetime
-from pathlib import Path
-f'{os.getenv("STAGE")} {json.loads(Path("/config.json").read_text())["stage"]} {datetime.now():%H:%M}'
-"""
+    class FrozenClock(OSAccess):
+        def datetime_now(self, tz=None) -> datetime:
+            return datetime(2026, 1, 1, 9, 30, tzinfo=tz)
 
-with Monty() as pool:
-    with pool.checkout() as session:
-        print(session.feed_run(code, os=fs))
-        #> test test 09:30
-```
+
+    fs = FrozenClock(
+        [MemoryFile('/config.json', content='{"stage": "test"}')], environ={'STAGE': 'test'}
+    )
+    code = """
+    import json, os
+    from datetime import datetime
+    from pathlib import Path
+    f'{os.getenv("STAGE")} {json.loads(Path("/config.json").read_text())["stage"]} {datetime.now():%H:%M}'
+    """
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            print(session.feed_run(code, os=fs))
+            #> test test 09:30
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty, NOT_HANDLED, type MontyDateTime } from '@pydantic/monty'
+
+    const files = new Map([['/config.json', '{"stage": "test"}']])
+    const environ: Record<string, string> = { STAGE: 'test' }
+    const frozenNow: MontyDateTime = {
+      __monty_type__: 'DateTime',
+      year: 2026,
+      month: 1,
+      day: 1,
+      hour: 9,
+      minute: 30,
+      second: 0,
+      microsecond: 0,
+    }
+
+    function fs(functionName: string, args: unknown[]) {
+      if (functionName === 'Path.read_text') return files.get(args[0] as string) ?? NOT_HANDLED
+      if (functionName === 'os.getenv') return environ[args[0] as string] ?? null
+      if (functionName === 'datetime.now') return frozenNow
+      return NOT_HANDLED
+    }
+
+    const code = `
+    import json, os
+    from datetime import datetime
+    from pathlib import Path
+    f'{os.getenv("STAGE")} {json.loads(Path("/config.json").read_text())["stage"]} {datetime.now():%H:%M}'
+    `
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    console.log(await session.feedRun(code, { os: fs })) // test test 09:30
+    ```
 
 See [filesystem access](filesystem.md).
 

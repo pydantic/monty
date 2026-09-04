@@ -64,7 +64,7 @@ an f-string report; every setup must print the same report.
 
 Every row was measured on 2026-09-03 on an Apple M3 Max (96 GB, macOS 26.5.2) in London, from CPython 3.14.7, with a
 single sample per cold start unless stated.
-The tables round the numbers; the measured values are in the text below.
+The tables round the numbers; the measured cold-start values are in the text below.
 
 - **Monty**: `pydantic-monty` 0.0.21 with a release build of the `monty` worker binary, driven through `Monty()` /
     `pool.checkout()` / `session.feed_run()`, the package's only execution API.

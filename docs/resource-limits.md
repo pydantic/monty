@@ -3,23 +3,46 @@
 Untrusted code will eventually try to allocate forever or loop forever.
 Monty enforces hard limits on memory, execution time and recursion depth, configured per session.
 
-```python
-from pydantic_monty import Monty, MontyRuntimeError
+=== "Python"
 
-limits = {
-    'max_memory': 10_000_000,
-    'max_duration_secs': 1.0,
-    'max_recursion_depth': 100,
-}
+    ```python
+    from pydantic_monty import Monty, MontyRuntimeError
 
-with Monty() as pool:
-    with pool.checkout(limits=limits) as session:
-        try:
-            session.feed_run('x = [0] * 100_000_000')
-        except MontyRuntimeError as exc:
-            print(exc.display(format='type-msg').split(':')[0])
-            #> MemoryError
-```
+    limits = {
+        'max_memory': 10_000_000,
+        'max_duration_secs': 1.0,
+        'max_recursion_depth': 100,
+    }
+
+    with Monty() as pool:
+        with pool.checkout(limits=limits) as session:
+            try:
+                session.feed_run('x = [0] * 100_000_000')
+            except MontyRuntimeError as exc:
+                print(exc.display(format='type-msg').split(':')[0])
+                #> MemoryError
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty, MontyRuntimeError } from '@pydantic/monty'
+
+    const limits = {
+      maxMemory: 10_000_000,
+      maxDurationSecs: 1,
+      maxRecursionDepth: 100,
+    }
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout({ limits })
+    try {
+      await session.feedRun('x = [0] * 100_000_000')
+    } catch (err) {
+      if (!(err instanceof MontyRuntimeError)) throw err
+      console.log(err.display('type-msg').split(':')[0]) // MemoryError
+    }
+    ```
 
 ## The five settings
 

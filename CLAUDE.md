@@ -904,6 +904,10 @@ Tests run straight from `ts/` via `@oxc-node/core` against the locally built
 - Tests use [Vitest](https://vitest.dev/) and live in `crates/monty-js/__test__/`
 - Tests are written in TypeScript; use the `setupPool` helper from `__test__/helpers.ts`
 - Follow the existing test style in the `__test__/` directory
+- `__test__/node_docs.spec.ts` runs every ```` ```ts ```` fence in `docs/` and `README.md` as its own module: each
+    is written to the gitignored `__test__/docs/`, type-checked with tsc, then imported. A docs snippet must be
+    self-contained (its own imports, `await using pool = await Monty.create()`, no leaked pool, no `process.exit`);
+    ```` ```ts test="skip" ```` skips running it but not type-checking it
 
 ## WebAssembly build (`@pydantic/monty/wasm`)
 
@@ -994,6 +998,13 @@ The list of stdlib modules in `docs/limitations/index.md` must be updated if a n
     `packages/pydantic-monty/README.md`, and `crates/monty-python/README.md`.
     It executes each snippet unless marked ```` ```python test="skip" ````; skipped snippets are still ruff-linted.
     This includes `docs/limitations/`, whose snippets are all sandbox-side and so all `test="skip"`.
+- `make test-js` runs every ```` ```ts ```` snippet in `docs/` and `README.md` as its own module
+    (`crates/monty-js/__test__/node_docs.spec.ts`: type-checked with tsc, then imported). A snippet must be
+    self-contained — its own imports, `await using pool = await Monty.create()`, no leaked pool, no `process.exit` —
+    and ```` ```ts test="skip" ```` skips running it but not type-checking it. Printed output is not compared.
+- Every example outside `docs/index.md` and `docs/quickstart/` is a `=== "Python"` / `=== "TypeScript"` tab pair,
+    Python first; both runners find fences inside tabs. Rust examples stay on `docs/quickstart/rust.md`, the only page
+    `monty-doctest` compiles: rustdoc ignores a fence indented inside a tab.
 - Sandbox-side Python (code fed to Monty, not host code) belongs inside a host snippet as
     a string, or in a `test="skip"` block. It must never be a runnable top-level block —
     CPython would execute it.
@@ -1012,7 +1023,7 @@ The list of stdlib modules in `docs/limitations/index.md` must be updated if a n
 ### Enforcement
 
 - `make test-docs` applies the Python checks above and compiles Rust snippets in `docs/quickstart/rust.md`.
-    TypeScript snippets are not checked.
+    `make test-js` applies the TypeScript check.
 - `make docs` builds the site with `--strict`, which fails on a broken internal link or a
     page missing from the nav. `make docs-serve` previews it. Both first run
     `make generate-api-docs`, which writes the gitignored `docs/api/rust/` pages; CI's
