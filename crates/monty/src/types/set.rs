@@ -18,6 +18,7 @@ use crate::{
     },
     identity::Identity,
     intern::StaticStrings,
+    modules::copy::{Memo, PyDeepCopy, clone_items, deep_copy},
     types::{
         LazyHeapSet, Type,
         dict::{ProbeOutcome, eq_is_native, probe_native_eq},
@@ -777,6 +778,18 @@ impl<'h> HeapRead<'h, Set> {
         Set(self.get(vm.heap).0.clone_with_heap(vm.heap))
     }
 
+    /// Clones the member at `index` in insertion order, or `None` past the end.
+    ///
+    /// For Rust-side walks that index a set rather than iterate it — the
+    /// counterpart to [`List::try_clone_item`](super::List::try_clone_item),
+    /// and how `copy.deepcopy` snapshots members before copying any of them.
+    pub(crate) fn try_clone_item(&self, index: usize, vm: &VM<'h>) -> Option<Value> {
+        self.get(vm.heap)
+            .storage()
+            .value_at(index)
+            .map(|value| value.clone_with_heap(vm.heap))
+    }
+
     fn storage(&self) -> BorrowedHeapRead<'_, 'h, SetStorage> {
         heap_read_ref_as_field!(self, Set, 0)
     }
@@ -986,6 +999,15 @@ impl<'h> HeapRead<'h, FrozenSet> {
     /// to avoid holding a borrow on the storage during `py_eq` calls.
     pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         self.storage().contains(value, vm)
+    }
+
+    /// Clones the member at `index` in insertion order, or `None` past the end,
+    /// as [`HeapRead<Set>::try_clone_item`](HeapRead::try_clone_item) does.
+    pub(crate) fn try_clone_item(&self, index: usize, vm: &VM<'h>) -> Option<Value> {
+        self.get(vm.heap)
+            .storage()
+            .value_at(index)
+            .map(|value| value.clone_with_heap(vm.heap))
     }
 
     /// Binary set operation via HeapRead. Creates a new frozenset from the result.
@@ -1768,4 +1790,69 @@ fn unhashable_type_name(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     }
 
     Ok(value.py_type_name(vm).into_owned())
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, Set> {
+    /// Copies a set, re-inserting each copied item so it hashes into its own slot.
+    #[inline(never)]
+    fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let copy_id = vm.heap.allocate(HeapData::Set(Set::new()));
+        let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
+        let (copy, vm) = guard.as_parts_mut();
+        memo.insert(source, copy, vm)?;
+        // CPython reduces a set through `list(x)`, snapshotting its members before
+        // any of them is copied, so a hook that mutates the source mid-walk cannot
+        // disturb the copy. Taking the same snapshot keeps that behaviour — and
+        // keeps the walk off an index into a container Python can resize.
+        let len = self.get(vm.heap).len();
+        // `clone_items` preflights the snapshot; the destination set holds the
+        // same number of slots again, and the walk works off the snapshot so
+        // that width is fixed here. Checked at 2× for the pair, as `py_iadd`
+        // checks a clone plus the growth it feeds.
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        let members = clone_items(len, vm, |index, vm| {
+            self.try_clone_item(index, vm).expect("index is in bounds")
+        })?;
+        let mut members = DropGuard::new(members, vm);
+        for index in 0..len {
+            let (members, vm) = members.as_parts_mut();
+            vm.heap.tracker.check_time_every(index)?;
+            let copied = deep_copy(&members[index], memo, vm)?;
+            let HeapReadOutput::Set(mut dest) = vm.heap.read(copy_id) else {
+                unreachable!("copy was allocated as a set")
+            };
+            dest.add(copied, vm)?;
+        }
+        let (members, vm) = members.into_parts();
+        members.drop_with(vm);
+        let (copy, _) = guard.into_parts();
+        Ok(copy)
+    }
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, FrozenSet> {
+    /// Copies a frozenset, building its members before the copy exists.
+    ///
+    /// A hashable member can point back at the frozenset, so a cycle is
+    /// possible, but CPython reduces one through `_reconstruct`, which copies
+    /// the members before it memoises and so rebuilds a second frozenset for
+    /// the back-reference. Memoising an empty shell here would diverge.
+    #[inline(never)]
+    fn py_deep_copy(&self, _source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let len = self.get(vm.heap).len();
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        let mut guard = DropGuard::new(Set::new(), vm);
+        for index in 0..len {
+            let (built, vm) = guard.as_parts_mut();
+            vm.heap.tracker.check_time_every(index)?;
+            let item = self.try_clone_item(index, vm).expect("index is in bounds");
+            let copied = deep_copy(&item, memo, vm);
+            item.drop_with(vm);
+            built.add(copied?, vm)?;
+        }
+        let (built, vm) = guard.into_parts();
+        Ok(Value::Ref(
+            vm.heap.allocate(HeapData::FrozenSet(FrozenSet::from_set(built))),
+        ))
+    }
 }

@@ -415,6 +415,34 @@ jobs:
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}\target\debug\monty.exe
 
+  # The native-stack budget in `crates/monty/tests/copy_module.rs` is a release
+  # measurement: only a release build runs it on the wasm worker's real 1 MiB
+  # stack, so a debug job — every other job here — proves nothing about it.
+  stack-budget:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          cache-on-failure: true
+
+      - name: set up python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+
+      - run: cargo test -p monty --release --test copy_module
+
   bench-test:
     runs-on: ubuntu-latest
 
@@ -512,6 +540,7 @@ jobs:
       - test-python-coverage
       - coverage-upload
       - test-rust-os
+      - stack-budget
       - test-python
       - test-js
       - test-browser

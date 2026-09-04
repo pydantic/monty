@@ -12,6 +12,7 @@ and no way for sandboxed code to load additional modules.
 | `base64`       | ./base64.md      |
 | `binascii`     | ./base64.md      |
 | `collections`  | ./collections.md |
+| `copy`         | ./copy.md        |
 | `dataclasses`  | ./dataclasses.md |
 | `datetime`     | ./datetime.md    |
 | `functools`    | ./functools.md   |
@@ -36,7 +37,7 @@ production sandboxes never see it.
 ## Notable modules NOT available
 
 Common modules that are *not* importable in Monty (non-exhaustive):
-`abc`, `argparse`, `array`, `bisect`, `contextlib`, `copy`, `csv`,
+`abc`, `argparse`, `array`, `bisect`, `contextlib`, `csv`,
 `ctypes`, `decimal`, `enum`, `fractions`,
 `hashlib`, `heapq`, `hmac`, `http`, `inspect`, `io`,
 `logging`, `multiprocessing`, `operator`, `pickle`, `queue`, `random`,
@@ -50,11 +51,11 @@ are unimplemented and may appear over time.
 
 Some available modules cover only part of their CPython surface: `itertools`
 implements eleven of its callables, `functools` only `reduce` and `partial`,
-`collections` only the four types above, and `binascii` everything except the
-uuencode and quoted-printable conversions. The absent names are missing from
-the module namespace rather than stubbed, so they fail type checking as well
-as raising `AttributeError` at runtime; see each module's page for the
-specifics.
+`copy` only `copy()` and `deepcopy()`, `collections` only the four types
+above, and `binascii` everything except the uuencode and quoted-printable
+conversions. The absent names are missing from the module namespace rather
+than stubbed, so they fail type checking as well as raising `AttributeError`
+at runtime; see each module's page for the specifics.
 
 ## Modules the type checker resolves but the runtime does not
 

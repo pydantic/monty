@@ -731,6 +731,29 @@ fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
     }
 }
 
+/// A container built just under the limit and then deep-copied is the shape
+/// that jumps the allocator's headroom in one uninterrupted span: nothing
+/// between entering `deepcopy` and returning re-reads the budget except the
+/// fill loop itself. Sized so the source fits and the copy does not, which
+/// before the destination preflight killed the worker outright
+/// (`allocation of 2621440 bytes exceeds the memory limit`) instead of raising.
+#[test]
+fn deep_copy_of_a_near_limit_dict_raises_rather_than_dying() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    let (_, event) = child.feed("import copy\nd = {i: i for i in range(100_000)}");
+    assert!(
+        !matches!(event, pb::child_event::Kind::Error(_)),
+        "the source must fit for this to test the copy, got {event:?}"
+    );
+    let (_, event) = child.feed("copy.deepcopy(d)");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    // The session survives, which is the whole point: a hard-limit exit would
+    // have taken the worker with it.
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
 /// Known large results are rejected against allocator usage before they can
 /// jump from below the soft limit past the hard ceiling. The reported figure is
 /// what each result really costs, so it pins down that the refusal accounted for

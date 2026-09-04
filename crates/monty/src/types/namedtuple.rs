@@ -37,6 +37,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     resource_checks::check_repeat_size,
     types::{
         Dict, Type, allocate_tuple,
@@ -207,6 +208,24 @@ impl NamedTuple {
 }
 
 impl<'h> HeapRead<'h, NamedTuple> {
+    /// Allocates a named tuple holding `items` with this one's name, fields and
+    /// originating class. Ownership of `items` transfers to it.
+    ///
+    /// A named tuple is immutable, so unlike the other `allocate_*_like`
+    /// constructors this one takes its items up front.
+    pub(crate) fn allocate_like(&self, items: Vec<Value>, vm: &mut VM<'h>) -> Value {
+        let data = self.get(vm.heap);
+        let name = data.name_either().clone();
+        let field_names = data.field_names().to_vec();
+        let class_id = data.class_id();
+        // `with_class` takes ownership of a reference to the class object.
+        if let Some(class_id) = class_id {
+            vm.heap.inc_ref(class_id);
+        }
+        let named = NamedTuple::with_class(name, field_names, items, class_id);
+        Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named))))
+    }
+
     /// Returns `Some(value)` if the index is in bounds, `None` otherwise.
     /// Uses `index + len` instead of `-index` to avoid overflow on `i64::MIN`.
     #[must_use]
@@ -1251,4 +1270,15 @@ fn take_key(key: Value, vm: &mut VM<'_>) -> EitherStr {
 fn py_list_repr(names: &[String]) -> String {
     let inner = names.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", ");
     format!("[{inner}]")
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, NamedTuple> {
+    /// Copies a named tuple, keeping its name, fields and originating class.
+    #[inline(never)]
+    fn py_deep_copy(&self, _source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let items = deep_copy_slots(self.get(vm.heap).field_names().len(), memo, vm, |index, vm| {
+            self.clone_item(index, vm)
+        })?;
+        Ok(self.allocate_like(items, vm))
+    }
 }

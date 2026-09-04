@@ -45,6 +45,14 @@ These raise `NameError`:
   printed), as do list (live length, mid-repr pops truncate / appends extend),
   `set`, `collections.deque` and `collections.Counter` (all snapshot, like
   CPython).
+- **copying a dict or rebuilding a set re-hashes the keys** — CPython copies the
+  hash table, so `d.copy()`, `dict(d)`, `{**d}`, `defaultdict.copy()`,
+  `Counter.copy()`, `set(s)` and `frozenset(s)` never call a key's `__hash__`.
+  Monty re-inserts each element, so a key with a custom `__hash__` sees it
+  called again — observable through a counter or other side effect, and a
+  `__hash__` that raises makes the copy fail where CPython's succeeds. Only
+  `set.copy()` clones the storage directly and matches CPython. `copy.copy`
+  inherits this for dicts (see ./copy.md).
 - **dict/set lookups under a mutating `__eq__`** — like CPython, a lookup
   (`in`, `d[k]`, `set.remove`, …) whose user `__eq__` mutates the container
   keeps probing rather than raising, and a mutation that only *adds* colliding

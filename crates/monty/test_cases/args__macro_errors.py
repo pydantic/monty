@@ -12,6 +12,7 @@
 import asyncio
 import base64
 import binascii
+import copy
 import datetime
 import json
 import re
@@ -218,6 +219,45 @@ try:
     assert False, 'map(fn) should require ≥2 args'
 except TypeError as e:
     assert str(e) == 'map() must have at least two arguments.', f'py-missing-1: {e}'
+
+# === def: copy() / deepcopy() arity and kwargs ===
+# Both are pure-Python `def`s in CPython, so binding names the missing
+# parameter and counts the optional ones in the too-many wording.
+try:
+    copy.copy()
+    assert False, 'copy() with no args should raise'
+except TypeError as e:
+    assert str(e) == "copy() missing 1 required positional argument: 'x'"
+
+try:
+    copy.deepcopy()
+    assert False, 'deepcopy() with no args should raise'
+except TypeError as e:
+    assert str(e) == "deepcopy() missing 1 required positional argument: 'x'"
+
+try:
+    copy.copy([], [])
+    assert False, 'copy() with 2 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'copy() takes 1 positional argument but 2 were given'
+
+try:
+    copy.deepcopy([], {}, None, 1)
+    assert False, 'deepcopy() with 4 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'deepcopy() takes from 1 to 3 positional arguments but 4 were given'
+
+try:
+    copy.copy(bogus=1)
+    assert False, 'copy() with an unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "copy() got an unexpected keyword argument 'bogus'"
+
+try:
+    copy.deepcopy([1], memo={}, bogus=2)
+    assert False, 'deepcopy() with an unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "deepcopy() got an unexpected keyword argument 'bogus'"
 
 # =====================================================================
 # === C style (`style = c` — anonymous "function" wording)           ===

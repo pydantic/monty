@@ -161,6 +161,34 @@ fn external_function_in_reduce_raises_not_implemented() {
     );
 }
 
+/// A `__deepcopy__` reaching an external function cannot suspend either: the
+/// hook runs through `evaluate_function` like any other dunder, so the copy
+/// raises `NotImplementedError` at the `ext_fn()` call site inside the hook
+/// (documented in `limitations/copy.md`). Rust-side for the same reason as the
+/// tests above: on CPython the external is an ordinary function and the copy
+/// would succeed.
+#[test]
+fn external_function_in_deepcopy_raises_not_implemented() {
+    let code = "import copy\n\n\nclass Foo:\n    def __deepcopy__(self, memo):\n        return ext_fn()\n\n\ncopy.deepcopy(Foo())";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let err = ex
+        .run_no_limits(vec![MontyObject::Function {
+            name: "ext_fn".to_owned(),
+            docstring: None,
+        }])
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 6, in __deepcopy__\n    return ext_fn()\n           ~~~~~~~~\nNotImplementedError: __deepcopy__: external function 'ext_fn' is not yet supported in this context"
+    );
+}
+
 /// A user `__next__` calling an external function cannot suspend: like
 /// `__repr__`/`__str__` it runs synchronously via `evaluate_function`, so the
 /// call raises `NotImplementedError` at the `ext_fn()` call site inside

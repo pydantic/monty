@@ -1145,6 +1145,16 @@ pub enum StaticStrings {
     /// `ignorechars` parameter of `base64.a85decode()`.
     #[strum(serialize = "ignorechars")]
     Ignorechars,
+
+    // ==========================
+    // copy module strings
+    /// `copy.deepcopy()`. The module name and `copy.copy()` reuse [`Self::Copy`].
+    Deepcopy,
+    /// `memo` parameter of `copy.deepcopy()`.
+    Memo,
+    /// `_nil` parameter of `copy.deepcopy()`, CPython's private sentinel.
+    #[strum(serialize = "_nil")]
+    NilSentinel,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.
