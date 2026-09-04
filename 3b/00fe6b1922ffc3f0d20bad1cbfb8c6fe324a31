@@ -1,0 +1,44 @@
+docs/cli.md
+  s_a1f481cef90e33::t_445fca3422a10b 33
+docs/snapshots.md
+  s_a1f481cef90e33::t_445fca3422a10b 222-223,236-239
+docs/type-checking.md
+  s_a1f481cef90e33::t_445fca3422a10b 178-179
+docs/limitations/index.md
+  s_a1f481cef90e33::t_9bc76d4f279779 27-29
+  s_a1f481cef90e33::t_445fca3422a10b 26,112-114
+docs/quickstart/javascript.md
+  s_a1f481cef90e33::t_445fca3422a10b 14-16,167-168,201,248,289
+docs/quickstart/python.md
+  s_a1f481cef90e33::t_445fca3422a10b 30-31,96-98,280-281,342-343,355
+CLAUDE.md
+  s_a1f481cef90e33::t_445fca3422a10b 852-854,928-931
+docs/resource-limits.md
+  s_a1f481cef90e33::t_445fca3422a10b 79-81,86-88
+docs/security.md
+  s_a1f481cef90e33::t_445fca3422a10b 6-7
+docs/host-functions.md
+  s_a1f481cef90e33::t_445fca3422a10b 169-171
+crates/monty-runtime/src/main.rs
+  s_a1f481cef90e33::t_445fca3422a10b 71
+docs/host-objects.md
+  s_a1f481cef90e33::t_445fca3422a10b 301-302
+docs/limitations/resource_limits.md
+  s_a1f481cef90e33::t_445fca3422a10b 32-35,115-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3b00fe6b1922ffc3f0d20bad1cbfb8c6fe324a31",
+  "prompts": {},
+  "sessions": {
+    "s_a1f481cef90e33": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7fa23c1-b658-4a6b-aed6-13a3b8a7da35",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
