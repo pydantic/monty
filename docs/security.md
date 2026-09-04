@@ -85,7 +85,7 @@ Validate arguments in the host function as you would validate any untrusted inpu
 
 ### Host objects and classes
 
-`ClassInstance` and `ClassType` wrappers put a host object, or a host class, in front of the sandbox.
+[`ClassInstance`][pydantic_monty.ClassInstance] and [`ClassType`][pydantic_monty.ClassType] wrappers put a host object, or a host class, in front of the sandbox.
 Every method call, lazy attribute read and `init=True` construction the wrapper allows runs **your** code on the host,
 with the same authority as a host function.
 `eager_attrs`, `lazy_attrs` and `allowed_methods` are name allow-lists that default to nothing, and `init` is a
@@ -199,7 +199,7 @@ anything.
 
 A separate `os=` callback handles operations no mount covers: the remaining `pathlib` operations, `os.getenv`,
 `os.environ`, `date.today()` and `datetime.now()`.
-`AbstractOS` is the typed form of that callback; `OSAccess` implements it over in-memory files and an `environ` mapping
+[`AbstractOS`][pydantic_monty.AbstractOS] is the typed form of that callback; [`OSAccess`][pydantic_monty.OSAccess] implements it over in-memory files and an `environ` mapping
 you supply, and overriding one of its methods replaces one operation.
 JavaScript has only the callback form, so the TypeScript tab answers the same three operations by hand:
 
@@ -298,7 +298,7 @@ in-process outright.
 See [in-process execution](#in-process-execution).
 
 When a worker dies, the pool observes the death, discards the worker, spawns a replacement, and the call raises
-`MontyCrashedError` (`PoolError::Crashed` in Rust).
+[`MontyCrashedError`][pydantic_monty.MontyCrashedError] ([`PoolError::Crashed`](api/rust/monty-pool.md#poolerror) in Rust).
 The session is lost; your process is not.
 
 Two more properties of the worker boundary matter:
@@ -327,8 +327,8 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     Two host-side backstops cover a wedged worker: `request_timeout` (a per-turn deadline; a loop of quick host calls
     resets it) and `duration_limit_grace` (fires only if the session also set `max_duration_secs`).
     Set both `request_timeout` and `max_duration_secs` for untrusted code.
-    Every local pool (`Monty`, `AsyncMonty`, JavaScript `Monty.create()`, `PoolConfig::subprocess`) defaults
-    `request_timeout` to no deadline; only `AsyncMontyWebsocket` sets one, at 10 seconds.
+    Every local pool ([`Monty`][pydantic_monty.Monty], [`AsyncMonty`][pydantic_monty.AsyncMonty], JavaScript `Monty.create()`, [`PoolConfig::subprocess`](api/rust/monty-pool.md#poolconfig)) defaults
+    `request_timeout` to no deadline; only [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] sets one, at 10 seconds.
 - **After a memory or time limit fires, no guarantees are made about heap state or reference counts.** Discard the
     session rather than continuing to run code in it.
     The pool does not do this for you, and the two limits do not even fail alike: a spent `max_duration_secs` budget is
@@ -346,9 +346,9 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
 
 ### Your own callbacks
 
-Host functions, the methods, lazy attributes and constructors exposed through `ClassInstance`/`ClassType`, the `os=`
-callback, and `CallbackFile` in the Python `OSAccess` helper all execute in the host process.
-`OSAccess` backed by `MemoryFile` objects is fully sandboxed; `OSAccess` backed by `CallbackFile` is exactly as
+Host functions, the methods, lazy attributes and constructors exposed through [`ClassInstance`][pydantic_monty.ClassInstance]/[`ClassType`][pydantic_monty.ClassType], the `os=`
+callback, and [`CallbackFile`][pydantic_monty.CallbackFile] in the Python [`OSAccess`][pydantic_monty.OSAccess] helper all execute in the host process.
+`OSAccess` backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed; `OSAccess` backed by `CallbackFile` is exactly as
 sandboxed as the callback you wrote.
 
 ### In-process execution
@@ -361,7 +361,7 @@ In the browser, a real `Worker` restores isolation and gives the watchdog a hard
 
 ### Remote workers
 
-`AsyncMontyWebsocket` (Python) and `PoolConfig::websocket` (Rust) dial a remote worker instead of spawning a local one.
+[`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] (Python) and [`PoolConfig::websocket`](api/rust/monty-pool.md#poolconfig) (Rust) dial a remote worker instead of spawning a local one.
 **A remote peer need not be a Monty sandbox at all.** It may be real CPython with no sandbox, no resource limits and
 full host access, relying on deployment isolation — a container or VM per session — rather than on the interpreter.
 None of the guarantees on this page transfer across that boundary; they become properties of whatever is running on the

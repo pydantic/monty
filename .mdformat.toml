@@ -3,3 +3,8 @@
 # One sentence per line is the house style, so never rewrap prose.
 wrap = "keep"
 end_of_line = "lf"
+
+# `[text][pydantic_monty.Name]` cross-references are resolved by mkdocs-autorefs
+# at build time, so do not escape them as missing link definitions.
+[plugin.mkdocs]
+ignore_missing_references = true

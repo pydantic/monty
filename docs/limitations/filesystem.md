@@ -1,7 +1,7 @@
 # Filesystem and sandbox boundary
 
 The sandbox has no default filesystem access. The host explicitly mounts
-real directories at virtual paths through Monty's `MountTable`; everything
+real directories at virtual paths through Monty's [`MountTable`](../api/rust/monty-fs.md#mounttable); everything
 outside a mount is invisible. Without any mounts, `open()` and every
 `pathlib` I/O method raise `PermissionError` for every path (see
 [open.md](open.md) and [pathlib.md](pathlib.md)).
@@ -173,7 +173,7 @@ the null byte.
 
 Mounting opens a descriptor on the host directory. On macOS and the BSDs that
 needs read permission, so a search-only directory (mode `0o111`) is refused:
-`MountDir` raises at construction, even though a host process can traverse it
+[`MountDir`][pydantic_monty.MountDir] raises at construction, even though a host process can traverse it
 and read known paths inside. Linux opens directories with `O_PATH` and accepts
 it. Grant `r-x` on anything you intend to mount portably.
 
@@ -200,7 +200,7 @@ so the host cannot move or delete a directory for as long as it is mounted;
 the attempt fails with `ERROR_SHARING_VIOLATION`. Unix is unaffected. The
 window is the mount's lifetime, which for `pydantic_monty` and
 `@pydantic/monty` is the lifetime of the mount object, not one feed. Close it
-(`MountDir.close()`, or the `with` / `using` block) to release the directory
+([`MountDir.close()`][pydantic_monty.MountDir.close], or the `with` / `using` block) to release the directory
 before the host touches it (see [pool-architecture.md](pool-architecture.md)).
 
 ### A mount follows its directory, not its path

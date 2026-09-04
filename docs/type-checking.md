@@ -156,7 +156,7 @@ checking for that feed only.
 
 ## Reading the diagnostics
 
-`MontyTypingError.display()` returns ty's rendered output — source context, underlines and rule names, one diagnostic
+[`MontyTypingError.display()`][pydantic_monty.MontyTypingError.display] returns ty's rendered output — source context, underlines and rule names, one diagnostic
 per block:
 
 ```text
@@ -180,9 +180,9 @@ the flag is `--type-check-format`.
 
 ## Elsewhere
 
-- **JavaScript**: `pool.checkout({ typeCheck: true, typeCheckStubs: '...' })`, raising `MontyTypingError` with the same
+- **JavaScript**: `pool.checkout({ typeCheck: true, typeCheckStubs: '...' })`, raising [`MontyTypingError`][pydantic_monty.MontyTypingError] with the same
     `.display()`.
-- **Rust**: `ReplConfig` on `monty-pool`, or the [`monty-type-checking`](https://crates.io/crates/monty-type-checking)
+- **Rust**: [`ReplConfig`](api/rust/monty-pool.md#replconfig) on `monty-pool`, or the [`monty-type-checking`](https://crates.io/crates/monty-type-checking)
     crate directly.
 - **CLI**: `monty --type-check file.py`.
     See [command line](cli.md).
