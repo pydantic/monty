@@ -46,7 +46,7 @@ use tokio_tungstenite::{
     tungstenite::{
         Bytes, Error as WsError, Message,
         client::IntoClientRequest,
-        http::{HeaderName, HeaderValue},
+        http::{HeaderName, HeaderValue, header::USER_AGENT},
         protocol::WebSocketConfig,
     },
 };
@@ -240,6 +240,12 @@ impl Worker {
         let mut request = url
             .into_client_request()
             .map_err(|err| PoolError::Spawn(format!("{url}: {err}")))?;
+
+        // set before the caller's headers so a `user-agent` entry there overrides it
+        request
+            .headers_mut()
+            .insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
+
         // a malformed name/value is a caller bug: fail the dial
         for (name, value) in connect_headers {
             let name = HeaderName::from_bytes(name.as_bytes())
@@ -615,6 +621,10 @@ fn ws_to_frame_error(err: WsError) -> FrameError {
         _ => FrameError::Truncated,
     }
 }
+
+/// `User-Agent` on every WebSocket upgrade request, identifying this crate to
+/// the server or relay it dials; a `connect_headers` entry replaces it.
+const USER_AGENT_VALUE: &str = concat!("monty-pool/", env!("CARGO_PKG_VERSION"));
 
 /// Fallback dial budget when the pool sets no `request_timeout` (which otherwise
 /// also bounds the WebSocket dial). Generous, since it only guards a stuck dial.

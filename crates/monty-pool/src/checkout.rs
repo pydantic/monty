@@ -77,8 +77,9 @@ pub struct CheckoutOptions {
     pub telemetry: Option<TelemetryContext>,
     /// Extra headers for this checkout's WebSocket upgrade request; the
     /// subprocess transport makes no request and ignores them. Duplicate
-    /// names are last-wins, even against `host` and the other handshake
-    /// headers, and a malformed name or value fails the dial.
+    /// names are last-wins, even against the default `user-agent`
+    /// (`monty-pool/<version>`), `host` and the other handshake headers,
+    /// and a malformed name or value fails the dial.
     pub connect_headers: Vec<(String, String)>,
 }
 

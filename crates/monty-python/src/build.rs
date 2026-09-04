@@ -7,7 +7,7 @@
 //! than leaking raw PyO3 errors.
 
 use monty_proto::python::{InstanceStore, exc_py_to_monty, py_to_monty_value};
-use monty_types::{ExcType, MontyException, MontyObject};
+use monty_types::{ExcType, MontyException, MontyObject, StringRepr};
 use pyo3::{
     exceptions::PyTypeError,
     prelude::*,
@@ -105,7 +105,8 @@ pub(crate) fn extract_connect_headers(py: Python<'_>, callback: &Py<PyAny>) -> P
     } else {
         let t = result.get_type().name()?;
         Err(PyTypeError::new_err(format!(
-            "connect_headers must return a mapping of str to str, got '{t}'"
+            "connect_headers must return a mapping of str to str, got {}",
+            StringRepr(&t.to_string_lossy())
         )))
     }
 }
@@ -117,7 +118,9 @@ fn header_str(part: &Bound<'_, PyAny>, side: &str) -> PyResult<String> {
     } else {
         let t = part.get_type().name()?;
         Err(PyTypeError::new_err(format!(
-            "connect_headers must return a mapping of str to str, got '{t}' header {side}"
+            "connect_headers must return a mapping of str to str, got {} header {}",
+            StringRepr(&t.to_string_lossy()),
+            side
         )))
     }
 }

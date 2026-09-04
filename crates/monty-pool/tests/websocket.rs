@@ -190,6 +190,38 @@ async fn duplicate_connect_headers_are_last_wins() {
     join_server(server).await;
 }
 
+/// Every dial carries a `User-Agent` naming this crate and its version, and a
+/// `connect_headers` entry of the same name replaces it rather than being
+/// appended, so a caller can identify their own product instead.
+#[tokio::test]
+async fn user_agent_is_set_and_overridable() {
+    let (header_tx, header_rx) = mpsc::channel();
+    let (listener, mut config) = ws_pool_config();
+    let server = thread::spawn(move || serve_capturing_header(&listener, "user-agent", 2, &header_tx));
+    config.request_timeout = Some(Duration::from_secs(10));
+    let pool = Pool::new(config).await.expect("pool");
+
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    assert_eq!(
+        header_rx.recv().expect("captured header"),
+        Some(format!("monty-pool/{}", env!("CARGO_PKG_VERSION")))
+    );
+    checkout.finish().await.expect("finish");
+
+    let options =
+        CheckoutOptions::default().with_connect_headers(vec![("User-Agent".to_owned(), "my-app/1.0".to_owned())]);
+    let checkout = pool
+        .checkout_with(&ReplConfig::default(), options)
+        .await
+        .expect("checkout");
+    assert_eq!(
+        header_rx.recv().expect("captured header").as_deref(),
+        Some("my-app/1.0")
+    );
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
 /// A malformed header name or value is validated before any I/O, so no server
 /// is needed: the checkout fails loudly with the promised dial error instead
 /// of the pair being silently dropped.

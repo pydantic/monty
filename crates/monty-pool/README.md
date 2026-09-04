@@ -168,7 +168,8 @@ flushing the host exporter.
   never prewarmed or returned to the pool. Isolation is the remote host's responsibility —
   a remote crash is observed as the connection dropping. `Pool::checkout_with` takes
   `CheckoutOptions::connect_headers`, extra headers for that checkout's upgrade request —
-  e.g. a fresh `traceparent` so server-side spans join the caller's trace.
+  e.g. a fresh `traceparent` so server-side spans join the caller's trace. The request
+  carries `User-Agent: monty-pool/<version>` unless a header of that name replaces it.
 
 ## Monty crates
 
