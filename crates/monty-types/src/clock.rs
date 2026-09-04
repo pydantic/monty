@@ -51,11 +51,15 @@ impl HostClock {
     /// `None` means the caller should treat the call as unserviced — the clock
     /// is [`Denied`](Self::Denied), the call is not a clock call, or the
     /// instant is unrepresentable as a Python `datetime`.
+    ///
+    /// The clock is read per arm rather than up front so that a host passing
+    /// every OS call through here — as the CLI does — pays nothing for the
+    /// filesystem calls, which are the overwhelming majority.
     #[must_use]
     pub fn resolve(self, call: &OsFunctionCall) -> Option<MontyObject> {
-        let (utc, local_offset_seconds) = self.instant()?;
         match call {
             OsFunctionCall::DateToday => {
+                let (utc, local_offset_seconds) = self.instant()?;
                 let local = shift(utc, local_offset_seconds)?;
                 Some(MontyObject::Date(MontyDate {
                     year: local.year(),
@@ -66,6 +70,7 @@ impl HostClock {
             // Naive `now()` is local wall clock; `now(tz)` is the same instant
             // read in `tz`, both matching CPython.
             OsFunctionCall::DateTimeNow(tz) => {
+                let (utc, local_offset_seconds) = self.instant()?;
                 let offset_seconds = tz.as_ref().map_or(local_offset_seconds, |tz| tz.offset_seconds);
                 let local = shift(utc, offset_seconds)?;
                 Some(MontyObject::DateTime(MontyDateTime {
