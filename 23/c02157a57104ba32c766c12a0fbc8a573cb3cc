@@ -1,0 +1,36 @@
+docs/index.md
+  s_a1f481cef90e33::t_f8161ba37be93f 37-38
+  s_a1f481cef90e33::t_2bd4e4a84ebbf1 28-29
+docs/alternatives.md
+  s_a1f481cef90e33::t_06855cb877c929 47,55-56,85-90,146-147
+  s_a1f481cef90e33::t_2bd4e4a84ebbf1 48
+  s_a1f481cef90e33::t_f8161ba37be93f 20-22,24-29,59,70-71,80-82,91,138-145,148-152
+  s_a1f481cef90e33::t_35b2f3a33d3655 23,83-84
+scripts/startup_latency_chart.py
+  s_a1f481cef90e33::t_2bd4e4a84ebbf1 19
+scripts/startup_performance.py
+  s_a1f481cef90e33::t_983f2d06fbbc40 15,22,25-26,61-62,64-76,79-94,286-311,431,433-459,461,463-468,470-472
+  s_a1f481cef90e33::t_06855cb877c929 63,77-78
+  s_a1f481cef90e33::t_c2779045620e33 6
+  s_a1f481cef90e33::t_2ebd337677c607 432,462
+docs/img/startup-latency.svg
+  s_a1f481cef90e33::t_f8161ba37be93f 1,4-17,21,24-35
+  s_a1f481cef90e33::t_35b2f3a33d3655 22
+  s_a1f481cef90e33::t_2bd4e4a84ebbf1 23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "23c02157a57104ba32c766c12a0fbc8a573cb3cc",
+  "prompts": {},
+  "sessions": {
+    "s_a1f481cef90e33": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7fa23c1-b658-4a6b-aed6-13a3b8a7da35",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
