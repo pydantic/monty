@@ -1,6 +1,6 @@
 ---
 title: Monty
-description: "A sandboxed Python interpreter written in Rust for code written by AI. Start latency 5 ms cold, 0.4 ms warm. Pause and resume. Resource limits. Available from PyPI, NPM and crates.io."
+description: "A sandboxed Python interpreter written in Rust for code written by AI. Start latency <1ms. Pause and resume. Resource limits. Available from PyPI, NPM and crates.io."
 ---
 
 # Monty
@@ -72,17 +72,23 @@ Installation
     uv add pydantic-monty
     ```
 
+    See [getting started with Python](quickstart/python.md).
+
 === "TypeScript"
 
     ```bash
     npm install @pydantic/monty
     ```
 
+    See [getting started with JavaScript](quickstart/javascript.md).
+
 === "Rust"
 
     ```bash
     cargo add monty-pool
     ```
+
+    See [getting started with Rust](quickstart/rust.md).
 
 The `code` string is what a model writes when asked how long a bar of chocolate could power a lightbulb.
 It calls a tool it was given, does arithmetic it should not do in its head, and prints the answer:
