@@ -1,6 +1,6 @@
 //! Implementation of Python's `functools` module.
 //!
-//! A subset so far, currently `reduce` and `partial`. See
+//! A subset so far: `reduce`, `partial`, `lru_cache` and `cache`. See
 //! `limitations/functools.md` for what diverges from CPython. Unimplemented
 //! names are absent from the namespace rather than stubbed, so they raise
 //! `AttributeError` up front.
@@ -16,7 +16,7 @@ use crate::{
     heap::{DropGuard, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Module, Type},
+    types::{Module, PyTrait, Type, lru_cache},
     value::Value,
 };
 
@@ -28,6 +28,8 @@ use crate::{
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FunctoolsFunctions {
     Reduce,
+    Cache,
+    LruCache,
 }
 
 /// Creates the `functools` module on the heap.
@@ -47,6 +49,16 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::Builtin(Builtins::Type(Type::Partial)),
         vm,
     );
+    module.set_attr(
+        StaticStrings::Cache,
+        Value::ModuleFunction(ModuleFunctions::Functools(FunctoolsFunctions::Cache)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::LruCache,
+        Value::ModuleFunction(ModuleFunctions::Functools(FunctoolsFunctions::LruCache)),
+        vm,
+    );
 
     vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
@@ -55,6 +67,8 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValues) -> RunResult<Value> {
     match function {
         FunctoolsFunctions::Reduce => call_reduce(vm, args),
+        FunctoolsFunctions::Cache => call_cache(vm, args),
+        FunctoolsFunctions::LruCache => call_lru_cache_factory(vm, args),
     }
 }
 
@@ -131,4 +145,77 @@ fn not_iterable_error(error: RunError) -> RunError {
         RunError::Exc(raise) if raise.exc.exc_type() == ExcType::TypeError => ExcType::reduce_not_iterable(),
         _ => error,
     }
+}
+
+/// Argument shape for `cache(user_function, /)`.
+#[derive(FromArgs)]
+#[from_args(name = "cache", style = def)]
+struct CacheArgs {
+    #[from_args(pos_only)]
+    user_function: Value,
+}
+
+/// `functools.cache(user_function)` — an unbounded [`LruCache`], the shorthand
+/// CPython defines as `lru_cache(maxsize=None)`.
+fn call_cache(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let CacheArgs { user_function } = CacheArgs::from_args(args, vm)?;
+    lru_cache::allocate(Some(user_function), None, false, vm)
+}
+
+/// Argument shape for `lru_cache(maxsize=128, typed=False)`.
+///
+/// Both are plain `Value`s: `maxsize` doubles as the decorated function in the
+/// bare `@lru_cache` form, and CPython only tests `typed` for truthiness.
+#[derive(FromArgs)]
+#[from_args(name = "lru_cache", style = def)]
+struct LruCacheArgs {
+    #[from_args(default = Value::Int(i64::from(DEFAULT_MAXSIZE)))]
+    maxsize: Value,
+    #[from_args(default = Value::Bool(false))]
+    typed: Value,
+}
+
+/// CPython's default entry ceiling for `lru_cache`.
+const DEFAULT_MAXSIZE: u32 = 128;
+
+/// `functools.lru_cache(maxsize=128, typed=False)`.
+///
+/// Returns the cached function directly when used bare (`@lru_cache`, where
+/// `maxsize` *is* the decorated function), and otherwise a decorator holding
+/// the settings until the function to cache arrives.
+fn call_lru_cache_factory(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let LruCacheArgs { maxsize, typed } = LruCacheArgs::from_args(args, vm)?;
+    defer_drop!(maxsize, vm);
+    defer_drop!(typed, vm);
+    let typed_flag = typed.py_bool(vm)?;
+
+    // CPython tests for an int first, so `lru_cache(True)` is a size, not a
+    // (callable-less) mistake.
+    match maxsize {
+        Value::Int(_) | Value::Bool(_) => decorator(Some(maxsize_from_int(maxsize)), typed_flag, vm),
+        // The bare `@lru_cache` form: `maxsize` is the function to wrap.
+        _ if maxsize.is_callable(vm.heap) => {
+            let func = maxsize.clone_with_heap(vm);
+            lru_cache::allocate(Some(func), Some(DEFAULT_MAXSIZE), typed_flag, vm)
+        }
+        Value::None => decorator(None, typed_flag, vm),
+        _ => Err(ExcType::lru_cache_bad_maxsize()),
+    }
+}
+
+/// Builds the decorator a parameterized `lru_cache(...)` hands back: a
+/// wrapper holding the settings until the function to cache arrives.
+fn decorator(maxsize: Option<u32>, typed: bool, vm: &mut VM<'_>) -> RunResult<Value> {
+    lru_cache::allocate(None, maxsize, typed, vm)
+}
+
+/// Clamps an integer `maxsize` to what the cache stores: negatives cache
+/// nothing, as CPython's `if maxsize < 0: maxsize = 0` does.
+fn maxsize_from_int(maxsize: &Value) -> u32 {
+    let size = match maxsize {
+        Value::Int(size) => *size,
+        Value::Bool(flag) => i64::from(*flag),
+        _ => unreachable!("only called for an int-like maxsize"),
+    };
+    u32::try_from(size).unwrap_or(if size < 0 { 0 } else { u32::MAX })
 }

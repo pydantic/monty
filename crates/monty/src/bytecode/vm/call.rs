@@ -24,7 +24,7 @@ use crate::{
     os_dispatch::{PendingOsEffect, release_pending_effect},
     types::{
         Dict, Instance, PyTrait, Type, bytes::call_bytes_method, construct_namedtuple, instance::class_name,
-        partial::partial_call_args, str::call_str_method,
+        lru_cache::call_lru_cache, partial::partial_call_args, str::call_str_method,
     },
     value::{EitherStr, Value},
 };
@@ -659,6 +659,20 @@ impl VM<'_> {
                 defer_drop!(func, this);
                 let args = partial_call_args(bound_args, bound_keywords, args, this);
                 return this.call_function(func, args);
+            }
+            // Answers from its stored results, or calls the wrapped callable
+            // and tags the frame so the result is stored on the way out.
+            HeapData::LruCache(_) => {
+                // Stacked wrappers (`cache(cache(f))`) dispatch through here
+                // once per layer without pushing a VM frame, so charge the
+                // native re-entry budget as the `Partial` arm does.
+                if let Err(err) = self.enter_run_reentry() {
+                    args.drop_with(self);
+                    return Err(err.into());
+                }
+                let mut guard = RunReentryGuard::new(self);
+                let this = &mut *guard;
+                return call_lru_cache(heap_id, args, this);
             }
             _ => {
                 // Coupling check: dispatch rejected this Ref, so the heap-side

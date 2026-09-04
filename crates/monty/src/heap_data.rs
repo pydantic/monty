@@ -141,6 +141,8 @@ macro_rules! heap_payloads {
             Time(inline $crate::types::time::Time),
             /// A `functools.partial` object.
             Partial(boxed $crate::types::Partial),
+            /// A `functools.lru_cache` / `functools.cache` wrapper.
+            LruCache(boxed $crate::types::LruCache),
         }
     };
 }
@@ -216,7 +218,8 @@ impl HeapData {
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
             | Self::ExternalFuture(_)
-            | Self::Partial(_) => true,
+            | Self::Partial(_)
+            | Self::LruCache(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
             // cannot close a cycle. Move one up if it gains a container-valued field.
             Self::Str(_)
@@ -256,6 +259,7 @@ impl HeapData {
                 | Self::FunctionDefaults(_)
                 | Self::ExtFunction(_)
                 | Self::Partial(_)
+                | Self::LruCache(_)
         )
     }
 
@@ -275,6 +279,7 @@ impl HeapData {
             Self::NamedTupleClass(_) => Type::Type,
             Self::Dict(_) => Type::Dict,
             Self::Partial(_) => Type::Partial,
+            Self::LruCache(_) => Type::LruCacheWrapper,
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,
             Self::DictValuesView(_) => Type::DictValues,
@@ -476,6 +481,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::CallableIterator($value) => $body,
             Self::Itertools($value) => $body,
             Self::Partial($value) => $body,
+            Self::LruCache($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
             Self::NamedTupleClass($value) => $body,
@@ -996,6 +1002,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::FunctionDefaults(_)
             | Self::ExtFunction(_)
             | Self::Partial(_)
+            | Self::LruCache(_)
             | Self::Cell(_)
             | Self::Exception(_)
             | Self::LongInt(_)

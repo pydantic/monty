@@ -594,9 +594,10 @@ impl<'h> VM<'h> {
                 exception_stack_base: f.exception_stack_base,
                 call_offset: f.call_offset,
                 is_initializer: f.is_initializer,
+                cache_stores: f.cache_stores,
             })
             .collect();
-        let current = &self.current_frame;
+        let current = &mut self.current_frame;
         frames.push(SerializedTaskFrame {
             function_id: current.function_id,
             ip: current.ip,
@@ -605,6 +606,9 @@ impl<'h> VM<'h> {
             exception_stack_base: current.exception_stack_base,
             call_offset: current.call_offset,
             is_initializer: current.is_initializer,
+            // Moved, not copied: a store owns a reference to the cache and
+            // the key, and the saved task is now its only owner.
+            cache_stores: mem::take(&mut current.cache_stores),
         });
 
         // Count this task's recursion depth contribution and subtract it from
@@ -670,6 +674,7 @@ impl<'h> VM<'h> {
                         should_return: false,
                         is_parked: false,
                         is_initializer: sf.is_initializer,
+                        cache_stores: sf.cache_stores,
                     }
                 })
                 .collect();

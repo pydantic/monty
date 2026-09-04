@@ -26,7 +26,11 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// rejected instead of decoding as their neighbour. That covers the
 /// interpreter's own types *and* everything reachable from [`Dump`] — notably
 /// [`TypeCheckingConfig`](monty_types::TypeCheckingConfig) in `monty-types`.
-pub const DUMP_VERSION: u16 = 8;
+///
+/// Adding or removing a serialized struct field needs a bump too: postcard is
+/// not self-describing, so the fields either side of it are read at the wrong
+/// offsets. The fingerprints below cover discriminants only, not field layout.
+pub const DUMP_VERSION: u16 = 9;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
@@ -197,7 +201,7 @@ mod tests {
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0xe763_e4db_4df3_e054,
+            0x61ed_004e_95da_2cd3,
             "static strings changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
@@ -215,12 +219,12 @@ mod tests {
 
         assert_eq!(
             variant_order_fingerprint(Type::VARIANTS),
-            0xba11_46b7_7fe7_1821,
+            0x8123_2fc6_3db1_bdd4,
             "Type variants changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0x1255_58b2_c0ad_a9f1,
+            0xa47b_86ad_1f37_fac4,
             "MontyType variants changed for dump version {DUMP_VERSION}"
         );
     }

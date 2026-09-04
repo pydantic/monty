@@ -444,6 +444,28 @@ impl<'h> HeapRead<'h, Dict> {
         Ok(true)
     }
 
+    /// Index of `key`'s entry in the dense entry vec, or `None` when absent.
+    ///
+    /// An index is only valid until the next removal — [`Dict::pop`] shifts
+    /// every later entry down — so callers must use it before mutating the
+    /// dict. Exists for `functools.lru_cache`, which keeps a recency stamp per
+    /// entry and so has to address entries positionally.
+    pub(crate) fn find_entry_index(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Option<usize>> {
+        Ok(self.find_index_hash(key, vm)?.0)
+    }
+
+    /// Replaces the value of the entry at `index`, returning the old one for
+    /// the caller to drop. Takes ownership of `value`.
+    ///
+    /// # Panics
+    /// Panics if `index` is out of range — pair it with [`Self::find_entry_index`].
+    pub(crate) fn replace_value_at(&mut self, index: usize, value: Value, vm: &mut VM<'h>) -> Value {
+        if matches!(value, Value::Ref(_)) {
+            self.get_mut(vm.heap).contains_refs = true;
+        }
+        mem::replace(&mut self.get_mut(vm.heap).entries[index].value, value)
+    }
+
     /// Gets a value from the dict by key.
     ///
     /// Returns Ok(Some(value)) if key exists, Ok(None) if key doesn't exist.

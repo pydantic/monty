@@ -124,6 +124,7 @@ impl FromStr for Builtins {
 }
 
 pub use monty_types::BuiltinsFunctions;
+pub(crate) use type_::type_of_ref;
 
 pub(crate) trait BuiltinsFunctionsExt: Sized {
     fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult>;

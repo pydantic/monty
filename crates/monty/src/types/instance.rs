@@ -775,9 +775,10 @@ fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
         Value::DefFunction(_) => true,
         Value::Ref(id) => matches!(
             vm.heap.get(*id),
-            // `functools.partial` is a descriptor in CPython 3.14 too, and binds
-            // the instance the same way: after the arguments it already carries.
-            HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::Partial(_)
+            // `functools.partial` and the `lru_cache` wrapper are descriptors in
+            // CPython 3.14 too, and bind the instance the same way: after the
+            // arguments they already carry.
+            HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::Partial(_) | HeapData::LruCache(_)
         ),
         _ => false,
     }

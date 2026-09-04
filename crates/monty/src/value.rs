@@ -32,6 +32,7 @@ use crate::{
             bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
             repeat_count, wide_i128_into_value,
         },
+        lru_cache::lru_cache_repr,
         namedtuple::cmp_item_seqs,
         slice::slice_collect_iterator,
         str::{
@@ -511,6 +512,11 @@ impl<'h> PyTrait<'h> for Value {
                         // Other types don't typically have cycles, but handle gracefully
                         _ => Ok(f.write_str("...")?),
                     }
+                } else if matches!(vm.heap.get(*id), HeapData::LruCache(_)) {
+                    // Handled here for the same reason as an instance: the
+                    // address in the repr is the heap id, which is only
+                    // available at the `Value` level.
+                    lru_cache_repr(*id, f)
                 } else if matches!(vm.heap.get(*id), HeapData::Instance(_)) {
                     // Instances manage their own recursion state: synthesized
                     // dataclass reprs use `heap_ids`, while a user `__repr__`

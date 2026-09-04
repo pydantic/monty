@@ -16,6 +16,7 @@ use crate::{
     exception_private::RunError,
     heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},
     intern::FunctionId,
+    types::lru_cache::CacheStore,
     value::Value,
 };
 
@@ -94,6 +95,11 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
     fn drop_with(mut self, heap: &mut C) {
         self.stack.drain(..).drop_with(heap);
         self.exception_stack.drain(..).drop_with(heap);
+        // A frame parked mid-way through a cached call still owns its pending
+        // stores; abandoning the task drops them without storing anything.
+        for frame in &mut self.frames {
+            mem::take(&mut frame.cache_stores).drop_with(heap);
+        }
         self.state.drop_with(heap);
         if let Some(coro_id) = self.coroutine_id.take() {
             heap.heap_mut().dec_ref(coro_id);
@@ -108,7 +114,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
 ///
 /// Similar to `SerializedFrame` but used within the scheduler for task context.
 /// Cannot store `&Code` references - uses `FunctionId` to look up code on resume.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SerializedTaskFrame {
     /// Which function's code this frame executes (None = module-level).
     pub function_id: Option<FunctionId>,
@@ -127,6 +133,10 @@ pub(crate) struct SerializedTaskFrame {
     /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
     #[serde(default)]
     pub is_initializer: bool,
+    /// The pending `functools.lru_cache` stores of this frame's cached calls
+    /// (see `CallFrame.cache_stores`).
+    #[serde(default)]
+    pub cache_stores: Vec<CacheStore>,
 }
 
 impl Task {
