@@ -26,7 +26,11 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// rejected instead of decoding as their neighbour. That covers the
 /// interpreter's own types *and* everything reachable from [`Dump`] — notably
 /// [`TypeCheckingConfig`](monty_types::TypeCheckingConfig) in `monty-types`.
-pub const DUMP_VERSION: u16 = 9;
+///
+/// Adding or removing a serialized struct field needs a bump too: postcard is
+/// not self-describing, so the fields either side of it are read at the wrong
+/// offsets. The fingerprints below cover discriminants only, not field layout.
+pub const DUMP_VERSION: u16 = 10;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
@@ -197,7 +201,7 @@ mod tests {
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0x8bc6_84ec_a12c_3edc,
+            0x4bf9_7365_5c83_7991,
             "static strings changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
@@ -215,12 +219,12 @@ mod tests {
 
         assert_eq!(
             variant_order_fingerprint(Type::VARIANTS),
-            0xc66d_9014_0335_92be,
+            0x2e07_385e_7008_51d5,
             "Type variants changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0x091c_2e22_e9b8_f5ee,
+            0x4ea4_b7b9_b434_d925,
             "MontyType variants changed for dump version {DUMP_VERSION}"
         );
         // Builtin discriminants are `CallBuiltinFunction` operands, so the enum
