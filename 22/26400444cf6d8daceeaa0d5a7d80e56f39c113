@@ -1,0 +1,64 @@
+CLAUDE.md
+  s_db77700bd3f6ae::t_92b0f53b522a68 1016-1017
+  s_db77700bd3f6ae::t_a63b5548753147 1013-1015,1018-1020
+docs/api/python/host_objects.md
+  s_db77700bd3f6ae::t_1de1b66ff23c1e 1-20
+docs/alternatives.md
+  s_db77700bd3f6ae::t_9154b19d9b38ee 81,88,156,159
+docs/security.md
+  s_db77700bd3f6ae::t_9154b19d9b38ee 88,202,301,330-331,349-351,364
+docs/host-functions.md
+  s_db77700bd3f6ae::t_9154b19d9b38ee 167,173,175,237,243,302
+docs/resource-limits.md
+  s_db77700bd3f6ae::t_d4b6128da2a0f9 66,140
+  s_db77700bd3f6ae::t_9154b19d9b38ee 106,154,159
+docs/host-objects.md
+  s_db77700bd3f6ae::t_9154b19d9b38ee 3,171,179,290,296-297,299-300
+docs/limitations/resource_limits.md
+  s_db77700bd3f6ae::t_9154b19d9b38ee 96
+  s_db77700bd3f6ae::t_d4b6128da2a0f9 174
+docs/limitations/filesystem.md
+  s_db77700bd3f6ae::t_d4b6128da2a0f9 4
+  s_db77700bd3f6ae::t_9154b19d9b38ee 176,203
+docs/limitations/AGENTS.md
+  s_db77700bd3f6ae::t_a63b5548753147 36-37
+docs/limitations/pool-architecture.md
+  s_db77700bd3f6ae::t_d4b6128da2a0f9 42,58,111,126,172,176,371-372
+  s_db77700bd3f6ae::t_92b0f53b522a68 46
+  s_db77700bd3f6ae::t_9154b19d9b38ee 37-38,41,50,145,229,231,233,249,252,261,282,289,336,393,395,397,441,456-457,468
+mkdocs.yml
+  s_db77700bd3f6ae::t_1de1b66ff23c1e 82
+docs/quickstart/rust.md
+  s_db77700bd3f6ae::t_d4b6128da2a0f9 84-86,95-96,99-100,104,107,109,112,118,130,133,140-141,161-162,185,210-211,213-214,216,220-222,242,246,248-249
+  s_db77700bd3f6ae::t_2599d2fb18f40d 88-94
+docs/filesystem.md
+  s_db77700bd3f6ae::t_9154b19d9b38ee 14,168,190,235,238,244
+  s_db77700bd3f6ae::t_d4b6128da2a0f9 248-249
+docs/snapshots.md
+  s_db77700bd3f6ae::t_9154b19d9b38ee 59-64,66,222,224,233,243,245,248
+  s_db77700bd3f6ae::t_d4b6128da2a0f9 253-254
+.mdformat.toml
+  s_db77700bd3f6ae::t_a00603c3c136ce 6-10
+docs/quickstart/python.md
+  s_db77700bd3f6ae::t_9154b19d9b38ee 56,98-99,109,158,179,253,258,288-294,374,378
+  s_db77700bd3f6ae::t_92b0f53b522a68 286
+docs/type-checking.md
+  s_db77700bd3f6ae::t_9154b19d9b38ee 159,183
+  s_db77700bd3f6ae::t_d4b6128da2a0f9 185
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2226400444cf6d8daceeaa0d5a7d80e56f39c113",
+  "prompts": {},
+  "sessions": {
+    "s_db77700bd3f6ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "182496b6-7c5a-406c-ab63-439302a6aaf8",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
