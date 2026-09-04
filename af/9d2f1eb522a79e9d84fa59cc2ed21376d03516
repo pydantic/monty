@@ -1,0 +1,39 @@
+crates/monty-cpython/src/session.rs
+  s_81c5bf8305bbe9::t_cadd7c75e03651 13,87,90,101,109,119,127,210
+crates/monty-cpython/README.md
+  s_81c5bf8305bbe9::t_49410157250ec7 189-192,196-198
+crates/monty-cpython/src/pyexec.rs
+  s_81c5bf8305bbe9::t_cadd7c75e03651 19,109,118,205
+crates/monty-cpython/src/host_pathlib.rs
+  s_81c5bf8305bbe9::t_49410157250ec7 47-48
+  s_81c5bf8305bbe9::t_cadd7c75e03651 17,38,49,51
+crates/monty-cpython/tests/stdio_session.rs
+  s_81c5bf8305bbe9::t_593d8a26e61b72 61-62
+  s_81c5bf8305bbe9::t_14a3c3f0d61293 167,187,263,280,315,327,357,376,407,419,438,451,472,495,516,532,556,568,590,602,642,665,695,713,733,745,764,776,789,801,825,842,865,877,895,907,924,936,963,975,1002,1032,1088,1120
+  s_81c5bf8305bbe9::t_95fc20f230d8db 20,32-43,93,108
+  s_81c5bf8305bbe9::t_49410157250ec7 992,1007-1009,1044
+crates/monty-cpython/src/lib.rs
+  s_81c5bf8305bbe9::t_cadd7c75e03651 23,82
+crates/monty-cpython/src/transport.rs
+  s_81c5bf8305bbe9::t_cadd7c75e03651 13,24-32,34-42,75
+  s_81c5bf8305bbe9::t_d4180e9e0d0618 33
+  s_81c5bf8305bbe9::t_288f7e95607b0e 72-74
+crates/monty-cpython/src/bridge.rs
+  s_81c5bf8305bbe9::t_cadd7c75e03651 10-11,13,40,49,55,130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "af9d2f1eb522a79e9d84fa59cc2ed21376d03516",
+  "prompts": {},
+  "sessions": {
+    "s_81c5bf8305bbe9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fb21e-3501-7120-9756-fecb346a143e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

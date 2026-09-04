@@ -1,0 +1,90 @@
+crates/monty-server/src/session.rs
+  s_ad954fca2eb54b::t_7962e0769a43bc 14,18,20-23,28-31,56-58,69,113,127-130,164-165,168,223-229,231-232,269-280,282-284,286,288-289,318-322,349-356
+crates/monty-js/src/pool.rs
+  s_ad954fca2eb54b::t_bc9c94200a56a9 609-616
+crates/monty-server/README.md
+  s_ad954fca2eb54b::t_226607836ebde4 26-40,44-62,74-75,105
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_ad954fca2eb54b::t_3024cdc9a5ed56 636,873-880,882-887
+crates/monty-pool/src/checkout.rs
+  s_ad954fca2eb54b::t_41dafa1e34840f 787-794,796
+  s_ad954fca2eb54b::t_fe16983aa82bff 280
+  s_ad954fca2eb54b::t_8104677a02a724 11
+  s_ad954fca2eb54b::t_f514a9cafe8f98 846-847,862-864
+  s_ad954fca2eb54b::t_c9f3710e769230 183
+  s_ad954fca2eb54b::t_7baa19c4de8909 622-623
+crates/monty-python/src/pool.rs
+  s_ad954fca2eb54b::t_fbc7377426a79f 52,1554-1555
+  s_ad954fca2eb54b::t_da4570f70568e5 551
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_ad954fca2eb54b::t_29255d7153c4ae 29,310-311,313-317,322-341,344-345,695-699
+  s_ad954fca2eb54b::t_37581d520af4a2 33
+crates/monty-proto/src/peek.rs
+  s_ad954fca2eb54b::t_6e6ac42fdb9970 50-51,53
+  s_ad954fca2eb54b::t_879d3a04a9da40 81
+crates/monty-pool/src/lib.rs
+  s_ad954fca2eb54b::t_ab11a4b86e3055 177-179
+  s_ad954fca2eb54b::t_863219a07338bd 138-155
+  s_ad954fca2eb54b::t_c54e6f81be9baa 175-176,180
+crates/monty-server/src/lib.rs
+  s_ad954fca2eb54b::t_0721129be09378 333-341
+  s_ad954fca2eb54b::t_4fd4d1ab1e84b5 8,13-18,34-35,44-47,49-51,54-55,64-65,67,70,72,78,115-117
+  s_ad954fca2eb54b::t_d19a7a080d4d3d 162-163,168
+  s_ad954fca2eb54b::t_fb71c8beab7821 342
+  s_ad954fca2eb54b::t_eaf259eca3b9a6 343-345,347-353
+crates/monty-python/python/pydantic_monty/__init__.py
+  s_ad954fca2eb54b::t_37581d520af4a2 25,72
+  s_ad954fca2eb54b::t_e1d3afe9408a56 30,76
+crates/monty-pool/tests/websocket.rs
+  s_ad954fca2eb54b::t_38b0074e8396ca 589-591
+  s_ad954fca2eb54b::t_6f754ebc2991cf 13
+  s_ad954fca2eb54b::t_236ec6da967780 383,385-387,412-415,460-466,470,474,478,482-483,498-500,502-504,506,508-512,514-515,517,525,533-536,538-539,543,547-549,552-555,558-566,568-569,577,581,583-585,588,592,597-601,614,631-632
+  s_ad954fca2eb54b::t_ebbc519627cc14 571-572
+crates/monty-python/tests/test_websocket.py
+  s_ad954fca2eb54b::t_23f707c3bb386e 163
+  s_ad954fca2eb54b::t_fccad8aea01182 25,96-99,155,161,166,171,179,189,191-194
+CLAUDE.md
+  s_ad954fca2eb54b::t_da4570f70568e5 138-141,147-149
+limitations/pool-architecture.md
+  s_ad954fca2eb54b::t_7b414e82aaee0c 20-21,53-60,62-87,89-92,301,304
+crates/monty-python/src/exceptions.rs
+  s_ad954fca2eb54b::t_906cfbe05b0809 382-383,385-388,390-437,439,442-443,445,447,456,464
+  s_ad954fca2eb54b::t_cc053b31f83e34 15-16
+crates/monty-proto/tests/frame.rs
+  s_ad954fca2eb54b::t_0ccd38921a40e7 195
+crates/monty-wasm-runtime/src/lib.rs
+  s_ad954fca2eb54b::t_f0e0ede356d401 157
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_ad954fca2eb54b::t_218129ebbd4846 638-650
+  s_ad954fca2eb54b::t_7a1dd5a68917b9 459
+crates/monty-pool/src/worker.rs
+  s_ad954fca2eb54b::t_6f7346ec2d269f 27
+  s_ad954fca2eb54b::t_c105077c235162 87,89-92,96-98
+crates/monty-python/src/lib.rs
+  s_ad954fca2eb54b::t_fbc7377426a79f 26,93
+  s_ad954fca2eb54b::t_ab11a4b86e3055 27
+  s_ad954fca2eb54b::t_19ecb4209a5b1d 95,99
+crates/monty-proto/src/generated/monty.v1.rs
+  s_ad954fca2eb54b::t_3024cdc9a5ed56 539,760-767,769-774
+crates/monty-proto/tests/roundtrip.rs
+  s_ad954fca2eb54b::t_0ccd38921a40e7 713,715-716,720,722,724,727
+crates/monty-server/tests/server_test.rs
+  s_ad954fca2eb54b::t_7c37866ff734b0 148,197,214,234,248,357
+  s_ad954fca2eb54b::t_257782041d83b6 21,137,139,141-142,146-147,149-154,185,195-196,204,221,241,256,263-265,281,283,320,342,352,354-355,403
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f621b2aaeb58a7c7a63629f81c023e54d3ce5789",
+  "prompts": {},
+  "sessions": {
+    "s_ad954fca2eb54b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "155e7484-ec4f-4f62-b16c-6e00f77abb21",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

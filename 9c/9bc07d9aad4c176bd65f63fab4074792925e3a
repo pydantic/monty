@@ -1,0 +1,23 @@
+crates/monty-server/tests/server_test.rs
+  s_dbdcce59c978f1::t_3f762264e2fd7b 517-519
+crates/monty-server/src/run.rs
+  s_dbdcce59c978f1::t_c98f2ff8cffe66 284-287
+crates/monty-server/try.html
+  s_dbdcce59c978f1::t_9b876dc13d42fe 77-79,81-84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9c9bc07d9aad4c176bd65f63fab4074792925e3a",
+  "prompts": {},
+  "sessions": {
+    "s_dbdcce59c978f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b251d60-458b-46fd-8b41-f69184b7c16e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+crates/monty-cpython/tests/stdio_session.rs
+  s_739b6e39771595::t_1ede4f9da90972 993-996
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f8297ef4fbde23fa3809dde3ad2f68448109f5c5",
+  "prompts": {},
+  "sessions": {
+    "s_739b6e39771595": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17ab6a8a-3ec4-4c0a-a0c5-0c26abf75fd0",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

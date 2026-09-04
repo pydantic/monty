@@ -1,0 +1,52 @@
+render.yaml
+  s_363d98113243ef::t_6ea65b140d4b9b 83-89
+crates/monty-server-tests/tests/wire/keepalive.rs
+  s_363d98113243ef::t_5910301782fdd9 1-61
+crates/monty-server/src/main.rs
+  s_363d98113243ef::t_576785728aaf54 41-50,196
+  s_363d98113243ef::t_f56288006df959 8-10,36,39,52,57,62
+crates/monty-server/README.md
+  s_363d98113243ef::t_5e8c1a7c36d116 106
+  s_363d98113243ef::t_d396d9d78cc881 35-37,44-73
+crates/monty-server/tests/sandbox_telemetry_test.rs
+  s_363d98113243ef::t_6e16f60deb0ef6 141-142
+crates/monty-server-tests/src/server.rs
+  s_363d98113243ef::t_bb8c266434edc3 80-82
+crates/monty-server/src/session.rs
+  s_363d98113243ef::t_c291174575772a 81-83,89
+  s_363d98113243ef::t_fc96cc5c2fcd56 162-164,171,180-184,191-223
+  s_363d98113243ef::t_1326578b6e02b4 145-150
+  s_363d98113243ef::t_d447f027e750a5 611-618
+crates/monty-server-tests/src/client/session.rs
+  s_363d98113243ef::t_51f7dc37e85f79 229-235
+crates/monty-server-tests/tests/wire/main.rs
+  s_363d98113243ef::t_360bea1582af3f 5-7,13
+crates/monty-server/src/lib.rs
+  s_363d98113243ef::t_6b9fa2172128fb 65-66,77-78,81-82,89-90
+  s_363d98113243ef::t_22be3444e06318 73
+  s_363d98113243ef::t_ec44cb9f19bd8d 83,87
+  s_363d98113243ef::t_aa4fc05497462c 67-70,76,79-80,84-86,91,148-151,199-200,202-204
+  s_363d98113243ef::t_16a276f58b62c6 145-147,152
+  s_363d98113243ef::t_70ef3d30f5c91d 201
+  s_363d98113243ef::t_5ec7e906c40d37 74
+  s_363d98113243ef::t_1cc5476fb66146 75
+  s_363d98113243ef::t_685daea1050543 92
+crates/monty-server/tests/server_test.rs
+  s_363d98113243ef::t_f94c5bd0fd3e70 111-113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2ffea1321522b6ac11475b0b7a36ccbe4527eb7b",
+  "prompts": {},
+  "sessions": {
+    "s_363d98113243ef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15596ddc-913d-4426-9da0-ded7c51dec14",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

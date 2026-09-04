@@ -1,0 +1,9 @@
+crates/monty-js/package-lock.json
+  ai_agent 2511,2514,2517,2520,2523
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "eecd1cce45136660fd77b8aece845e2d06356b6a",
+  "prompts": {}
+}

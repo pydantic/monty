@@ -1,0 +1,19 @@
+render.yaml
+  s_d6f701964ea643::t_0b7b25260cf7dc 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "814cd11809b993ad7f9c6c8db4b351f11e76ccd8",
+  "prompts": {},
+  "sessions": {
+    "s_d6f701964ea643": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb94e0c7-6ee4-41ec-8c7d-a97af779d441",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

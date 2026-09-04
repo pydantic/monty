@@ -1,0 +1,28 @@
+crates/monty-server/src/evict.rs
+  s_2dcb4cfb782920::t_4c50312a4f0a32 10-13
+crates/monty-python/tests/test_websocket.py
+  s_2dcb4cfb782920::t_c10e94c4f2e3ae 203
+crates/monty-pool/src/worker.rs
+  s_2dcb4cfb782920::t_e06c1ce5befce1 27
+  s_2dcb4cfb782920::t_cc0ffd423ef3df 78-80,88-93,95-96,98-134,141-143
+  s_2dcb4cfb782920::t_0b7bb68b02afd4 233
+crates/monty-pool/tests/websocket.rs
+  s_2dcb4cfb782920::t_200a3fd5168ae6 649-675,679-701
+  s_2dcb4cfb782920::t_c7676feaa83e79 676-678
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "266b40597691c40e3a52966c6bad5236d6ef741f",
+  "prompts": {},
+  "sessions": {
+    "s_2dcb4cfb782920": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1208fb4f-5e16-4ea3-a527-b833658b8962",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

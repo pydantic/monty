@@ -1,0 +1,42 @@
+crates/monty-server/src/lib.rs
+  s_d5279a42173d19::t_b9efe2540eb5ed 455-456,581,597-598,600-603,630-633,635
+  s_d5279a42173d19::t_e448ef1a283efd 582-584
+  s_d5279a42173d19::t_119fe97da36753 727-728
+crates/monty-server/src/index.rs
+  s_d5279a42173d19::t_ae28869038c8bf 10
+crates/monty-server/tests/request_span_test.rs
+  s_d5279a42173d19::t_f3391ff83f9e10 1,3-5,7-8,24,27-28,31,33-34,37,76,81-82,99-100,126-127,143,152,163,172,180,198-200,213,219-220,237-239
+crates/monty-server/README.md
+  s_d5279a42173d19::t_c621974fa93838 25-28,253-255,257,259-262,264-265,284-298,312-314
+crates/monty-server/tests/server_test.rs
+  s_d5279a42173d19::t_c50946983a655a 296-298,321-322,330-331,355-357,384-385,407
+crates/monty-server/src/session.rs
+  s_d5279a42173d19::t_ae28869038c8bf 91-93
+crates/monty-server-tests/src/server.rs
+  s_d5279a42173d19::t_f3391ff83f9e10 159-161
+crates/monty-server/src/telemetry.rs
+  s_d5279a42173d19::t_d2391198c1ad1c 15-17,20-21
+  s_d5279a42173d19::t_2f9c662554c0cd 125-127
+crates/monty-server/CLAUDE.md
+  s_d5279a42173d19::t_28684290d514f2 62-65,84-87,89-94,96-103,149
+  s_d5279a42173d19::t_0a4fae011f17eb 156-158
+  s_d5279a42173d19::t_b4bd66adb8b469 134-135
+crates/monty-server/Cargo.toml
+  s_d5279a42173d19::t_28684290d514f2 22-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "072f059ee9d85103e735b489502ed0e4e072faf0",
+  "prompts": {},
+  "sessions": {
+    "s_d5279a42173d19": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "651765df-236a-486e-bb26-797a7c324cd7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

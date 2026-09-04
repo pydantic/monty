@@ -1,0 +1,54 @@
+crates/monty-server/src/session.rs
+  s_a1bb66a86a9cfc::t_93a92995cad56b 298
+  s_a1bb66a86a9cfc::t_c26580c0846186 295-297
+  s_a1bb66a86a9cfc::t_76f74c4bc92e69 93-94,201
+  s_a1bb66a86a9cfc::t_6f9240cbadb1ef 299
+crates/monty-server/src/main.rs
+  s_a1bb66a86a9cfc::t_c2a2439b77d52a 211-212
+  s_a1bb66a86a9cfc::t_93a92995cad56b 213
+crates/monty-server/CLAUDE.md
+  s_a1bb66a86a9cfc::t_418351998bfe12 84-87,94
+  s_a1bb66a86a9cfc::t_45a4972685a41c 88-91,95-102
+  s_a1bb66a86a9cfc::t_76f74c4bc92e69 80-81
+crates/monty-server/README.md
+  s_a1bb66a86a9cfc::t_dd8f0bebaff0ac 254
+  s_a1bb66a86a9cfc::t_70170b52bc82fb 281-285,287,289-291,301-306,308-309
+  s_a1bb66a86a9cfc::t_8e4ed8ed275cff 343-351
+  s_a1bb66a86a9cfc::t_76f74c4bc92e69 438-439
+crates/monty-server/src/lib.rs
+  s_a1bb66a86a9cfc::t_93a92995cad56b 93,152-154,165
+  s_a1bb66a86a9cfc::t_c26580c0846186 160-163
+  s_a1bb66a86a9cfc::t_99adac48c77df3 158
+  s_a1bb66a86a9cfc::t_82be713a402e42 178
+crates/monty-server/tests/sandbox_telemetry_test.rs
+  s_a1bb66a86a9cfc::t_d8b21252a44825 125,204
+  s_a1bb66a86a9cfc::t_c26580c0846186 195-196
+  s_a1bb66a86a9cfc::t_a42cd22fd9f8a3 198,217
+  s_a1bb66a86a9cfc::t_7d28a71b6fdbe7 1,5-6
+crates/monty-server/src/telemetry.rs
+  s_a1bb66a86a9cfc::t_76f74c4bc92e69 15-16
+  s_a1bb66a86a9cfc::t_c26580c0846186 17-18
+crates/monty-server/Cargo.toml
+  s_a1bb66a86a9cfc::t_1512af31214b70 62
+crates/monty-server/tests/server_test.rs
+  s_a1bb66a86a9cfc::t_c26580c0846186 134-136
+  s_a1bb66a86a9cfc::t_1512af31214b70 21
+  s_a1bb66a86a9cfc::t_c15d10534874bf 130,139-140,142-146,149-150
+  s_a1bb66a86a9cfc::t_d8b21252a44825 30-31,137-138,141,147-148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f09cd0203912cd1448dbed55c06d6b43407f1d20",
+  "prompts": {},
+  "sessions": {
+    "s_a1bb66a86a9cfc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f29dac5b-13ae-4014-b2c3-9fd99c27845f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
