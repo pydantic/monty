@@ -20,6 +20,8 @@ Concretely:
 - **There is no ambient authority.** With no mounts and no host functions configured, the sandbox cannot read a file,
   read an environment variable, open a socket, or spawn a process.
   Not "it is blocked" — the capability does not exist in the bytecode VM.
+  The wall clock is the one exception, and only for in-process Rust runs, which read it by default; see
+  [the clock](#the-clock).
 - **The interpreter performs no filesystem I/O at all.** It suspends with a description of the operation it wants, and a
   host component decides what to do about it.
   All filesystem code lives in a separate crate (`monty-fs`) that worker artifacts do not even link in some builds.

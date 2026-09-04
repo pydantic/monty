@@ -79,9 +79,12 @@ and `MontyRepl::call_function` in Rust, and the `monty` CLI — has no host to
 ask and reads this machine's clock, so it matches CPython.
 `MontyRun::with_host_clock` / `MontyRepl::with_host_clock` choose otherwise:
 
-- `HostClock::Denied` makes both raise `NotImplementedError: OS function
-  'datetime.now' not implemented with standard execution` — a different
+- `HostClock::Denied` makes both raise `NotImplementedError` — a different
   exception from the suspend path's `RuntimeError` for the same refusal.
+  Through `MontyRun::run` and `MontyRepl::feed_run` the message is `OS
+  function 'datetime.now' not implemented with standard execution`; through
+  `MontyRepl::call_function` it is `MontyRepl::call_function: OS function
+  'datetime.now' is not yet supported in this context`.
 - `HostClock::Fixed` answers every call with one frozen instant, so
   `datetime.now() == datetime.now()` is `True`, a loop polling
   `datetime.now()` never sees it move, and `(datetime.now() - start)` is
