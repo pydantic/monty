@@ -36,7 +36,7 @@ pub(crate) enum AsyncioFunctions {
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Asyncio);
+    let mut module = Module::new(StaticStrings::Asyncio, vm.interns);
 
     module.set_attr(
         StaticStrings::Gather,

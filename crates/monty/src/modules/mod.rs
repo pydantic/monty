@@ -12,7 +12,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::RunResult,
     heap::HeapId,
-    intern::{StaticStrings, StringId},
+    intern::{InternerBuilder, Interns, StaticStrings, StringId},
 };
 
 pub(crate) mod asyncio;
@@ -85,9 +85,350 @@ pub(crate) enum StandardLib {
 }
 
 impl StandardLib {
+    /// Every module available in this build.
+    const ALL: &[Self] = &[
+        Self::Sys,
+        Self::Typing,
+        Self::Asyncio,
+        Self::Pathlib,
+        Self::Os,
+        Self::Math,
+        Self::Json,
+        Self::Re,
+        Self::Datetime,
+        Self::Unicodedata,
+        Self::Itertools,
+        Self::Dataclasses,
+        Self::Collections,
+        Self::Functools,
+        Self::Base64,
+        Self::Binascii,
+        #[cfg(feature = "test-hooks")]
+        Self::Gc,
+    ];
+
+    /// Resolves an importable module by its Python name.
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "sys" => Some(Self::Sys),
+            "typing" => Some(Self::Typing),
+            "asyncio" => Some(Self::Asyncio),
+            "pathlib" => Some(Self::Pathlib),
+            "os" => Some(Self::Os),
+            "math" => Some(Self::Math),
+            "json" => Some(Self::Json),
+            "re" => Some(Self::Re),
+            "datetime" => Some(Self::Datetime),
+            "unicodedata" => Some(Self::Unicodedata),
+            "itertools" => Some(Self::Itertools),
+            "dataclasses" => Some(Self::Dataclasses),
+            "collections" => Some(Self::Collections),
+            "functools" => Some(Self::Functools),
+            "base64" => Some(Self::Base64),
+            "binascii" => Some(Self::Binascii),
+            #[cfg(feature = "test-hooks")]
+            "gc" => Some(Self::Gc),
+            _ => None,
+        }
+    }
+
+    /// Returns the static tag for this module's import name.
+    fn name(self) -> StaticStrings {
+        match self {
+            Self::Sys => StaticStrings::Sys,
+            Self::Typing => StaticStrings::Typing,
+            Self::Asyncio => StaticStrings::Asyncio,
+            Self::Pathlib => StaticStrings::Pathlib,
+            Self::Os => StaticStrings::Os,
+            Self::Math => StaticStrings::Math,
+            Self::Json => StaticStrings::Json,
+            Self::Re => StaticStrings::Re,
+            Self::Datetime => StaticStrings::Datetime,
+            Self::Unicodedata => StaticStrings::Unicodedata,
+            Self::Itertools => StaticStrings::Itertools,
+            Self::Dataclasses => StaticStrings::Dataclasses,
+            Self::Collections => StaticStrings::Collections,
+            Self::Functools => StaticStrings::Functools,
+            Self::Base64 => StaticStrings::Base64,
+            Self::Binascii => StaticStrings::Binascii,
+            #[cfg(feature = "test-hooks")]
+            Self::Gc => StaticStrings::Gc,
+        }
+    }
+
+    /// Registers strings materialized when this module object is created.
+    pub(crate) fn intern_strings(self, interner: &mut InternerBuilder) {
+        for &value in self.static_strings() {
+            interner.intern_static(value);
+        }
+    }
+
+    /// Returns strings stored by a module or needed by its dispatch tables.
+    ///
+    /// Keep each list in sync with every `StaticStrings` use in that module;
+    /// deserialization also uses it to extend older append-only interners.
+    fn static_strings(self) -> &'static [StaticStrings] {
+        match self {
+            Self::Sys => &[
+                StaticStrings::Final,
+                StaticStrings::Major,
+                StaticStrings::Micro,
+                StaticStrings::Minor,
+                StaticStrings::Monty,
+                StaticStrings::MontyVersionString,
+                StaticStrings::Platform,
+                StaticStrings::Releaselevel,
+                StaticStrings::Serial,
+                StaticStrings::Setrecursionlimit,
+                StaticStrings::Stderr,
+                StaticStrings::Stdout,
+                StaticStrings::Sys,
+                StaticStrings::SysVersionInfo,
+                StaticStrings::Version,
+                StaticStrings::VersionInfo,
+            ],
+            Self::Typing => &[
+                StaticStrings::Annotated,
+                StaticStrings::Any,
+                StaticStrings::Callable,
+                StaticStrings::ClassVar,
+                StaticStrings::DictType,
+                StaticStrings::FinalType,
+                StaticStrings::FrozenSet,
+                StaticStrings::Generator,
+                StaticStrings::Generic,
+                StaticStrings::Iterable,
+                StaticStrings::IteratorType,
+                StaticStrings::ListType,
+                StaticStrings::Literal,
+                StaticStrings::Mapping,
+                StaticStrings::Never,
+                StaticStrings::NoReturn,
+                StaticStrings::Optional,
+                StaticStrings::Protocol,
+                StaticStrings::SelfType,
+                StaticStrings::Sequence,
+                StaticStrings::SetType,
+                StaticStrings::TupleType,
+                StaticStrings::Type,
+                StaticStrings::TypeChecking,
+                StaticStrings::TypeVar,
+                StaticStrings::Typing,
+                StaticStrings::UnionType,
+            ],
+            Self::Asyncio => &[StaticStrings::Asyncio, StaticStrings::Gather, StaticStrings::Run],
+            Self::Pathlib => &[StaticStrings::PathClass, StaticStrings::Pathlib],
+            Self::Os => &[
+                StaticStrings::Altsep,
+                StaticStrings::Curdir,
+                StaticStrings::DevNullString,
+                StaticStrings::Devnull,
+                StaticStrings::Environ,
+                StaticStrings::Extsep,
+                StaticStrings::Getenv,
+                StaticStrings::Linesep,
+                StaticStrings::Listdir,
+                StaticStrings::Makedirs,
+                StaticStrings::Mkdir,
+                StaticStrings::Name,
+                StaticStrings::Os,
+                StaticStrings::OsFspath,
+                StaticStrings::Pardir,
+                StaticStrings::ParentDirString,
+                StaticStrings::Posix,
+                StaticStrings::Remove,
+                StaticStrings::Rename,
+                StaticStrings::Replace,
+                StaticStrings::Rmdir,
+                StaticStrings::Sep,
+                StaticStrings::StatMethod,
+                StaticStrings::Unlink,
+            ],
+            Self::Math => &[
+                StaticStrings::Acos,
+                StaticStrings::Acosh,
+                StaticStrings::Asin,
+                StaticStrings::Asinh,
+                StaticStrings::Atan,
+                StaticStrings::Atan2,
+                StaticStrings::Atanh,
+                StaticStrings::Cbrt,
+                StaticStrings::Ceil,
+                StaticStrings::Comb,
+                StaticStrings::Copysign,
+                StaticStrings::Cos,
+                StaticStrings::Cosh,
+                StaticStrings::Degrees,
+                StaticStrings::Erf,
+                StaticStrings::Erfc,
+                StaticStrings::Exp,
+                StaticStrings::Exp2,
+                StaticStrings::Expm1,
+                StaticStrings::Fabs,
+                StaticStrings::Factorial,
+                StaticStrings::Floor,
+                StaticStrings::Fmod,
+                StaticStrings::Frexp,
+                StaticStrings::Gamma,
+                StaticStrings::Gcd,
+                StaticStrings::Isclose,
+                StaticStrings::Isfinite,
+                StaticStrings::Isinf,
+                StaticStrings::Isnan,
+                StaticStrings::Isqrt,
+                StaticStrings::Lcm,
+                StaticStrings::Ldexp,
+                StaticStrings::Lgamma,
+                StaticStrings::Log,
+                StaticStrings::Log10,
+                StaticStrings::Log1p,
+                StaticStrings::Log2,
+                StaticStrings::Math,
+                StaticStrings::MathE,
+                StaticStrings::MathInf,
+                StaticStrings::MathNan,
+                StaticStrings::Modf,
+                StaticStrings::Nextafter,
+                StaticStrings::Perm,
+                StaticStrings::Pi,
+                StaticStrings::Pow,
+                StaticStrings::Radians,
+                StaticStrings::Remainder,
+                StaticStrings::Sin,
+                StaticStrings::Sinh,
+                StaticStrings::Sqrt,
+                StaticStrings::Tan,
+                StaticStrings::Tanh,
+                StaticStrings::Tau,
+                StaticStrings::Trunc,
+                StaticStrings::Ulp,
+            ],
+            Self::Json => &[
+                StaticStrings::Dumps,
+                StaticStrings::Json,
+                StaticStrings::JsonDecodeError,
+                StaticStrings::Loads,
+            ],
+            Self::Re => &[
+                StaticStrings::A,
+                StaticStrings::AsciiFlag,
+                StaticStrings::Compile,
+                StaticStrings::DotallFlag,
+                StaticStrings::Error,
+                StaticStrings::Escape,
+                StaticStrings::Findall,
+                StaticStrings::Finditer,
+                StaticStrings::Fullmatch,
+                StaticStrings::I,
+                StaticStrings::Ignorecase,
+                StaticStrings::M,
+                StaticStrings::Match,
+                StaticStrings::MatchClass,
+                StaticStrings::MultilineFlag,
+                StaticStrings::NoFlag,
+                StaticStrings::PatternClass,
+                StaticStrings::PatternError,
+                StaticStrings::Re,
+                StaticStrings::S,
+                StaticStrings::Search,
+                StaticStrings::Split,
+                StaticStrings::Sub,
+            ],
+            Self::Datetime => &[
+                StaticStrings::Date,
+                StaticStrings::Datetime,
+                StaticStrings::Time,
+                StaticStrings::Timedelta,
+                StaticStrings::Timezone,
+            ],
+            Self::Unicodedata => &[
+                StaticStrings::Category,
+                StaticStrings::Combining,
+                StaticStrings::IsNormalized,
+                StaticStrings::Lookup,
+                StaticStrings::Name,
+                StaticStrings::Normalize,
+                StaticStrings::Unicodedata,
+                StaticStrings::UnidataVersion,
+            ],
+            Self::Itertools => &[
+                StaticStrings::Chain,
+                StaticStrings::Compress,
+                StaticStrings::Count,
+                StaticStrings::Cycle,
+                StaticStrings::Dropwhile,
+                StaticStrings::Filterfalse,
+                StaticStrings::Islice,
+                StaticStrings::Itertools,
+                StaticStrings::Pairwise,
+                StaticStrings::Repeat,
+                StaticStrings::Starmap,
+                StaticStrings::Takewhile,
+            ],
+            Self::Dataclasses => &[
+                StaticStrings::Dataclass,
+                StaticStrings::DataclassFields,
+                StaticStrings::DataclassParams,
+                StaticStrings::Dataclasses,
+                StaticStrings::FrozenInstanceError,
+                StaticStrings::IsDataclass,
+            ],
+            Self::Collections => &[
+                StaticStrings::Collections,
+                StaticStrings::Counter,
+                StaticStrings::Defaultdict,
+                StaticStrings::Deque,
+                StaticStrings::DunderMain,
+                StaticStrings::Namedtuple,
+            ],
+            Self::Functools => &[StaticStrings::Functools, StaticStrings::Partial, StaticStrings::Reduce],
+            Self::Base64 => &[
+                StaticStrings::B16Decode,
+                StaticStrings::B16Encode,
+                StaticStrings::B32Decode,
+                StaticStrings::B32Encode,
+                StaticStrings::B32HexDecode,
+                StaticStrings::B32HexEncode,
+                StaticStrings::B64Decode,
+                StaticStrings::B64Encode,
+                StaticStrings::B85Decode,
+                StaticStrings::B85Encode,
+                StaticStrings::Base64,
+                StaticStrings::Decodebytes,
+                StaticStrings::Encodebytes,
+                StaticStrings::MaxBinSize,
+                StaticStrings::MaxLineSize,
+                StaticStrings::StandardB64Decode,
+                StaticStrings::StandardB64Encode,
+                StaticStrings::UrlsafeB64Decode,
+                StaticStrings::UrlsafeB64Encode,
+                StaticStrings::Z85Decode,
+                StaticStrings::Z85Encode,
+            ],
+            Self::Binascii => &[
+                StaticStrings::A2bBase64,
+                StaticStrings::A2bHex,
+                StaticStrings::B2aBase64,
+                StaticStrings::B2aHex,
+                StaticStrings::Binascii,
+                StaticStrings::Crc32,
+                StaticStrings::ErrorClass,
+                StaticStrings::Hexlify,
+                StaticStrings::Unhexlify,
+            ],
+            #[cfg(feature = "test-hooks")]
+            Self::Gc => &[
+                StaticStrings::Collect,
+                StaticStrings::Disable,
+                StaticStrings::Enable,
+                StaticStrings::Gc,
+            ],
+        }
+    }
+
     /// Get the module from a string ID.
-    pub fn from_string_id(string_id: StringId) -> Option<Self> {
-        match StaticStrings::from_string_id(string_id)? {
+    pub fn from_string_id(string_id: StringId, interns: &InternerBuilder) -> Option<Self> {
+        match interns.static_string(string_id)? {
             StaticStrings::Sys => Some(Self::Sys),
             StaticStrings::Typing => Some(Self::Typing),
             StaticStrings::Asyncio => Some(Self::Asyncio),
@@ -112,9 +453,6 @@ impl StandardLib {
 
     /// Creates a new instance of this module on the heap.
     ///
-    /// # Panics
-    ///
-    /// Panics if the required strings have not been pre-interned during prepare phase.
     pub fn create(self, vm: &mut VM<'_>) -> HeapId {
         match self {
             Self::Sys => sys::create_module(vm),
@@ -135,6 +473,21 @@ impl StandardLib {
             Self::Binascii => binascii::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
+        }
+    }
+}
+
+/// Registers current module attributes missing from a deserialized interner.
+///
+/// This lets a newer build add a static module attribute without invalidating
+/// snapshots whose interner already contains that module's import name.
+pub(crate) fn restore_interned_strings(interns: &mut Interns) {
+    for &module in StandardLib::ALL {
+        let name: &'static str = module.name().into();
+        if interns.get_string_id_by_name(name).is_some() {
+            for &value in module.static_strings() {
+                interns.intern_static(value);
+            }
         }
     }
 }

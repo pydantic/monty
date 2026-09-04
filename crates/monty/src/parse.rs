@@ -22,6 +22,7 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{InternerBuilder, StringId},
+    modules::StandardLib,
     source_map::{SourceMap, StackFrameExt},
     stringize::stringize_annotation,
     types::long_int::INT_MAX_STR_DIGITS,
@@ -582,6 +583,9 @@ impl<'a> Parser<'a> {
                     .iter()
                     .map(|alias_node| {
                         let module_name = self.interner.intern(&alias_node.name);
+                        if let Some(module) = StandardLib::from_name(&alias_node.name) {
+                            module.intern_strings(self.interner);
+                        }
                         // The binding name is the alias if present, otherwise the module name
                         let binding_name = alias_node
                             .asname
@@ -644,7 +648,13 @@ impl<'a> Parser<'a> {
                 }
                 // Module name is required for absolute imports
                 let module_name = match module {
-                    Some(m) => self.interner.intern(&m),
+                    Some(m) => {
+                        let module_name = self.interner.intern(&m);
+                        if let Some(module) = StandardLib::from_name(&m) {
+                            module.intern_strings(self.interner);
+                        }
+                        module_name
+                    }
                     None => {
                         return Err(ParseError::import_error(
                             "attempted relative import with no known parent package",

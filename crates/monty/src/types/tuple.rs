@@ -465,7 +465,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string() {
+        match attr.static_string(vm.interns) {
             Some(StaticStrings::Index) => tuple_index(self, args, vm).map(CallResult::Value),
             Some(StaticStrings::Count) => tuple_count(self, args, vm).map(CallResult::Value),
             _ => {

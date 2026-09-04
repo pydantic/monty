@@ -371,7 +371,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         value.drop_with(vm);
         let type_name = self.py_type(vm).name(vm.heap, vm.interns);
-        if name.static_string() == Some(StaticStrings::Maxlen) {
+        if name.static_string(vm.interns) == Some(StaticStrings::Maxlen) {
             Err(ExcType::attribute_error_not_writable("maxlen", &type_name))
         } else {
             Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
@@ -568,7 +568,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // `maxlen` is the deque's only data attribute (read-only in CPython).
-        if attr.static_string() == Some(StaticStrings::Maxlen) {
+        if attr.static_string(vm.interns) == Some(StaticStrings::Maxlen) {
             let value = match self.get(vm.heap).maxlen() {
                 Some(max) => Value::Int(i64::try_from(max).expect("maxlen fits in i64")),
                 None => Value::None,
@@ -579,7 +579,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string() else {
+        let Some(method) = attr.static_string(vm.interns) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Deque, attr.as_str(vm.interns)));
         };

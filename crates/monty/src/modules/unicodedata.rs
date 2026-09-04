@@ -75,7 +75,7 @@ const UNICODEDATA_FUNCTIONS: &[(StaticStrings, UnicodedataFunctions)] = &[
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Unicodedata);
+    let mut module = Module::new(StaticStrings::Unicodedata, vm.interns);
 
     for (name, func) in UNICODEDATA_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Unicodedata(*func)), vm);

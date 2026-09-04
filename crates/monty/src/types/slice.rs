@@ -244,7 +244,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let this = self.get(vm.heap);
         // Fast path: interned strings can be matched by ID without string comparison
-        if let Some(ss) = attr.static_string() {
+        if let Some(ss) = attr.static_string(vm.interns) {
             return match ss {
                 StaticStrings::Start => Ok(Some(CallResult::Value(option_i64_to_value(this.start)))),
                 StaticStrings::Stop => Ok(Some(CallResult::Value(option_i64_to_value(this.stop)))),

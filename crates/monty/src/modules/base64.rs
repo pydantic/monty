@@ -136,7 +136,7 @@ const BASE64_FUNCTIONS: &[(StaticStrings, Base64Functions)] = &[
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Base64);
+    let mut module = Module::new(StaticStrings::Base64, vm.interns);
 
     for (name, func) in BASE64_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Base64(*func)), vm);

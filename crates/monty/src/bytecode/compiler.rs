@@ -1090,7 +1090,7 @@ impl<'a> Compiler<'a> {
         self.code.set_location(position, None);
 
         // Look up the module by name
-        if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
+        if let Some(builtin_module) = StandardLib::from_string_id(module_name, self.interns) {
             // Known module - emit LoadModule
             self.code.emit_u8(Opcode::LoadModule, builtin_module as u8)?;
             // Store to the binding (respects Local/Global/Cell scope)
@@ -1119,7 +1119,7 @@ impl<'a> Compiler<'a> {
         self.code.set_location(position, None);
 
         // Look up the module
-        if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
+        if let Some(builtin_module) = StandardLib::from_string_id(module_name, self.interns) {
             // Known module - emit LoadModule
             self.code.emit_u8(Opcode::LoadModule, builtin_module as u8)?;
 

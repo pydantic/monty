@@ -819,32 +819,32 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let dt = self.get(vm.heap).clone();
-        match attr.string_id() {
-            Some(id) if id == StaticStrings::Isoformat => {
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Isoformat) => {
                 args.check_zero_args("datetime.isoformat", vm.heap)?;
                 let s = format_isoformat(&dt, 'T');
                 Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)))
             }
-            Some(id) if id == StaticStrings::Strftime => {
+            Some(StaticStrings::Strftime) => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 defer_drop!(format, vm);
                 let formatted = format_datetime_strftime(&dt, format.as_str(vm))?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
             }
-            Some(id) if id == StaticStrings::Replace => Ok(CallResult::Value(self.replace(vm, args)?)),
-            Some(id) if id == StaticStrings::Weekday => {
+            Some(StaticStrings::Replace) => Ok(CallResult::Value(self.replace(vm, args)?)),
+            Some(StaticStrings::Weekday) => {
                 args.check_zero_args("datetime.weekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     dt.naive.date().weekday().num_days_from_monday(),
                 ))))
             }
-            Some(id) if id == StaticStrings::Isoweekday => {
+            Some(StaticStrings::Isoweekday) => {
                 args.check_zero_args("datetime.isoweekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     dt.naive.date().weekday().number_from_monday(),
                 ))))
             }
-            Some(id) if id == StaticStrings::Date => {
+            Some(StaticStrings::Date) => {
                 args.check_zero_args("datetime.date", vm.heap)?;
                 let d = date::from_ymd(
                     dt.naive.date().year(),
@@ -853,10 +853,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                 )?;
                 Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(d)))))
             }
-            Some(id) if id == StaticStrings::Time || id == StaticStrings::Timetz => {
+            Some(method @ (StaticStrings::Time | StaticStrings::Timetz)) => {
                 // `time()` drops the timezone, `timetz()` keeps it — the only
                 // difference between the two in CPython.
-                let keep_tz = id == StaticStrings::Timetz;
+                let keep_tz = method == StaticStrings::Timetz;
                 args.check_zero_args(if keep_tz { "datetime.timetz" } else { "datetime.time" }, vm.heap)?;
                 // Owned, so it must be released whether or not the time attaches it.
                 let tzinfo = if keep_tz { self.tzinfo_value(vm) } else { Value::None };
@@ -875,7 +875,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                     tzinfo,
                 )?))
             }
-            Some(id) if id == StaticStrings::Timestamp => {
+            Some(StaticStrings::Timestamp) => {
                 args.check_zero_args("datetime.timestamp", vm.heap)?;
                 let ts = compute_timestamp(&dt);
                 Ok(CallResult::Value(Value::Float(ts)))
@@ -888,19 +888,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         // Read only the field being asked for: cloning the whole `DateTime` would
         // copy the timezone name's `String` on every `dt.year`.
         let int_attr = |value: u32| Ok(Some(CallResult::Value(Value::Int(i64::from(value)))));
-        match attr.string_id() {
-            Some(id) if id == StaticStrings::Year => Ok(Some(CallResult::Value(Value::Int(i64::from(
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Year) => Ok(Some(CallResult::Value(Value::Int(i64::from(
                 self.get(vm.heap).naive.date().year(),
             ))))),
-            Some(id) if id == StaticStrings::Month => int_attr(self.get(vm.heap).naive.date().month()),
-            Some(id) if id == StaticStrings::Day => int_attr(self.get(vm.heap).naive.date().day()),
-            Some(id) if id == StaticStrings::Hour => int_attr(self.get(vm.heap).naive.time().hour()),
-            Some(id) if id == StaticStrings::Minute => int_attr(self.get(vm.heap).naive.time().minute()),
-            Some(id) if id == StaticStrings::Second => int_attr(self.get(vm.heap).naive.time().second()),
-            Some(id) if id == StaticStrings::Microsecond => {
-                int_attr(self.get(vm.heap).naive.and_utc().timestamp_subsec_micros())
-            }
-            Some(id) if id == StaticStrings::Tzinfo => Ok(Some(CallResult::Value(self.tzinfo_value(vm)))),
+            Some(StaticStrings::Month) => int_attr(self.get(vm.heap).naive.date().month()),
+            Some(StaticStrings::Day) => int_attr(self.get(vm.heap).naive.date().day()),
+            Some(StaticStrings::Hour) => int_attr(self.get(vm.heap).naive.time().hour()),
+            Some(StaticStrings::Minute) => int_attr(self.get(vm.heap).naive.time().minute()),
+            Some(StaticStrings::Second) => int_attr(self.get(vm.heap).naive.time().second()),
+            Some(StaticStrings::Microsecond) => int_attr(self.get(vm.heap).naive.and_utc().timestamp_subsec_micros()),
+            Some(StaticStrings::Tzinfo) => Ok(Some(CallResult::Value(self.tzinfo_value(vm)))),
             _ => Ok(None),
         }
     }

@@ -330,7 +330,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string() else {
+        let Some(method) = attr.static_string(vm.interns) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(
                 self.py_type(vm).name(vm.heap, vm.interns),
@@ -388,7 +388,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let Some(method) = attr.static_string() else {
+        let Some(method) = attr.static_string(vm.interns) else {
             return Err(ExcType::attribute_error(
                 self.py_type(vm).name(vm.heap, vm.interns),
                 attr.as_str(vm.interns),
@@ -1250,15 +1250,13 @@ fn parse_read_size_arg(size_arg: Option<Value>, vm: &mut VM<'_>) -> RunResult<Re
 
 /// Returns the empty `str` / `bytes` short-circuit result.
 ///
-/// Uses the pre-interned [`StaticStrings::EmptyString`] for the text-mode
-/// path so a hot `read(0)` does not allocate. Binary mode still allocates
-/// a fresh empty `Bytes` because there is no equivalent interned bytes
-/// singleton.
+/// Text and binary mode both return heap values because this heap-only helper
+/// has no executor interner from which to obtain an empty-string ID.
 fn empty_result(binary: bool, heap: &mut Heap) -> Value {
     if binary {
         Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(Vec::new()))))
     } else {
-        Value::InternString(StaticStrings::EmptyString.into())
+        allocate_string_no_interning("", heap)
     }
 }
 

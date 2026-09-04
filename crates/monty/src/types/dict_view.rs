@@ -247,7 +247,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string() {
+        match attr.static_string(vm.interns) {
             Some(StaticStrings::Isdisjoint) => {
                 let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
                 defer_drop!(other, vm);
@@ -523,7 +523,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictItemsView> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string() {
+        match attr.static_string(vm.interns) {
             Some(StaticStrings::Isdisjoint) => {
                 let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
                 defer_drop!(other, vm);

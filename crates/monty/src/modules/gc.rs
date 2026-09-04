@@ -43,7 +43,7 @@ pub(crate) enum GcFunctions {
 
 /// Creates the `gc` module and allocates it on the heap.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Gc);
+    let mut module = Module::new(StaticStrings::Gc, vm.interns);
     for (name, function) in [
         (StaticStrings::Collect, GcFunctions::Collect),
         (StaticStrings::Disable, GcFunctions::Disable),

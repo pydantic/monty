@@ -2232,7 +2232,7 @@ impl<'h> HeapRead<'h, SimpleException> {
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
         // Fast path: interned strings can be matched by ID
         let is_args = attr
-            .static_string()
+            .static_string(vm.interns)
             .map_or_else(|| attr.as_str(vm.interns) == "args", |ss| ss == StaticStrings::Args);
 
         if is_args {

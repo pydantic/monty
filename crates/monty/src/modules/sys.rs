@@ -23,7 +23,7 @@ use crate::{
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     types::{Module, NamedTuple},
-    value::{Marker, Value},
+    value::{EitherStr, Marker, Value},
 };
 
 /// Functions exposed by the `sys` module under the `test-hooks` feature.
@@ -46,32 +46,42 @@ pub(crate) enum SysFunctions {
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Sys);
+    let mut module = Module::new(StaticStrings::Sys, vm.interns);
 
     // sys.platform
-    module.set_attr(StaticStrings::Platform, StaticStrings::Monty.into(), vm);
+    module.set_attr(
+        StaticStrings::Platform,
+        Value::InternString(vm.interns.static_id(StaticStrings::Monty)),
+        vm,
+    );
 
     // sys.stdout / sys.stderr - markers for standard output/error
     module.set_attr(StaticStrings::Stdout, Value::Marker(Marker(StaticStrings::Stdout)), vm);
     module.set_attr(StaticStrings::Stderr, Value::Marker(Marker(StaticStrings::Stderr)), vm);
 
     // sys.version
-    module.set_attr(StaticStrings::Version, StaticStrings::MontyVersionString.into(), vm);
+    module.set_attr(
+        StaticStrings::Version,
+        Value::InternString(vm.interns.static_id(StaticStrings::MontyVersionString)),
+        vm,
+    );
     // sys.version_info - named tuple (major=3, minor=14, micro=0, releaselevel='final', serial=0)
     let version_info = NamedTuple::new(
-        StaticStrings::SysVersionInfo,
-        vec![
-            StaticStrings::Major.into(),
-            StaticStrings::Minor.into(),
-            StaticStrings::Micro.into(),
-            StaticStrings::Releaselevel.into(),
-            StaticStrings::Serial.into(),
-        ],
+        EitherStr::Interned(vm.interns.static_id(StaticStrings::SysVersionInfo)),
+        [
+            StaticStrings::Major,
+            StaticStrings::Minor,
+            StaticStrings::Micro,
+            StaticStrings::Releaselevel,
+            StaticStrings::Serial,
+        ]
+        .map(|name| EitherStr::Interned(vm.interns.static_id(name)))
+        .to_vec(),
         vec![
             Value::Int(3),
             Value::Int(14),
             Value::Int(0),
-            Value::InternString(StaticStrings::Final.into()),
+            Value::InternString(vm.interns.static_id(StaticStrings::Final)),
             Value::Int(0),
         ],
     );

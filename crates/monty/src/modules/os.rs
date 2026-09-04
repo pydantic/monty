@@ -86,13 +86,22 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         (StaticStrings::Altsep, Value::None),
         (StaticStrings::Extsep, Value::InternString(StringId::from_ascii(b'.'))),
         (StaticStrings::Curdir, Value::InternString(StringId::from_ascii(b'.'))),
-        (StaticStrings::Pardir, StaticStrings::ParentDirString.into()),
+        (
+            StaticStrings::Pardir,
+            Value::InternString(vm.interns.static_id(StaticStrings::ParentDirString)),
+        ),
         (StaticStrings::Linesep, Value::InternString(StringId::from_ascii(b'\n'))),
-        (StaticStrings::Name, StaticStrings::Posix.into()),
-        (StaticStrings::Devnull, StaticStrings::DevNullString.into()),
+        (
+            StaticStrings::Name,
+            Value::InternString(vm.interns.static_id(StaticStrings::Posix)),
+        ),
+        (
+            StaticStrings::Devnull,
+            Value::InternString(vm.interns.static_id(StaticStrings::DevNullString)),
+        ),
     ];
 
-    let mut module = Module::new(StaticStrings::Os);
+    let mut module = Module::new(StaticStrings::Os, vm.interns);
     for (attr, value) in attrs {
         module.set_attr(attr, value, vm);
     }

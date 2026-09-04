@@ -375,7 +375,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
     /// `args` and `keywords` are rebuilt on each access, so mutating the
     /// returned dict does not change what the partial passes on.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr = match attr.static_string() {
+        let attr = match attr.static_string(vm.interns) {
             Some(StaticStrings::Func) => "func",
             Some(StaticStrings::Args) => "args",
             Some(StaticStrings::Keywords) => "keywords",
