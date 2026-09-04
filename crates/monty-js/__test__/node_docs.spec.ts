@@ -3,9 +3,9 @@
 // output is not compared. `test="skip"` on the fence skips running but not type-checking.
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join, relative, sep } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { test } from 'vitest'
+import { expect, test } from 'vitest'
 
 const PACKAGE = fileURLToPath(new URL('..', import.meta.url))
 const REPO = join(PACKAGE, '..', '..')
@@ -44,7 +44,9 @@ function extract(): Snippet[] {
         .split('\n')
         .map((l) => (l.startsWith(indent) ? l.slice(indent.length) : l))
         .join('\n')
-      const file = join(OUT, `${page.replace(/\.md$/, '').replaceAll('/', '_')}__${line}.ts`)
+      // mirrors the page's directory so two pages can never map to one file
+      const file = join(OUT, `${page.replace(/\.md$/, '')}__${line}.ts`)
+      mkdirSync(dirname(file), { recursive: true })
       writeFileSync(file, code)
       snippets.push({ name: `${page}:${line}`, file, skip: SKIP.exec(info)?.[2] ?? null })
     }
@@ -67,6 +69,10 @@ writeFileSync(
   }),
 )
 const snippets = extract()
+
+test('snippet files are distinct', () => {
+  expect(new Set(snippets.map((s) => s.file)).size).toBe(snippets.length)
+})
 
 test('docs snippets type-check', () => {
   // the js entry via process.execPath: `.bin/tsc` is a .cmd shim on Windows
