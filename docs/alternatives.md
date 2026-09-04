@@ -17,16 +17,23 @@ Most were not conceived as an LLM sandbox, which is why they are not necessarily
 
 The chart is the time to create a sandbox and then run ten REPL commands in it; both halves are measured below.
 
-| Tech               | Language completeness      | Security             | Start latency                | FOSS       | Setup complexity | File mounting  | Snapshotting |
-| ------------------ | -------------------------- | -------------------- | ---------------------------- | ---------- | ---------------- | -------------- | ------------ |
-| Monty              | partial                    | strict               | 0.08 ms warm pool, 5 ms cold | free / OSS | easy             | easy           | easy         |
-| Full Monty         | partial, or full via proxy | strict, OS-level too | 2 ms warm, 4 ms cold         | not free   | easy             | easy           | easy         |
-| Docker             | full                       | good                 | 195 ms                       | free / OSS | intermediate     | easy           | intermediate |
-| Pyodide            | full                       | poor                 | 2700 ms                      | free / OSS | intermediate     | easy           | hard         |
-| starlark-rust      | very limited               | good                 | 1.3 ms                       | free / OSS | easy             | not available? | impossible?  |
-| WASI / wasmtime    | partial, almost full       | strict               | 16 ms                        | free / OSS | intermediate     | easy           | intermediate |
-| sandboxing service | full                       | strict               | 1500 ms                      | not free   | intermediate     | hard           | intermediate |
-| YOLO Python        | full                       | non-existent         | 0.1 ms / 30 ms               | free / OSS | easy             | easy / scary   | hard         |
+| Tech               | Language completeness      | Security          | Start latency           | FOSS       | Setup        | File mounting  | Snapshotting                |
+| ------------------ | -------------------------- | ----------------- | ----------------------- | ---------- | ------------ | -------------- | --------------------------- |
+| Monty              | partial                    | strict            | 0.08 ms warm, 5 ms cold | free / OSS | easy         | easy           | interpreter, kilobytes      |
+| Full Monty         | partial, or full via proxy | strict + OS-level | 2 ms warm, 4 ms cold    | not free   | easy         | easy           | interpreter, kilobytes      |
+| Docker             | full                       | good              | 195 ms                  | free / OSS | intermediate | easy           | CRIU image, experimental    |
+| Pyodide            | full                       | poor              | 2700 ms                 | free / OSS | intermediate | easy           | no                          |
+| starlark-rust      | very limited               | good              | 1.3 ms                  | free / OSS | easy         | not available? | no                          |
+| WASI / wasmtime    | partial, almost full       | strict            | 16 ms                   | free / OSS | intermediate | easy           | no                          |
+| sandboxing service | full                       | strict            | 1500 ms                 | not free   | intermediate | hard           | VM memory image, 100s of MB |
+| YOLO Python        | full                       | non-existent      | 0.1 ms / 30 ms          | free / OSS | easy         | easy / scary   | no                          |
+
+Snapshotting means pausing code mid-execution, serialising its state, and resuming it later, possibly elsewhere or
+more than once.
+Only an interpreter built for it can do that at the interpreter level; a microVM can do it for its whole memory, at
+a thousand times the size, and without knowing what the paused code was waiting for.
+Durable-execution frameworks such as Temporal are not snapshotting: they replay a workflow written for them, which a
+script a model just wrote is not.
 
 Start latency is the time from requesting a sandbox to receiving the result of `1 + 1`.
 The agent run below is ten REPL commands against a sandbox that already exists.
@@ -84,7 +91,7 @@ The tables round the numbers; the measured cold-start values are in the text bel
     not Docker Desktop's port-forwarding proxy.
     Cold start creates the client pool and opens the WebSocket connection, on which the server spawns a worker for the
     session, then checks out a session and runs `1 + 1`; the median of 7 runs is 3.5 ms.
-    The second row is the median of 20 further `checkout()` + `feed_run()` round trips on that client pool, at 1.6 ms;
+    The client-pool row is the median of 20 further `checkout()` + `feed_run()` round trips on that pool, at 1.6 ms;
     each is a new connection and a new worker, because the server never lets one process serve two clients.
     The worker spawns inside the Linux container, where Monty's own cold start measures 2.4 ms against 4.5 ms on
     macOS, so the Full Monty rows are not directly comparable with the macOS rows above.
@@ -132,7 +139,8 @@ The tables round the numbers; the measured cold-start values are in the text bel
 - **Start latency**: a warm checkout is one message to a worker that already exists; a cold start spawns the worker.
 - **Setup complexity**: `pip install pydantic-monty` or `npm install @pydantic/monty`, about 4.5 MB download.
 - **File mounting**: strictly controlled, see [filesystem access](filesystem.md).
-- **Snapshotting**: `feed_start()` and `dump()` pause, resume and fork execution.
+- **Snapshotting**: `feed_start()` pauses at a host call and `dump()` serialises the interpreter, paused call stack
+    included, to a few kilobytes; restore it once to resume, or several times to fork.
     See [snapshots](snapshots.md).
 
 ## Full Monty
@@ -160,8 +168,8 @@ The tables round the numbers; the measured cold-start values are in the text bel
 - **Setup complexity**: requires the Docker daemon, container images and orchestration; `python:3.14-alpine` is 50 MB
     and Docker cannot be installed from PyPI.
 - **File mounting**: volume mounts work well.
-- **Snapshotting**: possible with durable execution solutions like Temporal, or by snapshotting a container and saving
-    it as an image.
+- **Snapshotting**: not of a running process, except experimentally with CRIU on Linux; committing a container to an
+    image saves its filesystem, not its execution state.
 
 ## Pyodide
 
@@ -173,7 +181,7 @@ The tables round the numbers; the measured cold-start values are in the text bel
 - **Setup complexity**: load the WASM runtime and handle async initialisation; the Pyodide npm package is about 12 MB
     and Deno about 50 MB, so Pyodide cannot be used with PyPI packages alone.
 - **File mounting**: virtual filesystem via browser APIs.
-- **Snapshotting**: presumably possible with durable execution solutions like Temporal, but hard.
+- **Snapshotting**: no; a running Pyodide heap has no serialised form.
 
 ## starlark-rust
 
@@ -184,7 +192,7 @@ See [starlark-rust](https://github.com/facebook/starlark-rust).
 - **Start latency**: runs embedded in the process; 1.3 ms for the first evaluation, around 0.01 ms after that.
 - **Setup complexity**: usable from Python via [starlark-pyo3](https://github.com/inducer/starlark-pyo3).
 - **File mounting**: no file handling by design, as far as we know.
-- **Snapshotting**: impossible, as far as we know.
+- **Snapshotting**: no.
 
 ## WASI / wasmtime
 
@@ -203,7 +211,7 @@ CPython compiled to WebAssembly (WASI), run by [wasmtime](https://wasmtime.dev/)
 - **Setup complexity**: `pip install wasmtime` plus a CPython WASI build, a 13 MB download that unpacks to about 54 MB
     with the standard library; you manage the module, its precompilation and the stdlib directory yourself.
 - **File mounting**: preopened directories.
-- **Snapshotting**: not built in; a paused interpreter cannot be serialised, and pre-initialisation tools like
+- **Snapshotting**: no; a paused interpreter cannot be serialised, and pre-initialisation tools like
     [Wizer](https://github.com/bytecodealliance/wizer) only snapshot a module before it starts running.
 
 ## Sandboxing service
@@ -220,8 +228,9 @@ latency.
 - **FOSS**: pay per execution or compute time; some implementations are open source.
 - **Setup complexity**: API integration and auth tokens; fine for startups but often a non-starter for enterprises.
 - **File mounting**: upload and download via API calls.
-- **Snapshotting**: possible with durable execution solutions like Temporal; the services also offer their own
-    solutions, generally based on container snapshots.
+- **Snapshotting**: a microVM's whole memory can be paused and saved, which E2B and Modal offer as pause and resume;
+    it is hundreds of megabytes, takes hundreds of milliseconds or more, is tied to the host's CPU and kernel, and
+    the host cannot see what the paused code was waiting for.
 
 ## YOLO Python
 
@@ -232,4 +241,4 @@ Running Python directly via `exec()` (about 0.1 ms) or a subprocess (about 30 ms
 - **Start latency**: near zero for `exec()`, about 30 ms for a subprocess.
 - **Setup complexity**: none.
 - **File mounting**: direct filesystem access, which is the problem.
-- **Snapshotting**: possible with durable execution solutions like Temporal.
+- **Snapshotting**: no; `pickle` can save the globals between blocks, which is a session dump, not a paused frame.

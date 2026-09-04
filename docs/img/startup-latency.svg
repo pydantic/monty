@@ -17,10 +17,10 @@
 <text x='670.0' y='272' text-anchor='middle' fill='#8a8f98' font-size='12' font-family='ui-sans-serif, system-ui, sans-serif'>3,000 ms</text>
 <text x='140' y='59.4' text-anchor='end' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>Monty</text>
 <rect x='150' y='44' width='2.0' height='22' rx='3' fill='#e520e9'/>
-<text x='160.0' y='59.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>5 ms</text>
+<text x='160.0' y='59.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>4.9 ms</text>
 <text x='140' y='93.4' text-anchor='end' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>Full Monty</text>
 <rect x='150' y='78' width='2.0' height='22' rx='3' fill='#e520e9'/>
-<text x='160.0' y='93.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>7 ms</text>
+<text x='160.0' y='93.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>7.4 ms</text>
 <text x='140' y='127.4' text-anchor='end' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>WASI / wasmtime</text>
 <rect x='150' y='112' width='34.7' height='22' rx='3' fill='#7c8592'/>
 <text x='192.7' y='127.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>200 ms</text>

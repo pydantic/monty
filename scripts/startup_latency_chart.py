@@ -15,8 +15,8 @@ from pathlib import Path
 # (label, milliseconds, is_monty): cold start plus a warm agent run of 10 REPL
 # commands, the "Combined" column of the table in docs/index.md
 ROWS: list[tuple[str, float, bool]] = [
-    ('Monty', 5, True),
-    ('Full Monty', 7, True),
+    ('Monty', 4.9, True),
+    ('Full Monty', 7.4, True),
     ('WASI / wasmtime', 200, False),
     ('Docker', 900, False),
     ('Sandboxing service', 1900, False),
@@ -95,8 +95,8 @@ def x_for(ms: float) -> float:
 
 
 def fmt_ms(ms: float) -> str:
-    """`0.08 ms`, `7 ms`, `2,800 ms`: no trailing zeros, thousands separated."""
-    if ms < 1:
+    """`0.08 ms`, `4.9 ms`, `16 ms`, `2,800 ms`: a decimal only below 10 ms, thousands separated."""
+    if ms < 10:
         return f'{ms:g} ms'
     return f'{ms:,.0f} ms'
 
