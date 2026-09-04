@@ -39,7 +39,8 @@ both `OSError` and `ValueError`, matching CPython's dual parentage).
 ## Constructor signature
 
 All exception constructors accept **zero or one string argument** only.
-Multi-argument forms used in CPython (e.g. `OSError(errno, strerror, filename)`, `UnicodeDecodeError(encoding, obj, start, end, reason)`) are
+Multi-argument forms used in CPython (e.g. `OSError(errno, strerror, filename)`,
+`UnicodeDecodeError(encoding, obj, start, end, reason)`) are
 not supported; passing more than one argument raises an internal error.
 
 ## Attributes
@@ -49,7 +50,8 @@ not supported; passing more than one argument raises an internal error.
 - `str(exc)` — returns the single message string, or `""` if none.
 - `repr(exc)` — `ClassName('message')` matching CPython, **except**
     `UnicodeDecodeError`/`UnicodeEncodeError`: CPython reprs these from their
-    real 5-field constructor (`UnicodeDecodeError('ascii', b'\xff', 0, 1, 'ordinal not in range(128)')`), which Monty doesn't track, so Monty's
+    real 5-field constructor (`UnicodeDecodeError('ascii', b'\xff', 0, 1, 'ordinal not in range(128)')`), which Monty
+    doesn't track, so Monty's
     `repr()` uses the generic single-message form instead.
 
 **Not implemented:** `__cause__`, `__context__`, `__suppress_context__`,
@@ -60,7 +62,8 @@ tracebacks are not preserved across `raise from`.
 ## Custom subclasses
 
 User `class` definitions are supported, but classes cannot inherit
-(`class Foo(Exception):` raises `NotImplementedError: ... class inheritance and metaclasses`), so there is no way to create a new exception class inside
+(`class Foo(Exception):` raises `NotImplementedError: ... class inheritance and metaclasses`), so there is no way to
+create a new exception class inside
 the sandbox. Raising a plain user class instance (`raise MyClass()`) fails
 with `TypeError: exceptions must derive from BaseException`. Define custom
 exception types on the host side if needed, or use the built-in subclass
@@ -76,7 +79,8 @@ no warnings machinery.
 
 ## Attribute errors on type objects
 
-`list.nonexistent` raises `AttributeError: type object 'list' has no attribute 'nonexistent'`, naming the class rather than the metaclass, and calling it
+`list.nonexistent` raises `AttributeError: type object 'list' has no attribute 'nonexistent'`, naming the class rather
+than the metaclass, and calling it
 (`list.nonexistent()`) reports the same message. Both use Monty's name for the
 class, which differs from CPython's for one builtin: `pathlib.Path` reports
 `PosixPath`, because Monty has a single type where CPython has the `Path`

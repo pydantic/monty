@@ -39,7 +39,8 @@ CPython prints it literally, or the reverse. Common text is unaffected.
 ## Width / precision bounds
 
 - A `width` or `precision` whose decimal value overflows `usize` raises
-    `SyntaxError: Invalid format specifier '...': width or precision overflows usize` rather than being accepted. CPython is bounded only by memory.
+    `SyntaxError: Invalid format specifier '...': width or precision overflows usize` rather than being accepted.
+    CPython is bounded only by memory.
 - Very large widths/precisions are additionally bounded by the resource
     tracker; see [resource_limits.md](resource_limits.md).
 
@@ -52,5 +53,6 @@ characters after the type field (`f'{1:kk}'`, `f'{1:10xyz}'`) and `usize`
 overflow, raising `SyntaxError` instead of CPython's runtime `ValueError`. The
 message text otherwise matches, minus CPython's `for object of type '...'`
 suffix, which needs the runtime value type. Specs whose error *is*
-value-type-dependent or only resolvable at format time (`Unknown format code 'k'`, the `Cannot specify …` grouping conflicts, and `Format specifier missing precision`) are deferred to runtime and raise the exact CPython `ValueError`,
+value-type-dependent or only resolvable at format time (`Unknown format code 'k'`, the `Cannot specify …` grouping
+conflicts, and `Format specifier missing precision`) are deferred to runtime and raise the exact CPython `ValueError`,
 as do all dynamically-built specs (`f'{1:{spec}}'`).

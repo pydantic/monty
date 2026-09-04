@@ -29,20 +29,25 @@ around a decoration will not catch these.
     each is named individually rather than reported as an unknown keyword.
     Ordering dunders therefore do not exist, and hashing is whatever `eq`/`frozen`
     imply.
-- **`__post_init__`** — raises `NotImplementedError: dataclass() does not yet support __post_init__ in a class body, which would be silently skipped`.
-- **`InitVar[...]`** — raises `NotImplementedError: dataclass() does not yet support InitVar (field <name>), which would become an ordinary field`.
+- **`__post_init__`** — raises
+    `NotImplementedError: dataclass() does not yet support __post_init__ in a class body, which would be silently skipped`.
+- **`InitVar[...]`** — raises
+    `NotImplementedError: dataclass() does not yet support InitVar (field <name>), which would become an ordinary field`.
     Detected textually, since annotations are never evaluated: the name need not
     be imported to be rejected.
 - **`field()` / `default_factory` / `MISSING`** — `field(...)` in a class body
     raises `NameError`. There is no `MISSING` object, so the `Field` attributes
-    whose value would be one raise `NotImplementedError: Field.default is not yet supported, dataclasses.MISSING is not implemented` (likewise
+    whose value would be one raise
+    `NotImplementedError: Field.default is not yet supported, dataclasses.MISSING is not implemented` (likewise
     `default_factory`, and `default` only for a field that has none).
     `Field.metadata` and `Field._field_type` raise the same way, for
     `types.MappingProxyType` and `dataclasses._FIELD`.
-- **Module helpers** — `fields`, `asdict`, `astuple`, `replace`.
+- **Module helpers** — `fields`, `asdict`, `astuple` and `replace` do not exist: accessing them raises
+    `AttributeError`, not `NotImplementedError`, since the module has no such attribute.
 
 Mutable defaults are rejected as CPython rejects them
-(`ValueError: mutable default <class 'list'> for field xs is not allowed: use default_factory`), and so is a non-default field after a defaulted one
+(`ValueError: mutable default <class 'list'> for field xs is not allowed: use default_factory`), and so is a non-default
+field after a defaulted one
 (`TypeError: non-default argument 'b' follows default argument 'a'`).
 
 ## Divergences from CPython
@@ -58,7 +63,8 @@ Mutable defaults are rejected as CPython rejects them
     them in `fields()`. Monty has no field kinds, so the mapping *is* the field
     list and class variables never appear in it.
 - **`Field` renders differently.** `repr(field)` follows CPython's layout but
-    writes `MISSING` where CPython writes `<dataclasses._MISSING_TYPE object at 0x..>`, and the stringized `type`. `repr(type(field))` is `<class 'Field'>`,
+    writes `MISSING` where CPython writes `<dataclasses._MISSING_TYPE object at 0x..>`, and the stringized `type`.
+    `repr(type(field))` is `<class 'Field'>`,
     not `<class 'dataclasses.Field'>` (`Field.__name__` matches either way, so
     attribute errors read the same).
 - **Overwriting `__dataclass_fields__` un-marks the class.** Every dunder reads
@@ -90,7 +96,8 @@ Mutable defaults are rejected as CPython rejects them
     it reprs as `<function dataclass at 0x..>`, but `type()` says
     `builtin_function_or_method` where CPython says `function`, and CPython's repr
     names the closure (`dataclass.<locals>.wrap`). Having nowhere to live but the
-    value, the options *are* the value: `dataclass(frozen=True) is dataclass(frozen=True)` is `True`, where each CPython call builds a fresh
+    value, the options *are* the value: `dataclass(frozen=True) is dataclass(frozen=True)` is `True`, where each CPython
+    call builds a fresh
     closure. Fixable only if Monty gains closures over native functions; nothing
     else depends on that, so it is not planned.
 - **`del obj.field` on a frozen instance never raises `cannot delete field`**,

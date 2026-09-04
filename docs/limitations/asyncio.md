@@ -82,6 +82,9 @@ async def main():
         await asyncio.gather(sibling(), raises())
     except ValueError:
         pass
+
+
+asyncio.run(main())
 ```
 
 CPython prints `sibling finished` here, Monty prints nothing.

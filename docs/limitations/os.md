@@ -34,8 +34,9 @@ whether each call is permitted.
     rejected type the phrase is CPython's verbatim, so `os.stat(1.5)` still
     says `should be string, bytes, os.PathLike or integer`. Note `open()`
     *does* accept `bytes` paths, decoding them as UTF-8; the `os` functions do
-    not. The `os.listdir` wording always includes `integer`, POSIX CPython's
-    phrasing, even though Windows CPython omits it (no fd-based listdir there).
+    not. The verbatim `os.listdir` phrase is POSIX CPython's, which includes `integer`
+    even though Windows CPython omits it (no fd-based listdir there); the narrowed
+    phrase for `bytes`, `int` and `bool` is `string, os.PathLike or None`.
 - **No `__fspath__` protocol.** `os.fspath` (and every path-taking function)
     accepts only `str`, `bytes` (fspath only), and `pathlib.Path`: a
     user-defined class implementing `__fspath__` raises `TypeError` instead of
@@ -52,14 +53,16 @@ whether each call is permitted.
     `os.lstat` itself is not implemented.
 - **All-keyword calls that overflow the signature** are not always reported
     the way CPython reports them. `os.fspath(path='a', foo=1)` and
-    `os.listdir(path='.', foo=1)` match (`takes at most 1 keyword argument (2 given)`), but functions with keyword-only slots (`os.stat`, `os.mkdir`,
+    `os.listdir(path='.', foo=1)` match (`takes at most 1 keyword argument (2 given)`), but functions with keyword-only
+    slots (`os.stat`, `os.mkdir`,
     `os.remove`, `os.rmdir`, `os.rename`) report the first unknown keyword
     (`stat() got an unexpected keyword argument 'foo'`) where CPython reports
     the arity (`stat() takes at most 3 keyword arguments (4 given)`).
 - **No working directory.** `os.listdir()`'s default `'.'` (or any relative
     path) reaches the host unchanged; a mount table matches no mount and
     raises `PermissionError`.
-- **`mode` arguments** are type-checked (`'str' object cannot be interpreted as an integer`) but otherwise ignored: Monty's filesystem
+- **`mode` arguments** are type-checked (`'str' object cannot be interpreted as an integer`) but otherwise ignored:
+    Monty's filesystem
     backends do not model POSIX permission bits.
 - **`os.replace` is an alias of `os.rename`** at the host boundary: both
     suspend with the same rename OS call, so overwrite semantics are whatever

@@ -29,8 +29,8 @@ cargo add monty monty-types
 | [`monty-type-checking`](https://crates.io/crates/monty-type-checking) | Type checking, powered by ty                                |
 | [`monty-typeshed`](https://crates.io/crates/monty-typeshed)           | Trimmed typeshed stubs for Monty's stdlib subset            |
 
-Host-side crates depend on `monty-types`, never on `monty`, so the interpreter is not linked into your parent process
-at all.
+Host-side crates depend on `monty-types`, not on `monty`, so the interpreter is not linked into your parent process
+at all; `monty-proto` links it only with its `worker` feature, which the workers enable.
 The [Rust API](../api/rust/monty.md) pages document `monty`, `monty-pool`, `monty-types`, `monty-fs`, `monty-proto` and
 `monty-type-checking`.
 

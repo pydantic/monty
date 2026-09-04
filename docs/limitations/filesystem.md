@@ -140,7 +140,8 @@ characters around a `…`, where CPython quotes it whole.
 
 ### At most 64 path components
 
-A path naming more than 64 components raises the same `OSError` `[Errno 36] File name too long`, with the same three consequences as the length limit
+A path naming more than 64 components raises the same `OSError` `[Errno 36] File name too long`, with the same three
+consequences as the length limit
 above. CPython has no such limit: it hands the path to the kernel, which
 counts bytes, not levels.
 

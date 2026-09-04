@@ -3,7 +3,8 @@
 `typing` exists so type-annotated code can `import` it without
 `ModuleNotFoundError`. **No runtime type checking happens.** The forms are
 inert marker objects and none of them can be subscripted: `Optional[str]`,
-`List[int]` and `Callable[[int], str]` raise `TypeError: 'typing._SpecialForm' object is not subscriptable`, and `Union[int, str]` raises the `'type' object`
+`List[int]` and `Callable[[int], str]` raise `TypeError: 'typing._SpecialForm' object is not subscriptable`, and
+`Union[int, str]` raises the `'type' object`
 wording the builtins use for `list[int]`. Annotations are unaffected, being
 stringized rather than evaluated (see below).
 
@@ -52,7 +53,8 @@ This is a known temporary divergence; see `class__annotations.py`.
     Monty stringizes whether or not that import is present.
 - The blocker is that Monty has no generic types: `list[int]` and
     `dict[str, int]` raise `TypeError: 'type' object is not subscriptable`, and
-    `int | None` raises `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'`, so evaluated annotations would fail on the most common
+    `int | None` raises `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'`, so evaluated annotations
+    would fail on the most common
     forms. Runtime `types.GenericAlias` and `|` unions are the prerequisite for
     matching PEP 649.
 - **Treat the values as provisional.** Code reading `__annotations__` sees

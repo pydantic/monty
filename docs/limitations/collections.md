@@ -11,17 +11,20 @@ the type objects themselves (like `deque`), so `type(d) is defaultdict` and
 ## Not implemented
 
 `OrderedDict`, `ChainMap`, `UserDict`, `UserList`, `UserString`, and the
-`collections.abc` submodule. Importing one raises `ImportError: cannot import name 'OrderedDict' from 'collections' (unknown location)` (or `AttributeError`
+`collections.abc` submodule. Importing one raises
+`ImportError: cannot import name 'OrderedDict' from 'collections' (unknown location)` (or `AttributeError`
 as an attribute); `import collections.abc` raises `ModuleNotFoundError`. The
 narrowed typeshed stub makes `from collections import OrderedDict` a type error
 too, rather than something that type-checks and then fails at runtime.
 
 ## `deque`
 
-- **`d * 1.5`** raises `TypeError: unsupported operand type(s) for *: 'collections.deque' and 'float'`, where CPython says `can't multiply sequence by non-int of type 'float'`. Shared with `list`.
+- **`d * 1.5`** raises `TypeError: unsupported operand type(s) for *: 'collections.deque' and 'float'`, where CPython
+    says `can't multiply sequence by non-int of type 'float'`. Shared with `list`.
 - **Repeat counts in `[2**63, 2**64)` are accepted** where CPython rejects them:
     Monty's repeat count is a `usize`, CPython's a C `ssize_t`. Only observable
-    for a bounded deque, whose result truncates to `maxlen`: `deque([1, 2], maxlen=2) * 2**63` yields `deque([1, 2], maxlen=2)` in Monty but `OverflowError`
+    for a bounded deque, whose result truncates to `maxlen`: `deque([1, 2], maxlen=2) * 2**63` yields
+    `deque([1, 2], maxlen=2)` in Monty but `OverflowError`
     in CPython. `2**64` or more raises `OverflowError` in both.
 - **Returned to the host as a plain `list`**, so the `maxlen` bound and the
     deque-ness are lost; sending it back yields a `list`. (Same as
@@ -68,7 +71,8 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
     can hit the memory limit where CPython would stream.
 - **Crosses the host boundary as a plain `dict`.**
 - **In-place `c &= [list]`** (a non-mapping) subscripts `other[elem]` like
-    CPython and raises `TypeError`, but with Monty's list-index wording (`list indices must be integers, not 'str'` vs CPython's `... or slices, not str`).
+    CPython and raises `TypeError`, but with Monty's list-index wording (`list indices must be integers, not 'str'` vs
+    CPython's `... or slices, not str`).
     Mapping operands (`c &= {'a': 1}`) match CPython exactly, including the
     `KeyError` for a key missing from a plain dict.
 
@@ -76,7 +80,8 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
 
 `deque` and `defaultdict` are C types, so CPython qualifies them
 (`collections.deque`) in `repr(T)` and in every type-naming error message
-(`unsupported operand type(s)`, `object is not callable`, `object has no attribute`) while `__name__` stays bare (`'deque'`); Monty matches both
+(`unsupported operand type(s)`, `object is not callable`, `object has no attribute`) while `__name__` stays bare
+(`'deque'`); Monty matches both
 surfaces.
 
 `Counter` is a Python-level class, so CPython gives the bare name everywhere

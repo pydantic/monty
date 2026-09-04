@@ -941,7 +941,7 @@ the project describing behaviour it no longer has.
 
 | Surface                                                                                        | Reader                                                         | Contains                                                                                                                                                                                                                                                                                                                                                                             |
 | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `README.md`                                                                                    | GitHub, PyPI, npm landing page                                 | A short pitch with the latency numbers, install commands, one example, links into `docs/` — nothing else                                                                                                                                                                                                                                                                             |
+| `README.md`                                                                                    | GitHub, PyPI, npm landing page                                 | A short pitch with the latency numbers, install commands, one example, links into `docs/`, plus badges, community bindings and the Pydantic Stack footer; no can/cannot lists, quickstarts or alternatives                                                                                                                                                                           |
 | `docs/`                                                                                        | the docs site (`pydantic.dev/docs/monty`), nav in `mkdocs.yml` | The landing page (`index.md`: numbers, why, example), commercial support (`server.md`), getting started per language (install then examples), concepts (security model, host functions, resource limits, filesystem, snapshots, type checking), reference (comparison to alternatives, examples, CLI), limitations (the subset on `limitations/index.md`, then one page per feature) |
 | `limitations/` (a symlink to `docs/limitations/`, published as the site's Limitations section) | agents and contributors chasing a specific behaviour           | `index.md` gives the shape of the subset; the other pages are the exhaustive per-feature record of CPython divergences (see the section below)                                                                                                                                                                                                                                       |
 | `crates/*/README.md`                                                                           | crates.io, and PyPI/npm for the binding crates                 | Per-crate API documentation; `monty-python/README.md` and `monty-js/README.md` are the binding references                                                                                                                                                                                                                                                                            |
@@ -954,8 +954,7 @@ a `docs/` page instead of `limitations/` is a defect — move it and link.
 
 - **A CPython divergence** — `limitations/<file>.md`, per the mandatory rule below.
 - **The subset changes shape** (a stdlib module becomes importable, a parse-time
-    rejection lands or is lifted, a language feature ships) — also `docs/limitations/index.md`
-    and the "What Monty is not for" section of `docs/index.md`.
+    rejection lands or is lifted, a language feature ships) — also `docs/limitations/index.md`.
 - **Python binding API** (`crates/monty-python/`) — the `_monty.pyi` docstrings,
     `crates/monty-python/README.md`, and the `docs/` page that covers the feature.
 - **JavaScript binding API** (`crates/monty-js/`) — `crates/monty-js/README.md` and
@@ -1005,7 +1004,8 @@ The list of stdlib modules in `docs/limitations/index.md` must be updated if a n
     one sentence per line, claims traceable to source, no hype.
     Do not state a behaviour you have not read in the code, the tests or `limitations/`.
 - `make format-md` normalises every tracked markdown file with mdformat (table alignment, four-space list
-    continuations, admonitions and frontmatter kept); pre-commit runs it, and `make lint` checks it with `make lint-md`.
+    continuations, admonitions and frontmatter kept; style in `.mdformat.toml`); pre-commit runs it, and `make lint`
+    checks it with `make lint-md`.
     It never rewraps prose.
 
 ### Enforcement

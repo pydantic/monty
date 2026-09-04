@@ -28,11 +28,13 @@ any code runs.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).
 - **`async for` loops** and **async comprehensions**.
-- **Wildcard imports** (`from m import *`) — raises `NotImplementedError: "Wildcard imports (\`from ... import \*\`) are not supported"\`.
+- **Wildcard imports** (`from m import *`) — raises
+    `` NotImplementedError: "Wildcard imports (`from ... import *`) are not supported" ``.
 
 ## Expressions rejected at parse time
 
-- **Complex number literals** (`1j`, `2+3j`) — `NotImplementedError: The monty syntax parser does not yet support complex constants`.
+- **Complex number literals** (`1j`, `2+3j`) —
+    `NotImplementedError: The monty syntax parser does not yet support complex constants`.
 - **Template strings (t-strings)** — PEP 750.
 
 ## Starred unpacking
@@ -53,16 +55,23 @@ exactly.
 
 ## Source nesting depth
 
-- AST nesting is capped at 200 levels (30 in debug builds); exceeding it raises `SyntaxError: Source is too deeply nested`.
-- The budget is shared across every nesting-producing construct (parens, calls, subscripts, attribute chains, operators, comprehensions, control-flow blocks, `with`, etc.), including the synthetic nesting from a flat multi-item `with`; see [with.md](with.md).
-- The message differs from CPython, which uses construct-specific wording (`too many nested parentheses`, `too many statically nested blocks`, …).
-- Class-body annotations count against the budget even though they are stringized rather than evaluated (see [typing.md](typing.md)), as do class-variable values and method parameter defaults; all three are walked before being parsed. CPython imposes no comparable limit on a stringized annotation.
+- AST nesting is capped at 200 levels (30 in debug builds); exceeding it raises
+    `SyntaxError: Source is too deeply nested`.
+- The budget is shared across every nesting-producing construct (parens, calls, subscripts, attribute chains, operators,
+    comprehensions, control-flow blocks, `with`, etc.), including the synthetic nesting from a flat multi-item `with`;
+    see [with.md](with.md).
+- The message differs from CPython, which uses construct-specific wording (`too many nested parentheses`,
+    `too many statically nested blocks`, …).
+- Class-body annotations count against the budget even though they are stringized rather than evaluated (see
+    [typing.md](typing.md)), as do class-variable values and method parameter defaults; all three are walked before
+    being parsed. CPython imposes no comparable limit on a stringized annotation.
 
 ## Imports
 
 - Only the bundled stdlib modules listed in [modules.md](modules.md) can be
     imported. Importing anything else raises `ModuleNotFoundError`.
-- Relative imports (`from . import x`) raise `ImportError: "attempted relative import with no known parent package"`; there is no package
+- Relative imports (`from . import x`) raise `ImportError: "attempted relative import with no known parent package"`;
+    there is no package
     system.
 - `__import__` is not defined.
 
@@ -74,15 +83,18 @@ became mandatory in Python 3.7 or earlier and so are inert there too, and
 `annotations` is a no-op here because Monty already stringizes annotations
 (see [typing.md](typing.md)). Divergences:
 
-- **`barry_as_FLUFL`** (PEP 401) raises `NotImplementedError: "The monty syntax parser does not yet support the 'barry_as_FLUFL' future feature"`.
+- **`barry_as_FLUFL`** (PEP 401) raises
+    `NotImplementedError: "The monty syntax parser does not yet support the 'barry_as_FLUFL' future feature"`.
     CPython accepts it, making `<>` the inequality operator and `!=` a
     `SyntaxError`; Monty parses neither differently, so the import is rejected
     rather than silently ignored.
 - **Aliasing is rejected.** `from __future__ import annotations as ann` raises
-    `NotImplementedError: "The monty syntax parser does not yet support aliasing a \`__future__\` feature"`. CPython binds `ann`to a`__future__.\_Feature`object; a no-op would bind nothing and surface as a`NameError\` far from the
-    import, so it is rejected at the import instead.
+    `` NotImplementedError: "The monty syntax parser does not yet support aliasing a `__future__` feature" ``.
+    CPython binds `ann` to a `__future__._Feature` object; a no-op would bind nothing and surface as a `NameError`
+    far from the import, so it is rejected at the import instead.
 - **Position is not enforced.** CPython requires `__future__` imports to
-    precede all other statements (`SyntaxError: "from __future__ imports must occur at the beginning of the file"`); Monty accepts them anywhere.
+    precede all other statements (`SyntaxError: "from __future__ imports must occur at the beginning of the file"`);
+    Monty accepts them anywhere.
 - `import __future__` (as opposed to `from __future__ import ...`) raises
     `ModuleNotFoundError`; there is no `__future__` module object.
 
@@ -129,7 +141,10 @@ leak into the sandbox.
 ## Function objects
 
 A function exposes **no** attributes: `__name__`, `__doc__`, `__qualname__` and
-`__module__` all raise `AttributeError: 'function' object has no attribute '<name>'`, and new ones cannot be set — `fn.tag = True` raises `AttributeError: 'function' object has no attribute 'tag' and no __dict__ for setting new attributes`. CPython supports all of these.
+`__module__` all raise `AttributeError: 'function' object has no attribute '<name>'`, and new ones cannot be set —
+`fn.tag = True` raises
+`AttributeError: 'function' object has no attribute 'tag' and no __dict__ for setting new attributes`. CPython supports
+all of these.
 
 This bounds what a decorator can do: it can call, wrap, store or replace the
 function it receives, but cannot ask the function about itself, so

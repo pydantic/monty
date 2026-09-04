@@ -11,7 +11,8 @@ exception, `return`, `break`, `continue`), and a truthy return from
 User-class `__enter__` / `__exit__` run as real frames, so unlike
 `__repr__` / `__str__` (see [classes.md](classes.md)) they may suspend on
 external/OS calls and resume mid-`with`. The protocol check matches CPython:
-a value whose class lacks `__exit__` raises `TypeError: '...' object does not support the context manager protocol (missed __exit__ method)`; one with
+a value whose class lacks `__exit__` raises
+`TypeError: '...' object does not support the context manager protocol (missed __exit__ method)`; one with
 `__exit__` but no `__enter__` gets the `(missed __enter__ method)` variant.
 Lookup is type-level, as in CPython: an instance attribute named
 `__enter__`/`__exit__` is ignored by the `with` statement, but used by an

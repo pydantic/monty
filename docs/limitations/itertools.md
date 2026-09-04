@@ -21,7 +21,9 @@ Everything else: `accumulate`, `batched`, `combinations`,
 `chain.from_iterable` is also absent, even though `chain` itself is
 implemented: it is a classmethod reached through an attribute on the `chain`
 builtin, and Monty's module functions expose no attributes
-(`itertools.chain.from_iterable` raises `AttributeError: 'builtin_function_or_method' object has no attribute 'from_iterable'`). Use `chain(*iterables)` instead.
+(`itertools.chain.from_iterable` raises
+`AttributeError: 'builtin_function_or_method' object has no attribute 'from_iterable'`). Use `chain(*iterables)`
+instead.
 
 These names are absent from the module namespace rather than stubbed, so they
 are rejected at type-check time (`Module 'itertools' has no member 'chain'`) and
@@ -50,7 +52,8 @@ raise `AttributeError` at runtime.
     synchronous `evaluate_function` path, which runs a frame to completion and
     cannot yield to the host. A callable that reaches an external function, an
     `os` operation, or a host method call therefore raises
-    `NotImplementedError: takewhile(): external function 'f' is not yet supported in this context` where CPython would simply call it. This is the same
+    `NotImplementedError: takewhile(): external function 'f' is not yet supported in this context` where CPython would
+    simply call it. This is the same
     restriction that applies to `__init__`, `__next__` and `__repr__` (see
     [classes.md](classes.md)); ordinary sandbox-defined functions and lambdas are
     unaffected.

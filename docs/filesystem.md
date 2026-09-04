@@ -23,13 +23,13 @@ from pydantic_monty import Monty, MountDir
 with tempfile.TemporaryDirectory() as tmp:
     Path(tmp, 'greeting.txt').write_text('hello from the host')
 
-    mount = MountDir(host_path=tmp, virtual_path='/data', mode='read-only')
     code = "from pathlib import Path\nPath('/data/greeting.txt').read_text()"
 
-    with Monty() as pool:
-        with pool.checkout() as session:
-            print(session.feed_run(code, mount=mount))
-            #> hello from the host
+    with MountDir(host_path=tmp, virtual_path='/data', mode='read-only') as mount:
+        with Monty() as pool:
+            with pool.checkout() as session:
+                print(session.feed_run(code, mount=mount))
+                #> hello from the host
 ```
 
 Pass a list to `mount=` for several at once.

@@ -155,7 +155,8 @@ with Monty() as pool:
             #> MemoryError
 ```
 
-An infinite loop hits `max_duration_secs` the same way, raising `TimeoutError`.
+An infinite loop hits `max_duration_secs` the same way, raising a `MontyRuntimeError` whose `exception()` is a
+`TimeoutError`.
 Type checking is also configured on `checkout()`:
 
 ```python

@@ -51,8 +51,7 @@ fix.
 1. **The obliged surfaces are updated.** Match the change against the table in
     `CLAUDE.md` "Documentation surfaces that must stay in sync":
 
-    - subset shape change → `docs/limitations/index.md` and the "What Monty is not for"
-        section of `docs/index.md`
+    - subset shape change → `docs/limitations/index.md`
     - Python API → `_monty.pyi` docstrings, `crates/monty-python/README.md`, the covering
         `docs/` page
     - JS API → `crates/monty-js/README.md`, `docs/quickstart/javascript.md`

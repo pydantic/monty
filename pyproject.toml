@@ -12,6 +12,11 @@ dev = [
     "maturin>=1.15.0,<2.0",
     "mypy>=2.1.0",
     "ruff>=0.14.7",
+    # markdown formatting (`make format-md`); style is in .mdformat.toml
+    "mdformat>=0.7.22",
+    "mdformat-tables>=1.0.0",
+    "mdformat-mkdocs>=5.2.1",
+    "mdformat-frontmatter>=2.1.2",
     "duckdb>=1.0.0",
     "httpx>=0.28.1",
     "playwright>=1.58.0",
@@ -25,18 +30,7 @@ docs = [
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.7",
     "mkdocstrings[python]>=0.30",
-    "mdformat>=0.7.22",
-    "mdformat-tables>=1.0.0",
-    "mdformat-mkdocs>=5.2.1",
-    "mdformat-frontmatter>=2.1.2",
 ]
-
-# markdown formatting (`make format-md` / `make lint-md`); the file list comes from
-# `git ls-files` in the Makefile, this only sets the style
-[tool.mdformat]
-# one sentence per line is the house style, so never rewrap prose
-wrap = "keep"
-end_of_line = "lf"
 
 # https://beta.ruff.rs/docs/configuration/
 [tool.ruff]

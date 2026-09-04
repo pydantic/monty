@@ -1,6 +1,6 @@
 ---
 title: Monty
-description: "A sandboxed Python interpreter written in Rust for code written by AI. Start latency <1ms. Pause and resume. Resource limits. Available from PyPI, NPM and crates.io."
+description: "A sandboxed Python interpreter written in Rust for code written by AI. Start latency 5 ms cold, 0.4 ms warm. Pause and resume. Resource limits. Available from PyPI, NPM and crates.io."
 ---
 
 # Monty
@@ -51,8 +51,8 @@ Learn more in the [comparison to alternatives](alternatives.md).
     later on another machine.
     There are no file descriptors, sockets or threads inside the sandbox, so nothing has to be reconstructed.
     See [snapshots](snapshots.md).
-1. **Strict resource limits** `max_memory`, `max_duration_secs`, `max_recursion_depth` and
-    `max_suspensions` are enforced by the VM itself; `'x' * 10**12` raises `MemoryError` before the allocation is
+1. **Strict resource limits** `max_memory`, `max_duration_secs` and `max_recursion_depth` are enforced by the VM
+    itself, and `max_suspensions` by the pool; `'x' * 10**12` raises `MemoryError` before the allocation is
     attempted.
     See [resource limits](resource-limits.md).
 1. **A package, not infrastructure.** `uv add pydantic-monty`, `npm install @pydantic/monty` or `cargo add monty-pool`:
@@ -81,7 +81,7 @@ Installation
 === "Rust"
 
     ```bash
-    cargo add monty
+    cargo add monty-pool
     ```
 
 The `code` string is what a model writes when asked how long a bar of chocolate could power a lightbulb.
@@ -148,3 +148,4 @@ All of them need somewhere safe to run the generated code, and Monty is that pla
 - [Commercial support](server.md): `monty-server`, the same workers behind a WebSocket as a container image.
 - [Security model](security.md) for what "secure" does and does not mean here.
 - [Examples](examples.md), including Code Mode in Pydantic AI.
+- [Limitations](limitations/index.md): the Python subset, and every known divergence from CPython.

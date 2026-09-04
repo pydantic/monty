@@ -133,7 +133,7 @@ def run_wasmtime():
     The module is compiled once to `python.cwasm` next to it, as a deployment would
     do ahead of time; the timed part is deserialising that, instantiating, and running.
     """
-    from wasmtime import Engine, Linker, Module, Store, WasiConfig
+    from wasmtime import Engine, ExitTrap, Linker, Module, Store, WasiConfig
 
     wasi_dir = os.getenv('CPYTHON_WASI_DIR')
     if not wasi_dir:
@@ -160,7 +160,7 @@ def run_wasmtime():
     instance = linker.instantiate(store, module)
     try:
         instance.exports(store)['_start'](store)
-    except Exception:  # `sys.exit(0)` surfaces as a trap
+    except ExitTrap:  # `sys.exit(0)` surfaces as a trap; the output is checked below
         pass
     diff = time.perf_counter() - start
     output = stdout.read_text().strip()
@@ -247,7 +247,7 @@ def agent_monty(warm: bool):
 
 
 def agent_wasmtime():
-    from wasmtime import Engine, Linker, Module, Store, WasiConfig
+    from wasmtime import Engine, ExitTrap, Linker, Module, Store, WasiConfig
 
     wasi_dir = os.getenv('CPYTHON_WASI_DIR')
     if not wasi_dir:
@@ -277,7 +277,7 @@ def agent_wasmtime():
         instance = linker.instantiate(store, module)
         try:
             instance.exports(store)['_start'](store)
-        except Exception:  # `sys.exit(0)` surfaces as a trap
+        except ExitTrap:  # `sys.exit(0)` surfaces as a trap; the output is checked below
             pass
         output = stdout.read_text()
     diff = time.perf_counter() - start
@@ -300,6 +300,7 @@ def agent_docker():
                 ['docker', 'exec', container, 'python', '-c', replay(i)],
                 capture_output=True,
                 text=True,
+                check=True,
             )
             output = result.stdout
         diff = time.perf_counter() - start
@@ -345,7 +346,7 @@ def agent_daytona():
 def agent_subprocess_python():
     start = time.perf_counter()
     for i in range(1, len(AGENT_BLOCKS) + 1):
-        output = subprocess.run(['python', '-c', replay(i)], capture_output=True, text=True).stdout
+        output = subprocess.run(['python', '-c', replay(i)], capture_output=True, text=True, check=True).stdout
     diff = time.perf_counter() - start
     report_agent('Subprocess Python (replayed)', diff, output)
 

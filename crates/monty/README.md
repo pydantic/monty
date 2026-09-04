@@ -6,7 +6,9 @@
 
 The core interpreter crate of [Monty](https://github.com/pydantic/monty) — a sandboxed Python interpreter written in Rust for code written by AI.
 
-Monty lets you safely run Python code written by an LLM inside your own process, without the cost, latency and complexity of a container based sandbox. It parses Python with [Ruff](https://github.com/astral-sh/ruff)'s parser and executes it on its own bytecode VM — no CPython, no FFI, no C dependencies. Startup takes microseconds, not hundreds of milliseconds.
+Monty runs Python code written by an LLM without the cost, latency and complexity of a container based sandbox. It parses Python with [Ruff](https://github.com/astral-sh/ruff)'s parser and executes it on its own bytecode VM — no CPython, no FFI, no C dependencies. Startup takes microseconds, not hundreds of milliseconds.
+
+This crate runs the interpreter in your own process, so an abort inside it (a stack overflow, an allocator failure) takes your process with it. For untrusted code use [`monty-pool`](https://crates.io/crates/monty-pool), which runs the interpreter in worker subprocesses and replaces one that crashes.
 
 The sandbox has no ambient access to the host: filesystem, environment and network are only reachable through external function calls and mounts that you explicitly provide.
 

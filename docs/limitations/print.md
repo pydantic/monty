@@ -13,7 +13,8 @@ host decides where it ends up; there is no real `sys.stdout` underneath (see
 
 ## Rejected / ignored
 
-- `file=...` — rejected with `TypeError: "print() 'file' argument is not supported"`. Code that does `print(..., file=sys.stderr)` will not work;
+- `file=...` — rejected with `TypeError: "print() 'file' argument is not supported"`. Code that does
+    `print(..., file=sys.stderr)` will not work;
     `sys.stderr` is an opaque marker (see [sys.md](sys.md)).
 - `flush=...` — accepted and ignored. Output is delivered to the host through
     the subprocess protocol on its own schedule (see "Chunk boundaries" below);
@@ -79,7 +80,8 @@ buffers. That growth is **not** covered by `ResourceLimits.max_memory`
 (heap-only, and in the pool only on the worker).
 
 - Default cap: **10 MiB** (`DEFAULT_MAX_PRINT_COLLECT_BYTES`).
-- Exceeding the cap fails with `memory limit exceeded: {used} bytes > {limit} bytes` (same wording as heap `ResourceError::Memory`), but *what raises* and
+- Exceeding the cap fails with `memory limit exceeded: {used} bytes > {limit} bytes` (same wording as heap
+    `ResourceError::Memory`), but *what raises* and
     *who can catch it* differ by host:
     - **In-process Rust** (`PrintWriter::CollectString`/`CollectStreams`): the
         error is raised inside the VM as an ordinary `MemoryError`, so sandboxed

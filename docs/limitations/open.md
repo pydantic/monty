@@ -32,7 +32,8 @@ being changed or removed between calls, both documented further down.
     parse time with `ValueError: update modes ('+') are not yet supported`.
     Monty has no read-position state, so a write after a read would silently
     truncate the file via the one-shot OS write that backs `write()`.
-- Exclusive creation mode (`x`) is rejected with `ValueError: exclusive creation mode is not supported`; it would need a dedicated race-free
+- Exclusive creation mode (`x`) is rejected with `ValueError: exclusive creation mode is not supported`; it would need a
+    dedicated race-free
     mount-table operation.
 - The mode string is normalized to a canonical form at parse time
     (`'rt'` → `'r'`, `'br'` → `'rb'`); the original raw input is not
@@ -54,7 +55,8 @@ Two exceptions:
 - `encoding="utf-8"` (any case, also `"utf8"`) is accepted as a documented
     no-op because Monty already uses UTF-8 for all text I/O.
 - A wrong *type* for `encoding`/`errors`/`newline` (e.g. `encoding=123`)
-    raises a typed `TypeError: open() argument '<name>' must be str or None, not <type>` rather than the generic "not yet supported" message.
+    raises a typed `TypeError: open() argument '<name>' must be str or None, not <type>` rather than the generic "not
+    yet supported" message.
 
 Bytes paths are accepted but decoded as **strict** UTF-8, not via CPython's
 `os.fsdecode` / PEP 383 `surrogateescape` behavior. A non-UTF-8 bytes path
@@ -124,7 +126,8 @@ protocol (`__iter__`/`__next__`, including `for line in f:`).
     `sorted()`/`list.sort()`/`min()`/`max()`, `map()`/`filter()` functions,
     `iter(callable, sentinel)`, `defaultdict`'s `default_factory`, and dunder
     methods invoked implicitly. The first read that needs the host raises
-    `NotImplementedError: <context>: OS function 'Path.read_text' is not yet supported in this context` where CPython would simply read.
+    `NotImplementedError: <context>: OS function 'Path.read_text' is not yet supported in this context` where CPython
+    would simply read.
 - A read that *fails* in the host leaves the file in a retry-safe state:
     `pending_read` is cleared, the buffer stays empty, and `eof` is not
     flipped. A user-caught exception followed by a retry will re-attempt
@@ -133,7 +136,8 @@ protocol (`__iter__`/`__next__`, including `for line in f:`).
 - `seekable()` returns `True` for all open Monty file wrappers, matching
     regular CPython files.
 - Text-mode `tell()` returns a **char index** rather than CPython's opaque
-    byte cookie. Round-trips through `seek()` work correctly (`pos = tell(); seek(pos)` resumes the same position) but the raw integer differs from
+    byte cookie. Round-trips through `seek()` work correctly (`pos = tell(); seek(pos)` resumes the same position) but
+    the raw integer differs from
     what CPython returns for non-ASCII content.
 - Text-mode `seek(N)` accepts any non-negative char-index. CPython
     restricts `TextIOWrapper.seek` to `seek(0)`, `seek(0, 2)`, and cookies
@@ -193,10 +197,12 @@ round-trip as `open()` with `self` prepended as the `file` argument, so
 all the rules above (mode rejection, kwarg validation, returned wrapper
 types, open-time effects) apply identically. The differences:
 
-- CPython's `Path.open()` signature lists only `mode, buffering, encoding, errors, newline` (no `closefd` / `opener`). Monty accepts `closefd=True`
+- CPython's `Path.open()` signature lists only `mode, buffering, encoding, errors, newline` (no `closefd` / `opener`).
+    Monty accepts `closefd=True`
     and `opener=None` at their CPython `open()` defaults as documented
     no-ops on this path too, and rejects non-default values with the same
-    `"'closefd' argument is not yet supported"` / `"'opener' argument is not yet supported"` `TypeError` as `open()`. CPython would instead
+    `"'closefd' argument is not yet supported"` / `"'opener' argument is not yet supported"` `TypeError` as `open()`.
+    CPython would instead
     raise `TypeError: open() got an unexpected keyword argument 'closefd'`.
 - Passing `file=...` as a keyword (which is meaningless on `Path.open()`
     because `self` already supplies the file) raises Monty's "multiple

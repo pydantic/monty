@@ -96,11 +96,11 @@ MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macro
 
 .PHONY: format-md
 format-md: ## Format markdown with mdformat (tables, mkdocs admonitions, frontmatter)
-	uv run --group docs mdformat $(MD_FILES)
+	uv run mdformat $(MD_FILES)
 
 .PHONY: lint-md
 lint-md: ## Check markdown formatting with mdformat
-	uv run --group docs mdformat --check $(MD_FILES)
+	uv run mdformat --check $(MD_FILES)
 
 .PHONY: format
 format: format-rs format-py format-js format-md ## Format Rust code, this does not format Python code as we have to be careful with that

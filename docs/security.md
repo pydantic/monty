@@ -122,12 +122,11 @@ from pydantic_monty import Monty, MountDir
 
 with tempfile.TemporaryDirectory() as tmp:
     Path(tmp, 'notes.txt').write_text('mounted from the host')
-    mount = MountDir(host_path=tmp, virtual_path='/data', mode='read-only')
-
-    with Monty() as pool:
-        with pool.checkout() as session:
-            print(session.feed_run("open('/data/notes.txt').read()", mount=mount))
-            #> mounted from the host
+    with MountDir(host_path=tmp, virtual_path='/data', mode='read-only') as mount:
+        with Monty() as pool:
+            with pool.checkout() as session:
+                print(session.feed_run("open('/data/notes.txt').read()", mount=mount))
+                #> mounted from the host
 ```
 
 A separate `os=` callback handles operations no mount covers: the remaining `pathlib` operations, `os.getenv`,

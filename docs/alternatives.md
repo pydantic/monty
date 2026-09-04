@@ -64,7 +64,7 @@ an f-string report; every setup must print the same report.
 
 Every row was measured on 2026-09-03 on an Apple M3 Max (96 GB, macOS 26.5.2) in London, from CPython 3.14.7, with a
 single sample per cold start unless stated.
-Numbers are rounded to two significant figures.
+The tables round the numbers; the measured values are in the text below.
 
 - **Monty**: `pydantic-monty` 0.0.21 with a release build of the `monty` worker binary, driven through `Monty()` /
     `pool.checkout()` / `session.feed_run()`, the package's only execution API.
@@ -109,8 +109,8 @@ Numbers are rounded to two significant figures.
 
 - **Language completeness**: no class inheritance, limited stdlib, no third-party libraries.
     See [the Python subset](limitations/index.md).
-- **Security**: explicitly controlled filesystem, network and environment access; strict limits on execution time and
-    memory usage.
+- **Security**: explicitly controlled filesystem, network and environment access; limits on execution time and memory
+    usage, off unless you set them.
     See the [security model](security.md).
 - **Start latency**: a warm checkout is one message to a worker that already exists; a cold start spawns the worker.
 - **Setup complexity**: `pip install pydantic-monty` or `npm install @pydantic/monty`, about 4.5 MB download.
@@ -157,7 +157,7 @@ See [starlark-rust](https://github.com/facebook/starlark-rust).
 
 CPython compiled to WebAssembly (WASI), run by [wasmtime](https://wasmtime.dev/).
 
-- **Language completeness**: full CPython; pure-Python packages work from a mounted directory, packages with C
+- **Language completeness**: almost full CPython; pure-Python packages work from a mounted directory, packages with C
     extensions need their own WASI build.
     In the WASI build `socket.socket()` and `subprocess.run()` raise `OSError`, `threading.Thread.start()` raises
     `RuntimeError`, and `ctypes` does not import.

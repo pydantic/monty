@@ -216,7 +216,8 @@ properties that real CPython does not provide, per the caveat above.
     component applies the same checks while converting its WIT value arena. A frame
     carrying an invalid value therefore fails the whole protocol turn: a parent
     receiving one discards the worker with a protocol error; a worker receiving
-    one answers with a `RuntimeError("protocol violation: malformed request: ...")` turn and keeps the session. Parents written in other languages (e.g.
+    one answers with a `RuntimeError("protocol violation: malformed request: ...")` turn and keeps the session. Parents
+    written in other languages (e.g.
     the JS client) see the same behaviour.
 
 ## Host-API behaviour notes
@@ -253,7 +254,8 @@ properties that real CPython does not provide, per the caveat above.
     pool/session works (each concurrent nested call occupies an extra OS thread
     while it waits). Called from any *current-thread* Tokio runtime context,
     blocking would starve the tasks that drive the pool, so every sync method
-    raises `RuntimeError: the synchronous Monty API cannot run inside a current-thread Tokio runtime`. Only independent nested pools/sessions are
+    raises `RuntimeError: the synchronous Monty API cannot run inside a current-thread Tokio runtime`. Only independent
+    nested pools/sessions are
     supported: re-entering the *same* session from its own callback deadlocks
     on the session's internal lock.
 - **Mounts are host-side.** `MountDir` objects contribute configuration only;

@@ -70,7 +70,8 @@ must still be a string; see [exceptions.md](exceptions.md). The retained repr
 length can also be customized (an int >= 1, in bytes; 0 means "off", not
 "retain no bytes"):
 
-- Rust: pass `CompileOptions { assert_message_annotations: AssertMessageAnnotations::Off }` (or `::MaxBytes(n)`, a `NonZeroU32`;
+- Rust: pass `CompileOptions { assert_message_annotations: AssertMessageAnnotations::Off }` (or `::MaxBytes(n)`, a
+    `NonZeroU32`;
     `::from_max_bytes(n)` maps 0 to `Off`) to `MontyRun::new` or
     `MontyRepl::new`.
 - Python: `pool.checkout(assert_message_annotations=False)` (or `=n`).

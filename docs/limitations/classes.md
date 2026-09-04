@@ -70,13 +70,15 @@ order and error wording, but with these divergences:
     **bare** class name, where CPython uses the qualified name
     `<module.Foo object at 0x..>`.
 - **`__init__`/method argument-count errors** name the method without the
-    class qualifier, e.g. `__init__() missing 1 required positional argument: 'y'`, where CPython says `Foo.__init__() missing ...`.
+    class qualifier, e.g. `__init__() missing 1 required positional argument: 'y'`, where CPython says
+    `Foo.__init__() missing ...`.
 - **`type(obj)`** returns the class object (so identity works), but its own
     `repr` is `<class 'Foo'>` with the bare name; CPython qualifies it.
 - **The class object is not itself a `type` instance.** The bare name `type`
     resolves to the builtin `type` *function*, not a type object, so
     `type(Foo) is type` is `False` (CPython: `True`) and `isinstance(Foo, type)`
-    raises `TypeError: isinstance() arg 2 must be a type, a tuple of types, or a union` (CPython: `True`). There is no metaclass.
+    raises `TypeError: isinstance() arg 2 must be a type, a tuple of types, or a union` (CPython: `True`). There is no
+    metaclass.
 - **Bound methods report `function`, not `method`.** `type(obj.method)` is
     `<class 'function'>` where CPython says `<class 'method'>`; Monty has no
     dedicated `method` type.
@@ -165,7 +167,8 @@ with these divergences:
     host-side does not change the sandbox object (only a still-live sandbox
     object is resolved, and it keeps its own state).
 - A proxy whose sandbox object has since been freed raises
-    `RuntimeError: invalid input type: sandbox instance of 'Foo' (id ...) no longer exists` rather than materializing a host-backed copy.
+    `RuntimeError: invalid input type: sandbox instance of 'Foo' (id ...) no longer exists` rather than materializing a
+    host-backed copy.
 - A proxy of a **host-sent** instance (produced after a restore) has no
     sandbox object to resolve to: passing it back re-enters as a host-backed
     copy built from its `attributes`, not the host's original object.
@@ -204,7 +207,8 @@ value). Divergences from real CPython objects:
     repr is `<class 'Point'>` — without CPython's module qualification like
     `<class 'mymod.Point'>`), and error messages name the real class too
     (`unhashable type: 'Point'`, `'Point' object is not subscriptable`) — always
-    bare, so where CPython's message is module-qualified (`'mymod.Point' object does not support the context manager protocol (missed __exit__ method)`)
+    bare, so where CPython's message is module-qualified
+    (`'mymod.Point' object does not support the context manager protocol (missed __exit__ method)`)
     Monty says `'Point'`. But it is not the class: calling it suspends
     a `__call__` request to the host, which only succeeds when the host granted
     `init` on a `ClassType` wrapper (see below); and — like Monty class objects
@@ -459,15 +463,18 @@ The name resolves, but it is a carrier for `object.__setattr__` rather than a
 type: Monty has no inheritance, so there is no base class for it to be.
 `isinstance(x, object)` is `True` for every value, as in CPython.
 
-- **`object()` cannot be constructed** — raises `TypeError: cannot create 'object' instances`, where CPython returns a featureless instance.
+- **`object()` cannot be constructed** — raises `TypeError: cannot create 'object' instances`, where CPython returns a
+    featureless instance.
 - **`class Foo(object):` is still rejected**, like any base list (see above),
     so the idiom carries no more weight than `class Foo:`.
 - **Only `__setattr__` and `__name__` resolve.** Every other member CPython's
     `object` carries — `__doc__`, `__init__`, `__eq__`, `__getattribute__`,
     `__class__`, `__mro__`, `__bases__`, `__qualname__`, `__module__`,
-    `__dict__` — raises `AttributeError`, with Monty's generic `'type' object has no attribute 'x'` where CPython says `type object 'object' has no attribute 'x'`.
+    `__dict__` — raises `AttributeError`, with Monty's generic `'type' object has no attribute 'x'` where CPython says
+    `type object 'object' has no attribute 'x'`.
 - **`object.__setattr__` accepts only instances of sandbox-defined classes.**
-    Anything else raises CPython's `AttributeError: '<type>' object has no attribute '<name>' and no __dict__ for setting new attributes` — including
+    Anything else raises CPython's
+    `AttributeError: '<type>' object has no attribute '<name>' and no __dict__ for setting new attributes` — including
     a class object, where CPython instead raises `TypeError: can't apply this __setattr__ to type object`.
 - **It reprs as `<built-in function object.__setattr__>`**, where CPython says
     `<slot wrapper '__setattr__' of 'object' objects>`.
