@@ -63,6 +63,7 @@ CLI mounts always use the default per-mount memory limit of 100 MB; there is no 
 
 ```console
 $ monty -c "from datetime import datetime; print(datetime.now())"
+2026-09-03 21:02:32.871568
 ```
 
 An in-process Rust run reads the same clock; `MontyRun::with_host_clock` is how an embedder chooses otherwise, and the

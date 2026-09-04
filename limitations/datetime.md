@@ -75,8 +75,10 @@ host, and a host that answers neither makes them raise `RuntimeError:
 likewise), where CPython would return a time.
 
 Standard (non-suspending) execution — `MontyRun::run`, `MontyRepl::feed_run`
-and `MontyRepl::call_function` in Rust, and the `monty` CLI — has no host to
-ask and reads this machine's clock, so it matches CPython.
+and `MontyRepl::call_function` in Rust — has no host to ask and reads this
+machine's clock, so it matches CPython. The `monty` CLI reads the same clock,
+though there it is the host answering: it serves both calls itself rather than
+passing them on.
 `MontyRun::with_host_clock` / `MontyRepl::with_host_clock` choose otherwise:
 
 - `HostClock::Denied` makes both raise `NotImplementedError` — a different

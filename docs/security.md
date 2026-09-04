@@ -95,7 +95,7 @@ In-process Rust runs have no host loop to ask, so they read this machine's clock
 `HostClock::Fixed` for a frozen instant.
 
 Wall-clock time is a weak capability, but it is one — it is what makes elapsed time measurable from inside the sandbox,
-and it discloses the host's UTC offset, which is what a naive `datetime.now()` is read in.
+and a naive `datetime.now()` is read in the host's local zone, which discloses its UTC offset.
 
 ## Crash isolation
 

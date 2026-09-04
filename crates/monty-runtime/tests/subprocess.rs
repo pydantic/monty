@@ -498,12 +498,10 @@ fn external_function_not_found_raises_name_error() {
     child.shutdown();
 }
 
-/// The worker's `MontyRepl` carries a `HostClock` — `System` since #330 — that
-/// only the non-suspending paths read, and it drives `feed_start`, which does
-/// not. Nothing in the type system holds that apart: routing a worker feed
-/// through `feed_run` would silently start answering the clock inside the
-/// sandbox instead of asking the parent, so this pins that the two clock calls
-/// still arrive here.
+/// The worker's `MontyRepl` carries a `HostClock`, but drives `feed_start`,
+/// which never reads it. Only this test holds the two apart: routing a worker
+/// feed through `feed_run` would answer the clock inside the sandbox instead
+/// of asking the parent.
 #[test]
 fn clock_calls_bubble_to_parent() {
     let mut child = ChildProc::spawn();
