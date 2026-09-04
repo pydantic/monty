@@ -101,7 +101,12 @@ impl HostClock {
                 microsecond,
                 local_offset_seconds,
             } => {
-                let utc = DateTime::from_timestamp(unix_seconds, microsecond.checked_mul(1_000)?)?;
+                // Kept under a full second here rather than left to
+                // `from_timestamp`, which on the last second of a minute reads
+                // anything above one as a leap second and accepts it, yielding a
+                // `microsecond` no Python `datetime` can hold.
+                let nanoseconds = microsecond.checked_mul(1_000).filter(|ns| *ns < 1_000_000_000)?;
+                let utc = DateTime::from_timestamp(unix_seconds, nanoseconds)?;
                 Some((utc.naive_utc(), local_offset_seconds))
             }
         }
