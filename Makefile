@@ -91,8 +91,10 @@ format-js: install-js ## Format JS code with prettier
 	cd crates/monty-js && npm run format
 
 # tracked markdown, minus the vendored typeshed, the `.macroscope/` config files that only
-# look like markdown, and the AGENTS.md symlink (CLAUDE.md is formatted directly)
-MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macroscope/**' ':!:AGENTS.md')
+# look like markdown, the AGENTS.md symlink (CLAUDE.md is formatted directly), and the crate
+# READMEs: rustdoc embeds those and clippy's `doc_overindented_list_items` rejects the
+# four-space list continuations mdformat-mkdocs writes
+MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macroscope/**' ':!:AGENTS.md' ':!:crates/*/README*.md')
 
 .PHONY: format-md
 format-md: ## Format markdown with mdformat (tables, mkdocs admonitions, frontmatter)

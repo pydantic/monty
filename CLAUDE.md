@@ -1003,7 +1003,8 @@ The list of stdlib modules in `docs/limitations/index.md` must be updated if a n
 - Prose style follows [`.agents/skills/writing-style`](.agents/skills/writing-style/SKILL.md):
     one sentence per line, claims traceable to source, no hype.
     Do not state a behaviour you have not read in the code, the tests or `limitations/`.
-- `make format-md` normalises every tracked markdown file with mdformat (table alignment, four-space list
+- `make format-md` normalises every tracked markdown file except the crate READMEs, which rustdoc embeds and
+    clippy lints for two-space list continuations, with mdformat (table alignment, four-space list
     continuations, admonitions and frontmatter kept; style in `.mdformat.toml`); pre-commit runs it, and `make lint`
     checks it with `make lint-md`.
     It never rewraps prose.

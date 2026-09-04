@@ -38,11 +38,11 @@ stack overflow produces, and a host that cannot tell those apart cannot report
 The `exit-code` feature picks how the process ends:
 
 - **on** — `process::exit(monty_types::OOM_EXIT_CODE)`, the dedicated status a
-    parent reads to classify the death. Used by the `monty subprocess` worker,
-    whose parent is [`monty-pool`](https://crates.io/crates/monty-pool).
+  parent reads to classify the death. Used by the `monty subprocess` worker,
+  whose parent is [`monty-pool`](https://crates.io/crates/monty-pool).
 - **off** (default) — `process::abort()`, which on wasm is a trap. A wasm
-    module has no exit status to offer, and its host already treats a turn that
-    ends without a terminating event as a dead instance.
+  module has no exit status to offer, and its host already treats a turn that
+  ends without a terminating event as a dead instance.
 
 Only a binary or a wasm module may declare a `#[global_allocator]`: in a native
 cdylib it would hijack the allocator of the embedding host process.

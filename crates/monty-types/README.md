@@ -8,19 +8,19 @@ implementation**.
 ## What's here
 
 - `MontyObject` / `MontyType` — Python values and their types at the host
-    boundary, including the `datetime` family (`MontyDate`, `MontyDateTime`,
-    `MontyTimeDelta`, `MontyTimeZone`), `DictPairs` and `MontyFileHandle`.
+  boundary, including the `datetime` family (`MontyDate`, `MontyDateTime`,
+  `MontyTimeDelta`, `MontyTimeZone`), `DictPairs` and `MontyFileHandle`.
 - `MontyException` / `ExcType` — exceptions with tracebacks (`StackFrame`,
-    `CodeLoc`) and structured payloads (`ExcData`).
+  `CodeLoc`) and structured payloads (`ExcData`).
 - `OsFunctionCall` — the typed OS-call payloads sandboxed code suspends with
-    (file reads/writes, `open()`, `os.getenv`, ...), plus the `stat_result`
-    builders hosts use to answer them.
+  (file reads/writes, `open()`, `os.getenv`, ...), plus the `stat_result`
+  builders hosts use to answer them.
 - `ResourceTracker` / `ResourceLimits` — the resource tracker the
-    interpreter uses to enforce time/memory/recursion limits, plus the
-    `max_suspensions` budget hosts enforce themselves.
+  interpreter uses to enforce time/memory/recursion limits, plus the
+  `max_suspensions` budget hosts enforce themselves.
 - `PrintStream` / `PrintWriter` — `print()` output capture.
 - `CompileOptions`, `ExtFunctionResult`, `NameLookupResult`, `FileMode`, and
-    the CPython-compatible formatting helpers behind their `repr()`s.
+  the CPython-compatible formatting helpers behind their `repr()`s.
 
 ## Who should depend on it
 

@@ -21,28 +21,28 @@ for the schema and the protocol rules documented alongside it.
 ## What the crate provides
 
 - `pb` — prost-generated message types. The generated code is checked in;
-    regenerate with `make generate-proto` (CI enforces sync via
-    `make check-proto`).
+  regenerate with `make generate-proto` (CI enforces sync via
+  `make check-proto`).
 - `FrameReader` / `write_frame` — 4-byte little-endian length-prefixed
-    framing, with a hard cap on frame length.
+  framing, with a hard cap on frame length.
 - Fallible conversions between `pb` types and Monty's public types
-    (`MontyObject`, `MontyException`, mounts, resource limits, ...).
+  (`MontyObject`, `MontyException`, mounts, resource limits, ...).
 - Host-object routing on the wire: host-backed `MontyObject::ClassInstance` /
-    `MontyClassType` carry host-generated uuids, and `FunctionCall.object_id` /
-    `NameLookup.object_id` route their method calls and lazy attribute lookups
-    back to the parent's per-session instance store; sandbox-defined classes and
-    instances carry worker-generated uuids that never reach that store.
+  `MontyClassType` carry host-generated uuids, and `FunctionCall.object_id` /
+  `NameLookup.object_id` route their method calls and lazy attribute lookups
+  back to the parent's per-session instance store; sandbox-defined classes and
+  instances carry worker-generated uuids that never reach that store.
 - `PROTOCOL_VERSION` / `MIN_SUPPORTED_PROTOCOL_VERSION` — the wire schema
-    version a parent declares in `Configure`, and the range a child serves.
-    Versioned independently of the monty package: peers on different releases
-    interoperate as long as their protocol versions overlap. There is no in-band
-    negotiation, so a child rejecting a version reports its range in the
-    `FatalError` for the parent to downgrade to.
+  version a parent declares in `Configure`, and the range a child serves.
+  Versioned independently of the monty package: peers on different releases
+  interoperate as long as their protocol versions overlap. There is no in-band
+  negotiation, so a child rejecting a version reports its range in the
+  `FatalError` for the parent to downgrade to.
 - `python` (cargo feature, off by default) — the `python` module: PyO3-based
-    conversions between live Python objects and `MontyObject`/`MontyException`,
-    used by the `pydantic-monty-client` extension module. The feature pulls in `pyo3` (but never its
-    `extension-module` feature — how libpython is linked stays the top crate's
-    decision), so pure-Rust consumers pay nothing for it.
+  conversions between live Python objects and `MontyObject`/`MontyException`,
+  used by the `pydantic-monty-client` extension module. The feature pulls in `pyo3` (but never its
+  `extension-module` feature — how libpython is linked stays the top crate's
+  decision), so pure-Rust consumers pay nothing for it.
 
 ## Values are special-cased for performance
 
