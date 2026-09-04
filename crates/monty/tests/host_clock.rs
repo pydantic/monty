@@ -17,6 +17,11 @@ use monty_types::{CompileOptions, HostClock, MontyObject, ResourceTracker};
 /// to, reused so both harnesses tell the same story.
 const FIXTURE_SECONDS: i64 = 1_700_000_000;
 
+/// 2023-11-14 22:13:59 UTC, i.e. [`FIXTURE_SECONDS`] moved onto the last
+/// second of its minute — the only place chrono will read a microsecond past a
+/// full second as a leap second instead of rejecting it.
+const LAST_SECOND_OF_A_MINUTE: i64 = 1_700_000_039;
+
 /// A clock frozen at [`FIXTURE_SECONDS`] in a UTC+02:00 local zone, which puts
 /// the local date one day ahead of the UTC one.
 const FIXED: HostClock = HostClock::Fixed {
@@ -121,9 +126,6 @@ fn unrepresentable_fixed_instant_reads_as_denied() {
 
 #[test]
 fn out_of_range_microsecond_reads_as_denied() {
-    // Nothing in `instant()` bounds this itself — `from_timestamp` rejects the
-    // nanoseconds it becomes, so this pins the behaviour the field documents
-    // against a chrono that might one day accept them as a leap second.
     let overflowing = HostClock::Fixed {
         unix_seconds: FIXTURE_SECONDS,
         microsecond: 1_500_000,
@@ -131,6 +133,19 @@ fn out_of_range_microsecond_reads_as_denied() {
     };
     assert_eq!(
         run("from datetime import datetime\ndatetime.now()", overflowing).unwrap_err(),
+        "NotImplementedError: OS function 'datetime.now' not implemented with standard execution"
+    );
+
+    // On the last second of a minute chrono reads nanoseconds past a full
+    // second as a leap second and accepts them, so `from_timestamp` alone does
+    // not bound this — only `instant()`'s own check does.
+    let leap_second = HostClock::Fixed {
+        unix_seconds: LAST_SECOND_OF_A_MINUTE,
+        microsecond: 1_500_000,
+        local_offset_seconds: 0,
+    };
+    assert_eq!(
+        run("from datetime import datetime\ndatetime.now()", leap_second).unwrap_err(),
         "NotImplementedError: OS function 'datetime.now' not implemented with standard execution"
     );
 }
