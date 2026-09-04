@@ -453,8 +453,8 @@ same protocol in TypeScript over a WASM worker. Everything above applies, plus:
     (`TypeError`, `ValueError`, `KeyError`, ...); anything else becomes
     `RuntimeError`. Tracebacks of host errors are not preserved.
 - **Snapshots mirror `pydantic_monty`.** `session.feedStart(code, opts)`
-    returns a [`FunctionSnapshot`][pydantic_monty.FunctionSnapshot] / [`NameLookupSnapshot`][pydantic_monty.NameLookupSnapshot] / [`FutureSnapshot`][pydantic_monty.FutureSnapshot] (or a
-    [`MontyComplete`][pydantic_monty.MontyComplete]); `session.dump()` / `snapshot.dump()` serialize the worker,
+    returns a `FunctionSnapshot` / `NameLookupSnapshot` / `FutureSnapshot` (or a
+    `MontyComplete`); `session.dump()` / `snapshot.dump()` serialize the worker,
     and `session.loadSnapshot(bytes, opts)` restores it (fresh-session-only,
     returning the re-announced snapshot or `null`). Differences from Python: a
     name lookup resolves only to an external *function* (`resume(functionName?)`,
@@ -465,7 +465,7 @@ same protocol in TypeScript over a WASM worker. Everything above applies, plus:
     `FutureSnapshot.resume([{callId, value}|{callId, error}])`).
 - **Wrapper policies never reach JS object machinery.** `constructor`,
     `__proto__`, `prototype`, `arguments` and `caller` are refused under every
-    [`ClassInstance`][pydantic_monty.ClassInstance] / [`ClassType`][pydantic_monty.ClassType] policy, explicit lists included, and members
+    `ClassInstance` / `ClassType` policy, explicit lists included, and members
     found on `Object.prototype` / `Function.prototype` (`toString`,
     `hasOwnProperty`, `call`, `bind`, ...) count as absent. A string policy
     other than `'all'` throws `TypeError` at construction. Keyword arguments
