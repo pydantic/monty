@@ -40,6 +40,13 @@ commands 1 to *n*.
 
 Learn more in the [comparison to alternatives](alternatives.md).
 
+!!! tip
+
+    If you're interested in running Monty in the most secure and scalable setup, please see
+    [Full Monty](server.md).
+    If you're interested in being a design partner for Monty development in any deployment setup, please
+    [get in touch](https://pydantic.dev/contact).
+
 ## Why Monty
 
 1. **Latency in microseconds, not seconds.** A sandbox plus ten REPL commands takes 5 ms against 900 ms for Docker and
@@ -59,7 +66,7 @@ Learn more in the [comparison to alternatives](alternatives.md).
     about 4.5 MB, no daemon, no image, no API key, and a worker baseline of about 2 MB so one machine runs hundreds.
     See [getting started](quickstart/python.md).
 1. **MIT licensed, with commercial options.** The interpreter, the pool and bindings are open source.
-    [`monty-server`](server.md) runs the same workers behind a WebSocket as a container image, adding OS-level isolation,
+    [Full Monty](server.md) runs the same workers behind a WebSocket as a container image, adding OS-level isolation,
     and horizontal scaling.
 
 ## Example
@@ -151,7 +158,7 @@ All of them need somewhere safe to run the generated code, and Monty is that pla
 
 - Getting started with [Python](quickstart/python.md), [JavaScript](quickstart/javascript.md) or
     [Rust](quickstart/rust.md).
-- [Commercial support](server.md): `monty-server`, the same workers behind a WebSocket as a container image.
+- [Commercial support](server.md): Full Monty, the same workers behind a WebSocket as a container image.
 - [Security model](security.md) for what "secure" does and does not mean here.
 - [Examples](examples.md), including Code Mode in Pydantic AI.
 - [Limitations](limitations/index.md): the Python subset, and every known divergence from CPython.

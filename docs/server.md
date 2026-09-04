@@ -1,6 +1,6 @@
-# Running monty-server
+# Full Monty
 
-`monty-server` is a WebSocket server that hosts Monty sandbox workers: each connection gets its own `monty` worker
+Full Monty is a WebSocket server that hosts Monty sandbox workers: each connection gets its own `monty` worker
 subprocess from an elastic pool.
 A worker serves one session at a time and is reset or replaced between sessions, so no sandbox state crosses from one
 client to another.
@@ -8,9 +8,15 @@ client to another.
 subprocess-only today and cannot dial a remote server.
 The server adds capacity limits, timeouts, per-caller quotas, health probes, graceful drain and tracing to [Pydantic
 Logfire](https://pydantic.dev/logfire). The `monty` worker provides the sandboxing.
+Additionally, Full Monty can act as a reverse proxy, forwarding requests to a full sandbox running CPython.
 
 The server is closed-source and distributed as a container image.
-For access and licensing, [contact us](https://pydantic.dev/contact).
+
+!!! tip "Design partners"
+
+    If you're interested in being an early design partner for Full Monty, please
+    [contact us](https://pydantic.dev/contact). We're currently offering Full Monty free to a select set of
+    organizations while we finalize the commercial platform.
 
 ## Why Monty over WebSocket
 
@@ -24,7 +30,7 @@ Running Monty on a remote server provides:
     optional type checking, so a single machine can run hundreds.
 - **Same behavior as local Monty**: the wire protocol carries host callbacks, name lookups, async futures and mounted
     client directories, so code that runs against a local pool runs unchanged against the server.
-- **Future full sandbox option**: a VM running CPython for code that needs dependencies, bash or a real filesystem,
+- **Full sandbox option**: a VM running CPython for code that needs dependencies, bash or a real filesystem,
     exposed through the same interface.
 
 ## Quickstart

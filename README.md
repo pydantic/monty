@@ -37,7 +37,7 @@ npm install @pydantic/monty  # JavaScript / TypeScript
 cargo add monty              # Rust
 ```
 
-The commercial [`monty-server`](https://pydantic.dev/docs/monty/commercial-support/server/) runs the same workers as a container
+The commercial [Full Monty](https://pydantic.dev/docs/monty/commercial-support/server/) runs the same workers as a container
 image.
 
 ## Example
