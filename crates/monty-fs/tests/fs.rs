@@ -2053,6 +2053,27 @@ fn rw_write_text_exceeds_limit() {
 }
 
 #[test]
+fn rw_write_text_charges_existing_file_size_on_truncate() {
+    // https://github.com/pydantic/monty/issues/788
+    // A truncating write must be charged for the file content it destroys,
+    // not just the new (possibly empty) payload -- otherwise `write_text("")`
+    // against a large existing file is free.
+    let dir = create_test_dir();
+    // hello.txt is pre-populated with "hello world\n" (12 bytes).
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::ReadWrite, 5);
+
+    let exc = call_err(&mut mt, &write_text("/mnt/hello.txt", ""));
+    assert_exc(&exc, ExcType::OSError, "disk write limit of 5 bytes exceeded");
+
+    // The file must be untouched -- the quota check must happen before the
+    // truncating open, not after.
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt".into())),
+        MontyObject::String("hello world\n".to_owned())
+    );
+}
+
+#[test]
 fn rw_write_bytes_exceeds_limit() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt_with_limit(&dir, MountMode::ReadWrite, 5);

@@ -10,9 +10,9 @@ use monty_types::{FileMode, MontyObject};
 
 use super::{
     common::{
-        MemoryBudget, MountContext, check_write_limit, commit_write_bytes, host_append_bytes, host_append_text,
-        host_is_dir, host_is_file, host_iterdir, host_mkdir, host_read_bytes, host_read_text, host_rmdir, host_stat,
-        host_unlink, host_write_bytes, host_write_text, map_io, reject_non_regular,
+        MemoryBudget, MountContext, check_write_limit, commit_write_bytes, existing_file_len, host_append_bytes,
+        host_append_text, host_is_dir, host_is_file, host_iterdir, host_mkdir, host_read_bytes, host_read_text,
+        host_rmdir, host_stat, host_unlink, host_write_bytes, host_write_text, map_io, reject_non_regular,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -105,9 +105,10 @@ fn open(path: &str, mode: FileMode, ctx: &mut MountContext<'_>) -> Result<MontyO
             reject_non_regular(ctx.mount_dir, rel, path)?;
         }
         FileMode::Write(_) | FileMode::WriteUpdate(_) => {
-            check_write_limit(0, ctx)?;
+            let charged = existing_file_len(ctx.mount_dir, rel);
+            check_write_limit(charged, ctx)?;
             host_write_text(ctx.mount_dir, rel, "", path)?;
-            commit_write_bytes(0, ctx);
+            commit_write_bytes(charged, ctx);
         }
         FileMode::Append(_) | FileMode::AppendUpdate(_) => {
             host_append_bytes(ctx.mount_dir, rel, &[], path)?;
@@ -132,20 +133,28 @@ fn bool_query(
 }
 
 /// Writes text after validating quota.
+///
+/// A truncating write discards whatever the file previously held, so the
+/// charge is the destroyed bytes plus the new payload, not the payload alone
+/// (which would make `write_text('')` free even against a huge file).
 fn write_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
-    check_write_limit(data.len(), ctx)?;
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
-    let result = host_write_text(ctx.mount_dir, target.for_dir_op(), data, path)?;
-    commit_write_bytes(data.len(), ctx);
+    let rel = target.for_dir_op();
+    let charged = existing_file_len(ctx.mount_dir, rel).saturating_add(data.len());
+    check_write_limit(charged, ctx)?;
+    let result = host_write_text(ctx.mount_dir, rel, data, path)?;
+    commit_write_bytes(charged, ctx);
     Ok(result)
 }
 
-/// Writes bytes after validating quota.
+/// Writes bytes after validating quota. See `write_text` for the truncation-accounting rationale.
 fn write_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
-    check_write_limit(data.len(), ctx)?;
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
-    let result = host_write_bytes(ctx.mount_dir, target.for_dir_op(), data, path)?;
-    commit_write_bytes(data.len(), ctx);
+    let rel = target.for_dir_op();
+    let charged = existing_file_len(ctx.mount_dir, rel).saturating_add(data.len());
+    check_write_limit(charged, ctx)?;
+    let result = host_write_bytes(ctx.mount_dir, rel, data, path)?;
+    commit_write_bytes(charged, ctx);
     Ok(result)
 }
 
