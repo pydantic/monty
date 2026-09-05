@@ -76,6 +76,15 @@ export interface CheckoutOptions {
    * per-operand repr truncation length (default 120 bytes).
    */
   assertMessageAnnotations?: AssertMessageAnnotations
+  /**
+   * How long, in seconds, the worker may hold buffered `print()` output before
+   * sending it, so a burst of prints costs one `printCallback` call rather
+   * than one each (default 0.005). `0` restores line buffering, delivering
+   * each completed line on its own. Output is always flushed before a host
+   * call and before a feed ends, so this only sets how far live output may
+   * lag — never what arrives, or in what order.
+   */
+  printFlushInterval?: number
 }
 
 /**
@@ -147,6 +156,7 @@ export class Monty {
       ...(options.typeCheckFormat !== undefined ? { typeCheckFormat: options.typeCheckFormat } : {}),
       ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
       ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
+      ...(options.printFlushInterval !== undefined ? { printFlushIntervalMs: options.printFlushInterval * 1000 } : {}),
     })
     const telemetryContext = captureTelemetryContext()
     await native.enter(telemetryContext)

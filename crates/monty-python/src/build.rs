@@ -7,10 +7,11 @@
 //! than leaking raw PyO3 errors.
 
 use monty_proto::python::{InstanceStore, exc_py_to_monty, py_to_monty_value};
-use monty_types::{ExcType, MontyException, MontyObject};
+use monty_types::{ExcType, MontyException, MontyObject, StringRepr};
 use pyo3::{
+    exceptions::PyTypeError,
     prelude::*,
-    types::{PyDict, PyString},
+    types::{PyDict, PyMapping, PyString},
 };
 
 use crate::exceptions::{MontyConversionError, MontyError};
@@ -85,4 +86,41 @@ pub(crate) fn extract_repl_inputs(
             Ok((name, obj))
         })
         .collect::<PyResult<_>>()
+}
+
+/// Calls the `connect_headers` callback and extracts its `str -> str` mapping.
+/// The GIL is held on the caller's task, so the callback sees the caller's
+/// contextvars.
+pub(crate) fn extract_connect_headers(py: Python<'_>, callback: &Py<PyAny>) -> PyResult<Vec<(String, String)>> {
+    let result = callback.bind(py).call0()?;
+    if let Ok(mapping) = result.cast::<PyMapping>() {
+        mapping
+            .items()?
+            .iter()
+            .map(|item| {
+                let (name, value): (Bound<'_, PyAny>, Bound<'_, PyAny>) = item.extract()?;
+                Ok((header_str(&name, "name")?, header_str(&value, "value")?))
+            })
+            .collect()
+    } else {
+        let t = result.get_type().name()?;
+        Err(PyTypeError::new_err(format!(
+            "connect_headers must return a mapping of str to str, got {}",
+            StringRepr(&t.to_string_lossy())
+        )))
+    }
+}
+
+/// Extracts one header name or value, naming which side was not a `str`.
+fn header_str(part: &Bound<'_, PyAny>, side: &str) -> PyResult<String> {
+    if let Ok(s) = part.cast::<PyString>() {
+        Ok(s.to_cow()?.into_owned())
+    } else {
+        let t = part.get_type().name()?;
+        Err(PyTypeError::new_err(format!(
+            "connect_headers must return a mapping of str to str, got {} header {}",
+            StringRepr(&t.to_string_lossy()),
+            side
+        )))
+    }
 }

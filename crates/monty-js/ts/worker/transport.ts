@@ -26,6 +26,22 @@ import { decodeValue, encodeValue } from './value.js'
 
 type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
 
+/**
+ * Encodes a print flush interval (seconds) as whole milliseconds for the WIT
+ * `u32`, mirroring `monty-pool`'s `flush_interval_ms`.
+ *
+ * The component encodes a `u32` as `val >>> 0`, which would silently wrap a
+ * negative or non-finite value into a huge interval, so reject those here.
+ * Zero is the line-buffering sentinel, so a positive interval never rounds
+ * down into it.
+ */
+function flushIntervalMs(interval: number): number {
+  if (!Number.isFinite(interval) || interval < 0) {
+    throw new TypeError(`invalid printFlushInterval: expected a non-negative number of seconds, got ${interval}`)
+  }
+  return interval === 0 ? 0 : Math.min(Math.max(Math.floor(interval * 1000), 1), 0xffffffff)
+}
+
 /** Resource limits mirrored from the napi pool; the transport enforces `maxSuspensions`. */
 export interface ResourceLimits {
   maxDurationSecs?: number
@@ -50,6 +66,14 @@ export interface WorkerSessionConfig {
    * child's default, false disables them, and an integer customizes truncation.
    */
   assertMessageAnnotations?: AssertMessageAnnotations
+  /**
+   * How long, in seconds, the worker may hold buffered `print()` output before
+   * sending it (default 0.005). `0` restores line buffering, delivering each
+   * completed line on its own. A turn's frames all reach the host together
+   * here, but this still sets how they are split: one `printCallback` call per
+   * frame, and a print collector charges its `maxBytes` cap per frame.
+   */
+  printFlushInterval?: number
 }
 
 /** A session-shaped adapter over one semantic component dispatcher. */
@@ -87,6 +111,9 @@ export class WorkerTransport {
           ...(assertMessageAnnotations === undefined ? {} : { assertMessageAnnotations }),
           typeCheckFormat: componentTypeCheckFormat(config.typeCheckFormat ?? 'full'),
           typeCheckColor: config.typeCheckColor ?? false,
+          ...(config.printFlushInterval === undefined
+            ? {}
+            : { printFlushIntervalMs: flushIntervalMs(config.printFlushInterval) }),
         },
       },
       'ok',

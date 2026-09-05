@@ -491,6 +491,16 @@ pub struct Configure {
     /// in-band negotiation, so an undeclared peer cannot be assumed compatible.
     #[prost(uint32, tag = "9")]
     pub protocol_version: u32,
+    /// How long the child may hold buffered `print()` output before emitting it
+    /// as a `Print` event, in milliseconds. Absent means the child's default
+    /// (`DEFAULT_PRINT_FLUSH_INTERVAL`). 0 disables the timer and restores line
+    /// buffering — one event per completed line, as before this field existed —
+    /// for a host that wants each `print()` delivered on its own.
+    ///
+    /// Output is always flushed before a turn-ending event whatever this says, so
+    /// the field trades streaming latency for event volume and nothing else.
+    #[prost(uint32, optional, tag = "10")]
+    pub print_flush_interval_ms: ::core::option::Option<u32>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.

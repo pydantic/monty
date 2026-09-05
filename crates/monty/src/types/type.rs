@@ -230,6 +230,12 @@ pub enum Type {
     /// `type(p)` reads `<class 'functools.partial'>`.
     #[strum(serialize = "functools.partial")]
     Partial,
+    #[strum(serialize = "itertools.accumulate")]
+    ItertoolsAccumulate,
+    #[strum(serialize = "itertools.batched")]
+    ItertoolsBatched,
+    #[strum(serialize = "itertools.zip_longest")]
+    ItertoolsZipLongest,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -386,6 +392,9 @@ impl Type {
                 | Self::ItertoolsDropWhile
                 | Self::ItertoolsFilterFalse
                 | Self::ItertoolsStarMap
+                | Self::ItertoolsAccumulate
+                | Self::ItertoolsBatched
+                | Self::ItertoolsZipLongest
         )
     }
 

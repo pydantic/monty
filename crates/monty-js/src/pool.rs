@@ -32,8 +32,8 @@ use std::{
 use monty_pool::{
     exceeds_max_value_depth,
     telemetry::{TelemetryAdapterHandle, TelemetryContext},
-    Checkout, MountSpec, MountSpecMode, OnPrint, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue,
-    TurnEvent,
+    Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
+    ResumeValue, TurnEvent,
 };
 use monty_types::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, NameLookupResult, PrintStream, StackFrame,
@@ -132,6 +132,11 @@ pub struct NativeCheckoutOptions {
     /// operand reprs to `n` bytes. The TypeScript wrapper normalizes the
     /// public `boolean | number` option into this encoding.
     pub assert_message_annotations: Option<u32>,
+
+    /// How long the worker may hold buffered `print()` output before sending
+    /// it (ms). Absent: the worker's default. `0` restores line buffering,
+    /// delivering each completed line on its own.
+    pub print_flush_interval_ms: Option<f64>,
 }
 
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
@@ -194,9 +199,18 @@ impl NativePool {
         let mut config = PoolConfig::subprocess(&options.binary_path);
         config.min_processes = options.min_processes as usize;
         config.max_processes = options.max_processes as usize;
-        config.checkout_timeout = options.checkout_timeout_ms.map(duration_from_ms).transpose()?;
-        config.request_timeout = options.request_timeout_ms.map(duration_from_ms).transpose()?;
-        config.duration_limit_grace = options.duration_limit_grace_ms.map(duration_from_ms).transpose()?;
+        config.checkout_timeout = options
+            .checkout_timeout_ms
+            .map(|ms| duration_from_ms("checkoutTimeout", ms))
+            .transpose()?;
+        config.request_timeout = options
+            .request_timeout_ms
+            .map(|ms| duration_from_ms("requestTimeout", ms))
+            .transpose()?;
+        config.duration_limit_grace = options
+            .duration_limit_grace_ms
+            .map(|ms| duration_from_ms("durationLimitGrace", ms))
+            .transpose()?;
         config.max_checkouts_per_worker = options.max_checkouts_per_worker;
         config.metrics = configured_adapter().map(TelemetryAdapterHandle::metrics);
         if config.max_processes < 1 {
@@ -245,6 +259,10 @@ impl NativePool {
                     AssertMessageAnnotations::default,
                     AssertMessageAnnotations::from_max_bytes,
                 ),
+                print_flush_interval: options
+                    .print_flush_interval_ms
+                    .map(|ms| duration_from_ms("printFlushInterval", ms))
+                    .transpose()?,
             },
             checkout: Arc::new(AsyncMutex::new(None)),
         })
@@ -328,12 +346,13 @@ impl NativeSession {
                 .as_ref()
                 .map(Arc::clone)
                 .ok_or_else(|| invalid("the pool is not started — create it with Monty.create()"))?;
-            let checkout = if let Some(context) = telemetry_context {
-                pool.checkout_with_telemetry(&repl_config, context).await
-            } else {
-                pool.checkout(&repl_config).await
-            }
-            .map_err(pool_error)?;
+            let checkout = pool
+                .checkout_with(
+                    &repl_config,
+                    CheckoutOptions::default().with_telemetry(telemetry_context),
+                )
+                .await
+                .map_err(pool_error)?;
             *slot.lock().await = Some(checkout);
             Ok(())
         })
@@ -1065,9 +1084,10 @@ fn bytes_limit(limit: f64, name: &str) -> Result<u64> {
     }
 }
 
-/// Converts a millisecond count from JS into a `Duration`.
-fn duration_from_ms(ms: f64) -> Result<Duration> {
-    Duration::try_from_secs_f64(ms / 1000.0).map_err(|err| invalid(&format!("invalid timeout: {err}")))
+/// Converts a millisecond count from JS into a `Duration`, naming the option
+/// in the error so a rejected value says which one it was.
+fn duration_from_ms(name: &str, ms: f64) -> Result<Duration> {
+    Duration::try_from_secs_f64(ms / 1000.0).map_err(|err| invalid(&format!("invalid {name}: {err}")))
 }
 
 /// Locks the shared *pool* slot, ignoring poisoning (a panic elsewhere must

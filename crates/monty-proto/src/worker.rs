@@ -16,7 +16,11 @@
 //! the host transport surfaces that; it only ensures every *graceful* turn ends
 //! with exactly one turn-ending event.
 
-use std::{borrow::Cow, mem};
+use std::{
+    borrow::Cow,
+    mem,
+    time::{Duration, Instant},
+};
 
 use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump};
 use monty_type_checking::{SourceFile, TypeChecker};
@@ -26,8 +30,8 @@ use monty_types::{
 };
 
 use super::{
-    FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError, WireFunctionCall, check_protocol_version,
-    exceeds_max_frame_len, exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
+    DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError, WireFunctionCall,
+    check_protocol_version, exceeds_max_frame_len, exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
 };
 use crate::wire::uuid_to_pb;
 
@@ -199,6 +203,10 @@ pub struct Child {
     type_checker: TypeChecker,
     /// `Some` when the session was created with `type_check: true`.
     type_check: Option<TypeCheckState>,
+    /// How long [`ProtoPrint`] may hold buffered output, from the session's
+    /// `Configure`. `Duration::ZERO` means line buffering (see the field's
+    /// documentation in the schema).
+    print_flush_interval: Duration,
 }
 
 impl Default for Child {
@@ -208,6 +216,7 @@ impl Default for Child {
             script_name: String::new(),
             type_checker: TypeChecker::default(),
             type_check: None,
+            print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
         }
     }
 }
@@ -420,6 +429,14 @@ impl Child {
     /// not-yet-configured worker.
     fn handle_configure(&mut self, configure: pb::Configure) -> pb::ChildEvent {
         if matches!(self.state, SessionState::Configured(None)) {
+            // Applied on arrival rather than in `ensure_repl`, which a `Load`
+            // never reaches: a dump restores the repl directly, and print
+            // pacing is a delivery setting the dump does not carry.
+            // Absent means an older parent, or one with no opinion; both get
+            // the default rather than the line buffering that predates it.
+            self.print_flush_interval = configure
+                .print_flush_interval_ms
+                .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
             self.state = SessionState::Configured(Some(Box::new(configure)));
             ok_event()
         } else {
@@ -457,6 +474,8 @@ impl Child {
             protocol_version: _,
             // informational only — never checked
             monty_version: _,
+            // applied when the `Configure` arrived, so a `Load` honors it too
+            print_flush_interval_ms: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;
@@ -510,7 +529,7 @@ impl Child {
         {
             state.pending_snippet = Some(feed.code.clone());
         }
-        let mut print = ProtoPrint::new(sink);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let result = repl.feed_start(&feed.code, inputs, PrintWriter::Callback(&mut print));
         let event = self.drive(result, &mut print);
         print.drain();
@@ -561,7 +580,7 @@ impl Child {
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(sink);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = match *progress {
             ReplProgress::FunctionCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
             ReplProgress::OsCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
@@ -591,7 +610,7 @@ impl Child {
         let ReplProgress::NameLookup(lookup) = *progress else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(sink);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = lookup.resume(result, PrintWriter::Callback(&mut print));
         let event = self.drive(outcome, &mut print);
         print.drain();
@@ -617,7 +636,7 @@ impl Child {
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(sink);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = match *progress {
             ReplProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Callback(&mut print)),
             ReplProgress::OsCall(call) => call.abort(exc, PrintWriter::Callback(&mut print)),
@@ -649,7 +668,7 @@ impl Child {
         let ReplProgress::ResolveFutures(state) = *progress else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(sink);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = state.resume(results, PrintWriter::Callback(&mut print));
         let event = self.drive(outcome, &mut print);
         print.drain();
@@ -866,6 +885,7 @@ impl Child {
         self.state = SessionState::Configured(None);
         self.type_check = None;
         self.script_name = String::new();
+        self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
         self.type_checker.reset()
     }
 }
@@ -1054,22 +1074,35 @@ fn named_inputs(inputs: Vec<pb::NamedValue>) -> Result<Vec<(String, MontyObject)
 /// Streams sandbox `print()` output as `Print` events through an
 /// [`EventSink`].
 ///
-/// Line-buffered: a frame is written when the buffer ends with a newline or
-/// exceeds [`Self::FLUSH_BYTES`], and [`Self::drain`] flushes any partial
-/// line before the turn-ending event so ordering is exact.
+/// Debounced: a frame is written once the buffer reaches
+/// [`Self::FLUSH_BYTES`] or its oldest byte has waited out `interval`, so the
+/// number of events a turn produces follows elapsed time and output volume
+/// rather than how many times the program called `print()` — which is what
+/// makes a loop of tiny prints cost the parent (and its telemetry) roughly
+/// what one large print costs. [`Self::drain`] empties the buffer before every
+/// turn-ending event, so ordering against suspensions stays exact.
+///
+/// A zero `interval` disables the timer and restores line buffering, one event
+/// per completed line.
 struct ProtoPrint<'a> {
     buf: String,
     sink: &'a mut dyn EventSink,
+    /// How long the oldest buffered byte may wait; zero means line buffering.
+    interval: Duration,
+    /// When the buffer stopped being empty; `None` while it is empty.
+    buffered_since: Option<Instant>,
 }
 
 impl<'a> ProtoPrint<'a> {
-    /// Flush threshold for output that never produces a newline.
+    /// Flush threshold for output that never reaches the interval.
     const FLUSH_BYTES: usize = 8 * 1024;
 
-    fn new(sink: &'a mut dyn EventSink) -> Self {
+    fn new(sink: &'a mut dyn EventSink, interval: Duration) -> Self {
         Self {
             buf: String::new(),
             sink,
+            interval,
+            buffered_since: None,
         }
     }
 
@@ -1078,9 +1111,32 @@ impl<'a> ProtoPrint<'a> {
         if self.buf.is_empty() {
             return Ok(());
         }
+        self.buffered_since = None;
+        let text = mem::take(&mut self.buf);
+        self.send(text)
+    }
+
+    /// Emits one `Print` event per completed line, leaving any trailing
+    /// partial line buffered. With the timer off the contract is one event per
+    /// completed line, so a single write carrying embedded newlines has to be
+    /// split rather than shipped whole.
+    fn flush_lines(&mut self) -> Result<(), MontyException> {
+        while let Some(end) = self.buf.find('\n') {
+            let rest = self.buf.split_off(end + 1);
+            let line = mem::replace(&mut self.buf, rest);
+            self.send(line)?;
+        }
+        if self.buf.is_empty() {
+            self.buffered_since = None;
+        }
+        Ok(())
+    }
+
+    /// Sends `text` as one `Print` event.
+    fn send(&mut self, text: String) -> Result<(), MontyException> {
         let event = event(pb::child_event::Kind::Print(pb::Print {
             stream: pb::PrintStream::Stdout.into(),
-            text: mem::take(&mut self.buf),
+            text,
         }));
         self.sink.send(&event).map_err(|err| {
             MontyException::new(
@@ -1090,17 +1146,39 @@ impl<'a> ProtoPrint<'a> {
         })
     }
 
+    /// Flushes whatever the buffer has earned: complete lines when the timer
+    /// is off, then a frame if it has filled or its oldest byte has waited out
+    /// `interval`.
     fn maybe_flush(&mut self) -> Result<(), MontyException> {
-        if self.buf.ends_with('\n') || self.buf.len() >= Self::FLUSH_BYTES {
+        // Lines leave first so the size threshold below cannot merge a
+        // multi-line write back into one frame.
+        if self.interval.is_zero() {
+            self.flush_lines()?;
+        }
+        if self.buf.len() >= Self::FLUSH_BYTES || (!self.interval.is_zero() && self.interval_elapsed()) {
             self.flush()
         } else {
             Ok(())
         }
     }
 
-    /// Flushes any trailing partial line; called before every turn-ending
-    /// event. Errors are ignored — if the sink is broken the turn-ending write
-    /// fails anyway.
+    /// Whether buffered output has waited out `interval`. False when the
+    /// buffer is empty, so an idle writer never reads the clock twice.
+    fn interval_elapsed(&self) -> bool {
+        self.buffered_since
+            .is_some_and(|since| since.elapsed() >= self.interval)
+    }
+
+    /// Starts the interval clock when the buffer leaves the empty state.
+    fn mark_buffered(&mut self) {
+        if self.buffered_since.is_none() {
+            self.buffered_since = Some(Instant::now());
+        }
+    }
+
+    /// Flushes whatever is buffered; called before every turn-ending event.
+    /// Errors are ignored — if the sink is broken the turn-ending write fails
+    /// anyway.
     fn drain(&mut self) {
         let _ = self.flush();
     }
@@ -1121,6 +1199,7 @@ impl PrintWriterCallback for ProtoPrint<'_> {
                 self.flush()?;
                 continue;
             }
+            self.mark_buffered();
             self.buf.push_str(&rest[..take]);
             rest = &rest[take..];
             self.maybe_flush()?;
@@ -1129,8 +1208,21 @@ impl PrintWriterCallback for ProtoPrint<'_> {
     }
 
     fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
+        self.mark_buffered();
         self.buf.push(end);
         self.maybe_flush()
+    }
+
+    /// Releases output the program stopped writing to: without this a script
+    /// that prints and then computes in silence would hold that line until its
+    /// next print or the end of the turn. A zero `interval` has no timer to
+    /// expire, so line buffering is left to decide flushes on its own.
+    fn poll_flush(&mut self) -> Result<(), MontyException> {
+        if !self.interval.is_zero() && self.interval_elapsed() {
+            self.flush()
+        } else {
+            Ok(())
+        }
     }
 }
 

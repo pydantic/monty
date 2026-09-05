@@ -735,6 +735,11 @@ fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
 /// jump from below the soft limit past the hard ceiling. The reported figure is
 /// what each result really costs, so it pins down that the refusal accounted for
 /// the whole allocation rather than tripping on some smaller intermediate.
+///
+/// Every case here refuses at a one-shot preflight, whose size is deterministic.
+/// A refusal that instead depends on where a fill loop's poll lands has no
+/// stable figure to pin — test that as a property, as the `batched` case below
+/// does.
 #[test]
 fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
@@ -770,6 +775,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
             16_031_971,
+        ),
+        // `itertools.batched` preflights one batch, capped at `n`.
+        (
+            "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
+            16_032_590,
         ),
     ];
 
@@ -889,6 +899,45 @@ fn reading_partial_args_cannot_kill_the_worker() {
     child.shutdown();
 }
 
+/// A hint-less source gets no preflight, so only the fill loop's own memory
+/// poll can stop `batched` short of the hard limit. Where that poll lands
+/// depends on how far the batch's `Vec` has doubled, so this pins the property
+/// — refused above the soft limit, well short of the hard ceiling — rather than
+/// a byte figure a single reallocation would move by ~1 MiB.
+#[test]
+fn batched_without_a_size_hint_is_refused_before_the_hard_limit() {
+    const SOFT_LIMIT: u64 = 1024 * 1024;
+    // `monty-alloc`'s headroom above the soft limit, without type checking
+    const HARD_CEILING: u64 = SOFT_LIMIT + 4 * 1024 * 1024;
+
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(SOFT_LIMIT));
+    let code = "import itertools\nnext(itertools.batched(itertools.count(), 1_000_000_000))";
+    let (_, event) = child.feed(code);
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError");
+    let message = error.message.expect("MemoryError should have a message");
+    let used = reported_usage(&message, code);
+    assert!(
+        (SOFT_LIMIT..HARD_CEILING).contains(&used),
+        "{code}: reported {used} bytes, expected a refusal between {SOFT_LIMIT} and {HARD_CEILING}"
+    );
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// A small `n` caps a batch however long the source, so batching a huge
+/// exact-hint iterable must not trip the `batched` preflight — the memory
+/// really is bounded by `n`, not by the source.
+#[test]
+fn small_batched_n_is_not_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "import itertools\nlen(next(itertools.batched(range(500_000), 8)))";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(8));
+    child.shutdown();
+}
+
 /// A bounded deque retains at most `maxlen` items, so extending it from a huge
 /// exact-hint iterator (the sliding-window pattern) must not trip the
 /// `deque.extend` preflight — the memory really is capped at `maxlen`.
@@ -911,16 +960,22 @@ fn bounded_deque_extend_is_not_preflighted() {
 fn assert_reported_usage(message: &str, expected: u64, code: &str) {
     const TOLERANCE: u64 = 1024;
 
-    let used: u64 = message
-        .strip_prefix("memory limit exceeded: ")
-        .and_then(|rest| rest.strip_suffix(" bytes > 1048576 bytes"))
-        .unwrap_or_else(|| panic!("{code}: unexpected message {message:?}"))
-        .parse()
-        .unwrap_or_else(|_| panic!("{code}: unexpected message {message:?}"));
+    let used = reported_usage(message, code);
     assert!(
         used.abs_diff(expected) <= TOLERANCE,
         "{code}: reported {used} bytes, expected within {TOLERANCE} of {expected}"
     );
+}
+
+/// Parse the bytes-used figure out of a `memory limit exceeded` message raised
+/// against a 1 MiB limit, panicking with `code` if the message is not one.
+fn reported_usage(message: &str, code: &str) -> u64 {
+    message
+        .strip_prefix("memory limit exceeded: ")
+        .and_then(|rest| rest.strip_suffix(" bytes > 1048576 bytes"))
+        .unwrap_or_else(|| panic!("{code}: unexpected message {message:?}"))
+        .parse()
+        .unwrap_or_else(|_| panic!("{code}: unexpected message {message:?}"))
 }
 
 /// A refused allocation must leave the parent something it can classify: the
@@ -1446,13 +1501,18 @@ fn unsupported_protocol_version_on_create_is_a_fatal_error() {
     // Spelled out rather than taken from `check_protocol_version`, so rewording
     // the refusal a parent actually reads fails here.
     let supported = if MIN_SUPPORTED_PROTOCOL_VERSION == PROTOCOL_VERSION {
-        format!("this build supports protocol version {PROTOCOL_VERSION}")
+        format!("server supports protocol version {PROTOCOL_VERSION}")
     } else {
-        format!("this build supports protocol versions {MIN_SUPPORTED_PROTOCOL_VERSION} to {PROTOCOL_VERSION}")
+        format!("server supports protocol versions {MIN_SUPPORTED_PROTOCOL_VERSION} to {PROTOCOL_VERSION}")
     };
     assert!(
         message.contains(&supported),
         "message should name the supported range: {message}"
+    );
+    // Ahead of the range, so the client is on the wrong version rather than behind.
+    assert!(
+        message.contains("make sure you are using the correct client version"),
+        "message should point at the client version: {message}"
     );
 }
 
@@ -1469,6 +1529,11 @@ fn undeclared_protocol_version_is_a_fatal_error() {
     assert!(
         message.contains("unsupported protocol version 0"),
         "message should name the rejected version: {message}"
+    );
+    // Below the range, so the client needs to move forward.
+    assert!(
+        message.contains("try updating to a newer client version"),
+        "message should tell the client to update: {message}"
     );
 }
 

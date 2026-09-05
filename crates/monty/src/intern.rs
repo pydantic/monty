@@ -965,7 +965,8 @@ pub enum StaticStrings {
     Functools,
     /// `functools.reduce()` function.
     Reduce,
-    /// `initial` keyword argument of `functools.reduce()`.
+    /// `initial` keyword argument of `functools.reduce()` and
+    /// `itertools.accumulate()`.
     Initial,
 
     // ==========================
@@ -1100,7 +1101,7 @@ pub enum StaticStrings {
     Timespec,
     /// `functools.partial` type.
     Partial,
-    /// `partial.func` attribute.
+    /// `partial.func` attribute, and the `accumulate(func=...)` keyword.
     Func,
     /// `partial.keywords` attribute.
     Keywords,
@@ -1122,6 +1123,19 @@ pub enum StaticStrings {
     /// `ignorechars` parameter of `base64.a85decode()`.
     #[strum(serialize = "ignorechars")]
     Ignorechars,
+
+    // ==========================
+    // Batch-three itertools module strings. Appended at the enum end like every
+    // block before it: inserting beside the earlier itertools variants would
+    // shift every later serialized `StringId`.
+    /// `itertools.accumulate()` function.
+    Accumulate,
+    /// `zip_longest(fillvalue=...)` keyword.
+    Fillvalue,
+    /// `itertools.batched()` function.
+    Batched,
+    /// `itertools.zip_longest()` function.
+    ZipLongest,
 }
 
 /// One executor-local interned string and its precomputed Python hash.

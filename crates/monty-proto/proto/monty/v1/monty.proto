@@ -464,6 +464,15 @@ message Configure {
   // is not a monty parent — and is always rejected. The protocol has no
   // in-band negotiation, so an undeclared peer cannot be assumed compatible.
   uint32 protocol_version = 9;
+  // How long the child may hold buffered `print()` output before emitting it
+  // as a `Print` event, in milliseconds. Absent means the child's default
+  // (`DEFAULT_PRINT_FLUSH_INTERVAL`). 0 disables the timer and restores line
+  // buffering — one event per completed line, as before this field existed —
+  // for a host that wants each `print()` delivered on its own.
+  //
+  // Output is always flushed before a turn-ending event whatever this says, so
+  // the field trades streaming latency for event volume and nothing else.
+  optional uint32 print_flush_interval_ms = 10;
 }
 
 // Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's

@@ -1090,15 +1090,21 @@ impl<'h> VM<'h> {
     /// Periodic dispatch-loop work, outlined (`#[inline(never)]`) so the hot
     /// loop stays small: the amortized memory + time check — where a timeout
     /// swallowed by a truncating caller re-detects (elapsed time is
-    /// monotonic), backstopped by the `run_external` exit check — and the
-    /// GC-scheduling probe.
+    /// monotonic), backstopped by the `run_external` exit check — the
+    /// GC-scheduling probe, and the print writer's flush poll.
     #[inline(never)]
-    fn dispatch_checkpoint(&mut self, check_limits: bool) -> Result<(), RunError> {
+    fn dispatch_checkpoint(&mut self, check_limits: bool, poll_print: bool) -> Result<(), RunError> {
         if check_limits {
             self.heap.tracker.check_memory_time()?;
         }
         if self.heap.should_gc() {
             self.run_gc();
+        }
+        // A buffering writer only flushes when written to, so code that prints
+        // and then computes in silence would hold that output until its next
+        // print. This is what bounds that wait.
+        if poll_print {
+            self.print_writer.poll_flush()?;
         }
         Ok(())
     }
@@ -1133,6 +1139,9 @@ impl<'h> VM<'h> {
         // host boundary), so with none configured the whole checkpoint reduces
         // to this one hoisted, well-predicted branch per instruction.
         let check_limits = self.heap.tracker.has_memory_time_limit();
+        // Likewise hoisted: only a `Callback` writer can buffer, so every other
+        // variant skips the poll — and the clock read behind it — entirely.
+        let poll_print = self.print_writer.wants_poll();
 
         let mut countdown = CHECK_INTERVAL;
 
@@ -1146,7 +1155,7 @@ impl<'h> VM<'h> {
                 countdown = c;
             } else {
                 countdown = CHECK_INTERVAL;
-                self.dispatch_checkpoint(check_limits)?;
+                self.dispatch_checkpoint(check_limits, poll_print)?;
             }
 
             // Track instruction IP for exception table lookup

@@ -145,6 +145,24 @@ impl PrintWriter<'_> {
             Self::Callback(cb) => cb.stdout_push(end),
         }
     }
+
+    /// Whether this writer wants [`poll_flush`](Self::poll_flush) called at all.
+    ///
+    /// Only `Callback` can buffer, so the VM hoists this out of its dispatch
+    /// loop and skips the poll (and its clock read) entirely for every other
+    /// variant.
+    #[must_use]
+    pub fn wants_poll(&self) -> bool {
+        matches!(self, Self::Callback(_))
+    }
+
+    /// Forwards the VM's periodic checkpoint to a buffering callback.
+    pub fn poll_flush(&mut self) -> Result<(), MontyException> {
+        match self {
+            Self::Callback(cb) => cb.poll_flush(),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// Rejects a collect-buffer growth that would exceed `max_bytes`.
@@ -230,4 +248,14 @@ pub trait PrintWriterCallback {
     /// # Arguments
     /// * `end` - The character to print after the formatted output.
     fn stdout_push(&mut self, end: char) -> Result<(), MontyException>;
+
+    /// Gives a buffering implementation a chance to release what it holds.
+    ///
+    /// The VM calls this from its periodic dispatch checkpoint, so a callback
+    /// that batches writes can bound how long output sits unsent while the
+    /// program computes without printing. Implementations that write straight
+    /// through do nothing here.
+    fn poll_flush(&mut self) -> Result<(), MontyException> {
+        Ok(())
+    }
 }

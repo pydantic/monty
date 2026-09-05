@@ -4,6 +4,7 @@
 use std::time::Instant;
 use std::{
     borrow::Cow,
+    fmt,
     future::{Future, ready},
     mem,
     path::Path,
@@ -22,7 +23,7 @@ use monty_types::{
 use tokio::{task::spawn_blocking, time::timeout};
 
 #[cfg(feature = "telemetry")]
-use crate::telemetry::metrics::outcome;
+use crate::telemetry::{TelemetryContext, metrics::outcome};
 use crate::{
     CrashCause, PoolError,
     pool::{CapacityGuard, PoolInner},
@@ -50,6 +51,18 @@ pub struct ReplConfig {
     /// (see `limitations/assert.md`). On by default with a 120-byte
     /// operand-repr truncation; `MaxBytes` customizes the truncation.
     pub assert_message_annotations: AssertMessageAnnotations,
+    /// How long the worker may hold buffered `print()` output before sending
+    /// it, batching a burst of prints into one `Print` event instead of one
+    /// each. `None` takes the worker's default
+    /// ([`crate::DEFAULT_PRINT_FLUSH_INTERVAL`]); `Duration::ZERO` restores line
+    /// buffering, delivering each completed line on its own.
+    ///
+    /// Output is always flushed before a suspension or a turn ends, so this
+    /// only sets how long live output may lag — never what arrives, or in
+    /// what order. The wire carries whole milliseconds, so a positive interval
+    /// below 1 ms is sent as 1 ms rather than rounding down into the
+    /// line-buffering sentinel.
+    pub print_flush_interval: Option<Duration>,
 }
 
 impl Default for ReplConfig {
@@ -61,7 +74,57 @@ impl Default for ReplConfig {
             type_check_stubs: None,
             type_check_config: TypeCheckingConfig::default(),
             assert_message_annotations: AssertMessageAnnotations::default(),
+            print_flush_interval: None,
         }
+    }
+}
+
+/// Host-side context for one checkout, as opposed to the [`ReplConfig`] the
+/// worker is sent.
+// non_exhaustive: options may be added without breaking callers
+#[derive(Default)]
+#[non_exhaustive]
+pub struct CheckoutOptions {
+    /// Distributed trace context captured by a host adapter. Its span also
+    /// goes out as `traceparent`/`tracestate` on a WebSocket dial, so a remote
+    /// worker's own spans join the host's trace.
+    #[cfg(feature = "telemetry")]
+    pub telemetry: Option<TelemetryContext>,
+    /// Extra headers for this checkout's WebSocket upgrade request; the
+    /// subprocess transport makes no request and ignores them. Duplicate
+    /// names are last-wins, even against the default `user-agent`
+    /// (`monty-pool/<version>`), the `traceparent` from `telemetry`, `host`
+    /// and the other handshake headers, and a malformed name or value fails
+    /// the dial.
+    pub connect_headers: Vec<(String, String)>,
+}
+
+impl CheckoutOptions {
+    /// Sets the distributed trace context, if the host captured one.
+    #[cfg(feature = "telemetry")]
+    #[must_use]
+    pub fn with_telemetry(mut self, telemetry: Option<TelemetryContext>) -> Self {
+        self.telemetry = telemetry;
+        self
+    }
+
+    /// Sets the headers for this checkout's WebSocket upgrade request.
+    #[must_use]
+    pub fn with_connect_headers(mut self, connect_headers: Vec<(String, String)>) -> Self {
+        self.connect_headers = connect_headers;
+        self
+    }
+}
+
+/// Names each connect header, never its value: monty never interprets the
+/// values, but a caller may send e.g. a token for a proxy/relay in front of
+/// the worker, and options get logged.
+impl fmt::Debug for CheckoutOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let header_names: Vec<&str> = self.connect_headers.iter().map(|(name, _)| name.as_str()).collect();
+        f.debug_struct("CheckoutOptions")
+            .field("connect_headers", &header_names)
+            .finish_non_exhaustive()
     }
 }
 
@@ -449,6 +512,7 @@ impl Checkout {
             protocol_version: PROTOCOL_VERSION,
             // Diagnostic only, so a rejection can report both builds.
             monty_version: MONTY_VERSION.to_owned(),
+            print_flush_interval_ms: repl.print_flush_interval.map(flush_interval_ms),
         }));
         let mut this = Self {
             worker: Some(worker),
@@ -1531,6 +1595,20 @@ impl Drop for Checkout {
         }
         #[cfg(feature = "telemetry")]
         self.record_finish("abandoned");
+    }
+}
+
+/// Encodes a print flush interval as whole milliseconds for the wire.
+///
+/// Zero is the explicit line-buffering sentinel, so a *positive* interval must
+/// never round down into it — anything under a millisecond is sent as 1 ms.
+/// Saturates at the top: an interval past `u32::MAX` milliseconds is absurd
+/// rather than meaningful, and the turn-end flush bounds it anyway.
+fn flush_interval_ms(interval: Duration) -> u32 {
+    if interval.is_zero() {
+        0
+    } else {
+        u32::try_from(interval.as_millis()).unwrap_or(u32::MAX).max(1)
     }
 }
 

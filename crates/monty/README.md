@@ -4,11 +4,11 @@
 [![crates.io](https://img.shields.io/crates/v/monty.svg)](https://crates.io/crates/monty)
 [![license](https://img.shields.io/github/license/pydantic/monty.svg?v=2)](https://github.com/pydantic/monty/blob/main/LICENSE)
 
-The core interpreter crate of [Monty](https://github.com/pydantic/monty) — a minimal, secure Python interpreter written in Rust for use by AI.
+The core interpreter crate of [Monty](https://github.com/pydantic/monty) — a sandboxed Python interpreter written in Rust for code written by AI.
 
-**Experimental** — this project is still in development, and not ready for prime time.
+Monty runs Python code written by an LLM without the cost, latency and complexity of a container based sandbox. It parses Python with [Ruff](https://github.com/astral-sh/ruff)'s parser and executes it on its own bytecode VM — no CPython, no FFI, no C dependencies. Startup takes microseconds, not hundreds of milliseconds.
 
-Monty lets you safely run Python code written by an LLM inside your own process, without the cost, latency and complexity of a container based sandbox. It parses Python with [Ruff](https://github.com/astral-sh/ruff)'s parser and executes it on its own bytecode VM — no CPython, no FFI, no C dependencies. Startup takes microseconds, not hundreds of milliseconds.
+This crate runs the interpreter in your own process, so an abort inside it (a stack overflow, an allocator failure) takes your process with it. For untrusted code use [`monty-pool`](https://crates.io/crates/monty-pool), which runs the interpreter in worker subprocesses and replaces one that crashes.
 
 The sandbox has no ambient access to the host: filesystem, environment and network are only reachable through external function calls and mounts that you explicitly provide.
 
@@ -18,7 +18,7 @@ This crate is the pure-Rust core. Most users want one of the bindings built on t
 - **JavaScript/TypeScript**: [`@pydantic/monty`](https://www.npmjs.com/package/@pydantic/monty)
 - **CLI**: the `monty` binary from the [`monty-runtime`](https://crates.io/crates/monty-runtime) crate
 
-See the [project README](https://github.com/pydantic/monty) for the full feature matrix, motivation, and supported Python subset.
+See the [documentation](https://pydantic.dev/docs/monty/) for the motivation, latency measurements, comparison to alternatives and the supported Python subset.
 
 ## Basic usage
 

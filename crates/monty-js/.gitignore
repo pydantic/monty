@@ -153,3 +153,5 @@ test-results
 playwright-report
 .playwright
 __test__/__screenshots__
+# docs snippets written by __test__/node_docs.spec.ts
+__test__/docs

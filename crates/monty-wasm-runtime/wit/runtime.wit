@@ -208,6 +208,9 @@ interface worker {
         assert-message-annotations: option<u32>,
         type-check-format: type-check-format,
         type-check-color: bool,
+        /// How long the child may hold buffered print output. Absent takes its
+        /// default; zero restores line buffering, one event per completed line.
+        print-flush-interval-ms: option<u32>,
     }
 
     /// One Python snippet and its host inputs.

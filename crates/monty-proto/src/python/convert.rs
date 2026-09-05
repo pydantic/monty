@@ -229,6 +229,9 @@ pub(super) fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option
 /// [`MontyType`]. Built once and cached. Identities are taken from [`type_object_to_py`]
 /// so the two directions stay in lock-step. [`MontyType::Path`] is handled separately
 /// (by subclass check) since pathlib exposes several concrete path classes.
+///
+/// The whole table is built in one go, so an entry the host cannot resolve would
+/// fail every lookup, not just its own — [`host_has_type`] keeps those out.
 fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, MontyType)>> {
     static TABLE: PyOnceLock<Vec<(Py<PyAny>, MontyType)>> = PyOnceLock::new();
     TABLE.get_or_try_init(py, || {
@@ -256,6 +259,9 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::ItertoolsDropWhile,
             MontyType::ItertoolsFilterFalse,
             MontyType::ItertoolsStarMap,
+            MontyType::ItertoolsAccumulate,
+            MontyType::ItertoolsBatched,
+            MontyType::ItertoolsZipLongest,
             MontyType::Tuple,
             MontyType::Dict,
             MontyType::Set,
@@ -278,9 +284,26 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::SpecialForm,
         ]
         .into_iter()
+        .filter(|t| host_has_type(py, t))
         .map(|t| Ok((type_object_to_py(py, t.clone())?, t)))
         .collect()
     })
+}
+
+/// Whether this host's Python is new enough to define `t`'s type object.
+///
+/// A type the host does not have can never be the class being looked up, so it
+/// is left out of [`round_trip_type_table`] rather than failing the build of it.
+/// Outbound it is the guard in [`type_object_to_py`], which has a real value to
+/// reject rather than a table entry to skip.
+/// Runtime version check (not `cfg!(Py_3_12)`): this crate has no
+/// pyo3-build-config build script, so the version cfgs don't exist.
+fn host_has_type(py: Python<'_>, t: &MontyType) -> bool {
+    match t {
+        // `itertools.batched` is 3.12+, below the packages' 3.10 floor.
+        MontyType::ItertoolsBatched => py.version_info() >= (3, 12),
+        _ => true,
+    }
 }
 
 /// Represents a host callable with no richer Monty mapping as a
@@ -467,6 +490,16 @@ pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
 /// live in `io`). Unmodeled types fall through to `builtins` and raise `AttributeError`.
 /// Each modeled type's host class is cached in its own `PyOnceLock` (imported once).
 fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
+    // A type this host's Python is too old to define has no object to hand back.
+    // Say which type that was, rather than leaving the arm's import to raise a
+    // bare `AttributeError` naming neither. Same predicate as the filter in
+    // `round_trip_type_table`, so both directions agree on what this host holds.
+    if !host_has_type(py, &t) {
+        return Err(PyTypeError::new_err(format!(
+            "Cannot convert {t} to a host type: this Python does not define it"
+        )));
+    }
+
     // Each expansion gets a distinct hygienic `LOCK` static, so every arm caches
     // its own resolved type object. `PyOnceLock::import` imports + getattrs once.
     macro_rules! cached {
@@ -496,6 +529,9 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         MontyType::ItertoolsDropWhile => cached!("itertools", "dropwhile"),
         MontyType::ItertoolsFilterFalse => cached!("itertools", "filterfalse"),
         MontyType::ItertoolsStarMap => cached!("itertools", "starmap"),
+        MontyType::ItertoolsAccumulate => cached!("itertools", "accumulate"),
+        MontyType::ItertoolsBatched => cached!("itertools", "batched"),
+        MontyType::ItertoolsZipLongest => cached!("itertools", "zip_longest"),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
         MontyType::Path => get_pure_posix_path(py).map(|b| b.clone().unbind()),

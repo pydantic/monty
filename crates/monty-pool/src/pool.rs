@@ -14,11 +14,9 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
-#[cfg(feature = "telemetry")]
-use crate::telemetry::TelemetryContext;
 use crate::{
     PoolConfig, PoolError,
-    checkout::{Checkout, ReplConfig, request},
+    checkout::{Checkout, CheckoutOptions, ReplConfig, request},
     worker::Worker,
 };
 
@@ -70,7 +68,7 @@ impl Pool {
         let mut idle = Vec::with_capacity(config.min_processes);
         if !config.transport.is_websocket() {
             for _ in 0..config.min_processes {
-                idle.push(Worker::new(&config).await?);
+                idle.push(Worker::new(&config, &[]).await?);
             }
         }
         let total = idle.len();
@@ -86,25 +84,29 @@ impl Pool {
         Ok(pool)
     }
 
-    /// Dedicates a worker to one REPL session created from `repl`.
-    ///
-    /// Takes an idle worker when one exists, spawns a new one while below
-    /// `max_processes`, and otherwise waits up to `checkout_timeout`
-    /// (forever when `None`) before failing with [`PoolError::Exhausted`].
+    /// Dedicates a worker to one REPL session created from `repl`, with
+    /// default [`CheckoutOptions`] — see [`Self::checkout_with`].
     pub async fn checkout(&self, repl: &ReplConfig) -> Result<Checkout, PoolError> {
-        let worker = self.inner.acquire_worker().await?;
-        Checkout::create(worker, Arc::clone(&self.inner), repl).await
+        self.checkout_with(repl, CheckoutOptions::default()).await
     }
 
-    /// Checks out a session with distributed context captured by a host adapter.
-    #[cfg(feature = "telemetry")]
-    pub async fn checkout_with_telemetry(
-        &self,
-        repl: &ReplConfig,
-        context: TelemetryContext,
-    ) -> Result<Checkout, PoolError> {
-        let mut worker = self.inner.acquire_worker().await?;
-        worker.set_adapter_context(context);
+    /// Dedicates a worker to one REPL session created from `repl`, with the
+    /// host context `options` carries.
+    ///
+    /// Takes an idle worker when one exists, spawns or dials a new one (with
+    /// `options.connect_headers`, preceded by the W3C trace headers of
+    /// `options.telemetry`) while below `max_processes`, and otherwise waits
+    /// up to `checkout_timeout` (forever when `None`) before failing with
+    /// [`PoolError::Exhausted`].
+    pub async fn checkout_with(&self, repl: &ReplConfig, mut options: CheckoutOptions) -> Result<Checkout, PoolError> {
+        // ahead of the caller's headers, which stay last-wins
+        #[cfg(feature = "telemetry")]
+        if let Some(telemetry) = &options.telemetry {
+            options.connect_headers.splice(0..0, telemetry.propagation_headers());
+        }
+        let worker = self.inner.acquire_worker(&options.connect_headers).await?;
+        #[cfg(feature = "telemetry")]
+        let worker = worker.with_adapter_context(options.telemetry);
         Checkout::create(worker, Arc::clone(&self.inner), repl).await
     }
 
@@ -170,15 +172,15 @@ const SHUTDOWN_EXIT_GRACE: Duration = Duration::from_millis(500);
 
 impl PoolInner {
     /// Takes a worker, reusing/spawning a local one or connecting a fresh
-    /// remote one, waiting as capacity allows — and times that for
-    /// `monty.pool.checkout.wait`.
-    pub(crate) async fn acquire_worker(&self) -> Result<Worker, PoolError> {
+    /// remote one (with `connect_headers` on its upgrade request), waiting as
+    /// capacity allows — and times that for `monty.pool.checkout.wait`.
+    pub(crate) async fn acquire_worker(&self, connect_headers: &[(String, String)]) -> Result<Worker, PoolError> {
         #[cfg(feature = "telemetry")]
         let started = Instant::now();
         // set by the acquisition itself: only it can tell an idle reuse from a
         // spawn, or either from a wait for capacity
         let mut outcome = "idle";
-        let worker = self.acquire_worker_inner(&mut outcome).await;
+        let worker = self.acquire_worker_inner(connect_headers, &mut outcome).await;
         #[cfg(feature = "telemetry")]
         if let Some(metrics) = &self.config.metrics {
             let outcome = match &worker {
@@ -191,9 +193,14 @@ impl PoolInner {
         worker
     }
 
-    /// Reuses/spawns a local worker or connects a fresh remote one, waiting as
-    /// capacity allows, and reports through `outcome` how it got one.
-    async fn acquire_worker_inner(&self, outcome: &mut &'static str) -> Result<Worker, PoolError> {
+    /// Reuses/spawns a local worker or connects a fresh remote one (with
+    /// `connect_headers` on its upgrade request), waiting as capacity allows,
+    /// and reports through `outcome` how it got one.
+    async fn acquire_worker_inner(
+        &self,
+        connect_headers: &[(String, String)],
+        outcome: &mut &'static str,
+    ) -> Result<Worker, PoolError> {
         // WebSocket connections are single-use and never pooled idle, so the
         // idle-reuse step is skipped and each acquisition dials a fresh worker.
         let websocket = self.config.transport.is_websocket();
@@ -249,7 +256,7 @@ impl PoolInner {
                 // guard the reserved slot: a failed — or cancelled, for the
                 // WebSocket dial — spawn must release it or the pool shrinks
                 let capacity = CapacityGuard::new(self);
-                let worker = Worker::new(&self.config).await?;
+                let worker = Worker::new(&self.config, connect_headers).await?;
                 capacity.disarm();
                 return Ok(worker);
             }
