@@ -952,6 +952,12 @@ pub enum MontyType {
     /// `functools.partial`, qualified the way CPython's `tp_name` is.
     #[strum(serialize = "functools.partial")]
     Partial,
+    #[strum(serialize = "itertools.accumulate")]
+    ItertoolsAccumulate,
+    #[strum(serialize = "itertools.batched")]
+    ItertoolsBatched,
+    #[strum(serialize = "itertools.zip_longest")]
+    ItertoolsZipLongest,
 }
 
 impl fmt::Display for MontyType {

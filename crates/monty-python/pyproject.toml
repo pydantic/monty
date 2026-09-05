@@ -35,6 +35,9 @@ classifiers = [
 dependencies = ["typing_extensions>=4.5"]
 dynamic = ["license", "version"]
 
+[project.optional-dependencies]
+opentelemetry = ["opentelemetry-api>=1.39.0"]
+
 [project.urls]
 Homepage = "https://github.com/pydantic/monty"
 Source = "https://github.com/pydantic/monty"
@@ -51,7 +54,7 @@ dev = [
     "black>=25.12.0",
     "dirty-equals>=0.11",
     "inline-snapshot>=0.31.1",
-    "opentelemetry-proto>=1.0.0",
+    "opentelemetry-sdk>=1.39.0",
     "pytest>=9.0.2",
     "pytest-examples>=0.0.14",
     "pytest-pretty>=1.3.0",

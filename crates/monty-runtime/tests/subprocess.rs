@@ -5,6 +5,7 @@
 
 use std::{
     io::{Read, Write},
+    iter::repeat_n,
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     thread,
     time::{Duration, Instant},
@@ -682,6 +683,81 @@ fn async_accumulation_reaches_the_soft_limit() {
     child.shutdown();
 }
 
+/// A value that already meets its width emits no fill, so a multibyte fill
+/// must not be charged as though it were repeated to the full width.
+#[test]
+fn formatting_without_padding_does_not_charge_fill() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "s = 'x' * 400_000\nlen(f'{s:é<400000}')";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(400_000));
+    child.shutdown();
+}
+
+/// Generic string fallback must use the same exact output bound as direct strings.
+#[test]
+fn formatting_generic_value_without_padding_does_not_charge_fill() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "s = 'x' * 400_000\nclass Value:\n    def __str__(self):\n        return s\nvalue = Value()\nlen(f'{value:é<400000}')";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(400_000));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+#[test]
+fn impossible_format_capacity_preserves_the_worker() {
+    let width = isize::MAX.unsigned_abs() / 'é'.len_utf8() + 2;
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    for code in [
+        format!("'{{0:é<{width}}}'.format('x')"),
+        format!("'{{0:é<{width}}}'.format(1)"),
+    ] {
+        let (_, event) = child.feed(&code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+    }
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+#[test]
+fn large_unnested_format_spec_preserves_the_worker() {
+    const SPEC_LEN: usize = 5_500_000;
+    let mut template = String::with_capacity(SPEC_LEN + 4);
+    template.push_str("{0:");
+    template.extend(repeat_n('x', SPEC_LEN));
+    template.push('}');
+
+    for junk_len in [5_000_000, 10_000_000] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(16 * 1024 * 1024));
+        let inputs = vec![pb::NamedValue {
+            name: "template".to_owned(),
+            value: Some(str_value(&template)),
+        }];
+        // The smaller filler reaches tracked error rendering without room for
+        // another spec copy. The larger one requires a preflighted receiver copy.
+        let code = format!("junk = 'j' * {junk_len}\ntemplate.format(0)");
+        let (_, event) = child.feed_with(&code, inputs);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "junk_len {junk_len}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+        child.shutdown();
+    }
+}
+
+#[test]
+fn numeric_formatting_peak_memory_preserves_the_worker() {
+    for code in ["'{:08000000d}'.format(1)", "'{:.8000000f}'.format(1.0)"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(10_000_000));
+        let (_, event) = child.feed(code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
+        child.shutdown();
+    }
+}
+
 /// Gathers nested as *items* of one another (`g = asyncio.gather(g)`) cost no
 /// Python frames, so nothing but `max_memory` bounds how deep a nest gets built.
 /// Building one too large for the limit must end the run with a `MemoryError`,
@@ -735,11 +811,20 @@ fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
 /// jump from below the soft limit past the hard ceiling. The reported figure is
 /// what each result really costs, so it pins down that the refusal accounted for
 /// the whole allocation rather than tripping on some smaller intermediate.
+///
+/// Every case here refuses at a one-shot preflight, whose size is deterministic.
+/// A refusal that instead depends on where a fill loop's poll lands has no
+/// stable figure to pin — test that as a property, as the `batched` case below
+/// does.
 #[test]
 fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
     let cases = [
         ("'x' * 10_000_000", 10_031_137),
+        // Each formatter builder must fail softly before the worker reaches its hard ceiling.
+        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_231_000),
+        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_431_791),
+        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_230_835),
         ("b'x' * 10_000_000", 10_031_269),
         ("[None] * 1_000_000", 16_031_391),
         ("2 ** 10_000_000", 10_031_230),
@@ -770,6 +855,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
             16_031_971,
+        ),
+        // `itertools.batched` preflights one batch, capped at `n`.
+        (
+            "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
+            16_032_590,
         ),
     ];
 
@@ -889,6 +979,45 @@ fn reading_partial_args_cannot_kill_the_worker() {
     child.shutdown();
 }
 
+/// A hint-less source gets no preflight, so only the fill loop's own memory
+/// poll can stop `batched` short of the hard limit. Where that poll lands
+/// depends on how far the batch's `Vec` has doubled, so this pins the property
+/// — refused above the soft limit, well short of the hard ceiling — rather than
+/// a byte figure a single reallocation would move by ~1 MiB.
+#[test]
+fn batched_without_a_size_hint_is_refused_before_the_hard_limit() {
+    const SOFT_LIMIT: u64 = 1024 * 1024;
+    // `monty-alloc`'s headroom above the soft limit, without type checking
+    const HARD_CEILING: u64 = SOFT_LIMIT + 4 * 1024 * 1024;
+
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(SOFT_LIMIT));
+    let code = "import itertools\nnext(itertools.batched(itertools.count(), 1_000_000_000))";
+    let (_, event) = child.feed(code);
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError");
+    let message = error.message.expect("MemoryError should have a message");
+    let used = reported_usage(&message, code);
+    assert!(
+        (SOFT_LIMIT..HARD_CEILING).contains(&used),
+        "{code}: reported {used} bytes, expected a refusal between {SOFT_LIMIT} and {HARD_CEILING}"
+    );
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// A small `n` caps a batch however long the source, so batching a huge
+/// exact-hint iterable must not trip the `batched` preflight — the memory
+/// really is bounded by `n`, not by the source.
+#[test]
+fn small_batched_n_is_not_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "import itertools\nlen(next(itertools.batched(range(500_000), 8)))";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(8));
+    child.shutdown();
+}
+
 /// A bounded deque retains at most `maxlen` items, so extending it from a huge
 /// exact-hint iterator (the sliding-window pattern) must not trip the
 /// `deque.extend` preflight — the memory really is capped at `maxlen`.
@@ -911,16 +1040,22 @@ fn bounded_deque_extend_is_not_preflighted() {
 fn assert_reported_usage(message: &str, expected: u64, code: &str) {
     const TOLERANCE: u64 = 1024;
 
-    let used: u64 = message
-        .strip_prefix("memory limit exceeded: ")
-        .and_then(|rest| rest.strip_suffix(" bytes > 1048576 bytes"))
-        .unwrap_or_else(|| panic!("{code}: unexpected message {message:?}"))
-        .parse()
-        .unwrap_or_else(|_| panic!("{code}: unexpected message {message:?}"));
+    let used = reported_usage(message, code);
     assert!(
         used.abs_diff(expected) <= TOLERANCE,
         "{code}: reported {used} bytes, expected within {TOLERANCE} of {expected}"
     );
+}
+
+/// Parse the bytes-used figure out of a `memory limit exceeded` message raised
+/// against a 1 MiB limit, panicking with `code` if the message is not one.
+fn reported_usage(message: &str, code: &str) -> u64 {
+    message
+        .strip_prefix("memory limit exceeded: ")
+        .and_then(|rest| rest.strip_suffix(" bytes > 1048576 bytes"))
+        .unwrap_or_else(|| panic!("{code}: unexpected message {message:?}"))
+        .parse()
+        .unwrap_or_else(|_| panic!("{code}: unexpected message {message:?}"))
 }
 
 /// A refused allocation must leave the parent something it can classify: the

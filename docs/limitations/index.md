@@ -31,7 +31,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
-- f-strings, including `=`, `!r` / `!s` / `!a` and format specs
+- f-strings (including the `=` debug form) and `str.format()`, with `!r` / `!s` / `!a` conversions, format specs and
+    nested replacement fields
 - `async` / `await`, and `asyncio.run` / `asyncio.gather`
 - `import x`, `import x.y`, `from x import y, z as w`
 - Starred unpacking everywhere CPython allows it
@@ -116,8 +117,8 @@ Each links to the page that owns it, which is where the full account lives:
     `run` and `gather`, the latter running host calls concurrently.
     `create_task`, `sleep` and everything else do not exist
     ([asyncio.md](asyncio.md)).
-- **`str.format()` and `%`-formatting are not implemented.** Use f-strings
-    ([format.md](format.md)).
+- **The `format()` builtin and `%`-formatting are not implemented.** Use `str.format()` or
+    f-strings ([format.md](format.md)).
 - **Only UTF-8, ASCII, UTF-16 and UTF-32 codecs exist.** `latin-1` and friends raise `LookupError`
     ([encoding.md](encoding.md)).
 

@@ -1,7 +1,7 @@
 use std::mem;
 
 use monty::MontyRun;
-use monty_types::{CompileOptions, DictPairs, MontyClassInstance, MontyClassType, MontyObject, MontyUuid};
+use monty_types::{CompileOptions, DictPairs, ExcType, MontyClassInstance, MontyClassType, MontyObject, MontyUuid};
 
 /// Test we can reuse exec without borrow checker issues.
 #[test]
@@ -28,6 +28,23 @@ fn test_get_interned_string() {
     let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: String = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, "foobar");
+}
+
+/// Replacement fields are synchronous, so an OS-backed attribute cannot yield
+/// to the host and must fail before the call escapes the formatter.
+#[test]
+fn str_format_os_attribute_reports_suspension_limit() {
+    let ex = MontyRun::new(
+        "import os\n'{0.environ}'.format(os)".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_eq!(err.message(), Some("str.format attribute access cannot suspend"));
 }
 
 /// Test that calling a method on a host class instance in standard execution
@@ -292,14 +309,16 @@ fn not_implemented_in_list_sort_key_names_sort() {
 /// the same reason as the tests above: on CPython the external is an ordinary
 /// function and the call would succeed.
 ///
-/// Both call sites are covered — the predicate helper shared by `takewhile`,
-/// `dropwhile` and `filterfalse`, and `starmap`, which calls its function
-/// itself and so names itself in the error separately.
+/// Every call site is covered — the predicate helper shared by `takewhile`,
+/// `dropwhile` and `filterfalse`, plus `starmap` and `accumulate`, which each
+/// call their callable themselves and so name themselves in the error.
+/// `accumulate` needs two items, since the first is yielded untouched.
 #[test]
 fn external_function_as_itertools_callable_raises_not_implemented() {
     for (call, adaptor) in [
         ("itertools.takewhile(ext_fn, [1])", "takewhile"),
         ("itertools.starmap(ext_fn, [(1,)])", "starmap"),
+        ("itertools.accumulate([1, 2], ext_fn)", "accumulate"),
     ] {
         let expr = format!("list({call})");
         let code = format!("import itertools\n\n{expr}");

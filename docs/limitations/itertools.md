@@ -10,13 +10,14 @@ notes below.
 `compress(data, selectors)`, `islice(iterable, [start,] stop[, step])`,
 `chain(*iterables)`, `cycle(iterable)`, `takewhile(predicate, iterable)`,
 `dropwhile(predicate, iterable)`, `filterfalse(predicate, iterable)`,
-`starmap(function, iterable)`.
+`starmap(function, iterable)`, `accumulate(iterable, func=None, *, initial=None)`,
+`batched(iterable, n, *, strict=False)`,
+`zip_longest(*iterables, fillvalue=None)`.
 
 ## Not implemented
 
-Everything else: `accumulate`, `batched`, `combinations`,
-`combinations_with_replacement`, `groupby`, `permutations`, `product`, `tee`,
-`zip_longest`.
+Everything else: `combinations`, `combinations_with_replacement`, `groupby`,
+`permutations`, `product`, `tee`.
 
 `chain.from_iterable` is also absent, even though `chain` itself is
 implemented: it is a classmethod reached through an attribute on the `chain`
@@ -48,20 +49,40 @@ raise `AttributeError` at runtime.
     CPython prints `repeat([repeat([...])])`. This is Monty's general cycle
     detection in `repr()`, not specific to `itertools`.
 - **A callable that suspends is rejected, not paused.** `takewhile`,
-    `dropwhile`, `filterfalse` and `starmap` apply their callable through the
-    synchronous `evaluate_function` path, which runs a frame to completion and
-    cannot yield to the host. A callable that reaches an external function, an
-    `os` operation, or a host method call therefore raises
-    `NotImplementedError: takewhile(): external function 'f' is not yet supported in this context` where CPython would
-    simply call it. This is the same
-    restriction that applies to `__init__`, `__next__` and `__repr__` (see
-    [classes.md](classes.md)); ordinary sandbox-defined functions and lambdas are
-    unaffected.
+    `dropwhile`, `filterfalse`, `starmap` and `accumulate` apply their callable
+    through the synchronous `evaluate_function` path, which runs a frame to
+    completion and cannot yield to the host. A callable that reaches an external
+    function, an `os` operation, or a host method call therefore raises
+    `NotImplementedError: takewhile(): external function 'f' is not yet supported in this context`.
+    CPython would simply call it. This is the same restriction that applies to `__init__`,
+    `__next__` and `__repr__` (see [classes.md](classes.md)); ordinary
+    sandbox-defined functions and lambdas are unaffected.
+- **`zip_longest` names the rejected keyword.** A bad keyword raises
+    `zip_longest() got an unexpected keyword argument 'bogus'`, where CPython
+    raises `zip_longest() got an unexpected keyword argument` with no name —
+    CPython hand-rolls that check rather than going through a parser family, and
+    is alone in omitting it. Every other adaptor's wording matches.
+- **A re-entrant `zip_longest` stops instead of padding forever.** A source
+    that steps the same `zip_longest` from inside its own `__next__` can exhaust
+    the remaining slots before the outer round reaches them. Both agree on the
+    row that outer round yields; from the next one on Monty raises
+    `StopIteration`, having seen every slot go spent, while CPython drives its
+    `numactive` count below zero and so yields an all-`fillvalue` tuple on every
+    later `next()`, without end. Only re-entrancy reaches this: an ordinary
+    source cannot run while the adaptor that owns it is mid-round.
 - **Crossing the host boundary loses the repr.** A `count` / `repeat` object
     returned to the host arrives as `<itertools.count object>` /
     `<itertools.repeat object>` rather than its in-sandbox `repr()`
     (`count(0)`, `repeat(7, 3)`). Monty represents all iterators this way rather
     than recursing into what they hold.
+- **`batched`'s `n` is bounded by the worker's pointer width**, so the wasm
+    worker raises `OverflowError: Python int too large to convert to C ssize_t`
+    for `n` at or above `2**31`, where CPython accepts it.
+- **`batched`'s type cannot cross to a host below Python 3.12**, which is where
+    `itertools.batched` was added. Returning `type(itertools.batched(...))` to
+    such a host raises
+    `TypeError: Cannot convert itertools.batched to a host type: this Python does not define it`.
+    Every other adaptor's type resolves on all supported hosts.
 
 ## Infinite iterators and the eager builtins
 
@@ -101,14 +122,26 @@ source raises `TimeoutError` instead of spinning. The poll is amortized (once
 per 64 items), so the limit can be overshot by up to that much work. CPython
 has no duration limit at all and would loop forever.
 
+`batched(iterable, n)` fills a whole batch inside one `next()`, so a large `n`
+over a long source is the same kind of non-yielding loop and polls
+`max_duration` the same way. It also preflights one batch against `max_memory`
+from the source's size hint, capped at `n` — an exact-hint source
+(`batched(range(10**9), 10**9)`) therefore raises `MemoryError` up front rather
+than while filling. A source with no size hint gets no preflight, so the fill
+loop polls `max_memory` as well as `max_duration` on the same amortized
+cadence — `batched(count(), 10**9)` raises `MemoryError` while filling.
+
 `cycle(iterable)` must buffer every item it has seen so far in order to replay
 them, and that buffer is charged against `max_memory` as it grows, so cycling
 over a very long source raises `MemoryError` at the limit rather than at the
 point the source is exhausted. CPython buffers the same items with no such
 ceiling.
 
-Nesting the source-driving adaptors (`pairwise`, `compress`, `islice`, `chain`,
-`cycle`) is bounded by `max_recursion_depth`: each adaptor charges one recursion
-level while delegating `next()` to its wrapped iterator, so a nest deeper than
-the limit raises `RecursionError` when consumed. CPython imposes no comparable
-per-adaptor bound; deep nesting there is limited only by the C stack.
+Nesting the source-driving adaptors — everything except `count` and `repeat` —
+is bounded by `max_recursion_depth`: an adaptor charges one recursion level
+while delegating `next()` to its wrapped iterator, so a nest deeper than the
+limit raises `RecursionError` when consumed. An adaptor answering from its own
+state charges nothing, since it touches no source: a spent `batched`, a latched
+`takewhile`, an `accumulate` yielding its `initial`. CPython imposes no
+comparable per-adaptor bound; deep nesting there is limited only by the C
+stack.

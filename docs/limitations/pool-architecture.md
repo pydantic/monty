@@ -94,13 +94,12 @@ properties that real CPython does not provide, per the caveat above.
     **not** add process-group / Job Object teardown to defend against it. A
     sandbox escape that bypassed the invariant is out of scope here: it is
     already arbitrary native code running in the worker.
-- **Synchronous Python span telemetry can delay `request_timeout`.** The optional
-    Logfire adapter runs trusted Python SDK callbacks for span and log records
-    inside the protocol turn. A callback that does not return prevents Tokio from
-    polling the otherwise hard parent-side deadline, just like other non-yielding
-    host work. Metrics do not have this limitation: Rust aggregates them and
-    invokes Python only from the metric reader thread or an explicit flush. The
-    Node adapter uses non-blocking queued delivery for turn-time telemetry.
+- **Synchronous telemetry callbacks can delay `request_timeout`.** Python invokes
+    the supplied OpenTelemetry tracer, logger, and meter in the thread recording
+    each item. Node waits for span starts so children can use the host span context,
+    then queues span ends, logs, and measurements without blocking. A synchronous
+    callback that does not return prevents Tokio from polling the otherwise hard
+    parent-side deadline, just like other non-yielding host work.
 - **`max_duration` measures cumulative execution time, and the worker's
     clock is the single source of truth.** The in-sandbox clock runs only
     while the interpreter executes, never while suspended waiting on the

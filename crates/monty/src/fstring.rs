@@ -6,19 +6,21 @@
 //! F-strings can contain literal text and interpolated expressions with optional
 //! conversion flags (`!s`, `!r`, `!a`) and format specifications.
 
-use std::{fmt, fmt::Write, iter, iter::Peekable, str, str::FromStr};
+use std::{fmt, fmt::Write, iter::Peekable, str, str::FromStr};
 
 pub use monty_types::FormatFloat;
-use monty_types::ResourceTracker;
+use monty_types::{LARGE_RESULT_THRESHOLD, ResourceTracker};
+use unicode_general_category::{GeneralCategory, get_general_category};
 
 use crate::{
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunError, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     expressions::ExprLoc,
     heap::HeapData,
     intern::StringId,
     resource_checks::check_repeat_size,
+    string_builder::StringBuilder,
     types::{LongInt, PyTrait, Type, long_int::check_bits_str_digits_limit},
     value::Value,
 };
@@ -354,6 +356,14 @@ pub enum ParseFormatSpecReason {
 }
 
 impl ParseFormatSpecReason {
+    /// Whether CPython appends the formatted value's type to this error.
+    pub(crate) fn needs_type_suffix(&self) -> bool {
+        matches!(
+            self,
+            Self::Malformed | Self::NumberOverflow | Self::UnknownFormatCode(_)
+        )
+    }
+
     /// Builds the [`Self::GroupingConflict`] wording for an integer grouping
     /// `g` immediately followed by the unrecognised trailing char `c`,
     /// reproducing CPython's two distinct messages: `Cannot specify both ','
@@ -388,21 +398,6 @@ impl ParseFormatSpecError {
             spec: spec.to_owned(),
             reason,
         }
-    }
-
-    /// Whether the runtime should append `" for object of type 'T'"` to the
-    /// `Display` message, matching CPython's wording.
-    ///
-    /// CPython suffixes the type for `Invalid format specifier` and `Unknown
-    /// format code` but not for `Format specifier missing precision` or the
-    /// `Cannot specify …` grouping conflicts, which are self-contained.
-    pub fn needs_type_suffix(&self) -> bool {
-        matches!(
-            self.reason,
-            ParseFormatSpecReason::Malformed
-                | ParseFormatSpecReason::NumberOverflow
-                | ParseFormatSpecReason::UnknownFormatCode(_)
-        )
     }
 
     /// Whether this error should be deferred to the runtime (dynamic-spec) path
@@ -442,15 +437,12 @@ impl fmt::Display for ParseFormatSpecError {
     }
 }
 
-impl FromStr for ParsedFormatSpec {
-    type Err = ParseFormatSpecError;
-
+impl ParsedFormatSpec {
     /// Parses a format specification string into its components.
     ///
-    /// Returns a [`ParseFormatSpecError`] for malformed specs, specs that
-    /// rely on flags Monty doesn't implement yet (`#`), or specs whose
-    /// width/precision overflows [`usize`].
-    fn from_str(spec: &str) -> Result<Self, Self::Err> {
+    /// Runtime callers keep the reason separate from the borrowed source so a
+    /// failed parse does not duplicate a guest-sized format spec.
+    pub(crate) fn parse_runtime(spec: &str) -> Result<Self, ParseFormatSpecReason> {
         if spec.is_empty() {
             return Ok(Self {
                 fill: ' ',
@@ -507,7 +499,7 @@ impl FromStr for ParsedFormatSpec {
 
         // Parse width
         result.width = consume_decimal_usize(&mut chars)
-            .map_err(|()| ParseFormatSpecError::new(spec, ParseFormatSpecReason::NumberOverflow))?
+            .map_err(|()| ParseFormatSpecReason::NumberOverflow)?
             .unwrap_or(0);
 
         // Grouping option (`,` or `_` thousands separator). Whether it's
@@ -525,8 +517,7 @@ impl FromStr for ParsedFormatSpec {
         // digits; its legality for the presentation type is checked at format
         // time alongside the integer grouping.
         if chars.next_if_eq(&'.').is_some() {
-            result.precision = consume_decimal_usize(&mut chars)
-                .map_err(|()| ParseFormatSpecError::new(spec, ParseFormatSpecReason::NumberOverflow))?;
+            result.precision = consume_decimal_usize(&mut chars).map_err(|()| ParseFormatSpecReason::NumberOverflow)?;
             result.frac_grouping = chars.next_if(|c| matches!(c, ',' | '_')).map(|c| match c {
                 ',' => Grouping::Comma,
                 _ => Grouping::Underscore,
@@ -534,7 +525,7 @@ impl FromStr for ParsedFormatSpec {
             // A `.` must introduce either precision digits or a fractional
             // grouping option; `.f`/`.`/`.d` are CPython's "missing precision".
             if result.precision.is_none() && result.frac_grouping.is_none() {
-                return Err(ParseFormatSpecError::new(spec, ParseFormatSpecReason::MissingPrecision));
+                return Err(ParseFormatSpecReason::MissingPrecision);
             }
         }
 
@@ -546,7 +537,7 @@ impl FromStr for ParsedFormatSpec {
         // are genuinely malformed.
         let type_pos = chars.next();
         if chars.peek().is_some() {
-            return Err(ParseFormatSpecError::new(spec, ParseFormatSpecReason::Malformed));
+            return Err(ParseFormatSpecReason::Malformed);
         }
         if let Some(c) = type_pos {
             if let Some(tc) = TypeChar::from_char(c) {
@@ -559,11 +550,19 @@ impl FromStr for ParsedFormatSpec {
                     Some(g) => ParseFormatSpecReason::grouping_conflict(g, c),
                     None => ParseFormatSpecReason::UnknownFormatCode(c),
                 };
-                return Err(ParseFormatSpecError::new(spec, reason));
+                return Err(reason);
             }
         }
 
         Ok(result)
+    }
+}
+
+impl FromStr for ParsedFormatSpec {
+    type Err = ParseFormatSpecError;
+
+    fn from_str(spec: &str) -> Result<Self, Self::Err> {
+        Self::parse_runtime(spec).map_err(|reason| ParseFormatSpecError::new(spec, reason))
     }
 }
 
@@ -624,25 +623,9 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         value
     };
 
-    // `spec.width` is the minimum field width; every formatter below pads the
-    // value out to it with `spec.fill` via `pad_string`/`iter::repeat_n`, which
-    // build a native `String` through the global allocator. A literal
-    // width is clamped to 16 bits by the bytecode encoding, but a *dynamic*
-    // width (`f"{v:>{w}}"`, `w` a runtime value) is not, so an over-large `w`
-    // would materialize gigabytes of padding before the post-construction
-    // check, OOM-ing or aborting the host. Reject an over-budget width here,
-    // up front, using the same guard sequence repeats and `str.ljust`/`zfill`
-    // already use. The check is free below `LARGE_RESULT_THRESHOLD`.
-    check_repeat_size(spec.fill.len_utf8(), spec.width, &vm.heap.tracker)?;
-
     // `spec.precision` on the float formats is rendered as that many decimal
-    // digits. `fmt_float_fixed` / `fmt_float_exp` synthesise the digits beyond
-    // `MAX_FMT_PRECISION` by appending raw `'0'` chars to a Rust `String`, so an
-    // attacker-chosen precision (`f"{v:.{p}f}"`, `p` a runtime value) could cross
-    // the allocator's hard ceiling before returning a graceful error. Precision
-    // is parsed as an unrestricted `usize`; bound it by the
-    // active resource tracker the same way the width check above does. Skip for
-    // non-finite floats since the helpers ignore precision in that case.
+    // digits. Reject an attacker-chosen oversized result before formatting;
+    // tracker-backed builders guard the later copies at their actual size.
     //
     // This applies to `f`/`e`/`%` always, and to the `g`-family
     // (`g`/`G`/`n`/type-less-with-precision) *only* under alternate form (`#`):
@@ -671,7 +654,11 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
             // Fractional grouping (`f"{v:.{p}_f}"`) weaves in one separator per
             // three emitted digits, so the native string reaches ~4/3 × precision
             // before `allocate_string` accounts for it; budget the separators too.
-            let separators = if spec.frac_grouping.is_some() { precision / 3 } else { 0 };
+            let separators = if spec.frac_grouping.is_some() {
+                precision.saturating_sub(1) / 3
+            } else {
+                0
+            };
             check_repeat_size(precision.saturating_add(separators), 1, &vm.heap.tracker)?;
         }
     }
@@ -687,7 +674,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         validate_string_spec(spec)?;
         // `value` is already a `str`, so borrow it directly — no `py_str`
         // round-trip (which would allocate a fresh heap copy just to drop it).
-        return Ok(format_string(value.to_str(vm)?, spec)?);
+        return format_string(value.to_str(vm)?, spec, &vm.heap.tracker);
     }
 
     // A grouping option (`,`/`_`) is only legal for certain presentation
@@ -695,6 +682,15 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
     // dispatching to a formatter that would otherwise ignore the flag.
     if let Some(grouping) = spec.grouping {
         validate_grouping(grouping, spec.type_char, value_type)?;
+    }
+    if let Some(grouping) = spec.frac_grouping
+        && spec.type_char == Some(TypeChar::N)
+    {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("Cannot specify '{}' with 'n'.", grouping.separator()),
+        )
+        .into());
     }
 
     // Precision is meaningless for integer presentations. CPython rejects it
@@ -780,38 +776,40 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
     match (value, spec.type_char) {
         // Integer formatting. `n` (locale number) formats an integer like `d`;
         // Monty has no locale, so the C-locale form — no grouping — applies.
-        (Value::Int(n), None | Some(TypeChar::D | TypeChar::N)) => Ok(format_int(*n, spec)),
-        (Value::Int(n), Some(TypeChar::B)) => Ok(format_int_base(*n, 2, false, spec)?),
-        (Value::Int(n), Some(TypeChar::O)) => Ok(format_int_base(*n, 8, false, spec)?),
-        (Value::Int(n), Some(TypeChar::X)) => Ok(format_int_base(*n, 16, false, spec)?),
-        (Value::Int(n), Some(TypeChar::XUpper)) => Ok(format_int_base(*n, 16, true, spec)?),
-        (Value::Int(n), Some(TypeChar::C)) => Ok(format_char(*n, spec)?),
+        (Value::Int(n), None | Some(TypeChar::D | TypeChar::N)) => format_int(*n, spec, &vm.heap.tracker),
+        (Value::Int(n), Some(TypeChar::B)) => format_int_base(*n, 2, false, spec, &vm.heap.tracker),
+        (Value::Int(n), Some(TypeChar::O)) => format_int_base(*n, 8, false, spec, &vm.heap.tracker),
+        (Value::Int(n), Some(TypeChar::X)) => format_int_base(*n, 16, false, spec, &vm.heap.tracker),
+        (Value::Int(n), Some(TypeChar::XUpper)) => format_int_base(*n, 16, true, spec, &vm.heap.tracker),
+        (Value::Int(n), Some(TypeChar::C)) => format_char(*n, spec, &vm.heap.tracker),
 
         // Float formatting. A type-less spec with no precision uses the repr
         // (shortest) digits, *not* `g` — only an explicit `g`/`G` or a type-less
         // spec that carries a precision selects the `g` algorithm.
-        (Value::Float(f), None) if spec.precision.is_none() => Ok(format_float_default(*f, spec)),
+        (Value::Float(f), None) if spec.precision.is_none() => format_float_default(*f, spec, &vm.heap.tracker),
         // `n` on a float behaves like `g` (locale-aware in CPython; C-locale
         // here, so plain `g`).
-        (Value::Float(f), None | Some(TypeChar::G | TypeChar::GUpper | TypeChar::N)) => Ok(format_float_g(*f, spec)),
-        (Value::Float(f), Some(TypeChar::F | TypeChar::FUpper)) => Ok(format_float_f(*f, spec)),
-        (Value::Float(f), Some(TypeChar::E)) => Ok(format_float_e(*f, spec, false)),
-        (Value::Float(f), Some(TypeChar::EUpper)) => Ok(format_float_e(*f, spec, true)),
-        (Value::Float(f), Some(TypeChar::Percent)) => Ok(format_float_percent(*f, spec)),
+        (Value::Float(f), None | Some(TypeChar::G | TypeChar::GUpper | TypeChar::N)) => {
+            format_float_g(*f, spec, &vm.heap.tracker)
+        }
+        (Value::Float(f), Some(TypeChar::F | TypeChar::FUpper)) => format_float_f(*f, spec, &vm.heap.tracker),
+        (Value::Float(f), Some(TypeChar::E)) => format_float_e(*f, spec, false, &vm.heap.tracker),
+        (Value::Float(f), Some(TypeChar::EUpper)) => format_float_e(*f, spec, true, &vm.heap.tracker),
+        (Value::Float(f), Some(TypeChar::Percent)) => format_float_percent(*f, spec, &vm.heap.tracker),
 
         // Int to float formatting (Python allows this)
-        (Value::Int(n), Some(TypeChar::F | TypeChar::FUpper)) => Ok(format_float_f(*n as f64, spec)),
-        (Value::Int(n), Some(TypeChar::E)) => Ok(format_float_e(*n as f64, spec, false)),
-        (Value::Int(n), Some(TypeChar::EUpper)) => Ok(format_float_e(*n as f64, spec, true)),
-        (Value::Int(n), Some(TypeChar::G | TypeChar::GUpper)) => Ok(format_float_g(*n as f64, spec)),
-        (Value::Int(n), Some(TypeChar::Percent)) => Ok(format_float_percent(*n as f64, spec)),
+        (Value::Int(n), Some(TypeChar::F | TypeChar::FUpper)) => format_float_f(*n as f64, spec, &vm.heap.tracker),
+        (Value::Int(n), Some(TypeChar::E)) => format_float_e(*n as f64, spec, false, &vm.heap.tracker),
+        (Value::Int(n), Some(TypeChar::EUpper)) => format_float_e(*n as f64, spec, true, &vm.heap.tracker),
+        (Value::Int(n), Some(TypeChar::G | TypeChar::GUpper)) => format_float_g(*n as f64, spec, &vm.heap.tracker),
+        (Value::Int(n), Some(TypeChar::Percent)) => format_float_percent(*n as f64, spec, &vm.heap.tracker),
 
         // No type specifier on a non-string value: convert to string and
         // format. (`str` values are handled by the short-circuit above.)
         (_, None) => {
             let s = value.py_str(vm)?;
             defer_drop!(s, vm);
-            Ok(format_string(s.to_str(vm)?, spec)?)
+            format_string(s.to_str(vm)?, spec, &vm.heap.tracker)
         }
 
         // Type mismatch errors
@@ -999,6 +997,7 @@ fn spec_has_directives(spec: &ParsedFormatSpec) -> bool {
         || spec.zero_pad
         || spec.width != 0
         || spec.grouping.is_some()
+        || spec.frac_grouping.is_some()
         || spec.precision.is_some()
         || spec.type_char.is_some()
 }
@@ -1231,24 +1230,46 @@ pub fn decode_format_spec(encoded: i64) -> ParsedFormatSpec {
 /// 2. Alignment: Pads to `width` using `fill` character (default left-aligned for strings)
 ///
 /// Returns an error if `=` alignment is used (sign-aware padding only valid for numbers).
-pub fn format_string(value: &str, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
-    // Handle precision (string truncation)
-    let value = if let Some(prec) = spec.precision {
-        value.chars().take(prec).collect::<String>()
-    } else {
-        value.to_owned()
-    };
-
-    // Validate alignment for strings (= is only for numbers)
+pub fn format_string(value: &str, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     if spec.align == Some(Align::SignAware) {
-        return Err(FormatError::InvalidAlignment(
-            "'=' alignment not allowed in string format specifier".to_owned(),
-        ));
+        return Err(
+            FormatError::InvalidAlignment("'=' alignment not allowed in string format specifier".to_owned()).into(),
+        );
     }
 
-    // Default alignment for strings is left
+    let precision = spec.precision.unwrap_or(usize::MAX);
+    let mut end = value.len();
+    let mut value_len = 0;
+    for (index, (byte_offset, _)) in value.char_indices().enumerate() {
+        tracker.check_time_every(index)?;
+        if value_len == precision {
+            end = byte_offset;
+            break;
+        }
+        value_len += 1;
+    }
+    let value = &value[..end];
+
+    let padding = spec.width.saturating_sub(value_len);
     let align = spec.align.unwrap_or(Align::Left);
-    Ok(pad_string(&value, spec.width, align, spec.fill))
+    let left_padding = match align {
+        Align::Right => padding,
+        Align::Center => padding / 2,
+        Align::Left | Align::SignAware => 0,
+    };
+    let right_padding = padding - left_padding;
+    let capacity = value.len().saturating_add(padding.saturating_mul(spec.fill.len_utf8()));
+    let mut output = format_builder(capacity, tracker)?;
+    for index in 0..left_padding {
+        tracker.check_time_every(index)?;
+        output.push(spec.fill)?;
+    }
+    push_format_str(&mut output, value, tracker)?;
+    for index in 0..right_padding {
+        tracker.check_time_every(left_padding + index)?;
+        output.push(spec.fill)?;
+    }
+    output.finish_raw()
 }
 
 /// Formats an integer in decimal with a format specification.
@@ -1257,12 +1278,12 @@ pub fn format_string(value: &str, spec: &ParsedFormatSpec) -> Result<String, For
 /// - Sign prefix based on `sign` spec: `+` (always show), `-` (negatives only), ` ` (space for positive)
 /// - Zero-padding: When `zero_pad` is true or `=` alignment, inserts zeros between sign and digits
 /// - Alignment: Right-aligned by default for numbers, pads to `width` with `fill` character
-pub fn format_int(n: i64, spec: &ParsedFormatSpec) -> String {
+pub fn format_int(n: i64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     let is_negative = n < 0;
     // Use unsigned_abs() to avoid overflow panic on i64::MIN
     let abs_str = n.unsigned_abs().to_string();
     let sign = numeric_sign(is_negative, &abs_str, spec);
-    pad_signed_numeric(sign, "", &abs_str, spec)
+    pad_signed_numeric(sign, "", &abs_str, spec, tracker)
 }
 
 /// Formats an integer in binary (base 2), octal (base 8), or hexadecimal (base 16).
@@ -1276,7 +1297,13 @@ pub fn format_int(n: i64, spec: &ParsedFormatSpec) -> String {
 /// here rather than via `to_uppercase()` on the padded result (which would also
 /// uppercase an alphabetic fill, e.g. `f"{180:a>8X}"` → `aaaaaaB4`).
 /// Returns an error for invalid base values.
-pub fn format_int_base(n: i64, base: u32, uppercase: bool, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
+pub fn format_int_base(
+    n: i64,
+    base: u32,
+    uppercase: bool,
+    spec: &ParsedFormatSpec,
+    tracker: &ResourceTracker,
+) -> RunResult<String> {
     let is_negative = n < 0;
     let abs_val = n.unsigned_abs();
 
@@ -1285,12 +1312,12 @@ pub fn format_int_base(n: i64, base: u32, uppercase: bool, spec: &ParsedFormatSp
         (8, _) => (format!("{abs_val:o}"), "0o"),
         (16, false) => (format!("{abs_val:x}"), "0x"),
         (16, true) => (format!("{abs_val:X}"), "0X"),
-        _ => return Err(FormatError::ValueError("Invalid base".to_owned())),
+        _ => return Err(FormatError::ValueError("Invalid base".to_owned()).into()),
     };
     let prefix = if spec.alternate { base_prefix } else { "" };
 
     let sign = numeric_sign(is_negative, &abs_str, spec);
-    Ok(pad_signed_numeric(sign, prefix, &abs_str, spec))
+    pad_signed_numeric(sign, prefix, &abs_str, spec, tracker)
 }
 
 /// Formats a big integer ([`LongInt`]) through the numeric mini-language,
@@ -1348,7 +1375,7 @@ fn format_long_int(
         if uppercase {
             digits.make_ascii_uppercase();
         }
-        Ok(pad_signed_numeric(sign, prefix, &digits, spec))
+        pad_signed_numeric(sign, prefix, &digits, spec, tracker)
     };
     let as_float = || match li.to_f64() {
         Some(f) if f.is_finite() => Ok(f),
@@ -1369,11 +1396,11 @@ fn format_long_int(
         Some(TypeChar::O) => radix(8, "0o", false),
         Some(TypeChar::X) => radix(16, "0x", false),
         Some(TypeChar::XUpper) => radix(16, "0x", true),
-        Some(TypeChar::F | TypeChar::FUpper) => Ok(format_float_f(as_float()?, spec)),
-        Some(TypeChar::E) => Ok(format_float_e(as_float()?, spec, false)),
-        Some(TypeChar::EUpper) => Ok(format_float_e(as_float()?, spec, true)),
-        Some(TypeChar::G | TypeChar::GUpper) => Ok(format_float_g(as_float()?, spec)),
-        Some(TypeChar::Percent) => Ok(format_float_percent(as_float()?, spec)),
+        Some(TypeChar::F | TypeChar::FUpper) => format_float_f(as_float()?, spec, tracker),
+        Some(TypeChar::E) => format_float_e(as_float()?, spec, false, tracker),
+        Some(TypeChar::EUpper) => format_float_e(as_float()?, spec, true, tracker),
+        Some(TypeChar::G | TypeChar::GUpper) => format_float_g(as_float()?, spec, tracker),
+        Some(TypeChar::Percent) => format_float_percent(as_float()?, spec, tracker),
         // A `LongInt` is always out of the C-long range `c` converts through.
         Some(TypeChar::C) => Err(SimpleException::new_msg(
             ExcType::OverflowError,
@@ -1397,9 +1424,9 @@ fn format_long_int(
 /// Returns `Overflow` error if out of range, `ValueError` if not a valid Unicode scalar value
 /// (e.g., surrogate code points). Right-aligned by default: `c` is an integer
 /// presentation, so it follows the numeric default (`format(65, '5c')` → `'    A'`).
-pub fn format_char(n: i64, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
+pub fn format_char(n: i64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     if !(0..=0x0010_FFFF).contains(&n) {
-        return Err(FormatError::Overflow("%c arg not in range(0x110000)".to_owned()));
+        return Err(FormatError::Overflow("%c arg not in range(0x110000)".to_owned()).into());
     }
     let n_u32 = u32::try_from(n).expect("format_char n validated in 0..=0x10FFFF range");
     let c = char::from_u32(n_u32).ok_or_else(|| FormatError::ValueError("Invalid Unicode code point".to_owned()))?;
@@ -1411,7 +1438,7 @@ pub fn format_char(n: i64, spec: &ParsedFormatSpec) -> Result<String, FormatErro
         Align::SignAware => Align::Right,
         other => other,
     };
-    Ok(pad_string(&value, spec.width, align, spec.fill))
+    pad_string(&value, spec.width, align, spec.fill, tracker)
 }
 
 /// Formats a float in fixed-point notation (format types `f` and `F`).
@@ -1419,18 +1446,18 @@ pub fn format_char(n: i64, spec: &ParsedFormatSpec) -> Result<String, FormatErro
 /// Always includes a decimal point with `precision` digits after it (default 6).
 /// Handles sign prefix, zero-padding between sign and digits when `zero_pad` or `=` alignment.
 /// Right-aligned by default. NaN and infinity are formatted as `nan`/`inf` (or `NAN`/`INF` for `F`).
-pub fn format_float_f(f: f64, spec: &ParsedFormatSpec) -> String {
+pub fn format_float_f(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     let is_negative = f.is_sign_negative() && !f.is_nan();
     let uppercase = spec.type_char == Some(TypeChar::FUpper);
     let abs_str = if let Some(word) = non_finite_repr(f, uppercase) {
         word.to_owned()
     } else {
         let abs_val = f.abs();
-        let abs_str = fmt_float_fixed(abs_val, spec.precision.unwrap_or(6));
+        let abs_str = fmt_float_fixed(abs_val, spec.precision.unwrap_or(6), tracker)?;
         maybe_alternate_point(abs_str, abs_val, spec)
     };
     let sign = numeric_sign(is_negative, &abs_str, spec);
-    pad_signed_numeric(sign, "", &abs_str, spec)
+    pad_signed_numeric(sign, "", &abs_str, spec, tracker)
 }
 
 /// Formats a float in exponential/scientific notation (format types `e` and `E`).
@@ -1438,19 +1465,24 @@ pub fn format_float_f(f: f64, spec: &ParsedFormatSpec) -> String {
 /// Produces output like `1.234568e+03` with `precision` digits after decimal (default 6).
 /// The `uppercase` parameter controls whether to use `E` or `e` for the exponent marker.
 /// Exponent is always formatted with a sign and at least 2 digits (Python convention).
-pub fn format_float_e(f: f64, spec: &ParsedFormatSpec, uppercase: bool) -> String {
+pub fn format_float_e(
+    f: f64,
+    spec: &ParsedFormatSpec,
+    uppercase: bool,
+    tracker: &ResourceTracker,
+) -> RunResult<String> {
     let is_negative = f.is_sign_negative() && !f.is_nan();
     let abs_str = if let Some(word) = non_finite_repr(f, uppercase) {
         word.to_owned()
     } else {
         let abs_val = f.abs();
-        let abs_str = fmt_float_exp(abs_val, spec.precision.unwrap_or(6), uppercase);
+        let abs_str = fmt_float_exp(abs_val, spec.precision.unwrap_or(6), uppercase, tracker)?;
         // Fix exponent format to match Python (e+03 not e3)
-        let abs_str = fix_exp_format(&abs_str);
+        let abs_str = fix_exp_format(&abs_str, tracker)?;
         maybe_alternate_point(abs_str, abs_val, spec)
     };
     let sign = numeric_sign(is_negative, &abs_str, spec);
-    pad_signed_numeric(sign, "", &abs_str, spec)
+    pad_signed_numeric(sign, "", &abs_str, spec, tracker)
 }
 
 /// Formats a float in "general" format (format types `g` and `G`).
@@ -1461,7 +1493,7 @@ pub fn format_float_e(f: f64, spec: &ParsedFormatSpec, uppercase: bool) -> Strin
 ///
 /// Unlike `f` and `e` formats, trailing zeros are stripped from the result.
 /// Default precision is 6, but minimum is 1 significant digit.
-pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
+pub fn format_float_g(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     let is_negative = f.is_sign_negative() && !f.is_nan();
     // `G` (and only `G`) uppercases the exponent marker and `inf`/`nan`.
     let uppercase = spec.type_char == Some(TypeChar::GUpper);
@@ -1471,7 +1503,7 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
         // `z` never coerces a non-finite value (`word` has no digits), so the
         // sign is `"-"` for `-inf` as usual.
         let sign = numeric_sign(is_negative, word, spec);
-        return pad_signed_numeric(sign, "", word, spec);
+        return pad_signed_numeric(sign, "", word, spec, tracker);
     }
 
     let precision = spec.precision.unwrap_or(6).max(1);
@@ -1494,8 +1526,7 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
             .unwrap_or(0)
     };
 
-    // precision is typically small (default 6), safe to convert to i32
-    let prec_i32 = i32::try_from(precision).unwrap_or(i32::MAX);
+    let exp_magnitude = usize::try_from(exp.unsigned_abs()).unwrap_or(usize::MAX);
     // A type-less spec that reaches here carries a precision (the no-precision
     // case goes through `format_float_default`). CPython's type-less-with-
     // precision form is `g`-like but diverges in two ways: it switches to
@@ -1504,12 +1535,16 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     // (the `Py_DTSF_ADD_DOT_0` flag) — e.g. `f"{100.0:.3}"` is `'1e+02'` (not
     // `g`'s `'100'`) and `f"{1.0:.2}"` is `'1.0'` (not `'1'`).
     let is_default = spec.type_char.is_none();
-    let sci_threshold = if is_default { prec_i32 - 1 } else { prec_i32 };
+    let sci_threshold = if is_default {
+        precision.saturating_sub(1)
+    } else {
+        precision
+    };
     // The alternate form (`#`) keeps the trailing zeros that `g` normally strips
     // and forces a decimal point. This applies whenever the `g` algorithm runs
     // — an explicit `g`/`G` *or* a type-less spec that carries a precision.
     let alternate_g = spec.alternate;
-    let abs_str = if exp < -4 || exp >= sci_threshold {
+    let abs_str = if exp < -4 || (exp >= 0 && exp_magnitude >= sci_threshold) {
         // Use exponential notation
         let exp_prec = precision.saturating_sub(1);
         if alternate_g {
@@ -1517,21 +1552,26 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
             // precision: let `fmt_float_exp` synthesise the digits beyond Rust's
             // formatter cap, then normalise the exponent (`e+06`). Bounded by the
             // precision pre-check in `format_with_spec`.
-            fix_exp_format(&fmt_float_exp(abs_val, exp_prec, uppercase))
+            fix_exp_format(&fmt_float_exp(abs_val, exp_prec, uppercase, tracker)?, tracker)?
         } else {
             // Plain `g` strips trailing zeros, so mantissa digits beyond the cap
             // would be dropped anyway — cap to avoid generating them.
-            strip_trailing_zeros_exp(&fmt_float_exp(abs_val, exp_prec.min(MAX_FMT_PRECISION_EXP), uppercase))
+            strip_trailing_zeros_exp(
+                &fmt_float_exp(abs_val, exp_prec.min(MAX_FMT_PRECISION_EXP), uppercase, tracker)?,
+                tracker,
+            )?
         }
     } else {
-        // Use fixed notation - result is non-negative due to .max(0)
-        let sig_digits_i32 = (prec_i32 - exp - 1).max(0);
-        let sig_digits = usize::try_from(sig_digits_i32).expect("sig_digits guaranteed non-negative");
+        let sig_digits = if exp < 0 {
+            precision.saturating_add(exp_magnitude).saturating_sub(1)
+        } else {
+            precision.saturating_sub(exp_magnitude.saturating_add(1))
+        };
         if alternate_g {
             // `#` keeps the trailing zeros, so the digit count scales with
             // precision; `fmt_float_fixed` synthesises any beyond the formatter
             // cap (bounded by the precision pre-check in `format_with_spec`).
-            fmt_float_fixed(abs_val, sig_digits)
+            fmt_float_fixed(abs_val, sig_digits, tracker)?
         } else {
             // Plain `g` strips trailing zeros, so digits beyond the cap would be
             // dropped anyway — cap before formatting.
@@ -1553,7 +1593,7 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     };
 
     let sign = numeric_sign(is_negative, &abs_str, spec);
-    pad_signed_numeric(sign, "", &abs_str, spec)
+    pad_signed_numeric(sign, "", &abs_str, spec, tracker)
 }
 
 /// Formats a float with the *default* presentation — no type char and no
@@ -1568,14 +1608,14 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
 /// Unlike the repr/str path this needs an owned `String` (the result is
 /// post-processed by `maybe_alternate_point` and then padded), so it
 /// materializes [`FormatFloat`] via `to_string` rather than streaming.
-fn format_float_default(f: f64, spec: &ParsedFormatSpec) -> String {
+fn format_float_default(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     let is_negative = f.is_sign_negative() && !f.is_nan();
     let abs_val = f.abs();
     // The alternate form (`#`) still forces a decimal point on the repr digits,
     // even in scientific notation (`format(1e20, '#')` → `'1.e+20'`).
     let abs_str = maybe_alternate_point(FormatFloat(abs_val).to_string(), abs_val, spec);
     let sign = numeric_sign(is_negative, &abs_str, spec);
-    pad_signed_numeric(sign, "", &abs_str, spec)
+    pad_signed_numeric(sign, "", &abs_str, spec, tracker)
 }
 
 /// Applies ASCII conversion to a string (escapes non-ASCII characters).
@@ -1606,7 +1646,7 @@ pub fn ascii_escape(s: &str) -> String {
 ///
 /// Multiplies the value by 100 and appends a `%` sign. Uses fixed-point notation
 /// with `precision` decimal places (default 6). For example, `0.1234` becomes `12.340000%`.
-pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec) -> String {
+pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     let percent_val = f * 100.0;
     let is_negative = percent_val.is_sign_negative() && !percent_val.is_nan();
     // The `%` presentation has no uppercase variant, so `inf`/`nan` stay lower.
@@ -1614,12 +1654,16 @@ pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec) -> String {
         format!("{word}%")
     } else {
         let abs_val = percent_val.abs();
-        let abs_str = format!("{}%", fmt_float_fixed(abs_val, spec.precision.unwrap_or(6)));
+        let digits = fmt_float_fixed(abs_val, spec.precision.unwrap_or(6), tracker)?;
+        let mut output = format_builder(digits.len().saturating_add(1), tracker)?;
+        push_format_str(&mut output, &digits, tracker)?;
+        output.push('%')?;
+        let abs_str = output.finish_raw()?;
         // `#` forces the point before the `%` (`#.0%` → `50.%`).
         maybe_alternate_point(abs_str, abs_val, spec)
     };
     let sign = numeric_sign(is_negative, &abs_str, spec);
-    pad_signed_numeric(sign, "", &abs_str, spec)
+    pad_signed_numeric(sign, "", &abs_str, spec, tracker)
 }
 
 // ============================================================================
@@ -1741,20 +1785,26 @@ fn maybe_alternate_point(abs_str: String, abs_val: f64, spec: &ParsedFormatSpec)
 /// integer digits before padding — see [`pad_signed_grouped`]. When
 /// `spec.frac_grouping` is set, the fractional digits are grouped first (a
 /// no-op for values with no fractional part, e.g. integers).
-fn pad_signed_numeric(sign: &str, prefix: &str, abs_str: &str, spec: &ParsedFormatSpec) -> String {
+fn pad_signed_numeric(
+    sign: &str,
+    prefix: &str,
+    abs_str: &str,
+    spec: &ParsedFormatSpec,
+    tracker: &ResourceTracker,
+) -> RunResult<String> {
     // Fractional grouping is applied up front so the integer-grouping/padding
     // below treats the grouped fraction as an opaque suffix.
     let frac_grouped;
     let abs_str = if let Some(g) = spec.frac_grouping {
-        frac_grouped = insert_frac_grouping(abs_str, g.separator());
+        frac_grouped = insert_frac_grouping(abs_str, g.separator(), tracker)?;
         frac_grouped.as_str()
     } else {
         abs_str
     };
     let align = spec.align.unwrap_or(Align::Right);
     match spec.grouping {
-        None => pad_signed_ungrouped(sign, prefix, abs_str, align, spec),
-        Some(grouping) => pad_signed_grouped(sign, prefix, abs_str, align, grouping, spec),
+        None => pad_signed_ungrouped(sign, prefix, abs_str, align, spec, tracker),
+        Some(grouping) => pad_signed_grouped(sign, prefix, abs_str, align, grouping, spec, tracker),
     }
 }
 
@@ -1767,24 +1817,28 @@ fn pad_signed_numeric(sign: &str, prefix: &str, abs_str: &str, spec: &ParsedForm
 /// when the string has no fractional part (e.g. an integer), so it is safe to
 /// call unconditionally from [`pad_signed_numeric`]. Output size is bounded by
 /// the (already tracked) input length plus one separator per three digits.
-fn insert_frac_grouping(s: &str, sep: char) -> String {
-    let Some(dot) = s.find('.') else {
-        return s.to_owned();
+fn insert_frac_grouping(s: &str, sep: char, tracker: &ResourceTracker) -> RunResult<String> {
+    let (after, frac_len) = if let Some(dot) = s.find('.') {
+        let after = dot + 1;
+        let frac_len = s[after..]
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(s.len() - after);
+        (after, frac_len)
+    } else {
+        (s.len(), 0)
     };
-    let after = dot + 1;
-    let frac_len = s[after..]
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(s.len() - after);
-    let mut out = String::with_capacity(s.len() + frac_len / 3);
-    out.push_str(&s[..after]);
+    let separators = frac_len.saturating_sub(1) / 3;
+    let mut out = format_builder(s.len().saturating_add(separators), tracker)?;
+    push_format_str(&mut out, &s[..after], tracker)?;
     for (i, c) in s[after..after + frac_len].chars().enumerate() {
+        tracker.check_time_every(i)?;
         if i > 0 && i.is_multiple_of(3) {
-            out.push(sep);
+            out.push(sep)?;
         }
-        out.push(c);
+        out.push(c)?;
     }
-    out.push_str(&s[after + frac_len..]);
-    out
+    push_format_str(&mut out, &s[after + frac_len..], tracker)?;
+    out.finish_raw()
 }
 
 /// Padding for a signed numeric with no thousands grouping (the common case).
@@ -1792,21 +1846,15 @@ fn insert_frac_grouping(s: &str, sep: char) -> String {
 /// Handles the three modes documented on [`pad_signed_numeric`]: `0`-flag
 /// zero-padding, `=` sign-aware fill, and ordinary outside padding. `prefix`
 /// (the `#` base marker or `""`) is emitted right after the sign in every mode.
-fn pad_signed_ungrouped(sign: &str, prefix: &str, abs_str: &str, align: Align, spec: &ParsedFormatSpec) -> String {
-    if spec.zero_pad || align == Align::SignAware {
-        let fill = if spec.zero_pad { '0' } else { spec.fill };
-        let total_len = sign.len() + prefix.len() + abs_str.len();
-        if spec.width > total_len {
-            let padding = spec.width - total_len;
-            let pad_str: String = iter::repeat_n(fill, padding).collect();
-            format!("{sign}{prefix}{pad_str}{abs_str}")
-        } else {
-            format!("{sign}{prefix}{abs_str}")
-        }
-    } else {
-        let value = format!("{sign}{prefix}{abs_str}");
-        pad_string(&value, spec.width, align, spec.fill)
-    }
+fn pad_signed_ungrouped(
+    sign: &str,
+    prefix: &str,
+    abs_str: &str,
+    align: Align,
+    spec: &ParsedFormatSpec,
+    tracker: &ResourceTracker,
+) -> RunResult<String> {
+    pad_signed_parts(sign, prefix, abs_str, "", align, spec, tracker)
 }
 
 /// Padding for a signed numeric with a thousands separator (`,` or `_`).
@@ -1815,11 +1863,11 @@ fn pad_signed_ungrouped(sign: &str, prefix: &str, abs_str: &str, align: Align, s
 /// first split into its leading digit run and any trailing part (fraction,
 /// exponent, `%`). Binary/octal/hex presentations group in fours and never
 /// carry a suffix; decimal/float presentations group in threes. `prefix` (the
-/// `#` base marker or `""`) sits after the sign and is never grouped. The `0`
-/// flag is special: its leading zeros become part of the number and are
-/// themselves grouped to fill the field width (`format(1234, '08,')` →
-/// `'0,001,234'`), whereas `=` fill and outside padding wrap an already-grouped
-/// value.
+/// `#` base marker or `""`) sits after the sign and is never grouped. Zero fill
+/// (the `0` flag or an explicit `0=`) is special: its leading zeros become part
+/// of the number and are themselves grouped to fill the field width
+/// (`format(1234, '08,')` → `'0,001,234'`), whereas any other `=` fill and
+/// outside padding wrap an already-grouped value.
 fn pad_signed_grouped(
     sign: &str,
     prefix: &str,
@@ -1827,7 +1875,8 @@ fn pad_signed_grouped(
     align: Align,
     grouping: Grouping,
     spec: &ParsedFormatSpec,
-) -> String {
+    tracker: &ResourceTracker,
+) -> RunResult<String> {
     let sep = grouping.separator();
     let is_base = matches!(
         spec.type_char,
@@ -1849,68 +1898,131 @@ fn pad_signed_grouped(
     // no commas). Delegating here also avoids `insert_grouping` underflowing
     // on an empty digit string.
     if int_digits.is_empty() {
-        return pad_signed_ungrouped(sign, prefix, abs_str, align, spec);
+        return pad_signed_ungrouped(sign, prefix, abs_str, align, spec, tracker);
     }
 
-    if spec.zero_pad {
+    // CPython grows the digits, not the fill, for the `0` flag and an explicit `0=` alike.
+    let grouped_zero_fill = spec.zero_pad || (spec.fill == '0' && spec.align == Some(Align::SignAware));
+    let min_int_width = if grouped_zero_fill {
         // Grow the integer part with grouped leading zeros until the whole
         // field (sign + prefix + grouped digits + suffix) reaches the width.
         let reserved = sign.len() + prefix.len() + suffix.len();
-        let min_int_width = spec.width.saturating_sub(reserved);
-        let grouped = insert_grouping(int_digits, group_size, sep, min_int_width);
-        format!("{sign}{prefix}{grouped}{suffix}")
-    } else if align == Align::SignAware {
-        // `=` with a non-`0` fill: group normally, then insert fill (never
-        // grouped) between the prefix and the value.
-        let body = format!("{}{suffix}", insert_grouping(int_digits, group_size, sep, 0));
-        let total_len = sign.len() + prefix.len() + body.len();
-        if spec.width > total_len {
-            let pad_str: String = iter::repeat_n(spec.fill, spec.width - total_len).collect();
-            format!("{sign}{prefix}{pad_str}{body}")
-        } else {
-            format!("{sign}{prefix}{body}")
-        }
+        spec.width.saturating_sub(reserved)
     } else {
-        let grouped = insert_grouping(int_digits, group_size, sep, 0);
-        let value = format!("{sign}{prefix}{grouped}{suffix}");
-        pad_string(&value, spec.width, align, spec.fill)
+        0
+    };
+    let grouped = insert_grouping(int_digits, group_size, sep, min_int_width, tracker)?;
+    pad_signed_parts(sign, prefix, &grouped, suffix, align, spec, tracker)
+}
+
+/// Builds a signed value and its padding into one tracked buffer.
+fn pad_signed_parts(
+    sign: &str,
+    prefix: &str,
+    body: &str,
+    suffix: &str,
+    align: Align,
+    spec: &ParsedFormatSpec,
+    tracker: &ResourceTracker,
+) -> RunResult<String> {
+    tracker.check_time()?;
+    let value_len = sign.len() + prefix.len() + body.len() + suffix.len();
+    let padding = spec.width.saturating_sub(value_len);
+    let fill = if spec.zero_pad { '0' } else { spec.fill };
+    let capacity = sign
+        .len()
+        .saturating_add(prefix.len())
+        .saturating_add(body.len())
+        .saturating_add(suffix.len())
+        .saturating_add(padding.saturating_mul(fill.len_utf8()));
+    let mut output = format_builder(capacity, tracker)?;
+
+    if spec.zero_pad || align == Align::SignAware {
+        output.push_str(sign)?;
+        output.push_str(prefix)?;
+        push_padding(&mut output, fill, padding, tracker)?;
+        push_format_str(&mut output, body, tracker)?;
+        push_format_str(&mut output, suffix, tracker)?;
+    } else {
+        let left = match align {
+            Align::Left => 0,
+            Align::Right => padding,
+            Align::Center => padding / 2,
+            Align::SignAware => unreachable!(),
+        };
+        push_padding(&mut output, fill, left, tracker)?;
+        output.push_str(sign)?;
+        output.push_str(prefix)?;
+        push_format_str(&mut output, body, tracker)?;
+        push_format_str(&mut output, suffix, tracker)?;
+        push_padding(&mut output, fill, padding - left, tracker)?;
     }
+    output.finish_raw()
+}
+
+/// Appends repeated fill while polling long writes for time limits.
+fn push_padding(output: &mut StringBuilder<'_>, fill: char, count: usize, tracker: &ResourceTracker) -> RunResult<()> {
+    for i in 0..count {
+        tracker.check_time_every(i)?;
+        output.push(fill)?;
+    }
+    Ok(())
+}
+
+/// Defers large timed allocations so emission can poll before reserving the full result.
+fn format_builder(capacity: usize, tracker: &ResourceTracker) -> RunResult<StringBuilder<'_>> {
+    if capacity > LARGE_RESULT_THRESHOLD && tracker.max_duration().is_some() {
+        Ok(StringBuilder::new(tracker))
+    } else {
+        Ok(StringBuilder::with_capacity(capacity, tracker)?)
+    }
+}
+
+/// Copies large timed fragments incrementally so the deadline is polled during the copy.
+fn push_format_str(output: &mut StringBuilder<'_>, value: &str, tracker: &ResourceTracker) -> RunResult<()> {
+    if value.len() <= LARGE_RESULT_THRESHOLD || tracker.max_duration().is_none() {
+        output.push_str(value)?;
+    } else {
+        for (i, c) in value.chars().enumerate() {
+            tracker.check_time_every(i)?;
+            output.push(c)?;
+        }
+    }
+    Ok(())
 }
 
 /// Inserts `sep` between every `group_size` digits of `digits`, counting from
 /// the right, optionally left-padding with `'0'` first so the grouped result
 /// is at least `min_width` characters wide.
 ///
-/// `min_width` drives the `0`-flag interaction: CPython grows the zero-padded
+/// `min_width` drives the zero-fill interaction: CPython grows the zero-padded
 /// integer one digit at a time until digits-plus-separators reach the field
 /// width, so the result can overshoot `min_width` by one when the final digit
 /// also introduces a separator (`format(1234, '08,')` → `'0,001,234'`, 9
 /// wide for a width of 8). Callers must pass a non-empty `digits` (numeric
 /// formatters always emit at least one digit, and [`pad_signed_grouped`]
 /// routes non-finite values away before reaching here); the arithmetic is
-/// nonetheless hardened against an empty string so it can never panic. Output
-/// size is bounded by `min_width` (already capped against the resource tracker
-/// via `check_repeat_size` in [`format_with_spec`]), so a plain `String` is
-/// safe here.
-fn insert_grouping(digits: &str, group_size: usize, sep: char, min_width: usize) -> String {
+/// nonetheless hardened against an empty string so it can never panic.
+fn insert_grouping(
+    digits: &str,
+    group_size: usize,
+    sep: char,
+    min_width: usize,
+    tracker: &ResourceTracker,
+) -> RunResult<String> {
+    tracker.check_time()?;
     // `digits` are ASCII (decimal or hex), so byte length == char count.
     let ndigits = digits.len();
-    // Grow the total digit count until digits + separators reach `min_width`.
-    // `saturating_sub` guards the `total == 0` case defensively: callers must
-    // pass a non-empty `digits`, but an empty string would otherwise underflow
-    // here, and an underflow on attacker-controlled format specs is a host
-    // panic (a sandbox DoS) we must never risk.
-    let mut total = ndigits;
-    while total + total.saturating_sub(1) / group_size < min_width {
-        total += 1;
-    }
+    let total = grouped_digit_count(ndigits, group_size, min_width);
     let zeros = total - ndigits;
 
-    let mut out = String::with_capacity(total + total.saturating_sub(1) / group_size);
+    let capacity = total.saturating_add(total.saturating_sub(1) / group_size);
+    let mut out = format_builder(capacity, tracker)?;
     let mut digit_chars = digits.chars();
     for i in 0..total {
+        tracker.check_time_every(i)?;
         if i > 0 && (total - i).is_multiple_of(group_size) {
-            out.push(sep);
+            out.push(sep)?;
         }
         // The first `zeros` positions are synthesised leading zeros; the rest
         // consume the original digit string left-to-right.
@@ -1918,12 +2030,18 @@ fn insert_grouping(digits: &str, group_size: usize, sep: char, min_width: usize)
             '0'
         } else {
             digit_chars.next().expect("digit_chars yields exactly ndigits items")
-        });
+        })?;
     }
-    out
+    out.finish_raw()
 }
 
-/// Consumes a run of ASCII digits and folds them into a decimal [`usize`].
+/// Returns the smallest count at least `ndigits` whose grouped width reaches `min_width`.
+fn grouped_digit_count(ndigits: usize, group_size: usize, min_width: usize) -> usize {
+    let required = min_width.saturating_sub(min_width.saturating_sub(1) / (group_size + 1));
+    ndigits.max(required)
+}
+
+/// Consumes a run of Unicode decimal digits and folds them into a [`usize`].
 ///
 /// Returns `Ok(None)` when no digit is present, `Ok(Some(n))` for a parsed
 /// number, and `Err(())` if accumulating would overflow [`usize`]. Used for
@@ -1935,16 +2053,32 @@ fn insert_grouping(digits: &str, group_size: usize, sep: char, min_width: usize)
 /// can bail with a parse error rather than silently clamping to 0.
 fn consume_decimal_usize(chars: &mut Peekable<impl Iterator<Item = char>>) -> Result<Option<usize>, ()> {
     let mut value: Option<usize> = None;
-    while let Some(c) = chars.next_if(char::is_ascii_digit) {
-        let digit = c.to_digit(10).expect("char::is_ascii_digit guarantees a 0-9 digit") as usize;
+    while let Some((_, digit)) = chars.next_if_map(|c| decimal_digit_value(c).map_or_else(|| Err(c), |d| Ok((c, d)))) {
         let next = value
             .unwrap_or(0)
             .checked_mul(10)
-            .and_then(|n| n.checked_add(digit))
+            .and_then(|n| n.checked_add(digit as usize))
             .ok_or(())?;
         value = Some(next);
     }
     Ok(value)
+}
+
+/// Returns the numeric value of a Unicode decimal digit.
+pub(crate) fn decimal_digit_value(character: char) -> Option<u32> {
+    if get_general_category(character) != GeneralCategory::DecimalNumber {
+        return None;
+    }
+
+    let code_point = character as u32;
+    let mut run_start = code_point;
+    while let Some(previous) = run_start.checked_sub(1).and_then(char::from_u32) {
+        if get_general_category(previous) != GeneralCategory::DecimalNumber {
+            break;
+        }
+        run_start -= 1;
+    }
+    Some((code_point - run_start) % 10)
 }
 
 /// Maximum precision Rust's `format!` accepts for fixed-point float formatting
@@ -1967,13 +2101,19 @@ const MAX_FMT_PRECISION_EXP: usize = (u16::MAX as usize) - 1;
 /// For finite values beyond the native limit we format at `MAX_FMT_PRECISION`
 /// and append trailing zeros — f64 precision bottoms out long before this, so
 /// every additional digit Python would emit is a zero anyway.
-fn fmt_float_fixed(abs_val: f64, precision: usize) -> String {
+fn fmt_float_fixed(abs_val: f64, precision: usize, tracker: &ResourceTracker) -> RunResult<String> {
     if precision <= MAX_FMT_PRECISION || !abs_val.is_finite() {
-        return format!("{abs_val:.precision$}");
+        return Ok(format!("{abs_val:.precision$}"));
     }
-    let mut s = format!("{abs_val:.MAX_FMT_PRECISION$}");
-    s.extend(iter::repeat_n('0', precision - MAX_FMT_PRECISION));
-    s
+    let base = format!("{abs_val:.MAX_FMT_PRECISION$}");
+    let extra = precision - MAX_FMT_PRECISION;
+    let mut output = format_builder(base.len().saturating_add(extra), tracker)?;
+    output.push_str(&base)?;
+    for i in 0..extra {
+        tracker.check_time_every(i)?;
+        output.push('0')?;
+    }
+    output.finish_raw()
 }
 
 /// Formats a float in exponential notation at an arbitrary precision.
@@ -1981,13 +2121,13 @@ fn fmt_float_fixed(abs_val: f64, precision: usize) -> String {
 /// Same precision-capping strategy as `fmt_float_fixed`, but trailing zeros
 /// are injected into the mantissa (before the exponent marker) rather than
 /// appended to the end.
-fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool) -> String {
+fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool, tracker: &ResourceTracker) -> RunResult<String> {
     if precision <= MAX_FMT_PRECISION_EXP || !abs_val.is_finite() {
-        return if uppercase {
+        return Ok(if uppercase {
             format!("{abs_val:.precision$E}")
         } else {
             format!("{abs_val:.precision$e}")
-        };
+        });
     }
     let base = if uppercase {
         format!("{abs_val:.MAX_FMT_PRECISION_EXP$E}")
@@ -1998,10 +2138,16 @@ fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool) -> String {
     // Inject padding zeros immediately before the exponent marker.
     if let Some(e_pos) = base.find(['e', 'E']) {
         let (mantissa, exp_part) = base.split_at(e_pos);
-        let zeros: String = iter::repeat_n('0', extra).collect();
-        format!("{mantissa}{zeros}{exp_part}")
+        let mut output = format_builder(base.len().saturating_add(extra), tracker)?;
+        output.push_str(mantissa)?;
+        for i in 0..extra {
+            tracker.check_time_every(i)?;
+            output.push('0')?;
+        }
+        output.push_str(exp_part)?;
+        output.finish_raw()
     } else {
-        base
+        Ok(base)
     }
 }
 
@@ -2013,50 +2159,27 @@ fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool) -> String {
 /// `=` to right-align since chars have no sign. Routing a SignAware value
 /// here would silently drop width, which `debug_assert!` catches in test
 /// builds; release builds degrade to no-op padding as a safety net.
-fn pad_string(value: &str, width: usize, align: Align, fill: char) -> String {
+fn pad_string(value: &str, width: usize, align: Align, fill: char, tracker: &ResourceTracker) -> RunResult<String> {
     debug_assert!(
         align != Align::SignAware,
         "pad_string received Align::SignAware; callers must handle `=` themselves \
          (numeric formatters via pad_signed_numeric, format_char by mapping to Right)"
     );
     let value_len = value.chars().count();
-    if width <= value_len {
-        return value.to_owned();
-    }
-
-    let padding = width - value_len;
-
-    match align {
-        Align::Left => {
-            let mut s = value.to_owned();
-            for _ in 0..padding {
-                s.push(fill);
-            }
-            s
-        }
-        Align::Right => {
-            let mut s = String::new();
-            for _ in 0..padding {
-                s.push(fill);
-            }
-            s.push_str(value);
-            s
-        }
-        Align::Center => {
-            let left_pad = padding / 2;
-            let right_pad = padding - left_pad;
-            let mut s = String::new();
-            for _ in 0..left_pad {
-                s.push(fill);
-            }
-            s.push_str(value);
-            for _ in 0..right_pad {
-                s.push(fill);
-            }
-            s
-        }
-        Align::SignAware => value.to_owned(),
-    }
+    let padding = width.saturating_sub(value_len);
+    let (left, right) = match align {
+        Align::Left => (0, padding),
+        Align::Right => (padding, 0),
+        Align::Center => (padding / 2, padding - padding / 2),
+        Align::SignAware => (0, 0),
+    };
+    tracker.check_time()?;
+    let capacity = value.len().saturating_add(padding.saturating_mul(fill.len_utf8()));
+    let mut output = format_builder(capacity, tracker)?;
+    push_padding(&mut output, fill, left, tracker)?;
+    output.push_str(value)?;
+    push_padding(&mut output, fill, right, tracker)?;
+    output.finish_raw()
 }
 
 /// Strips trailing zeros from a decimal float string.
@@ -2081,14 +2204,17 @@ fn strip_trailing_zeros(s: &str) -> String {
 /// Splits the string at `e` or `E`, strips zeros from the mantissa part,
 /// then recombines with the exponent. Also normalizes the exponent format
 /// to Python's convention (sign and at least 2 digits).
-fn strip_trailing_zeros_exp(s: &str) -> String {
+fn strip_trailing_zeros_exp(s: &str, tracker: &ResourceTracker) -> RunResult<String> {
     if let Some(e_pos) = s.find(['e', 'E']) {
         let (mantissa, exp_part) = s.split_at(e_pos);
         let trimmed_mantissa = strip_trailing_zeros(mantissa);
-        let fixed_exp = fix_exp_format(exp_part);
-        format!("{trimmed_mantissa}{fixed_exp}")
+        let fixed_exp = fix_exp_format(exp_part, tracker)?;
+        let mut output = format_builder(trimmed_mantissa.len().saturating_add(fixed_exp.len()), tracker)?;
+        output.push_str(&trimmed_mantissa)?;
+        output.push_str(&fixed_exp)?;
+        output.finish_raw()
     } else {
-        strip_trailing_zeros(s)
+        Ok(strip_trailing_zeros(s))
     }
 }
 
@@ -2098,10 +2224,12 @@ fn strip_trailing_zeros_exp(s: &str) -> String {
 /// This function ensures the exponent has:
 /// 1. A sign character ('+' or '-')
 /// 2. At least 2 digits
-fn fix_exp_format(s: &str) -> String {
+fn fix_exp_format(s: &str, tracker: &ResourceTracker) -> RunResult<String> {
     // Find the 'e' or 'E' marker
     let Some(e_pos) = s.find(['e', 'E']) else {
-        return s.to_owned();
+        let mut output = format_builder(s.len(), tracker)?;
+        push_format_str(&mut output, s, tracker)?;
+        return output.finish_raw();
     };
 
     let (before_e, e_and_rest) = s.split_at(e_pos);
@@ -2118,11 +2246,20 @@ fn fix_exp_format(s: &str) -> String {
     };
 
     // Ensure at least 2 digits
-    let padded_digits = if digits.len() < 2 {
-        format!("{digits:0>2}")
-    } else {
-        digits.to_owned()
-    };
-
-    format!("{before_e}{e_char}{sign}{padded_digits}")
+    let padding = 2usize.saturating_sub(digits.len());
+    let capacity = before_e
+        .len()
+        .saturating_add(e_char.len_utf8())
+        .saturating_add(sign.len_utf8())
+        .saturating_add(padding)
+        .saturating_add(digits.len());
+    let mut output = format_builder(capacity, tracker)?;
+    push_format_str(&mut output, before_e, tracker)?;
+    output.push(e_char)?;
+    output.push(sign)?;
+    for _ in 0..padding {
+        output.push('0')?;
+    }
+    output.push_str(digits)?;
+    output.finish_raw()
 }

@@ -1,13 +1,4 @@
 # Every example from https://pyformat.info/ , converted to f-strings.
-#
-# pyformat.info presents each example in old `%` style and new `str.format()`
-# style. Monty implements the format mini-language ONLY through f-strings (no
-# `str.format()` / `%` / general `__format__` protocol — see
-# limitations/format.md), so each `.format()` example is written here as the
-# equivalent f-string. Examples that rely on a user-defined class (`Data`,
-# `Plant`, `HAL9000`) can't be represented verbatim — Monty has no `class`
-# statement — so they are adapted to built-in values that exercise the same
-# formatting feature, with a note.
 
 from datetime import datetime
 

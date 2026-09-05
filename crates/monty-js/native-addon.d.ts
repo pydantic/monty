@@ -2,11 +2,15 @@ export declare const MAX_VALUE_DEPTH: number
 
 export declare function _flushTelemetry(): Promise<void>
 
-export declare function _installTelemetryAdapter(
-  version: number,
-  callback: (event: string) => void,
-  metricsCallback: (payload: Buffer) => void,
+export declare function _installTelemetry(
+  callback: (event: string) => boolean,
+  metricsCallback: (event: string) => boolean,
+  metricsEnabled: boolean,
 ): void
+
+export declare function _montyVersion(): string
+
+export declare function _setTelemetryMetricsEnabled(enabled: boolean): void
 
 export interface NativeMount {
   virtualPath: string

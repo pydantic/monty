@@ -66,5 +66,5 @@ pub(crate) use slice::Slice;
 pub(crate) use str::{Str, StringIterator, allocate_string};
 pub(crate) use timedelta::TimeDelta;
 pub(crate) use timezone::TimeZone;
-pub(crate) use tuple::{Tuple, TupleIterator, allocate_tuple};
+pub(crate) use tuple::{Tuple, TupleIterator, TupleVec, allocate_tuple};
 pub(crate) use r#type::Type;
