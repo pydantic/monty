@@ -33,10 +33,10 @@ classifiers = [
 ]
 # version and both pins are rewritten from the Cargo workspace version by
 # `crates/monty-python/build.rs` — don't edit them by hand
-version = "0.0.22"
+version = "0.0.23"
 dependencies = [
-    "pydantic-monty-client==0.0.22",
-    "pydantic-monty-runtime==0.0.22",
+    "pydantic-monty-client==0.0.23",
+    "pydantic-monty-runtime==0.0.23",
 ]
 
 [project.optional-dependencies]
