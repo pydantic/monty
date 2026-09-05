@@ -5,7 +5,6 @@ from typing import Any, Callable, Literal
 
 from typing_extensions import NotRequired, TypeAlias, TypedDict
 
-from ._async import MontyCallbackCleanupError
 from ._monty import (
     NOT_HANDLED,
     AsyncFunctionSnapshot,
@@ -63,7 +62,6 @@ __all__ = (
     'OsHandler',
     'SyncSnapshot',
     'AsyncSnapshot',
-    'MontyCallbackCleanupError',
     # class_instance
     'ClassInstance',
     'ClassType',

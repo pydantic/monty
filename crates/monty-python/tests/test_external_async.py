@@ -8,7 +8,6 @@ import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
-import pydantic_monty._async as async_callbacks
 
 
 async def run_async(code: str, **kwargs: Any) -> Any:
@@ -21,7 +20,7 @@ async def run_async(code: str, **kwargs: Any) -> Any:
 @pytest.mark.parametrize('exit_mode', ['complete', 'error', 'cancel'])
 @pytest.mark.parametrize('cleanup_raises', [False, True])
 async def test_async_run_joins_unfinished_callbacks(exit_mode: str, cleanup_raises: bool):
-    """Every run exit joins callbacks whose cleanup finishes within the grace period."""
+    """Every run exit joins its unfinished callbacks."""
     started = asyncio.Event()
     cleaned_up = asyncio.Event()
     callback_tasks: list[asyncio.Task[Any]] = []
@@ -74,59 +73,76 @@ async def test_async_run_joins_unfinished_callbacks(exit_mode: str, cleanup_rais
         await asyncio.gather(driver, unrelated, *callback_tasks, return_exceptions=True)
 
 
-async def test_async_run_repeated_cancellation_during_callback_cleanup():
+@pytest.mark.parametrize('cancel_before_cleanup', [False, True])
+async def test_async_run_repeated_cancellation_during_callback_cleanup(cancel_before_cleanup: bool):
     cleanup_started = asyncio.Event()
+    cleanup_cancelled = asyncio.Event()
     release_cleanup = asyncio.Event()
     cleaned_up = asyncio.Event()
     started = asyncio.Event()
+    callback_tasks: list[asyncio.Task[Any]] = []
 
     async def background():
+        task = asyncio.current_task()
+        assert task is not None
+        callback_tasks.append(task)
         try:
             started.set()
             await asyncio.Event().wait()
         finally:
             cleanup_started.set()
-            await release_cleanup.wait()
+            try:
+                await release_cleanup.wait()
+            except asyncio.CancelledError:
+                cleanup_cancelled.set()
+                await release_cleanup.wait()
             cleaned_up.set()
 
     async def wait_until_started():
         await started.wait()
 
+    code = 'await background()' if cancel_before_cleanup else 'background()\nawait wait_until_started()'
     driver = asyncio.create_task(
-        run_async(
-            'background()\nawait wait_until_started()',
-            external_lookup={'background': background, 'wait_until_started': wait_until_started},
-        )
+        run_async(code, external_lookup={'background': background, 'wait_until_started': wait_until_started})
     )
     try:
-        await asyncio.wait_for(cleanup_started.wait(), timeout=5)
-        for _ in range(3):
+        await asyncio.wait_for(started.wait(), timeout=5)
+        if cancel_before_cleanup:
             driver.cancel()
-            await asyncio.sleep(0)
-            assert driver.done() == snapshot(False)
-            assert cleaned_up.is_set() == snapshot(False)
+        await asyncio.wait_for(cleanup_started.wait(), timeout=5)
+        driver.cancel()
+        await asyncio.wait_for(cleanup_cancelled.wait(), timeout=5)
+        assert driver.done() == snapshot(False)
+        assert [task.done() for task in callback_tasks] == snapshot([False])
         release_cleanup.set()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(driver, timeout=5)
         assert cleaned_up.is_set() == snapshot(True)
+        assert [task.done() for task in callback_tasks] == snapshot([True])
     finally:
         release_cleanup.set()
         driver.cancel()
-        await asyncio.gather(driver, return_exceptions=True)
+        await asyncio.gather(driver, *callback_tasks, return_exceptions=True)
 
 
 async def test_async_run_anyio_cancellation_joins_callback():
     started = asyncio.Event()
-    cleaned_up = asyncio.Event()
+    cleanup_exited = asyncio.Event()
+    callback_tasks: list[asyncio.Task[Any]] = []
     scopes: list[anyio.CancelScope] = []
 
     async def background():
+        task = asyncio.current_task()
+        assert task is not None
+        callback_tasks.append(task)
         try:
             started.set()
             await asyncio.Event().wait()
         finally:
-            await asyncio.sleep(0)
-            cleaned_up.set()
+            try:
+                await asyncio.sleep(0)
+            finally:
+                cleanup_exited.set()
 
     async def run():
         with anyio.CancelScope() as scope:
@@ -138,18 +154,16 @@ async def test_async_run_anyio_cancellation_joins_callback():
         await asyncio.wait_for(started.wait(), timeout=5)
         scopes[0].cancel()
         await asyncio.wait_for(driver, timeout=5)
-        assert cleaned_up.is_set() == snapshot(True)
+        assert cleanup_exited.is_set() == snapshot(True)
+        assert [task.done() for task in callback_tasks] == snapshot([True])
     finally:
         driver.cancel()
-        await asyncio.gather(driver, return_exceptions=True)
+        await asyncio.gather(driver, *callback_tasks, return_exceptions=True)
 
 
-@pytest.mark.parametrize('exit_mode', ['complete', 'error', 'cancel', 'cancel_during_cleanup'])
-async def test_async_run_cleanup_deadline_transfers_ownership(monkeypatch: pytest.MonkeyPatch, exit_mode: str):
-    monkeypatch.setattr(async_callbacks, '_CLEANUP_TIMEOUT', 0.05)
+@pytest.mark.parametrize('exit_mode', ['complete', 'error'])
+async def test_async_run_waits_for_slow_callback_cleanup(exit_mode: str):
     started = asyncio.Event()
-    cleanup_started = asyncio.Event()
-    release_cleanup = asyncio.Event()
     cleaned_up = asyncio.Event()
 
     async def background():
@@ -157,84 +171,29 @@ async def test_async_run_cleanup_deadline_transfers_ownership(monkeypatch: pytes
             started.set()
             await asyncio.Event().wait()
         finally:
-            cleanup_started.set()
-            await release_cleanup.wait()
+            await asyncio.sleep(1.05)
             cleaned_up.set()
 
     async def wait_until_started():
         await started.wait()
 
-    async def cancel_repeatedly(driver: asyncio.Future[Any]):
-        await cleanup_started.wait()
-        while not driver.done():
-            driver.cancel()
-            await asyncio.sleep(0.005)
-
-    async with pydantic_monty.AsyncMonty() as pool:
-        async with pool.checkout() as session:
-            code = 'background()\nawait wait_until_started()\n42'
-            if exit_mode == 'error':
-                code += '\nraise ValueError("sandbox failed")'
-            elif exit_mode == 'cancel':
-                code = 'await background()'
-            driver = asyncio.ensure_future(
-                session.feed_run(
-                    code, external_lookup={'background': background, 'wait_until_started': wait_until_started}
-                )
-            )
-            canceller = asyncio.create_task(cancel_repeatedly(driver)) if exit_mode == 'cancel_during_cleanup' else None
-            try:
-                if exit_mode == 'cancel':
-                    await asyncio.wait_for(started.wait(), timeout=5)
-                    driver.cancel('host cancelled')
-                await asyncio.wait_for(cleanup_started.wait(), timeout=5)
-                done, _ = await asyncio.wait((driver,), timeout=1)
-                assert bool(done) == snapshot(True)
-                if exit_mode.startswith('cancel'):
-                    with pytest.raises(asyncio.CancelledError) as cancelled_info:
-                        await driver
-                    cancelled = cancelled_info.value
-                    seen: set[BaseException] = set()
-                    # Python 3.10 wraps task cancellation in another CancelledError.
-                    while cancelled.__cause__ is None:
-                        assert cancelled not in seen
-                        seen.add(cancelled)
-                        assert isinstance(cancelled.__context__, asyncio.CancelledError)
-                        cancelled = cancelled.__context__
-                    cleanup_error = cancelled.__cause__
-                    assert isinstance(cleanup_error, pydantic_monty.MontyCallbackCleanupError)
-                    assert cleanup_error.__context__ == snapshot(None)
-                    assert cleanup_error.__cause__ == snapshot(None)
-                    if exit_mode == 'cancel':
-                        assert str(cancelled) == snapshot('host cancelled')
-                else:
-                    with pytest.raises(pydantic_monty.MontyCallbackCleanupError) as exc_info:
-                        await driver
-                    cleanup_error = exc_info.value
-                    if exit_mode == 'error':
-                        sandbox_error = cleanup_error.__context__
-                        assert isinstance(sandbox_error, pydantic_monty.MontyRuntimeError)
-                        assert str(sandbox_error.exception()) == snapshot('sandbox failed')
-                assert str(cleanup_error) == snapshot('Async callback cleanup timed out')
-                assert len(cleanup_error.tasks) == snapshot(1)
-                assert [task.done() for task in cleanup_error.tasks] == snapshot([False])
-                assert cleaned_up.is_set() == snapshot(False)
-                if exit_mode == 'cancel':
-                    with pytest.raises(RuntimeError) as finished_info:
-                        await session.feed_run('6 * 7')
-                    assert str(finished_info.value) == snapshot('this checkout has already been finished')
-                else:
-                    assert await session.feed_run('6 * 7') == snapshot(42)
-                release_cleanup.set()
-                await asyncio.gather(*cleanup_error.tasks, return_exceptions=True)
-                assert [task.done() for task in cleanup_error.tasks] == snapshot([True])
-            finally:
-                release_cleanup.set()
-                if canceller is not None:
-                    canceller.cancel()
-                    await asyncio.gather(canceller, return_exceptions=True)
-                await asyncio.gather(driver, return_exceptions=True)
-                await asyncio.wait_for(cleaned_up.wait(), timeout=5)
+    code = 'background()\nawait wait_until_started()\n42'
+    if exit_mode == 'error':
+        code += '\nraise ValueError("sandbox failed")'
+    driver = asyncio.create_task(
+        run_async(code, external_lookup={'background': background, 'wait_until_started': wait_until_started})
+    )
+    try:
+        if exit_mode == 'error':
+            with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+                await asyncio.wait_for(driver, timeout=5)
+            assert str(exc_info.value.exception()) == snapshot('sandbox failed')
+        else:
+            assert await asyncio.wait_for(driver, timeout=5) == snapshot(42)
+        assert cleaned_up.is_set() == snapshot(True)
+    finally:
+        driver.cancel()
+        await asyncio.gather(driver, return_exceptions=True)
 
 
 async def test_async_run_cancelled_before_start_leaves_session_healthy():

@@ -21,6 +21,5 @@ answering a snapshot with an exception.
             - MontyCrashedError
             - MontyDisconnectError
             - MontyShutdown
-            - MontyCallbackCleanupError
             - Frame
             - ExcType
