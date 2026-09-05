@@ -134,6 +134,9 @@ pub fn install_telemetry(
 #[napi(js_name = "_setTelemetryMetricsEnabled")]
 pub fn set_telemetry_metrics_enabled(enabled: bool) {
     if let Some(installed) = BRIDGE.get() {
+        if enabled {
+            installed.bridge.metrics_disabled.store(false, Ordering::Relaxed);
+        }
         installed.bridge.metrics_enabled.store(enabled, Ordering::Relaxed);
     }
 }

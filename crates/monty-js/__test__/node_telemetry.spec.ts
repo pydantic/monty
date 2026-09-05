@@ -26,6 +26,46 @@ test('MontyInstrumentation accepts SDK providers', () => {
   `)
 })
 
+test('a second MontyInstrumentation is rejected', () => {
+  runTelemetryChild(`
+    import { MontyInstrumentation } from ${JSON.stringify(new URL('../dist/node.js', import.meta.url).href)}
+
+    const first = new MontyInstrumentation({ logs: false, metrics: false, traces: false })
+    let message
+    try {
+      new MontyInstrumentation({ logs: false, metrics: false, traces: false })
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    if (message !== 'Monty telemetry is already configured') throw new Error(String(message))
+    first.disable()
+  `)
+})
+
+test('disable stops telemetry from an active session', () => {
+  runTelemetryChild(`
+    import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
+    import { Monty, MontyInstrumentation } from ${JSON.stringify(new URL('../dist/node.js', import.meta.url).href)}
+
+    const exporter = new InMemorySpanExporter()
+    const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] })
+    const instrumentation = new MontyInstrumentation({ logs: false, metrics: false })
+    instrumentation.setTracerProvider(provider)
+    const pool = await Monty.create()
+    const session = await pool.checkout()
+    if (await session.feedRun('1 + 2') !== 3) throw new Error('unexpected result')
+    await instrumentation.forceFlush()
+    instrumentation.disable()
+    if (await session.feedRun('4 + 5') !== 9) throw new Error('unexpected result')
+    await session.close()
+    await pool.close()
+    await instrumentation.forceFlush()
+    const names = exporter.getFinishedSpans().map((span) => span.name)
+    if (JSON.stringify(names) !== JSON.stringify(['run code'])) throw new Error(JSON.stringify(names))
+    await provider.shutdown()
+  `)
+})
+
 test('concurrent checkouts deliver complete span trees', () => {
   runTelemetryChild(`
     import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
@@ -190,8 +230,15 @@ test('tracing failure does not disable logging', () => {
 })
 
 function runTelemetryChild(source: string): void {
-  execFileSync(process.execPath, ['--input-type=module', '--eval', source], {
-    cwd: new URL('..', import.meta.url),
-    stdio: 'pipe',
-  })
+  try {
+    execFileSync(process.execPath, ['--input-type=module', '--eval', source], {
+      cwd: new URL('..', import.meta.url),
+      stdio: 'pipe',
+      timeout: 30_000,
+    })
+  } catch (error) {
+    const failure = error as Error & { stderr?: Buffer; stdout?: Buffer }
+    const output = [failure.stdout?.toString(), failure.stderr?.toString()].filter(Boolean).join('\n')
+    throw new Error(output === '' ? failure.message : `${failure.message}\n${output}`, { cause: error })
+  }
 }

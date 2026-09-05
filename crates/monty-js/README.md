@@ -513,9 +513,9 @@ instrumentTelemetry({
 })
 ```
 
-Each component is optional. Install instrumentation before creating a pool.
-It applies process-wide and records potentially sensitive source, inputs,
-outputs, exceptions, and printed text.
+Each component is optional, but at least one is required. Install
+instrumentation before creating a pool. It applies process-wide and records
+potentially sensitive source, inputs, outputs, exceptions, and printed text.
 
 When configuring an OpenTelemetry `NodeSDK`, use `MontyInstrumentation` so the
 SDK supplies its tracer and meter providers through the standard

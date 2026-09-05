@@ -248,7 +248,7 @@ const globalLogger: Logger = {
 }
 
 function activate(newOwner: object, value: TelemetryComponents): void {
-  if (owner === directOwner && newOwner !== directOwner) {
+  if (owner !== undefined && owner !== newOwner) {
     throw new Error('Monty telemetry is already configured')
   }
   installNativeCallbacks(value.meter !== undefined)
@@ -268,7 +268,10 @@ function deactivate(currentOwner: object): void {
     return
   }
   owner = undefined
+  components = undefined
   acceptingTelemetry = false
+  spans.clear()
+  instruments.clear()
   setNativeMetricsEnabled(false)
 }
 
@@ -454,9 +457,8 @@ function retainLogContext(event: StartEvent, key: string, root: string, parentCo
     context: TraceAPI.setSpanContext(parentContext, {
       traceId: parentSpanContext?.traceId ?? event.traceId,
       spanId: event.spanId,
-      traceFlags: parentSpanContext?.traceFlags ?? event.traceFlags,
-      traceState:
-        parentSpanContext?.traceState ?? (event.traceState === '' ? undefined : createTraceState(event.traceState)),
+      traceFlags: event.traceFlags,
+      traceState: event.traceState === '' ? undefined : createTraceState(event.traceState),
       isRemote: false,
     }),
     root,
