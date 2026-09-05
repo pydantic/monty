@@ -11,7 +11,7 @@ an **`os` callback**, which answers filesystem operations in host code.
 
 ## Mounts
 
-A `MountDir` maps a host directory to a virtual path inside the sandbox.
+A [`MountDir`][pydantic_monty.MountDir] maps a host directory to a virtual path inside the sandbox.
 Mounts are per-feed, and all arguments are keyword-only:
 
 === "Python"
@@ -165,7 +165,7 @@ It is called as `(function_name, args, kwargs)` and its return value is handed b
     console.log(await session.feedRun("import os\nos.getenv('STAGE')", { os: handleOs })) // production
     ```
 
-Returning the `NOT_HANDLED` sentinel declines the call, and the sandbox raises whatever it would have raised with no
+Returning the [`NOT_HANDLED`][pydantic_monty.NOT_HANDLED] sentinel declines the call, and the sandbox raises whatever it would have raised with no
 handler at all.
 
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
@@ -187,7 +187,7 @@ no-handler default explicitly.
 
 ## A virtual filesystem
 
-`pydantic_monty` ships a ready-made `AbstractOS` implementation for when you want a filesystem with no host directory
+`pydantic_monty` ships a ready-made [`AbstractOS`][pydantic_monty.AbstractOS] implementation for when you want a filesystem with no host directory
 behind it at all.
 JavaScript has no equivalent class, so the TypeScript tab answers the same operations from a `Map` in an `os` callback:
 
@@ -232,18 +232,18 @@ JavaScript has no equivalent class, so the TypeScript tab answers the same opera
     console.log(await session.feedRun(code, { os: fs })) // 2
     ```
 
-`OSAccess` backed by `MemoryFile` objects is fully sandboxed: content lives in host memory, path traversal cannot escape
+[`OSAccess`][pydantic_monty.OSAccess] backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed: content lives in host memory, path traversal cannot escape
 to real files, and `os.getenv` sees only the `environ` mapping you passed.
 
-`CallbackFile` read and write callbacks run in the host and can reach real resources.
+[`CallbackFile`][pydantic_monty.CallbackFile] read and write callbacks run in the host and can reach real resources.
 That is the point of it, but it means an `OSAccess` containing a `CallbackFile` is exactly as sandboxed as the callback
 you wrote.
 
 For anything more specific, subclass `OSAccess` and override the methods you want to change, or implement every
 abstract method of `AbstractOS` yourself; the optional hooks (`path_open`, the append methods, `date_today`,
-`datetime_now`) report `NOT_HANDLED` to Monty if you make them raise `NotImplementedError`.
+`datetime_now`) report [`NOT_HANDLED`][pydantic_monty.NOT_HANDLED] to Monty if you make them raise `NotImplementedError`.
 
 ## Rust
 
-Rust hosts hold a `MountTable` from [`monty-fs`](https://crates.io/crates/monty-fs) and service suspensions with
-`MountTable::handle_os_call`; `monty-pool` does this for you when you pass `MountSpec`s to `Checkout::feed`.
+Rust hosts hold a [`MountTable`](api/rust/monty-fs.md#mounttable) from [`monty-fs`](https://crates.io/crates/monty-fs) and service suspensions with
+[`MountTable::handle_os_call`](api/rust/monty-fs.md#mounttable); `monty-pool` does this for you when you pass [`MountSpec`](api/rust/monty-pool.md#mountspec)s to [`Checkout::feed`](api/rust/monty-pool.md#checkout).

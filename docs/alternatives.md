@@ -78,14 +78,14 @@ Every row was measured on 2026-09-03 (Full Monty on 2026-09-04) on an Apple M3 M
 from CPython 3.14.7, with a single sample per cold start unless stated.
 The tables round the numbers; the measured cold-start values are in the text below.
 
-- **Monty**: `pydantic-monty` 0.0.21 with a release build of the `monty` worker binary, driven through `Monty()` /
+- **Monty**: `pydantic-monty` 0.0.21 with a release build of the `monty` worker binary, driven through [`Monty()`][pydantic_monty.Monty] /
     `pool.checkout()` / `session.feed_run()`, the package's only execution API.
     Cold start creates the pool, which spawns the worker subprocess, completes the protocol handshake, checks out a
     session and runs `1 + 1`; the median of 7 runs is 4.5 ms.
     Warm pool is the median of 20 `checkout()` + `feed_run()` round trips against a pool whose worker already exists.
     The agent run is ten `feed_run` calls on one checkout, so state persists and nothing is replayed.
 - **Full Monty**: the [Full Monty](server.md) container image (0.0.22, a native `linux/arm64` build) running in Docker
-    Desktop 29.6.2 on the same machine, dialled with `pydantic-monty` 0.0.22's `AsyncMontyWebsocket` over
+    Desktop 29.6.2 on the same machine, dialled with `pydantic-monty` 0.0.22's [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] over
     `ws://localhost`.
     The client runs in a second container on the same host so the figure is the server's own overhead over loopback,
     not Docker Desktop's port-forwarding proxy.
@@ -153,10 +153,10 @@ The tables round the numbers; the measured cold-start values are in the text bel
     machine running your application.
 - **Start latency**: a WebSocket connection plus a worker spawn for the session, 4 ms measured over loopback inside
     a Linux container; a deployment adds its network round trip.
-- **FOSS**: closed-source and commercial; the client, `AsyncMontyWebsocket`, ships in the MIT `pydantic-monty`
+- **FOSS**: closed-source and commercial; the client, [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket], ships in the MIT `pydantic-monty`
     package.
 - **Setup complexity**: run the container image with one environment variable, the dump-signing key.
-- **File mounting**: client directories are mounted over the wire, the same `MountDir` as a local pool.
+- **File mounting**: client directories are mounted over the wire, the same [`MountDir`][pydantic_monty.MountDir] as a local pool.
 - **Snapshotting**: as Monty, and a draining server hands each session a signed dump to restore elsewhere.
 
 ## Docker

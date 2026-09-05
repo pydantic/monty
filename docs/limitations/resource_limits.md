@@ -94,7 +94,7 @@ without one is unlimited.
     comparable limit to `checkout()`.
 - **The wasm worker cannot classify a hard breach.** A soft breach is a normal
     `MemoryError`, but exceeding the hard limit traps the instance and the host
-    reports `MontyCrashedError`. Its `usize` is also 32 bits, so a limit near
+    reports [`MontyCrashedError`][pydantic_monty.MontyCrashedError]. Its `usize` is also 32 bits, so a limit near
     4 GiB leaves the module uncapped.
 - WebSocket workers get no allocator-enforced limit at all: they are remote
     processes this pool does not spawn.
@@ -172,7 +172,7 @@ indistinguishable from a stack overflow.
 ## Time
 
 - The host can set a `max_duration` budget; if exceeded the VM stops with a
-    `ResourceError` at its next checkpoint.
+    [`ResourceError`](../api/rust/monty-types.md#resourceerror) at its next checkpoint.
 - Enforcement is polled, not preemptive: a single bytecode instruction may
     run a long native operation (a `bytes` substring scan, a sort, an iterator
     drain), and those poll the clock at a coarse granularity. A run can

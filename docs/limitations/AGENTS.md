@@ -33,6 +33,8 @@ Only divergences belong here; behaviour that matches CPython is not recorded.
 Link between pages with relative markdown links (`see [classes.md](classes.md)`) rather than naming the file in
 prose, so the reference works on the site as well as in the repository.
 `mkdocs build --strict` fails on a link to a page that does not exist.
+Host-side `pydantic_monty` types link to their API page as `[`MountDir`][pydantic_monty.MountDir]` and Rust items as
+`[`Checkout`](../api/rust/monty-pool.md#checkout)`, per the docs rules in the root `CLAUDE.md`.
 
 Python snippets on these pages are sandbox-side code, so they are marked ```` ```python test="skip" ````;
 `make test-docs` would otherwise run them under CPython.

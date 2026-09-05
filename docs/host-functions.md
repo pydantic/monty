@@ -164,15 +164,15 @@ Positional and keyword arguments pass through as written:
 Return values must be types Monty can represent — the same set `inputs` and `external_lookup` accept, listed under
 [which values cross the boundary](quickstart/python.md#which-values-cross-the-boundary).
 Arguments come the other way, out of the sandbox.
-A sandbox-defined class instance arrives as a read-only `MontyClassProxy`; see
+A sandbox-defined class instance arrives as a read-only [`MontyClassProxy`][pydantic_monty.MontyClassProxy]; see
 [host objects](host-objects.md#sandbox-instances).
 A sandbox value with no host equivalent arrives silently as a *string* rather than raising: the repr of a sandbox
 class object, function or compiled `re` pattern, or the bare name of a host function handed back in.
 A host function cannot tell it from a sandbox `str` of the same text.
 
-A return value Monty cannot represent does not raise `MontyConversionError`.
+A return value Monty cannot represent does not raise [`MontyConversionError`][pydantic_monty.MontyConversionError].
 It is delivered into the sandbox as `TypeError: Cannot convert X to Monty value`, which sandboxed code can catch;
-uncaught, it reaches you as `MontyRuntimeError`.
+uncaught, it reaches you as [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError].
 The same is true of an `os=` callback's return value.
 `MontyConversionError` is for host values you hand over up front, in `inputs` or `external_lookup`.
 
@@ -234,13 +234,13 @@ sandbox, so sandboxed code can catch it:
     console.log(await session.feedRun(code, { externalLookup: { fetch } })) // caught: bad url
     ```
 
-If the sandbox does not catch it, `feed_run` raises `MontyRuntimeError` with the sandbox traceback.
+If the sandbox does not catch it, `feed_run` raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] with the sandbox traceback.
 Only [the exception types Monty implements](limitations/index.md) can cross; the type name is what carries over, not your
 exception class.
 
 ## Async host functions
 
-With `AsyncMonty`, callables in `external_lookup` may be coroutine functions.
+With [`AsyncMonty`][pydantic_monty.AsyncMonty], callables in `external_lookup` may be coroutine functions.
 They are awaited on your event loop, so blocking work inside one blocks it exactly as it would anywhere else in your
 async code — what `AsyncMonty` moves off the loop is worker I/O, not your callbacks.
 In JavaScript every host function may be async, and there is no separate pool class.
@@ -299,7 +299,7 @@ In JavaScript every host function may be async, and there is no separate pool cl
     console.log(await session.feedRun(code, { externalLookup: { fetch } })) // 2
     ```
 
-The sync `Monty` cannot drive coroutine host functions — use `AsyncMonty`, or resolve the pending futures by hand with
+The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions — use `AsyncMonty`, or resolve the pending futures by hand with
 [`feed_start`](snapshots.md).
 
 ## Driving suspensions yourself

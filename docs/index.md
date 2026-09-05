@@ -41,7 +41,7 @@ command *n* re-runs commands 1 to *n*.
 
 Learn more in the [comparison to alternatives](alternatives.md).
 
-!!! tip
+!!! tip "Commercial support"
 
     If you're interested in running Monty in the most secure and scalable setup, please see
     [Full Monty](server.md).
