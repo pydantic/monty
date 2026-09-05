@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
+from contextlib import suppress
 from typing import Any
 
 
@@ -43,7 +44,9 @@ class CallbackTasks:
         finally:
             self._closed = True
             for coro in self._pending.values():
-                coro.close()
+                # Ordinary cleanup errors must not replace the feed outcome or skip other callbacks.
+                with suppress(Exception, asyncio.CancelledError):
+                    coro.close()
             self._pending.clear()
             tasks = tuple(self._tasks)
             for task in tasks:
