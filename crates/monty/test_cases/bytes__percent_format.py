@@ -153,6 +153,10 @@ assert capture_error(b'%99999999999999999999d', 1) == ('ValueError', 'width too 
 assert capture_error(b'%*d', (b'a', 1)) == ('TypeError', '* wants int')
 assert capture_error(b'%*d', (10**30, 1)) == ('OverflowError', 'Python int too large to convert to C ssize_t')
 assert capture_error(b'%.*s', (10**30, b'x')) == ('OverflowError', 'Python int too large to convert to C int')
+assert capture_error(b'%.*s', (2**31, b'x')) == ('OverflowError', 'Python int too large to convert to C int')
+assert b'%.*s' % (2**31 - 1, b'x') == b'x'
+assert capture_error(b'%.3000000000d', 1) == ('ValueError', 'prec too big')
+assert capture_error(b'%.99999999999999999999d', 1) == ('ValueError', 'prec too big')
 
 # === Operand type errors ===
 assert capture_error(b'%s', 'x') == (

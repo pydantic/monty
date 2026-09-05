@@ -34,7 +34,7 @@
 //! tracker error reaches the caller even when the intermediate
 //! `fmt::Error` is swallowed by a downstream formatter.
 
-use std::{fmt, mem};
+use std::{fmt, iter, mem};
 
 use monty_types::{ResourceError, ResourceTracker};
 
@@ -122,6 +122,22 @@ impl<'t> StringBuilder<'t> {
         Ok(())
     }
 
+    /// Appends `count` copies of `c`, in chunks with the tracker's clock polled
+    /// between them so a wide padding request stays interruptible.
+    pub fn push_repeated(&mut self, c: char, count: usize) -> Result<(), ResourceError> {
+        let unit: String = iter::repeat_n(c, count.min(FILL_CHUNK)).collect();
+        let mut remaining = count;
+        let mut chunk = 0;
+        while remaining > 0 {
+            self.tracker.check_time_every(chunk)?;
+            chunk += 1;
+            let take = remaining.min(FILL_CHUNK);
+            self.push_str(&unit[..take * c.len_utf8()])?;
+            remaining -= take;
+        }
+        Ok(())
+    }
+
     /// Consumes the builder and allocates the resulting string in `heap`.
     ///
     /// If a prior [`fmt::Write`] call captured a tracker error, that error is
@@ -180,19 +196,27 @@ impl<'t> BytesBuilder<'t> {
         })
     }
 
-    /// Appends a byte after checking any required capacity increase.
-    pub fn push(&mut self, byte: u8) -> Result<(), ResourceError> {
-        let needed = self.inner.len().saturating_add(1);
-        approve_growth(&mut self.approved_capacity, needed, self.tracker)?;
-        self.inner.push(byte);
-        Ok(())
-    }
-
     /// Appends a byte slice after checking any required capacity increase.
     pub fn push_slice(&mut self, bytes: &[u8]) -> Result<(), ResourceError> {
         let needed = self.inner.len().saturating_add(bytes.len());
         approve_growth(&mut self.approved_capacity, needed, self.tracker)?;
         self.inner.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Appends `count` copies of `byte`, in chunks with the tracker's clock
+    /// polled between them so a wide padding request stays interruptible.
+    pub fn push_repeated(&mut self, byte: u8, count: usize) -> Result<(), ResourceError> {
+        let unit = vec![byte; count.min(FILL_CHUNK)];
+        let mut remaining = count;
+        let mut chunk = 0;
+        while remaining > 0 {
+            self.tracker.check_time_every(chunk)?;
+            chunk += 1;
+            let take = remaining.min(FILL_CHUNK);
+            self.push_slice(&unit[..take])?;
+            remaining -= take;
+        }
         Ok(())
     }
 
@@ -215,6 +239,9 @@ fn approve_growth(approved: &mut usize, needed: usize, tracker: &ResourceTracker
 }
 
 const MAX_STRING_CAPACITY: usize = isize::MAX as usize;
+
+/// Fill bytes appended between tracker clock polls by `push_repeated`.
+const FILL_CHUNK: usize = 4096;
 
 /// A capacity above `isize::MAX` panics inside the reservation itself, before
 /// the allocator can refuse it, so both reservation paths fence it here.

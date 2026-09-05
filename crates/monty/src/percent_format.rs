@@ -25,7 +25,7 @@ use crate::{
     types::{
         LongInt, PyTrait, Type, bytes::allocate_bytes, long_int::check_bits_str_digits_limit, str::allocate_string,
     },
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
 
 /// Renders `template % args` for a `str` template.
@@ -37,6 +37,17 @@ pub(crate) fn percent_format(template: &str, args: &Value, vm: &mut VM<'_>) -> R
 pub(crate) fn percent_format_bytes(template: &[u8], args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     format_template::<BytesTarget>(template, args, vm)
 }
+
+/// Copies a `bytes` template through the tracker, so a template near the
+/// memory limit reports `MemoryError` rather than tripping the hard ceiling.
+pub(crate) fn copy_bytes_template(template: &[u8], tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+    let mut copy = BytesBuilder::with_capacity(template.len(), tracker)?;
+    copy.push_slice(template)?;
+    Ok(copy.finish())
+}
+
+/// Bytes scanned between tracker clock polls while looking for the next `%`.
+const SCAN_CHUNK: usize = 4096;
 
 /// A `%` formatting target: the template type, its output buffer, and the
 /// behaviour that differs between `str` and `bytes` templates. Keeping the
@@ -51,6 +62,8 @@ trait Target: Sized {
 
     /// Selects the `bytes` rules: `%b`, `ascii()` for `%r`, the error wording.
     const IS_BYTES: bool;
+    /// The error for a literal precision above C `int`.
+    const PRECISION_TOO_BIG: &'static str;
 
     /// The template's bytes; every offset the formatter slices at is an ASCII byte.
     fn as_bytes(template: &Self::Template) -> &[u8];
@@ -112,6 +125,7 @@ impl Target for StrTarget {
     type Builder<'t> = StringBuilder<'t>;
 
     const IS_BYTES: bool = false;
+    const PRECISION_TOO_BIG: &'static str = "precision too big";
 
     fn as_bytes(template: &str) -> &[u8] {
         template.as_bytes()
@@ -189,6 +203,7 @@ impl Target for BytesTarget {
     type Builder<'t> = BytesBuilder<'t>;
 
     const IS_BYTES: bool = true;
+    const PRECISION_TOO_BIG: &'static str = "prec too big";
 
     fn as_bytes(template: &[u8]) -> &[u8] {
         template
@@ -213,15 +228,15 @@ impl Target for BytesTarget {
     /// Only ASCII text reaches a `bytes` template (`ascii()` output), so
     /// bytes and characters coincide.
     fn text_from_string(text: String, precision: Option<usize>, _tracker: &ResourceTracker) -> RunResult<Text<Self>> {
-        Ok(Self::from_bytes(text.into_bytes(), precision))
+        Ok(Self::from_bytes(text.as_bytes(), precision))
     }
 
     /// Only `bytes` values; Monty has no `bytearray`, `memoryview` or `__bytes__`.
     fn text_operand(value: &Value, precision: Option<usize>, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
         match value {
-            Value::InternBytes(id) => Ok(Self::from_bytes(vm.interns.get_bytes(*id).to_vec(), precision)),
+            Value::InternBytes(id) => Ok(Self::from_bytes(vm.interns.get_bytes(*id), precision)),
             Value::Ref(id) if let HeapData::Bytes(bytes) = vm.heap.get(*id) => {
-                Ok(Self::from_bytes(bytes.as_slice().to_vec(), precision))
+                Ok(Self::from_bytes(bytes.as_slice(), precision))
             }
             _ => Err(ExcType::type_error(format!(
                 "%b requires a bytes-like object, or an object that implements __bytes__, not '{}'",
@@ -231,7 +246,7 @@ impl Target for BytesTarget {
     }
 
     fn char_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
-        Ok(Self::from_bytes(vec![byte_char(value, vm)?], None))
+        Ok(Self::from_bytes(&[byte_char(value, vm)?], None))
     }
 
     fn float_type_error(type_name: &str) -> RunError {
@@ -260,13 +275,13 @@ impl Target for BytesTarget {
 }
 
 impl BytesTarget {
-    /// A `bytes` fragment truncated to `precision` bytes.
-    fn from_bytes(mut bytes: Vec<u8>, precision: Option<usize>) -> Text<Self> {
-        if let Some(precision) = precision {
-            bytes.truncate(precision);
+    /// A `bytes` fragment, copying only the first `precision` bytes.
+    fn from_bytes(bytes: &[u8], precision: Option<usize>) -> Text<Self> {
+        let len = precision.map_or(bytes.len(), |precision| precision.min(bytes.len()));
+        Text {
+            body: bytes[..len].to_vec(),
+            len,
         }
-        let len = bytes.len();
-        Text { body: bytes, len }
     }
 }
 
@@ -286,10 +301,7 @@ impl<'t> OutputBuilder<'t> for StringBuilder<'t> {
     }
 
     fn push_fill(&mut self, fill: u8, count: usize) -> RunResult<()> {
-        for _ in 0..count {
-            self.push(char::from(fill))?;
-        }
-        Ok(())
+        Ok(self.push_repeated(char::from(fill), count)?)
     }
 
     fn push_output(&mut self, fragment: &String) -> RunResult<()> {
@@ -317,10 +329,7 @@ impl<'t> OutputBuilder<'t> for BytesBuilder<'t> {
     }
 
     fn push_fill(&mut self, fill: u8, count: usize) -> RunResult<()> {
-        for _ in 0..count {
-            self.push(fill)?;
-        }
-        Ok(())
+        Ok(self.push_repeated(fill, count)?)
     }
 
     fn push_output(&mut self, fragment: &Vec<u8>) -> RunResult<()> {
@@ -335,7 +344,7 @@ impl<'t> OutputBuilder<'t> for BytesBuilder<'t> {
 /// Walks the template, copying literal runs and rendering each `%` directive.
 fn format_template<T: Target>(template: &T::Template, args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let bytes = T::as_bytes(template);
-    let arguments = Arguments::new(args, T::IS_BYTES, vm);
+    let arguments = Arguments::new(args, T::IS_BYTES, vm)?;
     defer_drop!(arguments, vm);
     let mut cursor = DropGuard::new(Cursor::default(), vm);
     let (cursor, vm) = cursor.as_parts_mut();
@@ -346,10 +355,7 @@ fn format_template<T: Target>(template: &T::Template, args: &Value, vm: &mut VM<
     while index < bytes.len() {
         vm.heap.tracker.check_time_every(steps)?;
         steps += 1;
-        let literal_end = bytes[index..]
-            .iter()
-            .position(|byte| *byte == b'%')
-            .map_or(bytes.len(), |offset| index + offset);
+        let literal_end = find_percent(bytes, index, &vm.heap.tracker)?;
         output = extend::<T>(output, &vm.heap.tracker, |builder| {
             T::push_literal(builder, template, index..literal_end)
         })?;
@@ -379,6 +385,18 @@ fn format_template<T: Target>(template: &T::Template, args: &Value, vm: &mut VM<
     }
 }
 
+/// Finds the next `%` at or after `start` (or the template's end), polling
+/// the tracker's clock per chunk so a long literal run stays interruptible.
+fn find_percent(bytes: &[u8], start: usize, tracker: &ResourceTracker) -> RunResult<usize> {
+    for (chunk_index, chunk) in bytes[start..].chunks(SCAN_CHUNK).enumerate() {
+        tracker.check_time_every(chunk_index)?;
+        if let Some(offset) = chunk.iter().position(|byte| *byte == b'%') {
+            return Ok(start + chunk_index * SCAN_CHUNK + offset);
+        }
+    }
+    Ok(bytes.len())
+}
+
 /// Appends to `output` through a short-lived tracked builder, so the tracker
 /// borrow ends before the VM is needed again.
 fn extend<T: Target>(
@@ -402,11 +420,11 @@ struct Arguments {
 }
 
 impl Arguments {
-    fn new(args: &Value, bytes_template: bool, vm: &VM<'_>) -> Self {
+    fn new(args: &Value, bytes_template: bool, vm: &VM<'_>) -> RunResult<Self> {
         let positional = match args {
             Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Tuple(tuple) => clone_items(tuple.as_slice(), vm),
-                HeapData::NamedTuple(tuple) => clone_items(tuple.as_vec(), vm),
+                HeapData::Tuple(tuple) => clone_items(tuple.as_slice(), vm)?,
+                HeapData::NamedTuple(tuple) => clone_items(tuple.as_vec(), vm)?,
                 _ => vec![args.clone_with_heap(vm.heap)],
             },
             _ => vec![args.clone_with_heap(vm.heap)],
@@ -417,7 +435,7 @@ impl Arguments {
             _ => false,
         }
         .then(|| args.clone_with_heap(vm.heap));
-        Self { positional, mapping }
+        Ok(Self { positional, mapping })
     }
 }
 
@@ -434,9 +452,13 @@ impl<C: ContainsHeap> DropWithContext<C> for Cursor {
     }
 }
 
-/// Clones tuple items so the operand can be released before rendering ends.
-fn clone_items(items: &[Value], vm: &VM<'_>) -> Vec<Value> {
-    items.iter().map(|item| item.clone_with_heap(vm.heap)).collect()
+/// Clones tuple items so the operand can be released before rendering ends,
+/// preflighting the copy like other bulk container clones.
+fn clone_items(items: &[Value], vm: &VM<'_>) -> RunResult<Vec<Value>> {
+    vm.heap
+        .tracker
+        .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
+    Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
 }
 
 /// Argument consumption state; lives inside a `DropGuard` in the render loop
@@ -498,7 +520,7 @@ fn render_directive<T: Target>(
         lookup_key(key, arguments, cursor, vm)?;
         index = key_end + 1;
     }
-    let parsed = parse_directive(bytes, index, arguments, cursor, vm)?;
+    let parsed = parse_directive::<T>(bytes, index, arguments, cursor, vm)?;
 
     // The argument is taken before the conversion is checked, so `'%5%' % ()`
     // reports the missing argument rather than the bad conversion.
@@ -531,7 +553,7 @@ fn render_directive<T: Target>(
 
 /// Reads the flags, width, precision, optional C length modifier and
 /// conversion byte, consuming the arguments a `*` width or precision names.
-fn parse_directive(
+fn parse_directive<T: Target>(
     template: &[u8],
     start: usize,
     arguments: &Arguments,
@@ -541,6 +563,7 @@ fn parse_directive(
     let mut spec = Directive::default();
     let mut index = start;
     while let Some(flag) = template.get(index) {
+        vm.heap.tracker.check_time_every(index)?;
         match flag {
             b'-' => spec.left = true,
             b'+' => spec.sign = Some(Sign::Plus),
@@ -559,18 +582,25 @@ fn parse_directive(
         spec.width = usize::try_from(width.unsigned_abs()).map_err(|_| ExcType::overflow_c_ssize_t())?;
         index += 1;
     } else {
-        (spec.width, index) = parse_number(template, index, "width too big")?;
+        (spec.width, index) = parse_number(template, index, isize::MAX, "width too big", &vm.heap.tracker)?;
     }
 
     if template.get(index) == Some(&b'.') {
         index += 1;
         if template.get(index) == Some(&b'*') {
             let precision = star_operand(arguments, cursor, vm, ExcType::overflow_c_int)?;
-            // A negative `*` precision clamps to zero.
+            // The precision must fit a C `int`; a negative one clamps to zero.
+            let precision = i32::try_from(precision).map_err(|_| ExcType::overflow_c_int())?;
             spec.precision = Some(usize::try_from(precision).unwrap_or(0));
             index += 1;
         } else {
-            let (precision, next) = parse_number(template, index, "precision too big")?;
+            let (precision, next) = parse_number(
+                template,
+                index,
+                i32::MAX as isize,
+                T::PRECISION_TOO_BIG,
+                &vm.heap.tracker,
+            )?;
             spec.precision = Some(precision);
             index = next;
         }
@@ -606,15 +636,23 @@ fn find_key_end(template: &[u8], start: usize, vm: &VM<'_>) -> RunResult<usize> 
     Err(value_error("incomplete format key"))
 }
 
-/// Parses a run of decimal digits, raising `message` past the signed size range.
-fn parse_number(template: &[u8], start: usize, message: &str) -> RunResult<(usize, usize)> {
+/// Parses a run of decimal digits, raising `message` above `max`: CPython
+/// bounds a width by `ssize_t` but a precision by C `int`.
+fn parse_number(
+    template: &[u8],
+    start: usize,
+    max: isize,
+    message: &str,
+    tracker: &ResourceTracker,
+) -> RunResult<(usize, usize)> {
     let mut index = start;
     let mut number = 0usize;
     while let Some(digit) = template.get(index).filter(|byte| byte.is_ascii_digit()) {
+        tracker.check_time_every(index)?;
         number = number
             .checked_mul(10)
             .and_then(|number| number.checked_add(usize::from(digit - b'0')))
-            .filter(|number| isize::try_from(*number).is_ok())
+            .filter(|number| isize::try_from(*number).is_ok_and(|number| number <= max))
             .ok_or_else(|| value_error(message))?;
         index += 1;
     }
@@ -772,8 +810,12 @@ fn long_digits(li: &LongInt, base: u32, uppercase: bool, tracker: &ResourceTrack
     if base == 10 {
         check_bits_str_digits_limit(li.bits())?;
     }
-    let max_digits = li.bits() / u64::from(base.trailing_zeros().max(1));
-    check_repeat_size(1, usize::try_from(max_digits).unwrap_or(usize::MAX), tracker)?;
+    let max_digits = li.bits().div_ceil(u64::from(base.trailing_zeros().max(1)));
+    check_repeat_size(
+        1,
+        usize::try_from(max_digits).unwrap_or(usize::MAX).saturating_add(2),
+        tracker,
+    )?;
     let mut digits = li.abs().inner().to_str_radix(base);
     if uppercase {
         digits.make_ascii_uppercase();
@@ -789,7 +831,7 @@ fn zero_extend(digits: String, precision: Option<usize>, tracker: &ResourceTrack
     } else {
         check_repeat_size(1, target, tracker)?;
         let mut output = StringBuilder::with_capacity(target, tracker)?;
-        output.push_fill(b'0', target - digits.len())?;
+        output.push_repeated('0', target - digits.len())?;
         output.push_str(&digits)?;
         output.finish_raw()
     }

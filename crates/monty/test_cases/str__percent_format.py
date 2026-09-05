@@ -343,6 +343,9 @@ assert capture_error('%.99999999999999999999d', 1) == ('ValueError', 'precision 
 assert capture_error('%*d', ('a', 3)) == ('TypeError', '* wants int')
 assert capture_error('%*d', (10**30, 3)) == ('OverflowError', 'Python int too large to convert to C ssize_t')
 assert capture_error('%.*s', (10**30, 'x')) == ('OverflowError', 'Python int too large to convert to C int')
+assert capture_error('%.*s', (2**31, 'x')) == ('OverflowError', 'Python int too large to convert to C int')
+assert '%.*s' % (2**31 - 1, 'x') == 'x'
+assert capture_error('%.3000000000d', 1) == ('ValueError', 'precision too big')
 
 # === Operand type errors ===
 assert capture_error('%d', 'x') == ('TypeError', '%d format: a real number is required, not str')

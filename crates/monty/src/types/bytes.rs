@@ -84,7 +84,7 @@ use crate::{
         DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, heap_read_ref_as_field,
     },
     intern::{BytesId, StaticStrings, StringId},
-    percent_format::percent_format_bytes,
+    percent_format::{copy_bytes_template, percent_format_bytes},
     resource_checks::{check_repeat_size, check_replace_size},
     types::{
         List,
@@ -379,7 +379,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
 
     /// `bytes % args` is printf-style formatting, see `percent_format`.
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let template = self.get(vm.heap).as_slice().to_vec();
+        let template = copy_bytes_template(self.get(vm.heap).as_slice(), &vm.heap.tracker)?;
         percent_format_bytes(&template, other, vm).map(Some)
     }
 
