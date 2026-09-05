@@ -86,7 +86,8 @@ more details.
 `AsyncMontySession.feed_run()` cancels unfinished coroutine callbacks and waits up to one second for their async cleanup
 before returning a result, raising an error, or propagating caller cancellation.
 If cleanup times out, `MontyCallbackCleanupError.tasks` transfers the unfinished callbacks to the host to retain and join.
-Caller cancellation still raises `CancelledError`, with the cleanup error as its cause.
+Caller cancellation still raises `CancelledError`, with the cleanup error in its exception chain.
+On Python 3.10, follow cancellation `__context__` wrappers to find the cleanup error in `__cause__`.
 Monty does not keep a global collection of overdue callbacks.
 Callbacks must cooperate with cancellation; tasks they create themselves remain their responsibility.
 This does not apply to snapshot-driven execution with `feed_start()` and `resume_auto()`.

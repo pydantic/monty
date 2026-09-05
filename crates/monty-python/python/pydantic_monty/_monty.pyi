@@ -964,7 +964,9 @@ class AsyncMontySession:
         cleanup before returning the outcome or propagating caller cancellation.
         If cleanup times out, `MontyCallbackCleanupError.tasks` transfers the
         unfinished callbacks to the host to retain and join. Caller cancellation
-        still raises `CancelledError`, with the cleanup error as its cause.
+        still raises `CancelledError`, with the cleanup error in its exception
+        chain. On Python 3.10, follow cancellation `__context__` wrappers to
+        find the cleanup error in `__cause__`.
         Tasks callbacks create themselves remain their responsibility.
 
         Arguments:

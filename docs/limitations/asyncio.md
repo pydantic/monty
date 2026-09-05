@@ -63,7 +63,10 @@ Cleanup can use `await` in a `finally` block.
 Repeated caller cancellation does not extend the deadline or interrupt callback cleanup.
 If cleanup times out, the feed raises [`MontyCallbackCleanupError`][pydantic_monty.MontyCallbackCleanupError] instead
 of returning its result, or chains the sandbox error as its context.
-Caller cancellation still raises `CancelledError`, with the cleanup error as its `__cause__`.
+Caller cancellation still raises `CancelledError`, with the cleanup error in its exception chain.
+On Python 3.10, asyncio wraps task cancellation in another `CancelledError`: follow its `__context__`
+to the original cancellation, whose `__cause__` holds the cleanup error.
+On Python 3.11 and later, the cleanup error is the direct `__cause__`.
 The cleanup error's `tasks` tuple transfers unfinished callbacks to the host.
 Retain these tasks until they finish, then join them with `await asyncio.gather(*error.tasks, return_exceptions=True)`.
 Monty collects their eventual exceptions but does not keep them in a global collection.

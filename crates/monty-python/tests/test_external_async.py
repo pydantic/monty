@@ -193,12 +193,20 @@ async def test_async_run_cleanup_deadline_transfers_ownership(monkeypatch: pytes
                 if exit_mode.startswith('cancel'):
                     with pytest.raises(asyncio.CancelledError) as cancelled_info:
                         await driver
-                    cleanup_error = cancelled_info.value.__cause__
+                    cancelled = cancelled_info.value
+                    seen: set[BaseException] = set()
+                    # Python 3.10 wraps task cancellation in another CancelledError.
+                    while cancelled.__cause__ is None:
+                        assert cancelled not in seen
+                        seen.add(cancelled)
+                        assert isinstance(cancelled.__context__, asyncio.CancelledError)
+                        cancelled = cancelled.__context__
+                    cleanup_error = cancelled.__cause__
                     assert isinstance(cleanup_error, pydantic_monty.MontyCallbackCleanupError)
                     assert cleanup_error.__context__ == snapshot(None)
                     assert cleanup_error.__cause__ == snapshot(None)
                     if exit_mode == 'cancel':
-                        assert str(cancelled_info.value) == snapshot('host cancelled')
+                        assert str(cancelled) == snapshot('host cancelled')
                 else:
                     with pytest.raises(pydantic_monty.MontyCallbackCleanupError) as exc_info:
                         await driver
