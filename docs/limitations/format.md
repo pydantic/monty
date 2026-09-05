@@ -49,8 +49,9 @@ CPython prints it literally, or the reverse. Common text is unaffected.
 ## Width / precision bounds
 
 - A `width` or `precision` whose decimal value overflows `usize` raises
-    `SyntaxError: Invalid format specifier '...': width or precision overflows usize` rather than being accepted.
-    CPython is bounded only by memory.
+    `SyntaxError: Invalid format specifier '...': width or precision overflows usize` in a literal f-string spec.
+    Runtime specs, including `str.format()`, raise `ValueError` instead, with an additional
+    `for object of type '...'` suffix.
 - Very large widths/precisions are additionally bounded by the resource
     tracker; see [resource_limits.md](resource_limits.md).
 

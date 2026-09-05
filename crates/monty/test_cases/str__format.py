@@ -73,6 +73,10 @@ assert '{0:{spec[align]}}'.format('x', spec={'align': '^5'}) == '  x  '
 assert '{} {:{}}'.format(1, 2, 3) == '1   2'
 dt = datetime(2001, 2, 3, 4, 5)
 assert '{0:%Y-%m-%d %H:%M}'.format(dt) == '2001-02-03 04:05'
+escaped_datetime_spec = '{0:{{%Y}}}'
+assert escaped_datetime_spec.format(dt) == '{2001}'
+assert '{0:{1}} {0:>3} {0:}'.format(7, '03d') == '007   7 7'
+assert '{0:{1:}}'.format(7, '03d') == '007'
 
 assert '{{}}'.format() == '{}'
 assert '{{{0}}}'.format('x') == '{x}'

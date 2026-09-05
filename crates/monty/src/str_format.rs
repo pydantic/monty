@@ -159,8 +159,8 @@ fn render_field(
         b'}' => None,
         b':' => {
             let spec_start = cursor + 1;
-            let spec_end = find_spec_end(template, spec_start, vm)?;
-            Some((spec_start, spec_end))
+            let (spec_end, needs_expansion) = find_spec_end(template, spec_start, vm)?;
+            Some((spec_start, spec_end, needs_expansion))
         }
         _ => return Err(value_error("expected '}' before end of string")),
     };
@@ -185,11 +185,11 @@ fn render_field(
         .map(|conversion| vm.convert_value(value, conversion))
         .transpose()?;
 
-    if let Some((spec_start, spec_end)) = spec_range {
+    if let Some((spec_start, spec_end, needs_expansion)) = spec_range {
         let raw_spec = &template[spec_start..spec_end];
         // Only a spec containing `{` is expanded, and the expansion itself costs a
         // recursion level, escaped braces included, matching CPython's `build_string`.
-        let spec = if raw_spec.contains('{') {
+        let spec = if needs_expansion {
             if recursion_remaining <= 1 {
                 return Err(value_error("Max string recursion exceeded"));
             }
@@ -231,17 +231,21 @@ fn find_field_end(template: &str, start: usize, vm: &VM<'_>) -> RunResult<(usize
     Err(value_error("expected '}' before end of string"))
 }
 
-/// Finds the closing brace for a possibly nested format spec.
-fn find_spec_end(template: &str, start: usize, vm: &VM<'_>) -> RunResult<usize> {
+/// Finds the closing brace and whether the spec needs expansion in one checked scan.
+fn find_spec_end(template: &str, start: usize, vm: &VM<'_>) -> RunResult<(usize, bool)> {
     let bytes = template.as_bytes();
     let mut index = start;
     let mut nesting = 0usize;
+    let mut needs_expansion = false;
 
     while index < bytes.len() {
         vm.heap.tracker.check_time_every(index)?;
         match bytes[index] {
-            b'{' => nesting += 1,
-            b'}' if nesting == 0 => return Ok(index),
+            b'{' => {
+                nesting += 1;
+                needs_expansion = true;
+            }
+            b'}' if nesting == 0 => return Ok((index, needs_expansion)),
             b'}' => nesting -= 1,
             _ => {}
         }
