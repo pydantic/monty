@@ -200,6 +200,7 @@ pub trait TelemetryAdapter: Send + Sync + 'static {
     /// Emits a log under the reconstructed span identified by `parent_span_id`.
     fn emit_log(&self, parent_span_id: SpanId, record: &SdkLogRecord) -> bool;
     /// Discards host-side state after delivery for one Monty root becomes unreliable.
+    /// Called after every in-flight callback for that root has returned.
     fn disable_root(&self, trace_id: TraceId, root_span_id: SpanId);
     /// Records one raw metric measurement in the foreign host's metrics SDK.
     ///
@@ -308,8 +309,16 @@ struct ProcessorState {
 
 /// Mutable ancestry and delivery state shared by processor callbacks.
 struct RoutingState {
+    /// Root containing each open Monty span.
     spans: HashMap<SpanKey, SpanKey>,
+    /// Roots whose adapter stream can no longer be trusted.
     disabled: HashSet<SpanKey>,
+    /// Callbacks which may still create or use adapter state.
+    active_deliveries: HashMap<SpanKey, usize>,
+    /// Disabled roots for which adapter cleanup was requested.
+    cleanup_sent: HashSet<SpanKey>,
+    /// Ended roots retained until their final child and callback completes.
+    finished_roots: HashSet<SpanKey>,
 }
 
 /// Identifies an OTel span without assuming span IDs are process-global.
@@ -327,14 +336,58 @@ impl AdapterProcessor {
             routing: Mutex::new(RoutingState {
                 spans: HashMap::new(),
                 disabled: HashSet::new(),
+                active_deliveries: HashMap::new(),
+                cleanup_sent: HashSet::new(),
+                finished_roots: HashSet::new(),
             }),
         }))
     }
 
-    /// Stops one Monty root after its ordered event stream becomes unreliable.
-    fn disable(&self, root: SpanKey) {
-        if lock(&self.0.routing).disabled.insert(root) {
+    /// Registers a callback so cleanup waits until every in-flight delivery completes.
+    fn begin_delivery(routing: &mut RoutingState, root: SpanKey) -> bool {
+        if routing.disabled.contains(&root) {
+            false
+        } else {
+            *routing.active_deliveries.entry(root).or_default() += 1;
+            true
+        }
+    }
+
+    /// Completes a callback and requests cleanup once no delivery can add more state.
+    fn finish_delivery(&self, root: SpanKey, delivered: bool) {
+        let cleanup = {
+            let mut routing = lock(&self.0.routing);
+            let active = routing
+                .active_deliveries
+                .get_mut(&root)
+                .expect("delivery registered before callback");
+            *active -= 1;
+            if *active == 0 {
+                routing.active_deliveries.remove(&root);
+            }
+            if !delivered {
+                routing.disabled.insert(root);
+            }
+            let cleanup = routing.disabled.contains(&root)
+                && !routing.active_deliveries.contains_key(&root)
+                && routing.cleanup_sent.insert(root);
+            Self::forget_finished_root(&mut routing, root);
+            cleanup
+        };
+        if cleanup {
             self.0.adapter.disable_root(root.trace_id, root.span_id);
+        }
+    }
+
+    /// Forgets routing failures only after an ended root has no remaining callbacks.
+    fn forget_finished_root(routing: &mut RoutingState, root: SpanKey) {
+        if routing.finished_roots.contains(&root)
+            && !routing.active_deliveries.contains_key(&root)
+            && !routing.spans.values().any(|candidate| *candidate == root)
+        {
+            routing.disabled.remove(&root);
+            routing.cleanup_sent.remove(&root);
+            routing.finished_roots.remove(&root);
         }
     }
 }
@@ -356,14 +409,16 @@ impl SpanProcessor for AdapterProcessor {
             trace_id: span_key.trace_id,
             span_id: parent.span().span_context().span_id(),
         };
-        let (root, disabled) = {
+        let (root, deliver) = {
             let mut routing = lock(&self.0.routing);
             let root = routing.spans.get(&parent_key).copied().unwrap_or(span_key);
             routing.spans.insert(span_key, root);
-            (root, routing.disabled.contains(&root))
+            let deliver = Self::begin_delivery(&mut routing, root);
+            (root, deliver)
         };
-        if !disabled && !self.0.adapter.start_span_with_parent(&data, parent) {
-            self.disable(root);
+        if deliver {
+            let delivered = self.0.adapter.start_span_with_parent(&data, parent);
+            self.finish_delivery(root, delivered);
         }
     }
 
@@ -372,19 +427,23 @@ impl SpanProcessor for AdapterProcessor {
             trace_id: span.span_context.trace_id(),
             span_id: span.span_context.span_id(),
         };
-        let (root, disabled) = {
+        let (root, deliver) = {
             let mut routing = lock(&self.0.routing);
             let Some(root) = routing.spans.remove(&span_key) else {
                 return;
             };
-            (root, routing.disabled.contains(&root))
+            let deliver = Self::begin_delivery(&mut routing, root);
+            (root, deliver)
         };
-        if !disabled && !self.0.adapter.end_span(&span) {
-            self.disable(root);
+        if deliver {
+            let delivered = self.0.adapter.end_span(&span);
+            self.finish_delivery(root, delivered);
         }
+        let mut routing = lock(&self.0.routing);
         if root == span_key {
-            lock(&self.0.routing).disabled.remove(&root);
+            routing.finished_roots.insert(root);
         }
+        Self::forget_finished_root(&mut routing, root);
     }
 
     fn force_flush(&self) -> OTelSdkResult {
@@ -402,18 +461,17 @@ impl LogProcessor for AdapterProcessor {
             trace_id: context.trace_id,
             span_id: context.span_id,
         };
-        let (root, disabled) = {
-            let routing = lock(&self.0.routing);
+        let (root, deliver) = {
+            let mut routing = lock(&self.0.routing);
             let Some(root) = routing.spans.get(&parent).copied() else {
                 return;
             };
-            (root, routing.disabled.contains(&root))
+            let deliver = Self::begin_delivery(&mut routing, root);
+            (root, deliver)
         };
-        if disabled {
-            return;
-        }
-        if !self.0.adapter.emit_log(context.span_id, record) {
-            self.disable(root);
+        if deliver {
+            let delivered = self.0.adapter.emit_log(context.span_id, record);
+            self.finish_delivery(root, delivered);
         }
     }
 

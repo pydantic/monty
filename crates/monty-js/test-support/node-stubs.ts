@@ -16,7 +16,7 @@ export const _flushTelemetry = () => {
   throw new Error('Node telemetry is not available in browser tests')
 }
 
-export const _installTelemetryAdapter = () => {
+export const _installTelemetry = () => {
   throw new Error('Node telemetry is not available in browser tests')
 }
 

@@ -496,20 +496,17 @@ The `monty` binary resolves from: explicit `binaryPath` → the `MONTY_BIN`
 environment variable → the installed platform package → `PATH` → a cargo
 workspace `target/` build (development).
 
-The Node-only Logfire integration installs a version-1 adapter through
-`_installTelemetryAdapter(1, adapter)`. At checkout it propagates the active
-host trace context into Monty's Rust spans, then reconstructs those records
-through the host SDK, which owns credentials, export, and shutdown. Span and
-log delivery uses a bounded non-blocking queue; overflow permanently disables
-the adapter and sends one global cleanup notification rather than risking
-unbounded host memory. Browser/WASM does not yet implement this adapter path.
+The Node binding has a private telemetry hook for OpenTelemetry integrations:
+`_installTelemetry({ tracer, meter, logger })`. Each standard OpenTelemetry component is optional,
+but at least one is required, and installation is process-wide. At checkout Monty propagates the
+active context and reconstructs spans and logs through the supplied components. The meter receives
+raw measurements so its views, readers, temporality, and exporters apply. Browser/WASM does not yet
+implement this integration.
 
-A separate callback receives pool metrics as aggregated OTLP
-`ExportMetricsServiceRequest` protobufs — live, immediately available and
-host-blocked worker counts, checkout waits, worker deaths by reason, run
-durations and each feed's sandbox execution time. They cover every checkout,
-traced or not, and contain no sandbox-supplied dimensions. The host integration
-awaits `_flushTelemetry()` before flushing its own exporter.
+Span starts cross synchronously so their host context is available to children. Span ends, logs,
+and raw measurements use bounded non-blocking queues; overflow disables the affected telemetry
+path rather than blocking a pool worker. `_flushTelemetry()` drains those queues and must complete
+before the host SDK is flushed or shut down.
 
 ## Value Conversion
 

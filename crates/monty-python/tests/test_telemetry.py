@@ -20,7 +20,6 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import NonRecordingSpan, SpanContext, StatusCode, TraceFlags, use_span
 
-import pydantic_monty._monty as native
 from pydantic_monty import Monty, MontyRuntimeError, instrument_telemetry
 
 
@@ -83,8 +82,23 @@ def install_telemetry() -> None:
 
 
 def test_components_are_required():
-    with pytest.raises(ValueError, match='at least one OpenTelemetry component is required'):
-        native.__dict__['_install_telemetry'](None, None, None)
+    subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            """
+import pydantic_monty._monty as native
+
+try:
+    native.__dict__['_install_telemetry'](None, None, None)
+except ValueError as exc:
+    assert str(exc) == 'at least one OpenTelemetry component is required'
+else:
+    raise AssertionError('expected telemetry installation to fail')
+""",
+        ],
+        check=True,
+    )
 
 
 def test_metrics_can_be_disabled():
@@ -195,6 +209,42 @@ def test_concurrent_checkouts_do_not_deadlock_components():
             assert sorted(executor.map(run, range(2))) == snapshot([1, 2])
 
 
+def test_tracer_can_reenter_monty():
+    subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            """
+from opentelemetry.sdk.trace import TracerProvider
+from pydantic_monty import Monty, instrument_telemetry
+
+class ReentrantTracer:
+    def __init__(self):
+        self.tracer = TracerProvider().get_tracer('test')
+        self.pool = None
+        self.reentered = False
+
+    def start_span(self, *args, **kwargs):
+        if self.pool is not None and not self.reentered:
+            self.reentered = True
+            with self.pool.checkout() as session:
+                assert session.feed_run('20 + 22') == 42
+        return self.tracer.start_span(*args, **kwargs)
+
+tracer = ReentrantTracer()
+instrument_telemetry(tracer=tracer)
+with Monty() as nested_pool:
+    tracer.pool = nested_pool
+    with Monty() as pool:
+        with pool.checkout() as session:
+            assert session.feed_run('1 + 2') == 3
+""",
+        ],
+        check=True,
+        timeout=30,
+    )
+
+
 def test_tracer_can_reject_one_root():
     install_telemetry()
     _tracer.reject_next_start = True
@@ -277,18 +327,44 @@ assert [span.name for span in exporter.get_finished_spans()] == ["run code", "se
     )
 
 
-def test_tracer_failure_does_not_disable_logging(monkeypatch: pytest.MonkeyPatch):
-    install_telemetry()
-    _tracer.raise_on_start = 2
-    unraisable: list[sys.UnraisableHookArgs] = []
-    monkeypatch.setattr(sys, 'unraisablehook', unraisable.append)
+def test_tracer_failure_does_not_disable_logging():
+    subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            """
+import sys
 
-    with Monty() as pool:
-        with pool.checkout() as session:
-            assert session.feed_run("print('still logged')\n1 + 2") == snapshot(3)
+from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
+from opentelemetry.sdk.trace import TracerProvider
+from pydantic_monty import Monty, instrument_telemetry
 
-    assert str(unraisable[0].exc_value) == snapshot('telemetry failed')
-    [log] = _log_exporter.get_finished_logs()
-    assert log.log_record.body == snapshot('print stdout')
-    assert log.log_record.attributes is not None
-    assert log.log_record.attributes['text'] == snapshot('still logged\n')
+class BrokenTracer:
+    def __init__(self):
+        self.tracer = TracerProvider().get_tracer('test')
+        self.starts = 0
+
+    def start_span(self, *args, **kwargs):
+        self.starts += 1
+        if self.starts == 2:
+            raise RuntimeError('telemetry failed')
+        return self.tracer.start_span(*args, **kwargs)
+
+exporter = InMemoryLogRecordExporter()
+provider = LoggerProvider()
+provider.add_log_record_processor(SimpleLogRecordProcessor(exporter))
+unraisable = []
+sys.unraisablehook = unraisable.append
+instrument_telemetry(tracer=BrokenTracer(), logger=provider.get_logger('test'))
+with Monty() as pool:
+    with pool.checkout() as session:
+        assert session.feed_run("print('still logged')\\n1 + 2") == 3
+assert str(unraisable[0].exc_value) == 'telemetry failed'
+[log] = exporter.get_finished_logs()
+assert log.log_record.body == 'print stdout'
+assert log.log_record.attributes['text'] == 'still logged\\n'
+""",
+        ],
+        check=True,
+    )

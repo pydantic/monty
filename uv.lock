@@ -1764,11 +1764,18 @@ dependencies = [
     { name = "pydantic-monty-runtime" },
 ]
 
+[package.optional-dependencies]
+opentelemetry = [
+    { name = "pydantic-monty-client", extra = ["opentelemetry"] },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "pydantic-monty-client", editable = "crates/monty-python" },
+    { name = "pydantic-monty-client", extras = ["opentelemetry"], marker = "extra == 'opentelemetry'", editable = "crates/monty-python" },
     { name = "pydantic-monty-runtime", editable = "crates/monty-runtime" },
 ]
+provides-extras = ["opentelemetry"]
 
 [[package]]
 name = "pydantic-monty-client"

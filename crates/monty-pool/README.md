@@ -160,9 +160,10 @@ remaining contribution.
 through `TelemetryAdapter::export_metrics`; its flush path should call
 `TelemetryAdapterHandle::force_flush`. `configure_telemetry_adapter_with_host_metrics` instead
 delivers every `Measurement` through `TelemetryAdapter::record_metric`, allowing the foreign
-SDK's views, readers, temporality, and exporters to apply. Raw measurements are synchronous, so
-only the foreign SDK needs flushing. Both callbacks default to dropping their input so adapters
-that do not support metrics continue to work.
+SDK's views, readers, temporality, and exporters to apply. The adapter method is called
+synchronously, but a language bridge may queue the measurement before invoking its SDK and must
+drain that queue before the SDK is flushed or shut down. Both callbacks default to dropping their
+input so adapters that do not support metrics continue to work.
 
 ## Transports
 

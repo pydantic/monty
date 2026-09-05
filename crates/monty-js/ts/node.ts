@@ -52,13 +52,5 @@ export {
   type MontyTimeZone,
 } from './types.js'
 export { findMontyBinary } from './binary.js'
-export {
-  _flushTelemetry,
-  _installTelemetryAdapter,
-  type MontyTelemetryAdapter,
-  type TelemetryEvent,
-  type TelemetryParentContext,
-  type TelemetrySpanEvent,
-  type TelemetryTimestamp,
-} from './telemetry.js'
+export { _flushTelemetry, _installTelemetry, type MontyTelemetryComponents } from './telemetry.js'
 export { MAX_VALUE_DEPTH } from '../native-addon.js'

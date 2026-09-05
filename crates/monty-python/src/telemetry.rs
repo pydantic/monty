@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    mem,
     sync::{
         Arc, Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicBool, Ordering},
@@ -22,7 +23,6 @@ use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
-    sync::MutexExt,
     types::{PyBytes, PyDict, PyList},
 };
 
@@ -46,8 +46,6 @@ struct PythonBridge {
     logs_disabled: AtomicBool,
     /// Whether metric delivery has failed.
     metrics_disabled: AtomicBool,
-    /// Serializes delivery with cleanup, including on free-threaded Python.
-    delivery: Mutex<()>,
 }
 
 /// Python OpenTelemetry API objects used by callbacks from Rust threads.
@@ -122,7 +120,6 @@ pub(crate) fn _install_telemetry(
         spans_disabled: AtomicBool::new(false),
         logs_disabled: AtomicBool::new(false),
         metrics_disabled: AtomicBool::new(false),
-        delivery: Mutex::new(()),
     });
     let handle = configure_telemetry_adapter_with_host_metrics(Arc::clone(&bridge) as Arc<dyn TelemetryAdapter>)
         .map_err(|err| PyRuntimeError::new_err(format!("failed to configure Monty telemetry: {err}")))?;
@@ -147,7 +144,6 @@ pub(crate) fn capture_telemetry_context(py: Python<'_>) -> Option<TelemetryConte
     let Some(tracer) = &bridge.tracer else {
         return logs_enabled.then(|| installed.handle.unparented_context());
     };
-    let _delivery = lock_py_attached(&bridge.delivery, py);
     if bridge.spans_disabled.load(Ordering::Acquire) {
         return logs_enabled.then(|| installed.handle.unparented_context());
     }
@@ -174,7 +170,7 @@ pub(crate) fn capture_telemetry_context(py: Python<'_>) -> Option<TelemetryConte
     match result {
         Ok(context) => Some(context),
         Err(err) => {
-            bridge.disable_spans_locked(py, tracer.bind(py), err);
+            bridge.disable_spans(py, tracer.bind(py), err);
             logs_enabled.then(|| installed.handle.unparented_context())
         }
     }
@@ -228,7 +224,6 @@ impl TelemetryAdapter for PythonBridge {
             return true;
         };
         Python::attach(|py| {
-            let _delivery = lock_py_attached(&self.delivery, py);
             if self.logs_disabled.load(Ordering::Acquire) {
                 return true;
             }
@@ -290,7 +285,16 @@ impl TelemetryAdapter for PythonBridge {
             trace_id,
             span_id: root_span_id,
         };
-        lock(&self.spans).retain(|_, state| state.root != root);
+        // Python finalizers may re-enter telemetry, so release the mutex before decrefing spans.
+        let discarded = {
+            let mut spans = lock(&self.spans);
+            let (retained, discarded): (HashMap<_, _>, HashMap<_, _>) = mem::take(&mut *spans)
+                .into_iter()
+                .partition(|(_, state)| state.root != root);
+            *spans = retained;
+            discarded
+        };
+        drop(discarded);
     }
 
     fn record_metric(&self, measurement: &Measurement<'_>) {
@@ -301,27 +305,28 @@ impl TelemetryAdapter for PythonBridge {
             return;
         };
         let _ = Python::try_attach(|py| {
-            let _delivery = lock_py_attached(&self.delivery, py);
             if self.metrics_disabled.load(Ordering::Acquire) {
                 return;
             }
             let result = (|| {
-                let instrument = {
+                let instrument = if let Some(instrument) = lock(&self.instruments).get(measurement.name) {
+                    instrument.clone_ref(py)
+                } else {
+                    let method = match measurement.kind {
+                        MetricKind::Counter => "create_counter",
+                        MetricKind::UpDownCounter => "create_up_down_counter",
+                        MetricKind::Histogram => "create_histogram",
+                    };
+                    let created = meter
+                        .bind(py)
+                        .call_method1(method, (measurement.name, measurement.unit, measurement.description))?
+                        .unbind();
                     let mut instruments = lock(&self.instruments);
                     if let Some(instrument) = instruments.get(measurement.name) {
                         instrument.clone_ref(py)
                     } else {
-                        let method = match measurement.kind {
-                            MetricKind::Counter => "create_counter",
-                            MetricKind::UpDownCounter => "create_up_down_counter",
-                            MetricKind::Histogram => "create_histogram",
-                        };
-                        let instrument = meter
-                            .bind(py)
-                            .call_method1(method, (measurement.name, measurement.unit, measurement.description))?
-                            .unbind();
-                        instruments.insert(measurement.name, instrument.clone_ref(py));
-                        instrument
+                        instruments.insert(measurement.name, created.clone_ref(py));
+                        created
                     }
                 };
                 let attributes = attributes_to_py(py, measurement.attributes)?;
@@ -381,10 +386,6 @@ impl PythonBridge {
             let span = tracer
                 .bind(py)
                 .call_method("start_span", (data.name.as_ref(),), Some(&kwargs))?;
-            let enabled: bool = span.call_method0("is_recording")?.extract()?;
-            if !enabled {
-                return Ok(false);
-            }
             let context = self
                 .helpers
                 .set_span_in_context
@@ -396,15 +397,23 @@ impl PythonBridge {
                 .iter()
                 .map(|attribute| (attribute.key.as_str().to_owned(), attribute.value.clone()))
                 .collect();
-            lock(&self.spans).insert(
-                key,
-                SpanState {
-                    span: span.unbind(),
-                    context,
-                    root,
-                    initial_attributes,
-                },
-            );
+            let mut spans = lock(&self.spans);
+            let replaced = if self.spans_disabled.load(Ordering::Acquire) {
+                None
+            } else {
+                spans.insert(
+                    key,
+                    SpanState {
+                        span: span.unbind(),
+                        context,
+                        root,
+                        initial_attributes,
+                    },
+                )
+            };
+            // A replaced custom span may run a finalizer which re-enters Monty.
+            drop(spans);
+            drop(replaced);
             Ok(true)
         })
         .unwrap_or_else(|| self.logs_enabled())
@@ -444,7 +453,6 @@ impl PythonBridge {
     /// Invokes the tracer without allowing failures to affect Monty or logging.
     fn call_spans(&self, f: impl FnOnce(Python<'_>) -> PyResult<bool>) -> Option<bool> {
         Python::attach(|py| {
-            let _delivery = lock_py_attached(&self.delivery, py);
             if self.spans_disabled.load(Ordering::Acquire) {
                 return None;
             }
@@ -452,7 +460,7 @@ impl PythonBridge {
                 Ok(enabled) => Some(enabled),
                 Err(err) => {
                     let tracer = self.tracer.as_ref().expect("tracer checked by caller");
-                    self.disable_spans_locked(py, tracer.bind(py), err);
+                    self.disable_spans(py, tracer.bind(py), err);
                     None
                 }
             }
@@ -464,9 +472,17 @@ impl PythonBridge {
     }
 
     /// Permanently disables spans and discards every retained Python span.
-    fn disable_spans_locked(&self, py: Python<'_>, target: &Bound<'_, PyAny>, err: PyErr) {
-        if !self.spans_disabled.swap(true, Ordering::AcqRel) {
-            lock(&self.spans).clear();
+    fn disable_spans(&self, py: Python<'_>, target: &Bound<'_, PyAny>, err: PyErr) {
+        // Python finalizers may re-enter telemetry, so release the mutex before decrefing spans.
+        let (first_failure, discarded) = {
+            let mut spans = lock(&self.spans);
+            (
+                !self.spans_disabled.swap(true, Ordering::AcqRel),
+                mem::take(&mut *spans),
+            )
+        };
+        drop(discarded);
+        if first_failure {
             err.write_unraisable(py, Some(target));
         }
     }
@@ -565,11 +581,6 @@ fn span_id_int(value: SpanId) -> u64 {
 /// Locks bridge state while recovering from an unrelated callback panic.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Locks bridge state without blocking a thread attached to Python.
-fn lock_py_attached<'a, T>(mutex: &'a Mutex<T>, py: Python<'_>) -> MutexGuard<'a, T> {
-    mutex.lock_py_attached(py).unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Converts a system timestamp to the nanoseconds expected by Python OTel.

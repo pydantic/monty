@@ -37,7 +37,7 @@ struct JsBridge {
     flush_metrics: SendAndWait,
     /// Queue overflow disables tracing rather than leaving gaps in open spans.
     tracing_disabled: AtomicBool,
-    /// Whether the metric callback can no longer receive batches.
+    /// Whether the metric callback can no longer receive measurements.
     metrics_disabled: AtomicBool,
     delivery: RwLock<DeliveryState>,
 }
@@ -292,18 +292,17 @@ impl TelemetryAdapter for JsBridge {
 }
 
 impl JsBridge {
-    /// Starts a span synchronously so the host's sampling decision reaches Rust.
+    /// Starts a span synchronously so the host can report delivery failure.
     fn start_span_event(&self, event: JsonValue) -> bool {
         let _delivery = read_lock(&self.delivery);
         if self.tracing_disabled.load(Ordering::Relaxed) {
             return false;
         }
-        match (self.send_and_wait)(event.to_string()) {
-            Some(enabled) => enabled,
-            None => {
-                self.tracing_disabled.store(true, Ordering::Relaxed);
-                false
-            }
+        if let Some(enabled) = (self.send_and_wait)(event.to_string()) {
+            enabled
+        } else {
+            self.tracing_disabled.store(true, Ordering::Relaxed);
+            false
         }
     }
 

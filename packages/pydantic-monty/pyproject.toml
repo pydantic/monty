@@ -39,6 +39,9 @@ dependencies = [
     "pydantic-monty-runtime==0.0.22",
 ]
 
+[project.optional-dependencies]
+opentelemetry = ["pydantic-monty-client[opentelemetry]"]
+
 [project.scripts]
 # the `monty` binary comes from `pydantic-monty-runtime`, so without this the
 # metapackage provides no executable of its own and `uvx pydantic-monty` fails.
