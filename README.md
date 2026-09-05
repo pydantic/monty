@@ -2,461 +2,95 @@
   <h1>Monty</h1>
 </div>
 <div align="center">
-  <h3>A minimal, secure Python interpreter written in Rust for use by AI.</h3>
+  <h3>A sandboxed Python interpreter, written in Rust, for code written by AI.</h3>
 </div>
 <div align="center">
   <a href="https://github.com/pydantic/monty/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/pydantic/monty/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://codspeed.io/pydantic/monty?utm_source=badge"><img src="https://img.shields.io/badge/CodSpeed-Performance%20Tracked-blue?logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNOCAwTDAgOEw4IDE2TDE2IDhMOCAwWiIgZmlsbD0id2hpdGUiLz48L3N2Zz4=" alt="Codspeed"></a>
   <a href="https://codecov.io/gh/pydantic/monty"><img src="https://codecov.io/gh/pydantic/monty/graph/badge.svg?token=HX4RDQX5OG" alt="Coverage"></a>
   <a href="https://pypi.python.org/pypi/pydantic-monty"><img src="https://img.shields.io/pypi/v/pydantic-monty.svg" alt="PyPI"></a>
-  <a href="https://github.com/pydantic/monty"><img src="https://img.shields.io/pypi/pyversions/pydantic-monty.svg" alt="versions"></a>
+  <a href="https://www.npmjs.com/package/@pydantic/monty"><img src="https://img.shields.io/npm/v/@pydantic/monty.svg" alt="NPM"></a>
+  <a href="https://crates.io/crates/monty"><img src="https://img.shields.io/crates/v/monty.svg" alt="crates.io"></a>
   <a href="https://github.com/pydantic/monty/blob/main/LICENSE"><img src="https://img.shields.io/github/license/pydantic/monty.svg?v=2" alt="license"></a>
   <a href="https://logfire.pydantic.dev/docs/join-slack/"><img src="https://img.shields.io/badge/Slack-Join%20Slack-4A154B?logo=slack" alt="Join Slack" /></a>
 </div>
 
----
+______________________________________________________________________
 
 > [!NOTE]
 > **Hack Monty Round 3 is live** - the last round before Monty V1. See [pydantic.dev/monty](https://pydantic.dev/monty) for details.
 
-A minimal, secure Python 3.14 interpreter written in Rust for use by AI.
+Monty runs Python written by a model with no container, VM or sandboxing service in the loop.
+Creating a sandbox and running ten commands in it takes 5 ms (Docker: 900 ms, a sandboxing service: 1900 ms), a paused
+interpreter serialises to bytes you can resume later, and memory, time and recursion limits are enforced by the VM
+itself.
+Filesystem, environment variables and network do not exist inside the sandbox: it reaches the host only through the
+functions and mounts you pass in.
 
-Monty avoids the cost, latency, complexity and general faff of using a full container based sandbox for running LLM generated code.
+**Documentation: [pydantic.dev/docs/monty](https://pydantic.dev/docs/monty/)**
 
-Instead, it lets you safely run Python code written by an LLM embedded in your agent, with startup times measured in single digit microseconds not hundreds of milliseconds.
-
-What Monty **can** do:
-
-- Run a reasonable subset of Python code - enough for your agent to express what it wants to do
-- Completely block access to the host environment: filesystem, env variables and network access are all implemented via external function calls the developer can control
-- Call functions on the host - only functions you give it access to - and expose host objects and classes with per-attribute/method policies, including letting sandboxed code construct instances of host classes you allow
-- Run typechecking - monty supports full modern python type hints and comes with [ty](https://docs.astral.sh/ty/) included in a single binary to run typechecking
-- Be snapshotted to bytes at external function calls, meaning you can store the interpreter state in a file or database, and resume later
-- Startup extremely fast (<1μs to go from code to execution result), and has runtime performance that is similar to CPython (generally between 5x faster and 5x slower)
-- Be called from Rust, Python, or Javascript - because Monty has no dependencies on cpython, you can use it anywhere you can run Rust
-- Control resource usage - Monty can track memory usage, stack depth, and execution time and cancel execution if it exceeds preset limits
-- Collect stdout and stderr and return it to the caller
-- Run async or sync sandboxed code, calling async or sync functions on the host
-- Use a small subset of the standard library including `asyncio`, `base64`, `binascii`, `collections`, `dataclasses`, `datetime`, `functools`, `itertools`, `json`, `math`, `os`, `pathlib`, `re`, `sys`, `typing`, `unicodedata`
-
-What Monty **cannot** do:
-
-- Use the rest of the standard library
-- Use third party libraries (like Pydantic), support for external python library is not a goal
-- use class inheritance, metaclasses or `super()` - simple classes without a base class do work
-- use match statements (support should come soon)
-
----
-
-In short, Monty is extremely limited and designed for **one** use case:
-
-**To run code written by agents.**
-
-For motivation on why you might want to do this, see:
-
-- [Codemode](https://blog.cloudflare.com/code-mode/) from Cloudflare
-- [Programmatic Tool Calling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling) from Anthropic
-- [Code Execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) from Anthropic
-- [Smol Agents](https://github.com/huggingface/smolagents) from Hugging Face
-
-In very simple terms, the idea of all the above is that LLMs can work faster, cheaper and more reliably if they're asked to write Python (or Javascript) code, instead of relying on traditional tool calling. Monty makes that possible without the complexity of a sandbox or risk of running code directly on the host.
-
-**Note:** Monty powers [`Code Mode`](https://pydantic.dev/docs/ai/harness/code-mode/) in [Pydantic AI](https://github.com/pydantic/pydantic-ai)
-
-**Documentation:** [`docs/`](./docs) covers installation, quickstarts for each language binding, the security model, host functions, resource limits, snapshotting, type checking and the supported Python subset. [`limitations/`](./limitations) is the reference for how Monty diverges from CPython.
-
-## Usage
-
-Monty can be called from Python, JavaScript/TypeScript or Rust.
-
-### Python
-
-To install:
+## Install
 
 ```bash
-uv add pydantic-monty
+uv add pydantic-monty        # Python
+npm install @pydantic/monty  # JavaScript / TypeScript
+cargo add monty              # Rust
 ```
 
-(Or `pip install pydantic-monty` for the boomers)
+The commercial [Full Monty](https://pydantic.dev/docs/monty/commercial-support/server/) runs the same workers as a container
+image.
 
-`pydantic-monty` is a metapackage pairing `pydantic-monty-client` (the
-`pydantic_monty` module) with `pydantic-monty-runtime` (the `monty` worker
-binary). Install `pydantic-monty-client` alone if the binary already comes from
-somewhere else.
+## Example
 
-Usage:
+The `code` string is what a model writes when asked how long a bar of chocolate could power a lightbulb:
 
 ```python
-from typing import Any
-
-import pydantic_monty
+from pydantic_monty import Monty
 
 code = """
-async def agent(prompt: str, messages: Messages):
-    while True:
-        print(f'messages so far: {messages}')
-        output = await call_llm(prompt, messages)
-        if isinstance(output, str):
-            return output
-        messages.extend(output)
-
-await agent(prompt, [])
+kcal = nutrition('chocolate bar')['kcal']
+hours = kcal * 4184 / (bulb_watts * 3600)
+print(f'a chocolate bar powers a {bulb_watts} W bulb for {hours:.1f} hours')
 """
 
-type_definitions = """
-from typing import Any
-
-Messages = list[dict[str, Any]]
-
-async def call_llm(prompt: str, messages: Messages) -> str | Messages:
-    raise NotImplementedError()
-
-prompt: str = ''
-"""
-
-
-Messages = list[dict[str, Any]]
-
-
-async def call_llm(prompt: str, messages: Messages) -> str | Messages:
-    if len(messages) < 2:
-        return [{'role': 'system', 'content': 'example response'}]
-    else:
-        return f'example output, message count {len(messages)}'
-
-
-async def main():
-    async with pydantic_monty.AsyncMonty() as pool:
-        async with pool.checkout(
-            script_name='agent.py',
-            type_check=True,
-            type_check_stubs=type_definitions,
-        ) as session:
-            output = await session.feed_run(
-                code,
-                inputs={'prompt': 'testing'},
-                external_lookup={'call_llm': call_llm},
-            )
-    print(output)
-    #> example output, message count 2
-
-
-if __name__ == '__main__':
-    import asyncio
-
-    asyncio.run(main())
-```
-
-Execution happens in a pool of `monty` worker subprocesses, so even a memory
-error triggered by adversarial code (stack overflow, allocator abort) can
-never crash your process — the worker dies, raises `MontyCrashedError`, and
-is replaced. There is also a fully synchronous API:
-
-```python
-import pydantic_monty
-
-with pydantic_monty.Monty() as pool:
+with Monty() as pool:
     with pool.checkout() as session:
-        # session state persists between feed_run calls
-        session.feed_run('x = 21')
-        print(session.feed_run('x * 2'))
-        #> 42
+        session.feed_run(
+            code,
+            inputs={'bulb_watts': 10},
+            external_lookup={'nutrition': lambda food: {'kcal': 230}},
+        )
+        #> a chocolate bar powers a 10 W bulb for 26.7 hours
 ```
 
-### JavaScript / TypeScript
-
-To install:
-
-```bash
-npm install @pydantic/monty
-```
-
-The JS package is a native (napi) binding over the same Rust worker pool the
-Python package uses — the binding and the `monty` worker binary ship via
-platform-specific npm packages:
-
-```ts
-import { Monty } from '@pydantic/monty'
-
-await using pool = await Monty.create()
-await using session = await pool.checkout()
-
-// session state persists between feedRun calls
-await session.feedRun('x = 21')
-console.log(await session.feedRun('x * 2')) // 42
-
-// external functions may be async
-const result = await session.feedRun('await fetch_data()', {
-  externalLookup: { fetch_data: async () => 'data' },
-})
-```
-
-For browsers (or anywhere subprocesses are impossible) the same package
-exposes an in-process WebAssembly build under the `@pydantic/monty/wasm`
-subpath (no crash isolation: a sandbox crash is a host crash there).
-
-### Rust
-
-For running untrusted code from Rust, we recommend the
-[`monty-pool`](https://crates.io/crates/monty-pool) crate rather than the in-process API below.
-`monty-pool` only runs code in `monty` worker subprocesses, which affords extra protections:
-a crash triggered by adversarial code (stack overflow, allocator abort) kills only the worker —
-the pool detects the death and replaces the worker — and a parent-side watchdog can kill workers
-that exceed a hard timeout. It is the same engine the Python and JavaScript packages above are
-built on. See the [monty-pool README](https://github.com/pydantic/monty/tree/main/crates/monty-pool)
-for usage.
-
-The `monty` crate itself provides the in-process interpreter:
-
-```rust
-use monty::MontyRun;
-use monty_types::{CompileOptions, ResourceTracker, MontyObject, PrintWriter, ResourceLimits};
-
-let code = r#"
-def fib(n):
-    if n <= 1:
-        return n
-    return fib(n - 1) + fib(n - 2)
-
-fib(x)
-"#;
-
-let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
-let result = runner.run(vec![MontyObject::Int(10)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
-assert_eq!(result, MontyObject::Int(55));
-```
-
-#### Serialization
-
-A REPL session can be serialized with `dump()` and restored with `Dump::load()`. The dump carries the session metadata (script name, type-check stubs) alongside the interpreter state, behind a version the loading build checks:
-
-```rust
-use monty::{Dump, MontyRepl, Session, SessionRef, dump};
-use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
-
-// Snapshot a session between snippets
-let mut repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
-repl.feed_run("x = 41", vec![], PrintWriter::Stdout).unwrap();
-let bytes = dump("main.py", None, SessionRef::Idle(&repl)).unwrap();
-
-// Later, restore and carry on feeding
-let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
-    panic!("dumped an idle session")
-};
-let result = restored.feed_run("x + 1", vec![], PrintWriter::Stdout).unwrap();
-assert_eq!(result, MontyObject::Int(42));
-```
-
-`MontyRun` and `RunProgress` have no dump format of their own, but both implement `serde::Serialize`/`Deserialize`, so a host can serialize parsed code or a paused run with whatever format it already uses.
-
-## Memory limits in workers
-
-A session's `max_memory` is measured by the worker's allocator. The interpreter
-reports a graceful `MemoryError` after crossing the soft limit; a higher hard
-limit kills and replaces the worker if one allocation jumps too far between checkpoints.
-
-See [`limitations/resource_limits.md`](limitations/resource_limits.md) for what
-a host sees when a limit is exceeded, and `monty-alloc` for the allocator both
-the subprocess and WebAssembly workers run under.
-
-## PydanticAI Integration
-
-Monty will power code-mode in
-[Pydantic AI](https://github.com/pydantic/pydantic-ai). Instead of making
-sequential tool calls, the LLM writes Python code that calls your tools
-as functions and Monty executes it safely.
-
-```python test="skip"
-import asyncio
-import json
-
-import logfire
-from httpx import AsyncClient
-from pydantic_ai import Agent, RunContext
-from pydantic_ai.toolsets.code_mode import CodeModeToolset
-from pydantic_ai.toolsets.function import FunctionToolset
-from typing_extensions import TypedDict
-
-logfire.configure()
-logfire.instrument_pydantic_ai()
-
-
-class LatLng(TypedDict):
-    lat: float
-    lng: float
-
-
-weather_toolset: FunctionToolset[AsyncClient] = FunctionToolset()
-
-
-@weather_toolset.tool
-async def get_lat_lng(
-    ctx: RunContext[AsyncClient], location_description: str
-) -> LatLng:
-    """Get the latitude and longitude of a location."""
-    # NOTE: the response here will be random, and is not related to the location description.
-    r = await ctx.deps.get(
-        'https://demo-endpoints.pydantic.workers.dev/latlng',
-        params={'location': location_description},
-    )
-    r.raise_for_status()
-    return json.loads(r.content)
-
-
-@weather_toolset.tool
-async def get_temp(ctx: RunContext[AsyncClient], lat: float, lng: float) -> float:
-    """Get the temp at a location."""
-    # NOTE: the responses here will be random, and are not related to the lat and lng.
-    r = await ctx.deps.get(
-        'https://demo-endpoints.pydantic.workers.dev/number',
-        params={'min': 10, 'max': 30},
-    )
-    r.raise_for_status()
-    return float(r.text)
-
-
-@weather_toolset.tool
-async def get_weather_description(
-    ctx: RunContext[AsyncClient], lat: float, lng: float
-) -> str:
-    """Get the weather description at a location."""
-    # NOTE: the responses here will be random, and are not related to the lat and lng.
-    r = await ctx.deps.get(
-        'https://demo-endpoints.pydantic.workers.dev/weather',
-        params={'lat': lat, 'lng': lng},
-    )
-    r.raise_for_status()
-    return r.text
-
-
-agent = Agent(
-    'gateway/anthropic:claude-sonnet-4-5',
-    # toolsets=[weather_toolset],
-    toolsets=[CodeModeToolset(weather_toolset)],
-    deps_type=AsyncClient,
-)
-
-
-async def main():
-    async with AsyncClient() as client:
-        await agent.run('Compare the weather of London, Paris, and Tokyo.', deps=client)
-
-
-if __name__ == '__main__':
-    asyncio.run(main())
-```
-
-## Community Bindings
-
-- **Go**: [gomonty](https://github.com/ewhauser/gomonty/) - Go bindings for the Monty interpreter
-- **Dart/Flutter**: dart_monty [(github)](https://github.com/runyaga/dart_monty) [(pub.dev)](https://pub.dev/packages/dart_monty)- Dart/Flutter bindings for Monty
-
-# Alternatives
-
-There are generally two responses when you show people Monty:
-
-1. Oh my god, this solves so many problems, I want it.
-2. Why not X?
-
-Where X is some alternative technology. Oddly often these responses are combined, suggesting people have not yet found an alternative that works for them, but are incredulous that there's really no good alternative to creating an entire Python implementation from scratch.
-
-I'll try to run through the most obvious alternatives, and why they aren't right for what we wanted.
-
-NOTE: all these technologies are impressive and have widespread uses, this commentary on their limitations for our use case should not be seen as a criticism. Most of these solutions were not conceived with the goal of providing an LLM sandbox, which is why they're not necessarily great at it.
-
-| Tech               | Language completeness | Security     | Start latency | FOSS       | Setup complexity | File mounting  | Snapshotting |
-| ------------------ | --------------------- | ------------ | ------------- | ---------- | ---------------- | -------------- | ------------ |
-| Monty              | partial               | strict       | 0.06ms        | free / OSS | easy             | easy           | easy         |
-| Docker             | full                  | good         | 195ms         | free / OSS | intermediate     | easy           | intermediate |
-| Pyodide            | full                  | poor         | 2800ms        | free / OSS | intermediate     | easy           | hard         |
-| starlark-rust      | very limited          | good         | 1.7ms         | free / OSS | easy             | not available? | impossible?  |
-| WASI / Wasmer      | partial, almost full  | strict       | 66ms          | free \*    | intermediate     | easy           | intermediate |
-| sandboxing service | full                  | strict       | 1033ms        | not free   | intermediate     | hard           | intermediate |
-| YOLO Python        | full                  | non-existent | 0.1ms / 30ms  | free / OSS | easy             | easy / scary   | hard         |
-
-See [./scripts/startup_performance.py](scripts/startup_performance.py) for the script used to calculate the startup performance numbers.
-
-Details on each row below:
-
-### Monty
-
-- **Language completeness**: No class inheritance, limited stdlib, no third-party libraries
-- **Security**: Explicitly controlled filesystem, network, and env access, strict limits on execution time and memory usage
-- **Start latency**: Starts in microseconds
-- **Setup complexity**: just `pip install pydantic-monty` or `npm install @pydantic/monty`, ~4.5MB download
-- **File mounting**: Strictly controlled, see [#85](https://github.com/pydantic/monty/pull/85)
-- **Snapshotting**: Monty's pause and resume functionality with `dump()` and `load()` makes it trivial to pause, resume and fork execution
-
-### Docker
-
-- **Language completeness**: Full CPython with any library
-- **Security**: Process and filesystem isolation, network policies, but container escapes exist, memory limitation is possible
-- **Start latency**: Container startup overhead (~195ms measured)
-- **Setup complexity**: Requires Docker daemon, container images, orchestration, `python:3.14-alpine` is 50MB - docker can't be installed from PyPI
-- **File mounting**: Volume mounts work well
-- **Snapshotting**: Possible with durable execution solutions like Temporal, or snapshotting an image and saving it as a Docker image.
-
-### Pyodide
-
-- **Language completeness**: Full CPython compiled to WASM, almost all libraries available
-- **Security**: Relies on browser/WASM sandbox - not designed for server-side isolation, python code can run arbitrary code in the JS runtime, only deno allows isolation, memory limits are hard/impossible to enforce with deno
-- **Start latency**: WASM runtime loading is slow (~2800ms cold start)
-- **Setup complexity**: Need to load WASM runtime, handle async initialization, pyodide NPM package is ~12MB, deno is ~50MB - Pyodide can't be called with just PyPI packages
-- **File mounting**: Virtual filesystem via browser APIs
-- **Snapshotting**: Possible with durable execution solutions like Temporal presumably, but hard
-
-### starlark-rust
-
-See [starlark-rust](https://github.com/facebook/starlark-rust).
-
-- **Language completeness**: Configuration language, not Python - no classes, exceptions, async
-- **Security**: Deterministic and hermetic by design
-- **Start latency**: runs embedded in the process like Monty, hence impressive startup time
-- **Setup complexity**: Usable in python via [starlark-pyo3](https://github.com/inducer/starlark-pyo3)
-- **File mounting**: No file handling by design AFAIK?
-- **Snapshotting**: Impossible AFAIK?
-
-### WASI / Wasmer
-
-Running Python in WebAssembly via [Wasmer](https://wasmer.io/).
-
-- **Language completeness**: Full CPython, pure Python external packages work via mounting, external packages with C bindings don't work
-- **Security**: In principle WebAssembly should provide strong sandboxing guarantees.
-- **Start latency**: The [wasmer](https://pypi.org/project/wasmer/) python package hasn't been updated for 3 years and I couldn't find docs on calling Python in wasmer from Python, so I called it via subprocess. Start latency was 66ms.
-- **Setup complexity**: wasmer download is 100mb, the "python/python" package is 50mb.
-- **FOSS**: I marked this as "free \*" since the cost is zero but not everything seems to be open source. As of 2026-02-10 the [`python/python` wasmer package](https://wasmer.io/python/python) package has no readme, no license, no source link and no indication of how it's built, the recently uploaded versions show size as "0B" although the download is ~50MB - the build process for the Python binary is not clear and transparent. _(If I'm wrong here, please create an issue to correct me)_
-- **File mounting**: Supported
-- **Snapshotting**: Supported via journaling
-
-### sandboxing service
-
-Services like [Daytona](https://daytona.io), [E2B](https://e2b.dev), [Modal](https://modal.com).
-
-There are similar challenges, more setup complexity but lower network latency for setting up your own sandbox setup with k8s.
-
-- **Language completeness**: Full CPython with any library
-- **Security**: Professionally managed container isolation
-- **Start latency**: Network round-trip and container startup time. I got ~1s cold start time with Daytona EU from London, Daytona advertise sub 90ms latency, presumably that's for an existing container, not clear if it includes network latency
-- **FOSS**: Pay per execution or compute time, some implementations are open source
-- **Setup complexity**: API integration, auth tokens - fine for startups but generally a non-start for enterprises
-- **File mounting**: Upload/download via API calls
-- **Snapshotting**: Possible with durable execution solutions like Temporal, also the services offer some solutions for this, I think based on docker containers
-
-### YOLO Python
-
-Running Python directly via `exec()` (~0.1ms) or subprocess (~30ms).
-
-- **Language completeness**: Full CPython with any library
-- **Security**: None - full filesystem, network, env vars, system commands
-- **Start latency**: Near-zero for `exec()`, ~30ms for subprocess
-- **Setup complexity**: None
-- **File mounting**: Direct filesystem access (that's the problem)
-- **Snapshotting**: Possible with durable execution solutions like Temporal
+`nutrition` ran on the host and the sandbox saw only its return value.
+
+## Documentation
+
+- [Introduction](https://pydantic.dev/docs/monty/) with the latency measurements
+- [Comparison to alternatives](https://pydantic.dev/docs/monty/reference/alternatives/): Docker, Pyodide, WASI,
+    sandboxing services
+- Getting started with [Python](https://pydantic.dev/docs/monty/quickstart/python/),
+    [JavaScript](https://pydantic.dev/docs/monty/quickstart/javascript/) or
+    [Rust](https://pydantic.dev/docs/monty/quickstart/rust/)
+- [Security model](https://pydantic.dev/docs/monty/concepts/security/), [resource
+    limits](https://pydantic.dev/docs/monty/concepts/resource-limits/),
+    [snapshots](https://pydantic.dev/docs/monty/concepts/snapshots/), [the Python
+    subset](https://pydantic.dev/docs/monty/limitations/)
+- [`docs/`](./docs): the source of the documentation site
+
+Monty runs [Code Mode](https://pydantic.dev/docs/ai/harness/code-mode/) in [Pydantic
+AI](https://github.com/pydantic/pydantic-ai).
+Community bindings: [gomonty](https://github.com/ewhauser/gomonty/) (Go) and
+[dart_monty](https://github.com/runyaga/dart_monty) (Dart / Flutter).
 
 ## Part of the Pydantic Stack
 
 The Pydantic Stack is everything you need to ship production-grade AI agents:
 
-- [Pydantic AI](https://pydantic.dev/pydantic-ai?utm_source=github&utm_medium=readme&utm_campaign=monty) - Type-safe agent framework
-- [Pydantic Logfire](https://pydantic.dev/logfire?utm_source=github&utm_medium=readme&utm_campaign=monty) - AI-first, full-stack observability
-- [Logfire AI Gateway](https://pydantic.dev/ai-gateway?utm_source=github&utm_medium=readme&utm_campaign=monty) - Unified LLM proxy
+- [Pydantic AI](https://pydantic.dev/pydantic-ai?utm_source=github&utm_medium=readme&utm_campaign=monty) - Type-safe
+    agent framework
+- [Pydantic Logfire](https://pydantic.dev/logfire?utm_source=github&utm_medium=readme&utm_campaign=monty) - AI-first,
+    full-stack observability
+- [Logfire AI Gateway](https://pydantic.dev/ai-gateway?utm_source=github&utm_medium=readme&utm_campaign=monty) - Unified
+    LLM proxy

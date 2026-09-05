@@ -288,6 +288,7 @@ export interface ConfigureRequest {
   assertMessageAnnotations?: number
   typeCheckFormat: TypeCheckFormat
   typeCheckColor: boolean
+  printFlushIntervalMs?: number
 }
 export interface FeedRequest {
   code: string

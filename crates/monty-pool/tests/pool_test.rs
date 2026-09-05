@@ -7,7 +7,9 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 #[cfg(windows)]
 use std::os::windows::fs::symlink_dir;
 use std::{
-    env, fs,
+    env,
+    fmt::Write as _,
+    fs,
     future::ready,
     io,
     path::{Path, PathBuf},
@@ -964,6 +966,188 @@ async fn inputs_and_prints() {
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(5));
     assert_eq!(output, "hello monty\n");
+    session.finish().await.unwrap();
+}
+
+/// A loop of small prints must not cost one `Print` event each: the worker
+/// batches them by size and elapsed time, which is what keeps the parent's
+/// per-event work (telemetry included) proportional to output rather than to
+/// how often the sandbox called `print()`.
+#[tokio::test]
+async fn prints_are_batched_into_few_events() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let mut output = String::new();
+    let mut events = 0;
+    let event = session
+        .feed(
+            "for i in range(2000):\n    print(i)",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| {
+                events += 1;
+                output.push_str(text);
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::None);
+    let mut expected = String::new();
+    for i in 0..2000 {
+        writeln!(expected, "{i}").unwrap();
+    }
+    assert_eq!(output, expected);
+    assert!(
+        events < 200,
+        "expected far fewer than one event per print, got {events}"
+    );
+    session.finish().await.unwrap();
+}
+
+/// The size threshold still bounds a chunk when the interval never expires:
+/// one huge write is split into ~8 KiB events rather than buffered whole. This
+/// is also what keeps the buffer below the threshold on entry to each write, so
+/// its remaining-room arithmetic cannot underflow.
+#[tokio::test]
+async fn one_huge_write_is_split_at_the_size_threshold() {
+    const FLUSH_BYTES: usize = 8 * 1024;
+    let pool = Pool::new(config()).await.unwrap();
+    // an interval nothing will reach, so only the size threshold can flush
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::from_secs(600)),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let mut chunks: Vec<usize> = Vec::new();
+    let mut total = 0;
+    session
+        .feed(
+            "print('x' * 100_000, end='')",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| {
+                chunks.push(text.len());
+                total += text.len();
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(total, 100_000);
+    assert!(chunks.len() > 1, "expected the write to be split, got {chunks:?}");
+    assert!(
+        chunks.iter().all(|len| *len <= FLUSH_BYTES),
+        "every chunk must stay within the threshold, got {chunks:?}"
+    );
+    session.finish().await.unwrap();
+}
+
+/// A zero interval turns the timer off and restores line buffering, for a host
+/// that wants each completed line delivered on its own.
+#[tokio::test]
+async fn zero_flush_interval_delivers_one_event_per_line() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::ZERO),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let mut lines = Vec::new();
+    session
+        .feed(
+            "for i in range(20):\n    print(i)",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| lines.push(text.to_owned())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(lines.len(), 20);
+    assert_eq!(lines[0], "0\n");
+    assert_eq!(lines[19], "19\n");
+    session.finish().await.unwrap();
+}
+
+/// With the timer off the contract is one event per *completed line*, not one
+/// per write: a single `print()` carrying embedded newlines must still arrive
+/// as one event per line.
+#[tokio::test]
+async fn zero_flush_interval_splits_embedded_newlines() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::ZERO),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let mut events = Vec::new();
+    session
+        .feed(
+            r#"print("a\nb")"#,
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| events.push(text.to_owned())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events, vec!["a\n".to_owned(), "b\n".to_owned()]);
+    session.finish().await.unwrap();
+}
+
+/// Output must not sit in the worker's buffer while the program computes in
+/// silence: the interpreter polls the writer at its dispatch checkpoints, so a
+/// line printed before a long stretch of quiet work is released on its own
+/// rather than waiting for the next print.
+#[tokio::test]
+async fn silence_releases_buffered_output() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::from_millis(1)),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let mut events: Vec<String> = Vec::new();
+    session
+        .feed(
+            // the loop is far longer than the 1ms interval in any build
+            "print('first')\nt = 0\nfor i in range(200_000):\n    t += i\nprint('second')",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| events.push(text.to_owned())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events.first().map(String::as_str), Some("first\n"));
+    assert_eq!(events.concat(), "first\nsecond\n");
+    session.finish().await.unwrap();
+}
+
+/// Batching must never reorder output against the suspension that follows it:
+/// the worker drains its buffer before every turn-ending event, so a print
+/// made just before a host call still arrives before the call is announced.
+#[tokio::test]
+async fn buffered_output_is_flushed_before_a_suspension() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let mut output = String::new();
+    let event = session
+        .feed(
+            "print('before')\nask()",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| output.push_str(text)),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(event, TurnEvent::FunctionCall { ref function_name, .. } if function_name == "ask"),
+        "expected a call suspension, got {event:?}"
+    );
+    assert_eq!(output, "before\n");
     session.finish().await.unwrap();
 }
 
@@ -1944,6 +2128,71 @@ async fn dump_survives_worker_death_and_loads_elsewhere() {
         .await
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(42));
+    restored.finish().await.unwrap();
+}
+
+/// Zero is the explicit line-buffering sentinel, so a positive interval must
+/// never round down into it. 100 prints would arrive as 100 events if the
+/// sub-millisecond interval had truncated to zero; any batching at all proves
+/// the timer is still on.
+#[tokio::test]
+async fn a_sub_millisecond_interval_does_not_become_line_buffering() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::from_micros(400)),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let mut events = 0usize;
+    session
+        .feed(
+            "for i in range(100):\n    print(i)",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, _: &str| events += 1),
+        )
+        .await
+        .unwrap();
+    assert!(events < 100, "expected batching, got one event per line ({events})");
+    session.finish().await.unwrap();
+}
+
+/// A `Load` restores the repl without materializing the checkout's stored
+/// `Configure`, so the print flush interval has to be adopted when that config
+/// arrives — otherwise a restored session silently falls back to the default
+/// and ignores the line buffering its host asked for.
+#[tokio::test]
+async fn a_restored_session_honors_its_checkout_flush_interval() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    session
+        .feed("base = 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    let state = session.dump().await.unwrap();
+    drop(session);
+
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::ZERO),
+        ..ReplConfig::default()
+    };
+    let mut restored = pool.checkout(&repl).await.unwrap();
+    restored.restore(state, vec![], &mut no_print).await.unwrap();
+    let mut lines = Vec::new();
+    restored
+        .feed(
+            "for i in range(20):\n    print(base + i)",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| lines.push(text.to_owned())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(lines.len(), 20);
+    assert_eq!(lines[0], "1\n");
+    assert_eq!(lines[19], "20\n");
     restored.finish().await.unwrap();
 }
 

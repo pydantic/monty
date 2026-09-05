@@ -7,7 +7,10 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropWithContext, HeapId, HeapRead},
-    types::{itertools::ItertoolsIter, tuple::allocate_tuple},
+    types::{
+        itertools::{ItertoolsIter, step::next_source},
+        tuple::allocate_tuple,
+    },
     value::Value,
 };
 
@@ -102,12 +105,7 @@ fn drive_source<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> 
         return Ok(None);
     };
     defer_drop!(source, vm);
-    let item = {
-        let mut source_read = source.read(vm);
-        source_read.py_next(vm)
-    };
-
-    if let Some(item) = item? {
+    if let Some(item) = next_source(source, vm)? {
         Ok(Some(item))
     } else {
         let ItertoolsIter::Pairwise(pairwise) = iter.get_mut(vm.heap) else {

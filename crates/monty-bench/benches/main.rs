@@ -7,7 +7,7 @@ use std::time::Duration;
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
-use monty::MontyRun;
+use monty::{MontyRepl, MontyRun};
 use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
@@ -467,6 +467,27 @@ fn parse_1k_assigns(bench: &mut Bencher) {
     });
 }
 
+/// Feeds a trivial snippet into a REPL session that has already run 2,000
+/// snippets (a mix of function definitions and assignments, so the intern,
+/// function and name tables are all large). Guards against per-feed cost
+/// scaling with session size: the session's tables must be moved into each
+/// snippet, never cloned, so this should cost the same as a fresh feed.
+fn repl_feed_after_2k_snippets(bench: &mut Bencher) {
+    let mut repl = MontyRepl::new("bench.py", ResourceTracker::default(), CompileOptions::default());
+    for i in 0..2_000 {
+        let code = if i % 2 == 0 {
+            format!("def func_{i}(a, b):\n    return a + b * {i}")
+        } else {
+            format!("value_{i} = 'literal {i}'")
+        };
+        repl.feed_run(&code, vec![], PrintWriter::Stdout).unwrap();
+    }
+    bench.iter(|| {
+        let r = repl.feed_run(black_box("1 + 1"), vec![], PrintWriter::Stdout).unwrap();
+        black_box(r);
+    });
+}
+
 /// Benchmarks end-to-end execution (parsing + running) using CPython.
 /// This is different from other benchmarks as it includes parsing in the loop.
 #[cfg(not(codspeed))]
@@ -499,6 +520,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     c.bench_function("end_to_end__monty", end_to_end_monty);
     c.bench_function("parse_1k_assigns__monty", parse_1k_assigns);
+    c.bench_function("repl_feed_after_2k_snippets__monty", repl_feed_after_2k_snippets);
     #[cfg(not(codspeed))]
     c.bench_function("end_to_end__cpython", end_to_end_cpython);
 

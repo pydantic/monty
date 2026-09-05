@@ -90,8 +90,22 @@ format-py: ## Format Python code - WARNING be careful about this command as it m
 format-js: install-js ## Format JS code with prettier
 	cd crates/monty-js && npm run format
 
+# tracked markdown, minus the vendored typeshed, the `.macroscope/` config files that only
+# look like markdown, the AGENTS.md symlink (CLAUDE.md is formatted directly), and the crate
+# READMEs: rustdoc embeds those and clippy's `doc_overindented_list_items` rejects the
+# four-space list continuations mdformat-mkdocs writes
+MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macroscope/**' ':!:AGENTS.md' ':!:crates/*/README*.md')
+
+.PHONY: format-md
+format-md: ## Format markdown with mdformat (tables, mkdocs admonitions, frontmatter)
+	uv run mdformat $(MD_FILES)
+
+.PHONY: lint-md
+lint-md: ## Check markdown formatting with mdformat
+	uv run mdformat --check $(MD_FILES)
+
 .PHONY: format
-format: format-rs format-py format-js ## Format Rust code, this does not format Python code as we have to be careful with that
+format: format-rs format-py format-js format-md ## Format Rust code, this does not format Python code as we have to be careful with that
 
 .PHONY: lint-rs
 lint-rs:  ## Lint Rust code with clippy and import checks
@@ -126,7 +140,7 @@ lint-py: dev-py ## Lint Python code with ruff
 	uv run -m mypy.stubtest pydantic_monty._monty --ignore-disjoint-bases
 
 .PHONY: lint
-lint: lint-rs lint-py ## Lint the code with ruff and clippy
+lint: lint-rs lint-py lint-md ## Lint the code with ruff, clippy and mdformat
 
 .PHONY: test-no-features
 test-no-features: ## Run rust tests without any features enabled
@@ -162,7 +176,7 @@ test-type-checking: ## Run rust tests on monty-type-checking
 .PHONY: test-subprocess
 test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
 	cargo build -p monty-runtime
-	cargo test -p monty-proto -p monty-runtime -p monty-pool
+	cargo test -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
 
 .PHONY: pytest
 pytest: ## Run Python tests with pytest

@@ -142,6 +142,15 @@ def make_adder():
     return add
 
 
+def make_concat():
+    bound = []
+
+    def concat(a, b):
+        return a + b + bound
+
+    return concat
+
+
 def make_boom():
     bound = [1]
 
@@ -218,5 +227,64 @@ drop_source = iter([[], [1]])
 past_drop = itertools.dropwhile(drop_pred, drop_source)
 assert next(past_drop) == [1]
 
+
+# The batch-three adaptors. `accumulate` has THREE edges — source, callable and
+# the running total. Two steps are needed for the total edge: the first stores
+# the source's own item untouched, and only the second folds one in to produce a
+# list the adaptor alone names.
+acc_live = itertools.accumulate([[1], [2]], make_concat())
+next(acc_live)
+next(acc_live)
+bat_live = itertools.batched([[1], [2]], 1)
+next(bat_live)
+zip_live = itertools.zip_longest([[1]], [[2], [3]])
+next(zip_live)
+
+# `zip_longest`'s fillvalue is a second edge, named only through the adaptor,
+# and is reached once a shorter source has run out.
+fill_live = itertools.zip_longest([[1]], [[2], [3]], fillvalue=[9])
+next(fill_live)
+next(fill_live)
+
+# The freeing paths: `py_dec_ref_ids` runs only on release, so each of these
+# must be dropped rather than merely held.
+gone_acc = itertools.accumulate([[1], [2]], make_concat())
+next(gone_acc)
+next(gone_acc)
+gone_acc = None
+gone_bat = itertools.batched([[1], [2]], 1)
+next(gone_bat)
+gone_bat = None
+gone_zip = itertools.zip_longest([[1]], [[2]], fillvalue=[9])
+next(gone_zip)
+gone_zip = None
+
+# Spending releases what can no longer be reached, THERE AND THEN. `batched`
+# clears its source on the empty batch that ends it, and `zip_longest` clears
+# each source as it runs out, so both counts fall to 1 while the adaptor lives.
+bat_source = iter([[1], [2]])
+spent_bat = itertools.batched(bat_source, 2)
+assert list(spent_bat) == [([1], [2])]
+zip_source = iter([[1]])
+spent_zip = itertools.zip_longest(zip_source)
+assert list(spent_zip) == [([1],)]
+
+# Arguments the constructors only inspect are released too. `batched` truth-tests
+# `strict` without storing it, and a heap-backed one is the only shape that shows
+# an over-count — an inline `strict=True` is not a ref at all.
+strict_flag = [1]
+inspected_bat = itertools.batched('AB', 2, strict=strict_flag)
+
+# `zip_longest` resolves every argument eagerly, so a non-iterable part-way along
+# has to release the ones already resolved AND the ones never reached. The bad
+# argument goes in the MIDDLE: put it last and the untouched tail is empty.
+zip_resolved = [1]
+zip_unreached = [2]
+try:
+    itertools.zip_longest(zip_resolved, 5, zip_unreached)
+    assert False, 'expected zip_longest to reject a non-iterable'
+except TypeError:
+    pass
+
 len('done')
-# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1, 'take_live': 1, 'drop_live': 1, 'filter_live': 1, 'star_live': 1, 'filter_none': 1, 'rejected': 1, 'pred_erroring': 1, 'star_erroring': 1, 'take_pred': 1, 'take_source': 1, 'latched_take': 1, 'drop_pred': 2, 'drop_source': 2, 'past_drop': 1}
+# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1, 'take_live': 1, 'drop_live': 1, 'filter_live': 1, 'star_live': 1, 'filter_none': 1, 'rejected': 1, 'pred_erroring': 1, 'star_erroring': 1, 'take_pred': 1, 'take_source': 1, 'latched_take': 1, 'drop_pred': 2, 'drop_source': 2, 'past_drop': 1, 'fill_live': 1, 'zip_live': 1, 'bat_live': 1, 'acc_live': 1, 'bat_source': 1, 'spent_zip': 1, 'spent_bat': 1, 'zip_source': 1, 'strict_flag': 1, 'inspected_bat': 1, 'zip_resolved': 1, 'zip_unreached': 1}

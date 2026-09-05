@@ -938,6 +938,19 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::value_error("Indices for islice() must be None or an integer: 0 <= x <= sys.maxsize.")
     }
 
+    /// Creates the ValueError `itertools.batched` raises when `n` is below one.
+    #[must_use]
+    fn batched_bad_n() -> RunError {
+        Self::value_error("n must be at least one")
+    }
+
+    /// Creates the ValueError `itertools.batched(..., strict=True)` raises when
+    /// the source runs out part-way through a batch.
+    #[must_use]
+    fn batched_incomplete() -> RunError {
+        Self::value_error("batched(): incomplete batch")
+    }
+
     /// Creates the ValueError `itertools.islice` raises for a non-positive or
     /// non-integer `step`.
     #[must_use]

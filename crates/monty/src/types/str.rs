@@ -4,7 +4,7 @@ use std::{cell::Cell, fmt::Write, ops};
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
-use monty_types::ResourceError;
+use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use ruff_python_stdlib::{identifiers::is_identifier, keyword::is_keyword};
 use smallvec::smallvec;
@@ -22,6 +22,7 @@ use crate::{
     },
     intern::{Interns, StaticStrings, StringId},
     resource_checks::{check_repeat_size, check_replace_size},
+    str_format::str_format,
     string_builder::StringBuilder,
     types::{
         LazyHeapSet, Type,
@@ -393,6 +394,25 @@ pub fn call_str_method(s: &str, method_id: StringId, args: ArgValues, vm: &mut V
     call_str_method_impl(&vm.heap.protect(s), method, args, vm)
 }
 
+const FORMAT_TEMPLATE_COPY_CHUNK: usize = 64 * 1024;
+
+fn copy_format_template(template: &str, tracker: &ResourceTracker) -> RunResult<String> {
+    tracker.check_time()?;
+    let mut copy = StringBuilder::with_capacity(template.len(), tracker)?;
+    let mut start = 0;
+    while start < template.len() {
+        tracker.check_time()?;
+        let mut end = start.saturating_add(FORMAT_TEMPLATE_COPY_CHUNK).min(template.len());
+        while !template.is_char_boundary(end) {
+            end -= 1;
+        }
+        copy.push_str(&template[start..end])?;
+        start = end;
+    }
+    tracker.check_time()?;
+    copy.finish_raw()
+}
+
 /// Dispatches a method call on a string value.
 ///
 /// This is the unified implementation for string method calls, used by both:
@@ -403,10 +423,7 @@ pub fn call_str_method(s: &str, method_id: StringId, args: ArgValues, vm: &mut V
 ///
 /// The following Python string methods are not yet implemented:
 ///
-/// - `format()` - Requires implementing the format spec mini-language (PEP 3101),
-///   which is complex and involves parsing format specifications like `{:>10.2f}`.
-/// - `format_map(mapping)` - Similar to `format()` but takes a mapping; depends on
-///   `format()` implementation.
+/// - `format_map(mapping)` - Mapping-only variant of `format()`.
 /// - `maketrans()` / `translate()` - Character translation tables; moderate complexity,
 ///   requires building and applying Unicode translation maps.
 /// - `expandtabs(tabsize=8)` - Tab expansion; simple but rarely used in practice.
@@ -508,6 +525,16 @@ fn call_str_method_impl<'h>(
         StaticStrings::Rjust => str_rjust(s, args, vm),
         StaticStrings::Zfill => str_zfill(s, args, vm),
         StaticStrings::Expandtabs => str_expandtabs(s, args, vm),
+        StaticStrings::Format => {
+            let template = match copy_format_template(s.get(vm.heap), &vm.heap.tracker) {
+                Ok(template) => template,
+                Err(error) => {
+                    args.drop_with(vm);
+                    return Err(error);
+                }
+            };
+            str_format(&template, args, vm)
+        }
         // Additional methods
         StaticStrings::Encode => str_encode(s, args, vm),
         StaticStrings::Isidentifier => {

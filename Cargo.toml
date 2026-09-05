@@ -24,7 +24,7 @@ default-members = ["crates/monty-runtime"]
 
 [workspace.package]
 edition = "2024"
-version = "0.0.21"
+version = "0.0.22"
 rust-version = "1.95"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
@@ -60,15 +60,15 @@ strip = false
 # rejects path-only dependencies). These versions MUST be kept in lockstep with
 # `workspace.package.version` above and bumped together on each release — see
 # RELEASING.md.
-monty = { path = "crates/monty", version = "0.0.21" }
-monty-types = { path = "crates/monty-types", version = "0.0.21" }
-monty-alloc = { path = "crates/monty-alloc", version = "0.0.21" }
-monty-fs = { path = "crates/monty-fs", version = "0.0.21" }
-monty-macros = { path = "crates/monty-macros", version = "0.0.21" }
-monty-proto = { path = "crates/monty-proto", version = "0.0.21" }
-monty-pool = { path = "crates/monty-pool", version = "0.0.21" }
-monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.21" }
-monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.21" }
+monty = { path = "crates/monty", version = "0.0.22" }
+monty-types = { path = "crates/monty-types", version = "0.0.22" }
+monty-alloc = { path = "crates/monty-alloc", version = "0.0.22" }
+monty-fs = { path = "crates/monty-fs", version = "0.0.22" }
+monty-macros = { path = "crates/monty-macros", version = "0.0.22" }
+monty-proto = { path = "crates/monty-proto", version = "0.0.22" }
+monty-pool = { path = "crates/monty-pool", version = "0.0.22" }
+monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.22" }
+monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.22" }
 # ruff, ty and related crates
 ruff_python_parser = "0.0.9"
 ruff_python_stdlib = "0.0.9"
@@ -157,8 +157,11 @@ rustls = { version = "0.23", features = ["aws_lc_rs"] }
 # Async runtime. Only the version is pinned here — tokio has no default
 # features and each consumer needs a very different slice of it.
 tokio = { version = "1" }
-# Feature-free: monty-pool builds spans only, while monty-runtime adds its exporter.
+# Feature-free: monty-pool builds telemetry only, while monty-runtime adds its network exporter.
 logfire = { version = "0.12", default-features = false }
+# Canonical OTLP batches cross the Python and Node extension boundaries after
+# Rust's metrics SDK has aggregated them.
+opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "metrics"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

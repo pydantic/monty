@@ -3,6 +3,8 @@
 //! The REPL session keeps heap/global namespace state between snippets and executes
 //! only the newly fed snippet each time.
 
+use std::fmt::Write;
+
 use insta::assert_snapshot;
 #[cfg(feature = "test-hooks")]
 use monty::FunctionMetadataFault;
@@ -588,6 +590,124 @@ fn repl_feed_start_restores_comprehension_slots_after_runtime_error() {
     assert_eq!(call.function_name, "foo");
     assert!(call.args.is_empty());
     let _repl = call.into_repl();
+}
+
+/// A snippet that rebinds existing globals to a fresh literal and function
+/// before suspending, then gets abandoned, must leave those globals usable:
+/// the ids they now hold were appended by the abandoned snippet.
+#[test]
+fn repl_abandoned_snippet_keeps_rebound_globals_usable() {
+    const REBIND: &str = "x = 'rebound literal'\ndef f():\n    return 2\next_fn()";
+    let check = |mut repl: MontyRepl| {
+        assert_eq!(
+            feed_run_print(&mut repl, "x").unwrap(),
+            MontyObject::String("rebound literal".to_owned())
+        );
+        assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(2));
+        // A new definition must not collide with the abandoned snippet's ids.
+        feed_run_print(&mut repl, "def g():\n    return f() + 1").unwrap();
+        assert_eq!(feed_run_print(&mut repl, "g()").unwrap(), MontyObject::Int(3));
+    };
+
+    let (repl, _) = init_repl("x = 'old'\ndef f():\n    return 1");
+    let progress = repl.feed_start(REBIND, vec![], PrintWriter::Stdout).unwrap();
+    check(
+        progress
+            .into_function_call()
+            .expect("expected function call")
+            .into_repl(),
+    );
+
+    let (repl, _) = init_repl("x = 'old'\ndef f():\n    return 1");
+    let progress = repl.feed_start(REBIND, vec![], PrintWriter::Stdout).unwrap();
+    check(round_trip_progress(&progress).into_repl());
+
+    let (repl, _) = init_repl("x = 'old'\ndef f():\n    return 1\nasync def main():\n    await ext_fn()");
+    let progress = repl
+        .feed_start(
+            "x = 'rebound literal'\ndef f():\n    return 2\nawait main()",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let call = progress.into_function_call().expect("expected function call");
+    let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+    check(
+        progress
+            .into_resolve_futures()
+            .expect("expected resolve futures")
+            .into_repl(),
+    );
+}
+
+/// Snippets that fail before running (syntax error, compile error, invalid
+/// input) leave the session's earlier definitions callable and later
+/// definitions working — the tables are handed back, not lost.
+#[test]
+fn repl_failed_snippets_keep_session_tables() {
+    let (mut repl, _) = init_repl("def f():\n    return 1");
+
+    let err = feed_run_print(&mut repl, "def g(:").unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(1));
+
+    let err = feed_run_print(&mut repl, "__name__ = 'x'").unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(1));
+
+    let err = repl
+        .feed_run(
+            "bad",
+            vec![("bad".to_owned(), MontyObject::Repr("bad".to_owned()))],
+            PrintWriter::Stdout,
+        )
+        .unwrap_err();
+    assert_eq!(
+        err.message(),
+        Some("invalid input type: 'Repr' is not a valid input value")
+    );
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(1));
+
+    feed_run_print(&mut repl, "def h():\n    return f() + 1").unwrap();
+    assert_eq!(feed_run_print(&mut repl, "h()").unwrap(), MontyObject::Int(2));
+
+    let err = repl
+        .feed_start("def g(:", vec![], PrintWriter::Stdout)
+        .expect_err("expected syntax error");
+    assert_eq!(err.error.exc_type(), ExcType::SyntaxError);
+    let mut repl = err.repl;
+    assert_eq!(feed_run_print(&mut repl, "h()").unwrap(), MontyObject::Int(2));
+}
+
+/// A snippet rejected at compile time, after prepare has allocated its
+/// global slots and the compiler has emitted its functions, must not consume
+/// those `u16` ids. One successful snippet takes the session to within a few
+/// ids of both caps, so a handful of rejected snippets would overflow them
+/// if their ids leaked — cheaper than 65k feeds, and just as conclusive.
+#[test]
+fn repl_rejected_snippets_do_not_consume_slots_or_function_ids() {
+    const HEADROOM: usize = 8;
+    let mut prefill = String::new();
+    for i in 0..usize::from(u16::MAX) + 1 - HEADROOM {
+        write!(prefill, "def g_{i}():\n    pass\n").unwrap();
+    }
+    let (mut repl, _) = init_repl(&prefill);
+
+    // Each would take four slots (input, function, global, `__name__`) and a
+    // function id; a second rejection would overflow if the first one leaked.
+    for i in 0..4 * HEADROOM {
+        let code = format!("def bad_{i}():\n    pass\nname_{i} = 1\n__name__ = 'x'");
+        let err = repl
+            .feed_run(
+                &code,
+                vec![(format!("input_{i}"), MontyObject::Int(1))],
+                PrintWriter::Stdout,
+            )
+            .unwrap_err();
+        assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    }
+    feed_run_print(&mut repl, "def h():\n    return g_0() is None\nok = h()").unwrap();
+    assert_eq!(feed_run_print(&mut repl, "ok").unwrap(), MontyObject::Bool(true));
 }
 
 #[test]

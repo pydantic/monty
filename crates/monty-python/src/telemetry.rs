@@ -1,4 +1,4 @@
-//! Bridge from Monty's shared telemetry processor into an adapter installed by Python Logfire.
+//! Bridge from Monty's statically linked Logfire pipeline into Python Logfire.
 
 use std::{
     sync::{
@@ -8,8 +8,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use monty_pool::telemetry_adapter::{
-    TELEMETRY_ADAPTER_VERSION, TelemetryAdapter, TelemetryAdapterHandle, TelemetryContext, configure_telemetry_adapter,
+use monty_pool::telemetry::{
+    Metrics, TELEMETRY_ADAPTER_VERSION, TelemetryAdapter, TelemetryAdapterHandle, TelemetryContext,
+    configure_telemetry_adapter,
 };
 use opentelemetry::{
     Array, KeyValue, Value,
@@ -23,7 +24,7 @@ use pyo3::{
     types::{PyBytes, PyDict, PyList, PyTuple},
 };
 
-/// Installed bridge and exporter-free Rust Logfire pipeline.
+/// Installed bridge and process-global Rust Logfire pipeline.
 struct InstalledBridge {
     bridge: Arc<PythonBridge>,
     handle: TelemetryAdapterHandle,
@@ -32,7 +33,12 @@ struct InstalledBridge {
 /// Python callback implementing the host side of the shared adapter.
 struct PythonBridge {
     adapter: Py<PyAny>,
-    disabled: AtomicBool,
+    /// Whether span and log delivery has failed.
+    tracing_disabled: AtomicBool,
+    /// Whether metric delivery has failed.
+    metrics_disabled: AtomicBool,
+    /// Whether the adapter accepts aggregate OTLP metric batches.
+    metrics: OnceLock<bool>,
 }
 
 static BRIDGE: OnceLock<InstalledBridge> = OnceLock::new();
@@ -47,7 +53,9 @@ pub(crate) fn _install_telemetry_adapter(version: u8, adapter: Py<PyAny>) -> PyR
     }
     let bridge = Arc::new(PythonBridge {
         adapter,
-        disabled: AtomicBool::new(false),
+        tracing_disabled: AtomicBool::new(false),
+        metrics_disabled: AtomicBool::new(false),
+        metrics: OnceLock::new(),
     });
     let handle = configure_telemetry_adapter(Arc::clone(&bridge) as Arc<dyn TelemetryAdapter>)
         .map_err(|err| PyRuntimeError::new_err(format!("failed to configure Monty telemetry: {err}")))?;
@@ -56,16 +64,34 @@ pub(crate) fn _install_telemetry_adapter(version: u8, adapter: Py<PyAny>) -> PyR
         .map_err(|_| PyRuntimeError::new_err("Monty telemetry is already configured"))
 }
 
+/// Flushes the extension's Rust telemetry pipeline into the Python adapter.
+#[pyfunction]
+pub(crate) fn _flush_telemetry(py: Python<'_>) -> PyResult<()> {
+    if let Some(installed) = BRIDGE.get() {
+        py.detach(|| installed.handle.force_flush())
+            .map_err(|err| PyRuntimeError::new_err(format!("failed to flush Monty telemetry: {err}")))?;
+    }
+    Ok(())
+}
+
+/// The pool metrics handle, when an adapter is installed.
+///
+/// Unlike [`capture_telemetry_context`] this is not per-checkout: metrics are
+/// pool-wide, so it is read once when a pool is configured.
+pub(crate) fn pool_metrics() -> Option<Metrics> {
+    BRIDGE.get().map(|installed| installed.handle.metrics())
+}
+
 /// Captures serializable distributed context while Python contextvars are active.
 pub(crate) fn capture_telemetry_context(py: Python<'_>) -> Option<TelemetryContext> {
     let installed = BRIDGE.get()?;
-    if installed.bridge.disabled.load(Ordering::Relaxed) {
+    if installed.bridge.tracing_disabled.load(Ordering::Relaxed) {
         return None;
     }
     let value = match installed.bridge.adapter.bind(py).call_method0("capture_context") {
         Ok(value) => value,
         Err(err) => {
-            installed.bridge.disabled.store(true, Ordering::Relaxed);
+            installed.bridge.tracing_disabled.store(true, Ordering::Relaxed);
             err.write_unraisable(py, Some(installed.bridge.adapter.bind(py)));
             return None;
         }
@@ -88,7 +114,7 @@ pub(crate) fn capture_telemetry_context(py: Python<'_>) -> Option<TelemetryConte
     match context {
         Ok(context) => Some(context),
         Err(err) => {
-            installed.bridge.disabled.store(true, Ordering::Relaxed);
+            installed.bridge.tracing_disabled.store(true, Ordering::Relaxed);
             err.write_unraisable(py, Some(installed.bridge.adapter.bind(py)));
             None
         }
@@ -168,18 +194,46 @@ impl TelemetryAdapter for PythonBridge {
             Ok(())
         });
     }
+
+    fn export_metrics(&self, payload: &[u8]) {
+        if self.metrics_disabled.load(Ordering::Relaxed) {
+            return;
+        }
+        // The periodic reader can outlive Python during interpreter shutdown.
+        let _ = Python::try_attach(|py| {
+            let adapter = self.adapter.bind(py);
+            let supports_metrics = if let Some(supports_metrics) = self.metrics.get() {
+                *supports_metrics
+            } else {
+                let supports_metrics = match adapter.hasattr("export_metrics") {
+                    Ok(supports_metrics) => supports_metrics,
+                    Err(err) => {
+                        self.metrics_disabled.store(true, Ordering::Relaxed);
+                        err.write_unraisable(py, Some(adapter));
+                        return;
+                    }
+                };
+                let _ = self.metrics.set(supports_metrics);
+                *self.metrics.get().expect("metrics capability was just initialized")
+            };
+            if supports_metrics && let Err(err) = adapter.call_method1("export_metrics", (PyBytes::new(py, payload),)) {
+                self.metrics_disabled.store(true, Ordering::Relaxed);
+                err.write_unraisable(py, Some(adapter));
+            }
+        });
+    }
 }
 
 impl PythonBridge {
     /// Invokes the adapter without allowing failures to affect sandbox execution.
     fn call(&self, f: impl FnOnce(Python<'_>, &Bound<'_, PyAny>) -> PyResult<()>) -> bool {
-        if self.disabled.load(Ordering::Relaxed) {
+        if self.tracing_disabled.load(Ordering::Relaxed) {
             return false;
         }
         Python::attach(|py| {
             let adapter = self.adapter.bind(py);
             if let Err(err) = f(py, adapter) {
-                self.disabled.store(true, Ordering::Relaxed);
+                self.tracing_disabled.store(true, Ordering::Relaxed);
                 err.write_unraisable(py, Some(adapter));
                 false
             } else {

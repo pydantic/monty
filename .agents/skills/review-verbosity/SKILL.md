@@ -18,14 +18,14 @@ so nothing outside `crates/` is missed — then review their edits yourself. A s
 over a large diff won't be exhaustive. In every comment the branch touched:
 
 - **Cut it down.** Comments and field docstrings rarely over 3 lines, mostly 1; function
-  and struct docstrings <= 5.
+    and struct docstrings \<= 5.
 - **Delete tautology** — restating what the code plainly says earns nothing.
 - **Delete narration** of the obvious, restated type signatures, how the code came to
-  be, hedging.
+    be, hedging.
 - **Keep the motivation** — why the code exists and its foot-guns are the valuable part.
-  Don't cut real information to hit a line count.
-- **Drop over-long examples.** Public items only, <= 8 lines, and every one must run in
-  tests — never `ignore`.
+    Don't cut real information to hit a line count.
+- **Drop over-long examples.** Public items only, \<= 8 lines, and every one must run in
+    tests — never `ignore`.
 - **Fix what's out of date.** A comment the branch made wrong gets corrected, not left.
 
 Python docstrings are markdown: single backticks, never RST double-backticks.

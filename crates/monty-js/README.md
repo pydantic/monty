@@ -284,8 +284,13 @@ session, before any feed; using the wrong one for a dump's kind throws.
 ## Print Output
 
 `printCallback` accepts a function or a host collector (`PrintTargetInput` in
-TypeScript). Output is line-buffered; without a callback it goes to the host
-process stdout/stderr.
+TypeScript); without a callback output goes to the host process stdout/stderr.
+
+The worker batches output rather than sending an event per `print()`, so a
+callback can receive several prints in one chunk, or one print in several.
+`printFlushInterval` on `checkout()` sets how long (in seconds) output may be
+held — 0.005 by default, or `0` to restore line buffering. Output is always
+flushed before a host call and before a feed ends.
 
 ```ts
 // Function form
@@ -493,12 +498,18 @@ workspace `target/` build (development).
 
 The Node-only Logfire integration installs a version-1 adapter through
 `_installTelemetryAdapter(1, adapter)`. At checkout it propagates the active
-host trace context into Monty's exporter-free Rust spans, then reconstructs
-those records through the host SDK, which owns credentials, export, and
-shutdown. Delivery uses a bounded non-blocking queue; overflow permanently
-disables the adapter and sends one global cleanup notification rather than
-risking unbounded host memory. Browser/WASM does not yet implement this adapter
-path.
+host trace context into Monty's Rust spans, then reconstructs those records
+through the host SDK, which owns credentials, export, and shutdown. Span and
+log delivery uses a bounded non-blocking queue; overflow permanently disables
+the adapter and sends one global cleanup notification rather than risking
+unbounded host memory. Browser/WASM does not yet implement this adapter path.
+
+A separate callback receives pool metrics as aggregated OTLP
+`ExportMetricsServiceRequest` protobufs — live, immediately available and
+host-blocked worker counts, checkout waits, worker deaths by reason, run
+durations and each feed's sandbox execution time. They cover every checkout,
+traced or not, and contain no sandbox-supplied dimensions. The host integration
+awaits `_flushTelemetry()` before flushing its own exporter.
 
 ## Value Conversion
 

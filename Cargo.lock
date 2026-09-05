@@ -2406,7 +2406,7 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "ahash",
  "chrono",
@@ -2445,14 +2445,14 @@ dependencies = [
 
 [[package]]
 name = "monty-alloc"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "monty-types",
 ]
 
 [[package]]
 name = "monty-apidoc"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "insta",
  "rustdoc-types",
@@ -2461,7 +2461,7 @@ dependencies = [
 
 [[package]]
 name = "monty-bench"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2478,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "monty-datatest"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "ahash",
  "chrono",
@@ -2496,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "monty-doctest"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "monty",
  "monty-pool",
@@ -2506,7 +2506,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fs"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "ahash",
  "cap-std",
@@ -2518,7 +2518,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fuzz"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -2528,7 +2528,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "monty-pool",
  "monty-types",
@@ -2546,7 +2546,7 @@ dependencies = [
 
 [[package]]
 name = "monty-macros"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "insta",
  "proc-macro2",
@@ -2556,7 +2556,7 @@ dependencies = [
 
 [[package]]
 name = "monty-pool"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "futures-util",
  "insta",
@@ -2566,7 +2566,9 @@ dependencies = [
  "monty-types",
  "num-traits",
  "opentelemetry",
+ "opentelemetry-proto",
  "opentelemetry_sdk",
+ "prost",
  "rustls",
  "serde",
  "serde_json",
@@ -2580,7 +2582,7 @@ dependencies = [
 
 [[package]]
 name = "monty-proto"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "insta",
  "monty",
@@ -2597,7 +2599,7 @@ dependencies = [
 
 [[package]]
 name = "monty-runtime"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
@@ -2616,7 +2618,7 @@ dependencies = [
 
 [[package]]
 name = "monty-type-checking"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2636,7 +2638,7 @@ dependencies = [
 
 [[package]]
 name = "monty-types"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "chrono",
  "monty-macros",
@@ -2652,7 +2654,7 @@ dependencies = [
 
 [[package]]
 name = "monty-typeshed"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -2662,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "monty-wasm-runtime"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "monty-alloc",
  "monty-proto",
@@ -3309,7 +3311,7 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty-client"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "ahash",
  "monty-fs",

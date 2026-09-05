@@ -1,7 +1,10 @@
 //! A checked-out worker: one REPL session, driven turn by turn.
 
+#[cfg(feature = "telemetry")]
+use std::time::Instant;
 use std::{
     borrow::Cow,
+    fmt,
     future::{Future, ready},
     mem,
     path::Path,
@@ -19,6 +22,8 @@ use monty_types::{
 };
 use tokio::{task::spawn_blocking, time::timeout};
 
+#[cfg(feature = "telemetry")]
+use crate::telemetry::{TelemetryContext, metrics::outcome};
 use crate::{
     CrashCause, PoolError,
     pool::{CapacityGuard, PoolInner},
@@ -46,6 +51,18 @@ pub struct ReplConfig {
     /// (see `limitations/assert.md`). On by default with a 120-byte
     /// operand-repr truncation; `MaxBytes` customizes the truncation.
     pub assert_message_annotations: AssertMessageAnnotations,
+    /// How long the worker may hold buffered `print()` output before sending
+    /// it, batching a burst of prints into one `Print` event instead of one
+    /// each. `None` takes the worker's default
+    /// ([`crate::DEFAULT_PRINT_FLUSH_INTERVAL`]); `Duration::ZERO` restores line
+    /// buffering, delivering each completed line on its own.
+    ///
+    /// Output is always flushed before a suspension or a turn ends, so this
+    /// only sets how long live output may lag — never what arrives, or in
+    /// what order. The wire carries whole milliseconds, so a positive interval
+    /// below 1 ms is sent as 1 ms rather than rounding down into the
+    /// line-buffering sentinel.
+    pub print_flush_interval: Option<Duration>,
 }
 
 impl Default for ReplConfig {
@@ -57,7 +74,57 @@ impl Default for ReplConfig {
             type_check_stubs: None,
             type_check_config: TypeCheckingConfig::default(),
             assert_message_annotations: AssertMessageAnnotations::default(),
+            print_flush_interval: None,
         }
+    }
+}
+
+/// Host-side context for one checkout, as opposed to the [`ReplConfig`] the
+/// worker is sent.
+// non_exhaustive: options may be added without breaking callers
+#[derive(Default)]
+#[non_exhaustive]
+pub struct CheckoutOptions {
+    /// Distributed trace context captured by a host adapter. Its span also
+    /// goes out as `traceparent`/`tracestate` on a WebSocket dial, so a remote
+    /// worker's own spans join the host's trace.
+    #[cfg(feature = "telemetry")]
+    pub telemetry: Option<TelemetryContext>,
+    /// Extra headers for this checkout's WebSocket upgrade request; the
+    /// subprocess transport makes no request and ignores them. Duplicate
+    /// names are last-wins, even against the default `user-agent`
+    /// (`monty-pool/<version>`), the `traceparent` from `telemetry`, `host`
+    /// and the other handshake headers, and a malformed name or value fails
+    /// the dial.
+    pub connect_headers: Vec<(String, String)>,
+}
+
+impl CheckoutOptions {
+    /// Sets the distributed trace context, if the host captured one.
+    #[cfg(feature = "telemetry")]
+    #[must_use]
+    pub fn with_telemetry(mut self, telemetry: Option<TelemetryContext>) -> Self {
+        self.telemetry = telemetry;
+        self
+    }
+
+    /// Sets the headers for this checkout's WebSocket upgrade request.
+    #[must_use]
+    pub fn with_connect_headers(mut self, connect_headers: Vec<(String, String)>) -> Self {
+        self.connect_headers = connect_headers;
+        self
+    }
+}
+
+/// Names each connect header, never its value: monty never interprets the
+/// values, but a caller may send e.g. a token for a proxy/relay in front of
+/// the worker, and options get logged.
+impl fmt::Debug for CheckoutOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let header_names: Vec<&str> = self.connect_headers.iter().map(|(name, _)| name.as_str()).collect();
+        f.debug_struct("CheckoutOptions")
+            .field("connect_headers", &header_names)
+            .finish_non_exhaustive()
     }
 }
 
@@ -288,6 +355,10 @@ pub struct Checkout {
     /// Consulted only by [`Checkout::resume_from_mounts`]. Dropped when the
     /// feed ends so overlay writes never leak into the next feed.
     feed_mounts: Option<MountTable>,
+    /// When the session started, for `monty.pool.session.duration`. Taken by
+    /// `finish`, terminal worker loss, or `Drop`, so it is recorded once.
+    #[cfg(feature = "telemetry")]
+    started: Option<Instant>,
 }
 
 /// Tracks limits the parent enforces or backstops.
@@ -441,6 +512,7 @@ impl Checkout {
             protocol_version: PROTOCOL_VERSION,
             // Diagnostic only, so a rejection can report both builds.
             monty_version: MONTY_VERSION.to_owned(),
+            print_flush_interval_ms: repl.print_flush_interval.map(flush_interval_ms),
         }));
         let mut this = Self {
             worker: Some(worker),
@@ -453,6 +525,8 @@ impl Checkout {
             armed_deadline: None,
             restored_script_name: None,
             feed_mounts: None,
+            #[cfg(feature = "telemetry")]
+            started: Some(Instant::now()),
         };
         let mut no_print = on_print_sync(|_, _| {});
         let deadline = this.pool.config.request_timeout;
@@ -802,6 +876,16 @@ impl Checkout {
     /// Consumes the checkout. On error the worker is discarded (and the
     /// error reported), but the pool remains healthy either way.
     pub async fn finish(mut self) -> Result<(), PoolError> {
+        let result = self.finish_session().await;
+        #[cfg(feature = "telemetry")]
+        self.record_finish(outcome(result.is_ok()));
+        result
+    }
+
+    /// The body of [`Self::finish`], split out so the session's outcome is
+    /// recorded on the error paths too — a `?` here would otherwise leave the
+    /// drop below to report the session as abandoned.
+    async fn finish_session(&mut self) -> Result<(), PoolError> {
         // A websocket worker is single-use — the pool discards it after every
         // checkout — so there is no point round-tripping a `Reset` to ready it
         // for reuse. Closing the connection (Close frame, then socket) is what
@@ -833,6 +917,14 @@ impl Checkout {
                 Ok(())
             }
             other => Err(self.protocol_violation(format!("unexpected reply to Reset: {other:?}"))),
+        }
+    }
+
+    /// Records the session's lifetime, once, when it ends.
+    #[cfg(feature = "telemetry")]
+    fn record_finish(&mut self, outcome: &'static str) {
+        if let (Some(started), Some(metrics)) = (self.started.take(), &self.pool.config.metrics) {
+            metrics.session_duration(started.elapsed(), outcome);
         }
     }
 
@@ -1390,9 +1482,11 @@ impl Checkout {
             // of a version-skew exit, which a SIGKILL would replace with the
             // signal and lose
             Some(mut worker) => {
+                #[cfg(feature = "telemetry")]
+                self.record_finish("error");
                 // guard, not a trailing release: a caller dropping this future
-                // mid-reap must still release the slot
-                let _capacity = CapacityGuard::new(&self.pool);
+                // mid-reap must still release the slot and count the death
+                let _capacity = CapacityGuard::terminating(&self.pool, "fatal");
                 let status = worker.reap_or_kill(FATAL_EXIT_GRACE).await;
                 drop(worker);
                 status
@@ -1409,11 +1503,17 @@ impl Checkout {
         let Some(mut worker) = self.worker.take() else {
             return PoolError::Finished;
         };
+        #[cfg(feature = "telemetry")]
+        self.record_finish("error");
         self.pending = None;
         self.feed_mounts = None;
+        let websocket = self.pool.config.transport.is_websocket();
         // guard, not a trailing release: a caller dropping this future
-        // mid-reap must still release the slot
-        let _capacity = CapacityGuard::new(&self.pool);
+        // mid-reap must still release the slot and count the death. Its reason
+        // is what the classification below would have said without an exit
+        // status, so a cancelled reap of an out-of-memory worker is the one
+        // case counted as a plain crash.
+        let mut capacity = CapacityGuard::terminating(&self.pool, if websocket { "disconnected" } else { "crash" });
         // A worker that exits deliberately (an allocation refused, see
         // `OOM_EXIT_CODE`) is racing us: SIGKILLing it mid-exit would replace
         // its code with `signal: 9` and lose the classification. Give it the
@@ -1423,13 +1523,14 @@ impl Checkout {
         // is waiting on this grace that should have been killed outright.
         let status = worker.reap_or_kill(FATAL_EXIT_GRACE).await;
         drop(worker);
-        if self.pool.config.transport.is_websocket() {
+        if websocket {
             PoolError::Disconnected {
                 context: context.to_owned(),
             }
         } else if status.and_then(|status| status.code()) == Some(monty_types::OOM_EXIT_CODE) {
             // the worker is gone, unlike every other `Runtime` error — the
             // checkout is already finished, so later calls report `Finished`
+            capacity.set_reason("oom");
             PoolError::Runtime(MontyException::new(
                 ExcType::MemoryError,
                 Some("the worker exceeded its memory limit and was terminated".to_owned()),
@@ -1449,9 +1550,11 @@ impl Checkout {
     /// so this only kills, reaps, and classifies.
     async fn poison_timeout(&mut self) -> PoolError {
         if let Some(mut worker) = self.worker.take() {
+            #[cfg(feature = "telemetry")]
+            self.record_finish("error");
             // guard, not a trailing release: a caller dropping this future
-            // mid-reap must still release the slot
-            let _capacity = CapacityGuard::new(&self.pool);
+            // mid-reap must still release the slot and count the death
+            let _capacity = CapacityGuard::terminating(&self.pool, "turn_timeout");
             let _ = worker.kill_and_reap().await;
             drop(worker);
         }
@@ -1468,7 +1571,10 @@ impl Checkout {
     /// through [`Self::fatal_error`], which reaps and classifies.
     fn discard_worker(&mut self) {
         if let Some(worker) = self.worker.take() {
+            #[cfg(feature = "telemetry")]
+            self.record_finish("error");
             drop(worker);
+            self.pool.count_termination("discarded");
             self.pool.release_capacity();
         }
         self.pending = None;
@@ -1484,8 +1590,25 @@ impl Drop for Checkout {
         // pool: kill the worker and free its capacity
         if let Some(worker) = self.worker.take() {
             drop(worker);
+            self.pool.count_termination("abandoned");
             self.pool.release_capacity();
         }
+        #[cfg(feature = "telemetry")]
+        self.record_finish("abandoned");
+    }
+}
+
+/// Encodes a print flush interval as whole milliseconds for the wire.
+///
+/// Zero is the explicit line-buffering sentinel, so a *positive* interval must
+/// never round down into it — anything under a millisecond is sent as 1 ms.
+/// Saturates at the top: an interval past `u32::MAX` milliseconds is absurd
+/// rather than meaningful, and the turn-end flush bounds it anyway.
+fn flush_interval_ms(interval: Duration) -> u32 {
+    if interval.is_zero() {
+        0
+    } else {
+        u32::try_from(interval.as_millis()).unwrap_or(u32::MAX).max(1)
     }
 }
 

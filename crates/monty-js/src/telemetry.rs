@@ -1,18 +1,18 @@
-//! Exporter-free shared telemetry pipeline forwarding records to Node's event loop.
+//! Statically linked Logfire pipeline forwarding telemetry to Node's event loop.
 
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+        mpsc, Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use monty_pool::telemetry_adapter::{
+use monty_pool::telemetry::{
     configure_telemetry_adapter, TelemetryAdapter, TelemetryAdapterHandle, TELEMETRY_ADAPTER_VERSION,
 };
 use napi::{
-    bindgen_prelude::{spawn, FnArgs, Function},
+    bindgen_prelude::{spawn, Buffer, FnArgs, Function},
     threadsafe_function::{ThreadsafeFunctionCallMode, UnknownReturnValue},
     Status,
 };
@@ -24,15 +24,18 @@ use opentelemetry::{
 };
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
 use serde_json::{json, Map, Value as JsonValue};
-use tokio::time::sleep;
+use tokio::{task::spawn_blocking, time::sleep};
 
 type SendEvent = Arc<dyn Fn(String, ThreadsafeFunctionCallMode) -> Status + Send + Sync>;
+type SendMetrics = Arc<dyn Fn(Buffer) -> bool + Send + Sync>;
 
 struct JsBridge {
     send: SendEvent,
-    /// Queue overflow disables the shared bridge rather than risking
-    /// cross-root gaps or an unbounded cleanup backlog.
-    disabled: AtomicBool,
+    send_metrics: SendMetrics,
+    /// Queue overflow disables tracing rather than leaving gaps in open spans.
+    tracing_disabled: AtomicBool,
+    /// Whether the metric callback can no longer receive batches.
+    metrics_disabled: AtomicBool,
     delivery: RwLock<DeliveryState>,
 }
 
@@ -52,11 +55,12 @@ const VALUE_SIZE_LIMIT: usize = 64 * 1024;
 /// Maximum nesting accepted from recursive OTel log values.
 const VALUE_DEPTH_LIMIT: usize = 64;
 
-/// Installs the versioned Node callback and shared exporter-free pipeline.
+/// Installs the versioned Node callbacks and process-global Logfire pipeline.
 #[napi(js_name = "_installTelemetryAdapter")]
 pub fn install_telemetry_adapter(
     version: u8,
     callback: Function<'_, FnArgs<(String,)>, UnknownReturnValue>,
+    metrics_callback: Function<'_, FnArgs<(Buffer,)>, UnknownReturnValue>,
 ) -> napi::Result<()> {
     if version != TELEMETRY_ADAPTER_VERSION {
         return Err(napi::Error::from_reason(format!(
@@ -69,9 +73,28 @@ pub fn install_telemetry_adapter(
         .max_queue_size::<1024>()
         .build()?;
     let send: SendEvent = Arc::new(move |event, mode| callback.call(FnArgs::from((event,)), mode));
+    let metrics_callback = metrics_callback
+        .build_threadsafe_function()
+        .weak::<true>()
+        .max_queue_size::<64>()
+        .build()?;
+    let send_metrics: SendMetrics = Arc::new(move |payload| {
+        let (acknowledge, acknowledged) = mpsc::sync_channel(1);
+        let status = metrics_callback.call_with_return_value(
+            FnArgs::from((payload,)),
+            ThreadsafeFunctionCallMode::Blocking,
+            move |result, _| {
+                let _ = acknowledge.send(result.is_ok());
+                Ok(())
+            },
+        );
+        status == Status::Ok && acknowledged.recv().unwrap_or(false)
+    });
     let bridge = Arc::new(JsBridge {
         send,
-        disabled: AtomicBool::new(false),
+        send_metrics,
+        tracing_disabled: AtomicBool::new(false),
+        metrics_disabled: AtomicBool::new(false),
         delivery: RwLock::new(DeliveryState {
             cleanup_requested: false,
         }),
@@ -83,10 +106,27 @@ pub fn install_telemetry_adapter(
         .map_err(|_| napi::Error::from_reason("Monty telemetry is already configured"))
 }
 
-/// Returns the installed handle used to construct coupled checkout context.
+/// Flushes the extension's Rust telemetry pipeline into the Node adapter.
+#[napi(js_name = "_flushTelemetry")]
+pub async fn flush_telemetry() -> napi::Result<()> {
+    if let Some(installed) = BRIDGE.get() {
+        spawn_blocking(|| installed.handle.force_flush())
+            .await
+            .map_err(|err| napi::Error::from_reason(format!("failed to join Monty telemetry flush: {err}")))?
+            .map_err(|err| napi::Error::from_reason(format!("failed to flush Monty telemetry: {err}")))?;
+    }
+    Ok(())
+}
+
+/// Returns the installed handle used to configure pool metrics.
 pub(crate) fn configured_adapter() -> Option<&'static TelemetryAdapterHandle> {
+    BRIDGE.get().map(|installed| &installed.handle)
+}
+
+/// Returns the installed handle while span and log delivery remains available.
+pub(crate) fn configured_tracing_adapter() -> Option<&'static TelemetryAdapterHandle> {
     let installed = BRIDGE.get()?;
-    (!installed.bridge.disabled.load(Ordering::Relaxed)).then_some(&installed.handle)
+    (!installed.bridge.tracing_disabled.load(Ordering::Relaxed)).then_some(&installed.handle)
 }
 
 impl TelemetryAdapter for JsBridge {
@@ -156,8 +196,16 @@ impl TelemetryAdapter for JsBridge {
         )
     }
 
+    fn export_metrics(&self, payload: &[u8]) {
+        // Exports run on the periodic reader thread. The acknowledgement makes
+        // an explicit flush wait until JavaScript has invoked the adapter.
+        if !self.metrics_disabled.load(Ordering::Relaxed) && !(self.send_metrics)(Buffer::from(payload)) {
+            self.metrics_disabled.store(true, Ordering::Relaxed);
+        }
+    }
+
     fn disable_root(&self, trace_id: TraceId, root_span_id: SpanId) {
-        self.disabled.store(true, Ordering::Relaxed);
+        self.tracing_disabled.store(true, Ordering::Relaxed);
         let mut delivery = write_lock(&self.delivery);
         if !delivery.cleanup_requested {
             delivery.cleanup_requested = true;
@@ -184,12 +232,12 @@ impl JsBridge {
     /// Queues one ordered record without blocking a Tokio worker thread.
     fn emit(&self, event: JsonValue) -> bool {
         let _delivery = read_lock(&self.delivery);
-        if self.disabled.load(Ordering::Relaxed) {
+        if self.tracing_disabled.load(Ordering::Relaxed) {
             false
         } else {
             let sent = (self.send)(event.to_string(), ThreadsafeFunctionCallMode::NonBlocking) == Status::Ok;
             if !sent {
-                self.disabled.store(true, Ordering::Relaxed);
+                self.tracing_disabled.store(true, Ordering::Relaxed);
             }
             sent
         }

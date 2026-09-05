@@ -202,7 +202,7 @@ jobs:
       # real `monty` binary: build it plainly first (outside the llvm-cov
       # target dir) and point the tests at it explicitly.
       - run: cargo build -p monty-runtime
-      - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool
+      - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
       - name: Compile Rust documentation examples
@@ -406,12 +406,12 @@ jobs:
       - run: cargo build -p monty-runtime
       - name: Test subprocess crates (Unix)
         if: runner.os != 'Windows'
-        run: cargo test -p monty-proto -p monty-runtime -p monty-pool
+        run: cargo test -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
       - name: Test subprocess crates (Windows)
         if: runner.os == 'Windows'
-        run: cargo test -p monty-proto -p monty-runtime -p monty-pool
+        run: cargo test -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}\target\debug\monty.exe
 

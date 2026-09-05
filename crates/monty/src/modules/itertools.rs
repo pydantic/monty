@@ -5,9 +5,12 @@
 //! stubbed, so they raise `AttributeError` up front. See
 //! [`crate::types::itertools`] for why the family shares one `HeapData` variant.
 
+use std::mem;
+
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, LaxBool},
     bytecode::VM,
+    defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId},
     intern::StaticStrings,
@@ -15,7 +18,8 @@ use crate::{
     types::{
         ItertoolsIter, Module, Type,
         itertools::{
-            Chain, Compress, Count, Cycle, DropWhile, FilterFalse, Islice, Pairwise, Repeat, StarMap, TakeWhile,
+            Accumulate, Batched, Chain, Compress, Count, Cycle, DropWhile, FilterFalse, Islice, Pairwise, Repeat,
+            StarMap, TakeWhile, ZipLongest,
         },
     },
     value::Value,
@@ -36,6 +40,9 @@ pub(crate) enum ItertoolsFunctions {
     Dropwhile,
     Filterfalse,
     Starmap,
+    Accumulate,
+    Batched,
+    ZipLongest,
 }
 
 /// Static mapping of attribute names to functions for module creation.
@@ -51,6 +58,9 @@ const ITERTOOLS_FUNCTIONS: &[(StaticStrings, ItertoolsFunctions)] = &[
     (StaticStrings::Dropwhile, ItertoolsFunctions::Dropwhile),
     (StaticStrings::Filterfalse, ItertoolsFunctions::Filterfalse),
     (StaticStrings::Starmap, ItertoolsFunctions::Starmap),
+    (StaticStrings::Accumulate, ItertoolsFunctions::Accumulate),
+    (StaticStrings::Batched, ItertoolsFunctions::Batched),
+    (StaticStrings::ZipLongest, ItertoolsFunctions::ZipLongest),
 ];
 
 /// Creates the `itertools` module on the heap.
@@ -81,6 +91,9 @@ pub(super) fn call(vm: &mut VM<'_>, function: ItertoolsFunctions, args: ArgValue
         ItertoolsFunctions::Dropwhile => call_dropwhile(vm, args),
         ItertoolsFunctions::Filterfalse => call_filterfalse(vm, args),
         ItertoolsFunctions::Starmap => call_starmap(vm, args),
+        ItertoolsFunctions::Accumulate => call_accumulate(vm, args),
+        ItertoolsFunctions::Batched => call_batched(vm, args),
+        ItertoolsFunctions::ZipLongest => call_zip_longest(vm, args),
     }
 }
 
@@ -431,6 +444,155 @@ fn call_starmap(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let StarMapArgs { callable, iterable } = StarMapArgs::from_args(args, vm)?;
     let (function, source) = resolve_source(callable, iterable, vm)?;
     let iter = ItertoolsIter::StarMap(StarMap::new(function, source));
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+}
+
+/// Argument shape for `accumulate(iterable, func=None, *, initial=None)`.
+///
+/// Argument Clinic, so both leading slots accept keywords
+/// (`accumulate(iterable=[1])` works). Clinic shares `_PyArg_UnpackKeywords`
+/// with the named C family, so `c_named` — not the default style, which is the
+/// `_PyArg_CheckPositional` wording — gives the `takes at most 2 positional
+/// arguments (3 given)` form, pivoting to a total count once kwargs push the
+/// overflow past every slot. `func` is never type-checked here: CPython only
+/// discovers a non-callable when the second item arrives.
+#[derive(FromArgs)]
+#[from_args(name = "accumulate", style = c_named)]
+struct AccumulateArgs {
+    #[from_args(static_string = "IterableArg")]
+    iterable: Value,
+    #[from_args(default = Value::None)]
+    func: Value,
+    #[from_args(kw_only, default = Value::None)]
+    initial: Value,
+}
+
+/// `itertools.accumulate(iterable, func=None, *, initial=None)` — running totals.
+fn call_accumulate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let AccumulateArgs {
+        iterable,
+        func,
+        initial,
+    } = AccumulateArgs::from_args(args, vm)?;
+    // `func` is held across the resolve so a non-iterable releases it too.
+    let (func, source) = match resolve_source(func, iterable, vm) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            initial.drop_with(vm);
+            return Err(error);
+        }
+    };
+    // An explicit `initial=None` is no initial at all, as CPython's `!= Py_None`
+    // check makes it — so `accumulate([], initial=None)` yields nothing.
+    let initial = match initial {
+        Value::None => None,
+        initial => Some(initial),
+    };
+    let iter = ItertoolsIter::Accumulate(Box::new(Accumulate::new(source, func, initial)));
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+}
+
+/// Argument shape for `batched(iterable, n, *, strict=False)`.
+///
+/// Argument Clinic, so `n` accepts a keyword and a missing one reports
+/// `missing required argument 'n' (pos 2)` — see [`AccumulateArgs`] for why
+/// that means `c_named`. Both positionals are required, so the overflow says
+/// "exactly" where `accumulate`'s says "at most". `n` stays a raw `Value` because it
+/// needs `as_int`'s message rather than the binder's, as `repeat`'s `times`
+/// does; `strict` is a [`LaxBool`] so CPython's `bool()`-style truth test
+/// happens in the binder, which releases the value on both paths.
+#[derive(FromArgs)]
+#[from_args(name = "batched", style = c_named)]
+struct BatchedArgs {
+    #[from_args(static_string = "IterableArg")]
+    iterable: Value,
+    n: Value,
+    #[from_args(kw_only, default = LaxBool::new(false))]
+    strict: LaxBool,
+}
+
+/// `itertools.batched(iterable, n, *, strict=False)` — consecutive n-tuples.
+fn call_batched(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let BatchedArgs { iterable, n, strict } = BatchedArgs::from_args(args, vm)?;
+    let strict = strict.bool();
+    // `n` is validated before the iterable is resolved, matching CPython's
+    // clinic converter, which runs over every argument before the body.
+    let size = batched_n(&n, vm);
+    n.drop_with(vm);
+    let size = match size {
+        Ok(size) => size,
+        Err(error) => {
+            iterable.drop_with(vm);
+            return Err(error);
+        }
+    };
+
+    let source = iterable.into_py_iter(vm)?;
+    let iter = ItertoolsIter::Batched(Batched::new(source, size, strict));
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+}
+
+/// Coerces `batched`'s `n` and enforces CPython's "at least one" floor.
+///
+/// Needs `&mut VM` because `as_int` dispatches `__index__`, re-entering the
+/// interpreter; the caller's other arguments are owned, so that cannot
+/// invalidate them. `as_int` raises `OverflowError` past `i64` as the
+/// `Py_ssize_t` conversion does, and the bound below reports the same for the
+/// range between `isize` and `i64` that only a 32-bit host (`wasm32-wasip1`)
+/// has — `batched('AB', 2**40)` there.
+fn batched_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+    let n = match value {
+        Value::Bool(b) => i64::from(*b),
+        other => other.as_int(vm)?,
+    };
+    if n < 1 {
+        Err(ExcType::batched_bad_n())
+    } else {
+        // CPython's `n` is a `Py_ssize_t`, so `isize` is the ceiling to check
+        // against; the sign is already known positive.
+        isize::try_from(n)
+            .map(isize::cast_unsigned)
+            .map_err(|_| ExcType::overflow_c_ssize_t())
+    }
+}
+
+/// Argument shape for `zip_longest(*iterables, fillvalue=None)`.
+///
+/// The only adaptor with both `*args` and a keyword. CPython hand-rolls the
+/// parse rather than using a parser family, and its rejection names no
+/// argument (`zip_longest() got an unexpected keyword argument`) — the derive
+/// appends the offending name, which `limitations/itertools.md` records.
+#[derive(FromArgs)]
+#[from_args(name = "zip_longest")]
+struct ZipLongestArgs {
+    #[from_args(varargs)]
+    iterables: Vec<Value>,
+    #[from_args(kw_only, default = Value::None)]
+    fillvalue: Value,
+}
+
+/// `itertools.zip_longest(*iterables, fillvalue=None)` — zip to the longest.
+fn call_zip_longest(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let ZipLongestArgs { iterables, fillvalue } = ZipLongestArgs::from_args(args, vm)?;
+    // Every argument is resolved up front, unlike `chain`'s lazy ones, so a
+    // later non-iterable must release the arguments never reached as well. The
+    // `Value::None` swap leaves those in the guard's vec: draining it instead
+    // would hand the tail to a Rust `Drop`, which cannot `drop_with`.
+    defer_drop_mut!(iterables, vm);
+    let mut guard = DropGuard::new(Vec::with_capacity(iterables.len()), vm);
+    for slot in iterables.iter_mut() {
+        let iterable = mem::replace(slot, Value::None);
+        let (resolved, vm) = guard.as_parts_mut();
+        match iterable.into_py_iter(vm) {
+            Ok(source) => resolved.push(source),
+            Err(error) => {
+                fillvalue.drop_with(vm);
+                return Err(error);
+            }
+        }
+    }
+    let (sources, vm) = guard.into_parts();
+    let iter = ItertoolsIter::ZipLongest(ZipLongest::new(sources, fillvalue));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 

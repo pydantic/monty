@@ -1,6 +1,12 @@
 export declare const MAX_VALUE_DEPTH: number
 
-export declare function _installTelemetryAdapter(version: number, callback: (event: string) => void): void
+export declare function _flushTelemetry(): Promise<void>
+
+export declare function _installTelemetryAdapter(
+  version: number,
+  callback: (event: string) => void,
+  metricsCallback: (payload: Buffer) => void,
+): void
 
 export interface NativeMount {
   virtualPath: string
