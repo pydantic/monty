@@ -1292,8 +1292,38 @@ jobs:
         run: npm install ../package-tarballs/monty-main.tgz ../package-tarballs/monty-${{ matrix.platform.triple }}.tgz --force --no-save --no-package-lock
         working-directory: crates/monty-js/smoke-test
 
-      - name: Import package and run a worker
-        run: node package-smoke.mjs
+      - name: Exercise the packed Node package
+        run: npm run test:node
+        working-directory: crates/monty-js/smoke-test
+
+  test-js-browser-package:
+    name: test packed JS package in browser
+    needs:
+      - assemble-js-packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Download package tarballs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: js-package-tarballs
+          path: crates/monty-js/package-tarballs
+
+      - name: Install packed package
+        run: npm install ../package-tarballs/monty-main.tgz --omit=optional --force --no-save --no-package-lock
+        working-directory: crates/monty-js/smoke-test
+
+      - name: Exercise the packed browser package
+        run: npx playwright install --with-deps chromium && npm run test:browser
         working-directory: crates/monty-js/smoke-test
 
   release-js:
@@ -1303,6 +1333,7 @@ jobs:
       - check
       - test-js
       - test-js-packages
+      - test-js-browser-package
       - test-browser
       - release-python
     if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
