@@ -51,7 +51,7 @@ export type ExternalFunction = (...args: never[]) => unknown
  */
 export type OsCallback = (name: string, args: unknown[], kwargs: Record<string, unknown>) => unknown
 
-/** Receives sandbox `print()` output (line-buffered). */
+/** Receives sandbox `print()` output in batched chunks. */
 export type PrintCallback = (stream: 'stdout' | 'stderr', text: string) => void
 
 /**

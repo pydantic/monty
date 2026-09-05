@@ -13,23 +13,23 @@ git diff origin/main...HEAD
 Read the changed files in full — a hunk is rarely enough to judge correctness. Look for:
 
 - **Bugs** — logic errors, `DropWithContext` values not released on every exit path (the
-  fix is `defer_drop!`/`DropGuard`, not more `drop_with` calls), borrow/aliasing
-  mistakes, unhandled error paths.
+    fix is `defer_drop!`/`DropGuard`, not more `drop_with` calls), borrow/aliasing
+    mistakes, unhandled error paths.
 - **CPython divergence** — different results, exception types or messages, missing
-  attributes. Check anything you're unsure of with `python-playground`.
+    attributes. Check anything you're unsure of with `python-playground`.
 - **Sandbox escapes** — sandboxed code reaching the host filesystem, environment,
-  network or subprocesses.
+    network or subprocesses.
 - **Resource-limit escapes** — allocations not charged to the tracker (an unbounded or
-  amplifying `String` build without `StringBuilder`), unbounded loops, recursion without
-  a depth guard.
+    amplifying `String` build without `StringBuilder`), unbounded loops, recursion without
+    a depth guard.
 - **Performance** — regressions the branch introduces, and improvements you spot.
 - **Verbose comments** — docstrings and comments should be concise as per `CLAUDE.md`.
 - **Cleanups** — duplication, misplaced logic, functions grown too complex.
 - **`./limitations/`** — a new divergence with no entry is a finding.
 - **Docs parity** — a user-visible change reflected in only one of `README.md`, `docs/`,
-  `limitations/` and the crate READMEs is a finding. `CLAUDE.md` "Documentation surfaces
-  that must stay in sync" has the obligation table. For a full pass, delegate to the
-  `docs-parity-reviewer` subagent.
+    `limitations/` and the crate READMEs is a finding. `CLAUDE.md` "Documentation surfaces
+    that must stay in sync" has the obligation table. For a full pass, delegate to the
+    `docs-parity-reviewer` subagent.
 
 ## Report
 
