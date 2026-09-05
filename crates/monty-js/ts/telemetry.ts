@@ -113,9 +113,10 @@ type MetricHandle =
   | { kind: 'histogram'; instrument: Histogram }
 
 interface SpanState {
-  span: Span
+  span?: Span
   context: Context
   root: string
+  initialAttributes: Record<string, unknown>
 }
 
 let nativeInstalled = false
@@ -159,7 +160,7 @@ export async function flushTelemetry(): Promise<void> {
  * OpenTelemetry instrumentation for use with `NodeSDK` and compatible SDKs.
  *
  * Adding an instance to an SDK's `instrumentations` array explicitly enables
- * Monty's potentially sensitive telemetry.
+ * Monty's potentially sensitive telemetry. Configure it before creating pools.
  */
 export class MontyInstrumentation {
   readonly instrumentationName = OTEL_SCOPE
@@ -335,15 +336,16 @@ function handleSpanEvent(serialized: string): boolean {
 }
 
 function startSpan(event: StartEvent): boolean {
+  const key = spanKey(event.traceId, event.spanId)
+  const parentKey = event.parentId === null ? undefined : spanKey(event.traceId, event.parentId)
+  const parent = parentKey === undefined ? undefined : spans.get(parentKey)
+  const parentContext = parent?.context ?? externalParentContext(event)
+  const root = parent?.root ?? key
   const tracer = components?.tracer
   if (tracer === undefined || spansDisabled) {
-    return components?.logger !== undefined && !logsDisabled
+    return retainLogContext(event, key, root, parentContext)
   }
   try {
-    const key = spanKey(event.traceId, event.spanId)
-    const parentKey = event.parentId === null ? undefined : spanKey(event.traceId, event.parentId)
-    const parent = parentKey === undefined ? undefined : spans.get(parentKey)
-    const parentContext = parent?.context ?? externalParentContext(event)
     const span = tracer.startSpan(
       event.name,
       {
@@ -352,33 +354,34 @@ function startSpan(event: StartEvent): boolean {
       },
       parentContext,
     )
-    if (!span.isRecording()) {
-      return false
-    }
     spans.set(key, {
       span,
       context: TraceAPI.setSpan(parentContext, span),
-      root: parent?.root ?? key,
+      root,
+      initialAttributes: event.attributes,
     })
     return true
   } catch {
     spansDisabled = true
-    spans.clear()
-    return components?.logger !== undefined && !logsDisabled
+    return retainLogContext(event, key, root, parentContext)
   }
 }
 
 function endSpan(event: EndEvent): void {
-  if (spansDisabled) {
-    return
-  }
-  const state = spans.get(spanKey(event.traceId, event.spanId))
+  const key = spanKey(event.traceId, event.spanId)
+  const state = spans.get(key)
   if (state === undefined) {
     return
   }
-  spans.delete(spanKey(event.traceId, event.spanId))
+  spans.delete(key)
+  if (state.span === undefined || spansDisabled) {
+    return
+  }
   try {
-    state.span.setAttributes(event.attributes as Attributes)
+    const attributes = changedAttributes(event.attributes, state.initialAttributes)
+    if (Object.keys(attributes).length !== 0) {
+      state.span.setAttributes(attributes as Attributes)
+    }
     if (event.status === 'ok') {
       state.span.setStatus({ code: SpanStatusCode.OK })
     } else if (event.status === 'error') {
@@ -387,7 +390,9 @@ function endSpan(event: EndEvent): void {
     state.span.end(timestamp(event.timestamp))
   } catch {
     spansDisabled = true
-    spans.clear()
+    if (components?.logger === undefined || logsDisabled) {
+      spans.clear()
+    }
   }
 }
 
@@ -438,6 +443,28 @@ function externalParentContext(event: StartEvent): Context {
   })
 }
 
+/** Retains native ancestry when logs are enabled without working span delivery. */
+function retainLogContext(event: StartEvent, key: string, root: string, parentContext: Context): boolean {
+  if (components?.logger === undefined || logsDisabled) {
+    spans.clear()
+    return false
+  }
+  const parentSpanContext = TraceAPI.getSpanContext(parentContext)
+  spans.set(key, {
+    context: TraceAPI.setSpanContext(parentContext, {
+      traceId: parentSpanContext?.traceId ?? event.traceId,
+      spanId: event.spanId,
+      traceFlags: parentSpanContext?.traceFlags ?? event.traceFlags,
+      traceState:
+        parentSpanContext?.traceState ?? (event.traceState === '' ? undefined : createTraceState(event.traceState)),
+      isRemote: false,
+    }),
+    root,
+    initialAttributes: event.attributes,
+  })
+  return true
+}
+
 function handleMetricEvent(serialized: string): boolean {
   let event: MetricEvent | FlushEvent
   try {
@@ -486,6 +513,18 @@ function metricHandle(meter: Meter, event: MetricEvent): MetricHandle {
 
 function spanKey(traceId: string, spanId: string): string {
   return `${traceId}:${spanId}`
+}
+
+/** Returns attributes added or changed after span creation. */
+function changedAttributes(
+  attributes: Record<string, unknown>,
+  initialAttributes: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(attributes).filter(
+      ([key, value]) => JSON.stringify(initialAttributes[key]) !== JSON.stringify(value),
+    ),
+  )
 }
 
 function timestamp(value: TelemetryTimestamp): [number, number] {

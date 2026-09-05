@@ -5,7 +5,7 @@ import { test } from 'vitest'
 test('MontyInstrumentation accepts SDK providers', () => {
   runTelemetryChild(`
     import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
-    import { flushTelemetry, Monty, MontyInstrumentation } from ${JSON.stringify(new URL('../dist/node.js', import.meta.url).href)}
+    import { Monty, MontyInstrumentation } from ${JSON.stringify(new URL('../dist/node.js', import.meta.url).href)}
 
     const exporter = new InMemorySpanExporter()
     const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] })
@@ -50,24 +50,39 @@ test('concurrent checkouts deliver complete span trees', () => {
   `)
 })
 
-test('host sampling can reject one root', () => {
+test('host sampling can reject one child without disabling its root', () => {
   runTelemetryChild(`
-    import { AlwaysOffSampler, BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
+    import { BasicTracerProvider, InMemorySpanExporter, SamplingDecision, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
     import { flushTelemetry, instrumentTelemetry, Monty } from ${JSON.stringify(new URL('../dist/node.js', import.meta.url).href)}
 
+    let rejected = false
+    const sampler = {
+      shouldSample(_context, _traceId, name) {
+        if (name === 'run code' && !rejected) {
+          rejected = true
+          return { decision: SamplingDecision.NOT_RECORD }
+        }
+        return { decision: SamplingDecision.RECORD_AND_SAMPLED }
+      },
+      toString() { return 'RejectFirstRun' },
+    }
     const exporter = new InMemorySpanExporter()
     const provider = new BasicTracerProvider({
-      sampler: new AlwaysOffSampler(),
+      sampler,
       spanProcessors: [new SimpleSpanProcessor(exporter)],
     })
     instrumentTelemetry({ tracer: provider.getTracer('test') })
     const pool = await Monty.create()
     const session = await pool.checkout()
     if (await session.feedRun('1 + 2') !== 3) throw new Error('unexpected result')
+    if (await session.feedRun('4 + 5') !== 9) throw new Error('unexpected result')
     await session.close()
     await pool.close()
     await flushTelemetry()
-    if (exporter.getFinishedSpans().length !== 0) throw new Error('sampled-out spans were exported')
+    const names = exporter.getFinishedSpans().map((span) => span.name)
+    if (JSON.stringify(names) !== JSON.stringify(['run code', 'session {script_name}'])) {
+      throw new Error(JSON.stringify(names))
+    }
     await provider.shutdown()
   `)
 })
@@ -122,6 +137,28 @@ test('metric failure does not disable tracing', () => {
     const names = exporter.getFinishedSpans().map((span) => span.name)
     if (JSON.stringify(names) !== JSON.stringify(['run code', 'session {script_name}'])) {
       throw new Error(JSON.stringify(names))
+    }
+    await provider.shutdown()
+  `)
+})
+
+test('logger-only installation preserves native trace context', () => {
+  runTelemetryChild(`
+    import { InMemoryLogRecordExporter, LoggerProvider, SimpleLogRecordProcessor } from '@opentelemetry/sdk-logs'
+    import { flushTelemetry, instrumentTelemetry, Monty } from ${JSON.stringify(new URL('../dist/node.js', import.meta.url).href)}
+
+    const exporter = new InMemoryLogRecordExporter()
+    const provider = new LoggerProvider({ processors: [new SimpleLogRecordProcessor({ exporter })] })
+    instrumentTelemetry({ logger: provider.getLogger('test') })
+    const pool = await Monty.create()
+    const session = await pool.checkout()
+    if (await session.feedRun("print('hello')\\n1 + 2") !== 3) throw new Error('unexpected result')
+    await session.close()
+    await pool.close()
+    await flushTelemetry()
+    const [record] = exporter.getFinishedLogRecords()
+    if (record?.spanContext?.traceId === undefined || record.spanContext.spanId === undefined) {
+      throw new Error(JSON.stringify(record))
     }
     await provider.shutdown()
   `)

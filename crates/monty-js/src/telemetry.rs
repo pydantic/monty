@@ -307,7 +307,7 @@ impl TelemetryAdapter for JsBridge {
 }
 
 impl JsBridge {
-    /// Starts a span synchronously so the host's sampling decision reaches Rust.
+    /// Starts a span synchronously so its host context is available to children.
     fn start_span_event(&self, event: JsonValue) -> bool {
         let _delivery = read_lock(&self.delivery);
         if self.tracing_disabled.load(Ordering::Relaxed) {

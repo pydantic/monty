@@ -519,16 +519,22 @@ outputs, exceptions, and printed text.
 
 When configuring an OpenTelemetry `NodeSDK`, use `MontyInstrumentation` so the
 SDK supplies its tracer and meter providers through the standard
-instrumentation lifecycle:
+instrumentation lifecycle. Configure providers and signal options before
+creating pools; changing them while pools are active is unsupported:
 
 ```ts
 import { NodeSDK } from '@opentelemetry/sdk-node'
 import { MontyInstrumentation } from '@pydantic/monty/node'
 
+const instrumentation = new MontyInstrumentation()
 const sdk = new NodeSDK({
-  instrumentations: [new MontyInstrumentation()],
+  instrumentations: [instrumentation],
 })
 sdk.start()
+
+// Before application shutdown:
+await instrumentation.forceFlush()
+await sdk.shutdown()
 ```
 
 The instrumentation obtains its logger through `@opentelemetry/api-logs`.
@@ -537,11 +543,12 @@ exporters, flushing, and shutdown therefore apply normally. Pool metrics cover
 every checkout and contain no sandbox-supplied dimensions.
 
 Native worker threads deliver records through bounded Node callback queues;
-span starts wait for the host sampling decision, while span ends, logs, and raw
-metric measurements are queued without blocking workers. Queue overflow
-disables the affected telemetry path rather than risking unbounded host memory.
-Call `flushTelemetry()` before directly flushing providers. Browser/WASM does
-not yet implement this instrumentation path.
+span starts wait for host span creation so children receive its context, while
+span ends, logs, and raw metric measurements are queued without blocking
+workers. Queue overflow disables the affected telemetry path rather than
+risking unbounded host memory. Call `flushTelemetry()` before directly flushing
+providers, or `instrumentation.forceFlush()` before shutting down a `NodeSDK`.
+Browser/WASM does not yet implement this instrumentation path.
 
 ## Value Conversion
 

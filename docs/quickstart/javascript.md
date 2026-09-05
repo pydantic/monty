@@ -161,14 +161,19 @@ OpenTelemetry SDK:
 import { NodeSDK } from '@opentelemetry/sdk-node'
 import { MontyInstrumentation } from '@pydantic/monty/node'
 
+const instrumentation = new MontyInstrumentation()
 const sdk = new NodeSDK({
-  instrumentations: [new MontyInstrumentation()],
+  instrumentations: [instrumentation],
 })
 sdk.start()
+
+await instrumentation.forceFlush()
+await sdk.shutdown()
 ```
 
 Instrumentation is an explicit opt-in because it records source, inputs, outputs, host calls, exceptions, and printed
-text. It also records pool and execution metrics through the SDK's meter provider. See the
+text. It also records pool and execution metrics through the SDK's meter provider. Drain Monty's callback queues with
+`instrumentation.forceFlush()` before shutting down the SDK. See the
 [package README](https://github.com/pydantic/monty/blob/main/crates/monty-js/README.md#observability) for direct
 `Tracer`, `Meter`, and `Logger` setup.
 

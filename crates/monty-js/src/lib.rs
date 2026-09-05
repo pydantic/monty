@@ -20,6 +20,7 @@ pub use limits::JsResourceLimits;
 pub use pool::{NativeCheckoutOptions, NativeMount, NativePool, NativePoolOptions, NativeSession, MAX_VALUE_DEPTH};
 pub use telemetry::{flush_telemetry, install_telemetry, set_telemetry_metrics_enabled};
 
+/// Returns the package version used for the OpenTelemetry instrumentation scope.
 #[napi_derive::napi(js_name = "_montyVersion")]
 #[must_use]
 pub const fn monty_version() -> &'static str {

@@ -311,6 +311,8 @@ struct ProcessorState {
 struct RoutingState {
     /// Root containing each open Monty span.
     spans: HashMap<SpanKey, SpanKey>,
+    /// Number of open Monty spans belonging to each root.
+    open_spans: HashMap<SpanKey, usize>,
     /// Roots whose adapter stream can no longer be trusted.
     disabled: HashSet<SpanKey>,
     /// Callbacks which may still create or use adapter state.
@@ -335,6 +337,7 @@ impl AdapterProcessor {
             adapter,
             routing: Mutex::new(RoutingState {
                 spans: HashMap::new(),
+                open_spans: HashMap::new(),
                 disabled: HashSet::new(),
                 active_deliveries: HashMap::new(),
                 cleanup_sent: HashSet::new(),
@@ -383,7 +386,7 @@ impl AdapterProcessor {
     fn forget_finished_root(routing: &mut RoutingState, root: SpanKey) {
         if routing.finished_roots.contains(&root)
             && !routing.active_deliveries.contains_key(&root)
-            && !routing.spans.values().any(|candidate| *candidate == root)
+            && !routing.open_spans.contains_key(&root)
         {
             routing.disabled.remove(&root);
             routing.cleanup_sent.remove(&root);
@@ -413,6 +416,7 @@ impl SpanProcessor for AdapterProcessor {
             let mut routing = lock(&self.0.routing);
             let root = routing.spans.get(&parent_key).copied().unwrap_or(span_key);
             routing.spans.insert(span_key, root);
+            *routing.open_spans.entry(root).or_default() += 1;
             let deliver = Self::begin_delivery(&mut routing, root);
             (root, deliver)
         };
@@ -432,6 +436,11 @@ impl SpanProcessor for AdapterProcessor {
             let Some(root) = routing.spans.remove(&span_key) else {
                 return;
             };
+            let open_spans = routing.open_spans.get_mut(&root).expect("span registered on start");
+            *open_spans -= 1;
+            if *open_spans == 0 {
+                routing.open_spans.remove(&root);
+            }
             let deliver = Self::begin_delivery(&mut routing, root);
             (root, deliver)
         };
