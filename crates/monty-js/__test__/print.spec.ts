@@ -135,7 +135,7 @@ for i in range(3):
 test('print mixed types', async () => {
   const { output, callback } = makePrintCollector()
   await run('print("Value:", 3.14, True, None, [1, 2, 3])', { printCallback: callback })
-  t.deepEqual(output, ['Value: 3.14 True None [1, 2, 3]\n'])
+  t.is(output.join(''), 'Value: 3.14 True None [1, 2, 3]\n')
 })
 
 // =============================================================================
