@@ -1,7 +1,9 @@
 """Callback registration can race with completion of the native feed."""
 
 import asyncio
+import gc
 import inspect
+import weakref
 from collections.abc import Coroutine
 from contextlib import suppress
 from typing import Any
@@ -9,6 +11,7 @@ from typing import Any
 import pytest
 from inline_snapshot import snapshot
 
+from pydantic_monty import _async
 from pydantic_monty._async import CallbackTasks
 
 
@@ -106,16 +109,72 @@ async def test_pending_callback_cleanup_preserves_host_control_flow(cleanup_erro
         finally:
             raise cleanup_error('host interrupted')
 
-    async def complete():
-        return 42
-
     coro = pending()
     coro.send(None)
     wrapped = callbacks.wrap(coro)
     try:
         # Await directly so asyncio's task-level interrupt handling cannot stop the test runner.
         with pytest.raises(cleanup_error):
-            await callbacks._run(complete)  # pyright: ignore[reportPrivateUsage]
+            await callbacks.close()
     finally:
         wrapped.close()
         coro.close()
+
+
+@pytest.mark.parametrize('cleanup_raises', [False, True])
+async def test_callback_outliving_cleanup_deadline_is_retained_and_reaped(
+    monkeypatch: pytest.MonkeyPatch, cleanup_raises: bool
+):
+    monkeypatch.setattr(_async, '_CLEANUP_TIMEOUT', 0.01)
+    callbacks = CallbackTasks()
+    started = asyncio.Event()
+    releases: list[weakref.ReferenceType[asyncio.Event]] = []
+    errors: list[dict[str, Any]] = []
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: errors.append(context))
+
+    async def background():
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            release = asyncio.Event()
+            releases.append(weakref.ref(release))
+            await release.wait()
+            if cleanup_raises:
+                raise RuntimeError('late cleanup failed')
+
+    async def complete():
+        await started.wait()
+        return 42
+
+    task = asyncio.create_task(callbacks.wrap(background()))
+    task_ref = weakref.ref(task)
+    del task
+    driver = callbacks.run(complete)
+    try:
+        done, _ = await asyncio.wait((driver,), timeout=1)
+        assert bool(done) == snapshot(True)
+        assert await driver == snapshot(42)
+        del callbacks, driver
+        gc.collect()
+        assert (task_ref() is not None) == snapshot(True)
+        release = releases[0]()
+        assert release is not None
+        release.set()
+        del release
+        # Let the task, gather, and retention-removal callbacks each finish.
+        for _ in range(3):
+            await asyncio.sleep(0)
+        gc.collect()
+        assert (task_ref() is None) == snapshot(True)
+        assert errors == snapshot([])
+    finally:
+        task = task_ref()
+        if releases and (release := releases[0]()) is not None:
+            release.set()
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        loop.set_exception_handler(previous_handler)

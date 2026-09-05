@@ -960,9 +960,10 @@ class AsyncMontySession:
         entries in `external_lookup`) may be coroutines, awaited concurrently.
         See `MontySession.feed_run` for the shared error types.
 
-        Unfinished callbacks are cancelled and joined before completion, errors,
-        or caller cancellation are returned. Their async cleanup must finish;
-        tasks they create themselves remain their responsibility.
+        Unfinished callbacks are cancelled, with up to one second for async
+        cleanup before returning the outcome or propagating caller cancellation.
+        Callbacks still running remain tracked until they finish, even after the
+        session closes. Tasks they create themselves remain their responsibility.
 
         Arguments:
             code: The Python snippet to execute; its trailing expression value

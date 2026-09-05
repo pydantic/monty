@@ -57,10 +57,14 @@ threads, and no in-sandbox scheduler.
 ### Python callback lifetime
 
 [`AsyncMontySession.feed_run()`][pydantic_monty.AsyncMontySession.feed_run] cancels unfinished Python callbacks and
-waits for their cleanup before returning, raising an error, or propagating cancellation to its caller.
+waits up to one second for their cleanup before returning, raising an error, or propagating cancellation to its caller.
 This includes callbacks the sandbox started without awaiting, but not tasks a callback creates itself.
-Cleanup can use `await` in a `finally` block; a callback that suppresses cancellation and never finishes also prevents
-the feed from finishing.
+Cleanup can use `await` in a `finally` block.
+Repeated caller cancellation does not extend the deadline or interrupt callback cleanup.
+Callbacks still running after the deadline remain tracked until they finish, and their exceptions are collected.
+They can outlive the feed and its session, so callbacks must not rely on either remaining open during cleanup.
+A callback that never finishes keeps its resources alive; the host must make its callbacks cooperate with cancellation.
+The deadline requires a responsive event loop and cannot interrupt synchronous blocking code in a callback.
 Snapshot-driven execution, started with [`AsyncMontySession.feed_start()`][pydantic_monty.AsyncMontySession.feed_start]
 and [resumed by the host](../snapshots.md), has a separate lifetime and is not covered by this
 cleanup.

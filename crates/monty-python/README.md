@@ -83,7 +83,8 @@ if __name__ == '__main__':
 See the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) README for
 more details.
 
-`AsyncMontySession.feed_run()` cancels unfinished coroutine callbacks and waits for their async cleanup before
-returning a result, raising an error, or propagating caller cancellation.
+`AsyncMontySession.feed_run()` cancels unfinished coroutine callbacks and waits up to one second for their async cleanup
+before returning a result, raising an error, or propagating caller cancellation.
+Callbacks still running after that deadline remain tracked until they finish, and their exceptions are collected.
 Callbacks must cooperate with cancellation; tasks they create themselves remain their responsibility.
 This does not apply to snapshot-driven execution with `feed_start()` and `resume_auto()`.

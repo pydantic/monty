@@ -5,9 +5,12 @@ from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
 from typing import Any
 
+_CLEANUP_TIMEOUT = 1.0
+_draining_callbacks: set[asyncio.Future[list[Any]]] = set()
+
 
 class CallbackTasks:
-    """Join unfinished callbacks before exposing a feed's outcome to its caller."""
+    """Cancel unfinished callbacks and give their cleanup a bounded wait."""
 
     def __init__(self) -> None:
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -42,23 +45,35 @@ class CallbackTasks:
         try:
             return await start()
         finally:
-            self._closed = True
-            for coro in self._pending.values():
-                # Ordinary cleanup errors must not replace the feed outcome or skip other callbacks.
-                with suppress(Exception, asyncio.CancelledError):
-                    coro.close()
-            self._pending.clear()
-            tasks = tuple(self._tasks)
-            for task in tasks:
-                task.cancel()
-            if tasks:
-                # Repeated caller cancellation must not interrupt callback finally blocks.
-                joined = asyncio.gather(*tasks, return_exceptions=True)
-                cancelled = False
-                while not joined.done():
-                    try:
-                        await asyncio.shield(joined)
-                    except asyncio.CancelledError:
-                        cancelled = True
-                if cancelled:
-                    raise asyncio.CancelledError
+            await self.close()
+
+    async def close(self) -> None:
+        """Stop accepting callbacks and wait at most one second for cancellation cleanup."""
+        self._closed = True
+        for coro in self._pending.values():
+            # Ordinary cleanup errors must not replace the feed outcome or skip other callbacks.
+            with suppress(Exception, asyncio.CancelledError):
+                coro.close()
+        self._pending.clear()
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            joined = asyncio.gather(*tasks, return_exceptions=True)
+            # Keep callbacks alive after the deadline and collect their eventual exceptions.
+            _draining_callbacks.add(joined)
+            joined.add_done_callback(_draining_callbacks.discard)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + _CLEANUP_TIMEOUT
+            cancelled = False
+            while not joined.done():
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                try:
+                    # wait() leaves callbacks running if this wait is cancelled or times out.
+                    await asyncio.wait((joined,), timeout=remaining)
+                except asyncio.CancelledError:
+                    cancelled = True
+            if cancelled:
+                raise asyncio.CancelledError
