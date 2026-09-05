@@ -22,6 +22,7 @@ use crate::{
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
+    percent_format::percent_format,
     resource_checks::check_pow_size,
     types::{
         Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
@@ -35,8 +36,8 @@ use crate::{
         namedtuple::cmp_item_seqs,
         slice::slice_collect_iterator,
         str::{
-            allocate_char, allocate_string, concat_allocate_str, get_char_at_index, repeat_str, str_contains,
-            string_repr_fmt,
+            allocate_char, allocate_string, concat_allocate_str, copy_format_template, get_char_at_index, repeat_str,
+            str_contains, string_repr_fmt,
         },
     },
 };
@@ -976,6 +977,11 @@ impl<'h> PyTrait<'h> for Value {
                 } else {
                     Ok(Some(Self::Float(py_float_mod(*v1 as f64, *v2))))
                 }
+            }
+            // `str % args` is printf-style formatting; heap strings reach it via `HeapRead<Str>`.
+            (Self::InternString(id), _) => {
+                let template = copy_format_template(vm.interns.get_str(*id), &vm.heap.tracker)?;
+                percent_format(&template, other, vm).map(Some)
             }
             (Self::Ref(id), _) => vm.heap.read(*id).py_mod_impl(other, vm),
             _ => Ok(None),

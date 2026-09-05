@@ -75,6 +75,11 @@ combine-as-imports = true
 known-first-party = ["pydantic_monty"]
 
 [tool.ruff.lint.per-file-ignores]
+"crates/monty/test_cases/str__percent_format.py" = [
+    "F504", # unused mapping key - tests that a mapping operand never reports leftovers
+    "F506", # mixed positional and named placeholders - tests CPython's argument consumption order
+    "F507", # placeholder/argument count mismatch - the point of the argument-count tests
+]
 "crates/monty/test_cases/*.py" = [
     "E722", # bare except - needed for testing try/except with bare except clauses
     "E711", # Comparison to `None` should be `cond is None`

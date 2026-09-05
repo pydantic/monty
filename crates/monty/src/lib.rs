@@ -24,6 +24,7 @@ mod namespace;
 mod object_bridge;
 mod os_dispatch;
 mod parse;
+mod percent_format;
 mod predicate;
 mod prepare;
 mod repl;

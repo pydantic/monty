@@ -433,13 +433,13 @@ fn decimal_index(field: &str, vm: &VM<'_>) -> RunResult<Option<usize>> {
 }
 
 /// Appends a fragment while preserving `StringBuilder` resource accounting.
-fn push_tracked(output: String, text: &str, vm: &VM<'_>) -> RunResult<String> {
+pub(crate) fn push_tracked(output: String, text: &str, vm: &VM<'_>) -> RunResult<String> {
     let mut builder = StringBuilder::from_existing(output, &vm.heap.tracker);
     builder.push_str(text)?;
     builder.finish_raw()
 }
 
 /// Builds a `ValueError` for a malformed format string.
-fn value_error(message: impl fmt::Display) -> RunError {
+pub(crate) fn value_error(message: impl fmt::Display) -> RunError {
     SimpleException::new_msg(ExcType::ValueError, message).into()
 }

@@ -117,7 +117,7 @@ Each links to the page that owns it, which is where the full account lives:
     `run` and `gather`, the latter running host calls concurrently.
     `create_task`, `sleep` and everything else do not exist
     ([asyncio.md](asyncio.md)).
-- **The `format()` builtin and `%`-formatting are not implemented.** Use `str.format()` or
+- **The `format()` builtin is not implemented.** Use `str.format()`, `%`-formatting or
     f-strings ([format.md](format.md)).
 - **Only UTF-8, ASCII, UTF-16 and UTF-32 codecs exist.** `latin-1` and friends raise `LookupError`
     ([encoding.md](encoding.md)).

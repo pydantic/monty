@@ -33,8 +33,9 @@ WebAssembly runtimes do.
     `str.zfill`, `bytes.ljust`, …), integer division and `divmod`, deque
     rotation, slicing and repeat, materialising an iterator into a
     container, and string formatting with dynamic width or precision, for
-    both f-strings (`f"{v:>{w}}"`, `f"{v:.{p}f}"`) and `str.format()`
-    (`"{0:>{1}}".format(v, w)`, `"{0:.{1}f}".format(v, p)`). The pre-check
+    f-strings (`f"{v:>{w}}"`, `f"{v:.{p}f}"`), `str.format()`
+    (`"{0:>{1}}".format(v, w)`, `"{0:.{1}f}".format(v, p)`) and `%`
+    formatting (`"%*d" % (w, v)`, `"%.*f" % (p, v)`). The pre-check
     threshold is 100 KB:
     estimates above that are checked against the remaining budget and rejected
     with `MemoryError` before allocation when they would exceed it.

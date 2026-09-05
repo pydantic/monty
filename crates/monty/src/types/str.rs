@@ -21,6 +21,7 @@ use crate::{
         DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, heap_read_ref_as_field,
     },
     intern::{Interns, StaticStrings, StringId},
+    percent_format::percent_format,
     resource_checks::{check_repeat_size, check_replace_size},
     str_format::str_format,
     string_builder::StringBuilder,
@@ -363,6 +364,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
         self.py_mul_impl(other, vm)
     }
 
+    /// `str % args` is printf-style formatting, see `percent_format`.
+    fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let template = copy_format_template(self.get(vm.heap).as_str(), &vm.heap.tracker)?;
+        percent_format(&template, other, vm).map(Some)
+    }
+
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with(vm);
@@ -396,7 +403,7 @@ pub fn call_str_method(s: &str, method_id: StringId, args: ArgValues, vm: &mut V
 
 const FORMAT_TEMPLATE_COPY_CHUNK: usize = 64 * 1024;
 
-fn copy_format_template(template: &str, tracker: &ResourceTracker) -> RunResult<String> {
+pub(crate) fn copy_format_template(template: &str, tracker: &ResourceTracker) -> RunResult<String> {
     tracker.check_time()?;
     let mut copy = StringBuilder::with_capacity(template.len(), tracker)?;
     let mut start = 0;
