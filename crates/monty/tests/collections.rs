@@ -198,5 +198,5 @@ fn namedtuple_string_subscript_names_tuple() {
     )
     .expect("should parse");
     let err = run.run_no_limits(vec![]).expect_err("expected TypeError");
-    assert_snapshot!(err.message().expect("TypeError carries a message"), @"tuple indices must be integers, not 'str'");
+    assert_snapshot!(err.message().expect("TypeError carries a message"), @"tuple indices must be integers or slices, not str");
 }

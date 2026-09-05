@@ -1232,28 +1232,19 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::IndexError, "no such group").into()
     }
 
-    /// Creates a TypeError for non-integer sequence indices (getitem).
+    /// Creates a TypeError for subscripting a sequence with a non-integer key.
     ///
-    /// Matches CPython's format: `TypeError('{type}' indices must be integers, not '{index_type}')`
+    /// CPython words this per type: `list indices must be integers or slices, not str`
+    /// for `list`, `tuple` and `range`, the same with `byte` for `bytes`, and
+    /// `string indices must be integers, not 'str'` for `str`.
     #[must_use]
-    fn type_error_indices(type_str: Type, index_type: &str) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{type_str} indices must be integers, not '{index_type}'"),
-        )
-        .into()
-    }
-
-    /// Creates a TypeError for non-integer list indices (setitem/assignment).
-    ///
-    /// Matches CPython's format: `TypeError('list indices must be integers or slices, not {index_type}')`
-    #[must_use]
-    fn type_error_list_assignment_indices(index_type: &str) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("list indices must be integers or slices, not {index_type}"),
-        )
-        .into()
+    fn type_error_indices(container: Type, index_type: &str) -> RunError {
+        let message = match container {
+            Type::Str => format!("string indices must be integers, not '{index_type}'"),
+            Type::Bytes => format!("byte indices must be integers or slices, not {index_type}"),
+            _ => format!("{container} indices must be integers or slices, not {index_type}"),
+        };
+        SimpleException::new_msg(ExcType::TypeError, message).into()
     }
 
     /// Creates a NameError for accessing a free variable (nonlocal/closure) before it's assigned.
