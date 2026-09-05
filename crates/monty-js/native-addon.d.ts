@@ -5,7 +5,12 @@ export declare function _flushTelemetry(): Promise<void>
 export declare function _installTelemetry(
   callback: (event: string) => boolean,
   metricsCallback: (event: string) => boolean,
+  metricsEnabled: boolean,
 ): void
+
+export declare function _montyVersion(): string
+
+export declare function _setTelemetryMetricsEnabled(enabled: boolean): void
 
 export interface NativeMount {
   virtualPath: string

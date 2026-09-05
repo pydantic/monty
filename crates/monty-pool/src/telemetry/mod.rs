@@ -178,7 +178,7 @@ impl TelemetryContext {
         headers
     }
 
-    /// Converts the propagated span into the remote OTel parent context.
+    /// Converts the propagated span into its OTel parent context.
     pub(crate) fn into_parent(self) -> Option<Context> {
         self.parent
             .map(|parent| Context::new().with_remote_span_context(parent))

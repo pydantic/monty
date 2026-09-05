@@ -496,17 +496,52 @@ The `monty` binary resolves from: explicit `binaryPath` → the `MONTY_BIN`
 environment variable → the installed platform package → `PATH` → a cargo
 workspace `target/` build (development).
 
-The Node binding has a private telemetry hook for OpenTelemetry integrations:
-`_installTelemetry({ tracer, meter, logger })`. Each standard OpenTelemetry component is optional,
-but at least one is required, and installation is process-wide. At checkout Monty propagates the
-active context and reconstructs spans and logs through the supplied components. The meter receives
-raw measurements so its views, readers, temporality, and exporters apply. Browser/WASM does not yet
-implement this integration.
+## Observability
 
-Span starts cross synchronously so their host context is available to children. Span ends, logs,
-and raw measurements use bounded non-blocking queues; overflow disables the affected telemetry
-path rather than blocking a pool worker. `_flushTelemetry()` drains those queues and must complete
-before the host SDK is flushed or shut down.
+Node applications can explicitly instrument Monty through the standard
+OpenTelemetry components configured by their SDK:
+
+```ts
+import { metrics, trace } from '@opentelemetry/api'
+import { logs } from '@opentelemetry/api-logs'
+import { instrumentTelemetry } from '@pydantic/monty/node'
+
+instrumentTelemetry({
+  tracer: trace.getTracer('@pydantic/monty'),
+  meter: metrics.getMeter('@pydantic/monty'),
+  logger: logs.getLogger('@pydantic/monty'),
+})
+```
+
+Each component is optional. Install instrumentation before creating a pool.
+It applies process-wide and records potentially sensitive source, inputs,
+outputs, exceptions, and printed text.
+
+When configuring an OpenTelemetry `NodeSDK`, use `MontyInstrumentation` so the
+SDK supplies its tracer and meter providers through the standard
+instrumentation lifecycle:
+
+```ts
+import { NodeSDK } from '@opentelemetry/sdk-node'
+import { MontyInstrumentation } from '@pydantic/monty/node'
+
+const sdk = new NodeSDK({
+  instrumentations: [new MontyInstrumentation()],
+})
+sdk.start()
+```
+
+The instrumentation obtains its logger through `@opentelemetry/api-logs`.
+Provider-owned IDs, sampling, metric views and aggregation, resources, readers,
+exporters, flushing, and shutdown therefore apply normally. Pool metrics cover
+every checkout and contain no sandbox-supplied dimensions.
+
+Native worker threads deliver records through bounded Node callback queues;
+span starts wait for the host sampling decision, while span ends, logs, and raw
+metric measurements are queued without blocking workers. Queue overflow
+disables the affected telemetry path rather than risking unbounded host memory.
+Call `flushTelemetry()` before directly flushing providers. Browser/WASM does
+not yet implement this instrumentation path.
 
 ## Value Conversion
 

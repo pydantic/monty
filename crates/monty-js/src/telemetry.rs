@@ -1,4 +1,4 @@
-//! Statically linked Logfire pipeline forwarding telemetry to Node's event loop.
+//! Bridge from Monty's Rust telemetry pipeline to Node's event loop.
 
 use std::{
     sync::{
@@ -37,6 +37,8 @@ struct JsBridge {
     flush_metrics: SendAndWait,
     /// Queue overflow disables tracing rather than leaving gaps in open spans.
     tracing_disabled: AtomicBool,
+    /// Whether the current JavaScript instrumentation requested metrics.
+    metrics_enabled: AtomicBool,
     /// Whether the metric callback can no longer receive measurements.
     metrics_disabled: AtomicBool,
     delivery: RwLock<DeliveryState>,
@@ -63,6 +65,7 @@ const VALUE_DEPTH_LIMIT: usize = 64;
 pub fn install_telemetry(
     callback: Function<'_, FnArgs<(String,)>, bool>,
     metrics_callback: Function<'_, FnArgs<(String,)>, bool>,
+    metrics_enabled: bool,
 ) -> napi::Result<()> {
     let callback = Arc::new(
         callback
@@ -114,6 +117,7 @@ pub fn install_telemetry(
         send_metrics,
         flush_metrics,
         tracing_disabled: AtomicBool::new(false),
+        metrics_enabled: AtomicBool::new(metrics_enabled),
         metrics_disabled: AtomicBool::new(false),
         delivery: RwLock::new(DeliveryState {
             cleanup_requested: false,
@@ -124,6 +128,14 @@ pub fn install_telemetry(
     BRIDGE
         .set(InstalledBridge { bridge, handle })
         .map_err(|_| napi::Error::from_reason("Monty telemetry is already configured"))
+}
+
+/// Enables or disables delivery of pool metrics for subsequently created pools.
+#[napi(js_name = "_setTelemetryMetricsEnabled")]
+pub fn set_telemetry_metrics_enabled(enabled: bool) {
+    if let Some(installed) = BRIDGE.get() {
+        installed.bridge.metrics_enabled.store(enabled, Ordering::Relaxed);
+    }
 }
 
 /// Waits until queued telemetry has reached the Node event loop.
@@ -144,7 +156,10 @@ pub async fn flush_telemetry() -> napi::Result<()> {
 
 /// Returns the installed handle used to configure pool metrics.
 pub(crate) fn configured_adapter() -> Option<&'static TelemetryAdapterHandle> {
-    BRIDGE.get().map(|installed| &installed.handle)
+    BRIDGE
+        .get()
+        .filter(|installed| installed.bridge.metrics_enabled.load(Ordering::Relaxed))
+        .map(|installed| &installed.handle)
 }
 
 /// Returns the installed handle while span and log delivery remains available.
@@ -239,7 +254,7 @@ impl TelemetryAdapter for JsBridge {
     }
 
     fn record_metric(&self, measurement: &Measurement<'_>) {
-        if self.metrics_disabled.load(Ordering::Relaxed) {
+        if !self.metrics_enabled.load(Ordering::Relaxed) || self.metrics_disabled.load(Ordering::Relaxed) {
             return;
         }
         let kind = match measurement.kind {
@@ -292,7 +307,7 @@ impl TelemetryAdapter for JsBridge {
 }
 
 impl JsBridge {
-    /// Starts a span synchronously so the host can report delivery failure.
+    /// Starts a span synchronously so the host's sampling decision reaches Rust.
     fn start_span_event(&self, event: JsonValue) -> bool {
         let _delivery = read_lock(&self.delivery);
         if self.tracing_disabled.load(Ordering::Relaxed) {

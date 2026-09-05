@@ -18,4 +18,10 @@ mod telemetry;
 pub use exceptions::{ExceptionInfo, Frame, JsMontyException};
 pub use limits::JsResourceLimits;
 pub use pool::{NativeCheckoutOptions, NativeMount, NativePool, NativePoolOptions, NativeSession, MAX_VALUE_DEPTH};
-pub use telemetry::{flush_telemetry, install_telemetry};
+pub use telemetry::{flush_telemetry, install_telemetry, set_telemetry_metrics_enabled};
+
+#[napi_derive::napi(js_name = "_montyVersion")]
+#[must_use]
+pub const fn monty_version() -> &'static str {
+    monty_types::MONTY_VERSION
+}

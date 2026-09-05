@@ -80,6 +80,12 @@
     "@emnapi/runtime": "^1.5.0",
     "@napi-rs/cli": "^3.2.0",
     "@napi-rs/wasm-runtime": "^1.1.5",
+    "@opentelemetry/context-async-hooks": "^2.11.0",
+    "@opentelemetry/instrumentation": "^0.222.0",
+    "@opentelemetry/sdk-logs": "^0.222.0",
+    "@opentelemetry/sdk-metrics": "^2.11.0",
+    "@opentelemetry/sdk-node": "^0.222.0",
+    "@opentelemetry/sdk-trace-base": "^2.11.0",
     "@playwright/test": "^1.49.1",
     "@tybys/wasm-util": "^0.10.0",
     "@types/node": "^25.0.9",
@@ -99,10 +105,10 @@
     "arrowParens": "always"
   },
   "optionalDependencies": {
-    "@pydantic/monty-darwin-x64": "0.0.22",
     "@pydantic/monty-darwin-arm64": "0.0.22",
-    "@pydantic/monty-linux-x64-gnu": "0.0.22",
+    "@pydantic/monty-darwin-x64": "0.0.22",
     "@pydantic/monty-linux-arm64-gnu": "0.0.22",
+    "@pydantic/monty-linux-x64-gnu": "0.0.22",
     "@pydantic/monty-win32-x64-msvc": "0.0.22"
   }
 }
