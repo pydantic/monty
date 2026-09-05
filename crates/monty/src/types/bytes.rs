@@ -84,6 +84,7 @@ use crate::{
         DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, heap_read_ref_as_field,
     },
     intern::{BytesId, StaticStrings, StringId},
+    percent_format::percent_format_bytes,
     resource_checks::{check_repeat_size, check_replace_size},
     types::{
         List,
@@ -374,6 +375,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.py_mul_impl(other, vm)
+    }
+
+    /// `bytes % args` is printf-style formatting, see `percent_format`.
+    fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let template = self.get(vm.heap).as_slice().to_vec();
+        percent_format_bytes(&template, other, vm).map(Some)
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
@@ -2298,7 +2305,7 @@ fn hex_char_to_value(c: char) -> Option<u8> {
 // =============================================================================
 
 /// Allocates bytes on the heap.
-fn allocate_bytes(bytes: Vec<u8>, heap: &Heap) -> Value {
+pub(crate) fn allocate_bytes(bytes: Vec<u8>, heap: &Heap) -> Value {
     let heap_id = heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
     Value::Ref(heap_id)
 }

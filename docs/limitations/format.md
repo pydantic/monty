@@ -16,27 +16,33 @@ The other CPython formatting entry points are not implemented:
 
 - The `format()` builtin raises `NameError`, and `str.format_map()` raises
     `AttributeError` (see [builtins.md](builtins.md)).
-- `bytes % args` is not implemented: `bytes` has no `__mod__`, so it raises
-    `TypeError: unsupported operand type(s) for %: 'bytes' and '...'`.
 
 ## Printf-style `%` formatting
 
-`str % args` implements CPython's printf-style directives: `%s`, `%r`, `%a`,
-`%c`, `%d` / `%i` / `%u`, `%o`, `%x` / `%X`, `%e` / `%E`, `%f` / `%F`,
-`%g` / `%G` and `%%`, with the `-`, `+`, space, `#` and `0` flags, a width and
-precision given literally or as `*` arguments, `%(key)s` mapping lookups, and
-the ignored `h` / `l` / `L` length modifiers. The divergences:
+`str % args` and `bytes % args` implement CPython's printf-style directives:
+`%s`, `%r`, `%a`, `%c`, `%d` / `%i` / `%u`, `%o`, `%x` / `%X`, `%e` / `%E`,
+`%f` / `%F`, `%g` / `%G` and `%%` (plus `%b` for `bytes`), with the `-`, `+`,
+space, `#` and `0` flags, a width and precision given literally or as `*`
+arguments, `%(key)s` mapping lookups, and the ignored `h` / `l` / `L` length
+modifiers. The divergences:
+
+- **`bytes` `%s` / `%b` accept only `bytes`.** Monty has no `bytearray`,
+    `memoryview` or `__bytes__` protocol, so `b'%s' % obj` raises
+    `TypeError: %b requires a bytes-like object, or an object that implements __bytes__, not 'C'`
+    even when `C` defines `__bytes__`.
 
 - **Operands are coerced through `__index__` only.** A class that defines just
     `__int__` raises `TypeError: %d format: a real number is required, not C`
     where CPython would call it; likewise one defining just `__float__` under
     `%f` raises `must be real number, not C`.
+
 - **A user class is never a mapping.** CPython lets `%(key)s` index any object
     with `__getitem__` and skips the leftover-arguments check for it; Monty
     recognises only `dict` (and its `collections` subclasses), `list`, `bytes`
     and `range`, so `'%(k)s' % instance` raises
     `TypeError: format requires a mapping` and `'abc' % instance` raises
     `not all arguments converted during string formatting`.
+
 - **`%c` rejects surrogate code points.** `'%c' % 0xD800` raises
     `OverflowError: %c arg not in range(0x110000)`, the same error as an
     out-of-range code point, because Monty strings cannot hold lone surrogates

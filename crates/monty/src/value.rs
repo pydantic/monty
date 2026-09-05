@@ -22,7 +22,7 @@ use crate::{
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
-    percent_format::percent_format,
+    percent_format::{percent_format, percent_format_bytes},
     resource_checks::check_pow_size,
     types::{
         Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
@@ -978,10 +978,14 @@ impl<'h> PyTrait<'h> for Value {
                     Ok(Some(Self::Float(py_float_mod(*v1 as f64, *v2))))
                 }
             }
-            // `str % args` is printf-style formatting; heap strings reach it via `HeapRead<Str>`.
+            // `str % args` and `bytes % args` are printf-style formatting; heap values reach it via `HeapRead`.
             (Self::InternString(id), _) => {
                 let template = copy_format_template(vm.interns.get_str(*id), &vm.heap.tracker)?;
                 percent_format(&template, other, vm).map(Some)
+            }
+            (Self::InternBytes(id), _) => {
+                let template = vm.interns.get_bytes(*id).to_vec();
+                percent_format_bytes(&template, other, vm).map(Some)
             }
             (Self::Ref(id), _) => vm.heap.read(*id).py_mod_impl(other, vm),
             _ => Ok(None),

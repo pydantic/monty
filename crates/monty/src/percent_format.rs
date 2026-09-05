@@ -1,10 +1,12 @@
-//! Printf-style `str % args` formatting (`'%5.2f' % x`, `'%(key)s' % mapping`).
+//! Printf-style `%` formatting for `str` and `bytes` (`'%5.2f' % x`, `b'%s' % data`).
 //!
 //! Directive parsing, argument consumption and error precedence follow
-//! CPython's `PyUnicode_Format`. Float digit text comes from the f-string
-//! formatters in [`crate::fstring`]; padding happens here because printf pads
-//! differently from the format mini-language (zero fill also covers `nan` and
-//! `inf`, text right-aligns, integer precision zero-extends the digits).
+//! CPython's `PyUnicode_Format` and `_PyBytes_FormatEx`, which share a
+//! grammar. The core works on bytes for both modes: numeric text is ASCII and
+//! every fragment appended in `str` mode is UTF-8. Float digit text comes from
+//! the f-string formatters in [`crate::fstring`]; padding happens here because
+//! printf pads differently from the format mini-language (zero fill also
+//! covers `nan` and `inf`, text right-aligns, integer precision zero-extends).
 
 use monty_types::ResourceTracker;
 
@@ -15,38 +17,70 @@ use crate::{
     fstring::{ParsedFormatSpec, Sign, TypeChar, format_float_e, format_float_f, format_float_g},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
     resource_checks::check_repeat_size,
-    str_format::{push_tracked, value_error},
-    string_builder::StringBuilder,
-    types::{LongInt, PyTrait, Type, long_int::check_bits_str_digits_limit, str::allocate_string},
+    str_format::value_error,
+    string_builder::BytesBuilder,
+    types::{
+        LongInt, PyTrait, Type, bytes::allocate_bytes, long_int::check_bits_str_digits_limit, str::allocate_string,
+    },
     value::Value,
 };
 
-/// Renders `template % args`: `args` is a tuple of positional values, a
-/// mapping for `%(key)` directives, or a single value.
+/// Renders `template % args` for a `str` template.
 pub(crate) fn percent_format(template: &str, args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let arguments = Arguments::new(args, vm);
+    let output = format_template(template.as_bytes(), Mode::Str, args, vm)?;
+    let output = String::from_utf8(output).expect("str formatting appends only UTF-8 fragments");
+    Ok(allocate_string(output, vm.heap))
+}
+
+/// Renders `template % args` for a `bytes` template.
+pub(crate) fn percent_format_bytes(template: &[u8], args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    let output = format_template(template, Mode::Bytes, args, vm)?;
+    Ok(allocate_bytes(output, vm.heap))
+}
+
+/// The operand type being formatted; decides the text conversions, the `%c`
+/// rules, and the wording of a few errors.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Str,
+    Bytes,
+}
+
+impl Mode {
+    /// The noun CPython uses in this mode's leftover-arguments error.
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Str => "string",
+            Self::Bytes => "bytes",
+        }
+    }
+}
+
+/// Walks the template, copying literal runs and rendering each `%` directive.
+fn format_template(template: &[u8], mode: Mode, args: &Value, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
+    let arguments = Arguments::new(args, mode, vm);
     defer_drop!(arguments, vm);
     let mut cursor = DropGuard::new(Cursor::default(), vm);
     let (cursor, vm) = cursor.as_parts_mut();
 
-    let mut output = String::new();
+    let mut output = Vec::new();
     let mut index = 0;
     let mut steps = 0;
     while index < template.len() {
         vm.heap.tracker.check_time_every(steps)?;
         steps += 1;
-        let Some(offset) = template[index..].find('%') else {
+        let Some(offset) = template[index..].iter().position(|byte| *byte == b'%') else {
             output = push_tracked(output, &template[index..], vm)?;
             break;
         };
         output = push_tracked(output, &template[index..index + offset], vm)?;
         index += offset + 1;
         // Only an immediate `%%` is an escape: `%5%` is a directive whose conversion is `%`.
-        if template.as_bytes().get(index) == Some(&b'%') {
-            output = push_tracked(output, "%", vm)?;
+        if template.get(index) == Some(&b'%') {
+            output = push_tracked(output, b"%", vm)?;
             index += 1;
         } else {
-            let (rendered, next) = render_directive(template, index, arguments, cursor, vm)?;
+            let (rendered, next) = render_directive(template, index, mode, arguments, cursor, vm)?;
             output = push_tracked(output, &rendered, vm)?;
             index = next;
         }
@@ -54,11 +88,12 @@ pub(crate) fn percent_format(template: &str, args: &Value, vm: &mut VM<'_>) -> R
 
     // A mapping operand never reports leftovers, so `'abc' % {}` is fine.
     if arguments.mapping.is_none() && cursor.next < arguments.positional.len() {
-        Err(ExcType::type_error(
-            "not all arguments converted during string formatting",
-        ))
+        Err(ExcType::type_error(format!(
+            "not all arguments converted during {} formatting",
+            mode.noun()
+        )))
     } else {
-        Ok(allocate_string(output, vm.heap))
+        Ok(output)
     }
 }
 
@@ -67,12 +102,13 @@ struct Arguments {
     /// The tuple's items, or the lone operand itself.
     positional: Vec<Value>,
     /// The operand again when `%(key)` may index it: the types CPython's
-    /// mapping check accepts (see `limitations/format.md`).
+    /// mapping check accepts (see `limitations/format.md`), minus `bytes`
+    /// for a `bytes` template.
     mapping: Option<Value>,
 }
 
 impl Arguments {
-    fn new(args: &Value, vm: &VM<'_>) -> Self {
+    fn new(args: &Value, mode: Mode, vm: &VM<'_>) -> Self {
         let positional = match args {
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Tuple(tuple) => clone_items(tuple.as_slice(), vm),
@@ -81,10 +117,11 @@ impl Arguments {
             },
             _ => vec![args.clone_with_heap(vm.heap)],
         };
-        let mapping = matches!(
-            args.py_type(vm),
-            Type::Dict | Type::DefaultDict | Type::Counter | Type::List | Type::Bytes | Type::Range
-        )
+        let mapping = match args.py_type(vm) {
+            Type::Dict | Type::DefaultDict | Type::Counter | Type::List | Type::Range => true,
+            Type::Bytes => mode == Mode::Str,
+            _ => false,
+        }
         .then(|| args.clone_with_heap(vm.heap));
         Self { positional, mapping }
     }
@@ -141,28 +178,64 @@ struct Directive {
     precision: Option<usize>,
 }
 
-/// A directive read up to its conversion character.
+/// A directive read up to its conversion byte.
 struct ParsedDirective {
     spec: Directive,
-    conversion: char,
-    /// Index just past the conversion character.
+    conversion: u8,
+    /// Index just past the conversion byte.
     end: usize,
+}
+
+/// A rendered text fragment with its length in the mode's units:
+/// characters for `str`, bytes for `bytes`.
+struct Text {
+    bytes: Vec<u8>,
+    len: usize,
+}
+
+impl Text {
+    /// Truncates a `str` fragment to `precision` characters.
+    fn from_string(text: String, precision: Option<usize>, tracker: &ResourceTracker) -> RunResult<Self> {
+        let mut len = 0;
+        let mut end = text.len();
+        for (index, (offset, _)) in text.char_indices().enumerate() {
+            tracker.check_time_every(index)?;
+            if precision == Some(len) {
+                end = offset;
+                break;
+            }
+            len += 1;
+        }
+        let mut bytes = text.into_bytes();
+        bytes.truncate(end);
+        Ok(Self { bytes, len })
+    }
+
+    /// Truncates a `bytes` fragment to `precision` bytes.
+    fn from_bytes(mut bytes: Vec<u8>, precision: Option<usize>) -> Self {
+        if let Some(precision) = precision {
+            bytes.truncate(precision);
+        }
+        let len = bytes.len();
+        Self { bytes, len }
+    }
 }
 
 /// Parses and renders the directive starting just after its `%`.
 fn render_directive(
-    template: &str,
+    template: &[u8],
     start: usize,
+    mode: Mode,
     arguments: &Arguments,
     cursor: &mut Cursor,
     vm: &mut VM<'_>,
-) -> RunResult<(String, usize)> {
+) -> RunResult<(Vec<u8>, usize)> {
     let mut index = start;
     // `%(key)` is looked up as soon as it is read, so a missing key reports
     // before a malformed spec does.
-    if template.as_bytes().get(index) == Some(&b'(') {
+    if template.get(index) == Some(&b'(') {
         let key_end = find_key_end(template, index + 1, vm)?;
-        lookup_key(&template[index + 1..key_end], arguments, cursor, vm)?;
+        lookup_key(&template[index + 1..key_end], mode, arguments, cursor, vm)?;
         index = key_end + 1;
     }
     let parsed = parse_directive(template, index, arguments, cursor, vm)?;
@@ -173,39 +246,41 @@ fn render_directive(
     defer_drop!(value, vm);
     let spec = &parsed.spec;
     let rendered = match parsed.conversion {
-        's' => pad_text(&vm.convert_value(value, 1)?, spec.precision, spec, &vm.heap.tracker),
-        'r' => pad_text(&vm.convert_value(value, 2)?, spec.precision, spec, &vm.heap.tracker),
-        'a' => pad_text(&vm.convert_value(value, 3)?, spec.precision, spec, &vm.heap.tracker),
+        b's' => text_operand(value, spec.precision, mode, vm).and_then(|text| pad_text(&text, spec, &vm.heap.tracker)),
+        b'b' if mode == Mode::Bytes => {
+            text_operand(value, spec.precision, mode, vm).and_then(|text| pad_text(&text, spec, &vm.heap.tracker))
+        }
+        b'r' | b'a' => repr_operand(value, parsed.conversion, spec.precision, mode, vm)
+            .and_then(|text| pad_text(&text, spec, &vm.heap.tracker)),
         // `%c` ignores the precision.
-        'c' => pad_text(&char_text(value, vm)?, None, spec, &vm.heap.tracker),
-        'd' | 'i' | 'u' => format_integer(value, 10, parsed.conversion, spec, vm),
-        'o' => format_integer(value, 8, 'o', spec, vm),
-        'x' => format_integer(value, 16, 'x', spec, vm),
-        'X' => format_integer(value, 16, 'X', spec, vm),
-        'e' => format_float(value, TypeChar::E, spec, vm),
-        'E' => format_float(value, TypeChar::EUpper, spec, vm),
-        'f' => format_float(value, TypeChar::F, spec, vm),
-        'F' => format_float(value, TypeChar::FUpper, spec, vm),
-        'g' => format_float(value, TypeChar::G, spec, vm),
-        'G' => format_float(value, TypeChar::GUpper, spec, vm),
-        other => Err(unsupported(other, template, parsed.end - other.len_utf8())),
+        b'c' => char_operand(value, mode, vm).and_then(|text| pad_text(&text, spec, &vm.heap.tracker)),
+        b'd' | b'i' | b'u' => format_integer(value, 10, parsed.conversion, spec, vm),
+        b'o' => format_integer(value, 8, b'o', spec, vm),
+        b'x' => format_integer(value, 16, b'x', spec, vm),
+        b'X' => format_integer(value, 16, b'X', spec, vm),
+        b'e' => format_float(value, TypeChar::E, mode, spec, vm),
+        b'E' => format_float(value, TypeChar::EUpper, mode, spec, vm),
+        b'f' => format_float(value, TypeChar::F, mode, spec, vm),
+        b'F' => format_float(value, TypeChar::FUpper, mode, spec, vm),
+        b'g' => format_float(value, TypeChar::G, mode, spec, vm),
+        b'G' => format_float(value, TypeChar::GUpper, mode, spec, vm),
+        _ => Err(unsupported(template, parsed.end - 1, mode)),
     }?;
     Ok((rendered, parsed.end))
 }
 
 /// Reads the flags, width, precision, optional C length modifier and
-/// conversion character, consuming the arguments a `*` width or precision names.
+/// conversion byte, consuming the arguments a `*` width or precision names.
 fn parse_directive(
-    template: &str,
+    template: &[u8],
     start: usize,
     arguments: &Arguments,
     cursor: &mut Cursor,
     vm: &mut VM<'_>,
 ) -> RunResult<ParsedDirective> {
-    let bytes = template.as_bytes();
     let mut spec = Directive::default();
     let mut index = start;
-    while let Some(flag) = bytes.get(index) {
+    while let Some(flag) = template.get(index) {
         match flag {
             b'-' => spec.left = true,
             b'+' => spec.sign = Some(Sign::Plus),
@@ -217,7 +292,7 @@ fn parse_directive(
         index += 1;
     }
 
-    if bytes.get(index) == Some(&b'*') {
+    if template.get(index) == Some(&b'*') {
         let width = star_operand(arguments, cursor, vm, ExcType::overflow_c_ssize_t)?;
         // A negative `*` width left-justifies, like the `-` flag.
         spec.left |= width < 0;
@@ -227,12 +302,12 @@ fn parse_directive(
         (spec.width, index) = parse_number(template, index, "width too big")?;
     }
 
-    if bytes.get(index) == Some(&b'.') {
+    if template.get(index) == Some(&b'.') {
         index += 1;
-        if bytes.get(index) == Some(&b'*') {
+        if template.get(index) == Some(&b'*') {
             let precision = star_operand(arguments, cursor, vm, ExcType::overflow_c_int)?;
-            // A negative `*` precision means none was given.
-            spec.precision = usize::try_from(precision).ok();
+            // A negative `*` precision clamps to zero.
+            spec.precision = Some(usize::try_from(precision).unwrap_or(0));
             index += 1;
         } else {
             let (precision, next) = parse_number(template, index, "precision too big")?;
@@ -242,24 +317,24 @@ fn parse_directive(
     }
 
     // C length modifiers are accepted and ignored.
-    if matches!(bytes.get(index), Some(b'h' | b'l' | b'L')) {
+    if matches!(template.get(index), Some(b'h' | b'l' | b'L')) {
         index += 1;
     }
 
-    match template[index..].chars().next() {
+    match template.get(index) {
         Some(conversion) => Ok(ParsedDirective {
             spec,
-            conversion,
-            end: index + conversion.len_utf8(),
+            conversion: *conversion,
+            end: index + 1,
         }),
         None => Err(value_error("incomplete format")),
     }
 }
 
 /// Finds the `)` closing a `%(key)`, allowing nested parentheses in the key.
-fn find_key_end(template: &str, start: usize, vm: &VM<'_>) -> RunResult<usize> {
+fn find_key_end(template: &[u8], start: usize, vm: &VM<'_>) -> RunResult<usize> {
     let mut depth = 0usize;
-    for (offset, byte) in template.as_bytes()[start..].iter().enumerate() {
+    for (offset, byte) in template[start..].iter().enumerate() {
         vm.heap.tracker.check_time_every(offset)?;
         match byte {
             b'(' => depth += 1,
@@ -272,11 +347,10 @@ fn find_key_end(template: &str, start: usize, vm: &VM<'_>) -> RunResult<usize> {
 }
 
 /// Parses a run of decimal digits, raising `message` past the signed size range.
-fn parse_number(template: &str, start: usize, message: &str) -> RunResult<(usize, usize)> {
-    let bytes = template.as_bytes();
+fn parse_number(template: &[u8], start: usize, message: &str) -> RunResult<(usize, usize)> {
     let mut index = start;
     let mut number = 0usize;
-    while let Some(digit) = bytes.get(index).filter(|byte| byte.is_ascii_digit()) {
+    while let Some(digit) = template.get(index).filter(|byte| byte.is_ascii_digit()) {
         number = number
             .checked_mul(10)
             .and_then(|number| number.checked_add(usize::from(digit - b'0')))
@@ -288,12 +362,15 @@ fn parse_number(template: &str, start: usize, message: &str) -> RunResult<(usize
 }
 
 /// Looks `key` up in the mapping operand and makes the result the one
-/// remaining argument, as CPython does.
-fn lookup_key(key: &str, arguments: &Arguments, cursor: &mut Cursor, vm: &mut VM<'_>) -> RunResult<()> {
+/// remaining argument, as CPython does. The key takes the template's type.
+fn lookup_key(key: &[u8], mode: Mode, arguments: &Arguments, cursor: &mut Cursor, vm: &mut VM<'_>) -> RunResult<()> {
     let Some(mapping) = &arguments.mapping else {
         return Err(ExcType::type_error("format requires a mapping"));
     };
-    let key = allocate_string(key, vm.heap);
+    let key = match mode {
+        Mode::Str => allocate_string(&*String::from_utf8_lossy(key), vm.heap),
+        Mode::Bytes => allocate_bytes(key.to_vec(), vm.heap),
+    };
     defer_drop!(key, vm);
     let value = mapping.py_getitem(key, vm)?;
     cursor.keyed = true;
@@ -336,28 +413,59 @@ fn star_operand(
     }
 }
 
-/// Truncates `text` to `precision` characters and pads it to the width:
-/// text right-aligns unless `-` was given, and the `0` flag is ignored.
-fn pad_text(text: &str, precision: Option<usize>, spec: &Directive, tracker: &ResourceTracker) -> RunResult<String> {
-    let mut length = 0;
-    let mut end = text.len();
-    for (index, (offset, _)) in text.char_indices().enumerate() {
-        tracker.check_time_every(index)?;
-        if precision == Some(length) {
-            end = offset;
-            break;
-        }
-        length += 1;
+/// The `%s` (and bytes `%b`) operand: `str()` of anything for a `str`
+/// template, but only `bytes` for a `bytes` template.
+fn text_operand(value: &Value, precision: Option<usize>, mode: Mode, vm: &mut VM<'_>) -> RunResult<Text> {
+    match mode {
+        Mode::Str => Text::from_string(vm.convert_value(value, 1)?, precision, &vm.heap.tracker),
+        Mode::Bytes => match value {
+            Value::InternBytes(id) => Ok(Text::from_bytes(vm.interns.get_bytes(*id).to_vec(), precision)),
+            Value::Ref(id) if let HeapData::Bytes(bytes) = vm.heap.get(*id) => {
+                Ok(Text::from_bytes(bytes.as_slice().to_vec(), precision))
+            }
+            _ => Err(ExcType::type_error(format!(
+                "%b requires a bytes-like object, or an object that implements __bytes__, not '{}'",
+                value.py_type_name(vm)
+            ))),
+        },
     }
-    pad("", "", &text[..end], length, false, spec, tracker)
+}
+
+/// The `%r` / `%a` operand: `repr()` or `ascii()` for a `str` template, and
+/// always `ascii()` for a `bytes` template.
+fn repr_operand(
+    value: &Value,
+    conversion: u8,
+    precision: Option<usize>,
+    mode: Mode,
+    vm: &mut VM<'_>,
+) -> RunResult<Text> {
+    let ascii = mode == Mode::Bytes || conversion == b'a';
+    let text = vm.convert_value(value, if ascii { 3 } else { 2 })?;
+    Text::from_string(text, precision, &vm.heap.tracker)
+}
+
+/// The `%c` operand: a code point or one-character string for a `str`
+/// template, a byte value or one-byte `bytes` for a `bytes` template.
+fn char_operand(value: &Value, mode: Mode, vm: &mut VM<'_>) -> RunResult<Text> {
+    match mode {
+        Mode::Str => Text::from_string(char_text(value, vm)?, None, &vm.heap.tracker),
+        Mode::Bytes => Ok(Text::from_bytes(vec![byte_char(value, vm)?], None)),
+    }
+}
+
+/// Pads a text fragment to the width: text right-aligns unless `-` was
+/// given, and the `0` flag is ignored.
+fn pad_text(text: &Text, spec: &Directive, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+    pad("", "", &text.bytes, text.len, false, spec, tracker)
 }
 
 /// Renders `%d`/`%i`/`%u` (base 10), `%o`, `%x` and `%X`: the magnitude in
 /// `base`, zero-extended to the precision, then signed, prefixed and padded.
-fn format_integer(value: &Value, base: u32, conversion: char, spec: &Directive, vm: &mut VM<'_>) -> RunResult<String> {
+fn format_integer(value: &Value, base: u32, conversion: u8, spec: &Directive, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
     let operand = integer_operand(value, conversion, vm)?;
     defer_drop!(operand, vm);
-    let uppercase = conversion == 'X';
+    let uppercase = conversion == b'X';
     let (negative, digits) = magnitude_digits(operand, base, uppercase, vm)?;
     let digits = zero_extend(digits, spec.precision, &vm.heap.tracker)?;
     let prefix = match (spec.alternate, base) {
@@ -379,8 +487,8 @@ fn format_integer(value: &Value, base: u32, conversion: char, spec: &Directive, 
 
 /// Coerces an integer directive's operand: ints and bools as they are, floats
 /// truncated for the decimal directives only, anything else through `__index__`.
-fn integer_operand(value: &Value, conversion: char, vm: &mut VM<'_>) -> RunResult<Value> {
-    let decimal = matches!(conversion, 'd' | 'i' | 'u');
+fn integer_operand(value: &Value, conversion: u8, vm: &mut VM<'_>) -> RunResult<Value> {
+    let decimal = matches!(conversion, b'd' | b'i' | b'u');
     match value {
         Value::Int(_) | Value::Bool(_) => Ok(value.clone_with_heap(vm.heap)),
         Value::Float(f) if decimal => LongInt::value_from_f64(*f, vm.heap),
@@ -389,7 +497,8 @@ fn integer_operand(value: &Value, conversion: char, vm: &mut VM<'_>) -> RunResul
             let requirement = if decimal { "a real number" } else { "an integer" };
             value.py_index_impl(vm)?.ok_or_else(|| {
                 ExcType::type_error(format!(
-                    "%{conversion} format: {requirement} is required, not {}",
+                    "%{} format: {requirement} is required, not {}",
+                    char::from(conversion),
                     value.py_type_name(vm)
                 ))
             })
@@ -438,23 +547,29 @@ fn long_digits(li: &LongInt, base: u32, uppercase: bool, tracker: &ResourceTrack
 }
 
 /// Left-pads digits with zeros up to the precision (`'%.3d' % 5` → `005`).
-fn zero_extend(digits: String, precision: Option<usize>, tracker: &ResourceTracker) -> RunResult<String> {
+fn zero_extend(digits: String, precision: Option<usize>, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
     let target = precision.unwrap_or(0);
     if digits.len() >= target {
-        Ok(digits)
+        Ok(digits.into_bytes())
     } else {
         check_repeat_size(1, target, tracker)?;
-        let mut output = StringBuilder::with_capacity(target, tracker)?;
-        push_repeated(&mut output, '0', target - digits.len())?;
-        output.push_str(&digits)?;
-        output.finish_raw()
+        let mut output = BytesBuilder::with_capacity(target, tracker)?;
+        push_repeated(&mut output, b'0', target - digits.len())?;
+        output.push_slice(digits.as_bytes())?;
+        Ok(output.finish())
     }
 }
 
 /// Renders the `%e`/`%f`/`%g` family through the shared f-string formatters,
 /// then re-signs and pads the digit text the printf way.
-fn format_float(value: &Value, type_char: TypeChar, spec: &Directive, vm: &mut VM<'_>) -> RunResult<String> {
-    let number = float_operand(value, vm)?;
+fn format_float(
+    value: &Value,
+    type_char: TypeChar,
+    mode: Mode,
+    spec: &Directive,
+    vm: &mut VM<'_>,
+) -> RunResult<Vec<u8>> {
+    let number = float_operand(value, mode, vm)?;
     let precision = spec.precision.unwrap_or(6);
     // The precision may come from an argument (`%.*f`), and the fixed and
     // exponent formatters synthesise that many digits.
@@ -479,7 +594,7 @@ fn format_float(value: &Value, type_char: TypeChar, spec: &Directive, vm: &mut V
     pad(
         number_sign(negative, spec),
         "",
-        body,
+        body.as_bytes(),
         body.len(),
         spec.zero,
         spec,
@@ -489,29 +604,34 @@ fn format_float(value: &Value, type_char: TypeChar, spec: &Directive, vm: &mut V
 
 /// Coerces a float directive's operand: floats and ints directly, big ints
 /// when they fit a float, anything else through `__index__`.
-fn float_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
+fn float_operand(value: &Value, mode: Mode, vm: &mut VM<'_>) -> RunResult<f64> {
     match value {
         Value::Float(f) => Ok(*f),
         Value::Int(n) => Ok(*n as f64),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => match li.to_f64() {
-            Some(f) if f.is_finite() => Ok(f),
-            _ => Err(ExcType::overflow_int_to_float()),
+        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => match (li.to_f64(), mode) {
+            (Some(f), _) if f.is_finite() => Ok(f),
+            (_, Mode::Str) => Err(ExcType::overflow_int_to_float()),
+            // CPython's bytes formatter folds the overflow into its generic type error.
+            (_, Mode::Bytes) => Err(ExcType::type_error("float argument required, not int")),
         },
-        _ => match value.py_index_impl(vm)? {
-            Some(index) => {
+        _ => {
+            if let Some(index) = value.py_index_impl(vm)? {
                 defer_drop!(index, vm);
-                float_operand(index, vm)
+                float_operand(index, mode, vm)
+            } else {
+                let type_name = value.py_type_name(vm);
+                Err(ExcType::type_error(match mode {
+                    Mode::Str => format!("must be real number, not {type_name}"),
+                    Mode::Bytes => format!("float argument required, not {type_name}"),
+                }))
             }
-            None => Err(ExcType::type_error(format!(
-                "must be real number, not {}",
-                value.py_type_name(vm)
-            ))),
-        },
+        }
     }
 }
 
-/// Renders `%c`: a one-character string as itself, otherwise an integer code point.
+/// Renders a `str` `%c`: a one-character string as itself, otherwise an
+/// integer code point.
 fn char_text(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     match value {
         Value::Int(n) => char_from_code(*n),
@@ -541,8 +661,8 @@ fn char_text(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     }
 }
 
-/// The character for a `%c` code point; surrogates are rejected with the
-/// range error, as `chr()` does.
+/// The character for a `str` `%c` code point; surrogates are rejected with
+/// the range error, as `chr()` does.
 fn char_from_code(code: i64) -> RunResult<String> {
     u32::try_from(code)
         .ok()
@@ -552,9 +672,47 @@ fn char_from_code(code: i64) -> RunResult<String> {
         .ok_or_else(char_range_error)
 }
 
-/// CPython's out-of-range `%c` error.
+/// CPython's out-of-range error for a `str` `%c`.
 fn char_range_error() -> RunError {
     SimpleException::new_msg(ExcType::OverflowError, "%c arg not in range(0x110000)").into()
+}
+
+/// Renders a `bytes` `%c`: a one-byte `bytes` as itself, otherwise an
+/// integer in `range(256)`.
+fn byte_char(value: &Value, vm: &mut VM<'_>) -> RunResult<u8> {
+    match value {
+        Value::Int(n) => u8::try_from(*n).map_err(|_| byte_range_error()),
+        Value::Bool(b) => Ok(u8::from(*b)),
+        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => Err(byte_range_error()),
+        Value::InternBytes(id) => single_byte(vm.interns.get_bytes(*id)),
+        Value::Ref(id) if let HeapData::Bytes(bytes) = vm.heap.get(*id) => single_byte(bytes.as_slice()),
+        _ => match value.py_index_impl(vm)? {
+            Some(index) => {
+                defer_drop!(index, vm);
+                byte_char(index, vm)
+            }
+            None => Err(ExcType::type_error(format!(
+                "%c requires an integer in range(256) or a single byte, not {}",
+                value.py_type_name(vm)
+            ))),
+        },
+    }
+}
+
+/// The one byte of a `bytes` `%c` operand.
+fn single_byte(bytes: &[u8]) -> RunResult<u8> {
+    match bytes {
+        [byte] => Ok(*byte),
+        _ => Err(ExcType::type_error(format!(
+            "%c requires an integer in range(256) or a single byte, not a bytes object of length {}",
+            bytes.len()
+        ))),
+    }
+}
+
+/// CPython's out-of-range error for a `bytes` `%c`.
+fn byte_range_error() -> RunError {
+    SimpleException::new_msg(ExcType::OverflowError, "%c arg not in range(256)").into()
 }
 
 /// The sign printf emits: `-` for negatives, else `+` or a space on request.
@@ -572,54 +730,77 @@ fn number_sign(negative: bool, spec: &Directive) -> &'static str {
 fn pad(
     sign: &str,
     prefix: &str,
-    body: &str,
-    body_chars: usize,
+    body: &[u8],
+    body_len: usize,
     zero_fill: bool,
     spec: &Directive,
     tracker: &ResourceTracker,
-) -> RunResult<String> {
-    let padding = spec.width.saturating_sub(sign.len() + prefix.len() + body_chars);
+) -> RunResult<Vec<u8>> {
+    let padding = spec.width.saturating_sub(sign.len() + prefix.len() + body_len);
     // The width may come from an argument (`%*s`), so budget the padding first.
     check_repeat_size(1, padding, tracker)?;
-    let mut output = StringBuilder::with_capacity(sign.len() + prefix.len() + body.len() + padding, tracker)?;
+    let mut output = BytesBuilder::with_capacity(sign.len() + prefix.len() + body.len() + padding, tracker)?;
     if spec.left {
-        output.push_str(sign)?;
-        output.push_str(prefix)?;
-        output.push_str(body)?;
-        push_repeated(&mut output, ' ', padding)?;
+        output.push_slice(sign.as_bytes())?;
+        output.push_slice(prefix.as_bytes())?;
+        output.push_slice(body)?;
+        push_repeated(&mut output, b' ', padding)?;
     } else if zero_fill {
-        output.push_str(sign)?;
-        output.push_str(prefix)?;
-        push_repeated(&mut output, '0', padding)?;
-        output.push_str(body)?;
+        output.push_slice(sign.as_bytes())?;
+        output.push_slice(prefix.as_bytes())?;
+        push_repeated(&mut output, b'0', padding)?;
+        output.push_slice(body)?;
     } else {
-        push_repeated(&mut output, ' ', padding)?;
-        output.push_str(sign)?;
-        output.push_str(prefix)?;
-        output.push_str(body)?;
+        push_repeated(&mut output, b' ', padding)?;
+        output.push_slice(sign.as_bytes())?;
+        output.push_slice(prefix.as_bytes())?;
+        output.push_slice(body)?;
     }
-    output.finish_raw()
+    Ok(output.finish())
 }
 
 /// Appends `count` copies of `fill`; the caller has already budgeted them.
-fn push_repeated(output: &mut StringBuilder<'_>, fill: char, count: usize) -> RunResult<()> {
+fn push_repeated(output: &mut BytesBuilder<'_>, fill: u8, count: usize) -> RunResult<()> {
     for _ in 0..count {
         output.push(fill)?;
     }
     Ok(())
 }
 
-/// CPython's `unsupported format character` error, quoting the character (or
-/// `?` outside printable ASCII) and its character index in the template.
-fn unsupported(conversion: char, template: &str, index: usize) -> RunError {
+/// Appends a fragment to the output while preserving `BytesBuilder` accounting.
+fn push_tracked(output: Vec<u8>, fragment: &[u8], vm: &VM<'_>) -> RunResult<Vec<u8>> {
+    let mut builder = BytesBuilder::from_existing(output, &vm.heap.tracker);
+    builder.push_slice(fragment)?;
+    Ok(builder.finish())
+}
+
+/// The error for an unknown conversion at byte `index`. CPython reports the
+/// character index in a `str` template and the byte index in a `bytes` one,
+/// and trips over a non-ASCII byte in a `bytes` template with an odd
+/// `OverflowError` instead.
+fn unsupported(template: &[u8], index: usize, mode: Mode) -> RunError {
+    let (conversion, char_index) = match mode {
+        Mode::Bytes if !template[index].is_ascii() => {
+            return SimpleException::new_msg(ExcType::OverflowError, "character argument not in range(0x110000)")
+                .into();
+        }
+        Mode::Bytes => (char::from(template[index]), index),
+        Mode::Str => (
+            String::from_utf8_lossy(&template[index..])
+                .chars()
+                .next()
+                .unwrap_or('?'),
+            String::from_utf8_lossy(&template[..index]).chars().count(),
+        ),
+    };
+    // Only printable ASCII is quoted as itself.
     let shown = if (' '..='~').contains(&conversion) {
         conversion
     } else {
         '?'
     };
     value_error(format!(
-        "unsupported format character '{shown}' (0x{:x}) at index {}",
-        u32::from(conversion),
-        template[..index].chars().count()
+        "unsupported format character '{shown}' (0x{:x}) at index {char_index}",
+        u32::from(conversion)
     ))
 }
