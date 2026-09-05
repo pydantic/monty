@@ -2,11 +2,14 @@
 //!
 //! Directive parsing, argument consumption and error precedence follow
 //! CPython's `PyUnicode_Format` and `_PyBytes_FormatEx`, which share a
-//! grammar. The core works on bytes for both modes: numeric text is ASCII and
-//! every fragment appended in `str` mode is UTF-8. Float digit text comes from
-//! the f-string formatters in [`crate::fstring`]; padding happens here because
-//! printf pads differently from the format mini-language (zero fill also
-//! covers `nan` and `inf`, text right-aligns, integer precision zero-extends).
+//! grammar. Directives are ASCII, so scanning works on the template's bytes
+//! for both types; the output stays typed as `String` or `Vec<u8>` through the
+//! [`Target`] trait. Float digit text comes from the f-string formatters in
+//! [`crate::fstring`]; padding happens here because printf pads differently
+//! from the format mini-language (zero fill also covers `nan` and `inf`, text
+//! right-aligns, integer precision zero-extends).
+
+use std::ops::Range;
 
 use monty_types::ResourceTracker;
 
@@ -15,10 +18,10 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     fstring::{ParsedFormatSpec, Sign, TypeChar, format_float_e, format_float_f, format_float_g},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData},
     resource_checks::check_repeat_size,
     str_format::value_error,
-    string_builder::BytesBuilder,
+    string_builder::{BytesBuilder, StringBuilder},
     types::{
         LongInt, PyTrait, Type, bytes::allocate_bytes, long_int::check_bits_str_digits_limit, str::allocate_string,
     },
@@ -27,74 +30,365 @@ use crate::{
 
 /// Renders `template % args` for a `str` template.
 pub(crate) fn percent_format(template: &str, args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let output = format_template(template.as_bytes(), Mode::Str, args, vm)?;
-    let output = String::from_utf8(output).expect("str formatting appends only UTF-8 fragments");
-    Ok(allocate_string(output, vm.heap))
+    format_template::<StrTarget>(template, args, vm)
 }
 
 /// Renders `template % args` for a `bytes` template.
 pub(crate) fn percent_format_bytes(template: &[u8], args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let output = format_template(template, Mode::Bytes, args, vm)?;
-    Ok(allocate_bytes(output, vm.heap))
+    format_template::<BytesTarget>(template, args, vm)
 }
 
-/// The operand type being formatted; decides the text conversions, the `%c`
-/// rules, and the wording of a few errors.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Str,
-    Bytes,
+/// A `%` formatting target: the template type, its output buffer, and the
+/// behaviour that differs between `str` and `bytes` templates. Keeping the
+/// output typed per target means the `str` path never re-validates UTF-8.
+trait Target: Sized {
+    /// `str` or `[u8]`.
+    type Template: ?Sized;
+    /// `String` or `Vec<u8>`.
+    type Output: Default;
+    /// The tracked builder for [`Self::Output`].
+    type Builder<'t>: OutputBuilder<'t, Output = Self::Output>;
+
+    /// Selects the `bytes` rules: `%b`, `ascii()` for `%r`, the error wording.
+    const IS_BYTES: bool;
+
+    /// The template's bytes; every offset the formatter slices at is an ASCII byte.
+    fn as_bytes(template: &Self::Template) -> &[u8];
+    /// Appends `template[range]` to the output.
+    fn push_literal(builder: &mut Self::Builder<'_>, template: &Self::Template, range: Range<usize>) -> RunResult<()>;
+    /// A `%(key)` as a value of the template's type.
+    fn key_value(template: &Self::Template, range: Range<usize>, heap: &Heap) -> Value;
+    /// An ASCII fragment (digits, signs, exponents) as an output value.
+    fn from_ascii(text: String) -> Self::Output;
+    /// The size of an output fragment in bytes.
+    fn byte_len(output: &Self::Output) -> usize;
+    /// A `str` fragment truncated to `precision`: `%r`, `%a`, and the `str` `%s` / `%c`.
+    fn text_from_string(text: String, precision: Option<usize>, tracker: &ResourceTracker) -> RunResult<Text<Self>>;
+    /// The `%s` operand (also `%b` for `bytes`).
+    fn text_operand(value: &Value, precision: Option<usize>, vm: &mut VM<'_>) -> RunResult<Text<Self>>;
+    /// The `%c` operand.
+    fn char_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Text<Self>>;
+    /// The error for a float directive on a non-numeric operand.
+    fn float_type_error(type_name: &str) -> RunError;
+    /// The error for an int too large to convert to a float.
+    fn float_overflow_error() -> RunError;
+    /// The error for an unknown conversion at byte `index`.
+    fn unsupported(template: &Self::Template, index: usize) -> RunError;
+    /// The finished output as a heap value.
+    fn allocate(output: Self::Output, heap: &Heap) -> Value;
 }
 
-impl Mode {
-    /// The noun CPython uses in this mode's leftover-arguments error.
-    fn noun(self) -> &'static str {
-        match self {
-            Self::Str => "string",
-            Self::Bytes => "bytes",
+/// The tracked builder a [`Target`] assembles its output with.
+trait OutputBuilder<'t>: Sized {
+    type Output;
+
+    /// Wraps an existing output whose capacity is already tracker-accounted.
+    fn from_existing(output: Self::Output, tracker: &'t ResourceTracker) -> Self;
+    /// Reserves `capacity` bytes up front after one tracker check.
+    fn with_capacity(capacity: usize, tracker: &'t ResourceTracker) -> RunResult<Self>;
+    /// Appends ASCII text (signs, prefixes, digits).
+    fn push_ascii(&mut self, text: &str) -> RunResult<()>;
+    /// Appends `count` copies of an ASCII fill byte.
+    fn push_fill(&mut self, fill: u8, count: usize) -> RunResult<()>;
+    /// Appends a rendered fragment.
+    fn push_output(&mut self, fragment: &Self::Output) -> RunResult<()>;
+    /// Consumes the builder.
+    fn finish(self) -> RunResult<Self::Output>;
+}
+
+/// A rendered text fragment with its length in the target's units:
+/// characters for `str`, bytes for `bytes`.
+struct Text<T: Target> {
+    body: T::Output,
+    len: usize,
+}
+
+/// `str % args`.
+struct StrTarget;
+
+impl Target for StrTarget {
+    type Template = str;
+    type Output = String;
+    type Builder<'t> = StringBuilder<'t>;
+
+    const IS_BYTES: bool = false;
+
+    fn as_bytes(template: &str) -> &[u8] {
+        template.as_bytes()
+    }
+
+    fn push_literal(builder: &mut StringBuilder<'_>, template: &str, range: Range<usize>) -> RunResult<()> {
+        builder.push_ascii(&template[range])
+    }
+
+    fn key_value(template: &str, range: Range<usize>, heap: &Heap) -> Value {
+        allocate_string(&template[range], heap)
+    }
+
+    fn from_ascii(text: String) -> String {
+        text
+    }
+
+    fn byte_len(output: &String) -> usize {
+        output.len()
+    }
+
+    fn text_from_string(
+        mut text: String,
+        precision: Option<usize>,
+        tracker: &ResourceTracker,
+    ) -> RunResult<Text<Self>> {
+        let mut len = 0;
+        let mut end = text.len();
+        for (index, (offset, _)) in text.char_indices().enumerate() {
+            tracker.check_time_every(index)?;
+            if precision == Some(len) {
+                end = offset;
+                break;
+            }
+            len += 1;
         }
+        text.truncate(end);
+        Ok(Text { body: text, len })
+    }
+
+    /// `str()` of any value.
+    fn text_operand(value: &Value, precision: Option<usize>, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
+        Self::text_from_string(vm.convert_value(value, 1)?, precision, &vm.heap.tracker)
+    }
+
+    fn char_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
+        Self::text_from_string(char_text(value, vm)?, None, &vm.heap.tracker)
+    }
+
+    fn float_type_error(type_name: &str) -> RunError {
+        ExcType::type_error(format!("must be real number, not {type_name}"))
+    }
+
+    fn float_overflow_error() -> RunError {
+        ExcType::overflow_int_to_float()
+    }
+
+    /// CPython reports the character (not byte) index in a `str` template.
+    fn unsupported(template: &str, index: usize) -> RunError {
+        let conversion = template[index..].chars().next().unwrap_or('?');
+        unsupported_character(conversion, template[..index].chars().count())
+    }
+
+    fn allocate(output: String, heap: &Heap) -> Value {
+        allocate_string(output, heap)
+    }
+}
+
+/// `bytes % args`.
+struct BytesTarget;
+
+impl Target for BytesTarget {
+    type Template = [u8];
+    type Output = Vec<u8>;
+    type Builder<'t> = BytesBuilder<'t>;
+
+    const IS_BYTES: bool = true;
+
+    fn as_bytes(template: &[u8]) -> &[u8] {
+        template
+    }
+
+    fn push_literal(builder: &mut BytesBuilder<'_>, template: &[u8], range: Range<usize>) -> RunResult<()> {
+        Ok(builder.push_slice(&template[range])?)
+    }
+
+    fn key_value(template: &[u8], range: Range<usize>, heap: &Heap) -> Value {
+        allocate_bytes(template[range].to_vec(), heap)
+    }
+
+    fn from_ascii(text: String) -> Vec<u8> {
+        text.into_bytes()
+    }
+
+    fn byte_len(output: &Vec<u8>) -> usize {
+        output.len()
+    }
+
+    /// Only ASCII text reaches a `bytes` template (`ascii()` output), so
+    /// bytes and characters coincide.
+    fn text_from_string(text: String, precision: Option<usize>, _tracker: &ResourceTracker) -> RunResult<Text<Self>> {
+        Ok(Self::from_bytes(text.into_bytes(), precision))
+    }
+
+    /// Only `bytes` values; Monty has no `bytearray`, `memoryview` or `__bytes__`.
+    fn text_operand(value: &Value, precision: Option<usize>, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
+        match value {
+            Value::InternBytes(id) => Ok(Self::from_bytes(vm.interns.get_bytes(*id).to_vec(), precision)),
+            Value::Ref(id) if let HeapData::Bytes(bytes) = vm.heap.get(*id) => {
+                Ok(Self::from_bytes(bytes.as_slice().to_vec(), precision))
+            }
+            _ => Err(ExcType::type_error(format!(
+                "%b requires a bytes-like object, or an object that implements __bytes__, not '{}'",
+                value.py_type_name(vm)
+            ))),
+        }
+    }
+
+    fn char_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
+        Ok(Self::from_bytes(vec![byte_char(value, vm)?], None))
+    }
+
+    fn float_type_error(type_name: &str) -> RunError {
+        ExcType::type_error(format!("float argument required, not {type_name}"))
+    }
+
+    /// CPython's bytes formatter folds the overflow into its generic type error.
+    fn float_overflow_error() -> RunError {
+        ExcType::type_error("float argument required, not int")
+    }
+
+    /// A non-ASCII byte gets an odd `OverflowError` from CPython rather than
+    /// the unsupported-character error.
+    fn unsupported(template: &[u8], index: usize) -> RunError {
+        let conversion = template[index];
+        if conversion.is_ascii() {
+            unsupported_character(char::from(conversion), index)
+        } else {
+            SimpleException::new_msg(ExcType::OverflowError, "character argument not in range(0x110000)").into()
+        }
+    }
+
+    fn allocate(output: Vec<u8>, heap: &Heap) -> Value {
+        allocate_bytes(output, heap)
+    }
+}
+
+impl BytesTarget {
+    /// A `bytes` fragment truncated to `precision` bytes.
+    fn from_bytes(mut bytes: Vec<u8>, precision: Option<usize>) -> Text<Self> {
+        if let Some(precision) = precision {
+            bytes.truncate(precision);
+        }
+        let len = bytes.len();
+        Text { body: bytes, len }
+    }
+}
+
+impl<'t> OutputBuilder<'t> for StringBuilder<'t> {
+    type Output = String;
+
+    fn from_existing(output: String, tracker: &'t ResourceTracker) -> Self {
+        StringBuilder::from_existing(output, tracker)
+    }
+
+    fn with_capacity(capacity: usize, tracker: &'t ResourceTracker) -> RunResult<Self> {
+        Ok(StringBuilder::with_capacity(capacity, tracker)?)
+    }
+
+    fn push_ascii(&mut self, text: &str) -> RunResult<()> {
+        Ok(self.push_str(text)?)
+    }
+
+    fn push_fill(&mut self, fill: u8, count: usize) -> RunResult<()> {
+        for _ in 0..count {
+            self.push(char::from(fill))?;
+        }
+        Ok(())
+    }
+
+    fn push_output(&mut self, fragment: &String) -> RunResult<()> {
+        Ok(self.push_str(fragment)?)
+    }
+
+    fn finish(self) -> RunResult<String> {
+        self.finish_raw()
+    }
+}
+
+impl<'t> OutputBuilder<'t> for BytesBuilder<'t> {
+    type Output = Vec<u8>;
+
+    fn from_existing(output: Vec<u8>, tracker: &'t ResourceTracker) -> Self {
+        BytesBuilder::from_existing(output, tracker)
+    }
+
+    fn with_capacity(capacity: usize, tracker: &'t ResourceTracker) -> RunResult<Self> {
+        Ok(BytesBuilder::with_capacity(capacity, tracker)?)
+    }
+
+    fn push_ascii(&mut self, text: &str) -> RunResult<()> {
+        Ok(self.push_slice(text.as_bytes())?)
+    }
+
+    fn push_fill(&mut self, fill: u8, count: usize) -> RunResult<()> {
+        for _ in 0..count {
+            self.push(fill)?;
+        }
+        Ok(())
+    }
+
+    fn push_output(&mut self, fragment: &Vec<u8>) -> RunResult<()> {
+        Ok(self.push_slice(fragment)?)
+    }
+
+    fn finish(self) -> RunResult<Vec<u8>> {
+        Ok(BytesBuilder::finish(self))
     }
 }
 
 /// Walks the template, copying literal runs and rendering each `%` directive.
-fn format_template(template: &[u8], mode: Mode, args: &Value, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
-    let arguments = Arguments::new(args, mode, vm);
+fn format_template<T: Target>(template: &T::Template, args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    let bytes = T::as_bytes(template);
+    let arguments = Arguments::new(args, T::IS_BYTES, vm);
     defer_drop!(arguments, vm);
     let mut cursor = DropGuard::new(Cursor::default(), vm);
     let (cursor, vm) = cursor.as_parts_mut();
 
-    let mut output = Vec::new();
+    let mut output = T::Output::default();
     let mut index = 0;
     let mut steps = 0;
-    while index < template.len() {
+    while index < bytes.len() {
         vm.heap.tracker.check_time_every(steps)?;
         steps += 1;
-        let Some(offset) = template[index..].iter().position(|byte| *byte == b'%') else {
-            output = push_tracked(output, &template[index..], vm)?;
+        let literal_end = bytes[index..]
+            .iter()
+            .position(|byte| *byte == b'%')
+            .map_or(bytes.len(), |offset| index + offset);
+        output = extend::<T>(output, &vm.heap.tracker, |builder| {
+            T::push_literal(builder, template, index..literal_end)
+        })?;
+        if literal_end == bytes.len() {
             break;
-        };
-        output = push_tracked(output, &template[index..index + offset], vm)?;
-        index += offset + 1;
+        }
+        index = literal_end + 1;
         // Only an immediate `%%` is an escape: `%5%` is a directive whose conversion is `%`.
-        if template.get(index) == Some(&b'%') {
-            output = push_tracked(output, b"%", vm)?;
+        if bytes.get(index) == Some(&b'%') {
+            output = extend::<T>(output, &vm.heap.tracker, |builder| builder.push_ascii("%"))?;
             index += 1;
         } else {
-            let (rendered, next) = render_directive(template, index, mode, arguments, cursor, vm)?;
-            output = push_tracked(output, &rendered, vm)?;
+            let (rendered, next) = render_directive::<T>(template, index, arguments, cursor, vm)?;
+            output = extend::<T>(output, &vm.heap.tracker, |builder| builder.push_output(&rendered))?;
             index = next;
         }
     }
 
     // A mapping operand never reports leftovers, so `'abc' % {}` is fine.
     if arguments.mapping.is_none() && cursor.next < arguments.positional.len() {
+        let noun = if T::IS_BYTES { "bytes" } else { "string" };
         Err(ExcType::type_error(format!(
-            "not all arguments converted during {} formatting",
-            mode.noun()
+            "not all arguments converted during {noun} formatting"
         )))
     } else {
-        Ok(output)
+        Ok(T::allocate(output, vm.heap))
     }
+}
+
+/// Appends to `output` through a short-lived tracked builder, so the tracker
+/// borrow ends before the VM is needed again.
+fn extend<T: Target>(
+    output: T::Output,
+    tracker: &ResourceTracker,
+    push: impl FnOnce(&mut T::Builder<'_>) -> RunResult<()>,
+) -> RunResult<T::Output> {
+    let mut builder = <T::Builder<'_>>::from_existing(output, tracker);
+    push(&mut builder)?;
+    builder.finish()
 }
 
 /// The right-hand operand, split the way CPython's `PyUnicode_Format` sees it.
@@ -108,7 +402,7 @@ struct Arguments {
 }
 
 impl Arguments {
-    fn new(args: &Value, mode: Mode, vm: &VM<'_>) -> Self {
+    fn new(args: &Value, bytes_template: bool, vm: &VM<'_>) -> Self {
         let positional = match args {
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Tuple(tuple) => clone_items(tuple.as_slice(), vm),
@@ -119,7 +413,7 @@ impl Arguments {
         };
         let mapping = match args.py_type(vm) {
             Type::Dict | Type::DefaultDict | Type::Counter | Type::List | Type::Range => true,
-            Type::Bytes => mode == Mode::Str,
+            Type::Bytes => !bytes_template,
             _ => false,
         }
         .then(|| args.clone_with_heap(vm.heap));
@@ -186,59 +480,25 @@ struct ParsedDirective {
     end: usize,
 }
 
-/// A rendered text fragment with its length in the mode's units:
-/// characters for `str`, bytes for `bytes`.
-struct Text {
-    bytes: Vec<u8>,
-    len: usize,
-}
-
-impl Text {
-    /// Truncates a `str` fragment to `precision` characters.
-    fn from_string(text: String, precision: Option<usize>, tracker: &ResourceTracker) -> RunResult<Self> {
-        let mut len = 0;
-        let mut end = text.len();
-        for (index, (offset, _)) in text.char_indices().enumerate() {
-            tracker.check_time_every(index)?;
-            if precision == Some(len) {
-                end = offset;
-                break;
-            }
-            len += 1;
-        }
-        let mut bytes = text.into_bytes();
-        bytes.truncate(end);
-        Ok(Self { bytes, len })
-    }
-
-    /// Truncates a `bytes` fragment to `precision` bytes.
-    fn from_bytes(mut bytes: Vec<u8>, precision: Option<usize>) -> Self {
-        if let Some(precision) = precision {
-            bytes.truncate(precision);
-        }
-        let len = bytes.len();
-        Self { bytes, len }
-    }
-}
-
 /// Parses and renders the directive starting just after its `%`.
-fn render_directive(
-    template: &[u8],
+fn render_directive<T: Target>(
+    template: &T::Template,
     start: usize,
-    mode: Mode,
     arguments: &Arguments,
     cursor: &mut Cursor,
     vm: &mut VM<'_>,
-) -> RunResult<(Vec<u8>, usize)> {
+) -> RunResult<(T::Output, usize)> {
+    let bytes = T::as_bytes(template);
     let mut index = start;
     // `%(key)` is looked up as soon as it is read, so a missing key reports
     // before a malformed spec does.
-    if template.get(index) == Some(&b'(') {
-        let key_end = find_key_end(template, index + 1, vm)?;
-        lookup_key(&template[index + 1..key_end], mode, arguments, cursor, vm)?;
+    if bytes.get(index) == Some(&b'(') {
+        let key_end = find_key_end(bytes, index + 1, vm)?;
+        let key = T::key_value(template, index + 1..key_end, vm.heap);
+        lookup_key(key, arguments, cursor, vm)?;
         index = key_end + 1;
     }
-    let parsed = parse_directive(template, index, arguments, cursor, vm)?;
+    let parsed = parse_directive(bytes, index, arguments, cursor, vm)?;
 
     // The argument is taken before the conversion is checked, so `'%5%' % ()`
     // reports the missing argument rather than the bad conversion.
@@ -246,25 +506,25 @@ fn render_directive(
     defer_drop!(value, vm);
     let spec = &parsed.spec;
     let rendered = match parsed.conversion {
-        b's' => text_operand(value, spec.precision, mode, vm).and_then(|text| pad_text(&text, spec, &vm.heap.tracker)),
-        b'b' if mode == Mode::Bytes => {
-            text_operand(value, spec.precision, mode, vm).and_then(|text| pad_text(&text, spec, &vm.heap.tracker))
+        b's' => T::text_operand(value, spec.precision, vm).and_then(|text| pad_text(&text, spec, &vm.heap.tracker)),
+        b'b' if T::IS_BYTES => {
+            T::text_operand(value, spec.precision, vm).and_then(|text| pad_text(&text, spec, &vm.heap.tracker))
         }
-        b'r' | b'a' => repr_operand(value, parsed.conversion, spec.precision, mode, vm)
+        b'r' | b'a' => repr_operand::<T>(value, parsed.conversion, spec.precision, vm)
             .and_then(|text| pad_text(&text, spec, &vm.heap.tracker)),
         // `%c` ignores the precision.
-        b'c' => char_operand(value, mode, vm).and_then(|text| pad_text(&text, spec, &vm.heap.tracker)),
-        b'd' | b'i' | b'u' => format_integer(value, 10, parsed.conversion, spec, vm),
-        b'o' => format_integer(value, 8, b'o', spec, vm),
-        b'x' => format_integer(value, 16, b'x', spec, vm),
-        b'X' => format_integer(value, 16, b'X', spec, vm),
-        b'e' => format_float(value, TypeChar::E, mode, spec, vm),
-        b'E' => format_float(value, TypeChar::EUpper, mode, spec, vm),
-        b'f' => format_float(value, TypeChar::F, mode, spec, vm),
-        b'F' => format_float(value, TypeChar::FUpper, mode, spec, vm),
-        b'g' => format_float(value, TypeChar::G, mode, spec, vm),
-        b'G' => format_float(value, TypeChar::GUpper, mode, spec, vm),
-        _ => Err(unsupported(template, parsed.end - 1, mode)),
+        b'c' => T::char_operand(value, vm).and_then(|text| pad_text(&text, spec, &vm.heap.tracker)),
+        b'd' | b'i' | b'u' => format_integer::<T>(value, 10, parsed.conversion, spec, vm),
+        b'o' => format_integer::<T>(value, 8, b'o', spec, vm),
+        b'x' => format_integer::<T>(value, 16, b'x', spec, vm),
+        b'X' => format_integer::<T>(value, 16, b'X', spec, vm),
+        b'e' => format_float::<T>(value, TypeChar::E, spec, vm),
+        b'E' => format_float::<T>(value, TypeChar::EUpper, spec, vm),
+        b'f' => format_float::<T>(value, TypeChar::F, spec, vm),
+        b'F' => format_float::<T>(value, TypeChar::FUpper, spec, vm),
+        b'g' => format_float::<T>(value, TypeChar::G, spec, vm),
+        b'G' => format_float::<T>(value, TypeChar::GUpper, spec, vm),
+        _ => Err(T::unsupported(template, parsed.end - 1)),
     }?;
     Ok((rendered, parsed.end))
 }
@@ -362,16 +622,12 @@ fn parse_number(template: &[u8], start: usize, message: &str) -> RunResult<(usiz
 }
 
 /// Looks `key` up in the mapping operand and makes the result the one
-/// remaining argument, as CPython does. The key takes the template's type.
-fn lookup_key(key: &[u8], mode: Mode, arguments: &Arguments, cursor: &mut Cursor, vm: &mut VM<'_>) -> RunResult<()> {
+/// remaining argument, as CPython does. Takes ownership of `key`.
+fn lookup_key(key: Value, arguments: &Arguments, cursor: &mut Cursor, vm: &mut VM<'_>) -> RunResult<()> {
+    defer_drop!(key, vm);
     let Some(mapping) = &arguments.mapping else {
         return Err(ExcType::type_error("format requires a mapping"));
     };
-    let key = match mode {
-        Mode::Str => allocate_string(&*String::from_utf8_lossy(key), vm.heap),
-        Mode::Bytes => allocate_bytes(key.to_vec(), vm.heap),
-    };
-    defer_drop!(key, vm);
     let value = mapping.py_getitem(key, vm)?;
     cursor.keyed = true;
     cursor.pending.replace(value).drop_with(vm);
@@ -413,56 +669,34 @@ fn star_operand(
     }
 }
 
-/// The `%s` (and bytes `%b`) operand: `str()` of anything for a `str`
-/// template, but only `bytes` for a `bytes` template.
-fn text_operand(value: &Value, precision: Option<usize>, mode: Mode, vm: &mut VM<'_>) -> RunResult<Text> {
-    match mode {
-        Mode::Str => Text::from_string(vm.convert_value(value, 1)?, precision, &vm.heap.tracker),
-        Mode::Bytes => match value {
-            Value::InternBytes(id) => Ok(Text::from_bytes(vm.interns.get_bytes(*id).to_vec(), precision)),
-            Value::Ref(id) if let HeapData::Bytes(bytes) = vm.heap.get(*id) => {
-                Ok(Text::from_bytes(bytes.as_slice().to_vec(), precision))
-            }
-            _ => Err(ExcType::type_error(format!(
-                "%b requires a bytes-like object, or an object that implements __bytes__, not '{}'",
-                value.py_type_name(vm)
-            ))),
-        },
-    }
-}
-
 /// The `%r` / `%a` operand: `repr()` or `ascii()` for a `str` template, and
 /// always `ascii()` for a `bytes` template.
-fn repr_operand(
+fn repr_operand<T: Target>(
     value: &Value,
     conversion: u8,
     precision: Option<usize>,
-    mode: Mode,
     vm: &mut VM<'_>,
-) -> RunResult<Text> {
-    let ascii = mode == Mode::Bytes || conversion == b'a';
+) -> RunResult<Text<T>> {
+    let ascii = T::IS_BYTES || conversion == b'a';
     let text = vm.convert_value(value, if ascii { 3 } else { 2 })?;
-    Text::from_string(text, precision, &vm.heap.tracker)
-}
-
-/// The `%c` operand: a code point or one-character string for a `str`
-/// template, a byte value or one-byte `bytes` for a `bytes` template.
-fn char_operand(value: &Value, mode: Mode, vm: &mut VM<'_>) -> RunResult<Text> {
-    match mode {
-        Mode::Str => Text::from_string(char_text(value, vm)?, None, &vm.heap.tracker),
-        Mode::Bytes => Ok(Text::from_bytes(vec![byte_char(value, vm)?], None)),
-    }
+    T::text_from_string(text, precision, &vm.heap.tracker)
 }
 
 /// Pads a text fragment to the width: text right-aligns unless `-` was
 /// given, and the `0` flag is ignored.
-fn pad_text(text: &Text, spec: &Directive, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
-    pad("", "", &text.bytes, text.len, false, spec, tracker)
+fn pad_text<T: Target>(text: &Text<T>, spec: &Directive, tracker: &ResourceTracker) -> RunResult<T::Output> {
+    pad::<T>("", "", &text.body, text.len, false, spec, tracker)
 }
 
 /// Renders `%d`/`%i`/`%u` (base 10), `%o`, `%x` and `%X`: the magnitude in
 /// `base`, zero-extended to the precision, then signed, prefixed and padded.
-fn format_integer(value: &Value, base: u32, conversion: u8, spec: &Directive, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
+fn format_integer<T: Target>(
+    value: &Value,
+    base: u32,
+    conversion: u8,
+    spec: &Directive,
+    vm: &mut VM<'_>,
+) -> RunResult<T::Output> {
     let operand = integer_operand(value, conversion, vm)?;
     defer_drop!(operand, vm);
     let uppercase = conversion == b'X';
@@ -474,11 +708,12 @@ fn format_integer(value: &Value, base: u32, conversion: u8, spec: &Directive, vm
         (true, 16) => "0x",
         _ => "",
     };
-    pad(
+    let digits_len = digits.len();
+    pad::<T>(
         number_sign(negative, spec),
         prefix,
-        &digits,
-        digits.len(),
+        &T::from_ascii(digits),
+        digits_len,
         spec.zero,
         spec,
         &vm.heap.tracker,
@@ -547,29 +782,28 @@ fn long_digits(li: &LongInt, base: u32, uppercase: bool, tracker: &ResourceTrack
 }
 
 /// Left-pads digits with zeros up to the precision (`'%.3d' % 5` → `005`).
-fn zero_extend(digits: String, precision: Option<usize>, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+fn zero_extend(digits: String, precision: Option<usize>, tracker: &ResourceTracker) -> RunResult<String> {
     let target = precision.unwrap_or(0);
     if digits.len() >= target {
-        Ok(digits.into_bytes())
+        Ok(digits)
     } else {
         check_repeat_size(1, target, tracker)?;
-        let mut output = BytesBuilder::with_capacity(target, tracker)?;
-        push_repeated(&mut output, b'0', target - digits.len())?;
-        output.push_slice(digits.as_bytes())?;
-        Ok(output.finish())
+        let mut output = StringBuilder::with_capacity(target, tracker)?;
+        output.push_fill(b'0', target - digits.len())?;
+        output.push_str(&digits)?;
+        output.finish_raw()
     }
 }
 
 /// Renders the `%e`/`%f`/`%g` family through the shared f-string formatters,
 /// then re-signs and pads the digit text the printf way.
-fn format_float(
+fn format_float<T: Target>(
     value: &Value,
     type_char: TypeChar,
-    mode: Mode,
     spec: &Directive,
     vm: &mut VM<'_>,
-) -> RunResult<Vec<u8>> {
-    let number = float_operand(value, mode, vm)?;
+) -> RunResult<T::Output> {
+    let number = float_operand::<T>(value, vm)?;
     let precision = spec.precision.unwrap_or(6);
     // The precision may come from an argument (`%.*f`), and the fixed and
     // exponent formatters synthesise that many digits.
@@ -581,21 +815,23 @@ fn format_float(
         type_char: Some(type_char),
         ..ParsedFormatSpec::default()
     };
-    let text = match type_char {
+    let mut text = match type_char {
         TypeChar::E => format_float_e(number, &parsed, false, tracker),
         TypeChar::EUpper => format_float_e(number, &parsed, true, tracker),
         TypeChar::G | TypeChar::GUpper => format_float_g(number, &parsed, tracker),
         _ => format_float_f(number, &parsed, tracker),
     }?;
-    let (negative, body) = match text.strip_prefix('-') {
-        Some(body) => (true, body),
-        None => (false, text.as_str()),
-    };
-    pad(
+    // The formatter signs negatives itself; printf's flags decide the sign here.
+    let negative = text.starts_with('-');
+    if negative {
+        text.remove(0);
+    }
+    let body_len = text.len();
+    pad::<T>(
         number_sign(negative, spec),
         "",
-        body.as_bytes(),
-        body.len(),
+        &T::from_ascii(text),
+        body_len,
         spec.zero,
         spec,
         tracker,
@@ -604,27 +840,21 @@ fn format_float(
 
 /// Coerces a float directive's operand: floats and ints directly, big ints
 /// when they fit a float, anything else through `__index__`.
-fn float_operand(value: &Value, mode: Mode, vm: &mut VM<'_>) -> RunResult<f64> {
+fn float_operand<T: Target>(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
     match value {
         Value::Float(f) => Ok(*f),
         Value::Int(n) => Ok(*n as f64),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => match (li.to_f64(), mode) {
-            (Some(f), _) if f.is_finite() => Ok(f),
-            (_, Mode::Str) => Err(ExcType::overflow_int_to_float()),
-            // CPython's bytes formatter folds the overflow into its generic type error.
-            (_, Mode::Bytes) => Err(ExcType::type_error("float argument required, not int")),
+        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => match li.to_f64() {
+            Some(f) if f.is_finite() => Ok(f),
+            _ => Err(T::float_overflow_error()),
         },
         _ => {
             if let Some(index) = value.py_index_impl(vm)? {
                 defer_drop!(index, vm);
-                float_operand(index, mode, vm)
+                float_operand::<T>(index, vm)
             } else {
-                let type_name = value.py_type_name(vm);
-                Err(ExcType::type_error(match mode {
-                    Mode::Str => format!("must be real number, not {type_name}"),
-                    Mode::Bytes => format!("float argument required, not {type_name}"),
-                }))
+                Err(T::float_type_error(&value.py_type_name(vm)))
             }
         }
     }
@@ -727,80 +957,49 @@ fn number_sign(negative: bool, spec: &Directive) -> &'static str {
 
 /// Pads `sign + prefix + body` to the width: `-` left-justifies, otherwise
 /// spaces lead, or zeros sit between the prefix and the body under `zero_fill`.
-fn pad(
+fn pad<T: Target>(
     sign: &str,
     prefix: &str,
-    body: &[u8],
+    body: &T::Output,
     body_len: usize,
     zero_fill: bool,
     spec: &Directive,
     tracker: &ResourceTracker,
-) -> RunResult<Vec<u8>> {
+) -> RunResult<T::Output> {
     let padding = spec.width.saturating_sub(sign.len() + prefix.len() + body_len);
     // The width may come from an argument (`%*s`), so budget the padding first.
     check_repeat_size(1, padding, tracker)?;
-    let mut output = BytesBuilder::with_capacity(sign.len() + prefix.len() + body.len() + padding, tracker)?;
+    let capacity = sign.len() + prefix.len() + T::byte_len(body) + padding;
+    let mut output = <T::Builder<'_>>::with_capacity(capacity, tracker)?;
     if spec.left {
-        output.push_slice(sign.as_bytes())?;
-        output.push_slice(prefix.as_bytes())?;
-        output.push_slice(body)?;
-        push_repeated(&mut output, b' ', padding)?;
+        output.push_ascii(sign)?;
+        output.push_ascii(prefix)?;
+        output.push_output(body)?;
+        output.push_fill(b' ', padding)?;
     } else if zero_fill {
-        output.push_slice(sign.as_bytes())?;
-        output.push_slice(prefix.as_bytes())?;
-        push_repeated(&mut output, b'0', padding)?;
-        output.push_slice(body)?;
+        output.push_ascii(sign)?;
+        output.push_ascii(prefix)?;
+        output.push_fill(b'0', padding)?;
+        output.push_output(body)?;
     } else {
-        push_repeated(&mut output, b' ', padding)?;
-        output.push_slice(sign.as_bytes())?;
-        output.push_slice(prefix.as_bytes())?;
-        output.push_slice(body)?;
+        output.push_fill(b' ', padding)?;
+        output.push_ascii(sign)?;
+        output.push_ascii(prefix)?;
+        output.push_output(body)?;
     }
-    Ok(output.finish())
+    output.finish()
 }
 
-/// Appends `count` copies of `fill`; the caller has already budgeted them.
-fn push_repeated(output: &mut BytesBuilder<'_>, fill: u8, count: usize) -> RunResult<()> {
-    for _ in 0..count {
-        output.push(fill)?;
-    }
-    Ok(())
-}
-
-/// Appends a fragment to the output while preserving `BytesBuilder` accounting.
-fn push_tracked(output: Vec<u8>, fragment: &[u8], vm: &VM<'_>) -> RunResult<Vec<u8>> {
-    let mut builder = BytesBuilder::from_existing(output, &vm.heap.tracker);
-    builder.push_slice(fragment)?;
-    Ok(builder.finish())
-}
-
-/// The error for an unknown conversion at byte `index`. CPython reports the
-/// character index in a `str` template and the byte index in a `bytes` one,
-/// and trips over a non-ASCII byte in a `bytes` template with an odd
-/// `OverflowError` instead.
-fn unsupported(template: &[u8], index: usize, mode: Mode) -> RunError {
-    let (conversion, char_index) = match mode {
-        Mode::Bytes if !template[index].is_ascii() => {
-            return SimpleException::new_msg(ExcType::OverflowError, "character argument not in range(0x110000)")
-                .into();
-        }
-        Mode::Bytes => (char::from(template[index]), index),
-        Mode::Str => (
-            String::from_utf8_lossy(&template[index..])
-                .chars()
-                .next()
-                .unwrap_or('?'),
-            String::from_utf8_lossy(&template[..index]).chars().count(),
-        ),
-    };
-    // Only printable ASCII is quoted as itself.
+/// CPython's `unsupported format character` error, quoting the character (or
+/// `?` outside printable ASCII) and its index.
+fn unsupported_character(conversion: char, index: usize) -> RunError {
     let shown = if (' '..='~').contains(&conversion) {
         conversion
     } else {
         '?'
     };
     value_error(format!(
-        "unsupported format character '{shown}' (0x{:x}) at index {char_index}",
+        "unsupported format character '{shown}' (0x{:x}) at index {index}",
         u32::from(conversion)
     ))
 }
