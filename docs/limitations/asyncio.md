@@ -61,9 +61,15 @@ waits up to one second for their cleanup before returning, raising an error, or 
 This includes callbacks the sandbox started without awaiting, but not tasks a callback creates itself.
 Cleanup can use `await` in a `finally` block.
 Repeated caller cancellation does not extend the deadline or interrupt callback cleanup.
-Callbacks still running after the deadline remain tracked until they finish, and their exceptions are collected.
-They can outlive the feed and its session, so callbacks must not rely on either remaining open during cleanup.
-A callback that never finishes keeps its resources alive; the host must make its callbacks cooperate with cancellation.
+If cleanup times out, the feed raises [`MontyCallbackCleanupError`][pydantic_monty.MontyCallbackCleanupError] instead
+of returning its result, or chains the sandbox error as its context.
+Caller cancellation still raises `CancelledError`, with the cleanup error as its `__cause__`.
+The cleanup error's `tasks` tuple transfers unfinished callbacks to the host.
+Retain these tasks until they finish, then join them with `await asyncio.gather(*error.tasks, return_exceptions=True)`.
+Monty collects their eventual exceptions but does not keep them in a global collection.
+Discarding the error without retaining its tasks can abandon their cleanup.
+Callbacks can outlive the feed and its session, so they must not rely on either remaining open during cleanup.
+The host must make its callbacks cooperate with cancellation; Python cannot forcibly terminate them.
 The deadline requires a responsive event loop and cannot interrupt synchronous blocking code in a callback.
 Snapshot-driven execution, started with [`AsyncMontySession.feed_start()`][pydantic_monty.AsyncMontySession.feed_start]
 and [resumed by the host](../snapshots.md), has a separate lifetime and is not covered by this

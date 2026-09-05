@@ -6,7 +6,20 @@ from contextlib import suppress
 from typing import Any
 
 _CLEANUP_TIMEOUT = 1.0
-_draining_callbacks: set[asyncio.Future[list[Any]]] = set()
+
+
+class MontyCallbackCleanupError(TimeoutError):
+    """Python callbacks did not finish cancellation cleanup within one second.
+
+    The host must retain `tasks` until they finish and join them with
+    `await asyncio.gather(*error.tasks, return_exceptions=True)`.
+    Cancellation remains cooperative; joining these tasks has no time bound.
+    """
+
+    def __init__(self, tasks: tuple[asyncio.Task[Any], ...]) -> None:
+        super().__init__('Async callback cleanup timed out')
+        self.tasks = tasks
+        """Unfinished callbacks whose ownership has transferred to the host."""
 
 
 class CallbackTasks:
@@ -42,38 +55,51 @@ class CallbackTasks:
             self._tasks.discard(task)
 
     async def _run(self, start: Callable[[], Awaitable[Any]]) -> Any:
+        cancelled = None
         try:
             return await start()
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+            raise
         finally:
-            await self.close()
+            error, cleanup_cancelled = await self.close()
+            if cancelled is not None or cleanup_cancelled:
+                raise cancelled or asyncio.CancelledError() from error
+            if error is not None:
+                raise error
 
-    async def close(self) -> None:
-        """Stop accepting callbacks and wait at most one second for cancellation cleanup."""
+    async def close(self) -> tuple[MontyCallbackCleanupError | None, bool]:
+        """Return overdue callbacks and caller cancellation after a bounded cleanup wait."""
         self._closed = True
         for coro in self._pending.values():
             # Ordinary cleanup errors must not replace the feed outcome or skip other callbacks.
             with suppress(Exception, asyncio.CancelledError):
                 coro.close()
         self._pending.clear()
-        tasks = tuple(self._tasks)
+        tasks = self._tasks.copy()
+        self._tasks.clear()
         for task in tasks:
+            task.add_done_callback(_consume_exception)
             task.cancel()
+        cancelled = False
         if tasks:
-            joined = asyncio.gather(*tasks, return_exceptions=True)
-            # Keep callbacks alive after the deadline and collect their eventual exceptions.
-            _draining_callbacks.add(joined)
-            joined.add_done_callback(_draining_callbacks.discard)
             loop = asyncio.get_running_loop()
             deadline = loop.time() + _CLEANUP_TIMEOUT
-            cancelled = False
-            while not joined.done():
+            while tasks:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     break
                 try:
-                    # wait() leaves callbacks running if this wait is cancelled or times out.
-                    await asyncio.wait((joined,), timeout=remaining)
+                    # Caller cancellation must not interrupt the callbacks' cleanup.
+                    _, tasks = await asyncio.wait(tasks, timeout=remaining)
                 except asyncio.CancelledError:
                     cancelled = True
-            if cancelled:
-                raise asyncio.CancelledError
+            tasks = {task for task in tasks if not task.done()}
+        # Return, rather than raise, so timeout and cancellation cannot form a context cycle.
+        return MontyCallbackCleanupError(tuple(tasks)) if tasks else None, cancelled
+
+
+def _consume_exception(task: asyncio.Task[Any]) -> None:
+    """Retrieve each callback's exception without retaining its siblings."""
+    if not task.cancelled():
+        task.exception()

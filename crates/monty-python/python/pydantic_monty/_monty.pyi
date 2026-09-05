@@ -962,8 +962,10 @@ class AsyncMontySession:
 
         Unfinished callbacks are cancelled, with up to one second for async
         cleanup before returning the outcome or propagating caller cancellation.
-        Callbacks still running remain tracked until they finish, even after the
-        session closes. Tasks they create themselves remain their responsibility.
+        If cleanup times out, `MontyCallbackCleanupError.tasks` transfers the
+        unfinished callbacks to the host to retain and join. Caller cancellation
+        still raises `CancelledError`, with the cleanup error as its cause.
+        Tasks callbacks create themselves remain their responsibility.
 
         Arguments:
             code: The Python snippet to execute; its trailing expression value

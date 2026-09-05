@@ -8,7 +8,7 @@ import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
-from pydantic_monty import _async
+import pydantic_monty._async as async_callbacks
 
 
 async def run_async(code: str, **kwargs: Any) -> Any:
@@ -144,9 +144,9 @@ async def test_async_run_anyio_cancellation_joins_callback():
         await asyncio.gather(driver, return_exceptions=True)
 
 
-@pytest.mark.parametrize('exit_mode', ['complete', 'error', 'cancel'])
-async def test_async_run_cleanup_deadline_preserves_outcome(monkeypatch: pytest.MonkeyPatch, exit_mode: str):
-    monkeypatch.setattr(_async, '_CLEANUP_TIMEOUT', 0.05)
+@pytest.mark.parametrize('exit_mode', ['complete', 'error', 'cancel', 'cancel_during_cleanup'])
+async def test_async_run_cleanup_deadline_transfers_ownership(monkeypatch: pytest.MonkeyPatch, exit_mode: str):
+    monkeypatch.setattr(async_callbacks, '_CLEANUP_TIMEOUT', 0.05)
     started = asyncio.Event()
     cleanup_started = asyncio.Event()
     release_cleanup = asyncio.Event()
@@ -175,27 +175,51 @@ async def test_async_run_cleanup_deadline_preserves_outcome(monkeypatch: pytest.
             code = 'background()\nawait wait_until_started()\n42'
             if exit_mode == 'error':
                 code += '\nraise ValueError("sandbox failed")'
+            elif exit_mode == 'cancel':
+                code = 'await background()'
             driver = asyncio.ensure_future(
                 session.feed_run(
                     code, external_lookup={'background': background, 'wait_until_started': wait_until_started}
                 )
             )
-            canceller = asyncio.create_task(cancel_repeatedly(driver)) if exit_mode == 'cancel' else None
+            canceller = asyncio.create_task(cancel_repeatedly(driver)) if exit_mode.startswith('cancel') else None
             try:
+                if exit_mode == 'cancel':
+                    await asyncio.wait_for(started.wait(), timeout=5)
+                    driver.cancel('host cancelled')
                 await asyncio.wait_for(cleanup_started.wait(), timeout=5)
                 done, _ = await asyncio.wait((driver,), timeout=1)
                 assert bool(done) == snapshot(True)
-                if exit_mode == 'cancel':
-                    with pytest.raises(asyncio.CancelledError):
+                if exit_mode.startswith('cancel'):
+                    with pytest.raises(asyncio.CancelledError) as cancelled_info:
                         await driver
-                elif exit_mode == 'error':
-                    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-                        await driver
-                    assert str(exc_info.value.exception()) == snapshot('sandbox failed')
+                    cleanup_error = cancelled_info.value.__cause__
+                    assert isinstance(cleanup_error, pydantic_monty.MontyCallbackCleanupError)
+                    assert cleanup_error.__context__ == snapshot(None)
+                    assert cleanup_error.__cause__ == snapshot(None)
+                    if exit_mode == 'cancel':
+                        assert str(cancelled_info.value) == snapshot('host cancelled')
                 else:
-                    assert await driver == snapshot(42)
+                    with pytest.raises(pydantic_monty.MontyCallbackCleanupError) as exc_info:
+                        await driver
+                    cleanup_error = exc_info.value
+                    if exit_mode == 'error':
+                        sandbox_error = cleanup_error.__context__
+                        assert isinstance(sandbox_error, pydantic_monty.MontyRuntimeError)
+                        assert str(sandbox_error.exception()) == snapshot('sandbox failed')
+                assert str(cleanup_error) == snapshot('Async callback cleanup timed out')
+                assert len(cleanup_error.tasks) == snapshot(1)
+                assert [task.done() for task in cleanup_error.tasks] == snapshot([False])
                 assert cleaned_up.is_set() == snapshot(False)
-                assert await session.feed_run('6 * 7') == snapshot(42)
+                if exit_mode == 'cancel':
+                    with pytest.raises(RuntimeError) as finished_info:
+                        await session.feed_run('6 * 7')
+                    assert str(finished_info.value) == snapshot('this checkout has already been finished')
+                else:
+                    assert await session.feed_run('6 * 7') == snapshot(42)
+                release_cleanup.set()
+                await asyncio.gather(*cleanup_error.tasks, return_exceptions=True)
+                assert [task.done() for task in cleanup_error.tasks] == snapshot([True])
             finally:
                 release_cleanup.set()
                 if canceller is not None:

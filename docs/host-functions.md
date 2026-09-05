@@ -304,6 +304,8 @@ The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions â
 
 In Python, [`AsyncMontySession.feed_run()`][pydantic_monty.AsyncMontySession.feed_run] cancels unfinished callbacks and
 waits up to one second for their cleanup before returning a result, raising an error, or propagating cancellation.
+If cleanup times out, [`MontyCallbackCleanupError`][pydantic_monty.MontyCallbackCleanupError] gives the host the
+unfinished tasks to retain and join.
 See [Python callback lifetime](limitations/asyncio.md#python-callback-lifetime) for the cleanup boundary and snapshot
 exception.
 
