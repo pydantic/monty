@@ -1,0 +1,19 @@
+crates/monty/test_cases/str__pyformat.py
+  s_db77700bd3f6ae::t_6e5874a498c39d 1-163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b4e6efc005376d68fa8e00c0338cd0cfc97442ef",
+  "prompts": {},
+  "sessions": {
+    "s_db77700bd3f6ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "182496b6-7c5a-406c-ab63-439302a6aaf8",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
