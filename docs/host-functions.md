@@ -302,6 +302,11 @@ In JavaScript every host function may be async, and there is no separate pool cl
 The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions — use `AsyncMonty`, or resolve the pending futures by hand with
 [`feed_start`](snapshots.md).
 
+In Python, `AsyncMontySession.feed_run()` cancels and joins unfinished callbacks before exposing its result, error,
+or cancellation to the caller.
+See [Python callback lifetime](limitations/asyncio.md#python-callback-lifetime) for the cleanup boundary and snapshot
+exception.
+
 ## Driving suspensions yourself
 
 `feed_run` answers every suspension for you and returns only the final value.

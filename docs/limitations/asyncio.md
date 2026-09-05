@@ -54,6 +54,16 @@ every branch is blocked on an external call, hands the pending calls to the
 host, and resumes when the host returns results. There is no preemption, no
 threads, and no in-sandbox scheduler.
 
+### Python callback lifetime
+
+`AsyncMontySession.feed_run()` cancels unfinished Python callbacks and waits for their cleanup before returning,
+raising an error, or propagating cancellation to its caller.
+This includes callbacks the sandbox started without awaiting, but not tasks a callback creates itself.
+Cleanup can use `await` in a `finally` block; a callback that suppresses cancellation and never finishes also prevents
+the feed from finishing.
+Snapshot-driven execution (`feed_start()` and `resume_auto()`) has a separate lifetime and is not covered by this
+cleanup.
+
 ### Siblings left running by a failed `gather` only advance while something else suspends
 
 When one child of a `gather` raises, the siblings keep running as they do in CPython.
