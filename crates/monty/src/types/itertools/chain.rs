@@ -9,7 +9,7 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropWithContext, HeapId, HeapRead},
-    types::itertools::ItertoolsIter,
+    types::itertools::{ItertoolsIter, step::next_source},
     value::Value,
 };
 
@@ -94,12 +94,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
         };
 
         defer_drop!(current, vm);
-        let item = {
-            let mut read = current.read(vm);
-            read.py_next(vm)
-        };
-
-        if let Some(item) = item? {
+        if let Some(item) = next_source(current, vm)? {
             return Ok(Some(item));
         }
         // This source is spent; release it and move to the next argument.

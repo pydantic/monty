@@ -3,33 +3,56 @@
 Untrusted code will eventually try to allocate forever or loop forever.
 Monty enforces hard limits on memory, execution time and recursion depth, configured per session.
 
-```python
-from pydantic_monty import Monty, MontyRuntimeError
+=== "Python"
 
-limits = {
-    'max_memory': 10_000_000,
-    'max_duration_secs': 1.0,
-    'max_recursion_depth': 100,
-}
+    ```python
+    from pydantic_monty import Monty, MontyRuntimeError
 
-with Monty() as pool:
-    with pool.checkout(limits=limits) as session:
-        try:
-            session.feed_run('x = [0] * 100_000_000')
-        except MontyRuntimeError as exc:
-            print(exc.display(format='type-msg').split(':')[0])
-            #> MemoryError
-```
+    limits = {
+        'max_memory': 10_000_000,
+        'max_duration_secs': 1.0,
+        'max_recursion_depth': 100,
+    }
+
+    with Monty() as pool:
+        with pool.checkout(limits=limits) as session:
+            try:
+                session.feed_run('x = [0] * 100_000_000')
+            except MontyRuntimeError as exc:
+                print(exc.display(format='type-msg').split(':')[0])
+                #> MemoryError
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty, MontyRuntimeError } from '@pydantic/monty'
+
+    const limits = {
+      maxMemory: 10_000_000,
+      maxDurationSecs: 1,
+      maxRecursionDepth: 100,
+    }
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout({ limits })
+    try {
+      await session.feedRun('x = [0] * 100_000_000')
+    } catch (err) {
+      if (!(err instanceof MontyRuntimeError)) throw err
+      console.log(err.display('type-msg').split(':')[0]) // MemoryError
+    }
+    ```
 
 ## The five settings
 
-| Key | Meaning |
-| --- | --- |
-| `max_memory` | Maximum heap memory in bytes |
-| `max_duration_secs` | Maximum cumulative execution time in seconds |
-| `max_recursion_depth` | Maximum function call stack depth (default 1000) |
-| `gc_interval` | Run garbage collection every N allocations |
-| `max_suspensions` | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
+| Key                   | Meaning                                                                                                               |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `max_memory`          | Maximum heap memory in bytes                                                                                          |
+| `max_duration_secs`   | Maximum cumulative execution time in seconds                                                                          |
+| `max_recursion_depth` | Maximum function call stack depth (default 1000)                                                                      |
+| `gc_interval`         | Run garbage collection every N allocations                                                                            |
+| `max_suspensions`     | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
 
 Every key is optional.
 Omit `max_memory` or `max_duration_secs`, or set them to `None`, to disable that limit.
@@ -40,7 +63,7 @@ off.
 
 In JavaScript the same fields are `maxMemory`, `maxDurationSecs`, `maxRecursionDepth`, `gcInterval` and
 `maxSuspensions`, passed as `limits` to `pool.checkout()`.
-In Rust they are the fields of `monty_types::ResourceLimits`, where the duration is a `Duration` named `max_duration`.
+In Rust they are the fields of [`monty_types::ResourceLimits`](api/rust/monty-types.md#resourcelimits), where the duration is a `Duration` named `max_duration`.
 
 ## Memory
 
@@ -53,15 +76,16 @@ obtained without the allocator: thread stacks, the binary's mapped image, a dire
 Size the limit with headroom, and use an OS or cgroup limit to bound the process itself.
 
 Operations whose result size is predictable from their inputs are **pre-checked before allocating**, above a 100 KB
-threshold: integer multiplication, left shift, integer power, sequence repeat (`'x' * n`), `str.replace` /
-`bytes.replace`, the padding methods, and f-string formatting with a dynamic width or precision.
+threshold, including integer multiplication, division and `divmod`, left shift, integer power, sequence repeat
+(`'x' * n`), `str.replace` / `bytes.replace`, `re.sub`, the padding methods, deque rotation and slicing, materialising
+an iterator into a container, and f-string or `str.format()` formatting with a dynamic width or precision.
 So `'x' * 10**12` fails immediately rather than after consuming the machine's memory.
 
 A few integer operations carry their own caps regardless of `max_memory`:
 
-- `base ** exp` with an exponent above `u32::MAX` raises `OverflowError`.
-- `int(s, base)` rejects strings over 4,300 digits before the quadratic BigInt parse, matching CPython's
-  `sys.int_info.default_max_str_digits`.
+- `base ** exp` with an exponent above `u32::MAX` raises `OverflowError`, except for bases 0, 1 and -1.
+- `int(s, base)` rejects strings over 4,300 digits before the quadratic BigInt parse when the base is not a power of
+    two, matching CPython's `sys.int_info.default_max_str_digits`.
 
 ## Time
 
@@ -69,23 +93,23 @@ A few integer operations carry their own caps regardless of `max_memory`:
 
 - The clock runs only while the interpreter executes bytecode.
 - It is paused while execution is suspended waiting on the host — a [host function](host-functions.md) that takes a
-  minute costs nothing.
+    minute costs nothing.
 - It accumulates across `feed_run` calls for the life of the session.
 - It is serialized into [snapshots](snapshots.md), so a restored session resumes its budget rather than restarting from
-  zero.
+    zero.
 - There is no way for sandboxed code to observe the budget or the time remaining.
 
 The in-sandbox check runs at interpreter checkpoints, so it cannot catch code that wedges the interpreter itself.
 Two host-side backstops cover that:
 
 - **`request_timeout`** on the pool is a hard per-turn deadline.
-  A worker that exceeds it is killed and the call raises `MontyCrashedError` with `timed_out=True`.
-  Each resume after a host-function or mount call starts a new deadline, so a program that suspends often can outlive
-  any single timeout.
+    A worker that exceeds it is killed and the call raises [`MontyCrashedError`][pydantic_monty.MontyCrashedError] with `timed_out=True`.
+    Each resume after a host-function or mount call starts a new deadline, so a program that suspends often can outlive
+    any single timeout.
 - **The duration backstop.** For sessions with a `max_duration_secs` limit, the worker reports its execution time on
-  every protocol turn, and the host kills the worker a grace period after the budget expires.
-  The grace period defaults to 1 second; in JavaScript it is the `durationLimitGrace` pool option (`null` disables it),
-  and from Python it is not currently configurable.
+    every protocol turn, and the host kills the worker a grace period after the budget expires.
+    The grace period defaults to 1 second; in JavaScript it is the `durationLimitGrace` pool option (`null` disables it),
+    and from Python it is not currently configurable.
 
 Set `max_duration_secs` for untrusted code that may suspend repeatedly; `request_timeout` alone does not bound the
 overall call.
@@ -113,7 +137,7 @@ Because `max_duration_secs` pauses during suspensions, a snippet could otherwise
 
 The pool enforces the limit per checkout; the default is 1000, and a host that needs more sets a larger number.
 A host driving the interpreter directly counts suspensions and calls `abort` itself; the limit only travels in the
-`ResourceTracker`, see the [Rust quickstart](quickstart/rust.md).
+[`ResourceTracker`](api/rust/monty-types.md#resourcetracker), see the [Rust quickstart](quickstart/rust.md).
 The first suspension over the budget aborts the feed with an uncatchable
 `RuntimeError: suspension limit 3 exceeded` at the call site.
 The session stays consistent and can be dumped; later feeds run until they suspend.
@@ -123,19 +147,19 @@ caps the dump's, so a worker cannot report a looser one.
 ## What is not covered
 
 - **Compilation time.** Parsing and bytecode compilation happen before the VM exists and are not charged to the duration
-  budget; memory retained by compiled code does count toward `max_memory` in workers.
-  Compilation has its own structural caps (AST nesting at 200 levels, bytecode operand sizes, comprehension nesting, and
-  a 1,024-copy cap on `finally` expansion that raises `SyntaxError`).
-  A host accepting untrusted source should still isolate compilation, as the subprocess and WebAssembly runtimes do.
-- **Print collectors.** `CollectString` and `CollectStreams` live in the host process, so their 10 MiB default cap is
-  separate from `max_memory`.
+    budget; memory retained by compiled code does count toward `max_memory` in workers.
+    Compilation has its own structural caps (AST nesting at 200 levels, bytecode operand sizes, comprehension nesting, and
+    a 1,024-copy cap on `finally` expansion that raises `SyntaxError`).
+    A host accepting untrusted source should still isolate compilation, as the subprocess and WebAssembly runtimes do.
+- **Print collectors.** [`CollectString`][pydantic_monty.CollectString] and [`CollectStreams`][pydantic_monty.CollectStreams] live in the host process, so their 10 MiB default cap is
+    separate from `max_memory`.
 - **Mount memory.** Each [mount](filesystem.md) has its own `memory_usage_limit`, defaulting to 100 MB, shared between
-  retained overlay data and transient results.
+    retained overlay data and transient results.
 - **`json.loads` nesting**, capped at 200 levels independently of the recursion limit.
-- **The host instance store.** Every `ClassInstance`/`ClassType` wrapper sent into a session (nested wrappers,
-  `init=True` constructions and `convert_value` wraps included) is retained in the host process until the session
-  ends; re-sending a wrapper with the same id reuses its entry, distinct wrappers accumulate; see
-  [host objects](host-objects.md#values-returned-by-methods).
+- **The host instance store.** Every [`ClassInstance`][pydantic_monty.ClassInstance]/[`ClassType`][pydantic_monty.ClassType] wrapper sent into a session (nested wrappers,
+    `init=True` constructions and `convert_value` wraps included) is retained in the host process until the session
+    ends; re-sending a wrapper with the same id reuses its entry, distinct wrappers accumulate; see
+    [host objects](host-objects.md#values-returned-by-methods).
 
 ## After a limit fires
 
@@ -154,4 +178,4 @@ Ending the session is your job.
 A caught `RecursionError` is the exception; it does not invalidate anything and execution may continue.
 
 Full details, including the exact pre-check thresholds, live in
-[`limitations/resource_limits.md`](https://github.com/pydantic/monty/blob/main/limitations/resource_limits.md).
+[`limitations/resource_limits.md`](limitations/resource_limits.md).

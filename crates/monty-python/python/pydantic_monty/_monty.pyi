@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Literal, NoReturn, final
 
@@ -537,6 +538,7 @@ class Monty:
         type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
+        print_flush_interval: float | None = None,
     ) -> MontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -564,6 +566,14 @@ class Monty:
                 CPython's empty `AssertionError`. On by default; set to `False`
                 to restore CPython's behavior, or to an int >= 1 to customize
                 the per-operand repr truncation length (default 120 bytes).
+            print_flush_interval: How long, in seconds, the worker may hold
+                buffered `print()` output before sending it, so that a burst
+                of prints costs one callback rather than one each. `None` (the
+                default) means 0.005; `0` restores line buffering, delivering
+                each completed line on its own. Output is always flushed
+                before a host call and before a run ends, so this only sets
+                how far live output may lag — never what arrives, or in what
+                order.
         """
 
 @final
@@ -815,6 +825,7 @@ class AsyncMonty:
         type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
+        print_flush_interval: float | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -858,6 +869,7 @@ class AsyncMontyWebsocket:
         max_processes: int | None = None,
         checkout_timeout: float | None = None,
         request_timeout: float | None = 10.0,
+        connect_headers: Callable[[], Mapping[str, str]] | None = None,
     ) -> Self:
         """
         Configure a remote worker pool; connections are made by `async with` and
@@ -882,6 +894,16 @@ class AsyncMontyWebsocket:
                 10.0 is often too low for it — a real `uv pip install` can exceed
                 it. Raise `request_timeout` (or pass `None`) when installing
                 dependencies over the WebSocket transport.
+            connect_headers: Called once per session, as it is entered and before
+                any wait for pool capacity, to produce extra `str` to `str`
+                headers for that connection's WebSocket upgrade request — e.g. a
+                token for infrastructure in front of the worker. It runs
+                synchronously on the checking-out task, so it sees that task's
+                contextvars and must not block. Monty never interprets the
+                values; duplicate names are last-wins, also over the default
+                `user-agent` and the `traceparent` the Logfire integration
+                adds, and a malformed name or value raises `RuntimeError` as
+                the session is entered.
         """
 
     async def __aenter__(self) -> Self: ...
@@ -896,6 +918,7 @@ class AsyncMontyWebsocket:
         type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
+        print_flush_interval: float | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated remote connection.

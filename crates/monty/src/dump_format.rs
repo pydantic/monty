@@ -197,7 +197,7 @@ mod tests {
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0xe763_e4db_4df3_e054,
+            0x782b_66f9_b630_180a,
             "static strings changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
@@ -215,12 +215,12 @@ mod tests {
 
         assert_eq!(
             variant_order_fingerprint(Type::VARIANTS),
-            0xba11_46b7_7fe7_1821,
+            0xc66d_9014_0335_92be,
             "Type variants changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0x1255_58b2_c0ad_a9f1,
+            0x091c_2e22_e9b8_f5ee,
             "MontyType variants changed for dump version {DUMP_VERSION}"
         );
     }

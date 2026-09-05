@@ -284,8 +284,13 @@ session, before any feed; using the wrong one for a dump's kind throws.
 ## Print Output
 
 `printCallback` accepts a function or a host collector (`PrintTargetInput` in
-TypeScript). Output is line-buffered; without a callback it goes to the host
-process stdout/stderr.
+TypeScript); without a callback output goes to the host process stdout/stderr.
+
+The worker batches output rather than sending an event per `print()`, so a
+callback can receive several prints in one chunk, or one print in several.
+`printFlushInterval` on `checkout()` sets how long (in seconds) output may be
+held — 0.005 by default, or `0` to restore line buffering. Output is always
+flushed before a host call and before a feed ends.
 
 ```ts
 // Function form

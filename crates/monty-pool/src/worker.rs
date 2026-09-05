@@ -43,7 +43,12 @@ use tokio::{
 };
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async_tls_with_config,
-    tungstenite::{Bytes, Error as WsError, Message, protocol::WebSocketConfig},
+    tungstenite::{
+        Bytes, Error as WsError, Message,
+        client::IntoClientRequest,
+        http::{HeaderName, HeaderValue, header::USER_AGENT},
+        protocol::WebSocketConfig,
+    },
 };
 
 #[cfg(feature = "telemetry")]
@@ -142,14 +147,20 @@ async fn send_close(sink: &mut SplitSink<WsStream, Message>) {
 }
 
 impl Worker {
-    /// Creates a worker for `config`'s transport.
-    pub(crate) async fn new(config: &PoolConfig) -> Result<Self, PoolError> {
+    /// Creates a worker for `config`'s transport. `connect_headers` go on the
+    /// WebSocket upgrade request; a subprocess makes no request and ignores them.
+    pub(crate) async fn new(config: &PoolConfig, connect_headers: &[(String, String)]) -> Result<Self, PoolError> {
         let worker = match &config.transport {
             MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path),
             // Bound the dial by `request_timeout` (see `websocket`); a missing
             // one falls back to a generous fixed budget.
             MontyTransport::Websocket(url) => {
-                Self::websocket(url, config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT)).await
+                Self::websocket(
+                    url,
+                    config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT),
+                    connect_headers,
+                )
+                .await
             }
         };
         #[cfg(feature = "telemetry")]
@@ -209,19 +220,41 @@ impl Worker {
     }
 
     /// Connects to a remote child over a WebSocket, dialing `url` verbatim. Any
-    /// session/rendezvous routing the URL needs is the caller's responsibility.
+    /// session/rendezvous routing the URL needs is the caller's responsibility;
+    /// `connect_headers` go on the upgrade request (see [`crate::CheckoutOptions`]).
     ///
     /// `dial_timeout` bounds the whole dial (DNS + TCP connect + TLS/WS
     /// handshake): `checkout_timeout` only covers waiting for capacity, so a
     /// hung dial would otherwise stall the checkout forever. Frame/message
     /// limits are raised to monty's [`MAX_FRAME_LEN`] so the transport never
     /// rejects a frame the protocol itself would accept.
-    async fn websocket(url: &str, dial_timeout: Duration) -> Result<Self, PoolError> {
+    async fn websocket(
+        url: &str,
+        dial_timeout: Duration,
+        connect_headers: &[(String, String)],
+    ) -> Result<Self, PoolError> {
         install_crypto_provider();
         let ws_config = WebSocketConfig::default()
             .max_frame_size(Some(MAX_FRAME_LEN as usize))
             .max_message_size(Some(MAX_FRAME_LEN as usize));
-        let dial = connect_async_tls_with_config(url, Some(ws_config), true, None);
+        let mut request = url
+            .into_client_request()
+            .map_err(|err| PoolError::Spawn(format!("{url}: {err}")))?;
+
+        // set before the caller's headers so a `user-agent` entry there overrides it
+        request
+            .headers_mut()
+            .insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
+
+        // a malformed name/value is a caller bug: fail the dial
+        for (name, value) in connect_headers {
+            let name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?}: {err}")))?;
+            let value = HeaderValue::from_str(value)
+                .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?} value: {err}")))?;
+            request.headers_mut().insert(name, value);
+        }
+        let dial = connect_async_tls_with_config(request, Some(ws_config), true, None);
         let (stream, _response) = timeout(dial_timeout, dial)
             .await
             .map_err(|_| PoolError::Spawn(format!("{url}: connect timed out after {dial_timeout:?}")))?
@@ -299,13 +332,17 @@ impl Worker {
         result.map(drop)
     }
 
-    /// Assigns propagated host context before this worker starts a checkout.
+    /// Attaches the host's trace context, if it captured one, before this
+    /// worker starts a checkout.
     #[cfg(feature = "telemetry")]
-    pub(crate) fn set_adapter_context(&mut self, context: TelemetryContext) {
-        let worker_pid = self.pid();
-        self.recorder
-            .get_or_insert_with(|| Box::new(Recorder::new(worker_pid)))
-            .set_adapter_context(context);
+    pub(crate) fn with_adapter_context(mut self, context: Option<TelemetryContext>) -> Self {
+        if let Some(context) = context {
+            let worker_pid = self.pid();
+            self.recorder
+                .get_or_insert_with(|| Box::new(Recorder::new(worker_pid)))
+                .set_adapter_context(context);
+        }
+        self
     }
 
     /// Receives one event. EOF/close is an error here because within a
@@ -584,6 +621,10 @@ fn ws_to_frame_error(err: WsError) -> FrameError {
         _ => FrameError::Truncated,
     }
 }
+
+/// `User-Agent` on every WebSocket upgrade request, identifying this crate to
+/// the server or relay it dials; a `connect_headers` entry replaces it.
+const USER_AGENT_VALUE: &str = concat!("monty-pool/", env!("CARGO_PKG_VERSION"));
 
 /// Fallback dial budget when the pool sets no `request_timeout` (which otherwise
 /// also bounds the WebSocket dial). Generous, since it only guards a stuck dial.

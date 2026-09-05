@@ -80,12 +80,24 @@ impl<'t> StringBuilder<'t> {
         }
     }
 
+    /// Existing capacity is already tracker-accounted; only later growth needs preflight.
+    pub fn from_existing(inner: String, tracker: &'t ResourceTracker) -> Self {
+        let approved_capacity = inner.capacity();
+        Self {
+            inner,
+            tracker,
+            approved_capacity,
+            pending_error: None,
+        }
+    }
+
     /// Creates a builder with `capacity` bytes reserved up front.
     ///
     /// Use when the final size is known or bounded (e.g. padding to a given
     /// width). One up-front check covers pushes within `capacity`.
     pub fn with_capacity(capacity: usize, tracker: &'t ResourceTracker) -> Result<Self, ResourceError> {
         tracker.check_allocation(capacity)?;
+        check_string_capacity(capacity)?;
         Ok(Self {
             inner: String::with_capacity(capacity),
             tracker,
@@ -139,8 +151,24 @@ impl<'t> StringBuilder<'t> {
             let new_capacity = self.approved_capacity.saturating_mul(2).max(needed);
             let additional = new_capacity - self.approved_capacity;
             self.tracker.check_allocation(additional)?;
+            check_string_capacity(new_capacity)?;
             self.approved_capacity = new_capacity;
         }
+        Ok(())
+    }
+}
+
+const MAX_STRING_CAPACITY: usize = isize::MAX as usize;
+
+/// A capacity above `isize::MAX` panics inside the reservation itself, before
+/// the allocator can refuse it, so both reservation paths fence it here.
+fn check_string_capacity(capacity: usize) -> Result<(), ResourceError> {
+    if capacity > MAX_STRING_CAPACITY {
+        Err(ResourceError::Memory {
+            limit: MAX_STRING_CAPACITY,
+            used: capacity,
+        })
+    } else {
         Ok(())
     }
 }

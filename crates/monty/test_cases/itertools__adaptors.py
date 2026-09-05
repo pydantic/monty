@@ -645,3 +645,197 @@ assert sorted(itertools.filterfalse(lambda x: x > 1, itertools.chain([0, 1], [2]
 assert list(itertools.starmap(lambda: 7, [()])) == [7]
 assert list(itertools.starmap(lambda a, b, c: a + b + c, [(1, 2, 3)])) == [6]
 assert list(itertools.starmap(lambda *a: len(a), [(1, 2, 3, 4)])) == [4]
+
+# === accumulate ===
+assert list(itertools.accumulate([1, 2, 3, 4])) == [1, 3, 6, 10]
+assert list(itertools.accumulate([1, 2, 3, 4], lambda a, b: a * b)) == [1, 2, 6, 24]
+assert list(itertools.accumulate([])) == []
+assert list(itertools.accumulate([5])) == [5]
+assert list(itertools.accumulate(['a', 'b', 'c'])) == ['a', 'ab', 'abc']
+# The first item is yielded untouched, never passed through the callable.
+assert list(itertools.accumulate([7], lambda a, b: 0)) == [7]
+# `initial` is yielded before the source is touched, so an empty source still
+# produces one value.
+assert list(itertools.accumulate([1, 2, 3], initial=10)) == [10, 11, 13, 16]
+assert list(itertools.accumulate([], initial=10)) == [10]
+# An explicit `None` is no initial at all, and no callable means `+`.
+assert list(itertools.accumulate([1, 2, 3], initial=None)) == [1, 3, 6]
+assert list(itertools.accumulate([1, 2], None)) == [1, 3]
+assert list(itertools.accumulate([1, 2], func=None)) == [1, 3]
+assert list(itertools.accumulate(iterable=[1, 2])) == [1, 3]
+
+# === batched ===
+assert list(itertools.batched('ABCDEFG', 3)) == [('A', 'B', 'C'), ('D', 'E', 'F'), ('G',)]
+assert list(itertools.batched([1, 2, 3, 4], 2)) == [(1, 2), (3, 4)]
+assert list(itertools.batched([], 3)) == []
+assert list(itertools.batched([1, 2], 5)) == [(1, 2)]
+assert list(itertools.batched([1, 2, 3], n=3)) == [(1, 2, 3)]
+assert list(itertools.batched('ABCD', 2, strict=True)) == [('A', 'B'), ('C', 'D')]
+assert type(next(itertools.batched([1], 1))) is tuple
+
+# === zip_longest ===
+assert list(itertools.zip_longest([1, 2, 3], 'ab')) == [(1, 'a'), (2, 'b'), (3, None)]
+assert list(itertools.zip_longest([1, 2, 3], 'ab', fillvalue='-')) == [(1, 'a'), (2, 'b'), (3, '-')]
+assert list(itertools.zip_longest()) == []
+assert list(itertools.zip_longest([1, 2])) == [(1,), (2,)]
+assert list(itertools.zip_longest([], [])) == []
+assert list(itertools.zip_longest([1], [2, 3], [4, 5, 6])) == [(1, 2, 4), (None, 3, 5), (None, None, 6)]
+assert type(next(itertools.zip_longest([1]))) is tuple
+# Exhausted once, exhausted for good.
+spent_zip = itertools.zip_longest([1], [2, 3])
+assert list(spent_zip) == [(1, 2), (None, 3)]
+assert list(spent_zip) == []
+
+
+# A source that steps the same `zip_longest` from inside its own `__next__`
+# drains the other slots before the outer round reaches them, so the outer round
+# pads them. What the adaptor does AFTER that row diverges — see
+# `limitations/itertools.md`.
+class Reentrant:
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == 1:
+            try:
+                next(reentrant_zip)
+                assert False, 'expected the nested round to exhaust every slot'
+            except StopIteration:
+                pass
+            return 'a'
+        raise StopIteration
+
+
+reentrant_zip = itertools.zip_longest(Reentrant(), iter([]), iter([]))
+assert next(reentrant_zip) == ('a', None, None)
+
+# === the new adaptors against a stuttering source ===
+# `batched` clears its source only on an EMPTY batch, so a short batch caused
+# by a transient StopIteration is yielded and the source driven again.
+# `Stuttering` never really ends, so it is stepped rather than drained.
+stutter_batched = itertools.batched(Stuttering(), 3)
+assert next(stutter_batched) == (1,)
+assert next(stutter_batched) == (3, 4, 5)
+# `accumulate` keeps its running total across the same stutter.
+stutter_acc = itertools.accumulate(Stuttering())
+assert next(stutter_acc) == 1
+try:
+    next(stutter_acc)
+    assert False, 'expected StopIteration'
+except StopIteration:
+    pass
+assert next(stutter_acc) == 4
+
+# === errors shared with CPython ===
+# Arity and clinic wording diverge (see limitations/itertools.md), so only the
+# messages that match both engines are pinned here.
+try:
+    itertools.accumulate(5)
+    assert False, 'expected accumulate to reject a non-iterable'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
+
+try:
+    list(itertools.accumulate([1, 2], 5))
+    assert False, 'expected accumulate to reject a non-callable func'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not callable"
+
+try:
+    list(itertools.accumulate([1, 'a']))
+    assert False, 'expected accumulate to reject mixed operands'
+except TypeError as exc:
+    assert str(exc) == "unsupported operand type(s) for +: 'int' and 'str'"
+
+try:
+    itertools.accumulate([1], bogus=1)
+    assert False, 'expected accumulate to reject an unknown keyword'
+except TypeError as exc:
+    assert str(exc) == "accumulate() got an unexpected keyword argument 'bogus'"
+
+# Clinic shares its arity wording with the named C family: "at most" when a
+# positional has a default, "exactly" when none does, and a total count once
+# keywords push the overflow past every slot.
+try:
+    itertools.accumulate([1], None, 9)
+    assert False, 'expected accumulate to reject a third positional'
+except TypeError as exc:
+    assert str(exc) == 'accumulate() takes at most 2 positional arguments (3 given)'
+
+try:
+    itertools.accumulate([1], None, 9, initial=1)
+    assert False, 'expected accumulate to reject a third positional with a keyword'
+except TypeError as exc:
+    assert str(exc) == 'accumulate() takes at most 3 arguments (4 given)'
+
+try:
+    itertools.batched([1], 2, 3)
+    assert False, 'expected batched to reject a third positional'
+except TypeError as exc:
+    assert str(exc) == 'batched() takes exactly 2 positional arguments (3 given)'
+
+try:
+    itertools.accumulate()
+    assert False, 'expected accumulate to reject a missing iterable'
+except TypeError as exc:
+    assert str(exc) == "accumulate() missing required argument 'iterable' (pos 1)"
+
+try:
+    itertools.batched([1])
+    assert False, 'expected batched to reject a missing n'
+except TypeError as exc:
+    assert str(exc) == "batched() missing required argument 'n' (pos 2)"
+
+try:
+    itertools.accumulate([1], None, func=abs)
+    assert False, 'expected accumulate to reject a duplicated func'
+except TypeError as exc:
+    assert str(exc) == "argument for accumulate() given by name ('func') and position (2)"
+
+for bad_n in (0, -1):
+    try:
+        itertools.batched([1], bad_n)
+        assert False, 'expected batched to reject n below one'
+    except ValueError as exc:
+        assert str(exc) == 'n must be at least one'
+
+try:
+    itertools.batched([1], 'x')
+    assert False, 'expected batched to reject a non-integer n'
+except TypeError as exc:
+    assert str(exc) == "'str' object cannot be interpreted as an integer"
+
+# `n` is a `Py_ssize_t`, so one past it overflows rather than saturating. On a
+# 64-bit host that ceiling is `i64`; a 32-bit one rejects from `2**31` up too.
+try:
+    itertools.batched([1], 2**70)
+    assert False, 'expected batched to reject an n past Py_ssize_t'
+except OverflowError as exc:
+    assert str(exc) == 'Python int too large to convert to C ssize_t'
+
+# `strict` rejects the short final batch, and latches rather than retrying.
+strict_batched = itertools.batched('ABCDE', 2, strict=True)
+assert next(strict_batched) == ('A', 'B')
+assert next(strict_batched) == ('C', 'D')
+try:
+    next(strict_batched)
+    assert False, 'expected batched to reject the incomplete batch'
+except ValueError as exc:
+    assert str(exc) == 'batched(): incomplete batch'
+try:
+    next(strict_batched)
+    assert False, 'expected batched to be spent'
+except StopIteration:
+    pass
+
+# Every `zip_longest` argument is resolved eagerly, so a later non-iterable
+# raises at construction rather than on the first `next`.
+try:
+    itertools.zip_longest([1], 5)
+    assert False, 'expected zip_longest to reject a non-iterable'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
