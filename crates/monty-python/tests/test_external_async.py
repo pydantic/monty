@@ -182,7 +182,7 @@ async def test_async_run_cleanup_deadline_transfers_ownership(monkeypatch: pytes
                     code, external_lookup={'background': background, 'wait_until_started': wait_until_started}
                 )
             )
-            canceller = asyncio.create_task(cancel_repeatedly(driver)) if exit_mode.startswith('cancel') else None
+            canceller = asyncio.create_task(cancel_repeatedly(driver)) if exit_mode == 'cancel_during_cleanup' else None
             try:
                 if exit_mode == 'cancel':
                     await asyncio.wait_for(started.wait(), timeout=5)

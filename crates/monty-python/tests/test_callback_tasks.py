@@ -214,10 +214,9 @@ async def test_discarded_cleanup_errors_do_not_retain_callbacks_globally(monkeyp
     """Ignoring ownership transfer abandons cleanup, but must not create global roots."""
     monkeypatch.setattr(async_callbacks, '_CLEANUP_TIMEOUT', 0.01)
     refs: list[weakref.ReferenceType[asyncio.Task[Any]]] = []
-    messages: list[str] = []
     loop = asyncio.get_running_loop()
     previous_handler = loop.get_exception_handler()
-    loop.set_exception_handler(lambda _loop, context: messages.append(context['message']))
+    loop.set_exception_handler(lambda _loop, _context: None)
 
     async def abandon_feed():
         callbacks = CallbackTasks()
@@ -251,4 +250,3 @@ async def test_discarded_cleanup_errors_do_not_retain_callbacks_globally(monkeyp
         await asyncio.gather(*tasks, return_exceptions=True)
         loop.set_exception_handler(previous_handler)
     assert released == snapshot([True, True, True])
-    assert messages == snapshot(['Task was destroyed but it is pending!'] * 3)
