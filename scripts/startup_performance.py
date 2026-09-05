@@ -3,7 +3,7 @@
 # dependencies = [
 #     "daytona>=0.136.0",
 #     "mcp-run-python>=0.0.22",
-#     "pydantic-monty>=0.0.22",
+#     "pydantic-monty>=0.0.23",
 #     "starlark-pyo3>=2025.2.5",
 #     "wasmtime>=38",
 # ]
