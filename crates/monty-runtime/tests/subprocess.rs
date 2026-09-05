@@ -15,7 +15,7 @@ use monty_proto::{
     FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireFunctionCall,
     WireObject, exceeds_max_frame_len, pb, write_frame,
 };
-use monty_types::MontyObject;
+use monty_types::{MontyDate, MontyDateTime, MontyObject};
 
 /// How long a death-expecting helper waits for the child to exit. Generous:
 /// the regression it guards is "the child never dies", so the only cost of a
@@ -496,6 +496,59 @@ fn external_function_not_found_raises_name_error() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "NameError");
     assert_eq!(error.message.as_deref(), Some("name 'undefined_fn' is not defined"));
+    child.shutdown();
+}
+
+/// The worker's `MontyRepl` carries a `HostClock`, but drives `feed_start`,
+/// which never reads it. Only this test holds the two apart: routing a worker
+/// feed through `feed_run` would answer the clock inside the sandbox instead
+/// of asking the parent.
+#[test]
+fn clock_calls_bubble_to_parent() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+
+    let today = MontyDate {
+        year: 2024,
+        month: 1,
+        day: 15,
+    };
+    let (_, event) = child.feed("from datetime import date\ndate.today()");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(call.call, Some(pb::os_call::Call::DateToday(pb::Unit {})));
+    let (_, event) = child.resume_call(
+        call.call_id,
+        pb::ext_function_result::Kind::ReturnValue(WireObject::new(MontyObject::Date(today.clone()))),
+    );
+    assert_eq!(expect_complete(event), MontyObject::Date(today));
+
+    let now = MontyDateTime {
+        year: 2024,
+        month: 1,
+        day: 15,
+        hour: 9,
+        minute: 30,
+        second: 0,
+        microsecond: 0,
+        offset_seconds: None,
+        timezone_name: None,
+    };
+    let (_, event) = child.feed("from datetime import datetime\ndatetime.now()");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::DateTimeNow(pb::os_call::DateTimeNow { tz: None }))
+    );
+    let (_, event) = child.resume_call(
+        call.call_id,
+        pb::ext_function_result::Kind::ReturnValue(WireObject::new(MontyObject::DateTime(now.clone()))),
+    );
+    assert_eq!(expect_complete(event), MontyObject::DateTime(now));
+
     child.shutdown();
 }
 
