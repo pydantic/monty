@@ -129,7 +129,7 @@ pub(super) fn call(vm: &mut VM<'_>, functions: OsFunctions, args: ArgValues) -> 
 /// directory, held by the VM so no host round-trip is needed.
 fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("getcwd", vm.heap)?;
-    Ok(CallResult::Value(allocate_string(vm.env.cwd.as_str(), vm.heap)))
+    Ok(CallResult::Value(allocate_string(&*vm.env.cwd, vm.heap)))
 }
 
 /// Implementation of `os.chdir(path)`.

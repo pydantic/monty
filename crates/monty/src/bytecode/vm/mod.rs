@@ -15,7 +15,7 @@ mod format;
 mod recursion;
 mod scheduler;
 
-use std::mem;
+use std::{borrow::Cow, mem};
 
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
@@ -656,8 +656,6 @@ pub struct VMSnapshot {
 
     /// Working directory at the pause, including any `os.chdir` so far.
     cwd: String,
-    /// `__file__` for the run, fixed when it started.
-    file: String,
 }
 
 impl VMSnapshot {
@@ -824,10 +822,11 @@ pub struct VM<'h> {
     /// snapshotted (a pure performance cache), so default-initialized on restore.
     pub(crate) re_pattern_cache: RePatternCache,
 
-    /// Working directory, `__file__` and the assert-repr cap for this run.
-    /// The cap is supplied fresh by the executor on restore; the paths travel
-    /// in the snapshot because `os.chdir` may have moved the directory.
-    pub(crate) env: VmEnv,
+    /// Working directory, `__file__` inputs and the assert-repr cap for this
+    /// run. Rebuilt from the executor on restore, except the working
+    /// directory, which travels in the snapshot because `os.chdir` may have
+    /// moved it.
+    pub(crate) env: VmEnv<'h>,
 }
 
 impl<'h> VM<'h> {
@@ -838,7 +837,7 @@ impl<'h> VM<'h> {
         heap: &'h mut HeapReader<'h>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
-        env: VmEnv,
+        env: VmEnv<'h>,
     ) -> Self {
         Self::new_with_frame(
             globals,
@@ -857,7 +856,7 @@ impl<'h> VM<'h> {
         heap: &'h mut HeapReader<'h>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
-        env: VmEnv,
+        env: VmEnv<'h>,
     ) -> Self {
         Self {
             stack: Vec::with_capacity(64),
@@ -895,14 +894,14 @@ impl<'h> VM<'h> {
     /// * `heap` - The deserialized heap
     /// * `interns` - Interns for looking up function code
     /// * `print_writer` - Writer for print output
-    /// * `assert_repr_max_bytes` - Operand-repr byte cap from the executor
+    /// * `env` - The executor's environment; the snapshot's working directory overrides its `cwd`
     pub fn restore(
         snapshot: VMSnapshot,
         module_code: &'h Code,
         heap: &'h mut HeapReader<'h>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
-        assert_repr_max_bytes: u32,
+        env: VmEnv<'h>,
     ) -> Self {
         // Reconstruct call frames from serialized form
         let frames: Vec<CallFrame<'_>> = snapshot
@@ -956,10 +955,10 @@ impl<'h> VM<'h> {
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
-            env: VmEnv {
-                cwd: snapshot.cwd,
-                file: snapshot.file,
-                assert_repr_max_bytes,
+            env: {
+                let mut env = env;
+                env.cwd = Cow::Owned(snapshot.cwd);
+                env
             },
         }
     }
@@ -1008,8 +1007,7 @@ impl<'h> VM<'h> {
             scheduler: mem::take(&mut self.scheduler),
             pending_os_effect: self.pending_os_effect.take(),
             pending_lookup_effect: self.pending_lookup_effect.take(),
-            cwd: mem::take(&mut self.env.cwd),
-            file: mem::take(&mut self.env.file),
+            cwd: mem::take(&mut self.env.cwd).into_owned(),
         }
     }
 
@@ -1963,7 +1961,7 @@ impl<'h> VM<'h> {
             },
             Some(PendingOsEffect::Chdir { path, spelled }) => match check_chdir_stat(&obj, &spelled) {
                 Ok(()) => {
-                    self.env.cwd = path;
+                    self.env.cwd = Cow::Owned(path);
                     MontyObject::None
                 }
                 Err(err) => return self.resume_with_exception(err),
@@ -2347,7 +2345,7 @@ impl<'h> VM<'h> {
         let value = match self.interns.get_str(name_id) {
             "__name__" => Value::InternString(StaticStrings::DunderMain.into()),
             "__debug__" => Value::Bool(true),
-            "__file__" => allocate_string(self.env.file.as_str(), self.heap),
+            "__file__" => allocate_string(self.env.file(), self.heap),
             "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))),
             "__doc__" | "__spec__" | "__package__" => Value::None,
             _ => return None,
