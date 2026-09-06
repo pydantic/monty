@@ -4,7 +4,7 @@
 
 import { afterAll as afterEachFile, beforeAll as beforeEachFile } from 'vitest'
 import { kind } from './env.js'
-import { Monty, type CheckoutOptions, type FeedOptions } from '@pydantic/monty'
+import { Monty, MontyFileHandle, type CheckoutOptions, type FeedOptions } from '@pydantic/monty'
 import { t } from './assertions.js'
 
 /** Checkout-level and feed-level options, flattened for convenience. */
@@ -15,6 +15,36 @@ export interface PoolFixture {
   run: (code: string, options?: RunOptions) => Promise<unknown>
   /** The shared pool, for tests that manage sessions directly. */
   pool: () => Monty
+}
+
+/** Checks relative Python results while callbacks continue to receive absolute paths. */
+export async function checkRelativePathResults(run: PoolFixture['run']): Promise<void> {
+  const calls: unknown[] = []
+  const result = await run(
+    `from pathlib import Path
+([str(p) for p in Path('.').iterdir()],
+ [str(p) for p in Path('sub/..').iterdir()],
+ open('./file.txt').name,
+ Path('./file.txt').open().name,
+ str(open(b'./file.txt').name))`,
+    {
+      cwd: '/data',
+      os: (name, args) => {
+        calls.push([name, args])
+        if (name === 'Path.iterdir') return ['/data/file.txt']
+        if (name === 'open') return new MontyFileHandle(args[0] as string, 'r')
+        throw new Error(`unexpected OS call: ${name}`)
+      },
+    },
+  )
+  t.deepEqual(result, [['file.txt'], ['sub/../file.txt'], './file.txt', 'file.txt', "b'./file.txt'"])
+  t.deepEqual(calls, [
+    ['Path.iterdir', ['/data']],
+    ['Path.iterdir', ['/data']],
+    ['open', ['/data/file.txt', 'r']],
+    ['open', ['/data/file.txt', 'r']],
+    ['open', ['/data/file.txt', 'r']],
+  ])
 }
 
 /** Checks path rejection and error spelling through native and WASM OS callbacks. */

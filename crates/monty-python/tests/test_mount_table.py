@@ -655,8 +655,18 @@ def test_cwd_defaults_to_the_first_mount(monty_run: RunMonty, test_dir: Path):
 
 def test_cwd_explicit(monty_run: RunMonty, test_dir: Path):
     md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
-    code = "import os\n(os.getcwd(), open('nested.txt').read())"
-    assert monty_run(code, mount=md, cwd='/data/subdir/') == snapshot(('/data/subdir', 'nested content'))
+    code = """
+import os
+from pathlib import Path
+f = open('nested.txt')
+(os.getcwd(), f.read(), f.name, [str(p) for p in Path('.').iterdir()])
+"""
+    assert monty_run(code, mount=md, cwd='/data/subdir/') == (
+        '/data/subdir',
+        'nested content',
+        'nested.txt',
+        ['nested.txt'],
+    )
 
 
 def test_cwd_must_be_absolute(monty_run: RunMonty):
@@ -669,7 +679,8 @@ def test_cwd_persists_across_feeds(pool: Monty, test_dir: Path):
     md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
     with pool.checkout() as session:
         # the first feed's mount sets the directory; chdir and the mount-less feed keep it
-        assert session.feed_run("import os\nos.chdir('subdir')\nos.getcwd()", mount=md) == snapshot('/data/subdir')
+        code = "import os\nfrom pathlib import Path\nos.chdir(path='subdir')\nstr(Path('.').cwd())"
+        assert session.feed_run(code, mount=md) == '/data/subdir'
         assert session.feed_run('os.getcwd()', mount=md) == snapshot('/data/subdir')
         assert session.feed_run('os.getcwd()') == snapshot('/data/subdir')
         # an explicit cwd switches it, and the switch persists too

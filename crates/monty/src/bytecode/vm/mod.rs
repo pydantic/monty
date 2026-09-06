@@ -38,12 +38,14 @@ use crate::{
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingOsEffect, check_chdir_stat, listdir_names, release_pending_effect, resolve_call_paths},
+    os_dispatch::{
+        PendingOsEffect, check_chdir_stat, iterdir_paths, listdir_names, release_pending_effect, resolve_call_paths,
+    },
     parse::CodeRange,
     run::VmEnv,
     types::{
         Dict, LongInt, PyTrait,
-        file::{apply_buffer_store, apply_write_position},
+        file::{apply_buffer_store, apply_open_name, apply_write_position},
         str::allocate_string,
     },
     value::{EitherStr, Value},
@@ -1978,10 +1980,14 @@ impl<'h> VM<'h> {
     /// through the corresponding helper (file-state update or `os.listdir`
     /// name reduction) before it is pushed back to Python.
     pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
-        // `ListdirNames` and `Chdir` reshape the raw host object *before*
+        // Directory effects reshape the raw host object *before*
         // heap conversion — plain data in, plain data out, no refcounts involved.
         let obj = match self.pending_os_effect.take() {
             Some(PendingOsEffect::ListdirNames) => match listdir_names(obj) {
+                Ok(obj) => obj,
+                Err(err) => return self.resume_with_exception(err),
+            },
+            Some(PendingOsEffect::IterdirPaths { path }) => match iterdir_paths(obj, &path) {
                 Ok(obj) => obj,
                 Err(err) => return self.resume_with_exception(err),
             },
@@ -2012,9 +2018,12 @@ impl<'h> VM<'h> {
             let result = match effect {
                 PendingOsEffect::BufferStore { file_id } => apply_buffer_store(file_id, value, self),
                 PendingOsEffect::WritePosition { file_id, .. } => apply_write_position(file_id, value, self),
+                PendingOsEffect::OpenName { name } => apply_open_name(name, value, self),
                 // Cleared above, before conversion.
-                PendingOsEffect::ListdirNames | PendingOsEffect::Chdir { .. } => {
-                    unreachable!("ListdirNames and Chdir are handled before heap conversion")
+                PendingOsEffect::ListdirNames
+                | PendingOsEffect::Chdir { .. }
+                | PendingOsEffect::IterdirPaths { .. } => {
+                    unreachable!("directory effects are handled before heap conversion")
                 }
             };
             match result {
@@ -2069,7 +2078,10 @@ impl<'h> VM<'h> {
                     self.heap.dec_ref(file_id);
                 }
                 // Hold no state or heap references — nothing to roll back.
-                PendingOsEffect::ListdirNames | PendingOsEffect::Chdir { .. } => {}
+                PendingOsEffect::ListdirNames
+                | PendingOsEffect::Chdir { .. }
+                | PendingOsEffect::IterdirPaths { .. }
+                | PendingOsEffect::OpenName { .. } => {}
             }
         }
         // Use the normal exception handling mechanism

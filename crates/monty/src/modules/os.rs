@@ -146,6 +146,13 @@ fn getcwdb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Bytes(bytes)))))
 }
 
+/// `os.chdir(path)` accepts a positional or keyword path, with CPython's total-count check.
+#[derive(FromArgs)]
+#[from_args(name = "chdir", style = c_named, at_most_total)]
+struct ChdirArgs {
+    path: Value,
+}
+
 /// Implementation of `os.chdir(path)`.
 ///
 /// The VM owns the working directory, but the target must exist and be a
@@ -154,7 +161,7 @@ fn getcwdb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `FileNotFoundError` therefore comes from the host, `NotADirectoryError`
 /// from the resume side.
 fn chdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let path = args.get_one_arg("chdir", vm.heap)?;
+    let ChdirArgs { path } = ChdirArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     let spelled = extract_os_path(path, "chdir", "path", PathAccepts::Fd, vm)?;
     if spelled.is_empty() {

@@ -80,5 +80,15 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+## Working directory
+
+Pass `cwd='/data'` to `session.feed_run()` or `session.feed_start()` to set the sandbox's virtual working directory.
+The async session methods accept the same option.
+The path must be absolute and uses POSIX `/` separators on every host.
+On the first feed, omitting `cwd` selects the first mount's virtual path, or `/` if no mount is supplied.
+The directory then persists across feeds, including successful `os.chdir(path=...)` calls, until another feed sets `cwd`.
+`os.getcwd()` and `Path.cwd()` report it, and relative `open()`, `os`, and `pathlib` requests resolve against it.
+Setting `cwd` does not grant filesystem access; provide `mount=` or `os=` to handle filesystem operations.
+
 See the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) README for
 more details.

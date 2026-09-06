@@ -6,7 +6,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { MontyFileHandle, MontyRuntimeError, MountDir, type MountDirOptions } from '@pydantic/monty/node'
-import { checkOsPathValidation, setupPool } from './helpers.js'
+import { checkOsPathValidation, checkRelativePathResults, setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
 
@@ -124,6 +124,10 @@ test('cwd defaults to the root without mounts', async () => {
 
 test('NUL paths never reach callbacks and no-handler errors use clean paths', async () => {
   await checkOsPathValidation(run)
+})
+
+test('filesystem results preserve relative paths', async () => {
+  await checkRelativePathResults(run)
 })
 
 test.each(['/', '/data'])('os callbacks receive normalized paths with cwd %s', async (cwd) => {

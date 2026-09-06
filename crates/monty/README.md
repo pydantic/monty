@@ -116,7 +116,7 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 ## Other pieces
 
 - `MontyRepl` — a REPL-style interface: feed code snippet by snippet with state persisting between snippets.
-- `fs` module — mount real host directories into the sandbox at virtual paths (read-write, read-only, or copy-on-write in-memory overlay), with path resolution hardened against escapes.
+- `monty-fs` crate — mount real host directories into the sandbox at virtual paths (read-write, read-only, or copy-on-write in-memory overlay), with path resolution hardened against escapes.
 - `RunProgress::OsCall` — filesystem and other `os`-level operations the host can intercept or delegate.
 - `FunctionCall::object_id` and `NameLookup::object_id` — `Some(uuid)` when the suspension is a method call or lazy attribute lookup on a host object sent as `MontyObject::ClassInstance` / `MontyObject::Type`; the receiver is not in `args`.
 

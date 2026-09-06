@@ -105,6 +105,10 @@ methods and attributes are:
 - `name`, `mode`, `closed` attributes.
 - `encoding` attribute on text files (always `"utf-8"`).
 
+`open('data.txt').name` is `'data.txt'`, matching the supplied filename rather than the absolute path sent to the host.
+Bytes filenames remain bytes, and `Path.open()` uses the path's string spelling.
+Subsequent reads and writes still target the file opened originally, even after `os.chdir()`.
+
 Everything else raises `AttributeError`, including: `truncate()`,
 `fileno()`, `isatty()`, `detach()`, `buffer`, `raw`, and the iterator
 protocol (`__iter__`/`__next__`, including `for line in f:`).
