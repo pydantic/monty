@@ -445,14 +445,15 @@ class MontyDisconnectError(MontyError):
 
     The local analogue is `MontyCrashedError`. The sandbox may have died, or
     the server may have dropped the session by policy — an idle, session, or
-    turn timeout, or being over capacity. A bare disconnect cannot tell those
-    apart; a server that closed deliberately says why in its WebSocket Close
-    frame, exposed here as `close_code`, `close_reason` and `close_cause` and
-    repeated in the message. Retry on a fresh session.
+    turn timeout. A bare disconnect cannot tell those apart; a server that
+    closed deliberately says why in its WebSocket Close frame, exposed here as
+    `close_code`, `close_reason` and `close_cause` and repeated in the
+    message. Retry on a fresh session.
 
-    One policy drop is not reported this way: a worker killed for exceeding
+    Two policy drops are not reported this way: a worker killed for exceeding
     its memory limit raises the same session-ending `MemoryError` a local
-    pool does.
+    pool does, and a server that drained while the session sat idle raises
+    `MontyShutdown`.
 
     Cannot be constructed directly from Python.
     """
@@ -481,7 +482,9 @@ class MontyShutdown(MontyError):
     `dump` carries the session state captured just before shutdown — restore
     it on a new session to carry the session across a server restart, with
     `session.load_session` (idle, between feeds) or `session.load_snapshot`
-    (suspended mid-feed).
+    (suspended mid-feed). A server that drained while the session sat idle
+    past its grace period drops it without a dump (`close_cause`
+    `'server_shutdown'`), so `dump` is `None` and the session starts over.
 
     One caveat: if the interrupted request was answering a suspension (an
     external function or `os` callback), the host already ran that call and
@@ -868,9 +871,10 @@ class AsyncMontyWebsocket:
     A `monty-server` enforces its own policy on top of the pool's. On SIGTERM
     drain it answers the session's next request with `MontyShutdown`, whose
     `dump` restores the session onto another server; every other server-side
-    drop (idle, session or turn timeout, capacity) closes the connection and
-    raises `MontyDisconnectError`, whose `close_cause` names the policy —
-    except a memory-limit kill, which raises `MemoryError` as a local pool does.
+    drop closes the connection with a `CloseCause`: the timeouts (idle,
+    session, turn) raise `MontyDisconnectError` naming it in `close_cause`, a
+    memory-limit kill raises `MemoryError` as a local pool does, and an idle
+    session dropped during drain raises `MontyShutdown` without a `dump`.
 
     ```python
     async with AsyncMontyWebsocket('ws://127.0.0.1:8799') as pool:

@@ -26,7 +26,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.datastructures import Headers
 from websockets.http11 import Request
 
-from pydantic_monty import AsyncMontyWebsocket, MontyDisconnectError, MontyRuntimeError
+from pydantic_monty import AsyncMontyWebsocket, MontyDisconnectError, MontyRuntimeError, MontyShutdown
 from pydantic_monty._binary import find_monty_binary
 
 _RELAY_SCRIPT = Path(__file__).resolve().parents[3] / 'scripts' / 'websocket_relay.py'
@@ -319,6 +319,18 @@ async def test_unknown_close_code_has_no_cause():
                     pass
     assert exc_info.value.close_code == snapshot(4999)
     assert exc_info.value.close_cause == snapshot(None)
+
+
+async def test_server_shutdown_close_is_a_shutdown_without_a_dump():
+    # the server drained while the session sat idle: the same exception as its
+    # in-flight ShutdownDump reply, so one handler covers both, but no state
+    async with serve_closing_with(4004, 'server shutting down') as ws_url:
+        async with AsyncMontyWebsocket(ws_url, request_timeout=30.0) as pool:
+            with pytest.raises(MontyShutdown) as exc_info:
+                async with pool.checkout():
+                    pass
+    assert exc_info.value.dump is None
+    assert str(exc_info.value) == snapshot('monty server is shutting down; the request did not run')
 
 
 async def test_out_of_memory_close_is_a_memory_error():

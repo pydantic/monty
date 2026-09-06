@@ -49,9 +49,11 @@ properties that real CPython does not provide, per the caveat above.
     server put in its WebSocket Close frame: `close_code` and `close_reason`,
     `None` when the connection dropped without one, and `close_cause` naming the
     policy when the code is one monty defines (`'idle_timeout'`,
-    `'session_timeout'`, `'turn_timeout'`, `'request_too_large'`, `'evicted'`).
-    A server's memory-limit kill (close code 4003) raises the same
-    session-ending `MemoryError` a local pool does instead. A server that is shutting down instead answers the
+    `'session_timeout'`, `'turn_timeout'`).
+    Two codes raise something else: a memory-limit kill (4003) raises the same
+    session-ending `MemoryError` a local pool does, and a server that drained
+    while the session sat idle (4004) raises [`MontyShutdown`][pydantic_monty.MontyShutdown]
+    with no `dump`. A server that is shutting down instead answers the
     session's next request with [`MontyShutdown`][pydantic_monty.MontyShutdown]. That request did **not** run,
     and its `dump` (when present) restores the session onto a fresh checkout
     via `session.load_session` / `session.load_snapshot`. If the interrupted

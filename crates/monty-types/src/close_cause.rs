@@ -23,10 +23,9 @@ pub enum CloseCause {
     TurnTimeout = 4002,
     /// The worker exceeded its memory limit and was terminated.
     OutOfMemory = 4003,
-    /// A request frame exceeded the server's size cap.
-    RequestTooLarge = 4004,
-    /// The server reclaimed the session's capacity.
-    Evicted = 4005,
+    /// The server is shutting down and dropped the session while it sat
+    /// idle, without state: no request of it was run.
+    ServerShutdown = 4004,
 }
 
 impl CloseCause {
@@ -58,8 +57,7 @@ impl CloseCause {
             Self::SessionTimeout => "the session outlived the server's session lifetime limit",
             Self::TurnTimeout => "the request outlived the server's turn timeout",
             Self::OutOfMemory => "the worker exceeded its memory limit and was terminated",
-            Self::RequestTooLarge => "the request frame exceeded the server's size cap",
-            Self::Evicted => "the server reclaimed the session's capacity",
+            Self::ServerShutdown => "the server is shutting down and dropped the idle session",
         }
     }
 }

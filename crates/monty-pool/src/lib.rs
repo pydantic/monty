@@ -164,11 +164,12 @@ pub enum PoolError {
     /// The remote worker's connection dropped without a turn-ending event
     /// (WebSocket transport only — the local analogue is [`Self::Crashed`]).
     /// The sandbox may have died, or the server may have dropped the session
-    /// by policy (idle/session/turn timeout, capacity). A bare disconnect
-    /// cannot tell those apart; a server that closed deliberately says why in
-    /// `close`, whose [`CloseFrame::cause`] names the policy. The one cause
-    /// not reported this way is [`CloseCause::OutOfMemory`], which surfaces as
-    /// the same session-ending `MemoryError` the subprocess transport raises.
+    /// by policy (an idle, session or turn timeout). A bare disconnect cannot
+    /// tell those apart; a server that closed deliberately says why in
+    /// `close`, whose [`CloseFrame::cause`] names the policy. Two causes are
+    /// not reported this way: [`CloseCause::OutOfMemory`] surfaces as the same
+    /// session-ending `MemoryError` the subprocess transport raises, and
+    /// [`CloseCause::ServerShutdown`] as [`Self::Shutdown`].
     Disconnected {
         /// What the pool was doing when the disconnect was observed.
         context: String,
@@ -178,7 +179,9 @@ pub enum PoolError {
     /// The remote server is shutting down and did **not** run the request —
     /// re-running it on a fresh session is safe. `dump` carries the session
     /// state captured just before shutdown, restorable via
-    /// [`Checkout::restore`] on a fresh checkout.
+    /// [`Checkout::restore`] on a fresh checkout. A server draining while the
+    /// session sat idle drops it without a dump and says so in its Close
+    /// frame ([`CloseCause::ServerShutdown`]), which lands here too.
     Shutdown {
         /// Restorable session dump, absent when there was no session yet or
         /// the server's dump failed.

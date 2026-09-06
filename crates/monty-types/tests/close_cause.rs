@@ -12,14 +12,13 @@ fn codes_are_pinned() {
     assert_eq!(CloseCause::SessionTimeout.code(), 4001);
     assert_eq!(CloseCause::TurnTimeout.code(), 4002);
     assert_eq!(CloseCause::OutOfMemory.code(), 4003);
-    assert_eq!(CloseCause::RequestTooLarge.code(), 4004);
-    assert_eq!(CloseCause::Evicted.code(), 4005);
+    assert_eq!(CloseCause::ServerShutdown.code(), 4004);
 }
 
 #[test]
 fn variants_are_in_code_order() {
     let codes: Vec<u16> = CloseCause::VARIANTS.iter().map(|cause| cause.code()).collect();
-    assert_eq!(codes, vec![4000, 4001, 4002, 4003, 4004, 4005]);
+    assert_eq!(codes, vec![4000, 4001, 4002, 4003, 4004]);
 }
 
 // === round trips ===
@@ -41,8 +40,7 @@ fn names_are_distinct_snake_case() {
             "session_timeout",
             "turn_timeout",
             "out_of_memory",
-            "request_too_large",
-            "evicted"
+            "server_shutdown"
         ]
     );
 }
@@ -62,6 +60,6 @@ fn unknown_codes_are_none() {
     // registered codes, and a private-use code a newer server might define
     assert_eq!(CloseCause::from_code(1000), None);
     assert_eq!(CloseCause::from_code(1011), None);
-    assert_eq!(CloseCause::from_code(4006), None);
+    assert_eq!(CloseCause::from_code(4005), None);
     assert_eq!(CloseCause::from_code(4999), None);
 }

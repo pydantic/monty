@@ -2080,6 +2080,34 @@ async fn an_out_of_memory_close_is_the_session_ending_memory_error() {
 }
 
 #[tokio::test]
+async fn a_server_shutdown_close_is_a_shutdown_without_a_dump() {
+    // The server drained while the session sat idle past its grace period:
+    // the same outcome as its `ShutdownDump` reply to an in-flight request,
+    // minus the state, so a caller handling `Shutdown` covers both.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || serve_then_close(&listener, true, 4004, "server shutting down"));
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    join_server(server).await;
+    let err = checkout
+        .feed("x", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("a closed connection must fail the turn");
+    assert!(matches!(err, PoolError::Shutdown { dump: None }), "got {err:?}");
+    // the session is gone: a fresh checkout is the only way forward
+    let err = checkout
+        .feed("x", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the checkout is finished");
+    assert!(matches!(err, PoolError::Finished), "got {err:?}");
+}
+
+#[tokio::test]
 async fn an_unknown_close_code_is_still_a_disconnect() {
     // a code a newer server defined: the number and text still come through,
     // just without a cause

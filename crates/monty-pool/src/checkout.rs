@@ -1528,8 +1528,9 @@ impl Checkout {
         // an out-of-memory kill is the one death reported the same way on both
         // transports: the worker is gone, unlike every other `Runtime` error —
         // the checkout is already finished, so later calls report `Finished`
+        let cause = close.as_ref().and_then(CloseFrame::cause);
         let out_of_memory = if websocket {
-            close.as_ref().and_then(CloseFrame::cause) == Some(CloseCause::OutOfMemory)
+            cause == Some(CloseCause::OutOfMemory)
         } else {
             status.and_then(|status| status.code()) == Some(monty_types::OOM_EXIT_CODE)
         };
@@ -1539,6 +1540,11 @@ impl Checkout {
                 ExcType::MemoryError,
                 Some(CloseCause::OutOfMemory.description().to_owned()),
             ))
+        } else if cause == Some(CloseCause::ServerShutdown) {
+            // the server drained while the session sat idle: the same outcome
+            // as its `ShutdownDump` reply to an in-flight request, minus the
+            // state, and the request (if any) equally never ran
+            PoolError::Shutdown { dump: None }
         } else if websocket {
             PoolError::Disconnected {
                 context: context.to_owned(),
