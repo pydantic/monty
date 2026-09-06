@@ -359,6 +359,83 @@ async fn invalid_mount_host_path_is_rejected_cleanly() {
     session.finish().await.unwrap();
 }
 
+/// The sandbox working directory is per feed: the first mount by default, an
+/// explicit `feed_with_cwd` choice otherwise, and `/` without either. An
+/// `os.chdir` inside one feed does not carry into the next.
+#[tokio::test]
+async fn working_directory_follows_the_feed() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("data.txt"), "relative!").unwrap();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+
+    // No mounts: the root, and `__file__` is placed under it.
+    let event = session
+        .feed(
+            "import os\n(os.getcwd(), __file__)",
+            vec![],
+            vec![],
+            false,
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::Tuple(vec![
+            MontyObject::String("/".to_owned()),
+            MontyObject::String("/main.py".to_owned())
+        ])
+    );
+
+    // The first mount, so relative paths reach into it; chdir moves within the feed.
+    let code = "\
+from pathlib import Path
+before = (os.getcwd(), __file__, open('data.txt').read())
+os.chdir('sub')
+(before, Path.cwd(), Path('..').resolve())";
+    let result = session.feed(code, vec![], mount(), false, &mut no_print).await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::Tuple(vec![
+            MontyObject::Tuple(vec![
+                MontyObject::String("/mnt".to_owned()),
+                MontyObject::String("/mnt/main.py".to_owned()),
+                MontyObject::String("relative!".to_owned()),
+            ]),
+            MontyObject::Path("/mnt/sub".to_owned()),
+            MontyObject::Path("/mnt".to_owned()),
+        ])
+    );
+
+    // The chdir did not persist, and an explicit cwd wins over the mount.
+    let result = session
+        .feed_with_cwd("os.getcwd()", vec![], mount(), Some("/mnt/sub/"), false, &mut no_print)
+        .await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt/sub".to_owned()));
+
+    // A relative cwd is refused before anything is sent; the session survives.
+    let err = session
+        .feed_with_cwd("1", vec![], vec![], Some("data"), false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected a runtime error, got {err:?}");
+    };
+    assert_eq!(exc.exc_type(), ExcType::ValueError);
+    assert_eq!(exc.message().unwrap(), "cwd must be an absolute POSIX path: \"data\"");
+    let event = session
+        .feed("os.getcwd()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/".to_owned()));
+    session.finish().await.unwrap();
+}
+
 /// Mount-covered filesystem OS calls are serviced by the parent and never
 /// surface to the caller — the feed just completes. Covers read, write,
 /// mkdir kwargs, rename, and `open()` + file-handle ops through a mount.
@@ -1463,6 +1540,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1504,6 +1582,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1549,6 +1628,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };

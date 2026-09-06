@@ -127,7 +127,7 @@ export class WorkerTransport {
     code: string,
     inputs: Record<string, unknown> | null,
     mounts: readonly unknown[],
-    skipTypeCheck: boolean,
+    options: { cwd?: string; skipTypeCheck: boolean },
     onPrint: OnPrint,
   ): Promise<NativeTurn> {
     if (mounts.length > 0) {
@@ -139,7 +139,9 @@ export class WorkerTransport {
         val: {
           code,
           inputs: Object.entries(inputs ?? {}).map(([name, value]) => ({ name, value: encodeValue(value) })),
-          skipTypeCheck,
+          skipTypeCheck: options.skipTypeCheck,
+          // No mounts in the browser, so the default is always the root.
+          cwd: options.cwd ?? '/',
         },
       },
       onPrint,

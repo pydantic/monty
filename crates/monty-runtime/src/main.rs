@@ -56,6 +56,14 @@ pub(crate) struct Cli {
     #[arg(short = 'm', long = "mount")]
     mounts: Vec<String>,
 
+    /// Sandbox working directory: an absolute virtual path.
+    ///
+    /// `os.getcwd()` reports it, relative paths resolve against it and
+    /// `__file__` is the script name placed under it. Defaults to the first
+    /// `--mount` virtual path, or `/` without mounts.
+    #[arg(long)]
+    cwd: Option<String>,
+
     /// Maximum execution time in seconds (e.g. `0.5` for 500ms).
     #[arg(long)]
     max_duration: Option<f64>,
@@ -105,6 +113,8 @@ impl Cli {
             Some("--type-check")
         } else if !self.mounts.is_empty() {
             Some("--mount")
+        } else if self.cwd.is_some() {
+            Some("--cwd")
         } else if self.any_resource_limit_flag() {
             Some("a resource-limit flag")
         } else {

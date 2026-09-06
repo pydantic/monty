@@ -113,6 +113,39 @@ f"{Path('/child/inside.txt').read_text()}:{Path('/child/secret.txt').exists()}"`
   }
 })
 
+// =============================================================================
+// Working directory
+// =============================================================================
+
+test('cwd defaults to the root without mounts', async () => {
+  t.deepEqual(await run('import os\n(os.getcwd(), __file__)'), ['/', '/main.py'])
+  t.deepEqual(await run('import os\nos.getcwd()', { cwd: '/work/' }), '/work')
+})
+
+test('cwd defaults to the first mount and chdir lasts one feed', async (ctx) => {
+  skipIfBrowser(ctx)
+  const { mount, cleanup } = createTestDir()
+  try {
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
+    await using session = await pool().checkout()
+    t.deepEqual(await session.feedRun("import os\n(os.getcwd(), __file__, open('hello.txt').read())", { mount: md }), [
+      '/data',
+      '/data/main.py',
+      'hello world',
+    ])
+    t.is(await session.feedRun("os.chdir('subdir')\nos.getcwd()", { mount: md }), '/data/subdir')
+    t.is(await session.feedRun('os.getcwd()', { mount: md }), '/data')
+    t.is(await session.feedRun("open('nested.txt').read()", { mount: md, cwd: '/data/subdir' }), 'nested content')
+  } finally {
+    cleanup()
+  }
+})
+
+test('a relative cwd is refused', async () => {
+  const error = await t.throwsAsync(() => run('1', { cwd: 'data' }), { instanceOf: MontyRuntimeError })
+  t.is(error.message, 'ValueError: cwd must be an absolute POSIX path: "data"')
+})
+
 test('MountDir repr', (ctx) => {
   skipIfBrowser(ctx)
   const { dir, mount, cleanup } = createTestDir()

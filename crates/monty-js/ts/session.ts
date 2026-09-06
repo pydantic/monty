@@ -78,6 +78,15 @@ export interface FeedOptions {
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
+  /**
+   * The sandbox's working directory for this feed, an absolute virtual path.
+   * Defaults to the first mount's virtual path, or `/` without mounts.
+   * `os.getcwd()` reports it, relative paths resolve against it before
+   * reaching a mount or the `os` handler, and `__file__` is the script name
+   * placed under it. Per feed like `mount`: an `os.chdir()` in the snippet
+   * does not carry over to the next feed.
+   */
+  cwd?: string
   /** Handler for OS calls not covered by mounts. */
   os?: OsCallback
   /** Skip type checking for this feed even when the session enables it. */
@@ -104,6 +113,9 @@ export interface FeedStartOptions {
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
+  /** The sandbox's working directory for the whole feed, as in
+   *  [`FeedOptions.cwd`]; a dump taken mid-feed carries it. */
+  cwd?: string
   /** Handler for OS calls not covered by mounts. Consulted only by
    *  `resumeAuto()` — `feedStart` always surfaces OS calls as snapshots. */
   os?: OsCallback
@@ -185,7 +197,7 @@ export class MontySession {
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      options.skipTypeCheck ?? false,
+      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
       onPrint,
     )) as NativeTurn
     for (;;) {
@@ -254,7 +266,7 @@ export class MontySession {
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      options.skipTypeCheck ?? false,
+      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
       driver.onPrint,
     )) as NativeTurn
     return driver.advance(turn)

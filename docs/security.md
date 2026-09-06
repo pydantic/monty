@@ -284,6 +284,8 @@ Confinement is structural rather than checked:
     A host path never leaks in.
 
 `/tmp`, `/etc`, `/proc`, `/dev`, `~` and the host working directory are not reachable unless you mount them.
+The sandbox's own [working directory](filesystem.md#working-directory) is a virtual path, so a relative path is
+resolved inside the sandbox and reaches a mount as an absolute virtual path.
 
 ## Crash isolation
 

@@ -327,6 +327,15 @@ const mount = new MountDir({ hostPath: '/path/on/host', virtualPath: '/mnt/data'
 await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
 ```
 
+The sandbox's working directory is per feed too: the first mount's virtual
+path, or `/` without mounts, unless `cwd` names another absolute virtual path.
+`os.getcwd()` reports it, relative paths resolve against it before reaching a
+mount or the `os` callback, and `__file__` is the script name under it.
+
+```ts
+await session.feedRun("open('file.txt').read()", { mount, cwd: '/mnt/data' })
+```
+
 Each mount has a 100 MB aggregate memory budget by default. Configure it with
 `memoryUsageLimit`; retained overlay data and filesystem results share it, and
 operations that exceed it raise a `MontyRuntimeError` wrapping `MemoryError`.

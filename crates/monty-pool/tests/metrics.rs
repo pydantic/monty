@@ -431,6 +431,7 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
             code: "print('hi')\n6 * 7".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };

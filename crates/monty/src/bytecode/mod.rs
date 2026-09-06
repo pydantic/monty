@@ -37,11 +37,12 @@ pub use vm::{FrameExit, VM, VMSnapshot};
 /// rejected at compile time with a `NotImplementedError` (see
 /// `Compiler::compile_store`) rather than being silently ignored.
 /// Function-local variables that happen to share these names are unaffected.
-pub(crate) const RESERVED_MODULE_DUNDERS: [&str; 6] = [
+pub(crate) const RESERVED_MODULE_DUNDERS: [&str; 7] = [
     "__name__",
     "__debug__",
     "__doc__",
     "__annotations__",
     "__spec__",
     "__package__",
+    "__file__",
 ];

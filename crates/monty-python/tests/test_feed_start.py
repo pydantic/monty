@@ -247,6 +247,22 @@ def test_dump_at_suspension_then_load_and_resume(pool: Monty):
         assert done.output == snapshot(42)
 
 
+def test_dump_keeps_the_feeds_working_directory(pool: Monty):
+    # cwd is per feed and travels inside a mid-feed dump, so the restoring
+    # session needs no `cwd=`
+    with pool.checkout() as session:
+        snap = session.feed_start('import os\nfetch()\nos.getcwd()', cwd='/work')
+        assert isinstance(snap, FunctionSnapshot)
+        blob = snap.dump()
+
+    with pool.checkout() as session:
+        loaded_snap = session.load_snapshot(blob)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        done = loaded_snap.resume({'return_value': None})
+        assert isinstance(done, MontyComplete)
+        assert done.output == snapshot('/work')
+
+
 def test_loaded_snapshot_reports_the_dumps_script_name(pool: Monty):
     # script_name travels inside the dump; the restored snapshot reports the
     # dump's name, not the (differently-configured) restoring session's

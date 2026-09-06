@@ -138,6 +138,7 @@ pub(crate) fn feed_start_sync(
         code,
         inputs,
         mounts,
+        cwd,
         skip_type_check,
         os,
         print_target,
@@ -148,7 +149,12 @@ pub(crate) fn feed_start_sync(
     drive_sync(
         py,
         ctx,
-        turn_fn(move |c, p| Box::pin(async move { c.feed(&code, inputs, mounts, skip_type_check, p).await })),
+        turn_fn(move |c, p| {
+            Box::pin(async move {
+                c.feed_with_cwd(&code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                    .await
+            })
+        }),
     )
 }
 
@@ -165,6 +171,7 @@ pub(crate) fn feed_start_async(
         code,
         inputs,
         mounts,
+        cwd,
         skip_type_check,
         os,
         print_target,
@@ -175,7 +182,12 @@ pub(crate) fn feed_start_async(
     future_into_py(py, async move {
         drive_async(
             ctx,
-            turn_fn(move |c, p| Box::pin(async move { c.feed(&code, inputs, mounts, skip_type_check, p).await })),
+            turn_fn(move |c, p| {
+                Box::pin(async move {
+                    c.feed_with_cwd(&code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                        .await
+                })
+            }),
         )
         .await
     })

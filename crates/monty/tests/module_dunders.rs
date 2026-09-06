@@ -1,5 +1,6 @@
 //! Tests for Monty's module-level dunder variables (`__name__`, `__debug__`,
-//! `__doc__`, `__annotations__`, `__spec__`, `__package__`, `__loader__`).
+//! `__doc__`, `__annotations__`, `__spec__`, `__package__`, `__file__`,
+//! `__loader__`).
 //!
 //! Monty exposes these with fixed values for CPython compatibility but, having
 //! no module object or `globals()` dict, treats them as read-only. The
@@ -17,8 +18,8 @@
 //!   time with `NotImplementedError` (CPython allows it, except `__debug__`
 //!   which it rejects with `SyntaxError`)
 
-use monty::MontyRun;
-use monty_types::{CompileOptions, DictPairs, ExcType, MontyObject};
+use monty::{MontyRun, RunProgress};
+use monty_types::{CompileOptions, DictPairs, ExcType, MontyObject, PrintWriter, ResourceTracker, dir_stat};
 
 /// Runs `code` to completion with no resource limits and returns the value of
 /// its final expression.
@@ -41,6 +42,43 @@ fn name_is_main() {
 #[test]
 fn debug_is_true() {
     assert_eq!(eval("__debug__"), MontyObject::Bool(true));
+}
+
+#[test]
+fn file_is_script_name_under_cwd() {
+    // Like CPython 3.9+, `__main__.__file__` is absolute: the script name
+    // resolved against the working directory the run started in.
+    assert_eq!(eval("__file__"), MontyObject::String("/test.py".to_owned()));
+
+    let mut runner = MontyRun::new("__file__".to_owned(), "main.py", vec![], CompileOptions::default()).unwrap();
+    runner.set_cwd("/data");
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::String("/data/main.py".to_owned())
+    );
+
+    // An absolute script name is used verbatim, and `os.chdir` never moves it.
+    let code = "import os\nos.chdir('/')\n__file__";
+    let mut runner = MontyRun::new(code.to_owned(), "/srv/app.py", vec![], CompileOptions::default()).unwrap();
+    runner.set_cwd("/data");
+    let RunProgress::OsCall(call) = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap()
+    else {
+        panic!("expected the chdir stat call");
+    };
+    let result = call
+        .resume(dir_stat(0o755, 0.0), PrintWriter::Stdout)
+        .unwrap()
+        .into_complete()
+        .unwrap();
+    assert_eq!(result, MontyObject::String("/srv/app.py".to_owned()));
+}
+
+#[test]
+fn reassign_file_rejected() {
+    // CPython allows this; Monty treats `__file__` like the other dunders.
+    assert_reassignment_rejected("__file__ = 'x.py'", "__file__");
 }
 
 #[test]

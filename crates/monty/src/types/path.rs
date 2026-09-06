@@ -302,6 +302,14 @@ impl Path {
     }
 }
 
+/// Classmethod `Path.cwd()`: the sandbox's virtual working directory, held
+/// by the VM so no host round-trip is needed.
+pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    args.check_zero_args("Path.cwd", vm.heap)?;
+    let path = Path::new(vm.env.cwd.clone());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
+}
+
 /// Extracts a string from a Value for use as a path.
 fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
     value_as_path_str(val, vm.heap, vm.interns)

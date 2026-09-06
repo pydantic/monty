@@ -744,6 +744,7 @@ fn decodes_in_frame(value: &MontyObject) -> bool {
                 value: Some(WireObject::new(value.clone())),
             }],
             skip_type_check: false,
+            cwd: "/work".to_owned(),
         })),
         trace_parent: None,
     };

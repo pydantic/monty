@@ -8,7 +8,7 @@ use std::{
 };
 
 pub use monty_types::CompileOptions;
-use monty_types::{ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker};
+use monty_types::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker};
 use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
@@ -20,6 +20,7 @@ use crate::{
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
+    os_dispatch::posix_join,
     parse::{CodeRange, parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
     run_progress::{
@@ -84,6 +85,16 @@ impl MontyRun {
     #[must_use]
     pub fn code(&self) -> &str {
         &self.executor.code
+    }
+
+    /// Sets the sandbox working directory the run starts in (default `/`).
+    ///
+    /// `cwd` is an absolute POSIX virtual path: `os.getcwd()` reports it,
+    /// relative paths in `open()` / `os` / `pathlib` calls resolve against it
+    /// before reaching the host, and `__file__` is the script name resolved
+    /// against it. Hosts typically pass the first mount's virtual path.
+    pub fn set_cwd(&mut self, cwd: impl Into<String>) {
+        self.executor.cwd = cwd.into();
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
@@ -170,7 +181,7 @@ impl MontyRun {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_bytes,
+                    executor.vm_env(),
                 );
                 executor.populate_inputs(inputs, &mut vm)?;
 
@@ -211,6 +222,13 @@ pub(crate) struct Executor {
     /// UTF-8 byte cap for each operand repr in introspected assert messages.
     /// Stored with the compiled program and passed to every VM.
     pub(crate) assert_repr_max_bytes: u32,
+    /// The user-facing script name (`main.py`), which `__file__` is derived
+    /// from. For REPL snippets this is the session's name, not the
+    /// `<python-input-N>` name the snippet was parsed under.
+    pub(crate) script_name: String,
+    /// Sandbox working directory every VM built from this executor starts in;
+    /// `/` unless the host set one (see [`MontyRun::set_cwd`]).
+    pub(crate) cwd: String,
     /// Estimated heap capacity for pre-allocation on subsequent runs.
     /// Uses AtomicUsize for thread-safety (required by PyO3's Sync bound).
     heap_capacity: AtomicUsize,
@@ -225,9 +243,51 @@ impl Clone for Executor {
             code: self.code.clone(),
             input_slots: self.input_slots.clone(),
             assert_repr_max_bytes: self.assert_repr_max_bytes,
+            script_name: self.script_name.clone(),
+            cwd: self.cwd.clone(),
             heap_capacity: AtomicUsize::new(self.heap_capacity.load(Ordering::Relaxed)),
         }
     }
+}
+
+/// Per-run environment handed to a fresh VM: the sandbox working directory,
+/// the `__file__` it reports and the assert-repr cap. Built by
+/// [`Executor::vm_env`] so every `VM::new` call site agrees on how the
+/// values derive from the executor.
+pub(crate) struct VmEnv {
+    /// Working directory `os.getcwd()` reports and relative paths resolve
+    /// against; `os.chdir` mutates the VM's copy for the rest of the run.
+    pub(crate) cwd: String,
+    /// `__file__`: the script name resolved against the initial `cwd`, fixed
+    /// for the run even after `os.chdir`.
+    pub(crate) file: String,
+    /// UTF-8 byte cap for each operand repr in introspected assert messages.
+    pub(crate) assert_repr_max_bytes: u32,
+}
+
+impl Default for VmEnv {
+    /// The environment of a VM built without an executor (in-module tests):
+    /// root working directory, no script.
+    fn default() -> Self {
+        Self {
+            cwd: DEFAULT_CWD.to_owned(),
+            file: String::new(),
+            assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+        }
+    }
+}
+
+/// The sandbox working directory used until a host sets one.
+pub(crate) const DEFAULT_CWD: &str = "/";
+
+/// Session identity a REPL snippet executor inherits: the user-facing script
+/// name and the working directory the snippet starts in.
+#[derive(Clone, Copy)]
+pub(crate) struct ReplSession<'a> {
+    /// User-facing script name (`main.py`), the basis of `__file__`.
+    pub(crate) script_name: &'a str,
+    /// Absolute virtual working directory for the snippet.
+    pub(crate) cwd: &'a str,
 }
 
 impl Executor {
@@ -263,8 +323,19 @@ impl Executor {
             code,
             input_slots: Vec::new(),
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            script_name: script_name.to_owned(),
+            cwd: DEFAULT_CWD.to_owned(),
             heap_capacity: AtomicUsize::new(namespace_size),
         })
+    }
+
+    /// Builds the [`VmEnv`] a VM run from this executor starts with.
+    pub(crate) fn vm_env(&self) -> VmEnv {
+        VmEnv {
+            cwd: self.cwd.clone(),
+            file: posix_join(&self.cwd, &self.script_name),
+            assert_repr_max_bytes: self.assert_repr_max_bytes,
+        }
     }
 
     /// Returns the size of the module's global namespace (number of slots).
@@ -289,7 +360,9 @@ impl Executor {
     ///
     /// `input_names` are pre-registered in the globals map before preparation so
     /// they receive stable namespace slots that the REPL input-injection logic
-    /// can use.
+    /// can use. `script_name` is the `<python-input-N>` name the snippet is
+    /// parsed under; `session` carries the user-facing name and working
+    /// directory the VM reports.
     pub(crate) fn new_repl_snippet(
         code: String,
         script_name: &str,
@@ -297,6 +370,7 @@ impl Executor {
         interns: &mut Interns,
         input_names: &[String],
         options: CompileOptions,
+        session: ReplSession<'_>,
     ) -> Result<Self, MontyException> {
         check_identifier(input_names)?;
 
@@ -327,6 +401,8 @@ impl Executor {
             code,
             input_slots,
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            script_name: session.script_name.to_owned(),
+            cwd: session.cwd.to_owned(),
             heap_capacity: AtomicUsize::new(0),
         })
     }
@@ -350,6 +426,7 @@ impl Executor {
         mut existing_globals: NameMap,
         interns: &mut Interns,
         options: CompileOptions,
+        session: ReplSession<'_>,
     ) -> Result<Self, MontyException> {
         const CALL_ARGS_NAME: &str = "<monty-call-args>";
 
@@ -392,6 +469,8 @@ impl Executor {
             code,
             input_slots: vec![args_slot],
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            script_name: session.script_name.to_owned(),
+            cwd: session.cwd.to_owned(),
             heap_capacity: AtomicUsize::new(0),
         })
     }
@@ -424,7 +503,7 @@ impl Executor {
                 reader,
                 &executor.interns,
                 print.reborrow(),
-                executor.assert_repr_max_bytes,
+                executor.vm_env(),
             );
             executor.populate_inputs(inputs, &mut vm)?;
             executor.run_to_completion(&mut vm)
@@ -514,7 +593,7 @@ impl Executor {
                 reader,
                 &executor.interns,
                 PrintWriter::Stdout,
-                executor.assert_repr_max_bytes,
+                executor.vm_env(),
             );
             executor.populate_inputs(inputs, &mut vm)?;
             // Lookups are answered before the globals are taken below: an

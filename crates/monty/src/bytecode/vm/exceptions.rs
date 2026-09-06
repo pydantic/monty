@@ -493,7 +493,7 @@ impl VM<'_> {
 /// Streams an assert operand's repr into the configured byte-capped writer.
 /// Reaching the cap stops formatting the remainder and appends `…`.
 fn assert_operand_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
-    let mut writer = TruncatingWriter::new(vm.assert_repr_max_bytes as usize);
+    let mut writer = TruncatingWriter::new(vm.env.assert_repr_max_bytes as usize);
     let mut heap_ids = LazyHeapSet::default();
     match value.py_repr_fmt(&mut writer, vm, &mut heap_ids) {
         Ok(()) => Ok(writer.into_string()),

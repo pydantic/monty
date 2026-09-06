@@ -6,7 +6,6 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    env::set_current_dir,
     error::Error,
     ffi::CString,
     fmt,
@@ -1693,7 +1692,11 @@ fn try_run_mount_fs_test(
         )
         .expect("failed to mount temp dir for mount-fs test");
 
-    let exec = match new_monty_run(code, &test_name) {
+    // Like the pool, the working directory defaults to the first mount.
+    let exec = match new_monty_run(code, &test_name).map(|mut exec| {
+        exec.set_cwd("/mnt");
+        exec
+    }) {
         Ok(e) => e,
         Err(parse_err) => {
             return Err(TestFailure {
@@ -2053,7 +2056,10 @@ fn run_traceback_script(path: &Path, iter_mode: bool, async_mode: bool) -> Strin
         let run_traceback = import_run_traceback(py);
 
         // Get absolute path for the test file
-        let abs_path = path.canonicalize().expect("Failed to get absolute path");
+        let abs_path = CANONICAL_WS_DIR
+            .join(path)
+            .canonicalize()
+            .expect("Failed to get absolute path");
         let path_str = abs_path.to_str().expect("Invalid UTF-8 in path");
 
         // Call run_file_and_get_traceback with the recursion limit, iter_mode, and async_mode flags
@@ -2280,6 +2286,10 @@ fn try_run_cpython_test(
             globals
                 .set_item("__name__", "__main__")
                 .expect("Failed to seed __name__ for CPython");
+            // A script run has an absolute `__file__`, as Monty's does.
+            globals
+                .set_item("__file__", CANONICAL_WS_DIR.join(path).to_string_lossy())
+                .expect("Failed to seed __file__ for CPython");
         }
 
         // For mount-fs tests, inject `root` variable pointing to real temp directory.
@@ -2488,12 +2498,13 @@ where
 /// Handles xfail with strict semantics: if a test is marked `xfail=monty`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
-    set_current_dir(CANONICAL_WS_DIR.as_path())?;
-
-    let path = path.canonicalize()?;
+    // Joined onto the workspace rather than read relative to the process cwd:
+    // the harness never changes directory, so a CPython fixture that calls
+    // `os.chdir` cannot race another thread's fixture read.
+    let path = CANONICAL_WS_DIR.join(path).canonicalize()?;
     let path = path.strip_prefix(CANONICAL_WS_DIR.as_path())?;
 
-    let content = fs::read_to_string(path)?;
+    let content = fs::read_to_string(CANONICAL_WS_DIR.join(path))?;
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path
         .strip_prefix(TEST_CASES_RELATIVE_DIR)
@@ -2551,12 +2562,13 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
 /// Handles xfail with strict semantics: if a test is marked `xfail=cpython`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
-    set_current_dir(CANONICAL_WS_DIR.as_path())?;
-
-    let path = path.canonicalize()?;
+    // Joined onto the workspace rather than read relative to the process cwd:
+    // the harness never changes directory, so a CPython fixture that calls
+    // `os.chdir` cannot race another thread's fixture read.
+    let path = CANONICAL_WS_DIR.join(path).canonicalize()?;
     let path = path.strip_prefix(CANONICAL_WS_DIR.as_path())?;
 
-    let content = fs::read_to_string(path)?;
+    let content = fs::read_to_string(CANONICAL_WS_DIR.join(path))?;
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path
         .strip_prefix(TEST_CASES_RELATIVE_DIR)

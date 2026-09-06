@@ -593,7 +593,9 @@ impl Checkout {
     /// Executes one snippet against the session. Inputs become sandbox
     /// globals; mounts apply to this feed only and are serviced by the parent
     /// (an invalid host path fails here, before any frame is sent, as a
-    /// session-preserving [`PoolError::Runtime`]). Returns the first
+    /// session-preserving [`PoolError::Runtime`]). The sandbox working
+    /// directory is the first mount's virtual path, or `/` without mounts;
+    /// [`Checkout::feed_with_cwd`] chooses it explicitly. Returns the first
     /// suspension (or completion); `print()` output streams to `on_print`
     /// throughout.
     ///
@@ -608,6 +610,28 @@ impl Checkout {
         skip_type_check: bool,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
+        self.feed_with_cwd(code, inputs, mounts, None, skip_type_check, on_print)
+            .await
+    }
+
+    /// [`Checkout::feed`] with an explicit sandbox working directory for the
+    /// feed: an absolute POSIX virtual path that `os.getcwd()` reports,
+    /// relative paths resolve against and `__file__` is placed under. `None`
+    /// takes the default (first mount, else `/`). The directory is per feed
+    /// like mounts: an `os.chdir` inside the snippet does not carry over.
+    ///
+    /// # Errors
+    /// A relative or NUL-containing `cwd` is a session-preserving
+    /// [`PoolError::Runtime`] (`ValueError`), raised before any frame is sent.
+    pub async fn feed_with_cwd(
+        &mut self,
+        code: &str,
+        inputs: Vec<(String, MontyObject)>,
+        mounts: Vec<MountSpec>,
+        cwd: Option<&str>,
+        skip_type_check: bool,
+        on_print: OnPrint<'_>,
+    ) -> Result<TurnEvent, PoolError> {
         self.ensure_ready()?;
         if self.pending.is_some() {
             return Err(PoolError::Protocol(
@@ -615,6 +639,12 @@ impl Checkout {
             ));
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
+        let cwd = match cwd {
+            Some(cwd) => validate_cwd(cwd)?,
+            None => mounts
+                .first()
+                .map_or_else(|| "/".to_owned(), |mount| mount.virtual_path().to_owned()),
+        };
         self.feed_mounts = Self::build_feed_mounts(mounts);
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
@@ -626,6 +656,7 @@ impl Checkout {
                 })
                 .collect(),
             skip_type_check,
+            cwd,
         }));
         self.expect_turn(&request, on_print).await
     }
@@ -1666,6 +1697,29 @@ fn min_deadline(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (deadline, None) | (None, deadline) => deadline,
+    }
+}
+/// Checks an explicit feed working directory: absolute, POSIX, no NUL bytes.
+/// Trailing slashes are dropped so `os.getcwd()` never reports `/data/`;
+/// the root itself stays `/`.
+fn validate_cwd(cwd: &str) -> Result<String, PoolError> {
+    let invalid = |msg: &str| {
+        PoolError::Runtime(MontyException::new(
+            ExcType::ValueError,
+            Some(format!("cwd {msg}: {cwd:?}")),
+        ))
+    };
+    if cwd.contains('\0') {
+        Err(invalid("must not contain NUL bytes"))
+    } else if !cwd.starts_with('/') {
+        Err(invalid("must be an absolute POSIX path"))
+    } else {
+        let trimmed = cwd.trim_end_matches('/');
+        Ok(if trimmed.is_empty() {
+            "/".to_owned()
+        } else {
+            trimmed.to_owned()
+        })
     }
 }
 

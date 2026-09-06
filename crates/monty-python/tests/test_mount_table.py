@@ -639,3 +639,49 @@ def test_search_only_directory_mountability(test_dir: Path):
         assert message == snapshot("cannot open host path '<dir>': Permission denied (os error 13)")
     finally:
         target.chmod(0o755)
+
+
+# =============================================================================
+# Working directory
+# =============================================================================
+
+
+def test_cwd_defaults_to_the_first_mount(monty_run: RunMonty, test_dir: Path):
+    md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
+    code = "import os\nfrom pathlib import Path\n(os.getcwd(), Path.cwd(), __file__, open('hello.txt').read())"
+    assert monty_run(code, mount=md) == snapshot(('/data', Path('/data'), '/data/main.py', 'hello world'))
+    assert monty_run('import os\n(os.getcwd(), __file__)') == snapshot(('/', '/main.py'))
+
+
+def test_cwd_explicit(monty_run: RunMonty, test_dir: Path):
+    md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
+    code = "import os\n(os.getcwd(), open('nested.txt').read())"
+    assert monty_run(code, mount=md, cwd='/data/subdir/') == snapshot(('/data/subdir', 'nested content'))
+
+
+def test_cwd_must_be_absolute(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('1', cwd='data')
+    assert str(exc_info.value) == snapshot('ValueError: cwd must be an absolute POSIX path: "data"')
+
+
+def test_chdir_lasts_for_one_feed(pool: Monty, test_dir: Path):
+    md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
+    with pool.checkout() as session:
+        assert session.feed_run("import os\nos.chdir('subdir')\nos.getcwd()", mount=md) == snapshot('/data/subdir')
+        assert session.feed_run('os.getcwd()', mount=md) == snapshot('/data')
+        assert session.feed_run('os.getcwd()') == snapshot('/')
+
+
+def test_chdir_errors(monty_run: RunMonty, test_dir: Path):
+    md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import os\nos.chdir('hello.txt')", mount=md)
+    assert str(exc_info.value) == snapshot("NotADirectoryError: [Errno 20] Not a directory: 'hello.txt'")
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import os\nos.chdir('missing')", mount=md)
+    assert str(exc_info.value) == snapshot("FileNotFoundError: [Errno 2] No such file or directory: '/data/missing'")
+    # Without a mount or `os` handler, the stat behind chdir has no answerer.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import os\nos.chdir('/data')")
+    assert str(exc_info.value) == snapshot("PermissionError: Permission denied: '/data'")
