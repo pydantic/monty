@@ -8,15 +8,16 @@ is_windows = sys.platform == 'win32'
 # root is injected by the test runner:
 # - Monty: Path('/mnt'), also the sandbox working directory
 # - CPython: Path('<real_tmpdir>'), while the process cwd is elsewhere
-# CPython resolves symlinked temp dirs in os.getcwd(), so compare resolved paths.
+# CPython's os.getcwd() may differ textually from root (symlinked temp dirs on
+# macOS, 8.3 short names on Windows), so compare resolved paths.
 resolved_root = root.resolve()
 original = os.getcwd()
 os.chdir(root)
 try:
     # === getcwd / Path.cwd ===
     assert os.chdir(root) is None
-    assert Path(os.getcwd()) == resolved_root
-    assert Path.cwd() == resolved_root
+    assert Path(os.getcwd()).resolve() == resolved_root
+    assert Path.cwd().resolve() == resolved_root
     assert isinstance(os.getcwd(), str)
 
     # === relative paths resolve against the working directory ===
@@ -39,17 +40,17 @@ try:
 
     # === chdir into a subdirectory ===
     os.chdir('subdir')
-    assert Path.cwd() == resolved_root / 'subdir'
+    assert Path.cwd().resolve() == resolved_root / 'subdir'
     assert Path('nested.txt').read_text() == 'nested content'
     assert Path('deep/file.txt').read_text() == 'deep file'
     assert Path('..').resolve() == resolved_root
     assert Path('../hello.txt').read_text() == 'hello world\n'
     os.chdir(Path('deep'))
-    assert Path.cwd() == resolved_root / 'subdir' / 'deep'
+    assert Path.cwd().resolve() == resolved_root / 'subdir' / 'deep'
     os.chdir('../..')
-    assert Path.cwd() == resolved_root
+    assert Path.cwd().resolve() == resolved_root
     os.chdir('.')
-    assert Path.cwd() == resolved_root
+    assert Path.cwd().resolve() == resolved_root
 
     # === chdir errors ===
     # Windows CPython reports WinError messages instead of POSIX errno text.
@@ -59,14 +60,14 @@ try:
     except NotADirectoryError as e:
         if not is_windows:
             assert str(e) == "[Errno 20] Not a directory: 'hello.txt'"
-    assert Path.cwd() == resolved_root
+    assert Path.cwd().resolve() == resolved_root
     try:
         os.chdir(root / 'missing')
         assert False, 'expected FileNotFoundError'
     except FileNotFoundError as e:
         if not is_windows:
             assert str(e) == f"[Errno 2] No such file or directory: '{root / 'missing'}'"
-    assert Path.cwd() == resolved_root
+    assert Path.cwd().resolve() == resolved_root
     # Windows CPython raises a different OSError subclass for the empty path.
     try:
         os.chdir('')
@@ -75,7 +76,7 @@ try:
         if not is_windows:
             assert isinstance(e, FileNotFoundError)
             assert str(e) == "[Errno 2] No such file or directory: ''"
-    assert Path.cwd() == resolved_root
+    assert Path.cwd().resolve() == resolved_root
     try:
         os.chdir(1.5)
         assert False, 'expected TypeError'
