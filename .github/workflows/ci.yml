@@ -1067,9 +1067,17 @@ jobs:
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             triple: linux-x64-gnu
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            triple: linux-x64-musl
+            cross-compile: true
           - host: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             triple: linux-arm64-gnu
+          - host: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            triple: linux-arm64-musl
+            cross-compile: true
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1080,6 +1088,17 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.settings.target }}
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        if: matrix.settings.cross-compile
+        with:
+          version: 0.15.2
+          use-cache: false
+
+      - uses: taiki-e/install-action@1ed3272338f573e042a2e6bca3893aa19f43b47a # v2.71.3
+        if: matrix.settings.cross-compile
+        with:
+          tool: cargo-zigbuild@0.23.3
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -1098,7 +1117,7 @@ jobs:
         working-directory: crates/monty-js
 
       - name: Build the napi shared library
-        run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }}
+        run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }} ${{ matrix.settings.cross-compile && '--cross-compile' || '' }}
         working-directory: crates/monty-js
 
       - name: Upload artifact
@@ -1296,6 +1315,39 @@ jobs:
         run: node package-smoke.mjs
         working-directory: crates/monty-js/smoke-test
 
+  test-js-musl-packages:
+    name: test ${{ matrix.platform.triple }} JS package on node@${{ matrix.node }}
+    needs:
+      - assemble-js-packages
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '24']
+        platform:
+          - os: ubuntu-latest
+            triple: linux-x64-musl
+          - os: ubuntu-24.04-arm
+            triple: linux-arm64-musl
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download package tarballs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: js-package-tarballs
+          path: crates/monty-js/package-tarballs
+
+      - name: Install and run the Alpine package
+        run: |
+          docker run --rm \
+            --volume "${{ github.workspace }}:/workspace" \
+            --workdir /workspace/crates/monty-js/smoke-test \
+            node:${{ matrix.node }}-alpine \
+            sh -c 'npm install ../package-tarballs/monty-main.tgz ../package-tarballs/monty-${{ matrix.platform.triple }}.tgz --force --no-save --no-package-lock && node package-smoke.mjs'
+
   release-js:
     name: Release to NPM
     runs-on: ubuntu-latest
@@ -1303,6 +1355,7 @@ jobs:
       - check
       - test-js
       - test-js-packages
+      - test-js-musl-packages
       - test-browser
       - release-python
     if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
