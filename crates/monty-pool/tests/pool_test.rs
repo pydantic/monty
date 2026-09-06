@@ -413,7 +413,14 @@ os.chdir('sub')
 
     // The chdir did not persist, and an explicit cwd wins over the mount.
     let result = session
-        .feed_with_cwd("os.getcwd()", vec![], mount(), Some("/mnt/sub/"), false, &mut no_print)
+        .feed_with_cwd(
+            "import os\nos.getcwd()",
+            vec![],
+            mount(),
+            Some("/mnt/sub/"),
+            false,
+            &mut no_print,
+        )
         .await;
     let event = feed_with_mounts(&mut session, result).await.unwrap();
     assert_eq!(expect_complete(event), MontyObject::String("/mnt/sub".to_owned()));
@@ -429,7 +436,7 @@ os.chdir('sub')
     assert_eq!(exc.exc_type(), ExcType::ValueError);
     assert_eq!(exc.message().unwrap(), "cwd must be an absolute POSIX path: \"data\"");
     let event = session
-        .feed("os.getcwd()", vec![], vec![], false, &mut no_print)
+        .feed("import os\nos.getcwd()", vec![], vec![], false, &mut no_print)
         .await
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::String("/".to_owned()));

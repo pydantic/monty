@@ -73,9 +73,12 @@ whether each call is permitted.
     raises `PermissionError`. The interpreter raises `NotADirectoryError`
     when the reply is not a directory, naming the argument as written like
     CPython; `FileNotFoundError` comes from the host and names the resolved
-    path. The adopted directory is lexically normalized (`..` collapses
+    path. `os.chdir('')` raises `FileNotFoundError` without consulting the
+    host. The adopted directory is lexically normalized (`..` collapses
     without consulting symlinks). Integer file descriptors are refused with
-    the `path_t` `TypeError`; CPython would `fchdir`.
+    the `path_t` `TypeError`; CPython would `fchdir`. A Rust host that
+    answers the stat with a future gets `RuntimeError` instead of a silently
+    unchanged directory.
 - **`mode` arguments** are type-checked (`'str' object cannot be interpreted as an integer`) but otherwise ignored:
     Monty's filesystem
     backends do not model POSIX permission bits.

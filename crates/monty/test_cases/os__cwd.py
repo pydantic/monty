@@ -1,6 +1,9 @@
 # mount-fs
 import os
+import sys
 from pathlib import Path
+
+is_windows = sys.platform == 'win32'
 
 # root is injected by the test runner:
 # - Monty: Path('/mnt'), also the sandbox working directory
@@ -49,22 +52,33 @@ try:
     assert Path.cwd() == resolved_root
 
     # === chdir errors ===
+    # Windows CPython reports WinError messages instead of POSIX errno text.
     try:
         os.chdir('hello.txt')
         assert False, 'expected NotADirectoryError'
     except NotADirectoryError as e:
-        assert str(e) == "[Errno 20] Not a directory: 'hello.txt'"
+        if not is_windows:
+            assert str(e) == "[Errno 20] Not a directory: 'hello.txt'"
     assert Path.cwd() == resolved_root
     try:
         os.chdir(root / 'missing')
         assert False, 'expected FileNotFoundError'
     except FileNotFoundError as e:
-        assert str(e) == f"[Errno 2] No such file or directory: '{root / 'missing'}'"
+        if not is_windows:
+            assert str(e) == f"[Errno 2] No such file or directory: '{root / 'missing'}'"
+    assert Path.cwd() == resolved_root
+    try:
+        os.chdir('')
+        assert False, 'expected FileNotFoundError'
+    except FileNotFoundError as e:
+        if not is_windows:
+            assert str(e) == "[Errno 2] No such file or directory: ''"
     assert Path.cwd() == resolved_root
     try:
         os.chdir(1.5)
         assert False, 'expected TypeError'
     except TypeError as e:
-        assert str(e) == 'chdir: path should be string, bytes, os.PathLike or integer, not float'
+        if not is_windows:
+            assert str(e) == 'chdir: path should be string, bytes, os.PathLike or integer, not float'
 finally:
     os.chdir(original)

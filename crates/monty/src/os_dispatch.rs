@@ -158,11 +158,19 @@ pub(crate) fn resolve_call_paths(call: &mut OsFunctionCall, cwd: &str) {
 pub(crate) fn check_chdir_stat(obj: &MontyObject, spelled: &str) -> Result<(), RunError> {
     const S_IFMT: i64 = 0o170_000;
     const S_IFDIR: i64 = 0o040_000;
+    // Located by name so a host's stat result is accepted whatever its field
+    // order, and anything without an integer `st_mode` is refused.
     let st_mode = match obj {
-        MontyObject::NamedTuple { values, .. } => values.first().and_then(|mode| match mode {
-            MontyObject::Int(mode) => Some(*mode),
-            _ => None,
-        }),
+        MontyObject::NamedTuple {
+            field_names, values, ..
+        } => field_names
+            .iter()
+            .position(|name| name == "st_mode")
+            .and_then(|index| values.get(index))
+            .and_then(|mode| match mode {
+                MontyObject::Int(mode) => Some(*mode),
+                _ => None,
+            }),
         _ => None,
     };
     match st_mode {
