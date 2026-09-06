@@ -888,7 +888,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
 #[test]
 fn non_finite_float_precision_is_not_charged() {
     let mut child = ChildProc::spawn();
-    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    child.create_repl_with(configure_with_max_memory(64 * 1024));
     assert_eq!(
         child.feed_complete("'%.2000000000f' % float('inf')"),
         MontyObject::String("inf".to_owned())

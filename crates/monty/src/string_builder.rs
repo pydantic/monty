@@ -125,14 +125,14 @@ impl<'t> StringBuilder<'t> {
     /// Appends `count` copies of `c`, in chunks with the tracker's clock polled
     /// between them so a wide padding request stays interruptible.
     pub fn push_repeated(&mut self, c: char, count: usize) -> Result<(), ResourceError> {
-        let unit: String = iter::repeat_n(c, count.min(FILL_CHUNK)).collect();
         let mut remaining = count;
         let mut chunk = 0;
         while remaining > 0 {
             self.tracker.check_time_every(chunk)?;
             chunk += 1;
             let take = remaining.min(FILL_CHUNK);
-            self.push_str(&unit[..take * c.len_utf8()])?;
+            self.ensure(self.inner.len().saturating_add(take.saturating_mul(c.len_utf8())))?;
+            self.inner.extend(iter::repeat_n(c, take));
             remaining -= take;
         }
         Ok(())
@@ -207,14 +207,15 @@ impl<'t> BytesBuilder<'t> {
     /// Appends `count` copies of `byte`, in chunks with the tracker's clock
     /// polled between them so a wide padding request stays interruptible.
     pub fn push_repeated(&mut self, byte: u8, count: usize) -> Result<(), ResourceError> {
-        let unit = vec![byte; count.min(FILL_CHUNK)];
         let mut remaining = count;
         let mut chunk = 0;
         while remaining > 0 {
             self.tracker.check_time_every(chunk)?;
             chunk += 1;
             let take = remaining.min(FILL_CHUNK);
-            self.push_slice(&unit[..take])?;
+            let needed = self.inner.len().saturating_add(take);
+            approve_growth(&mut self.approved_capacity, needed, self.tracker)?;
+            self.inner.resize(needed, byte);
             remaining -= take;
         }
         Ok(())

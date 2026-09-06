@@ -11,7 +11,9 @@
 
 use std::ops::Range;
 
+use memchr::memchr;
 use monty_types::ResourceTracker;
+use smallvec::{SmallVec, smallvec};
 
 use crate::{
     bytecode::VM,
@@ -80,7 +82,7 @@ trait Target: Sized {
     /// The size of an output fragment in bytes.
     fn byte_len(output: &Self::Output) -> usize;
     /// A `str` fragment cut to the directive's precision: `%r`, `%a`, and the `str` `%s` / `%c`.
-    fn text_from_string(text: String, spec: &Directive, tracker: &ResourceTracker) -> RunResult<Text<Self>>;
+    fn text_from_string(text: String, spec: &Directive) -> Text<Self>;
     /// The `%s` operand (also `%b` for `bytes`).
     fn text_operand(value: &Value, spec: &Directive, vm: &mut VM<'_>) -> RunResult<Text<Self>>;
     /// The `%c` operand, always one character or byte; the precision is ignored.
@@ -153,14 +155,13 @@ impl Target for StrTarget {
         output.len()
     }
 
-    fn text_from_string(mut text: String, spec: &Directive, tracker: &ResourceTracker) -> RunResult<Text<Self>> {
+    fn text_from_string(mut text: String, spec: &Directive) -> Text<Self> {
         if spec.precision.is_none() && spec.width == 0 {
-            Ok(Text { body: text, len: 0 })
+            Text { body: text, len: 0 }
         } else {
             let mut len = 0;
             let mut end = text.len();
-            for (index, (offset, _)) in text.char_indices().enumerate() {
-                tracker.check_time_every(index)?;
+            for (offset, _) in text.char_indices() {
                 if spec.precision == Some(len) {
                     end = offset;
                     break;
@@ -168,13 +169,13 @@ impl Target for StrTarget {
                 len += 1;
             }
             text.truncate(end);
-            Ok(Text { body: text, len })
+            Text { body: text, len }
         }
     }
 
     /// `str()` of any value.
     fn text_operand(value: &Value, spec: &Directive, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
-        Self::text_from_string(vm.convert_value(value, 1)?, spec, &vm.heap.tracker)
+        Ok(Self::text_from_string(vm.convert_value(value, 1)?, spec))
     }
 
     fn char_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
@@ -242,8 +243,8 @@ impl Target for BytesTarget {
 
     /// Only ASCII text reaches a `bytes` template (`ascii()` output), so
     /// bytes and characters coincide.
-    fn text_from_string(text: String, spec: &Directive, _tracker: &ResourceTracker) -> RunResult<Text<Self>> {
-        Ok(Self::from_bytes(text.as_bytes(), spec.precision))
+    fn text_from_string(text: String, spec: &Directive) -> Text<Self> {
+        Self::from_bytes(text.as_bytes(), spec.precision)
     }
 
     /// Only `bytes` values; Monty has no `bytearray`, `memoryview` or `__bytes__`.
@@ -371,9 +372,11 @@ fn format_template<T: Target>(template: &T::Template, args: &Value, vm: &mut VM<
         vm.heap.tracker.check_time_every(steps)?;
         steps += 1;
         let literal_end = find_percent(bytes, index, &vm.heap.tracker)?;
-        output = extend::<T>(output, &vm.heap.tracker, |builder| {
-            T::push_literal(builder, template, index..literal_end)
-        })?;
+        if literal_end > index {
+            output = extend::<T>(output, &vm.heap.tracker, |builder| {
+                T::push_literal(builder, template, index..literal_end)
+            })?;
+        }
         if literal_end == bytes.len() {
             break;
         }
@@ -410,7 +413,7 @@ fn format_template<T: Target>(template: &T::Template, args: &Value, vm: &mut VM<
 fn find_percent(bytes: &[u8], start: usize, tracker: &ResourceTracker) -> RunResult<usize> {
     for (chunk_index, chunk) in bytes[start..].chunks(SCAN_CHUNK).enumerate() {
         tracker.check_time_every(chunk_index)?;
-        if let Some(offset) = chunk.iter().position(|byte| *byte == b'%') {
+        if let Some(offset) = memchr(b'%', chunk) {
             return Ok(start + chunk_index * SCAN_CHUNK + offset);
         }
     }
@@ -431,8 +434,8 @@ fn extend<T: Target>(
 
 /// The right-hand operand, split the way CPython's `PyUnicode_Format` sees it.
 struct Arguments {
-    /// The tuple's items, or the lone operand itself.
-    positional: Vec<Value>,
+    /// The tuple's items, or the lone operand itself; inline for the usual few.
+    positional: SmallVec<[Value; 4]>,
     /// The operand again when `%(key)` may index it: the types CPython's
     /// mapping check accepts (see `limitations/format.md`), minus `bytes`
     /// for a `bytes` template.
@@ -442,12 +445,9 @@ struct Arguments {
 impl Arguments {
     fn new(args: &Value, bytes_template: bool, vm: &VM<'_>) -> RunResult<Self> {
         let positional = match args {
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Tuple(tuple) => clone_items(tuple.as_slice(), vm)?,
-                HeapData::NamedTuple(tuple) => clone_items(tuple.as_vec(), vm)?,
-                _ => vec![args.clone_with_heap(vm.heap)],
-            },
-            _ => vec![args.clone_with_heap(vm.heap)],
+            Value::Ref(id) if let HeapData::Tuple(tuple) = vm.heap.get(*id) => clone_items(tuple.as_slice(), vm)?,
+            Value::Ref(id) if let HeapData::NamedTuple(tuple) = vm.heap.get(*id) => clone_items(tuple.as_vec(), vm)?,
+            _ => smallvec![args.clone_with_heap(vm.heap)],
         };
         let mapping = match args.py_type(vm) {
             Type::Dict | Type::DefaultDict | Type::Counter | Type::List | Type::Range => true,
@@ -474,7 +474,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Cursor {
 
 /// Clones tuple items so the operand can be released before rendering ends,
 /// preflighting the copy like other bulk container clones.
-fn clone_items(items: &[Value], vm: &VM<'_>) -> RunResult<Vec<Value>> {
+fn clone_items(items: &[Value], vm: &VM<'_>) -> RunResult<SmallVec<[Value; 4]>> {
     vm.heap
         .tracker
         .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
@@ -535,7 +535,7 @@ fn render_directive<T: Target>(
     // `%(key)` is looked up as soon as it is read, so a missing key reports
     // before a malformed spec does.
     if bytes.get(index) == Some(&b'(') {
-        let key_end = find_key_end(bytes, index + 1, vm)?;
+        let key_end = find_key_end(bytes, index + 1)?;
         let key = T::key_value(template, index + 1..key_end, vm.heap);
         lookup_key(key, arguments, cursor, vm)?;
         index = key_end + 1;
@@ -580,7 +580,6 @@ fn parse_directive<T: Target>(
     let mut spec = Directive::default();
     let mut index = start;
     while let Some(flag) = template.get(index) {
-        vm.heap.tracker.check_time_every(index)?;
         match flag {
             b'-' => spec.left = true,
             b'+' => spec.sign = Some(Sign::Plus),
@@ -599,7 +598,7 @@ fn parse_directive<T: Target>(
         spec.width = usize::try_from(width.unsigned_abs()).map_err(|_| ExcType::overflow_c_ssize_t())?;
         index += 1;
     } else {
-        (spec.width, index) = parse_number(template, index, isize::MAX, "width too big", &vm.heap.tracker)?;
+        (spec.width, index) = parse_number(template, index, isize::MAX, "width too big")?;
     }
 
     if template.get(index) == Some(&b'.') {
@@ -611,13 +610,7 @@ fn parse_directive<T: Target>(
             spec.precision = Some(usize::try_from(precision).unwrap_or(0));
             index += 1;
         } else {
-            let (precision, next) = parse_number(
-                template,
-                index,
-                i32::MAX as isize,
-                T::PRECISION_TOO_BIG,
-                &vm.heap.tracker,
-            )?;
+            let (precision, next) = parse_number(template, index, i32::MAX as isize, T::PRECISION_TOO_BIG)?;
             spec.precision = Some(precision);
             index = next;
         }
@@ -639,10 +632,9 @@ fn parse_directive<T: Target>(
 }
 
 /// Finds the `)` closing a `%(key)`, allowing nested parentheses in the key.
-fn find_key_end(template: &[u8], start: usize, vm: &VM<'_>) -> RunResult<usize> {
+fn find_key_end(template: &[u8], start: usize) -> RunResult<usize> {
     let mut depth = 0usize;
     for (offset, byte) in template[start..].iter().enumerate() {
-        vm.heap.tracker.check_time_every(offset)?;
         match byte {
             b'(' => depth += 1,
             b')' if depth == 0 => return Ok(start + offset),
@@ -655,17 +647,10 @@ fn find_key_end(template: &[u8], start: usize, vm: &VM<'_>) -> RunResult<usize> 
 
 /// Parses a run of decimal digits, raising `message` above `max`: CPython
 /// bounds a width by `ssize_t` but a precision by C `int`.
-fn parse_number(
-    template: &[u8],
-    start: usize,
-    max: isize,
-    message: &str,
-    tracker: &ResourceTracker,
-) -> RunResult<(usize, usize)> {
+fn parse_number(template: &[u8], start: usize, max: isize, message: &str) -> RunResult<(usize, usize)> {
     let mut index = start;
     let mut number = 0usize;
     while let Some(digit) = template.get(index).filter(|byte| byte.is_ascii_digit()) {
-        tracker.check_time_every(index)?;
         number = number
             .checked_mul(10)
             .and_then(|number| number.checked_add(usize::from(digit - b'0')))
@@ -729,7 +714,7 @@ fn star_operand(
 fn repr_operand<T: Target>(value: &Value, conversion: u8, spec: &Directive, vm: &mut VM<'_>) -> RunResult<Text<T>> {
     let ascii = T::IS_BYTES || conversion == b'a';
     let text = vm.convert_value(value, if ascii { 3 } else { 2 })?;
-    T::text_from_string(text, spec, &vm.heap.tracker)
+    Ok(T::text_from_string(text, spec))
 }
 
 /// Pads a text fragment to the width: text right-aligns unless `-` was
