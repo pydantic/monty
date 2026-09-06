@@ -1,0 +1,44 @@
+crates/monty/src/exception_private.rs
+  s_8094673681c2fa::t_d3e7a816abc6e7 692-702
+crates/monty/src/run_progress.rs
+  s_8094673681c2fa::t_dcb6a0cb6a77f0 781-783
+  s_8094673681c2fa::t_d3e7a816abc6e7 21,778-780,784-791
+docs/limitations/os.md
+  s_8094673681c2fa::t_dcb6a0cb6a77f0 76-77,79-81
+docs/cli.md
+  s_8094673681c2fa::t_d3e7a816abc6e7 64-65
+crates/monty/src/repl.rs
+  s_8094673681c2fa::t_d3e7a816abc6e7 30,118-121,124-125
+crates/monty/src/modules/os.rs
+  s_8094673681c2fa::t_d3e7a816abc6e7 146-149
+crates/monty/tests/module_dunders.rs
+  s_8094673681c2fa::t_d3e7a816abc6e7 60-67,69,82
+crates/monty-proto/src/lib.rs
+  s_8094673681c2fa::t_d3e7a816abc6e7 24
+crates/monty-pool/tests/pool_test.rs
+  s_8094673681c2fa::t_dcb6a0cb6a77f0 416-423,439
+crates/monty/src/os_dispatch.rs
+  s_8094673681c2fa::t_d3e7a816abc6e7 161-162,164-173
+crates/monty/src/run.rs
+  s_8094673681c2fa::t_d3e7a816abc6e7 24,93-100
+crates/monty/test_cases/os__cwd.py
+  s_8094673681c2fa::t_d3e7a816abc6e7 3,6-7,55,60-61,67-75,81-82
+crates/monty/tests/os_tests.rs
+  s_8094673681c2fa::t_dcb6a0cb6a77f0 345-397
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9d51d810b6e87b9827b50e4cdd0413e70b8c1c6f",
+  "prompts": {},
+  "sessions": {
+    "s_8094673681c2fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf9081e0-d46f-481b-8256-a7fe2e23cafe",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
