@@ -435,7 +435,7 @@ function feedCwd(cwd: string | undefined): string | NativeTurn {
     kind: 'error',
     exception: {
       excType: 'ValueError',
-      message: `cwd ${problem}: ${JSON.stringify(cwd)}`,
+      message: `cwd ${problem}: ${rustDebugString(cwd ?? '')}`,
       traceback: '',
       frames: [],
     },
@@ -451,6 +451,34 @@ function feedCwd(cwd: string | undefined): string | NativeTurn {
   }
   const trimmed = cwd.replace(/\/+$/, '')
   return trimmed === '' ? '/' : trimmed
+}
+
+/**
+ * Quotes a string the way Rust's `{:?}` does, so the wasm transport's
+ * validation errors read exactly like `monty-pool`'s: `"`, `\` and the
+ * common control characters get their short escapes, other control
+ * characters `\u{..}`, and everything else is kept as is.
+ */
+function rustDebugString(value: string): string {
+  const shortEscapes: Record<string, string> = {
+    '"': '\\"',
+    '\\': '\\\\',
+    '\n': '\\n',
+    '\r': '\\r',
+    '\t': '\\t',
+    '\0': '\\0',
+  }
+  let out = '"'
+  for (const ch of value) {
+    const short = shortEscapes[ch]
+    if (short !== undefined) {
+      out += short
+      continue
+    }
+    const codePoint = ch.codePointAt(0) ?? 0
+    out += codePoint < 0x20 || codePoint === 0x7f ? `\\u{${codePoint.toString(16)}}` : ch
+  }
+  return out + '"'
 }
 
 /** Creates a traceback-free host exception result. */
