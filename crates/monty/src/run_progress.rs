@@ -401,7 +401,7 @@ impl NameLookup {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_bytes,
+                    executor.vm_env(),
                 );
 
                 // Resolve the name lookup result with the VM alive
@@ -643,7 +643,7 @@ impl ResolveFutures {
                 reader,
                 &executor.interns,
                 PrintWriter::Stdout,
-                executor.assert_repr_max_bytes,
+                executor.vm_env(),
             );
             vm.__force_gc_for_tests();
             vm.snapshot()
@@ -706,7 +706,7 @@ impl ResolveFutures {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_bytes,
+                    executor.vm_env(),
                 );
 
                 // Now check for invalid call_ids after VM is restored.
@@ -769,7 +769,7 @@ impl Snapshot {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_bytes,
+                    executor.vm_env(),
                 );
 
                 let vm_result = match ext_result {
@@ -819,7 +819,7 @@ fn abort_restored(
             reader,
             &executor.interns,
             print.reborrow(),
-            executor.assert_repr_max_bytes,
+            executor.vm_env(),
         );
         let vm_result = vm.abort(exc);
         let converted = convert_frame_exit(vm_result, &mut vm);

@@ -1,15 +1,36 @@
-error[E0308]: mismatched types
-   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:157:98
+error: lifetime may not live long enough
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:158:13
     |
-157 |         |reader, (interns, print)| VM::new(Vec::new(), code, reader, *interns, print.reborrow(), 120),
-    |                                    ------- arguments to this function are incorrect              ^^^ expected `VmEnv`, found integer
+157 |           |reader, (interns, print)| {
+    |            ------                  - return type of closure is VM<'2>
+    |            |
+    |            has type `&'1 mut heap::HeapReader<'1>`
+158 | /             VM::new(
+159 | |                 Vec::new(),
+160 | |                 code,
+161 | |                 reader,
+...   |
+164 | |                 crate::run::VmEnv::default(),
+165 | |             )
+    | |_____________^ returning this value requires that `'1` must outlive `'2`
     |
-note: associated function defined here
-   --> crates/monty/src/bytecode/vm/mod.rs:835:12
+    = note: requirement occurs because of the type `VM<'_>`, which makes the generic argument `'_` invariant
+    = note: the struct `VM<'h>` is invariant over the parameter `'h`
+    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+error: lifetime may not live long enough
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:154:5
     |
-835 |     pub fn new(
-    |            ^^^
-...
-841 |         env: VmEnv,
-    |         ----------
-For more information about this error, try `rustc --explain E0308`.
+153 |   fn smuggle_vm(heap: &mut Heap, interns: &crate::intern::Interns, code: &'static crate::bytecode::Code) -> VM<'static> {
+    |                                           - let's call the lifetime of this reference `'1`
+154 | /     HeapReader::with(
+155 | |         heap,
+156 | |         &mut (interns, monty_types::PrintWriter::Disabled),
+157 | |         |reader, (interns, print)| {
+...   |
+166 | |         },
+167 | |     )
+    | |_____^ returning this value requires that `'1` must outlive `'static`
+    |
+    = note: requirement occurs because of the type `VM<'_>`, which makes the generic argument `'_` invariant
+    = note: the struct `VM<'h>` is invariant over the parameter `'h`
+    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance

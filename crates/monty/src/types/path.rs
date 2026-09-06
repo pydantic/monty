@@ -306,7 +306,7 @@ impl Path {
 /// by the VM so no host round-trip is needed.
 pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     args.check_zero_args("Path.cwd", vm.heap)?;
-    let path = Path::new(vm.env.cwd.clone());
+    let path = Path::new(vm.env.cwd.to_string());
     Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
 }
 

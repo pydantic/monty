@@ -1,5 +1,6 @@
 //! Public interface for running Monty code.
 use std::{
+    borrow::Cow,
     mem,
     sync::{
         Arc,
@@ -251,27 +252,38 @@ impl Clone for Executor {
 }
 
 /// Per-run environment handed to a fresh VM: the sandbox working directory,
-/// the `__file__` it reports and the assert-repr cap. Built by
+/// what `__file__` derives from and the assert-repr cap. Built by
 /// [`Executor::vm_env`] so every `VM::new` call site agrees on how the
-/// values derive from the executor.
-pub(crate) struct VmEnv {
+/// values derive from the executor. Borrows rather than clones: a VM is
+/// built per run, so this must not allocate.
+pub(crate) struct VmEnv<'h> {
     /// Working directory `os.getcwd()` reports and relative paths resolve
-    /// against; `os.chdir` mutates the VM's copy for the rest of the run.
-    pub(crate) cwd: String,
-    /// `__file__`: the script name resolved against the initial `cwd`, fixed
-    /// for the run even after `os.chdir`.
-    pub(crate) file: String,
+    /// against. Borrowed from the executor until `os.chdir` replaces it.
+    pub(crate) cwd: Cow<'h, str>,
+    /// Working directory the run started in; `__file__` is `script_name`
+    /// resolved against it, unaffected by a later `os.chdir`.
+    pub(crate) initial_cwd: &'h str,
+    /// User-facing script name (`main.py`), the basis of `__file__`.
+    pub(crate) script_name: &'h str,
     /// UTF-8 byte cap for each operand repr in introspected assert messages.
     pub(crate) assert_repr_max_bytes: u32,
 }
 
-impl Default for VmEnv {
+impl VmEnv<'_> {
+    /// `__file__`: computed on read, since most runs never look at it.
+    pub(crate) fn file(&self) -> String {
+        posix_join(self.initial_cwd, self.script_name)
+    }
+}
+
+impl Default for VmEnv<'static> {
     /// The environment of a VM built without an executor (in-module tests):
     /// root working directory, no script.
     fn default() -> Self {
         Self {
-            cwd: DEFAULT_CWD.to_owned(),
-            file: String::new(),
+            cwd: Cow::Borrowed(DEFAULT_CWD),
+            initial_cwd: DEFAULT_CWD,
+            script_name: "",
             assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
         }
     }
@@ -330,10 +342,11 @@ impl Executor {
     }
 
     /// Builds the [`VmEnv`] a VM run from this executor starts with.
-    pub(crate) fn vm_env(&self) -> VmEnv {
+    pub(crate) fn vm_env(&self) -> VmEnv<'_> {
         VmEnv {
-            cwd: self.cwd.clone(),
-            file: posix_join(&self.cwd, &self.script_name),
+            cwd: Cow::Borrowed(&self.cwd),
+            initial_cwd: &self.cwd,
+            script_name: &self.script_name,
             assert_repr_max_bytes: self.assert_repr_max_bytes,
         }
     }

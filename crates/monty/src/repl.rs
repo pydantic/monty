@@ -798,7 +798,7 @@ impl ReplNameLookup {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_bytes,
+                    executor.vm_env(),
                 );
 
                 // Resolve the name lookup result with the VM alive
@@ -911,7 +911,7 @@ impl ReplResolveFutures {
                 reader,
                 &executor.interns,
                 print.reborrow(),
-                executor.assert_repr_max_bytes,
+                executor.vm_env(),
             );
 
             if let Some(call_id) = invalid_call_id {
@@ -1046,7 +1046,7 @@ fn abort_restored(
             reader,
             &executor.interns,
             print.reborrow(),
-            executor.assert_repr_max_bytes,
+            executor.vm_env(),
         );
         let vm_result = vm.abort(exc);
         let converted = convert_frame_exit(vm_result, &mut vm);
@@ -1120,7 +1120,7 @@ impl ReplSnapshot {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_bytes,
+                    executor.vm_env(),
                 );
 
                 let vm_result = match ext_result {
