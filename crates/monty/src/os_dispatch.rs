@@ -19,7 +19,7 @@
 //! conversions, then wire the new variant into the fs/ dispatcher and any
 //! host backends.
 
-use std::mem;
+use std::{mem, sync::Arc};
 
 use monty_types::{
     ExcType, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
@@ -138,6 +138,25 @@ pub(crate) fn normalize_posix_path(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     push_normalized(&mut out, path);
     finish_absolute(out)
+}
+
+/// A host-supplied working directory as the canonical shared string the
+/// executor and REPL keep: one allocation when `cwd` is already canonical
+/// (the usual case, a mount's virtual path), a normalizing pass first
+/// otherwise.
+pub(crate) fn canonical_cwd(cwd: &str) -> Arc<str> {
+    let canonical = cwd == "/"
+        || (cwd.starts_with('/')
+            && !cwd.ends_with('/')
+            && cwd
+                .split('/')
+                .skip(1)
+                .all(|segment| !matches!(segment, "" | "." | "..")));
+    if canonical {
+        Arc::from(cwd)
+    } else {
+        Arc::from(normalize_posix_path(cwd))
+    }
 }
 
 /// Appends `path`'s segments to `out`, each preceded by `/`, dropping `.` and

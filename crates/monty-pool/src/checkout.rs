@@ -613,7 +613,7 @@ impl Checkout {
     /// usable; all other errors mean the worker was discarded.
     pub async fn feed(
         &mut self,
-        code: &str,
+        code: impl Into<String>,
         inputs: Vec<(String, MontyObject)>,
         mounts: Vec<MountSpec>,
         skip_type_check: bool,
@@ -634,7 +634,7 @@ impl Checkout {
     /// [`PoolError::Runtime`] (`ValueError`), raised before any frame is sent.
     pub async fn feed_with_cwd(
         &mut self,
-        code: &str,
+        code: impl Into<String>,
         inputs: Vec<(String, MontyObject)>,
         mounts: Vec<MountSpec>,
         cwd: Option<&str>,
@@ -659,7 +659,7 @@ impl Checkout {
         self.cwd_set = true;
         self.feed_mounts = Self::build_feed_mounts(mounts);
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
-            code: code.to_owned(),
+            code: code.into(),
             inputs: inputs
                 .into_iter()
                 .map(|(name, value)| pb::NamedValue {

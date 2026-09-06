@@ -9,7 +9,7 @@
 //! cloned, so the cost of a feed depends on the snippet, not on how much the
 //! session has already run.
 
-use std::mem;
+use std::{mem, sync::Arc};
 
 use ahash::AHashMap;
 use monty_types::{ExcType, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker};
@@ -27,7 +27,7 @@ use crate::{
     intern::Interns,
     name_map::NameMap,
     object_bridge::MontyObjectExt,
-    os_dispatch::normalize_posix_path,
+    os_dispatch::canonical_cwd,
     run::{CompileOptions, DEFAULT_CWD, Executor, ReplSession},
     run_progress::{
         ConvertedExit, ExtFunctionResult, ExtFunctionResultExt, LookupAnswer, LookupScope, NameLookupResult,
@@ -48,7 +48,7 @@ pub struct MontyRepl {
     ///
     /// Incremental `feed()` / `start()` snippets intentionally use internal script names
     /// like `<python-input-0>` to match CPython's interactive traceback style.
-    script_name: String,
+    script_name: Arc<str>,
     /// Counter for generated `<python-input-N>` execution filenames.
     next_input_id: u64,
     /// Stable mapping of global variable names to namespace slot IDs.
@@ -70,7 +70,7 @@ pub struct MontyRepl {
     /// diagnostic pass must be able to look that source up by filename —
     /// the current snippet's `Executor.code` is not sufficient.
     #[serde(default)]
-    sources: AHashMap<String, String>,
+    sources: AHashMap<String, Arc<str>>,
     /// [`CompileOptions`] applied to every snippet fed to this session, fixed
     /// at construction so all snippets compile consistently.
     #[serde(default)]
@@ -79,7 +79,7 @@ pub struct MontyRepl {
     /// [`set_cwd`](Self::set_cwd) chose, then whatever `os.chdir` left the
     /// last snippet in — the directory is session state, like the globals.
     #[serde(default = "default_cwd")]
-    cwd: String,
+    cwd: Arc<str>,
     /// Persistent heap across snippets.
     heap: Heap,
     /// Persistent global variable values across snippets.
@@ -101,13 +101,13 @@ impl MontyRepl {
         let heap = Heap::new(0, resource_tracker);
 
         Self {
-            script_name: script_name.to_owned(),
+            script_name: Arc::from(script_name),
             next_input_id: 0,
             global_names: NameMap::new(),
             interns: Interns::default(),
             sources: AHashMap::new(),
             options,
-            cwd: DEFAULT_CWD.to_owned(),
+            cwd: Arc::from(DEFAULT_CWD),
             heap,
             globals: Vec::new(),
         }
@@ -121,8 +121,8 @@ impl MontyRepl {
     /// it before reaching the host, and `__file__` is the script name resolved
     /// against it. The directory then persists across snippets, including a
     /// snippet's `os.chdir`, until the host switches it again.
-    pub fn set_cwd(&mut self, cwd: impl AsRef<str>) {
-        self.cwd = normalize_posix_path(cwd.as_ref());
+    pub fn set_cwd(&mut self, cwd: &str) {
+        self.cwd = canonical_cwd(cwd);
     }
 
     /// Injects `fault` into a compiled function's metadata.
@@ -195,13 +195,14 @@ impl MontyRepl {
 
         let input_script_name = this.next_input_script_name();
         // Preserve this snippet's source (see `feed_run` for rationale).
-        this.sources.insert(input_script_name.clone(), code.to_owned());
+        let code: Arc<str> = Arc::from(code);
+        this.sources.insert(input_script_name.clone(), Arc::clone(&code));
         let session = ReplSession {
             script_name: &this.script_name,
             cwd: &this.cwd,
         };
         let executor = match Executor::new_repl_snippet(
-            code.to_owned(),
+            code,
             &input_script_name,
             &mut this.global_names,
             &mut this.interns,
@@ -277,14 +278,15 @@ impl MontyRepl {
         // Preserve this snippet's source before anything can fail, so later
         // tracebacks with frames from this snippet can still resolve line/
         // column/preview information — `Executor.code` only survives until
-        // the next feed.
-        self.sources.insert(input_script_name.clone(), code.to_owned());
+        // the next feed. The one copy of the text is shared with the executor.
+        let code: Arc<str> = Arc::from(code);
+        self.sources.insert(input_script_name.clone(), Arc::clone(&code));
         let session = ReplSession {
             script_name: &self.script_name,
             cwd: &self.cwd,
         };
         let executor = Executor::new_repl_snippet(
-            code.to_owned(),
+            code,
             &input_script_name,
             &mut self.global_names,
             &mut self.interns,
@@ -324,7 +326,9 @@ impl MontyRepl {
 
         // Resolve every traceback frame against the source of the snippet that
         // produced it — frames from earlier snippets live in `self.sources`.
-        result?.map_err(|e| e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)))
+        result?.map_err(|e| {
+            e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source))
+        })
     }
 
     /// Calls a Python function defined in the session by name.
@@ -343,15 +347,15 @@ impl MontyRepl {
     ) -> Result<MontyObject, MontyException> {
         let Some(name_id) = self.interns.get_string_id_by_name(name) else {
             return Err(RunError::from(ExcType::name_error(name))
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
+                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
         };
         let Some(slot_idx) = self.global_names.get(name_id) else {
             return Err(RunError::from(ExcType::name_error(name))
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
+                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
         };
         if matches!(self.globals.get(slot_idx.index()), None | Some(Value::Undefined)) {
             return Err(RunError::from(ExcType::name_error(name))
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
+                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
         }
 
         let input_script_name = self.next_input_script_name();
@@ -415,7 +419,7 @@ impl MontyRepl {
                             }
                             Err(error) => {
                                 break Err(error.into_python_exception(&executor.interns, |fname| {
-                                    self.sources.get(fname).map(String::as_str)
+                                    self.sources.get(fname).map(|source| &**source)
                                 }));
                             }
                         };
@@ -428,7 +432,7 @@ impl MontyRepl {
             globals.split_off(original_globals_len).drop_with(vm);
             self.globals = globals;
             if let Some(cwd) = vm.take_changed_cwd() {
-                self.cwd = cwd;
+                self.cwd = Arc::from(cwd);
             }
             result
         });
@@ -862,7 +866,9 @@ impl ReplResolveFutures {
             vm_state,
             ..
         } = self;
-        (repl.globals, repl.cwd) = vm_state.abandon(&mut repl.heap);
+        let (globals, cwd) = vm_state.abandon(&mut repl.heap);
+        repl.globals = globals;
+        repl.cwd = Arc::from(cwd);
         repl.commit_executor(executor);
         repl
     }
@@ -1099,7 +1105,9 @@ impl ReplSnapshot {
             executor,
             vm_state,
         } = self;
-        (repl.globals, repl.cwd) = vm_state.abandon(&mut repl.heap);
+        let (globals, cwd) = vm_state.abandon(&mut repl.heap);
+        repl.globals = globals;
+        repl.cwd = Arc::from(cwd);
         repl.commit_executor(executor);
         repl
     }
@@ -1163,10 +1171,10 @@ impl ReplSnapshot {
 /// Reclaims what outlives a snippet from its finished VM: the globals, and
 /// the working directory when the snippet (or the snapshot it resumed from)
 /// owns one, so an `os.chdir` persists into later feeds like the globals do.
-fn reclaim_vm_state(globals: &mut Vec<Value>, cwd: &mut String, vm: &mut VM<'_>) {
+fn reclaim_vm_state(globals: &mut Vec<Value>, cwd: &mut Arc<str>, vm: &mut VM<'_>) {
     *globals = vm.take_globals();
     if let Some(changed) = vm.take_changed_cwd() {
-        *cwd = changed;
+        *cwd = Arc::from(changed);
     }
 }
 
@@ -1254,8 +1262,9 @@ fn build_repl_progress(
             // is still required because it holds the StringIds referenced by
             // the in-flight frames; `repl.sources` holds every snippet's
             // source text and is what owns any older snippets' sources.
-            let error =
-                err.into_python_exception(&executor.interns, |fname| repl.sources.get(fname).map(String::as_str));
+            let error = err.into_python_exception(&executor.interns, |fname| {
+                repl.sources.get(fname).map(|source| &**source)
+            });
             // Commit compiler metadata even on runtime errors, matching feed() behavior.
             // Snippets can create new variables or functions before raising, and those
             // values may reference FunctionId/StringId values from the new tables.
@@ -1332,6 +1341,6 @@ fn is_callable(value: &Value, heap: &Heap) -> bool {
 }
 
 /// serde default for [`MontyRepl::cwd`], so dumps taken before the field existed load.
-fn default_cwd() -> String {
-    DEFAULT_CWD.to_owned()
+fn default_cwd() -> Arc<str> {
+    Arc::from(DEFAULT_CWD)
 }

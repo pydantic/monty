@@ -128,9 +128,9 @@ fn run_cli(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
         return if cli.interactive {
-            dispatch_repl("<string>", &cmd, limits, mount_table, cwd)
+            dispatch_repl("<string>", &cmd, limits, mount_table, &cwd)
         } else {
-            dispatch_script("<string>", cmd, type_check, limits, mount_table, cwd)
+            dispatch_script("<string>", cmd, type_check, limits, mount_table, &cwd)
         };
     }
 
@@ -143,13 +143,13 @@ fn run_cli(cli: Cli) -> ExitCode {
             }
         };
         return if cli.interactive {
-            dispatch_repl(file_path, &code, limits, mount_table, cwd)
+            dispatch_repl(file_path, &code, limits, mount_table, &cwd)
         } else {
-            dispatch_script(file_path, code, type_check, limits, mount_table, cwd)
+            dispatch_script(file_path, code, type_check, limits, mount_table, &cwd)
         };
     }
 
-    dispatch_repl("repl.py", "", limits, mount_table, cwd)
+    dispatch_repl("repl.py", "", limits, mount_table, &cwd)
 }
 
 /// Resolves the sandbox working directory: `--cwd`, else the first `--mount`
@@ -172,7 +172,7 @@ fn dispatch_script(
     type_check: Option<TypeCheckingConfig>,
     limits: ResourceLimits,
     mount_table: Option<MountTable>,
-    cwd: String,
+    cwd: &str,
 ) -> ExitCode {
     run_script(
         file_path,
@@ -190,7 +190,7 @@ fn dispatch_repl(
     code: &str,
     limits: ResourceLimits,
     mount_table: Option<MountTable>,
-    cwd: String,
+    cwd: &str,
 ) -> ExitCode {
     run_repl(file_path, code, ResourceTracker::new(limits), mount_table, cwd)
 }
@@ -210,7 +210,7 @@ fn run_script(
     type_check: Option<TypeCheckingConfig>,
     tracker: ResourceTracker,
     mut mount_table: Option<MountTable>,
-    cwd: String,
+    cwd: &str,
 ) -> ExitCode {
     if let Some(config) = type_check {
         let start = Instant::now();
@@ -314,7 +314,7 @@ fn run_repl(
     code: &str,
     tracker: ResourceTracker,
     mut mount_table: Option<MountTable>,
-    cwd: String,
+    cwd: &str,
 ) -> ExitCode {
     let mut suspensions = SuspensionBudget::new(&tracker);
     let mut repl = MontyRepl::new(file_path, tracker, CompileOptions::default());

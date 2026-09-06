@@ -390,7 +390,7 @@ impl NativeSession {
             outcome_fn(move |checkout, on_print| {
                 Box::pin(async move {
                     checkout
-                        .feed_with_cwd(&code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
+                        .feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
                         .await
                 })
             }),

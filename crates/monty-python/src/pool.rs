@@ -1308,7 +1308,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         &print_target,
         turn_fn(move |c, p| {
             Box::pin(async move {
-                c.feed_with_cwd(&code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
         }),
@@ -1499,7 +1499,7 @@ async fn drive_async_inner(
             // `AbandonGuard`)
             started.store(true, Ordering::Release);
             Box::pin(async move {
-                c.feed_with_cwd(&code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
         }),
