@@ -662,8 +662,9 @@ impl VMSnapshot {
     /// Discards the in-flight execution state of a snapshot that will never be
     /// restored, releasing every heap reference it holds (operand and exception
     /// stacks, scheduler tasks, pending resume effects), and returns the globals
-    /// so an abandoned REPL snippet keeps its namespace. Mirrors `VM::drop`.
-    pub(crate) fn abandon(self, heap: &mut Heap) -> Vec<Value> {
+    /// and working directory so an abandoned REPL snippet keeps its namespace
+    /// and any `os.chdir` it made. Mirrors `VM::drop`.
+    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String) {
         let Self {
             stack,
             globals,
@@ -671,6 +672,7 @@ impl VMSnapshot {
             mut scheduler,
             pending_os_effect,
             pending_lookup_effect,
+            cwd,
             ..
         } = self;
         HeapReader::with(heap, &mut (), |heap, ()| {
@@ -680,7 +682,7 @@ impl VMSnapshot {
             stack.drop_with(heap);
             scheduler.cleanup(heap);
         });
-        globals
+        (globals, cwd)
     }
 
     /// Number of tasks the scheduler held when this snapshot was taken.
@@ -1033,6 +1035,16 @@ impl<'h> VM<'h> {
     /// any remaining globals with `drop_with`.
     pub fn take_globals(&mut self) -> Vec<Value> {
         mem::take(&mut self.globals)
+    }
+
+    /// Takes the working directory if this run owns one: after an `os.chdir`,
+    /// or always for a restored VM (its snapshot carried the directory). The
+    /// REPL writes it back so a directory change persists into later feeds.
+    pub fn take_changed_cwd(&mut self) -> Option<String> {
+        match mem::replace(&mut self.env.cwd, Cow::Borrowed(self.env.initial_cwd)) {
+            Cow::Owned(cwd) => Some(cwd),
+            Cow::Borrowed(_) => None,
+        }
     }
 
     /// Allocates a new `CallId` for an external function call.

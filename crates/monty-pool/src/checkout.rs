@@ -355,6 +355,11 @@ pub struct Checkout {
     /// Consulted only by [`Checkout::resume_from_mounts`]. Dropped when the
     /// feed ends so overlay writes never leak into the next feed.
     feed_mounts: Option<MountTable>,
+    /// Whether the session's working directory has been established (a feed
+    /// chose it, or a restored dump carried it). Until then a feed without an
+    /// explicit `cwd` sends the mount-derived default; afterwards it sends
+    /// nothing and the worker keeps the directory, `os.chdir` included.
+    cwd_set: bool,
     /// When the session started, for `monty.pool.session.duration`. Taken by
     /// `finish`, terminal worker loss, or `Drop`, so it is recorded once.
     #[cfg(feature = "telemetry")]
@@ -525,6 +530,7 @@ impl Checkout {
             armed_deadline: None,
             restored_script_name: None,
             feed_mounts: None,
+            cwd_set: false,
             #[cfg(feature = "telemetry")]
             started: Some(Instant::now()),
         };
@@ -575,6 +581,8 @@ impl Checkout {
         self.begin_load();
         self.restored_script_name = None;
         self.feed_mounts = feed_mounts;
+        // The dump carries the session's working directory too.
+        self.cwd_set = true;
         let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
         let outcome = self
             .request_turn(&request, self.pool.config.request_timeout, on_print)
@@ -593,11 +601,12 @@ impl Checkout {
     /// Executes one snippet against the session. Inputs become sandbox
     /// globals; mounts apply to this feed only and are serviced by the parent
     /// (an invalid host path fails here, before any frame is sent, as a
-    /// session-preserving [`PoolError::Runtime`]). The sandbox working
-    /// directory is the first mount's virtual path, or `/` without mounts;
-    /// [`Checkout::feed_with_cwd`] chooses it explicitly. Returns the first
-    /// suspension (or completion); `print()` output streams to `on_print`
-    /// throughout.
+    /// session-preserving [`PoolError::Runtime`]). The session's first feed
+    /// sets the sandbox working directory to its first mount's virtual path,
+    /// or `/` without mounts; later feeds keep the directory (`os.chdir`
+    /// included) unless [`Checkout::feed_with_cwd`] switches it. Returns the
+    /// first suspension (or completion); `print()` output streams to
+    /// `on_print` throughout.
     ///
     /// # Errors
     /// [`PoolError::Runtime`] / [`PoolError::Typing`] leave the session
@@ -614,11 +623,11 @@ impl Checkout {
             .await
     }
 
-    /// [`Checkout::feed`] with an explicit sandbox working directory for the
-    /// feed: an absolute POSIX virtual path that `os.getcwd()` reports,
-    /// relative paths resolve against and `__file__` is placed under. `None`
-    /// takes the default (first mount, else `/`). The directory is per feed
-    /// like mounts: an `os.chdir` inside the snippet does not carry over.
+    /// [`Checkout::feed`] with an explicit switch of the sandbox working
+    /// directory before the feed: an absolute POSIX virtual path that
+    /// `os.getcwd()` reports, relative paths resolve against and `__file__`
+    /// is placed under. `None` keeps the session's current directory, which
+    /// the first feed defaults to its first mount (else `/`).
     ///
     /// # Errors
     /// A relative or NUL-containing `cwd` is a session-preserving
@@ -641,10 +650,13 @@ impl Checkout {
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
         let cwd = match cwd {
             Some(cwd) => validate_cwd(cwd)?,
+            // An empty wire cwd keeps the worker's current directory.
+            None if self.cwd_set => String::new(),
             None => mounts
                 .first()
                 .map_or_else(|| "/".to_owned(), |mount| mount.virtual_path().to_owned()),
         };
+        self.cwd_set = true;
         self.feed_mounts = Self::build_feed_mounts(mounts);
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
@@ -1699,7 +1711,7 @@ fn min_deadline(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
         (deadline, None) | (None, deadline) => deadline,
     }
 }
-/// Checks an explicit feed working directory: absolute, POSIX, no NUL bytes.
+/// Checks an explicit working directory: absolute, POSIX, no NUL bytes.
 /// Trailing slashes are dropped so `os.getcwd()` never reports `/data/`;
 /// the root itself stays `/`.
 fn validate_cwd(cwd: &str) -> Result<String, PoolError> {

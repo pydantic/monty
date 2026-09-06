@@ -628,13 +628,14 @@ class MontySession:
                 Serviced by the pool on the host side — `'overlay'` writes
                 live in the pool's per-feed mount table and are discarded when
                 the feed ends.
-            cwd: The sandbox's working directory for this feed, an absolute
-                virtual path. Defaults to the first mount's virtual path, or
-                `/` without mounts. `os.getcwd()` reports it, relative paths
-                resolve against it before reaching a mount or the `os`
-                handler, and `__file__` is the script name placed under it.
-                Like `mount`, it is per feed: an `os.chdir()` in the snippet
-                does not carry over to the next feed.
+            cwd: Switches the sandbox's working directory before this feed,
+                an absolute virtual path. The directory persists across the
+                session's feeds, including any `os.chdir()`, so `None` keeps
+                the current one; the session's first feed defaults to its
+                first mount's virtual path, or `/` without mounts.
+                `os.getcwd()` reports it, relative paths resolve against it
+                before reaching a mount or the `os` handler, and `__file__`
+                is the script name placed under it.
             os: Fallback handler for OS calls (e.g. filesystem access) not
                 covered by a mount, invoked as `(function_name, args, kwargs)`,
                 or an `AbstractOS` instance.
@@ -991,13 +992,14 @@ class AsyncMontySession:
                 Serviced by the pool on the host side — `'overlay'` writes
                 live in the pool's per-feed mount table and are discarded when
                 the feed ends.
-            cwd: The sandbox's working directory for this feed, an absolute
-                virtual path. Defaults to the first mount's virtual path, or
-                `/` without mounts. `os.getcwd()` reports it, relative paths
-                resolve against it before reaching a mount or the `os`
-                handler, and `__file__` is the script name placed under it.
-                Like `mount`, it is per feed: an `os.chdir()` in the snippet
-                does not carry over to the next feed.
+            cwd: Switches the sandbox's working directory before this feed,
+                an absolute virtual path. The directory persists across the
+                session's feeds, including any `os.chdir()`, so `None` keeps
+                the current one; the session's first feed defaults to its
+                first mount's virtual path, or `/` without mounts.
+                `os.getcwd()` reports it, relative paths resolve against it
+                before reaching a mount or the `os` handler, and `__file__`
+                is the script name placed under it.
             os: Fallback handler for OS calls (e.g. filesystem access) not
                 covered by a mount, invoked as `(function_name, args, kwargs)`,
                 or an `AbstractOS` instance.

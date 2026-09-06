@@ -79,12 +79,13 @@ export interface FeedOptions {
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
   /**
-   * The sandbox's working directory for this feed, an absolute virtual path.
-   * Defaults to the first mount's virtual path, or `/` without mounts.
-   * `os.getcwd()` reports it, relative paths resolve against it before
-   * reaching a mount or the `os` handler, and `__file__` is the script name
-   * placed under it. Per feed like `mount`: an `os.chdir()` in the snippet
-   * does not carry over to the next feed.
+   * Switches the sandbox's working directory before this feed, an absolute
+   * virtual path. The directory persists across the session's feeds,
+   * including any `os.chdir()`, so leaving it unset keeps the current one;
+   * the session's first feed defaults to its first mount's virtual path, or
+   * `/` without mounts. `os.getcwd()` reports it, relative paths resolve
+   * against it before reaching a mount or the `os` handler, and `__file__`
+   * is the script name placed under it.
    */
   cwd?: string
   /** Handler for OS calls not covered by mounts. */
@@ -113,7 +114,7 @@ export interface FeedStartOptions {
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
-  /** The sandbox's working directory for the whole feed, as in
+  /** Switches the sandbox's working directory before the feed, as in
    *  [`FeedOptions.cwd`]; a dump taken mid-feed carries it. */
   cwd?: string
   /** Handler for OS calls not covered by mounts. Consulted only by
