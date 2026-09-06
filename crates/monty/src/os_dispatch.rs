@@ -110,11 +110,23 @@ pub(crate) fn release_pending_effect(effect: Option<PendingOsEffect>, heap: &mut
 /// [`normalize_posix_path`]); an absolute one is returned as written, so
 /// host error messages still show what the user spelled. An empty `path`
 /// stays empty so the host reports it the way CPython does.
+///
+/// `cwd` must already be canonical (absolute, no `.`/`..`, no trailing
+/// slash), which `set_cwd` and `os.chdir` guarantee, so it is copied in as
+/// is and only `path` is walked: one allocation sized for the whole result,
+/// since this runs on every relative OS call. Collapsing `..` here is for
+/// canonical output, not safety: the mount table normalizes again and
+/// confines structurally.
 pub(crate) fn posix_join(cwd: &str, path: &str) -> String {
     if path.is_empty() || path.starts_with('/') {
         path.to_owned()
     } else {
-        normalize_posix_path(&format!("{cwd}/{path}"))
+        let mut joined = String::with_capacity(cwd.len() + 1 + path.len());
+        if cwd != "/" {
+            joined.push_str(cwd);
+        }
+        push_normalized(&mut joined, path);
+        finish_absolute(joined)
     }
 }
 
@@ -123,26 +135,46 @@ pub(crate) fn posix_join(cwd: &str, path: &str) -> String {
 /// same purely textual treatment the mount table applies, so it can never
 /// reach outside a mount.
 pub(crate) fn normalize_posix_path(path: &str) -> String {
-    let mut segments: Vec<&str> = Vec::new();
+    let mut out = String::with_capacity(path.len());
+    push_normalized(&mut out, path);
+    finish_absolute(out)
+}
+
+/// Appends `path`'s segments to `out`, each preceded by `/`, dropping `.` and
+/// empty segments and popping the last segment of `out` on `..` (never
+/// above the root, which is the empty string here).
+fn push_normalized(out: &mut String, path: &str) {
     for segment in path.split('/') {
         match segment {
             "" | "." => {}
-            ".." => {
-                segments.pop();
+            ".." => out.truncate(out.rfind('/').unwrap_or(0)),
+            segment => {
+                out.push('/');
+                out.push_str(segment);
             }
-            segment => segments.push(segment),
         }
     }
-    format!("/{}", segments.join("/"))
+}
+
+/// Turns the segment buffer of [`push_normalized`] into a path: the empty
+/// buffer is the root.
+fn finish_absolute(mut out: String) -> String {
+    if out.is_empty() {
+        out.push('/');
+    }
+    out
 }
 
 /// Resolves every relative path in `call` against `cwd` (see [`posix_join`]).
 ///
 /// Runs at the VM's single OS-call exit, so builtins and `Path` methods can
-/// hand over paths exactly as the user wrote them.
+/// hand over paths exactly as the user wrote them. Absolute and empty paths
+/// are left untouched, not copied.
 pub(crate) fn resolve_call_paths(call: &mut OsFunctionCall, cwd: &str) {
     for path in call.fs_paths_mut() {
-        *path = MontyPath::new(posix_join(cwd, path));
+        if !path.is_empty() && !path.starts_with('/') {
+            *path = MontyPath::new(posix_join(cwd, path));
+        }
     }
 }
 
