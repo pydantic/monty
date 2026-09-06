@@ -777,10 +777,13 @@ impl Snapshot {
                     ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
                     // A future never runs the resume-side effect, so a
                     // directory change could not take hold; refuse it rather
-                    // than leave `os.getcwd()` silently unchanged.
-                    ExtFunctionResult::Future(_)
+                    // than leave `os.getcwd()` silently unchanged. The future
+                    // is still registered so the host's task drains through
+                    // the usual `ResolveFutures` flow instead of being orphaned.
+                    ExtFunctionResult::Future(raw_call_id)
                         if matches!(vm.pending_os_effect, Some(PendingOsEffect::Chdir { .. })) =>
                     {
+                        vm.add_pending_call(CallId::new(raw_call_id));
                         vm.resume_with_exception(
                             SimpleException::new_msg(
                                 ExcType::RuntimeError,
