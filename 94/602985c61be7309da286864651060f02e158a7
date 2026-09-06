@@ -1,0 +1,19 @@
+crates/monty/test_cases/os__cwd.py
+  s_8094673681c2fa::t_e5bbc6cd3128ff 11-12,19-20,43,49,51,53,63,70,79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "94602985c61be7309da286864651060f02e158a7",
+  "prompts": {},
+  "sessions": {
+    "s_8094673681c2fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf9081e0-d46f-481b-8256-a7fe2e23cafe",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
