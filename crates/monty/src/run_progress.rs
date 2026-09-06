@@ -1064,8 +1064,6 @@ pub(crate) fn build_run_progress(
         ConvertedExit::NameLookup { name, scope } => {
             Ok(RunProgress::NameLookup(NameLookup::new(name, scope, new_snapshot!())))
         }
-        ConvertedExit::Error(err) => {
-            Err(err.into_python_exception(&executor.interns, |_| Some(executor.code.as_str())))
-        }
+        ConvertedExit::Error(err) => Err(err.into_python_exception(&executor.interns, |_| Some(&*executor.code))),
     }
 }
