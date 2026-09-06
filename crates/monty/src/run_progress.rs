@@ -797,30 +797,29 @@ impl Snapshot {
 /// VM and runs on. Shared by the one-shot and REPL resume paths so both treat
 /// every [`ExtFunctionResult`] the same way.
 ///
-/// A future answering the `Path.stat` behind `os.chdir` is refused: a future
-/// never runs the resume-side effect, so the directory change could not take
-/// hold, and `os.getcwd()` would stay silently unchanged. The future is still
-/// registered so the host's task drains through the usual `ResolveFutures`
-/// flow instead of being orphaned.
+/// Calls requiring result postprocessing refuse futures, which bypass `VM::resume`.
+/// The future is still registered so the host's task drains through `ResolveFutures`.
 pub(crate) fn resume_with_result(vm: &mut VM<'_>, result: ExtFunctionResult) -> Result<FrameExit, RunError> {
     match result {
         ExtFunctionResult::Return(obj) => vm.resume(obj),
         ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
-        ExtFunctionResult::Future(raw_call_id)
-            if matches!(vm.pending_os_effect, Some(PendingOsEffect::Chdir { .. })) =>
-        {
-            vm.add_pending_call(CallId::new(raw_call_id));
-            vm.resume_with_exception(
-                SimpleException::new_msg(
-                    ExcType::RuntimeError,
-                    "os.chdir cannot be answered with a future".to_owned(),
-                )
-                .into(),
-            )
-        }
         ExtFunctionResult::Future(raw_call_id) => {
             vm.add_pending_call(CallId::new(raw_call_id));
-            vm.run_external()
+            if let Some(name) = vm
+                .pending_os_effect
+                .as_ref()
+                .and_then(PendingOsEffect::immediate_result_name)
+            {
+                vm.resume_with_exception(
+                    SimpleException::new_msg(
+                        ExcType::RuntimeError,
+                        format!("{name} cannot be answered with a future"),
+                    )
+                    .into(),
+                )
+            } else {
+                vm.run_external()
+            }
         }
         ExtFunctionResult::NotFound(function_name) => {
             vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))

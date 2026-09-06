@@ -62,13 +62,13 @@
 //! Any code path that needs one of these should be added explicitly
 //! rather than relying on CPython parity.
 
-use std::fmt::Write;
+use std::fmt::{self, Write};
 
 use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs};
 
 use super::{
     LazyHeapSet, List, PyTrait, Type,
-    bytes::Bytes,
+    bytes::{Bytes, bytes_repr_fmt},
     str::{allocate_string, allocate_string_no_interning},
 };
 use crate::{
@@ -81,7 +81,34 @@ use crate::{
     os_dispatch::PendingOsEffect,
     types::str::StringRepr,
     value::{EitherStr, Value},
+    virtual_path::posix_join,
 };
+
+/// Original `open()` filename, kept separately from the host's absolute I/O path.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum FileName {
+    Str(String),
+    Bytes(Vec<u8>),
+}
+
+impl FileName {
+    /// Restores the caller's filename type for the file's `.name` attribute.
+    fn to_value(&self, heap: &Heap) -> Value {
+        match self {
+            Self::Str(name) => allocate_string(name.as_str(), heap),
+            Self::Bytes(name) => Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(name.clone())))),
+        }
+    }
+}
+
+impl fmt::Display for FileName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Str(name) => StringRepr(name).fmt(f),
+            Self::Bytes(name) => bytes_repr_fmt(name, f),
+        }
+    }
+}
 
 /// Shape of a buffered file read/seek request, recorded on [`OpenFile`] between
 /// emitting the OS-call-with-store-hook and the matching resume.
@@ -133,16 +160,17 @@ impl FileModeExt for FileMode {
 /// A Python file object that stores path and mode state, but no native handle.
 ///
 /// Monty keeps no live OS file descriptor: every OS round-trip is a complete
-/// one-shot call that the host opens, performs, and closes. All state needed
-/// to make those calls reproducible across a snapshot/resume — `path`, `mode`,
-/// `position`, `id`, `buffer`, `pending_read`, `eof` — lives here and is
-/// serialized.
+/// one-shot call that the host opens, performs, and closes. The I/O target,
+/// original filename, mode, position, and buffered state survive snapshot/resume.
 ///
 /// `position` semantics depend on mode (documented on the field). It is the
 /// offset future sized/line/seek operations operate against the heap buffer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OpenFile {
+    /// Host-provided target retained for I/O, including after `os.chdir()`.
     path: String,
+    /// Filename passed to `open()`; host-injected handles default to their path.
+    name: Option<FileName>,
     mode: FileMode,
     /// Whether at least one write has been issued. For `w`/`wb` mode this
     /// switches subsequent writes from truncating to appending so write #2
@@ -236,6 +264,7 @@ impl OpenFile {
     pub fn with_state(path: String, mode: FileMode, position: u64) -> Self {
         Self {
             path,
+            name: None,
             mode,
             first_write_done: mode.truncate(),
             closed: false,
@@ -319,13 +348,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let file = self.get(vm.heap);
-        write!(
-            f,
-            "<{} name={} mode={}>",
-            file.file_type(),
-            StringRepr(file.path()),
-            StringRepr(file.mode())
-        )?;
+        write!(f, "<{} name=", file.file_type())?;
+        if let Some(name) = &file.name {
+            write!(f, "{name}")?;
+        } else {
+            write!(f, "{}", StringRepr(file.path()))?;
+        }
+        write!(f, " mode={}>", StringRepr(file.mode()))?;
         Ok(())
     }
 
@@ -397,7 +426,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
 
         let file = self.get(vm.heap);
         let value = match method {
-            StaticStrings::Name => allocate_string(file.path.clone(), vm.heap),
+            StaticStrings::Name => file.name.as_ref().map_or_else(
+                || allocate_string(file.path.as_str(), vm.heap),
+                |name| name.to_value(vm.heap),
+            ),
             StaticStrings::Mode => allocate_string(file.mode.as_str().to_owned(), vm.heap),
             StaticStrings::Closed => Value::Bool(file.closed),
             StaticStrings::Encoding if !file.mode.is_binary() => allocate_string("utf-8", vm.heap),
@@ -704,6 +736,27 @@ impl OpenFile {
 /// `CallResult`'s drop (call discarded before dispatch).
 fn inc_ref_for_pending_oscall(vm: &VM<'_>, file_id: HeapId) {
     vm.heap.inc_ref(file_id);
+}
+
+/// Attaches the caller's filename to the host-returned file without changing its I/O target.
+pub(crate) fn apply_open_name(name: FileName, value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    if let Value::Ref(id) = &value
+        && let HeapReadOutput::OpenFile(mut file) = vm.heap.read(*id)
+    {
+        let file = file.get_mut(vm.heap);
+        if !file.path.is_empty() && !file.path.starts_with('/') {
+            file.path = posix_join(&vm.env.cwd, &file.path);
+        }
+        file.name = Some(name);
+        Ok(value)
+    } else {
+        value.drop_with(vm);
+        Err(SimpleException::new_msg(
+            ExcType::RuntimeError,
+            "invalid return type: open requires the host to return a file handle",
+        )
+        .into())
+    }
 }
 
 /// Stores the OS-returned full-file content into an [`OpenFile`]'s buffer and

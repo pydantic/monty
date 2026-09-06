@@ -17,7 +17,7 @@ give `PosixPath` / `<class 'PosixPath'>`, and `pathlib.Path.nonexistent` raises
 `Path(*segments)` works. Each segment may be a `str` or another `Path`.
 Bytes paths are rejected with `TypeError`.
 
-`Path.cwd()` returns the sandbox's virtual working directory without a host
+`Path.cwd()` and `Path('.').cwd()` return the sandbox's virtual working directory without a host
 round-trip; the host sets it per feed and relative paths are resolved against
 it before any I/O method reaches the host (see [os.md](os.md)). `Path.home()`
 is **not** implemented: the sandbox has no home directory.
@@ -62,5 +62,9 @@ Not implemented: `glob`, `rglob`, `touch`, `chmod`, `lchmod`, `owner`,
 
 ## Path normalization and the sandbox
 
-Every I/O call routes through the host's mount table; paths are resolved
+I/O calls are handled by mounts or a custom `os` callback. Mounts resolve paths
 strictly within mounted roots. See [filesystem.md](filesystem.md).
+
+`iterdir()` preserves the receiver's spelling: `Path('.').iterdir()` returns relative paths such as `Path('file.txt')`,
+while `Path('subdir').iterdir()` returns paths beneath `subdir`, matching CPython.
+The host receives an absolute request; the interpreter joins each returned entry's name onto the original directory path.

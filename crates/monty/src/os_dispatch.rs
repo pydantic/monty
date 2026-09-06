@@ -32,6 +32,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
+    types::{Path, file::FileName},
     value::Value,
     virtual_path::posix_join,
 };
@@ -81,16 +82,30 @@ pub(crate) enum PendingOsEffect {
         /// reports the argument, not the resolved path).
         spelled: String,
     },
+    /// Rebuild directory entries beneath the caller's original `Path`.
+    IterdirPaths { path: String },
+    /// Preserve `open()`'s filename while the returned handle supplies the I/O target.
+    OpenName { name: FileName },
 }
 
 impl PendingOsEffect {
+    /// Operations whose result must be postprocessed before execution can continue.
+    pub(crate) fn immediate_result_name(&self) -> Option<&'static str> {
+        match self {
+            Self::Chdir { .. } => Some("os.chdir"),
+            Self::IterdirPaths { .. } => Some("Path.iterdir"),
+            Self::OpenName { .. } => Some("open"),
+            _ => None,
+        }
+    }
+
     /// The heap entry this effect pins across the host yield, if any — the
     /// single place that knows which variants carry a refcount, so drop and
     /// abandon paths release it with `if let Some(id) = effect.pinned_file()`.
     pub(crate) fn pinned_file(&self) -> Option<HeapId> {
         match self {
             Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => Some(*file_id),
-            Self::ListdirNames | Self::Chdir { .. } => None,
+            Self::ListdirNames | Self::Chdir { .. } | Self::IterdirPaths { .. } | Self::OpenName { .. } => None,
         }
     }
 }
@@ -170,23 +185,39 @@ pub(crate) fn check_chdir_stat(obj: &MontyObject, spelled: &str) -> Result<(), R
 /// after the last `/`. Hosts answering the `Path.iterdir` callback themselves
 /// may return `str` entries instead of paths — both work.
 pub(crate) fn listdir_names(obj: MontyObject) -> Result<MontyObject, RunError> {
+    directory_entries(obj, None)
+}
+
+/// Rebuilds host entries using the caller's original relative or absolute directory path.
+pub(crate) fn iterdir_paths(obj: MontyObject, path: &str) -> Result<MontyObject, RunError> {
+    directory_entries(obj, Some(path))
+}
+
+/// Reduces host paths to entry names, optionally joining them onto a `Path.iterdir()` receiver.
+fn directory_entries(obj: MontyObject, path: Option<&str>) -> Result<MontyObject, RunError> {
     let invalid = |type_name: &str| -> RunError {
+        let operation = if path.is_some() { "Path.iterdir" } else { "os.listdir" };
         SimpleException::new_msg(
             ExcType::RuntimeError,
-            format!("invalid return type: os.listdir requires the host to return a list of paths, got {type_name}"),
+            format!("invalid return type: {operation} requires the host to return a list of paths, got {type_name}"),
         )
         .into()
     };
     let MontyObject::List(mut items) = obj else {
         return Err(invalid(obj.type_name()));
     };
+    let directory = path.map(|path| Path::new(path.to_owned()));
     for item in &mut items {
         match item {
-            MontyObject::Path(path) | MontyObject::String(path) => {
-                if let Some(sep) = path.rfind('/') {
-                    path.drain(..=sep);
+            MontyObject::Path(entry) | MontyObject::String(entry) => {
+                if let Some(sep) = entry.rfind('/') {
+                    entry.drain(..=sep);
                 }
-                *item = MontyObject::String(mem::take(path));
+                *item = if let Some(directory) = &directory {
+                    MontyObject::Path(directory.joinpath(entry))
+                } else {
+                    MontyObject::String(mem::take(entry))
+                };
             }
             other => return Err(invalid(other.type_name())),
         }

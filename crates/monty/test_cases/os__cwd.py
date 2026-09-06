@@ -18,6 +18,9 @@ try:
     assert os.chdir(root) is None
     assert Path(os.getcwd()).resolve() == resolved_root
     assert Path.cwd().resolve() == resolved_root
+    assert Path('.').cwd() == Path.cwd()
+    assert Path('/unrelated/nonexistent').cwd() == Path.cwd()
+    assert os.chdir(path=root) is None
     assert isinstance(os.getcwd(), str)
     assert os.getcwdb() == os.getcwd().encode()
 
@@ -31,6 +34,17 @@ try:
     assert Path('subdir/../hello.txt').resolve() == resolved_root / 'hello.txt'
     assert sorted(os.listdir()) == ['data.bin', 'empty.txt', 'hello.txt', 'readonly.txt', 'subdir']
     assert sorted(os.listdir('.')) == sorted(os.listdir(root))
+    assert sorted(p.name for p in Path('.').iterdir()) == sorted(os.listdir())
+    assert all(not p.is_absolute() for p in Path('.').iterdir())
+    for directory in ['subdir', './subdir', 'subdir/../subdir']:
+        assert set(Path(directory).iterdir()) == {Path(directory) / 'nested.txt', Path(directory) / 'deep'}
+    assert all(p.is_absolute() for p in root.iterdir())
+    for filename in ['hello.txt', './hello.txt', 'subdir/../hello.txt', b'./hello.txt']:
+        with open(filename) as f:
+            assert f.name == filename
+            assert f'name={filename!r}' in repr(f)
+    with Path('./hello.txt').open() as f:
+        assert f.name == 'hello.txt'
     with open('out.txt', 'w') as f:
         f.write('written')
     assert (root / 'out.txt').read_text() == 'written'
@@ -40,13 +54,18 @@ try:
     assert Path('made/moved.txt').read_text() == 'written'
 
     # === chdir into a subdirectory ===
-    os.chdir('subdir')
+    before_chdir = open('./hello.txt')
+    os.chdir(path='subdir')
+    assert before_chdir.name == './hello.txt'
+    assert before_chdir.read() == 'hello world\n'
+    before_chdir.close()
     assert Path.cwd().resolve() == resolved_root / 'subdir'
+    assert Path('.').cwd() == Path.cwd()
     assert Path('nested.txt').read_text() == 'nested content'
     assert Path('deep/file.txt').read_text() == 'deep file'
     assert Path('..').resolve() == resolved_root
     assert Path('../hello.txt').read_text() == 'hello world\n'
-    os.chdir(Path('deep'))
+    os.chdir(path=Path('deep'))
     assert Path.cwd().resolve() == resolved_root / 'subdir' / 'deep'
     os.chdir('../..')
     assert Path.cwd().resolve() == resolved_root
@@ -54,6 +73,25 @@ try:
     assert Path.cwd().resolve() == resolved_root
 
     # === chdir errors ===
+    for args, kwargs, message in [
+        ((), {}, "chdir() missing required argument 'path' (pos 1)"),
+        (('.', '.'), {}, 'chdir() takes at most 1 argument (2 given)'),
+        (('.',), {'path': '.'}, 'chdir() takes at most 1 argument (2 given)'),
+        ((), {'other': '.'}, "chdir() missing required argument 'path' (pos 1)"),
+    ]:
+        try:
+            os.chdir(*args, **kwargs)
+            assert False, 'expected TypeError'
+        except TypeError as e:
+            assert str(e) == message
+
+    for receiver in [Path, Path('.')]:
+        try:
+            receiver.cwd('unexpected')
+            assert False, 'expected TypeError'
+        except TypeError:
+            pass
+
     # Windows CPython reports WinError messages instead of POSIX errno text.
     try:
         os.chdir('hello.txt')

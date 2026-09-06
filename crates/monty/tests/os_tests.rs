@@ -235,7 +235,7 @@ fn getcwd_and_path_cwd_need_no_host() {
     let mut runner = MontyRun::new(
         "import os
 from pathlib import Path
-(os.getcwd(), Path.cwd())"
+(os.getcwd(), Path.cwd(), Path('/unrelated').cwd())"
             .to_owned(),
         "test.py",
         vec![],
@@ -246,6 +246,7 @@ from pathlib import Path
         runner.run_no_limits(vec![]).unwrap(),
         MontyObject::Tuple(vec![
             MontyObject::String("/".to_owned()),
+            MontyObject::Path("/".to_owned()),
             MontyObject::Path("/".to_owned())
         ])
     );
@@ -254,6 +255,7 @@ from pathlib import Path
         runner.run_no_limits(vec![]).unwrap(),
         MontyObject::Tuple(vec![
             MontyObject::String("/mnt/data".to_owned()),
+            MontyObject::Path("/mnt/data".to_owned()),
             MontyObject::Path("/mnt/data".to_owned())
         ])
     );
@@ -628,7 +630,73 @@ entries[0]
 
     assert_eq!(func, "Path.iterdir");
     assert_eq!(args[0], MontyObject::Path("/home/user".to_owned()));
-    assert_eq!(result, MontyObject::String("/home/user/documents".to_owned()));
+    assert_eq!(result, MontyObject::Path("/home/user/documents".to_owned()));
+}
+
+/// Display names retain the input spelling while a relative host handle is anchored at open time.
+#[test]
+fn open_name_and_target_survive_chdir() {
+    let mut runner = MontyRun::new(
+        "import os\nf = open('./name.txt')\nos.chdir('/other')\n(f.name, f.read())".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    runner.set_cwd("/data");
+    let call = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap()
+        .into_os_call()
+        .unwrap();
+    let call = call
+        .resume(mock_file_handle("target.txt"), PrintWriter::Stdout)
+        .unwrap()
+        .into_os_call()
+        .unwrap();
+    assert_eq!(call.function_call.fs_primary_path(), Some("/other"));
+    let call = call
+        .resume(dir_stat(0o755, 0.0), PrintWriter::Stdout)
+        .unwrap()
+        .into_os_call()
+        .unwrap();
+    assert_eq!(call.function_call.fs_primary_path(), Some("/data/target.txt"));
+    let result = call
+        .resume(MontyObject::String("content".to_owned()), PrintWriter::Stdout)
+        .unwrap()
+        .into_complete()
+        .unwrap();
+    assert_eq!(
+        result,
+        MontyObject::Tuple(vec![
+            MontyObject::String("./name.txt".to_owned()),
+            MontyObject::String("content".to_owned())
+        ])
+    );
+}
+
+/// Malformed host replies must not leak values or bypass result postprocessing.
+#[test]
+fn filesystem_result_effects_reject_invalid_replies() {
+    for (code, operation) in [
+        ("open('./file.txt')", "open"),
+        ("from pathlib import Path\nPath('.').iterdir()", "Path.iterdir"),
+    ] {
+        let call = run_to_oscall_start(code);
+        let err = call
+            .resume(MontyObject::List(vec![MontyObject::Int(1)]), PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(err.exc_type(), ExcType::RuntimeError);
+        assert!(err.message().unwrap().contains(operation));
+        let call = run_to_oscall_start(code);
+        let err = call
+            .resume(ExtFunctionResult::Future(1), PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(
+            err.message().unwrap(),
+            format!("{operation} cannot be answered with a future")
+        );
+    }
 }
 
 #[test]

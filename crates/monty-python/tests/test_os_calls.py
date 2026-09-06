@@ -75,6 +75,39 @@ open('./sub//../file.txt').read()
     ]
 
 
+def test_relative_paths_survive_os_callbacks(monty_run: RunMonty):
+    """Python results retain relative spelling while callbacks see absolute requests."""
+    calls: list[Any] = []
+
+    def os_handler(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        calls.append((name, args))
+        if name == 'Path.iterdir':
+            return [PurePosixPath('/data/file.txt')]
+        assert name == 'open'
+        return MontyFileHandle(str(args[0]), 'r')
+
+    result = monty_run(
+        """
+from pathlib import Path
+([str(p) for p in Path('.').iterdir()],
+ [str(p) for p in Path('sub/..').iterdir()],
+ open('./file.txt').name,
+ Path('./file.txt').open().name,
+ open(b'./file.txt').name)
+""",
+        cwd='/data',
+        os=os_handler,
+    )
+    assert result == (['file.txt'], ['sub/../file.txt'], './file.txt', 'file.txt', b'./file.txt')
+    assert calls == [
+        ('Path.iterdir', (PurePosixPath('/data'),)),
+        ('Path.iterdir', (PurePosixPath('/data'),)),
+        ('open', (PurePosixPath('/data/file.txt'), 'r')),
+        ('open', (PurePosixPath('/data/file.txt'), 'r')),
+        ('open', (PurePosixPath('/data/file.txt'), 'r')),
+    ]
+
+
 @pytest.mark.parametrize('with_callback', [False, True])
 @pytest.mark.parametrize(
     'operation, message',

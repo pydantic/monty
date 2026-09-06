@@ -4,9 +4,9 @@
 //! yields an [`OsFunction::Open`] OS call; the host performs the open-time
 //! effect (truncate / create / existence-check) and returns a
 //! [`MontyObject::FileHandle`](monty_types::MontyObject::FileHandle), which the
-//! generic resume path converts into the heap [`OpenFile`](crate::types::OpenFile)
-//! wrapper. `read()`/`write()` then delegate to full-file OS calls, so all
-//! filesystem access remains behind `OsFunction`.
+//! resume path converts into the heap [`OpenFile`](crate::types::OpenFile)
+//! wrapper and attaches the original filename. `read()`/`write()` use the host's
+//! returned path for full-file OS calls, so filesystem access remains behind `OsFunction`.
 
 use std::str;
 
@@ -18,19 +18,19 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::HeapData,
-    types::{PyTrait, file::FileMode},
+    os_dispatch::PendingOsEffect,
+    types::{
+        PyTrait, Type,
+        file::{FileMode, FileName},
+    },
     value::Value,
 };
 
 /// Opens a file for reading, writing, or appending.
 ///
-/// `open()` validates its arguments and the mode string, then returns a
-/// [`CallResult::OsCall`] for [`OsFunction::Open`] with arguments
-/// `[path, mode]`. The host performs the open-time effect — truncate for
-/// `w`/`w+`, create-if-missing for `a`/`a+`, existence check (raising
-/// `FileNotFoundError`) for `r`/`r+` — and returns a `MontyObject::FileHandle`.
-/// The generic resume path converts that into the `OpenFile` heap wrapper, so
-/// `open()` needs no special resume handling.
+/// The host performs open-time validation and creation, then returns a file handle.
+/// The resume effect preserves the supplied filename for `.name` and `repr()`;
+/// subsequent I/O uses the handle's path, independent of later directory changes.
 pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let OpenArgs {
         file,
@@ -72,10 +72,18 @@ pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRe
         .parse::<FileMode>()
         .map_err(|e| RunError::from(SimpleException::new_msg(ExcType::ValueError, e)))?;
 
-    Ok(CallResult::OsCall(OsFunctionCall::Open(OpenCallArgs {
-        path: MontyPath::new(path),
-        mode: file_mode,
-    })))
+    let name = if file.py_type(vm) == Type::Bytes {
+        FileName::Bytes(path.as_bytes().to_vec())
+    } else {
+        FileName::Str(path.clone())
+    };
+    Ok(CallResult::OsCallWithEffect {
+        call: OsFunctionCall::Open(OpenCallArgs {
+            path: MontyPath::new(path),
+            mode: file_mode,
+        }),
+        effect: PendingOsEffect::OpenName { name },
+    })
 }
 
 /// Argument shape for `open(file, mode='r', buffering=-1, encoding=None,

@@ -263,6 +263,43 @@ def test_dump_keeps_the_feeds_working_directory(pool: Monty):
         assert done.output == snapshot('/work')
 
 
+@pytest.mark.parametrize(
+    'expression, expected',
+    [
+        ("open('./hello.txt').name", './hello.txt'),
+        ("open(b'./hello.txt').name", b'./hello.txt'),
+        ("[str(p) for p in Path('.').iterdir()]", ['hello.txt']),
+    ],
+)
+def test_dump_keeps_original_filesystem_paths(pool: Monty, tmp_path: Path, expression: str, expected: Any):
+    """Original path spelling survives suspension before the host returns a result."""
+    (tmp_path / 'hello.txt').write_text('hi')
+    with pool.checkout() as session:
+        snap = session.feed_start('from pathlib import Path\n' + expression, cwd='/data')
+        assert isinstance(snap, FunctionSnapshot)
+        blob = snap.dump()
+
+    with MountDir(host_path=tmp_path, virtual_path='/data') as mount:
+        with pool.checkout() as session:
+            loaded = session.load_snapshot(blob, mount=mount)
+            assert isinstance(loaded, FunctionSnapshot)
+            done = loaded.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == expected
+
+
+def test_dump_keeps_open_file_name_and_target(pool: Monty, tmp_path: Path):
+    """The display name and I/O target both survive dumping an already-open file."""
+    (tmp_path / 'hello.txt').write_text('hi')
+    with MountDir(host_path=tmp_path, virtual_path='/data') as mount:
+        with pool.checkout() as session:
+            session.feed_run("f = open('./hello.txt')", mount=mount)
+            blob = session.dump()
+        with pool.checkout() as session:
+            session.load_session(blob)
+            assert session.feed_run('(f.name, f.read())', cwd='/', mount=mount) == ('./hello.txt', 'hi')
+
+
 def test_loaded_snapshot_reports_the_dumps_script_name(pool: Monty):
     # script_name travels inside the dump; the restored snapshot reports the
     # dump's name, not the (differently-configured) restoring session's
