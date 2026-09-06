@@ -54,7 +54,7 @@ pub enum BuiltinsFunctions {
     // Exec,
     Filter,
     // float - handled by Type enum
-    // Format,
+    Format,
     // frozenset - handled by Type enum
     Getattr,
     // Globals,

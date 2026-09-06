@@ -7,8 +7,8 @@ Python.
 ## Implemented builtin functions
 
 `abs`, `all`, `any`, `bin`, `chr`, `divmod`, `enumerate`, `filter`,
-`getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `iter`, `len`, `map`,
-`max`, `min`, `next`, `oct`, `open`, `ord`, `pow`, `print`, `repr`,
+`format`, `getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `iter`, `len`,
+`map`, `max`, `min`, `next`, `oct`, `open`, `ord`, `pow`, `print`, `repr`,
 `reversed`, `round`, `setattr`, `sorted`, `sum`, `type`, `zip`.
 
 ## Implemented type constructors (also builtins)
@@ -28,7 +28,7 @@ These raise `NameError`:
 - **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
     `super`. (`@property` on functions is not recognized; use a method.)
 - **Construction / coercion**: `bytearray`, `complex`, `memoryview`,
-    `object`, `format`, `ascii`.
+    `object`, `ascii`.
 - **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
 
 `super()` is the biggest practical omission: with no class inheritance either
