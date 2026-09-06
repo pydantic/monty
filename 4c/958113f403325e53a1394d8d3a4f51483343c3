@@ -1,0 +1,39 @@
+crates/monty/src/types/path.rs
+  s_8094673681c2fa::t_639eb96569d08c 309
+crates/monty/src/modules/os.rs
+  s_8094673681c2fa::t_639eb96569d08c 132
+crates/monty/src/repl.rs
+  s_8094673681c2fa::t_299cf67654c8da 801,914,1049,1123
+crates/monty/tests/heap_reader_compile_fail_cases/smuggle_and_swap_reader.stderr
+  s_8094673681c2fa::t_642524904eba50 2,4,9
+crates/monty/src/run.rs
+  s_8094673681c2fa::t_299cf67654c8da 3,255,257-259,261-267,272-279,284-286,345,347-349
+crates/monty/src/bytecode/vm/mod.rs
+  s_8094673681c2fa::t_639eb96569d08c 825-829,840,859,897,904,1010,1964,2348
+  s_8094673681c2fa::t_8288255acbbee3 18
+  s_8094673681c2fa::t_e3defa1073d835 958-961
+crates/monty/src/run_progress.rs
+  s_8094673681c2fa::t_299cf67654c8da 404,646,709,772,822
+crates/monty/tests/heap_reader_compile_fail_cases/smuggle_vm.stderr
+  s_8094673681c2fa::t_f0c14f8f0f2533 1-2,17-21,23-28,32-36
+  s_8094673681c2fa::t_642524904eba50 4-15,29-31
+crates/monty/tests/heap_reader_compile_fail_cases/cases.rs
+  s_8094673681c2fa::t_f0c14f8f0f2533 157,166
+  s_8094673681c2fa::t_45e7d05bec46a8 158-165
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4c958113f403325e53a1394d8d3a4f51483343c3",
+  "prompts": {},
+  "sessions": {
+    "s_8094673681c2fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf9081e0-d46f-481b-8256-a7fe2e23cafe",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
