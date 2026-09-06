@@ -26,7 +26,6 @@ use crate::{
     intern::Interns,
     name_map::NameMap,
     object_bridge::MontyObjectExt,
-    os_dispatch::canonical_cwd,
     run::{CompileOptions, DEFAULT_CWD, Executor, ReplSession},
     run_progress::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
@@ -34,6 +33,7 @@ use crate::{
     },
     types::tuple::allocate_tuple,
     value::Value,
+    virtual_path::canonical_cwd,
 };
 
 /// Stateful REPL session that executes snippets incrementally without replay.

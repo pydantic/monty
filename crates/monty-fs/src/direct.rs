@@ -6,7 +6,7 @@
 //! filesystem root.
 
 use cap_std::fs::Dir;
-use monty_types::{FileMode, MontyObject};
+use monty_types::{FileMode, MontyObject, normalize_virtual_path};
 
 use super::{
     common::{
@@ -16,7 +16,7 @@ use super::{
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
-    path_security::{MountRelativePath, normalize_virtual_path, resolve_virtual_path},
+    path_security::{MountRelativePath, resolve_virtual_path},
 };
 
 /// Executes a parsed filesystem request directly against the host filesystem.
@@ -82,7 +82,7 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
         }
         FsRequest::Rename { src, dst } => rename(&src, &dst, ctx),
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
-            Ok(MontyObject::Path(normalize_virtual_path(&path)))
+            Ok(MontyObject::Path(normalize_virtual_path(&path).into_owned()))
         }
         FsRequest::Open { path, mode } => open(&path, mode, ctx),
     }

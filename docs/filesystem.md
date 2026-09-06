@@ -65,10 +65,19 @@ Pass a list to `mount=` for several at once.
 The sandbox has a virtual working directory.
 A session's first feed sets it to the first mount's virtual path, or `/` when nothing is mounted, and it then persists
 across the session's feeds like the globals do.
-`os.getcwd()` and `Path.cwd()` report it, relative paths in `open()`, `os` and `pathlib` calls resolve against it
-before they reach a mount or the `os` callback, and `__file__` is the script name placed under it.
+`os.getcwd()` and `Path.cwd()` report it.
+Relative paths in `open()`, `os` and `pathlib` calls are joined onto it.
+Mounts receive these paths without collapsing `.` or `..`, so they can validate every component.
+`__file__` is the script name placed under it.
 `os.chdir()` moves it, and the change carries over to later feeds.
 Pass `cwd=` to switch to another absolute virtual path before a feed.
+
+Custom `os` callbacks in Python and JavaScript receive normalized absolute paths, with `.` and `..` collapsed.
+For example, `os.listdir()` passes `/data` when the cwd is `/data`, and `../secret` becomes `/secret`.
+Both rename arguments are normalized.
+The shared Rust `OsFunctionCall::to_args()` conversion applies this normalization, including for WASM clients.
+Check access rules against complete path components: a string prefix check can confuse `/data` with `/database`.
+Use `MountTable` for host filesystem access: normalization and prefix checks alone do not confine symlinks or prevent races.
 
 === "Python"
 

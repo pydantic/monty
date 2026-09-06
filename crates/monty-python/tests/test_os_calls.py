@@ -15,7 +15,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import NOT_HANDLED, MontyRuntimeError, StatResult
+from pydantic_monty import NOT_HANDLED, MontyFileHandle, MontyRuntimeError, StatResult
 
 # =============================================================================
 # Basic os= callback dispatch
@@ -34,6 +34,45 @@ def test_os_basic(monty_run: RunMonty):
 
     assert result is True
     assert calls == snapshot([('Path.exists', (PurePosixPath('/tmp/test.txt'),))])
+
+
+@pytest.mark.parametrize('cwd', ['/', '/data'])
+def test_os_callback_paths_are_normalized(monty_run: RunMonty, cwd: str):
+    """Callbacks receive canonical paths for relative inputs and both rename endpoints."""
+    calls: list[Any] = []
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        calls.append((function_name, args))
+        if function_name == 'Path.iterdir':
+            return []
+        if function_name == 'open':
+            return MontyFileHandle(str(args[0]), 'r')
+        if function_name == 'Path.read_text':
+            return 'hello'
+        return True
+
+    result = monty_run(
+        """
+import os
+from pathlib import Path
+Path('sub/../file.txt').exists()
+Path('/other//sub/../file.txt').exists()
+os.listdir()
+os.rename('./sub/../src', '../dst')
+open('./sub//../file.txt').read()
+""",
+        cwd=cwd,
+        os=os_handler,
+    )
+    assert result == 'hello'
+    assert calls == [
+        ('Path.exists', (PurePosixPath(cwd) / 'file.txt',)),
+        ('Path.exists', (PurePosixPath('/other/file.txt'),)),
+        ('Path.iterdir', (PurePosixPath(cwd),)),
+        ('Path.rename', (PurePosixPath(cwd) / 'src', PurePosixPath('/dst'))),
+        ('open', (PurePosixPath(cwd) / 'file.txt', 'r')),
+        ('Path.read_text', (PurePosixPath(cwd) / 'file.txt',)),
+    ]
 
 
 def test_path_concatenation(monty_run: RunMonty):

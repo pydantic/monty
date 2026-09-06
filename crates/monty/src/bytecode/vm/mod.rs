@@ -19,7 +19,7 @@ use std::{borrow::Cow, mem};
 
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
-use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
+use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, normalize_virtual_path};
 pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;
 
@@ -1973,7 +1973,7 @@ impl<'h> VM<'h> {
             },
             Some(PendingOsEffect::Chdir { path, spelled }) => match check_chdir_stat(&obj, &spelled) {
                 Ok(()) => {
-                    self.env.cwd = Cow::Owned(path);
+                    self.env.cwd = Cow::Owned(normalize_virtual_path(&path).into_owned());
                     MontyObject::None
                 }
                 Err(err) => return self.resume_with_exception(err),

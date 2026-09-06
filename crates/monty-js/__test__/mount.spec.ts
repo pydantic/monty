@@ -122,6 +122,39 @@ test('cwd defaults to the root without mounts', async () => {
   t.deepEqual(await run('import os\nos.getcwd()', { cwd: '/work/' }), '/work')
 })
 
+test.each(['/', '/data'])('os callbacks receive normalized paths with cwd %s', async (cwd) => {
+  const calls: unknown[] = []
+  const result = await run(
+    `import os
+from pathlib import Path
+Path('sub/../file.txt').exists()
+Path('/other//sub/../file.txt').exists()
+os.listdir()
+os.rename('./sub/../src', '../dst')
+open('./sub//../file.txt').read()`,
+    {
+      cwd,
+      os: (name, args) => {
+        calls.push([name, args])
+        if (name === 'Path.iterdir') return []
+        if (name === 'open') return new MontyFileHandle(args[0] as string, 'r')
+        if (name === 'Path.read_text') return 'hello'
+        return true
+      },
+    },
+  )
+  t.is(result, 'hello')
+  const prefix = cwd === '/' ? '' : cwd
+  t.deepEqual(calls, [
+    ['Path.exists', [`${prefix}/file.txt`]],
+    ['Path.exists', ['/other/file.txt']],
+    ['Path.iterdir', [cwd]],
+    ['Path.rename', [`${prefix}/src`, '/dst']],
+    ['open', [`${prefix}/file.txt`, 'r']],
+    ['Path.read_text', [`${prefix}/file.txt`]],
+  ])
+})
+
 test('cwd defaults to the first mount and persists across feeds', async (ctx) => {
   skipIfBrowser(ctx)
   const { mount, cleanup } = createTestDir()

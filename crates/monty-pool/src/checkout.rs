@@ -1351,11 +1351,9 @@ impl Checkout {
                             }
                         },
                     };
-                    // Every OS call surfaces, mount-covered or not: the caller
-                    // decides how to answer it, and reaches this feed's mounts
-                    // through `resume_from_mounts`. The typed call is retained
-                    // for that; the caller-facing `(name, args, kwargs)` shape
-                    // is projected from a clone.
+                    // The caller can answer any OS call or use `resume_from_mounts`.
+                    // Retain the raw typed call for mount validation; `to_args`
+                    // normalizes only the clone presented to callbacks.
                     let function_name = function_call.name().to_owned();
                     let (args, kwargs) = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {

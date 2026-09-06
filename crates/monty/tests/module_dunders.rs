@@ -64,6 +64,20 @@ fn file_is_script_name_under_cwd() {
         MontyObject::String("/srv/app.py".to_owned())
     );
 
+    for (script_name, expected) in [
+        ("./sub/../main.py", "/data/main.py"),
+        ("../main.py", "/main.py"),
+        ("/foo/../main.py", "/foo/../main.py"),
+        ("/foo/./main.py", "/foo/./main.py"),
+    ] {
+        let mut runner = MontyRun::new("__file__".to_owned(), script_name, vec![], CompileOptions::default()).unwrap();
+        runner.set_cwd("/data");
+        assert_eq!(
+            runner.run_no_limits(vec![]).unwrap(),
+            MontyObject::String(expected.to_owned())
+        );
+    }
+
     // `os.chdir` never moves it: recomputing against the new cwd would give `/app.py`.
     let code = "import os\nos.chdir('/')\n__file__";
     let mut runner = MontyRun::new(code.to_owned(), "app.py", vec![], CompileOptions::default()).unwrap();

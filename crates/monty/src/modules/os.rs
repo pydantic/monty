@@ -27,9 +27,10 @@ use crate::{
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingOsEffect, normalize_posix_path, posix_join, value_to_owned_string},
+    os_dispatch::{PendingOsEffect, value_to_owned_string},
     types::{Bytes, Module, Property, Type, property::ZeroArgOsProperty, str::allocate_string},
     value::Value,
+    virtual_path::posix_join,
 };
 
 /// OS module functions.
@@ -160,13 +161,8 @@ fn chdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         // CPython's `chdir("")` fails with ENOENT; the host would otherwise stat the root.
         return Err(ExcType::file_not_found_error(""));
     }
-    // The adopted directory must be canonical, as CPython's is, so an
-    // absolute target is normalized too rather than passed through as written.
-    let path = if spelled.starts_with('/') {
-        normalize_posix_path(&spelled)
-    } else {
-        posix_join(&vm.env.cwd, &spelled)
-    };
+    // Keep every component until the host validates the target; normalize on success.
+    let path = posix_join(&vm.env.cwd, &spelled);
     Ok(CallResult::OsCallWithEffect {
         call: OsFunctionCall::Stat(MontyPath::new(path.clone())),
         effect: PendingOsEffect::Chdir {

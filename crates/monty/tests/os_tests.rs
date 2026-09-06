@@ -179,9 +179,9 @@ fn path_absolute() {
 // =============================================================================
 
 /// Starts `code` with the working directory set to `cwd` and returns the first
-/// OS call's name and arguments. The call is answered with a mock result so
+/// typed OS call. The call is answered with a mock result so
 /// the run winds down cleanly instead of dropping live stack values.
-fn run_to_oscall_in(code: &str, cwd: &str) -> (&'static str, Vec<MontyObject>) {
+fn run_to_oscall_in(code: &str, cwd: &str) -> OsFunctionCall {
     let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     runner.set_cwd(cwd);
     match runner
@@ -190,10 +190,9 @@ fn run_to_oscall_in(code: &str, cwd: &str) -> (&'static str, Vec<MontyObject>) {
     {
         RunProgress::OsCall(call) => {
             let mock_result = mock_oscall_result(&call.function_call);
-            let function = call.function_call.name();
-            let (args, _) = call.function_call.clone().to_args();
+            let function_call = call.function_call.clone();
             let _ = call.resume(mock_result, PrintWriter::Stdout);
-            (function, args)
+            function_call
         }
         progress => panic!("expected OsCall, got {progress:?}"),
     }
@@ -207,31 +206,29 @@ fn relative_paths_resolve_against_cwd() {
             "from pathlib import Path; Path('a/./b.txt').read_text()",
             "/data/a/b.txt",
         ),
-        ("from pathlib import Path; Path('..').resolve()", "/"),
-        ("from pathlib import Path; Path('../../x').resolve()", "/x"),
+        ("from pathlib import Path; Path('..').resolve()", "/data/.."),
+        ("from pathlib import Path; Path('../../x').resolve()", "/data/../../x"),
         // Absolute paths pass through as written; the host normalizes them.
         ("from pathlib import Path; Path('/a/../b/c').exists()", "/a/../b/c"),
         ("import os; os.mkdir('/data/../x')", "/data/../x"),
-        ("import os; os.listdir()", "/data"),
-        ("import os; os.mkdir('sub/')", "/data/sub"),
+        ("import os; os.listdir()", "/data/."),
+        ("import os; os.mkdir('sub/')", "/data/sub/"),
+        ("import os; os.stat('a//./b/../c/')", "/data/a//./b/../c/"),
+        ("open('bad\\0/../notes.txt')", "/data/bad\0/../notes.txt"),
+        ("open('')", ""),
         ("from pathlib import Path; Path('/abs.txt').exists()", "/abs.txt"),
     ] {
-        let (_, args) = run_to_oscall_in(code, "/data");
-        assert_eq!(args[0], MontyObject::Path(expected.to_owned()), "{code}");
+        let call = run_to_oscall_in(code, "/data");
+        assert_eq!(call.fs_primary_path(), Some(expected), "{code}");
     }
 }
 
 #[test]
 fn rename_resolves_both_endpoints() {
-    let (func, args) = run_to_oscall_in("import os; os.rename('a.txt', 'b.txt')", "/data");
-    assert_eq!(func, "Path.rename");
-    assert_eq!(
-        args,
-        vec![
-            MontyObject::Path("/data/a.txt".to_owned()),
-            MontyObject::Path("/data/b.txt".to_owned())
-        ]
-    );
+    let call = run_to_oscall_in("import os; os.rename('a/../a.txt', 'b/../b.txt')", "/data");
+    assert_eq!(call.name(), "Path.rename");
+    assert_eq!(call.fs_primary_path(), Some("/data/a/../a.txt"));
+    assert_eq!(call.rename_destination(), Some("/data/b/../b.txt"));
 }
 
 #[test]
@@ -331,8 +328,7 @@ fn os_chdir_normalizes_an_absolute_target() {
     else {
         panic!("expected OsCall");
     };
-    let (args, _) = call.function_call.clone().to_args();
-    assert_eq!(args, vec![MontyObject::Path("/data/sub".to_owned())]);
+    assert_eq!(call.function_call.fs_primary_path(), Some("/data/sub/../sub/"));
     let result = call
         .resume(dir_stat(0o755, 0.0), PrintWriter::Stdout)
         .unwrap()

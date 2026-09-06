@@ -70,15 +70,17 @@ whether each call is permitted.
     a mount or `os` callback only ever sees absolute paths. Host errors
     therefore name the resolved path
     (`open('missing')` raises `[Errno 2] No such file or directory: '/data/missing'`) where CPython names the argument as written. Absolute
-    paths reach the host as written.
+    paths reach mounts as written.
+    Joining preserves `.` and `..` so mounts can validate NUL bytes and path limits before normalization.
+    Python and JavaScript `os` callbacks receive lexically normalized paths, including both rename arguments.
 - **`os.chdir(path)` suspends as `Path.stat`** on the resolved target: hosts
     cannot observe a directory change, and without a mount or `os` handler it
     raises `PermissionError`. The interpreter raises `NotADirectoryError`
     when the reply is not a directory, naming the argument as written like
     CPython; `FileNotFoundError` comes from the host and names the resolved
     path. `os.chdir('')` raises `FileNotFoundError` without consulting the
-    host. The adopted directory is lexically normalized (`..` collapses
-    without consulting symlinks). Integer file descriptors are refused with
+    host. Only after the host accepts the target is the stored directory lexically normalized
+    (`..` collapses without consulting symlinks). Integer file descriptors are refused with
     the `path_t` `TypeError`; CPython would `fchdir`. A Rust host that
     answers the stat with a future gets `RuntimeError` instead of a silently
     unchanged directory.

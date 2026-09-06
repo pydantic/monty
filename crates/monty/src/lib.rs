@@ -37,6 +37,7 @@ mod string_builder;
 mod stringize;
 mod types;
 mod value;
+mod virtual_path;
 
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]

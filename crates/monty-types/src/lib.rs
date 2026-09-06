@@ -16,6 +16,7 @@ mod results;
 mod run_options;
 mod type_checking;
 mod uuid;
+mod virtual_path;
 
 pub use crate::{
     builtins::BuiltinsFunctions,
@@ -43,4 +44,5 @@ pub use crate::{
     run_options::{AssertMessageAnnotations, CompileOptions},
     type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
     uuid::MontyUuid,
+    virtual_path::normalize_virtual_path,
 };
