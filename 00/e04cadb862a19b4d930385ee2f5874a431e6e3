@@ -1,0 +1,21 @@
+crates/monty/test_cases/bytes__percent_format.py
+  s_430265adc807dd::t_89d8efbd58f92c 121-140
+crates/monty/test_cases/str__percent_format.py
+  s_430265adc807dd::t_89d8efbd58f92c 280-298
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "00e04cadb862a19b4d930385ee2f5874a431e6e3",
+  "prompts": {},
+  "sessions": {
+    "s_430265adc807dd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "de2faeba-43b5-4278-9a3d-fe37627c7c8a",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
