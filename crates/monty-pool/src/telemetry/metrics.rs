@@ -1064,6 +1064,7 @@ mod tests {
             code: "double(2)".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         }))
     }
 

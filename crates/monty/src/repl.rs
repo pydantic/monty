@@ -29,7 +29,7 @@ use crate::{
     intern::Interns,
     name_map::NameMap,
     object_bridge::MontyObjectExt,
-    run::{CompileOptions, Executor, default_clock},
+    run::{CompileOptions, DEFAULT_CWD, Executor, ReplSession, default_clock},
     run_progress::{
         ConvertedExit, ExtFunctionResult, ExtFunctionResultExt, LookupAnswer, LookupScope, NameLookupResult,
         convert_frame_exit, resume_lookup,
@@ -82,6 +82,11 @@ pub struct MontyRepl {
     /// [`with_host_clock`](Self::with_host_clock).
     #[serde(default = "default_clock")]
     clock: HostClock,
+    /// Sandbox working directory each new snippet starts in; see
+    /// [`set_cwd`](Self::set_cwd). `os.chdir` within a snippet does not
+    /// write back here — the directory is per feed, like mounts.
+    #[serde(default = "default_cwd")]
+    cwd: String,
     /// Persistent heap across snippets.
     heap: Heap,
     /// Persistent global variable values across snippets.
@@ -110,6 +115,7 @@ impl MontyRepl {
             sources: AHashMap::new(),
             options,
             clock: default_clock(),
+            cwd: DEFAULT_CWD.to_owned(),
             heap,
             globals: Vec::new(),
         }
@@ -126,6 +132,17 @@ impl MontyRepl {
     pub fn with_host_clock(mut self, clock: HostClock) -> Self {
         self.clock = clock;
         self
+    }
+
+    /// Sets the sandbox working directory the next snippets start in (default `/`).
+    ///
+    /// `cwd` is an absolute POSIX virtual path: `os.getcwd()` reports it,
+    /// relative paths in `open()` / `os` / `pathlib` calls resolve against it
+    /// before reaching the host, and `__file__` is the script name resolved
+    /// against it. Hosts call this before each feed, typically with the
+    /// feed's first mount; a snippet's `os.chdir` lasts only for that snippet.
+    pub fn set_cwd(&mut self, cwd: impl Into<String>) {
+        self.cwd = cwd.into();
     }
 
     /// Injects `fault` into a compiled function's metadata.
@@ -199,6 +216,10 @@ impl MontyRepl {
         let input_script_name = this.next_input_script_name();
         // Preserve this snippet's source (see `feed_run` for rationale).
         this.sources.insert(input_script_name.clone(), code.to_owned());
+        let session = ReplSession {
+            script_name: &this.script_name,
+            cwd: &this.cwd,
+        };
         let executor = match Executor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
@@ -206,6 +227,7 @@ impl MontyRepl {
             &mut this.interns,
             &input_names,
             this.options,
+            session,
         ) {
             Ok(exec) => exec,
             Err(error) => return Err(Box::new(ReplStartError { repl: this, error })),
@@ -220,7 +242,7 @@ impl MontyRepl {
                 reader,
                 &executor.interns,
                 print.reborrow(),
-                executor.assert_repr_max_bytes,
+                executor.vm_env(),
             );
 
             // Inject inputs with VM alive
@@ -277,6 +299,10 @@ impl MontyRepl {
         // column/preview information — `Executor.code` only survives until
         // the next feed.
         self.sources.insert(input_script_name.clone(), code.to_owned());
+        let session = ReplSession {
+            script_name: &self.script_name,
+            cwd: &self.cwd,
+        };
         let executor = Executor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
@@ -284,6 +310,7 @@ impl MontyRepl {
             &mut self.interns,
             &input_names,
             self.options,
+            session,
         )?
         .with_clock(self.clock);
 
@@ -296,7 +323,7 @@ impl MontyRepl {
                 reader,
                 &executor.interns,
                 print.reborrow(),
-                executor.assert_repr_max_bytes,
+                executor.vm_env(),
             );
 
             if let Err(e) = inject_inputs_into_vm(executor, input_values, &mut vm) {
@@ -360,6 +387,10 @@ impl MontyRepl {
             self.global_names.clone(),
             &mut self.interns,
             self.options,
+            ReplSession {
+                script_name: &self.script_name,
+                cwd: &self.cwd,
+            },
         )?
         .with_clock(self.clock);
         self.sources.insert(input_script_name, executor.code.clone());
@@ -373,7 +404,7 @@ impl MontyRepl {
                 reader,
                 &executor.interns,
                 print.reborrow(),
-                executor.assert_repr_max_bytes,
+                executor.vm_env(),
             );
 
             let result = match convert_args(args, vm) {
@@ -1312,4 +1343,9 @@ fn is_callable(value: &Value, heap: &Heap) -> bool {
         ),
         _ => false,
     }
+}
+
+/// serde default for [`MontyRepl::cwd`], so dumps taken before the field existed load.
+fn default_cwd() -> String {
+    DEFAULT_CWD.to_owned()
 }

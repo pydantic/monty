@@ -251,6 +251,34 @@ impl OsFunctionCall {
         }
     }
 
+    /// Every path this call carries, mutably: the primary path plus the
+    /// rename destination. The interpreter resolves relative paths against
+    /// the sandbox working directory here before the call reaches the host,
+    /// so host backends only ever see absolute virtual paths.
+    pub fn fs_paths_mut(&mut self) -> impl Iterator<Item = &mut MontyPath> {
+        let (primary, dst) = match self {
+            Self::Exists(p)
+            | Self::IsFile(p)
+            | Self::IsDir(p)
+            | Self::IsSymlink(p)
+            | Self::ReadText(p)
+            | Self::ReadBytes(p)
+            | Self::Stat(p)
+            | Self::Iterdir(p)
+            | Self::Resolve(p)
+            | Self::Absolute(p)
+            | Self::Unlink(p)
+            | Self::Rmdir(p) => (Some(p), None),
+            Self::WriteText(a) | Self::AppendText(a) => (Some(&mut a.path), None),
+            Self::WriteBytes(a) | Self::AppendBytes(a) => (Some(&mut a.path), None),
+            Self::Open(a) => (Some(&mut a.path), None),
+            Self::Mkdir(a) => (Some(&mut a.path), None),
+            Self::Rename(a) => (Some(&mut a.src), Some(&mut a.dst)),
+            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) => (None, None),
+        };
+        primary.into_iter().chain(dst)
+    }
+
     /// Exception to raise when no handler accepted this call: `PermissionError`
     /// for FS ops (with the path), `RuntimeError` for non-FS ops.
     #[must_use]

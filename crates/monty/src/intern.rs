@@ -1204,6 +1204,15 @@ pub enum StaticStrings {
     /// `header` parameter of the `binascii` quoted-printable pair.
     #[strum(serialize = "header")]
     Header,
+
+    // ==========================
+    // Working-directory strings, appended at the enum end for the same reason.
+    /// `os.getcwd()` function.
+    Getcwd,
+    /// `os.chdir()` function.
+    Chdir,
+    /// `Path.cwd()` classmethod.
+    Cwd,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

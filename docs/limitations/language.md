@@ -130,13 +130,21 @@ ordinary local in a separate namespace), matching CPython, except `__debug__`,
 which CPython rejects everywhere with `SyntaxError` but Monty permits as a
 local.
 
-Other module dunders CPython defines (`__loader__`, `__file__`, `__builtins__`,
+`__file__` is the session's script name resolved against the virtual working
+directory the feed started in: `/main.py` by default, `/data/main.py` when the
+feed's first mount is `/data`, or the script name itself when it is absolute.
+Through the Python, JavaScript and Rust pool APIs the script name is the fixed
+session name, so `__file__` is a virtual path. The `monty` CLI passes the file
+argument as written, like `python`, so `monty /abs/script.py` reports that host
+path and `monty -c` reports `/<string>` where CPython raises `NameError`. Like
+the other dunders it is read-only, where CPython allows rebinding it.
+
+Other module dunders CPython defines (`__loader__`, `__builtins__`,
 `__cached__`, `__dict__`) are not exposed; reading them falls through to the host
 name lookup and ultimately raises `NameError` if unresolved. `__loader__` is
 omitted because CPython always binds it to a loader *object* (never `None`), so
 exposing `None` would diverge on type, and a real loader is neither available
-nor safe to surface in the sandbox. `__file__` is omitted so no host path can
-leak into the sandbox.
+nor safe to surface in the sandbox.
 
 ## Function objects
 

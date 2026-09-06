@@ -513,6 +513,10 @@ pub struct Feed {
     /// Skip type checking for this feed even when the session enables it.
     #[prost(bool, tag = "3")]
     pub skip_type_check: bool,
+    /// Absolute virtual working directory for this feed, resolved by the parent
+    /// (an explicit choice, else the feed's first mount, else `/`). Empty means `/`.
+    #[prost(string, tag = "4")]
+    pub cwd: ::prost::alloc::string::String,
 }
 /// Ends a pending suspension by raising `exception` uncatchably at its site.
 /// The session returns ready in an `Error` event. Hosts use this to stop a feed,

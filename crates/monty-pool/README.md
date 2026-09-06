@@ -69,7 +69,8 @@ async fn main() -> Result<(), PoolError> {
 snippet, and `print_flush_interval` — how long the worker may batch `print()` output before
 sending it, so a burst of prints costs one event rather than one each (`Duration::ZERO`
 restores line buffering, one event per completed line); `Checkout::feed` accepts inputs (host values exposed as sandbox globals) and
-per-feed filesystem mounts (`MountSpec`). Sessions can be snapshotted with `Checkout::dump`
+per-feed filesystem mounts (`MountSpec`) and, through `Checkout::feed_with_cwd`, the
+sandbox's working directory (the first mount's virtual path by default). Sessions can be snapshotted with `Checkout::dump`
 and restored later — including on a different worker or machine — with `Checkout::restore`.
 
 ## Protections over in-process execution

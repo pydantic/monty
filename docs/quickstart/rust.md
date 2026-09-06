@@ -82,7 +82,9 @@ async fn main() -> Result<(), PoolError> {
 ```
 
 [`Checkout::feed`](../api/rust/monty-pool.md#checkout) takes the code, inputs (host values bound as sandbox globals), per-feed filesystem mounts
-([`MountSpec`](../api/rust/monty-pool.md#mountspec)), a `skip_type_check` flag and a print sink.
+([`MountSpec`](../api/rust/monty-pool.md#mountspec)), a `skip_type_check` flag and a print sink;
+[`Checkout::feed_with_cwd`](../api/rust/monty-pool.md#checkout) also sets the sandbox's
+[working directory](../filesystem.md#working-directory), which otherwise defaults to the first mount.
 It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 
 | `TurnEvent`                                                             | Meaning                                                                                                                                                                | Answer with                                                                      |

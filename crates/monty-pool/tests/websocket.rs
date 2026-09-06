@@ -604,6 +604,7 @@ async fn duration_backstop_arms_on_the_raw_path() {
             code: "while True:\n    pass".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -666,6 +667,7 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
             code: "while True:\n    pass".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -725,6 +727,7 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -779,6 +782,7 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
             code: "while True:\n    pass".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -821,6 +825,7 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1134,6 +1139,7 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
             code: "fetch()".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1236,6 +1242,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
             code: "fetch()".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1449,6 +1456,7 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
             code: "fetch()".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };

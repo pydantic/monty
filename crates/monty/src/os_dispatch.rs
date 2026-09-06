@@ -51,7 +51,7 @@ impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
 /// the VM's single slot (one call in flight per task) only once the call
 /// reaches the host, where a `resume` becomes guaranteed; anything discarding
 /// the suspension calls [`release_pending_effect`] instead.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PendingOsEffect {
     /// Store a full-file read result into the file buffer, then compute the
     /// pending read/seek slice (see `types/file.rs`).
@@ -70,16 +70,26 @@ pub(crate) enum PendingOsEffect {
     /// paths) to the list of bare entry names before conversion. Holds no
     /// heap references, so exception/drop cleanup is a no-op.
     ListdirNames,
+    /// `os.chdir`: the target was sent to the host as a `Path.stat` call;
+    /// adopt `path` as the working directory once the reply proves it is a
+    /// directory. Holds no heap references.
+    Chdir {
+        /// Absolute virtual path `os.getcwd()` reports after a successful change.
+        path: String,
+        /// The path as the caller spelled it, for `NotADirectoryError` (CPython
+        /// reports the argument, not the resolved path).
+        spelled: String,
+    },
 }
 
 impl PendingOsEffect {
     /// The heap entry this effect pins across the host yield, if any — the
     /// single place that knows which variants carry a refcount, so drop and
     /// abandon paths release it with `if let Some(id) = effect.pinned_file()`.
-    pub(crate) fn pinned_file(self) -> Option<HeapId> {
+    pub(crate) fn pinned_file(&self) -> Option<HeapId> {
         match self {
-            Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => Some(file_id),
-            Self::ListdirNames => None,
+            Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => Some(*file_id),
+            Self::ListdirNames | Self::Chdir { .. } => None,
         }
     }
 }
@@ -90,8 +100,82 @@ impl PendingOsEffect {
 /// Reached via the owner's `drop_with`, or `Drop for VM` once the effect is
 /// armed and no owning value remains.
 pub(crate) fn release_pending_effect(effect: Option<PendingOsEffect>, heap: &mut impl ContainsHeap) {
-    if let Some(file_id) = effect.and_then(PendingOsEffect::pinned_file) {
+    if let Some(file_id) = effect.and_then(|effect| effect.pinned_file()) {
         heap.heap_mut().dec_ref(file_id);
+    }
+}
+
+/// Resolves `path` against the working directory `cwd`: a relative `path`
+/// becomes the normalized absolute path `os.path.abspath` would give (see
+/// [`normalize_posix_path`]); an absolute one is returned as written, so
+/// host error messages still show what the user spelled. An empty `path`
+/// stays empty so the host reports it the way CPython does.
+pub(crate) fn posix_join(cwd: &str, path: &str) -> String {
+    if path.is_empty() || path.starts_with('/') {
+        path.to_owned()
+    } else {
+        normalize_posix_path(&format!("{cwd}/{path}"))
+    }
+}
+
+/// Collapses an absolute POSIX path lexically: `.` and empty segments are
+/// dropped and `..` pops the previous segment, never above `/`. This is the
+/// same purely textual treatment the mount table applies, so it can never
+/// reach outside a mount.
+pub(crate) fn normalize_posix_path(path: &str) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            segment => segments.push(segment),
+        }
+    }
+    format!("/{}", segments.join("/"))
+}
+
+/// Resolves every relative path in `call` against `cwd` (see [`posix_join`]).
+///
+/// Runs at the VM's single OS-call exit, so builtins and `Path` methods can
+/// hand over paths exactly as the user wrote them.
+pub(crate) fn resolve_call_paths(call: &mut OsFunctionCall, cwd: &str) {
+    for path in call.fs_paths_mut() {
+        *path = MontyPath::new(posix_join(cwd, path));
+    }
+}
+
+/// Checks a host `Path.stat` reply for `os.chdir` — the resume half of
+/// [`PendingOsEffect::Chdir`], run on the raw [`MontyObject`] before heap
+/// conversion like [`listdir_names`].
+///
+/// A directory `st_mode` passes and the caller adopts the path (`os.chdir`
+/// returns `None`); a file raises `NotADirectoryError` naming `spelled`, the
+/// path as the caller wrote it. Hosts that answered `Path.stat` with
+/// something other than a stat result get the same `RuntimeError` shape as
+/// `os.listdir`.
+pub(crate) fn check_chdir_stat(obj: &MontyObject, spelled: &str) -> Result<(), RunError> {
+    const S_IFMT: i64 = 0o170_000;
+    const S_IFDIR: i64 = 0o040_000;
+    let st_mode = match obj {
+        MontyObject::NamedTuple { values, .. } => values.first().and_then(|mode| match mode {
+            MontyObject::Int(mode) => Some(*mode),
+            _ => None,
+        }),
+        _ => None,
+    };
+    match st_mode {
+        Some(mode) if mode & S_IFMT == S_IFDIR => Ok(()),
+        Some(_) => Err(ExcType::not_a_directory_error(spelled)),
+        None => Err(SimpleException::new_msg(
+            ExcType::RuntimeError,
+            format!(
+                "invalid return type: os.chdir requires the host to return a stat result, got {}",
+                obj.type_name()
+            ),
+        )
+        .into()),
     }
 }
 

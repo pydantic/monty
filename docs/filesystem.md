@@ -59,6 +59,67 @@ Mounts are per-feed, and all arguments are keyword-only:
     ```
 
 Pass a list to `mount=` for several at once.
+
+### Working directory
+
+The sandbox has a virtual working directory, chosen per feed like the mounts: the first mount's virtual path, or `/`
+when nothing is mounted.
+`os.getcwd()` and `Path.cwd()` report it, relative paths in `open()`, `os` and `pathlib` calls resolve against it
+before they reach a mount or the `os` callback, and `__file__` is the script name placed under it.
+Pass `cwd=` to choose another absolute virtual path.
+`os.chdir()` works within a feed and, like a mount, is forgotten when the feed ends.
+
+=== "Python"
+
+    ```python
+    import tempfile
+    from pathlib import Path
+
+    from pydantic_monty import Monty, MountDir
+
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, 'notes.txt').write_text('hello')
+
+        code = "import os\n(os.getcwd(), __file__, open('notes.txt').read())"
+
+        with MountDir(host_path=tmp, virtual_path='/data', mode='read-only') as mount:
+            with Monty() as pool:
+                with pool.checkout() as session:
+                    print(session.feed_run(code, mount=mount))
+                    #> ('/data', '/data/main.py', 'hello')
+                    cwd_code = 'import os\nos.getcwd()'
+                    print(session.feed_run(cwd_code, mount=mount, cwd='/data/sub'))
+                    #> /data/sub
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+    import { tmpdir } from 'node:os'
+    import { join } from 'node:path'
+
+    import { Monty } from '@pydantic/monty'
+    import { MountDir } from '@pydantic/monty/node'
+
+    const tmp = mkdtempSync(join(tmpdir(), 'monty-'))
+    writeFileSync(join(tmp, 'notes.txt'), 'hello')
+
+    const code = "import os\n(os.getcwd(), __file__, open('notes.txt').read())"
+
+    {
+      using mount = new MountDir({ hostPath: tmp, virtualPath: '/data', mode: 'read-only' })
+      await using pool = await Monty.create()
+      await using session = await pool.checkout()
+      console.log(await session.feedRun(code, { mount })) // [ '/data', '/data/main.py', 'hello' ]
+      console.log(await session.feedRun('import os\nos.getcwd()', { mount, cwd: '/data/sub' })) // /data/sub
+    }
+    rmSync(tmp, { recursive: true })
+    ```
+
+The directory is not checked against the mounts, and `os.chdir()` needs a mount (or `os` callback) to confirm its
+target exists.
+The divergences are in [`limitations/os.md`](limitations/os.md).
 In JavaScript `MountDir` comes from the `@pydantic/monty/node` subpath and `using` closes it at the end of scope; the
 WebAssembly build rejects mounts outright, because a browser has no host filesystem.
 

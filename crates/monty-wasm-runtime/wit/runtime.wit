@@ -218,6 +218,8 @@ interface worker {
         code: string,
         inputs: list<named-value>,
         skip-type-check: bool,
+        /// Absolute virtual working directory for the feed (`/` when unset).
+        cwd: string,
     }
 
     /// A host-raised exception used to resume a call.

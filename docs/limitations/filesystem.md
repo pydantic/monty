@@ -102,6 +102,15 @@ root.
 `/tmp`, `/etc`, `/proc`, `/dev`, `~`, and the host current working
 directory are **not** available unless the host explicitly mounts them.
 
+### Relative paths resolve against a virtual working directory
+
+The sandbox's working directory is a virtual path the host sets per feed
+(the first mount's virtual path by default, else `/`), so a relative path
+never reaches a mount as written: the interpreter joins it onto the working
+directory first, collapsing `.` and `..` lexically. A mount therefore never
+sees a relative path, and host error messages name the resolved absolute
+path. See [os.md](os.md) for `os.getcwd()` / `os.chdir()`.
+
 ### `..` is resolved in the virtual namespace, not through symlinks
 
 `..` is collapsed textually before anything touches the filesystem, so it

@@ -38,11 +38,13 @@ use crate::{
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingOsEffect, listdir_names, release_pending_effect},
+    os_dispatch::{PendingOsEffect, check_chdir_stat, listdir_names, release_pending_effect, resolve_call_paths},
     parse::CodeRange,
+    run::VmEnv,
     types::{
         Dict, LongInt, PyTrait,
         file::{apply_buffer_store, apply_write_position},
+        str::allocate_string,
     },
     value::{EitherStr, Value},
 };
@@ -158,16 +160,20 @@ macro_rules! handle_call_result {
                     name_load_ip,
                 });
             }
-            Ok(CallResult::OsCall(function_call)) => {
+            Ok(CallResult::OsCall(mut function_call)) => {
                 let call_id = $self.allocate_call_id();
+                // The only exit for OS calls, so relative paths are resolved
+                // against the working directory here rather than per builtin.
+                resolve_call_paths(&mut function_call, &$self.env.cwd);
                 return Ok(FrameExit::OsCall {
                     function_call,
                     call_id,
                     effect: None,
                 });
             }
-            Ok(CallResult::OsCallWithEffect { call, effect }) => {
+            Ok(CallResult::OsCallWithEffect { mut call, effect }) => {
                 let call_id = $self.allocate_call_id();
+                resolve_call_paths(&mut call, &$self.env.cwd);
                 // Not armed here — this exit may still be rejected on its
                 // way out, and only a dispatched call earns a `resume`.
                 return Ok(FrameExit::OsCall {
@@ -647,6 +653,11 @@ pub struct VMSnapshot {
     /// See [`VM::pending_lookup_effect`].
     #[serde(default)]
     pending_lookup_effect: Option<PendingLookupEffect>,
+
+    /// Working directory at the pause, including any `os.chdir` so far.
+    cwd: String,
+    /// `__file__` for the run, fixed when it started.
+    file: String,
 }
 
 impl VMSnapshot {
@@ -813,9 +824,10 @@ pub struct VM<'h> {
     /// snapshotted (a pure performance cache), so default-initialized on restore.
     pub(crate) re_pattern_cache: RePatternCache,
 
-    /// UTF-8 byte cap for each operand repr in introspected assert messages.
-    /// Supplied by the executor on construction, so it is not snapshotted.
-    pub(crate) assert_repr_max_bytes: u32,
+    /// Working directory, `__file__` and the assert-repr cap for this run.
+    /// The cap is supplied fresh by the executor on restore; the paths travel
+    /// in the snapshot because `os.chdir` may have moved the directory.
+    pub(crate) env: VmEnv,
 }
 
 impl<'h> VM<'h> {
@@ -826,7 +838,7 @@ impl<'h> VM<'h> {
         heap: &'h mut HeapReader<'h>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
-        assert_repr_max_bytes: u32,
+        env: VmEnv,
     ) -> Self {
         Self::new_with_frame(
             globals,
@@ -834,7 +846,7 @@ impl<'h> VM<'h> {
             heap,
             interns,
             print_writer,
-            assert_repr_max_bytes,
+            env,
         )
     }
 
@@ -845,7 +857,7 @@ impl<'h> VM<'h> {
         heap: &'h mut HeapReader<'h>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
-        assert_repr_max_bytes: u32,
+        env: VmEnv,
     ) -> Self {
         Self {
             stack: Vec::with_capacity(64),
@@ -867,7 +879,7 @@ impl<'h> VM<'h> {
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
-            assert_repr_max_bytes,
+            env,
         }
     }
 
@@ -944,7 +956,11 @@ impl<'h> VM<'h> {
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
-            assert_repr_max_bytes,
+            env: VmEnv {
+                cwd: snapshot.cwd,
+                file: snapshot.file,
+                assert_repr_max_bytes,
+            },
         }
     }
 
@@ -992,6 +1008,8 @@ impl<'h> VM<'h> {
             scheduler: mem::take(&mut self.scheduler),
             pending_os_effect: self.pending_os_effect.take(),
             pending_lookup_effect: self.pending_lookup_effect.take(),
+            cwd: mem::take(&mut self.env.cwd),
+            file: mem::take(&mut self.env.file),
         }
     }
 
@@ -1936,16 +1954,24 @@ impl<'h> VM<'h> {
     /// through the corresponding helper (file-state update or `os.listdir`
     /// name reduction) before it is pushed back to Python.
     pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
-        // `ListdirNames` reshapes the raw host object *before* heap
-        // conversion — plain data in, plain data out, no refcounts involved.
-        let obj = if matches!(self.pending_os_effect, Some(PendingOsEffect::ListdirNames)) {
-            self.pending_os_effect = None;
-            match listdir_names(obj) {
+        // `ListdirNames` and `Chdir` reshape the raw host object *before*
+        // heap conversion — plain data in, plain data out, no refcounts involved.
+        let obj = match self.pending_os_effect.take() {
+            Some(PendingOsEffect::ListdirNames) => match listdir_names(obj) {
                 Ok(obj) => obj,
                 Err(err) => return self.resume_with_exception(err),
+            },
+            Some(PendingOsEffect::Chdir { path, spelled }) => match check_chdir_stat(&obj, &spelled) {
+                Ok(()) => {
+                    self.env.cwd = path;
+                    MontyObject::None
+                }
+                Err(err) => return self.resume_with_exception(err),
+            },
+            other => {
+                self.pending_os_effect = other;
+                obj
             }
-        } else {
-            obj
         };
         // Surface resource-exhaustion failures from `to_value` (e.g. a host
         // string whose `heap.allocate` trips `max_memory`) as the same
@@ -1963,7 +1989,9 @@ impl<'h> VM<'h> {
                 PendingOsEffect::BufferStore { file_id } => apply_buffer_store(file_id, value, self),
                 PendingOsEffect::WritePosition { file_id, .. } => apply_write_position(file_id, value, self),
                 // Cleared above, before conversion.
-                PendingOsEffect::ListdirNames => unreachable!("ListdirNames is handled before heap conversion"),
+                PendingOsEffect::ListdirNames | PendingOsEffect::Chdir { .. } => {
+                    unreachable!("ListdirNames and Chdir are handled before heap conversion")
+                }
             };
             match result {
                 Ok(value) => {
@@ -2016,8 +2044,8 @@ impl<'h> VM<'h> {
                     }
                     self.heap.dec_ref(file_id);
                 }
-                // Holds no state or heap references — nothing to roll back.
-                PendingOsEffect::ListdirNames => {}
+                // Hold no state or heap references — nothing to roll back.
+                PendingOsEffect::ListdirNames | PendingOsEffect::Chdir { .. } => {}
             }
         }
         // Use the normal exception handling mechanism
@@ -2310,14 +2338,16 @@ impl<'h> VM<'h> {
     /// (asserts always run). `__doc__`/`__spec__`/`__package__` default to
     /// `None` and `__annotations__` to a fresh empty dict — module-level
     /// annotations are not stored (see `limitations/typing.md`), so it is
-    /// always empty. `__loader__` is deliberately *not* exposed: CPython only
-    /// ever puts a loader object there (never `None`), so rather than diverge
-    /// on the type we let it raise `NameError` like other unexposed dunders
-    /// (`__file__`, `__cached__`, …).
+    /// always empty. `__file__` is the script name resolved against the
+    /// working directory the run started in. `__loader__` is deliberately
+    /// *not* exposed: CPython only ever puts a loader object there (never
+    /// `None`), so rather than diverge on the type we let it raise `NameError`
+    /// like other unexposed dunders (`__cached__`, …).
     fn module_dunder(&self, name_id: StringId) -> Option<Value> {
         let value = match self.interns.get_str(name_id) {
             "__name__" => Value::InternString(StaticStrings::DunderMain.into()),
             "__debug__" => Value::Bool(true),
+            "__file__" => allocate_string(self.env.file.as_str(), self.heap),
             "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))),
             "__doc__" | "__spec__" | "__package__" => Value::None,
             _ => return None,

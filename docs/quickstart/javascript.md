@@ -255,6 +255,8 @@ console.log(text) // hello
 
 `mode` is `'read-only'`, `'read-write'` or `'overlay'` (the default).
 `using` closes the mount's directory handle at the end of scope, which Windows needs before the directory can be removed.
+The sandbox's working directory is the first mount's virtual path, so `open('new.txt')` would reach the same file; the
+`cwd` feed option picks another.
 See [filesystem access](../filesystem.md).
 
 ## Configuring the pool
