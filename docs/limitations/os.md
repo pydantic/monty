@@ -20,6 +20,8 @@ whether each call is permitted.
 - `os.rename(src, dst)`, `os.replace(src, dst)`
 - `os.fspath(path)` — pure, no host involvement.
 - `os.getcwd()` — pure: the sandbox's virtual working directory.
+- `os.getcwdb()` — pure: the same directory as UTF-8 bytes (virtual paths
+    are always UTF-8, so no filesystem encoding is involved).
 - `os.chdir(path)` — validated through a `Path.stat` host call (see below).
 - Constants (fixed POSIX values on every host OS, matching the sandbox's
     POSIX-only path model): `os.sep == '/'`, `os.altsep is None`,

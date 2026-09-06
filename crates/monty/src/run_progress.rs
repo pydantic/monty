@@ -772,35 +772,7 @@ impl Snapshot {
                     executor.vm_env(),
                 );
 
-                let vm_result = match ext_result {
-                    ExtFunctionResult::Return(obj) => vm.resume(obj),
-                    ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
-                    // A future never runs the resume-side effect, so a
-                    // directory change could not take hold; refuse it rather
-                    // than leave `os.getcwd()` silently unchanged. The future
-                    // is still registered so the host's task drains through
-                    // the usual `ResolveFutures` flow instead of being orphaned.
-                    ExtFunctionResult::Future(raw_call_id)
-                        if matches!(vm.pending_os_effect, Some(PendingOsEffect::Chdir { .. })) =>
-                    {
-                        vm.add_pending_call(CallId::new(raw_call_id));
-                        vm.resume_with_exception(
-                            SimpleException::new_msg(
-                                ExcType::RuntimeError,
-                                "os.chdir cannot be answered with a future".to_owned(),
-                            )
-                            .into(),
-                        )
-                    }
-                    ExtFunctionResult::Future(raw_call_id) => {
-                        let call_id = CallId::new(raw_call_id);
-                        vm.add_pending_call(call_id);
-                        vm.run_external()
-                    }
-                    ExtFunctionResult::NotFound(function_name) => {
-                        vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
-                    }
-                };
+                let vm_result = resume_with_result(&mut vm, ext_result);
 
                 // Three-phase: convert while VM alive, snapshot, build progress
                 let converted = convert_frame_exit(vm_result, &mut vm);
@@ -818,6 +790,41 @@ impl Snapshot {
             heap,
         } = self;
         abort_restored(executor, vm_state, heap, exc, print)
+    }
+}
+
+/// Feeds the host's answer to a paused external or OS call into the restored
+/// VM and runs on. Shared by the one-shot and REPL resume paths so both treat
+/// every [`ExtFunctionResult`] the same way.
+///
+/// A future answering the `Path.stat` behind `os.chdir` is refused: a future
+/// never runs the resume-side effect, so the directory change could not take
+/// hold, and `os.getcwd()` would stay silently unchanged. The future is still
+/// registered so the host's task drains through the usual `ResolveFutures`
+/// flow instead of being orphaned.
+pub(crate) fn resume_with_result(vm: &mut VM<'_>, result: ExtFunctionResult) -> Result<FrameExit, RunError> {
+    match result {
+        ExtFunctionResult::Return(obj) => vm.resume(obj),
+        ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
+        ExtFunctionResult::Future(raw_call_id)
+            if matches!(vm.pending_os_effect, Some(PendingOsEffect::Chdir { .. })) =>
+        {
+            vm.add_pending_call(CallId::new(raw_call_id));
+            vm.resume_with_exception(
+                SimpleException::new_msg(
+                    ExcType::RuntimeError,
+                    "os.chdir cannot be answered with a future".to_owned(),
+                )
+                .into(),
+            )
+        }
+        ExtFunctionResult::Future(raw_call_id) => {
+            vm.add_pending_call(CallId::new(raw_call_id));
+            vm.run_external()
+        }
+        ExtFunctionResult::NotFound(function_name) => {
+            vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+        }
     }
 }
 
