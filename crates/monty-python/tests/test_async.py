@@ -254,6 +254,11 @@ async def test_os_callback_paths_are_normalized(asession: AsyncMontySession):
         is True
     )
     assert calls == [(PurePosixPath('/data/file.txt'),)]
+    calls.clear()
+    with pytest.raises(MontyRuntimeError, match='ValueError: embedded null byte'):
+        await asession.feed_run("open('bad\\0/../file.txt')", os=os_handler)
+    assert await asession.feed_run("Path('bad\\0/../file.txt').exists()", os=os_handler) is False
+    assert calls == []
 
 
 async def test_os_with_external_lookup(asession: AsyncMontySession):

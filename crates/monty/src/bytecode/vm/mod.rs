@@ -160,28 +160,16 @@ macro_rules! handle_call_result {
                     name_load_ip,
                 });
             }
-            Ok(CallResult::OsCall(mut function_call)) => {
-                let call_id = $self.allocate_call_id();
-                // The only exit for OS calls, so relative paths are resolved
-                // against the working directory here rather than per builtin.
-                resolve_call_paths(&mut function_call, &$self.env.cwd);
-                return Ok(FrameExit::OsCall {
-                    function_call,
-                    call_id,
-                    effect: None,
-                });
-            }
-            Ok(CallResult::OsCallWithEffect { mut call, effect }) => {
-                let call_id = $self.allocate_call_id();
-                resolve_call_paths(&mut call, &$self.env.cwd);
-                // Not armed here — this exit may still be rejected on its
-                // way out, and only a dispatched call earns a `resume`.
-                return Ok(FrameExit::OsCall {
-                    function_call: call,
-                    call_id,
-                    effect: Some(effect),
-                });
-            }
+            Ok(CallResult::OsCall(call)) => match $self.prepare_os_call(call, None) {
+                Ok(Some(exit)) => return Ok(exit),
+                Ok(None) => {}
+                Err(err) => catch!($self, err),
+            },
+            Ok(CallResult::OsCallWithEffect { call, effect }) => match $self.prepare_os_call(call, Some(effect)) {
+                Ok(Some(exit)) => return Ok(exit),
+                Ok(None) => {}
+                Err(err) => catch!($self, err),
+            },
             Ok(CallResult::MethodCall { name, args, object_id }) => {
                 let call_id = $self.allocate_call_id();
                 return Ok(FrameExit::MethodCall {
@@ -1044,6 +1032,32 @@ impl<'h> VM<'h> {
         match mem::replace(&mut self.env.cwd, Cow::Borrowed(self.env.initial_cwd)) {
             Cow::Owned(cwd) => Some(cwd),
             Cow::Borrowed(_) => None,
+        }
+    }
+
+    /// Joins paths to cwd and rejects NUL bytes before yielding an OS call.
+    /// Rejected calls release their pending effect; existence predicates finish locally.
+    fn prepare_os_call(
+        &mut self,
+        mut call: OsFunctionCall,
+        effect: Option<PendingOsEffect>,
+    ) -> RunResult<Option<FrameExit>> {
+        resolve_call_paths(&mut call, &self.env.cwd);
+        if let Err(message) = call.check_path_null_bytes() {
+            release_pending_effect(effect, self.heap);
+            if call.is_existence_check() {
+                self.push(Value::Bool(false));
+                Ok(None)
+            } else {
+                Err(ExcType::value_error(message))
+            }
+        } else {
+            // The effect is armed only after this exit is accepted for dispatch.
+            Ok(Some(FrameExit::OsCall {
+                function_call: call,
+                call_id: self.allocate_call_id(),
+                effect,
+            }))
         }
     }
 

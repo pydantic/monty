@@ -7,6 +7,14 @@ import { test } from 'vitest'
 import { t } from './assertions.js'
 import { skipIfBrowser } from './env.js'
 import { Monty } from '@pydantic/monty/wasm'
+import { checkOsPathValidation } from './helpers.js'
+
+test('WASM rejects NUL paths before callbacks and reports clean no-handler paths', async (ctx) => {
+  skipIfBrowser(ctx)
+  await using pool = await Monty.create()
+  await using session = await pool.checkout()
+  await checkOsPathValidation((code, options) => session.feedRun(code, options))
+})
 
 test('OS callback paths are normalized over the wasm transport', async (ctx) => {
   skipIfBrowser(ctx)

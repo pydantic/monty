@@ -75,6 +75,55 @@ open('./sub//../file.txt').read()
     ]
 
 
+@pytest.mark.parametrize('with_callback', [False, True])
+@pytest.mark.parametrize(
+    'operation, message',
+    [
+        ('open(path)', 'embedded null byte'),
+        ('Path(path).read_text()', 'embedded null byte'),
+        ('os.stat(path)', 'stat: embedded null character in path'),
+        ('os.chdir(path)', 'stat: embedded null character in path'),
+        ("os.rename(path, 'dst')", 'rename: embedded null character in src'),
+        ("os.rename('src', path)", 'rename: embedded null character in dst'),
+    ],
+)
+def test_nul_paths_rejected_before_callback(monty_run: RunMonty, with_callback: bool, operation: str, message: str):
+    """Cancelled NUL components raise without dispatching, even with no mounts."""
+    calls: list[Any] = []
+
+    def os_handler(*args: Any) -> bool:
+        calls.append(args)
+        return True
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(
+            'import os\nfrom pathlib import Path\n' + operation,
+            inputs={'path': 'bad\0/../x'},
+            os=os_handler if with_callback else None,
+        )
+    assert str(exc_info.value) == f'ValueError: {message}'
+    result = monty_run(
+        'from pathlib import Path\np = Path(path)\n(p.exists(), p.is_file(), p.is_dir(), p.is_symlink())',
+        inputs={'path': 'bad\0/../x'},
+        os=os_handler if with_callback else None,
+    )
+    assert result == (False, False, False, False)
+    assert calls == []
+
+
+@pytest.mark.parametrize('with_callback', [False, True])
+@pytest.mark.parametrize('code, path', [('import os\nos.listdir()', '/'), ("open('./x')", '/x'), ("open('')", '')])
+def test_no_handler_uses_normalized_path(monty_run: RunMonty, with_callback: bool, code: str, path: str):
+    """Missing and declining callbacks report the same normalized permission error."""
+
+    def os_handler(*args: object) -> object:
+        return NOT_HANDLED
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code, os=os_handler if with_callback else None)
+    assert str(exc_info.value) == f'PermissionError: Permission denied: {path!r}'
+
+
 def test_path_concatenation(monty_run: RunMonty):
     """Path concatenation with / operator produces the correct path argument."""
     calls: list[Any] = []

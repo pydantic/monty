@@ -109,7 +109,8 @@ session's first feed (the first mount's virtual path by default, else `/`)
 and that persists across feeds, so a relative path never reaches a mount as
 written: the interpreter prepends the working directory, preserving every component.
 The mount validates that absolute path before collapsing `.` and `..` lexically.
-Host error messages name the absolute path supplied to the mount. See
+Mount-generated error messages name the absolute path supplied to the mount.
+When no handler accepts a call, the default `PermissionError` names the normalized path. See
 [os.md](os.md) for `os.getcwd()` / `os.chdir()`.
 
 ### `..` is resolved in the virtual namespace, not through symlinks
@@ -175,9 +176,10 @@ Null bytes otherwise behave as CPython's do, message for message. Only
 `absolute()` differs: CPython returns the path without inspecting it, while
 Monty refuses it at the boundary rather than carve out the one operation that
 never reaches a syscall. It raises `ValueError: embedded null byte`, the
-generic wording, since no syscall is involved to name. A path that is both
-over-long and null-containing reports the length error, where CPython reports
-the null byte.
+generic wording, since no syscall is involved to name.
+The interpreter checks NUL bytes before dispatch, including when no mount is configured.
+Direct Rust calls to `MountTable` check length first, so a path that is both over-long and null-containing
+reports the length error there.
 
 ### A search-only host directory may not be mountable
 

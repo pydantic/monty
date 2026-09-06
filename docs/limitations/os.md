@@ -73,6 +73,9 @@ whether each call is permitted.
     paths reach mounts as written.
     Joining preserves `.` and `..` so mounts can validate NUL bytes and path limits before normalization.
     Python and JavaScript `os` callbacks receive lexically normalized paths, including both rename arguments.
+    The interpreter rejects NUL bytes before dispatch, even in components cancelled by `..`.
+    Existence predicates return `False` for these paths; other operations raise `ValueError`.
+    Length and depth limits are mount policy and do not apply to callbacks without mounts.
 - **`os.chdir(path)` suspends as `Path.stat`** on the resolved target: hosts
     cannot observe a directory change, and without a mount or `os` handler it
     raises `PermissionError`. The interpreter raises `NotADirectoryError`

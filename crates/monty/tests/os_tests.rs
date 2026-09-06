@@ -214,7 +214,6 @@ fn relative_paths_resolve_against_cwd() {
         ("import os; os.listdir()", "/data/."),
         ("import os; os.mkdir('sub/')", "/data/sub/"),
         ("import os; os.stat('a//./b/../c/')", "/data/a//./b/../c/"),
-        ("open('bad\\0/../notes.txt')", "/data/bad\0/../notes.txt"),
         ("open('')", ""),
         ("from pathlib import Path; Path('/abs.txt').exists()", "/abs.txt"),
     ] {
@@ -313,7 +312,7 @@ fn os_chdir_adopts_a_directory() {
 }
 
 #[test]
-fn os_chdir_normalizes_an_absolute_target() {
+fn os_chdir_normalizes_cwd_after_host_acceptance() {
     let mut runner = MontyRun::new(
         "import os\nos.chdir('/data/sub/../sub/')\nos.getcwd()".to_owned(),
         "test.py",
@@ -335,6 +334,31 @@ fn os_chdir_normalizes_an_absolute_target() {
         .into_complete()
         .unwrap();
     assert_eq!(result, MontyObject::String("/data/sub".to_owned()));
+}
+
+/// Rejected file operations must release their effect's heap reference before raising.
+#[test]
+fn nul_file_paths_release_pending_effects() {
+    for (mode, operation) in [("r", "f.read()"), ("w", "f.write('data')")] {
+        let runner = MontyRun::new(
+            format!("try:\n    {operation}\nexcept ValueError as e:\n    message = str(e)\nmessage"),
+            "test.py",
+            vec!["f".to_owned()],
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let file = MontyObject::FileHandle(MontyFileHandle {
+            path: "/bad\0/../x".to_owned(),
+            mode: mode.parse().unwrap(),
+            position: 0,
+        });
+        let result = runner
+            .start(vec![file], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        assert_eq!(result, MontyObject::String("embedded null byte".to_owned()));
+    }
 }
 
 #[test]
