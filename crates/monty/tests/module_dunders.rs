@@ -57,9 +57,16 @@ fn file_is_script_name_under_cwd() {
         MontyObject::String("/data/main.py".to_owned())
     );
 
-    // An absolute script name is used verbatim, and `os.chdir` never moves it.
+    // An absolute script name is used verbatim.
+    let runner = MontyRun::new("__file__".to_owned(), "/srv/app.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::String("/srv/app.py".to_owned())
+    );
+
+    // `os.chdir` never moves it: recomputing against the new cwd would give `/app.py`.
     let code = "import os\nos.chdir('/')\n__file__";
-    let mut runner = MontyRun::new(code.to_owned(), "/srv/app.py", vec![], CompileOptions::default()).unwrap();
+    let mut runner = MontyRun::new(code.to_owned(), "app.py", vec![], CompileOptions::default()).unwrap();
     runner.set_cwd("/data");
     let RunProgress::OsCall(call) = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
@@ -72,7 +79,7 @@ fn file_is_script_name_under_cwd() {
         .unwrap()
         .into_complete()
         .unwrap();
-    assert_eq!(result, MontyObject::String("/srv/app.py".to_owned()));
+    assert_eq!(result, MontyObject::String("/data/app.py".to_owned()));
 }
 
 #[test]

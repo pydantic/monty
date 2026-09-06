@@ -689,6 +689,17 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates `FileNotFoundError: [Errno 2] No such file or directory: '{path}'`,
+    /// as raised by `os.chdir('')` without consulting the host.
+    #[must_use]
+    fn file_not_found_error(path: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::FileNotFoundError,
+            format!("[Errno 2] No such file or directory: {}", StringRepr(path)),
+        )
+        .into()
+    }
+
     /// Creates `NotADirectoryError: [Errno 20] Not a directory: '{path}'`, as
     /// raised by `os.chdir` when the host's stat result is not a directory.
     #[must_use]

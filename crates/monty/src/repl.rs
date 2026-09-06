@@ -27,6 +27,7 @@ use crate::{
     intern::Interns,
     name_map::NameMap,
     object_bridge::MontyObjectExt,
+    os_dispatch::normalize_posix_path,
     run::{CompileOptions, DEFAULT_CWD, Executor, ReplSession},
     run_progress::{
         ConvertedExit, ExtFunctionResult, ExtFunctionResultExt, LookupAnswer, LookupScope, NameLookupResult,
@@ -114,13 +115,14 @@ impl MontyRepl {
 
     /// Sets the sandbox working directory the next snippets start in (default `/`).
     ///
-    /// `cwd` is an absolute POSIX virtual path: `os.getcwd()` reports it,
-    /// relative paths in `open()` / `os` / `pathlib` calls resolve against it
-    /// before reaching the host, and `__file__` is the script name resolved
+    /// `cwd` is an absolute POSIX virtual path, normalized here like
+    /// [`MontyRun::set_cwd`](crate::MontyRun::set_cwd): `os.getcwd()` reports
+    /// it, relative paths in `open()` / `os` / `pathlib` calls resolve against
+    /// it before reaching the host, and `__file__` is the script name resolved
     /// against it. Hosts call this before each feed, typically with the
     /// feed's first mount; a snippet's `os.chdir` lasts only for that snippet.
-    pub fn set_cwd(&mut self, cwd: impl Into<String>) {
-        self.cwd = cwd.into();
+    pub fn set_cwd(&mut self, cwd: impl AsRef<str>) {
+        self.cwd = normalize_posix_path(cwd.as_ref());
     }
 
     /// Injects `fault` into a compiled function's metadata.

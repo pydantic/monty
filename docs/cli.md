@@ -61,7 +61,8 @@ CLI mounts always use the default per-mount memory limit of 100 MB; there is no 
 The sandbox's [working directory](filesystem.md#working-directory) defaults to the first mount's virtual path, so
 `monty -m ./data::/data script.py` runs with `os.getcwd() == '/data'` and `__file__ == '/data/script.py'`; `--cwd`
 picks another absolute virtual path.
-`__file__` is the file argument as written, like `python`: an absolute argument shows that host path to the script.
+A relative file argument resolves against that directory; an absolute one passes through as written, like `python`,
+so the script sees that host path.
 
 ## Worker mode
 

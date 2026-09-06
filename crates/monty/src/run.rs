@@ -21,7 +21,7 @@ use crate::{
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
-    os_dispatch::posix_join,
+    os_dispatch::{normalize_posix_path, posix_join},
     parse::{CodeRange, parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
     run_progress::{
@@ -90,12 +90,14 @@ impl MontyRun {
 
     /// Sets the sandbox working directory the run starts in (default `/`).
     ///
-    /// `cwd` is an absolute POSIX virtual path: `os.getcwd()` reports it,
-    /// relative paths in `open()` / `os` / `pathlib` calls resolve against it
-    /// before reaching the host, and `__file__` is the script name resolved
-    /// against it. Hosts typically pass the first mount's virtual path.
-    pub fn set_cwd(&mut self, cwd: impl Into<String>) {
-        self.executor.cwd = cwd.into();
+    /// `cwd` is an absolute POSIX virtual path, normalized here (`.`, `..`
+    /// and repeated or trailing slashes collapse) so `os.getcwd()` reports a
+    /// canonical directory: it is what relative paths in `open()` / `os` /
+    /// `pathlib` calls resolve against before reaching the host, and what
+    /// `__file__` places the script name under. Hosts typically pass the
+    /// first mount's virtual path.
+    pub fn set_cwd(&mut self, cwd: impl AsRef<str>) {
+        self.executor.cwd = normalize_posix_path(cwd.as_ref());
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.

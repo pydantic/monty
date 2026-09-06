@@ -18,7 +18,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
     object_bridge::MontyObjectExt,
-    os_dispatch::release_pending_effect,
+    os_dispatch::{PendingOsEffect, release_pending_effect},
     run::Executor,
     value::Value,
 };
@@ -775,6 +775,20 @@ impl Snapshot {
                 let vm_result = match ext_result {
                     ExtFunctionResult::Return(obj) => vm.resume(obj),
                     ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
+                    // A future never runs the resume-side effect, so a
+                    // directory change could not take hold; refuse it rather
+                    // than leave `os.getcwd()` silently unchanged.
+                    ExtFunctionResult::Future(_)
+                        if matches!(vm.pending_os_effect, Some(PendingOsEffect::Chdir { .. })) =>
+                    {
+                        vm.resume_with_exception(
+                            SimpleException::new_msg(
+                                ExcType::RuntimeError,
+                                "os.chdir cannot be answered with a future".to_owned(),
+                            )
+                            .into(),
+                        )
+                    }
                     ExtFunctionResult::Future(raw_call_id) => {
                         let call_id = CallId::new(raw_call_id);
                         vm.add_pending_call(call_id);

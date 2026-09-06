@@ -21,7 +21,7 @@ pub mod worker;
 /// or repurposing a field, changing a field's meaning, or adding one the child
 /// requires. Purely additive changes an older peer can ignore do not need a
 /// bump.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 2;

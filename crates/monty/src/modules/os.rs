@@ -143,6 +143,10 @@ fn chdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let path = args.get_one_arg("chdir", vm.heap)?;
     defer_drop!(path, vm);
     let spelled = extract_os_path(path, "chdir", "path", PathAccepts::Fd, vm)?;
+    if spelled.is_empty() {
+        // CPython fails before any syscall; the host would otherwise stat the root.
+        return Err(ExcType::file_not_found_error(""));
+    }
     // Always normalized: the adopted directory must be canonical, as CPython's is.
     let path = normalize_posix_path(&posix_join(&vm.env.cwd, &spelled));
     Ok(CallResult::OsCallWithEffect {

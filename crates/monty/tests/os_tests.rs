@@ -342,6 +342,60 @@ fn os_chdir_normalizes_an_absolute_target() {
 }
 
 #[test]
+fn os_chdir_empty_path_raises_without_the_host() {
+    let err = MontyRun::new(
+        "import os\nos.chdir('')".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap()
+    .run_no_limits(vec![])
+    .unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::FileNotFoundError);
+    assert_eq!(err.message().unwrap(), "[Errno 2] No such file or directory: ''");
+}
+
+#[test]
+fn os_chdir_rejects_a_malformed_stat_reply() {
+    // Directory bits in the first slot are not enough: `st_mode` is found by name.
+    let bogus = MontyObject::NamedTuple {
+        type_name: "other".to_owned(),
+        field_names: vec!["nope".to_owned()],
+        values: vec![MontyObject::Int(0o040_755)],
+    };
+    let err = run_chdir("import os\nos.chdir('sub')", bogus).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::RuntimeError);
+    assert_eq!(
+        err.message().unwrap(),
+        "invalid return type: os.chdir requires the host to return a stat result, got namedtuple"
+    );
+}
+
+#[test]
+fn os_chdir_answered_with_a_future_is_refused() {
+    let err = run_chdir("import os\nos.chdir('sub')", ExtFunctionResult::Future(7)).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::RuntimeError);
+    assert_eq!(err.message().unwrap(), "os.chdir cannot be answered with a future");
+}
+
+#[test]
+fn set_cwd_normalizes() {
+    let mut runner = MontyRun::new(
+        "import os\nos.getcwd()".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    runner.set_cwd("/data/sub/../x//");
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::String("/data/x".to_owned())
+    );
+}
+
+#[test]
 fn os_chdir_returns_none() {
     assert_eq!(
         run_chdir("import os\nos.chdir('sub')", dir_stat(0o755, 0.0)).unwrap(),
