@@ -147,8 +147,13 @@ fn chdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         // CPython's `chdir("")` fails with ENOENT; the host would otherwise stat the root.
         return Err(ExcType::file_not_found_error(""));
     }
-    // Always normalized: the adopted directory must be canonical, as CPython's is.
-    let path = normalize_posix_path(&posix_join(&vm.env.cwd, &spelled));
+    // The adopted directory must be canonical, as CPython's is, so an
+    // absolute target is normalized too rather than passed through as written.
+    let path = if spelled.starts_with('/') {
+        normalize_posix_path(&spelled)
+    } else {
+        posix_join(&vm.env.cwd, &spelled)
+    };
     Ok(CallResult::OsCallWithEffect {
         call: OsFunctionCall::Stat(MontyPath::new(path.clone())),
         effect: PendingOsEffect::Chdir {
