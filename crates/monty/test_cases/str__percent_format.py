@@ -346,6 +346,14 @@ assert capture_error('%.*s', (10**30, 'x')) == ('OverflowError', 'Python int too
 assert capture_error('%.*s', (2**31, 'x')) == ('OverflowError', 'Python int too large to convert to C int')
 assert '%.*s' % (2**31 - 1, 'x') == 'x'
 assert capture_error('%.3000000000d', 1) == ('ValueError', 'precision too big')
+assert capture_error('%.2147483645d', 1) == ('OverflowError', 'precision too large')
+assert capture_error('%.2147483647x', -1) == ('OverflowError', 'precision too large')
+assert capture_error('%.*o', (2147483647, 1)) == ('OverflowError', 'precision too large')
+assert capture_error('%.2147483647d', 'x') == ('TypeError', '%d format: a real number is required, not str')
+assert capture_error('%.2147483647d', 10**5000) == ('OverflowError', 'precision too large')
+assert capture_error('%\x1f', 1) == ('ValueError', "unsupported format character '\x1f' (0x1f) at index 1")
+assert capture_error('%\x1e', 1) == ('ValueError', "unsupported format character '?' (0x1e) at index 1")
+assert capture_error('%\x7f', 1) == ('ValueError', "unsupported format character '?' (0x7f) at index 1")
 
 # === Operand type errors ===
 assert capture_error('%d', 'x') == ('TypeError', '%d format: a real number is required, not str')
