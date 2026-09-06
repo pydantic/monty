@@ -67,7 +67,8 @@ impl MontyRun {
     ///
     /// # Arguments
     /// * `code` - The Python code to execute
-    /// * `script_name` - The script name for error messages
+    /// * `script_name` - The script name for error messages, and what `__file__`
+    ///   places under the working directory (`/main.py` for `main.py` at the root)
     /// * `input_names` - Names of input variables
     /// * `options` - [`CompileOptions`] controlling CPython divergences; usually `CompileOptions::default()`
     ///
@@ -93,9 +94,8 @@ impl MontyRun {
     /// `cwd` is an absolute POSIX virtual path, normalized here (`.`, `..`
     /// and repeated or trailing slashes collapse) so `os.getcwd()` reports a
     /// canonical directory: it is what relative paths in `open()` / `os` /
-    /// `pathlib` calls resolve against before reaching the host, and what
-    /// `__file__` places the script name under. Hosts typically pass the
-    /// first mount's virtual path.
+    /// `pathlib` calls resolve against before reaching the host. Hosts
+    /// typically pass the first mount's virtual path.
     pub fn set_cwd(&mut self, cwd: &str) {
         self.executor.cwd = canonical_cwd(cwd);
     }

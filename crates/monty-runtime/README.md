@@ -39,7 +39,7 @@ monty --help
 - `-m` / `--mount /host/path::/virtual/path[::mode[::write_limit_bytes]]` —
   mount a host directory into the sandbox (`ro`, `rw`, or `overlay`)
 - `--cwd /virtual/path` — the sandbox's working directory (default: the first
-  mount's virtual path, else `/`); relative paths and `__file__` resolve against it
+  mount's virtual path, else `/`); relative paths resolve against it
 - `--max-memory 10MB`, `--max-duration 0.5`, `--max-recursion-depth`,
   `--gc-interval`, `--max-suspensions` — sandbox resource limits
 

@@ -545,7 +545,9 @@ class Monty:
         session and returned to the pool when the `with` block exits.
 
         Arguments:
-            script_name: Name used in tracebacks and error messages.
+            script_name: Name used in tracebacks and error messages, and the
+                basis of the sandbox's `__file__`: the name placed under the
+                working directory the feed starts in (`/main.py` by default).
             limits: Resource limits enforced inside the worker, plus `max_suspensions`,
                 which the pool enforces itself.
             type_check: Type-check each fed snippet before executing it; each
@@ -633,9 +635,8 @@ class MontySession:
                 session's feeds, including any `os.chdir()`, so `None` keeps
                 the current one; the session's first feed defaults to its
                 first mount's virtual path, or `/` without mounts.
-                `os.getcwd()` reports it, relative paths resolve against it
-                before reaching a mount or the `os` handler, and `__file__`
-                is the script name placed under it.
+                `os.getcwd()` reports it and relative paths resolve against
+                it before reaching a mount or the `os` handler.
             os: Fallback handler for OS calls (e.g. filesystem access) not
                 covered by a mount, invoked as `(function_name, args, kwargs)`,
                 or an `AbstractOS` instance.
@@ -997,9 +998,8 @@ class AsyncMontySession:
                 session's feeds, including any `os.chdir()`, so `None` keeps
                 the current one; the session's first feed defaults to its
                 first mount's virtual path, or `/` without mounts.
-                `os.getcwd()` reports it, relative paths resolve against it
-                before reaching a mount or the `os` handler, and `__file__`
-                is the script name placed under it.
+                `os.getcwd()` reports it and relative paths resolve against
+                it before reaching a mount or the `os` handler.
             os: Fallback handler for OS calls (e.g. filesystem access) not
                 covered by a mount, invoked as `(function_name, args, kwargs)`,
                 or an `AbstractOS` instance.

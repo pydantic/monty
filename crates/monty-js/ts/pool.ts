@@ -49,7 +49,11 @@ export interface MontyOptions {
 
 /** Options for [`Monty.checkout`], mirroring `pydantic_monty`. */
 export interface CheckoutOptions {
-  /** Name used in type-checking diagnostics (default `'main.py'`). */
+  /**
+   * Name used in tracebacks and type-checking diagnostics (default
+   * `'main.py'`), and the basis of the sandbox's `__file__`: the name placed
+   * under the working directory a feed starts in (`/main.py` at the root).
+   */
   scriptName?: string
   /** Resource limits enforced inside the worker for the whole session. */
   limits?: ResourceLimits

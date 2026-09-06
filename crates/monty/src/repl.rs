@@ -44,7 +44,8 @@ use crate::{
 /// state, avoiding the cost and semantic risks of replaying prior code.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct MontyRepl {
-    /// Script name used for runtime error messages and REPL identification.
+    /// Script name used for runtime error messages and REPL identification,
+    /// and what `__file__` places under the working directory a snippet starts in.
     ///
     /// Incremental `feed()` / `start()` snippets intentionally use internal script names
     /// like `<python-input-0>` to match CPython's interactive traceback style.
@@ -117,10 +118,10 @@ impl MontyRepl {
     ///
     /// `cwd` is an absolute POSIX virtual path, normalized here like
     /// [`MontyRun::set_cwd`](crate::MontyRun::set_cwd): `os.getcwd()` reports
-    /// it, relative paths in `open()` / `os` / `pathlib` calls resolve against
-    /// it before reaching the host, and `__file__` is the script name resolved
-    /// against it. The directory then persists across snippets, including a
-    /// snippet's `os.chdir`, until the host switches it again.
+    /// it and relative paths in `open()` / `os` / `pathlib` calls resolve
+    /// against it before reaching the host. The directory then persists across
+    /// snippets, including a snippet's `os.chdir`, until the host switches it
+    /// again.
     pub fn set_cwd(&mut self, cwd: &str) {
         self.cwd = canonical_cwd(cwd);
     }

@@ -34,7 +34,9 @@ use crate::{
 /// `MontyRepl`'s constructor surface.
 #[derive(Debug, Clone)]
 pub struct ReplConfig {
-    /// Script name used in tracebacks and type-check diagnostics.
+    /// Script name used in tracebacks and type-check diagnostics, and the
+    /// basis of the sandbox's `__file__`: the name placed under the working
+    /// directory a feed starts in (`/main.py` for `main.py` at the root).
     pub script_name: String,
     /// Sandbox resource limits enforced inside the worker. `None` means
     /// unlimited (except monty's standard recursion-depth default).
@@ -625,9 +627,9 @@ impl Checkout {
 
     /// [`Checkout::feed`] with an explicit switch of the sandbox working
     /// directory before the feed: an absolute POSIX virtual path that
-    /// `os.getcwd()` reports, relative paths resolve against and `__file__`
-    /// is placed under. `None` keeps the session's current directory, which
-    /// the first feed defaults to its first mount (else `/`).
+    /// `os.getcwd()` reports and relative paths resolve against. `None` keeps
+    /// the session's current directory, which the first feed defaults to its
+    /// first mount (else `/`).
     ///
     /// # Errors
     /// A relative or NUL-containing `cwd` is a session-preserving
