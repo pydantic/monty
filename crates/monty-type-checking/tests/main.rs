@@ -1,3 +1,5 @@
+#![cfg(feature = "ty")]
+
 use std::thread;
 
 use insta::assert_snapshot;

@@ -15,23 +15,10 @@ use ruff_text_size::{TextRange, TextSize};
 use salsa::Setter as _;
 use ty_python_semantic::{Db as _, check_file_unwrap};
 
-use crate::db::{MemoryDb, SRC_ROOT};
-
-/// Definition of a source file.
-pub struct SourceFile<'a> {
-    /// source code
-    pub source_code: &'a str,
-    /// file path
-    pub path: &'a str,
-}
-
-impl<'a> SourceFile<'a> {
-    /// Create a new source file.
-    #[must_use]
-    pub fn new(source_code: &'a str, path: &'a str) -> Self {
-        Self { source_code, path }
-    }
-}
+use crate::{
+    db::{MemoryDb, SRC_ROOT},
+    source_file::SourceFile,
+};
 
 #[derive(Debug, Default)]
 pub struct TypeChecker {

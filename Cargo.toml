@@ -67,7 +67,7 @@ monty-fs = { path = "crates/monty-fs", version = "0.0.23" }
 monty-macros = { path = "crates/monty-macros", version = "0.0.23" }
 monty-proto = { path = "crates/monty-proto", version = "0.0.23" }
 monty-pool = { path = "crates/monty-pool", version = "0.0.23" }
-monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.23" }
+monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.23", default-features = false }
 monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.23" }
 # ruff, ty and related crates
 ruff_python_parser = "0.0.9"

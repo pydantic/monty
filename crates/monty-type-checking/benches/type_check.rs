@@ -19,6 +19,17 @@ fn prewarmed() -> TypeChecker {
     checker
 }
 
+const fn backend_label() -> &'static str {
+    #[cfg(feature = "ty")]
+    {
+        "ty"
+    }
+    #[cfg(feature = "pyrefly")]
+    {
+        "pyrefly"
+    }
+}
+
 /// Diagnostics are rendered by the checker, so the format is part of what the
 /// benchmarks measure; `Full` is the default a session gets.
 const CONFIG: TypeCheckingConfig = TypeCheckingConfig {
@@ -29,9 +40,9 @@ const CONFIG: TypeCheckingConfig = TypeCheckingConfig {
 /// Steady-state cost of type-checking a trivial snippet. This is the headline metric —
 /// it isolates per-call overhead (write one file, run `check_types`) from the
 /// one-time cost of building the database.
-fn bench_warm_trivial(c: &mut Criterion) {
+fn bench_warm_trivial(c: &mut Criterion, label: &str) {
     let mut checker = prewarmed();
-    c.bench_function("type_check__warm_trivial", |b| {
+    c.bench_function(&format!("type_check__{label}__warm_trivial"), |b| {
         b.iter(|| {
             let out = checker.run(&SourceFile::new("x = 1", "main.py"), None, CONFIG).unwrap();
             black_box(out);
@@ -41,9 +52,9 @@ fn bench_warm_trivial(c: &mut Criterion) {
 
 /// Steady-state cost of type-checking a snippet that exercises a builtin (`int.__add__`).
 /// Slightly heavier than `warm_trivial` because it actually resolves a type.
-fn bench_warm_builtin(c: &mut Criterion) {
+fn bench_warm_builtin(c: &mut Criterion, label: &str) {
     let mut checker = prewarmed();
-    c.bench_function("type_check__warm_builtin", |b| {
+    c.bench_function(&format!("type_check__{label}__warm_builtin"), |b| {
         b.iter(|| {
             let out = checker
                 .run(&SourceFile::new("x = 1 + 2", "main.py"), None, CONFIG)
@@ -56,9 +67,9 @@ fn bench_warm_builtin(c: &mut Criterion) {
 /// Realistic REPL-like pattern: each iteration type-checks a growing accumulated-stubs
 /// context plus a new "current" snippet. Mirrors how the REPL would call `type_check`
 /// per feed_run.
-fn bench_repl_sequence(c: &mut Criterion) {
+fn bench_repl_sequence(c: &mut Criterion, label: &str) {
     let mut checker = prewarmed();
-    c.bench_function("type_check__repl_sequence", |b| {
+    c.bench_function(&format!("type_check__{label}__repl_sequence"), |b| {
         b.iter(|| {
             let mut stubs = String::new();
             for (i, snippet) in [
@@ -90,9 +101,10 @@ fn bench_repl_sequence(c: &mut Criterion) {
 
 /// Configures the type-checking benchmarks.
 fn criterion_benchmark(c: &mut Criterion) {
-    bench_warm_trivial(c);
-    bench_warm_builtin(c);
-    bench_repl_sequence(c);
+    let label = backend_label();
+    bench_warm_trivial(c, label);
+    bench_warm_builtin(c, label);
+    bench_repl_sequence(c, label);
 }
 
 // Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)
