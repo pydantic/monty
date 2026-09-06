@@ -174,7 +174,7 @@ impl Error for DumpError {}
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{MontyType, TypeCheckingFormat};
+    use monty_types::{BuiltinsFunctions, MontyType, TypeCheckingFormat};
     use strum::VariantNames;
 
     use super::DUMP_VERSION;
@@ -223,13 +223,21 @@ mod tests {
             0x091c_2e22_e9b8_f5ee,
             "MontyType variants changed for dump version {DUMP_VERSION}"
         );
+        // Builtin discriminants are `CallBuiltinFunction` operands, so the enum
+        // is append-only: a new builtin goes after the last variant.
+        assert_eq!(
+            variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
+            0xd5ef_68ff_fc6b_f752,
+            "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}"
+        );
     }
 
     /// FNV-1a over variant names in declaration order.
     ///
     /// `Type` and `MontyType` are postcard-encoded by variant index inside a
-    /// `Dump`, so inserting a variant rewrites what older dumps decode to rather
-    /// than failing the version check. Appending leaves this unchanged for every
+    /// `Dump`, and `BuiltinsFunctions` discriminants are bytecode operands, so
+    /// inserting a variant rewrites what older dumps decode to rather than
+    /// failing the version check. Appending leaves this unchanged for every
     /// existing variant; inserting or reordering does not.
     ///
     /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`,

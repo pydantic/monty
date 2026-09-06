@@ -1,7 +1,8 @@
 # String formatting
 
 Monty implements CPython 3.14's format mini-language for f-string
-interpolations, `str.format()` replacement fields and the `format()` builtin. `str.format()` supports
+interpolations, `str.format()` replacement fields and the `format()`
+builtin. `str.format()` supports
 positional and keyword fields, automatic and manual numbering, attribute and
 item access, `!s` / `!r` / `!a` conversions, nested replacement fields in
 format specs, and escaped braces.
@@ -47,9 +48,10 @@ modifiers. The divergences:
 
 ## Custom `__format__`
 
-f-strings, `str.format()` and `format()` dispatch to a type's `__format__` only for
-`date`, `datetime` and `time`, which interpret the spec as a `strftime` string
-(`f'{dt:%Y-%m-%d}'`, `'{:%Y-%m-%d}'.format(dt)` or `format(dt, '%Y-%m-%d')`); see
+f-strings, `str.format()` and `format()` dispatch to a type's `__format__`
+only for `date`, `datetime` and `time`, which interpret the spec as a
+`strftime` string (`f'{dt:%Y-%m-%d}'`, `'{:%Y-%m-%d}'.format(dt)` or
+`format(dt, '%Y-%m-%d')`); see
 [datetime.md](datetime.md). There is no general `__format__` protocol: user
 classes can't customise formatting (see [classes.md](classes.md)), and all
 other types use the builtin mini-language formatter. A format spec on a
@@ -74,8 +76,8 @@ CPython prints it literally, or the reverse. Common text is unaffected.
 
 - A `width` or `precision` whose decimal value overflows `usize` raises
     `SyntaxError: Invalid format specifier '...': width or precision overflows usize` in a literal f-string spec.
-    Runtime specs, including `str.format()` and `format()`, raise `ValueError` instead, with an additional
-    `for object of type '...'` suffix.
+    Runtime specs, including `str.format()` and `format()`, raise `ValueError`
+    instead, with an additional `for object of type '...'` suffix.
 - Very large widths/precisions are additionally bounded by the resource
     tracker; see [resource_limits.md](resource_limits.md).
 

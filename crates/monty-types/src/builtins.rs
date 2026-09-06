@@ -1,7 +1,7 @@
 //! [`BuiltinsFunctions`] — the name-level identity of every interpreter-native
 //! Python builtin, carried by [`MontyObject::BuiltinFunction`](crate::object::MontyObject).
 
-use strum::{Display, EnumString, FromRepr, IntoStaticStr};
+use strum::{Display, EnumString, FromRepr, IntoStaticStr, VariantNames};
 /// Enumerates every interpreter-native Python builtin function.
 ///
 /// Listed alphabetically per <https://docs.python.org/3/library/functions.html>
@@ -19,6 +19,7 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr};
     EnumString,
     FromRepr,
     IntoStaticStr,
+    VariantNames,
     PartialEq,
     Eq,
     Hash,
@@ -54,7 +55,7 @@ pub enum BuiltinsFunctions {
     // Exec,
     Filter,
     // float - handled by Type enum
-    Format,
+    // Format - appended below
     // frozenset - handled by Type enum
     Getattr,
     // Globals,
@@ -112,4 +113,6 @@ pub enum BuiltinsFunctions {
     #[strum(serialize = "object.__setattr__")]
     #[serde(rename = "object.__setattr__")]
     ObjectSetattr,
+    /// `format(value, format_spec='')`, appended after [`Self::ObjectSetattr`].
+    Format,
 }
