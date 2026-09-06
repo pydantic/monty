@@ -307,7 +307,7 @@ async def test_close_frame_is_carried_by_disconnect_error():
     assert exc_info.value.close_reason == snapshot('session idle timeout')
     assert exc_info.value.close_cause == snapshot('idle_timeout')
     assert str(exc_info.value) == snapshot(
-        'monty worker connection closed while waiting for a reply: session idle timeout (close code 4000)'
+        'monty worker connection closed while waiting for a reply: session idle timeout (idle_timeout)'
     )
 
 

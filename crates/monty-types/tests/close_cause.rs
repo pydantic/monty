@@ -2,6 +2,7 @@
 //! pinned as literal numbers, and every conversion round-trips.
 
 use monty_types::CloseCause;
+use strum::VariantArray;
 
 // === codes are literal wire constants ===
 
@@ -16,8 +17,8 @@ fn codes_are_pinned() {
 }
 
 #[test]
-fn all_lists_every_cause_in_code_order() {
-    let codes: Vec<u16> = CloseCause::ALL.iter().map(|cause| cause.code()).collect();
+fn variants_are_in_code_order() {
+    let codes: Vec<u16> = CloseCause::VARIANTS.iter().map(|cause| cause.code()).collect();
     assert_eq!(codes, vec![4000, 4001, 4002, 4003, 4004, 4005]);
 }
 
@@ -25,14 +26,14 @@ fn all_lists_every_cause_in_code_order() {
 
 #[test]
 fn every_cause_round_trips_through_its_code() {
-    for cause in CloseCause::ALL {
+    for &cause in CloseCause::VARIANTS {
         assert_eq!(CloseCause::from_code(cause.code()), Some(cause));
     }
 }
 
 #[test]
 fn names_are_distinct_snake_case() {
-    let names: Vec<&str> = CloseCause::ALL.iter().map(|cause| cause.name()).collect();
+    let names: Vec<&str> = CloseCause::VARIANTS.iter().map(|cause| cause.name()).collect();
     assert_eq!(
         names,
         vec![

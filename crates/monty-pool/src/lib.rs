@@ -284,12 +284,15 @@ impl CloseFrame {
     }
 }
 
+/// Names the cause where the code is one of monty's, falling back to the
+/// bare number; a frame with no reason text prints the cause's description.
 impl fmt::Display for CloseFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.reason.is_empty() {
-            write!(f, "close code {}", self.code)
-        } else {
-            write!(f, "{} (close code {})", self.reason, self.code)
+        match (self.cause(), self.reason.is_empty()) {
+            (Some(cause), true) => write!(f, "{cause} ({})", cause.name()),
+            (Some(cause), false) => write!(f, "{} ({})", self.reason, cause.name()),
+            (None, true) => write!(f, "close code {}", self.code),
+            (None, false) => write!(f, "{} (close code {})", self.reason, self.code),
         }
     }
 }

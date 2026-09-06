@@ -2016,7 +2016,7 @@ async fn a_close_frame_sent_while_idle_reaches_the_next_turn() {
     );
     assert_eq!(
         err.to_string(),
-        "monty worker connection closed while sending a request: session idle timeout (close code 4000)"
+        "monty worker connection closed while sending a request: session idle timeout (idle_timeout)"
     );
 }
 
@@ -2099,4 +2099,8 @@ async fn an_unknown_close_code_is_still_a_disconnect() {
     assert_eq!(close.code, 4999);
     assert_eq!(close.reason, "something new");
     assert_eq!(close.cause(), None);
+    assert_eq!(
+        err.to_string(),
+        "monty worker connection closed while waiting for a reply: something new (close code 4999)"
+    );
 }
