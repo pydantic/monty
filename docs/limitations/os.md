@@ -60,14 +60,15 @@ whether each call is permitted.
     `os.remove`, `os.rmdir`, `os.rename`) report the first unknown keyword
     (`stat() got an unexpected keyword argument 'foo'`) where CPython reports
     the arity (`stat() takes at most 3 keyword arguments (4 given)`).
-- **The working directory is virtual and per feed.** The host sets it for
-    each feed (an explicit `cwd`, else the feed's first mount's virtual path,
-    else `/`); `os.getcwd()` reports it and relative paths are resolved
-    against it inside the interpreter, so a mount or `os` callback only ever
-    sees absolute paths. Host errors therefore name the resolved path
+- **The working directory is virtual and belongs to the session.** A
+    session's first feed sets it (an explicit `cwd`, else that feed's first
+    mount's virtual path, else `/`); it then persists across feeds, including
+    any `os.chdir()`, until a feed passes `cwd` again. `os.getcwd()` reports
+    it and relative paths are resolved against it inside the interpreter, so
+    a mount or `os` callback only ever sees absolute paths. Host errors
+    therefore name the resolved path
     (`open('missing')` raises `[Errno 2] No such file or directory: '/data/missing'`) where CPython names the argument as written. Absolute
-    paths reach the host as written. `os.chdir()` lasts for the current feed
-    only, like a mount.
+    paths reach the host as written.
 - **`os.chdir(path)` suspends as `Path.stat`** on the resolved target: hosts
     cannot observe a directory change, and without a mount or `os` handler it
     raises `PermissionError`. The interpreter raises `NotADirectoryError`

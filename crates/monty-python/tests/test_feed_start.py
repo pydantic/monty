@@ -248,8 +248,8 @@ def test_dump_at_suspension_then_load_and_resume(pool: Monty):
 
 
 def test_dump_keeps_the_feeds_working_directory(pool: Monty):
-    # cwd is per feed and travels inside a mid-feed dump, so the restoring
-    # session needs no `cwd=`
+    # cwd is session state and travels inside a mid-feed dump, so the
+    # restoring session needs no `cwd=`
     with pool.checkout() as session:
         snap = session.feed_start('import os\nfetch()\nos.getcwd()', cwd='/work')
         assert isinstance(snap, FunctionSnapshot)

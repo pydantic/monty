@@ -122,7 +122,7 @@ test('cwd defaults to the root without mounts', async () => {
   t.deepEqual(await run('import os\nos.getcwd()', { cwd: '/work/' }), '/work')
 })
 
-test('cwd defaults to the first mount and chdir lasts one feed', async (ctx) => {
+test('cwd defaults to the first mount and persists across feeds', async (ctx) => {
   skipIfBrowser(ctx)
   const { mount, cleanup } = createTestDir()
   try {
@@ -133,12 +133,23 @@ test('cwd defaults to the first mount and chdir lasts one feed', async (ctx) => 
       '/data/main.py',
       'hello world',
     ])
+    // chdir carries over, with or without the mount; an explicit cwd switches it
     t.is(await session.feedRun("os.chdir('subdir')\nos.getcwd()", { mount: md }), '/data/subdir')
-    t.is(await session.feedRun('os.getcwd()', { mount: md }), '/data')
+    t.is(await session.feedRun('os.getcwd()', { mount: md }), '/data/subdir')
+    t.is(await session.feedRun('os.getcwd()'), '/data/subdir')
     t.is(await session.feedRun("open('nested.txt').read()", { mount: md, cwd: '/data/subdir' }), 'nested content')
+    t.is(await session.feedRun('os.getcwd()', { mount: md, cwd: '/data' }), '/data')
   } finally {
     cleanup()
   }
+})
+
+test('an explicit cwd persists across feeds', async () => {
+  // no mounts, so this covers the wasm path too
+  await using session = await pool().checkout()
+  t.is(await session.feedRun('import os\nos.getcwd()', { cwd: '/work' }), '/work')
+  t.is(await session.feedRun('os.getcwd()'), '/work')
+  t.is(await session.feedRun('os.getcwd()', { cwd: '/' }), '/')
 })
 
 test('a relative cwd is refused', async () => {

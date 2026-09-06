@@ -665,12 +665,20 @@ def test_cwd_must_be_absolute(monty_run: RunMonty):
     assert str(exc_info.value) == snapshot('ValueError: cwd must be an absolute POSIX path: "data"')
 
 
-def test_chdir_lasts_for_one_feed(pool: Monty, test_dir: Path):
+def test_cwd_persists_across_feeds(pool: Monty, test_dir: Path):
     md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
     with pool.checkout() as session:
+        # the first feed's mount sets the directory; chdir and the mount-less feed keep it
         assert session.feed_run("import os\nos.chdir('subdir')\nos.getcwd()", mount=md) == snapshot('/data/subdir')
-        assert session.feed_run('os.getcwd()', mount=md) == snapshot('/data')
-        assert session.feed_run('os.getcwd()') == snapshot('/')
+        assert session.feed_run('os.getcwd()', mount=md) == snapshot('/data/subdir')
+        assert session.feed_run('os.getcwd()') == snapshot('/data/subdir')
+        # an explicit cwd switches it, and the switch persists too
+        assert session.feed_run('os.getcwd()', cwd='/data') == snapshot('/data')
+        assert session.feed_run("open('hello.txt').read()", mount=md) == snapshot('hello world')
+    with pool.checkout() as session:
+        # a session whose first feed has no mount starts at the root and stays there
+        assert session.feed_run('import os\nos.getcwd()') == snapshot('/')
+        assert session.feed_run('os.getcwd()', mount=md) == snapshot('/')
 
 
 def test_chdir_errors(monty_run: RunMonty, test_dir: Path):

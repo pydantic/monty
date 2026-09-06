@@ -611,8 +611,9 @@ pub struct Feed {
     /// Skip type checking for this feed even when the session enables it.
     #[prost(bool, tag = "3")]
     pub skip_type_check: bool,
-    /// Absolute virtual working directory for this feed, resolved by the parent
-    /// (an explicit choice, else the feed's first mount, else `/`). Empty means `/`.
+    /// Absolute virtual working directory to switch the session to before the
+    /// feed, resolved by the parent (an explicit choice, or the first mount on
+    /// the session's first feed). Empty keeps the session's current directory.
     #[prost(string, tag = "4")]
     pub cwd: ::prost::alloc::string::String,
 }

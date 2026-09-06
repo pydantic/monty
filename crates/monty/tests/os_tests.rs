@@ -4,7 +4,7 @@
 //! `RunProgress::OsCall` with the correct `OsFunction` variant and arguments,
 //! and that return values are correctly used by Python code.
 
-use monty::{MontyRun, RunProgress};
+use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
     MontyObject, OsFunctionCall, PrintWriter, ResourceTracker, dir_stat, file_stat,
@@ -424,6 +424,33 @@ fn os_chdir_host_error_propagates_and_keeps_cwd() {
             MontyObject::String("[Errno 2] No such file or directory: '/data/sub'".to_owned()),
             MontyObject::String("/data".to_owned())
         ])
+    );
+}
+
+/// The REPL keeps the directory `os.chdir` left the last snippet in, until
+/// the host switches it with `set_cwd`.
+#[test]
+fn repl_keeps_the_directory_across_snippets() {
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    repl.set_cwd("/data");
+    let ReplProgress::OsCall(call) = repl
+        .feed_start("import os\nos.chdir('sub')", vec![], PrintWriter::Stdout)
+        .unwrap()
+    else {
+        panic!("expected OsCall");
+    };
+    let ReplProgress::Complete { repl, .. } = call.resume(dir_stat(0o755, 0.0), PrintWriter::Stdout).unwrap() else {
+        panic!("expected Complete");
+    };
+    let mut repl = repl;
+    assert_eq!(
+        repl.feed_run("os.getcwd()", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::String("/data/sub".to_owned())
+    );
+    repl.set_cwd("/other");
+    assert_eq!(
+        repl.feed_run("os.getcwd()", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::String("/other".to_owned())
     );
 }
 

@@ -425,10 +425,11 @@ function returnValue(value: unknown): CallResult {
 
 /**
  * Resolves a feed's working directory the way `monty-pool` does for native
- * workers: unset means the root (there are no mounts in the browser), an
- * explicit value must be an absolute POSIX path without NUL bytes and loses
- * its trailing slashes. A rejected value is the session-preserving
- * `ValueError` turn the native path produces.
+ * workers: unset keeps the session's current directory (the root until a
+ * feed or `os.chdir` changes it — there are no mounts in the browser to
+ * default to), an explicit value must be an absolute POSIX path without NUL
+ * bytes and loses its trailing slashes. A rejected value is the
+ * session-preserving `ValueError` turn the native path produces.
  */
 function feedCwd(cwd: string | undefined): string | NativeTurn {
   const invalid = (problem: string): NativeTurn => ({
@@ -441,7 +442,7 @@ function feedCwd(cwd: string | undefined): string | NativeTurn {
     },
   })
   if (cwd === undefined) {
-    return '/'
+    return ''
   }
   if (cwd.includes('\0')) {
     return invalid('must not contain NUL bytes')

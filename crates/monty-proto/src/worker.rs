@@ -521,9 +521,11 @@ impl Child {
         let SessionState::Ready(mut repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked Ready above");
         };
-        // The parent resolves the working directory per feed (explicit
-        // choice, else the feed's first mount); an older parent sends none.
-        repl.set_cwd(if feed.cwd.is_empty() { "/" } else { feed.cwd.as_str() });
+        // The working directory persists in the REPL (including `os.chdir`);
+        // the parent sends one only to switch it, and an older parent never does.
+        if !feed.cwd.is_empty() {
+            repl.set_cwd(&feed.cwd);
+        }
         // snippets fed with skip_type_check never become type-check context:
         // the caller explicitly excluded them from checking, so later snippets
         // must not be checked against their (unchecked) bindings either

@@ -62,12 +62,13 @@ Pass a list to `mount=` for several at once.
 
 ### Working directory
 
-The sandbox has a virtual working directory, chosen per feed like the mounts: the first mount's virtual path, or `/`
-when nothing is mounted.
+The sandbox has a virtual working directory.
+A session's first feed sets it to the first mount's virtual path, or `/` when nothing is mounted, and it then persists
+across the session's feeds like the globals do.
 `os.getcwd()` and `Path.cwd()` report it, relative paths in `open()`, `os` and `pathlib` calls resolve against it
 before they reach a mount or the `os` callback, and `__file__` is the script name placed under it.
-Pass `cwd=` to choose another absolute virtual path.
-`os.chdir()` works within a feed and, like a mount, is forgotten when the feed ends.
+`os.chdir()` moves it, and the change carries over to later feeds.
+Pass `cwd=` to switch to another absolute virtual path before a feed.
 
 === "Python"
 

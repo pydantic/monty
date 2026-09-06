@@ -83,9 +83,9 @@ pub struct MontyRepl {
     /// [`with_host_clock`](Self::with_host_clock).
     #[serde(default = "default_clock")]
     clock: HostClock,
-    /// Sandbox working directory each new snippet starts in; see
-    /// [`set_cwd`](Self::set_cwd). `os.chdir` within a snippet does not
-    /// write back here — the directory is per feed, like mounts.
+    /// Sandbox working directory the next snippet starts in: what
+    /// [`set_cwd`](Self::set_cwd) chose, then whatever `os.chdir` left the
+    /// last snippet in — the directory is session state, like the globals.
     #[serde(default = "default_cwd")]
     cwd: String,
     /// Persistent heap across snippets.
@@ -135,14 +135,14 @@ impl MontyRepl {
         self
     }
 
-    /// Sets the sandbox working directory the next snippets start in (default `/`).
+    /// Switches the sandbox working directory (initially `/`).
     ///
     /// `cwd` is an absolute POSIX virtual path, normalized here like
     /// [`MontyRun::set_cwd`](crate::MontyRun::set_cwd): `os.getcwd()` reports
     /// it, relative paths in `open()` / `os` / `pathlib` calls resolve against
     /// it before reaching the host, and `__file__` is the script name resolved
-    /// against it. Hosts call this before each feed, typically with the
-    /// feed's first mount; a snippet's `os.chdir` lasts only for that snippet.
+    /// against it. The directory then persists across snippets, including a
+    /// snippet's `os.chdir`, until the host switches it again.
     pub fn set_cwd(&mut self, cwd: impl AsRef<str>) {
         self.cwd = normalize_posix_path(cwd.as_ref());
     }
@@ -260,7 +260,7 @@ impl MontyRepl {
             let vm_state = if converted.needs_snapshot() {
                 Some(vm.snapshot())
             } else {
-                this.globals = vm.take_globals();
+                reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut vm);
                 None
             };
             Ok((converted, vm_state))
@@ -335,8 +335,8 @@ impl MontyRepl {
 
             let result = executor.run_to_completion(&mut vm);
 
-            // Reclaim globals before cleanup.
-            self.globals = vm.take_globals();
+            // Reclaim globals (and any directory change) before cleanup.
+            reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut vm);
             Ok(result)
         });
 
@@ -457,6 +457,9 @@ impl MontyRepl {
             let mut globals = vm.take_globals();
             globals.split_off(original_globals_len).drop_with(vm);
             self.globals = globals;
+            if let Some(cwd) = vm.take_changed_cwd() {
+                self.cwd = cwd;
+            }
             result
         });
         self.interns = executor.interns;
@@ -843,7 +846,7 @@ impl ReplNameLookup {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    repl.globals = vm.take_globals();
+                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut vm);
                     None
                 };
                 (converted, vm_state)
@@ -889,7 +892,7 @@ impl ReplResolveFutures {
             vm_state,
             ..
         } = self;
-        repl.globals = vm_state.abandon(&mut repl.heap);
+        (repl.globals, repl.cwd) = vm_state.abandon(&mut repl.heap);
         repl.commit_executor(executor);
         repl
     }
@@ -947,7 +950,7 @@ impl ReplResolveFutures {
             );
 
             if let Some(call_id) = invalid_call_id {
-                repl.globals = vm.take_globals();
+                reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut vm);
                 return Err(MontyException::runtime_error(format!(
                     "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
                 )));
@@ -960,7 +963,7 @@ impl ReplResolveFutures {
             let vm_state = if converted.needs_snapshot() {
                 Some(vm.snapshot())
             } else {
-                repl.globals = vm.take_globals();
+                reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut vm);
                 None
             };
             Ok((converted, vm_state))
@@ -1083,7 +1086,7 @@ fn abort_restored(
         let vm_result = vm.abort(exc);
         let converted = convert_frame_exit(vm_result, &mut vm);
         // Uncatchable exceptions cannot suspend, so no snapshot is needed.
-        repl.globals = vm.take_globals();
+        reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut vm);
         converted
     });
     build_repl_progress(converted, None, executor, repl)
@@ -1113,7 +1116,8 @@ impl ReplSnapshot {
         abort_restored(repl, executor, vm_state, exc, print)
     }
 
-    /// Extracts the REPL session, restoring globals from the VM snapshot.
+    /// Extracts the REPL session, restoring globals and the working directory
+    /// from the VM snapshot.
     ///
     /// When a snapshot is taken, globals live inside the `VMSnapshot`; the rest
     /// of the in-flight state is released so the abandoned snippet leaks nothing
@@ -1125,7 +1129,7 @@ impl ReplSnapshot {
             executor,
             vm_state,
         } = self;
-        repl.globals = vm_state.abandon(&mut repl.heap);
+        (repl.globals, repl.cwd) = vm_state.abandon(&mut repl.heap);
         repl.commit_executor(executor);
         repl
     }
@@ -1173,7 +1177,7 @@ impl ReplSnapshot {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    repl.globals = vm.take_globals();
+                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut vm);
                     None
                 };
                 (converted, vm_state)
@@ -1185,6 +1189,16 @@ impl ReplSnapshot {
 // ---------------------------------------------------------------------------
 // Private helper functions
 // ---------------------------------------------------------------------------
+
+/// Reclaims what outlives a snippet from its finished VM: the globals, and
+/// the working directory when the snippet (or the snapshot it resumed from)
+/// owns one, so an `os.chdir` persists into later feeds like the globals do.
+fn reclaim_vm_state(globals: &mut Vec<Value>, cwd: &mut String, vm: &mut VM<'_>) {
+    *globals = vm.take_globals();
+    if let Some(changed) = vm.take_changed_cwd() {
+        *cwd = changed;
+    }
+}
 
 /// Injects input values into the VM's global namespace slots.
 ///
