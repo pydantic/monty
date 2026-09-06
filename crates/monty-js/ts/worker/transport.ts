@@ -133,6 +133,10 @@ export class WorkerTransport {
     if (mounts.length > 0) {
       throw new Error('the wasm worker does not support filesystem mounts (browser has no host filesystem)')
     }
+    const cwd = feedCwd(options.cwd)
+    if (typeof cwd !== 'string') {
+      return Promise.resolve(cwd)
+    }
     return this.turn(
       {
         tag: 'feed',
@@ -140,8 +144,7 @@ export class WorkerTransport {
           code,
           inputs: Object.entries(inputs ?? {}).map(([name, value]) => ({ name, value: encodeValue(value) })),
           skipTypeCheck: options.skipTypeCheck,
-          // No mounts in the browser, so the default is always the root.
-          cwd: options.cwd ?? '/',
+          cwd,
         },
       },
       onPrint,
@@ -418,6 +421,36 @@ function returnValue(value: unknown): CallResult {
   } catch (error) {
     return errorResult('TypeError', error instanceof Error ? error.message : String(error))
   }
+}
+
+/**
+ * Resolves a feed's working directory the way `monty-pool` does for native
+ * workers: unset means the root (there are no mounts in the browser), an
+ * explicit value must be an absolute POSIX path without NUL bytes and loses
+ * its trailing slashes. A rejected value is the session-preserving
+ * `ValueError` turn the native path produces.
+ */
+function feedCwd(cwd: string | undefined): string | NativeTurn {
+  const invalid = (problem: string): NativeTurn => ({
+    kind: 'error',
+    exception: {
+      excType: 'ValueError',
+      message: `cwd ${problem}: ${JSON.stringify(cwd)}`,
+      traceback: '',
+      frames: [],
+    },
+  })
+  if (cwd === undefined) {
+    return '/'
+  }
+  if (cwd.includes('\0')) {
+    return invalid('must not contain NUL bytes')
+  }
+  if (!cwd.startsWith('/')) {
+    return invalid('must be an absolute POSIX path')
+  }
+  const trimmed = cwd.replace(/\/+$/, '')
+  return trimmed === '' ? '/' : trimmed
 }
 
 /** Creates a traceback-free host exception result. */

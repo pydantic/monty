@@ -179,7 +179,8 @@ fn path_absolute() {
 // =============================================================================
 
 /// Starts `code` with the working directory set to `cwd` and returns the first
-/// OS call's name and arguments.
+/// OS call's name and arguments. The call is answered with a mock result so
+/// the run winds down cleanly instead of dropping live stack values.
 fn run_to_oscall_in(code: &str, cwd: &str) -> (&'static str, Vec<MontyObject>) {
     let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     runner.set_cwd(cwd);
@@ -188,8 +189,11 @@ fn run_to_oscall_in(code: &str, cwd: &str) -> (&'static str, Vec<MontyObject>) {
         .unwrap()
     {
         RunProgress::OsCall(call) => {
+            let mock_result = mock_oscall_result(&call.function_call);
+            let function = call.function_call.name();
             let (args, _) = call.function_call.clone().to_args();
-            (call.function_call.name(), args)
+            let _ = call.resume(mock_result, PrintWriter::Stdout);
+            (function, args)
         }
         progress => panic!("expected OsCall, got {progress:?}"),
     }
