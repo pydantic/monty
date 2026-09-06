@@ -67,11 +67,13 @@ try:
         if not is_windows:
             assert str(e) == f"[Errno 2] No such file or directory: '{root / 'missing'}'"
     assert Path.cwd() == resolved_root
+    # Windows CPython raises a different OSError subclass for the empty path.
     try:
         os.chdir('')
         assert False, 'expected FileNotFoundError'
-    except FileNotFoundError as e:
+    except OSError as e:
         if not is_windows:
+            assert isinstance(e, FileNotFoundError)
             assert str(e) == "[Errno 2] No such file or directory: ''"
     assert Path.cwd() == resolved_root
     try:

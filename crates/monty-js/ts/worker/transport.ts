@@ -455,9 +455,10 @@ function feedCwd(cwd: string | undefined): string | NativeTurn {
 
 /**
  * Quotes a string the way Rust's `{:?}` does, so the wasm transport's
- * validation errors read exactly like `monty-pool`'s: `"`, `\` and the
- * common control characters get their short escapes, other control
- * characters `\u{..}`, and everything else is kept as is.
+ * validation errors read like `monty-pool`'s: `"`, `\` and the common
+ * control characters get their short escapes; other control, format and
+ * non-space separator characters become `\u{..}`; everything else is kept
+ * as is. Rust also escapes a leading grapheme extender, left verbatim here.
  */
 function rustDebugString(value: string): string {
   const shortEscapes: Record<string, string> = {
@@ -475,8 +476,7 @@ function rustDebugString(value: string): string {
       out += short
       continue
     }
-    const codePoint = ch.codePointAt(0) ?? 0
-    out += codePoint < 0x20 || codePoint === 0x7f ? `\\u{${codePoint.toString(16)}}` : ch
+    out += ch !== ' ' && /[\p{C}\p{Z}]/u.test(ch) ? `\\u{${(ch.codePointAt(0) ?? 0).toString(16)}}` : ch
   }
   return out + '"'
 }
