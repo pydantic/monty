@@ -1,0 +1,21 @@
+crates/monty-js/ts/worker/transport.ts
+  s_8094673681c2fa::t_e2966a68dd0948 136-139,147,426-453
+crates/monty/tests/os_tests.rs
+  s_8094673681c2fa::t_af2ba3903bdb95 182-183,192-193,195-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8834eb4fcfd84d8dbf004f40146a96670980ff80",
+  "prompts": {},
+  "sessions": {
+    "s_8094673681c2fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf9081e0-d46f-481b-8256-a7fe2e23cafe",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
