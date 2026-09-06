@@ -20,8 +20,9 @@
 use std::sync::Arc;
 
 use ahash::AHashMap;
+use monty_pool::CloseFrame;
 use monty_proto::python::exc_monty_to_py;
-use monty_types::{ExcType, MontyException};
+use monty_types::{CloseCause, ExcType, MontyException};
 use pyo3::{
     PyClassInitializer,
     exceptions::{self},
@@ -388,18 +389,36 @@ impl MontyCrashedError {
 /// (WebSocket transport only — the local analogue is `MontyCrashedError`).
 ///
 /// The sandbox may have died, or the server may have dropped the session by
-/// policy: an idle/session/turn timeout, or being over capacity. A client that
-/// only sees the connection go away cannot tell those apart, so this error
-/// deliberately claims no more than that. Retry on a fresh session.
+/// policy: an idle/session/turn timeout, or being over capacity. A bare
+/// disconnect cannot tell those apart; a server that closed deliberately says
+/// why in its Close frame, exposed as `close_code`, `close_reason` and — for
+/// a code monty defines — `close_cause`. Retry on a fresh session.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
-pub struct MontyDisconnectError {}
+pub struct MontyDisconnectError {
+    /// The server's WebSocket close code, `None` when it sent no Close frame.
+    #[pyo3(get, name = "close_code")]
+    code: Option<u16>,
+    /// The server's close reason; `None` without a Close frame, and `''` for
+    /// a frame that gave none.
+    #[pyo3(get, name = "close_reason")]
+    reason: Option<String>,
+    /// `CloseCause::name()` for a close code monty defines, else `None`.
+    #[pyo3(get, name = "close_cause")]
+    cause: Option<&'static str>,
+}
 
 impl MontyDisconnectError {
-    /// Creates a `MontyDisconnectError` with the given description.
+    /// Creates a `MontyDisconnectError` with the given description and the
+    /// server's Close frame, when it sent one.
     #[must_use]
-    pub fn new_err(py: Python<'_>, message: String) -> PyErr {
+    pub fn new_err(py: Python<'_>, message: String, close: Option<CloseFrame>) -> PyErr {
         let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
-        let init = PyClassInitializer::from(base).add_subclass(Self {});
+        let cause = close.as_ref().and_then(CloseFrame::cause).map(CloseCause::name);
+        let (code, reason) = match close {
+            Some(close) => (Some(close.code), Some(close.reason)),
+            None => (None, None),
+        };
+        let init = PyClassInitializer::from(base).add_subclass(Self { code, reason, cause });
         match Py::new(py, init) {
             Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
             Err(e) => e,

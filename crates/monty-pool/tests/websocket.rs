@@ -17,11 +17,11 @@ use std::{
 #[cfg(feature = "telemetry")]
 use monty_pool::telemetry::{TelemetryAdapter, configure_telemetry_adapter};
 use monty_pool::{
-    Checkout, CheckoutOptions, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
-    ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, CloseFrame, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture,
+    ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, WireObject, decode_frame, encode_to_capped_vec, pb};
-use monty_types::{MontyObject, PrintStream, ResourceLimits};
+use monty_types::{CloseCause, ExcType, MontyObject, PrintStream, ResourceLimits};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
@@ -32,6 +32,7 @@ use tokio::time::timeout;
 use tungstenite::{
     Message, WebSocket,
     handshake::server::{Request, Response},
+    protocol::{CloseFrame as WsCloseFrame, frame::coding::CloseCode},
 };
 
 /// A mock child: accepts one WebSocket connection and answers each request with
@@ -1942,5 +1943,160 @@ async fn a_dropped_connection_is_a_disconnect() {
         .feed("x", vec![], vec![], false, &mut no_print)
         .await
         .expect_err("a closed connection must fail the turn");
-    assert!(matches!(err, PoolError::Disconnected { .. }), "got {err:?}");
+    // a Close with no body carries nothing to report
+    assert!(
+        matches!(err, PoolError::Disconnected { close: None, .. }),
+        "got {err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "monty worker connection closed while sending a request"
+    );
+}
+
+/// A server ending a session by policy, the way `monty-server` does: a Close
+/// frame whose code is the cause and whose reason is free text.
+fn close_with(socket: &mut WebSocket<TcpStream>, code: u16, reason: &str) {
+    let _ = socket.close(Some(WsCloseFrame {
+        code: CloseCode::from(code),
+        reason: reason.into(),
+    }));
+}
+
+/// Scripts a mock child that answers `Configure`, then closes with `code`
+/// either instead of answering the first feed or after answering it.
+fn serve_then_close(listener: &TcpListener, answer_first_feed: bool, code: u16, reason: &str) {
+    let mut socket = accept_ws(listener);
+    expect_configure(&mut socket);
+    expect_feed(&mut socket, "1 + 1");
+    if answer_first_feed {
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Complete(pb::Complete {
+                value: Some(MontyObject::Int(42).into()),
+            }),
+        );
+    }
+    close_with(&mut socket, code, reason);
+}
+
+#[tokio::test]
+async fn a_close_frame_sent_while_idle_reaches_the_next_turn() {
+    // The idle case: the server drops the session between turns. The reader
+    // task sees the Close while the client sits idle, and the next request
+    // fails on the send — which must still report what the server said.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || serve_then_close(&listener, true, 4000, "session idle timeout"));
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    join_server(server).await;
+    let err = checkout
+        .feed("x", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("a closed connection must fail the turn");
+    let PoolError::Disconnected { context, close } = &err else {
+        panic!("expected Disconnected, got {err:?}");
+    };
+    assert_eq!(context, "sending a request");
+    assert_eq!(
+        *close,
+        Some(CloseFrame {
+            code: 4000,
+            reason: "session idle timeout".to_owned(),
+        })
+    );
+    assert_eq!(
+        close.as_ref().and_then(CloseFrame::cause),
+        Some(CloseCause::IdleTimeout)
+    );
+    assert_eq!(
+        err.to_string(),
+        "monty worker connection closed while sending a request: session idle timeout (close code 4000)"
+    );
+}
+
+#[tokio::test]
+async fn a_close_frame_sent_mid_turn_fails_that_turn() {
+    // The server drops the session instead of answering a request.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || serve_then_close(&listener, false, 4002, "turn timeout"));
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("a closed connection must fail the turn");
+    join_server(server).await;
+    let PoolError::Disconnected { context, close } = &err else {
+        panic!("expected Disconnected, got {err:?}");
+    };
+    assert_eq!(context, "waiting for a reply");
+    assert_eq!(
+        *close,
+        Some(CloseFrame {
+            code: 4002,
+            reason: "turn timeout".to_owned(),
+        })
+    );
+    assert_eq!(
+        close.as_ref().and_then(CloseFrame::cause),
+        Some(CloseCause::TurnTimeout)
+    );
+}
+
+#[tokio::test]
+async fn an_out_of_memory_close_is_the_session_ending_memory_error() {
+    // Parity with the subprocess transport, where the worker's OOM exit code
+    // becomes a `MemoryError` whose checkout is already finished.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || serve_then_close(&listener, false, 4003, "memory limit exceeded"));
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("a closed connection must fail the turn");
+    join_server(server).await;
+    let PoolError::Runtime(exc) = &err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert_eq!(
+        exc.message(),
+        Some("the worker exceeded its memory limit and was terminated")
+    );
+    let err = checkout
+        .feed("x", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the checkout is finished");
+    assert!(matches!(err, PoolError::Finished), "got {err:?}");
+}
+
+#[tokio::test]
+async fn an_unknown_close_code_is_still_a_disconnect() {
+    // a code a newer server defined: the number and text still come through,
+    // just without a cause
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || serve_then_close(&listener, false, 4999, "something new"));
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("a closed connection must fail the turn");
+    join_server(server).await;
+    let PoolError::Disconnected { close: Some(close), .. } = &err else {
+        panic!("expected Disconnected with a frame, got {err:?}");
+    };
+    assert_eq!(close.code, 4999);
+    assert_eq!(close.reason, "something new");
+    assert_eq!(close.cause(), None);
 }

@@ -101,7 +101,10 @@ and restored later — including on a different worker or machine — with `Chec
 
 Runtime errors inside the sandbox (`PoolError::Runtime`) are not crashes: the worker and its
 session remain alive and usable — the one exception being the `MemoryError` above, raised for
-a worker that has already exited.
+a worker that has already exited. A WebSocket server reports the same kill with close code
+`CloseCause::OutOfMemory`, which the pool maps onto that `MemoryError`; every other
+`CloseCause` (idle/session/turn timeout, oversize request, eviction) is a
+`PoolError::Disconnected` carrying the frame.
 
 ## Observability
 

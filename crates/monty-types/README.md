@@ -19,6 +19,8 @@ implementation**.
   interpreter uses to enforce time/memory/recursion limits, plus the
   `max_suspensions` budget hosts enforce themselves.
 - `PrintStream` / `PrintWriter` — `print()` output capture.
+- `CloseCause` — the WebSocket close codes a server uses to say why it ended
+  a session, and what a client reads them back into.
 - `CompileOptions`, `ExtFunctionResult`, `NameLookupResult`, `FileMode`, and
   the CPython-compatible formatting helpers behind their `repr()`s.
 

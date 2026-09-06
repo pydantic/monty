@@ -13,7 +13,8 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from types import MappingProxyType, ModuleType
@@ -25,7 +26,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.datastructures import Headers
 from websockets.http11 import Request
 
-from pydantic_monty import AsyncMontyWebsocket, MontyRuntimeError
+from pydantic_monty import AsyncMontyWebsocket, MontyDisconnectError, MontyRuntimeError
 from pydantic_monty._binary import find_monty_binary
 
 _RELAY_SCRIPT = Path(__file__).resolve().parents[3] / 'scripts' / 'websocket_relay.py'
@@ -281,3 +282,50 @@ async def test_checkout_rejects_unknown_limits():
     assert exc_info.value.args[0] == snapshot(
         "unknown limits key 'max_memroy'; accepted keys are 'max_duration_secs', 'max_memory', 'gc_interval', 'max_recursion_depth', 'max_suspensions'"
     )
+
+
+@asynccontextmanager
+async def serve_closing_with(code: int, reason: str) -> AsyncGenerator[str, None]:
+    """Serves a mock that drops every session the way a server enforcing a
+    policy limit does: a Close frame whose code is the cause and whose reason is text."""
+
+    async def handler(websocket: ServerConnection) -> None:
+        await websocket.close(code, reason)
+
+    async with serve(handler, '127.0.0.1', 0) as server:
+        host, port = server.sockets[0].getsockname()[:2]
+        yield f'ws://{host}:{port}'
+
+
+async def test_close_frame_is_carried_by_disconnect_error():
+    async with serve_closing_with(4000, 'session idle timeout') as ws_url:
+        async with AsyncMontyWebsocket(ws_url, request_timeout=30.0) as pool:
+            with pytest.raises(MontyDisconnectError) as exc_info:
+                async with pool.checkout():
+                    pass
+    assert exc_info.value.close_code == snapshot(4000)
+    assert exc_info.value.close_reason == snapshot('session idle timeout')
+    assert exc_info.value.close_cause == snapshot('idle_timeout')
+    assert str(exc_info.value) == snapshot(
+        'monty worker connection closed while waiting for a reply: session idle timeout (close code 4000)'
+    )
+
+
+async def test_unknown_close_code_has_no_cause():
+    async with serve_closing_with(4999, 'something new') as ws_url:
+        async with AsyncMontyWebsocket(ws_url, request_timeout=30.0) as pool:
+            with pytest.raises(MontyDisconnectError) as exc_info:
+                async with pool.checkout():
+                    pass
+    assert exc_info.value.close_code == snapshot(4999)
+    assert exc_info.value.close_cause == snapshot(None)
+
+
+async def test_out_of_memory_close_is_a_memory_error():
+    # parity with a local pool, where a memory-limit kill is a session-ending MemoryError
+    async with serve_closing_with(4003, 'memory limit exceeded') as ws_url:
+        async with AsyncMontyWebsocket(ws_url, request_timeout=30.0) as pool:
+            with pytest.raises(MontyRuntimeError) as exc_info:
+                async with pool.checkout():
+                    pass
+    assert exc_info.value.display(format='msg') == snapshot('the worker exceeded its memory limit and was terminated')

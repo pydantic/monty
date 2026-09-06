@@ -60,6 +60,7 @@ __all__ = (
     'ExcType',
     'PrintCallback',
     'TypeCheckFormat',
+    'CloseCause',
     'OsHandler',
     'SyncSnapshot',
     'AsyncSnapshot',
@@ -239,6 +240,23 @@ instance or by type name), or a pending `future`."""
 
 PrintCallback: TypeAlias = Callable[[Literal['stdout', 'stderr'], str], None] | CollectStreams | CollectString
 """Print sink accepted by `feed_run` / `feed_start` / `load_snapshot`."""
+
+CloseCause: TypeAlias = Literal[
+    'idle_timeout', 'session_timeout', 'turn_timeout', 'out_of_memory', 'request_too_large', 'evicted'
+]
+"""Why a `monty-server` ended a session, read from the code of its WebSocket Close frame.
+
+| code | cause                 |
+|------|-----------------------|
+| 4000 | `'idle_timeout'`      |
+| 4001 | `'session_timeout'`   |
+| 4002 | `'turn_timeout'`      |
+| 4003 | `'out_of_memory'`     |
+| 4004 | `'request_too_large'` |
+| 4005 | `'evicted'`           |
+
+Exposed as `MontyDisconnectError.close_cause`, except `'out_of_memory'`, which
+raises `MemoryError` instead."""
 
 TypeCheckFormat: TypeAlias = Literal[
     'full', 'concise', 'azure', 'json', 'jsonlines', 'rdjson', 'pylint', 'gitlab', 'github'
