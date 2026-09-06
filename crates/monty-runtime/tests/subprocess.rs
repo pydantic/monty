@@ -883,6 +883,19 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     }
 }
 
+/// `inf` and `nan` print as they are, so a huge float precision costs nothing
+/// and must not be charged against the limit.
+#[test]
+fn non_finite_float_precision_is_not_charged() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    assert_eq!(
+        child.feed_complete("'%.2000000000f' % float('inf')"),
+        MontyObject::String("inf".to_owned())
+    );
+    child.shutdown();
+}
+
 /// Announcing a suspension must not cost extra copies of the value being
 /// announced. A host-call argument sized as a *fraction of the limit* is what
 /// makes this a regression test for that amplification rather than for one

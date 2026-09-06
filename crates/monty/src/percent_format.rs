@@ -866,9 +866,11 @@ fn format_float<T: Target>(
     let number = float_operand::<T>(value, vm)?;
     let precision = spec.precision.unwrap_or(6);
     // The precision may come from an argument (`%.*f`), and the fixed and
-    // exponent formatters synthesise that many digits.
+    // exponent formatters synthesise that many digits; `inf`/`nan` print as is.
     let tracker = &vm.heap.tracker;
-    check_repeat_size(1, precision, tracker)?;
+    if number.is_finite() {
+        check_repeat_size(1, precision, tracker)?;
+    }
     let parsed = ParsedFormatSpec {
         alternate: spec.alternate,
         precision: Some(precision),

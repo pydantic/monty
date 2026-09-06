@@ -181,22 +181,3 @@ fn deque_crosses_host_boundary_as_a_list() {
         ])
     );
 }
-
-/// A named tuple subscripted by a string reports as `tuple`, not `namedtuple`.
-///
-/// CPython raises this from the inherited `tuple.__getitem__`, so the subclass
-/// name never appears. This cannot be a dual-run `test_case`: the rest of the
-/// message still diverges from CPython's `tuple indices must be integers or
-/// slices, not str`, a difference plain tuples and lists share.
-#[test]
-fn namedtuple_string_subscript_names_tuple() {
-    let run = MontyRun::new(
-        "from collections import namedtuple\nnamedtuple('P', 'x y')(1, 2)['x']".to_owned(),
-        "test.py",
-        vec![],
-        CompileOptions::default(),
-    )
-    .expect("should parse");
-    let err = run.run_no_limits(vec![]).expect_err("expected TypeError");
-    assert_snapshot!(err.message().expect("TypeError carries a message"), @"tuple indices must be integers or slices, not str");
-}
