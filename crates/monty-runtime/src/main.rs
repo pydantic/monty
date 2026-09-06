@@ -58,9 +58,8 @@ pub(crate) struct Cli {
 
     /// Sandbox working directory: an absolute virtual path.
     ///
-    /// `os.getcwd()` reports it, relative paths resolve against it and
-    /// `__file__` is the script name placed under it. Defaults to the first
-    /// `--mount` virtual path, or `/` without mounts.
+    /// `os.getcwd()` reports it and relative paths resolve against it.
+    /// Defaults to the first `--mount` virtual path, or `/` without mounts.
     #[arg(long)]
     cwd: Option<String>,
 

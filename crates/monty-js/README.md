@@ -330,9 +330,8 @@ await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
 The sandbox's working directory is session state: the first feed sets it to
 the first mount's virtual path, or `/` without mounts, and it then persists
 (`os.chdir()` included) unless `cwd` switches it to another absolute virtual
-path. `os.getcwd()` reports it, relative paths resolve against it before
-reaching a mount or the `os` callback, and `__file__` is the script name
-under it.
+path. `os.getcwd()` reports it and relative paths resolve against it before
+reaching a mount or the `os` callback.
 
 ```ts
 await session.feedRun("open('file.txt').read()", { mount, cwd: '/mnt/data' })
