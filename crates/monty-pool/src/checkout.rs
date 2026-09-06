@@ -583,8 +583,6 @@ impl Checkout {
         self.begin_load();
         self.restored_script_name = None;
         self.feed_mounts = feed_mounts;
-        // The dump carries the session's working directory too.
-        self.cwd_set = true;
         let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
         let outcome = self
             .request_turn(&request, self.pool.config.request_timeout, on_print)
@@ -597,6 +595,8 @@ impl Checkout {
                 return Err(self.protocol_violation(format!("unexpected reply to Load: {other:?}")));
             }
         };
+        // The adopted dump carries the session's working directory too.
+        self.cwd_set = true;
         Ok((event, self.restored_script_name.take()))
     }
 
@@ -658,7 +658,6 @@ impl Checkout {
                 .first()
                 .map_or_else(|| "/".to_owned(), |mount| mount.virtual_path().to_owned()),
         };
-        self.cwd_set = true;
         self.feed_mounts = Self::build_feed_mounts(mounts);
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.into(),
@@ -672,7 +671,14 @@ impl Checkout {
             skip_type_check,
             cwd,
         }));
-        self.expect_turn(&request, on_print).await
+        let outcome = self.expect_turn(&request, on_print).await;
+        // The worker adopts the directory after type checking and before
+        // running the snippet, so every reply but a typing rejection means it
+        // took effect (a lost worker takes the session with it).
+        if !matches!(outcome, Err(PoolError::Typing(_))) {
+            self.cwd_set = true;
+        }
+        outcome
     }
 
     /// Answers a [`TurnEvent::FunctionCall`] or [`TurnEvent::OsCall`].

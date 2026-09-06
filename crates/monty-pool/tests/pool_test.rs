@@ -450,6 +450,33 @@ os.chdir('sub')
     session.finish().await.unwrap();
 }
 
+/// A first feed that type checking rejects never reaches the worker's
+/// directory switch, so the next feed still establishes the mount default.
+#[tokio::test]
+async fn working_directory_survives_a_rejected_first_feed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            type_check: true,
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let err = session
+        .feed("x: int = 'nope'", vec![], mount(), false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Typing(_)), "expected Typing, got {err:?}");
+    let result = session
+        .feed("import os\nos.getcwd()", vec![], mount(), false, &mut no_print)
+        .await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt".to_owned()));
+    session.finish().await.unwrap();
+}
+
 /// Mount-covered filesystem OS calls are serviced by the parent and never
 /// surface to the caller — the feed just completes. Covers read, write,
 /// mkdir kwargs, rename, and `open()` + file-handle ops through a mount.

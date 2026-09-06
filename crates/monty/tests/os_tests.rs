@@ -427,6 +427,33 @@ fn os_chdir_host_error_propagates_and_keeps_cwd() {
     );
 }
 
+/// The REPL refuses a future answering `os.chdir`'s stat like a one-shot run
+/// does, instead of leaving the directory silently unchanged.
+#[test]
+fn repl_os_chdir_answered_with_a_future_is_refused() {
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    repl.set_cwd("/data");
+    let ReplProgress::OsCall(call) = repl
+        .feed_start("import os\nos.chdir('sub')", vec![], PrintWriter::Stdout)
+        .unwrap()
+    else {
+        panic!("expected OsCall");
+    };
+    let err = call
+        .resume(ExtFunctionResult::Future(7), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(err.error.exc_type(), ExcType::RuntimeError);
+    assert_eq!(
+        err.error.message().unwrap(),
+        "os.chdir cannot be answered with a future"
+    );
+    let mut repl = err.repl;
+    assert_eq!(
+        repl.feed_run("os.getcwd()", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::String("/data".to_owned())
+    );
+}
+
 /// The REPL keeps the directory `os.chdir` left the last snippet in, until
 /// the host switches it with `set_cwd`.
 #[test]
