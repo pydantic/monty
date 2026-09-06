@@ -327,6 +327,13 @@ impl CodeBuilder {
     /// Slots 0-3 use zero-operand opcodes (`LoadLocal0`, etc.) for efficiency.
     /// Slots 4-255 use `LoadLocal` with a u8 operand.
     /// Slots 256+ use `LoadLocalW` with a u16 operand.
+    /// Sizes the local-name table for `count` slots up front, so registering a
+    /// large namespace (a long REPL session's globals) does not grow it one
+    /// slot at a time through repeated reallocation.
+    pub fn reserve_local_names(&mut self, count: usize) {
+        self.local_names.reserve(count);
+    }
+
     /// Registers a local variable name for a given slot.
     ///
     /// This is called during compilation when we encounter a variable access.
