@@ -28,7 +28,7 @@ use crate::{
     modules::ModuleFunctions,
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingOsEffect, normalize_posix_path, posix_join, value_to_owned_string},
-    types::{Module, Property, Type, property::ZeroArgOsProperty, str::allocate_string},
+    types::{Bytes, Module, Property, Type, property::ZeroArgOsProperty, str::allocate_string},
     value::Value,
 };
 
@@ -48,6 +48,7 @@ pub(crate) enum OsFunctions {
     Replace,
     Fspath,
     Getcwd,
+    Getcwdb,
     Chdir,
 }
 
@@ -78,6 +79,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         (StaticStrings::Rename, function(OsFunctions::Rename)),
         (StaticStrings::Replace, function(OsFunctions::Replace)),
         (StaticStrings::Getcwd, function(OsFunctions::Getcwd)),
+        (StaticStrings::Getcwdb, function(OsFunctions::Getcwdb)),
         (StaticStrings::Chdir, function(OsFunctions::Chdir)),
         (StaticStrings::OsFspath, function(OsFunctions::Fspath)),
         // os.environ — property that yields the host environment as a dict.
@@ -121,6 +123,7 @@ pub(super) fn call(vm: &mut VM<'_>, functions: OsFunctions, args: ArgValues) -> 
         OsFunctions::Replace => replace(vm, args),
         OsFunctions::Fspath => fspath(vm, args),
         OsFunctions::Getcwd => getcwd(vm, args),
+        OsFunctions::Getcwdb => getcwdb(vm, args),
         OsFunctions::Chdir => chdir(vm, args),
     }
 }
@@ -130,6 +133,16 @@ pub(super) fn call(vm: &mut VM<'_>, functions: OsFunctions, args: ArgValues) -> 
 fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("getcwd", vm.heap)?;
     Ok(CallResult::Value(allocate_string(&*vm.env.cwd, vm.heap)))
+}
+
+/// Implementation of `os.getcwdb()`: the working directory as bytes.
+///
+/// Virtual paths are always UTF-8, so this is `os.getcwd().encode()` with no
+/// filesystem encoding involved.
+fn getcwdb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    args.check_zero_args("getcwdb", vm.heap)?;
+    let bytes = Bytes::new(vm.env.cwd.as_bytes().to_vec());
+    Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Bytes(bytes)))))
 }
 
 /// Implementation of `os.chdir(path)`.
