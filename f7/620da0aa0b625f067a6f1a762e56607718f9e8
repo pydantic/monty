@@ -1,0 +1,19 @@
+crates/monty-js/__test__/print.spec.ts
+  s_b8b9912e690cc2::t_34edd7420c13eb 138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f7620da0aa0b625f067a6f1a762e56607718f9e8",
+  "prompts": {},
+  "sessions": {
+    "s_b8b9912e690cc2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "919696d2-c4dd-4cb7-803b-bbe0bba76f9a",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
