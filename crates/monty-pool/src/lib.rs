@@ -12,7 +12,7 @@ mod worker;
 use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
 
 pub use monty_proto::{DEFAULT_PRINT_FLUSH_INTERVAL, MAX_VALUE_DEPTH, exceeds_max_value_depth};
-use monty_types::MontyException;
+use monty_types::{CloseCause, MontyException};
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::Metrics;
@@ -164,12 +164,16 @@ pub enum PoolError {
     /// The remote worker's connection dropped without a turn-ending event
     /// (WebSocket transport only — the local analogue is [`Self::Crashed`]).
     /// The sandbox may have died, or the server may have dropped the session
-    /// by policy (idle/session/turn timeout, capacity); the two are
-    /// indistinguishable to a client that only learns of the close, so this
-    /// deliberately says no more than "the connection went away".
+    /// by policy (idle/session/turn timeout, capacity). A bare disconnect
+    /// cannot tell those apart; a server that closed deliberately says why in
+    /// `close`, whose [`CloseFrame::cause`] names the policy. The one cause
+    /// not reported this way is [`CloseCause::OutOfMemory`], which surfaces as
+    /// the same session-ending `MemoryError` the subprocess transport raises.
     Disconnected {
         /// What the pool was doing when the disconnect was observed.
         context: String,
+        /// The Close frame the server sent, when it sent one before going away.
+        close: Option<CloseFrame>,
     },
     /// The remote server is shutting down and did **not** run the request —
     /// re-running it on a fresh session is safe. `dump` carries the session
@@ -231,7 +235,13 @@ impl fmt::Display for PoolError {
             Self::Exhausted => f.write_str("no monty worker became available within the checkout timeout"),
             Self::Spawn(msg) => write!(f, "failed to spawn monty worker: {msg}"),
             Self::Finished => f.write_str("this checkout has already been finished"),
-            Self::Disconnected { context } => write!(f, "monty worker connection closed while {context}"),
+            Self::Disconnected { context, close: None } => {
+                write!(f, "monty worker connection closed while {context}")
+            }
+            Self::Disconnected {
+                context,
+                close: Some(close),
+            } => write!(f, "monty worker connection closed while {context}: {close}"),
             Self::Shutdown { dump } => match dump {
                 Some(_) => {
                     f.write_str("monty server is shutting down; the request did not run (session dump attached)")
@@ -247,6 +257,39 @@ impl error::Error for PoolError {
         match self {
             Self::Runtime(exc) => Some(exc),
             _ => None,
+        }
+    }
+}
+
+/// The WebSocket Close frame a server sent before ending a session, carried by
+/// [`PoolError::Disconnected`].
+///
+/// The code is the frame's status code (RFC 6455 §7.4), which [`Self::cause`]
+/// reads back into a [`CloseCause`] when it is one of monty's; the reason is
+/// the frame's text, at most 123 bytes, empty when the server gave none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseFrame {
+    /// The close status code.
+    pub code: u16,
+    /// The human-readable reason, empty when the server sent none.
+    pub reason: String,
+}
+
+impl CloseFrame {
+    /// Why the server ended the session, when its code is one of
+    /// [`CloseCause`]'s; `None` for any other code.
+    #[must_use]
+    pub fn cause(&self) -> Option<CloseCause> {
+        CloseCause::from_code(self.code)
+    }
+}
+
+impl fmt::Display for CloseFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.reason.is_empty() {
+            write!(f, "close code {}", self.code)
+        } else {
+            write!(f, "{} (close code {})", self.reason, self.code)
         }
     }
 }

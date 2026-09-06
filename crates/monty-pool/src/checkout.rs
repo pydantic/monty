@@ -17,15 +17,15 @@ use std::{
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{FrameError, PROTOCOL_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 use monty_types::{
-    AssertMessageAnnotations, DEFAULT_MAX_SUSPENSIONS, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid,
-    NameLookupResult, OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig,
+    AssertMessageAnnotations, CloseCause, DEFAULT_MAX_SUSPENSIONS, ExcType, MONTY_VERSION, MontyException, MontyObject,
+    MontyUuid, NameLookupResult, OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig,
 };
 use tokio::{task::spawn_blocking, time::timeout};
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::outcome};
 use crate::{
-    CrashCause, PoolError,
+    CloseFrame, CrashCause, PoolError,
     pool::{CapacityGuard, PoolInner},
     worker::Worker,
 };
@@ -1514,6 +1514,8 @@ impl Checkout {
         // status, so a cancelled reap of an out-of-memory worker is the one
         // case counted as a plain crash.
         let mut capacity = CapacityGuard::terminating(&self.pool, if websocket { "disconnected" } else { "crash" });
+        // read before teardown aborts the reader task holding it
+        let close = worker.peer_close().await;
         // A worker that exits deliberately (an allocation refused, see
         // `OOM_EXIT_CODE`) is racing us: SIGKILLing it mid-exit would replace
         // its code with `signal: 9` and lose the classification. Give it the
@@ -1523,18 +1525,25 @@ impl Checkout {
         // is waiting on this grace that should have been killed outright.
         let status = worker.reap_or_kill(FATAL_EXIT_GRACE).await;
         drop(worker);
-        if websocket {
-            PoolError::Disconnected {
-                context: context.to_owned(),
-            }
-        } else if status.and_then(|status| status.code()) == Some(monty_types::OOM_EXIT_CODE) {
-            // the worker is gone, unlike every other `Runtime` error — the
-            // checkout is already finished, so later calls report `Finished`
+        // an out-of-memory kill is the one death reported the same way on both
+        // transports: the worker is gone, unlike every other `Runtime` error —
+        // the checkout is already finished, so later calls report `Finished`
+        let out_of_memory = if websocket {
+            close.as_ref().and_then(CloseFrame::cause) == Some(CloseCause::OutOfMemory)
+        } else {
+            status.and_then(|status| status.code()) == Some(monty_types::OOM_EXIT_CODE)
+        };
+        if out_of_memory {
             capacity.set_reason("oom");
             PoolError::Runtime(MontyException::new(
                 ExcType::MemoryError,
-                Some("the worker exceeded its memory limit and was terminated".to_owned()),
+                Some(CloseCause::OutOfMemory.description().to_owned()),
             ))
+        } else if websocket {
+            PoolError::Disconnected {
+                context: context.to_owned(),
+                close,
+            }
         } else {
             PoolError::Crashed {
                 status,

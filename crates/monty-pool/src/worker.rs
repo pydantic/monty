@@ -47,13 +47,13 @@ use tokio_tungstenite::{
         Bytes, Error as WsError, Message,
         client::IntoClientRequest,
         http::{HeaderName, HeaderValue, header::USER_AGENT},
-        protocol::WebSocketConfig,
+        protocol::{CloseFrame as WsCloseFrame, WebSocketConfig},
     },
 };
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::TurnMetrics, tracing::Recorder};
-use crate::{MontyTransport, PoolConfig, PoolError};
+use crate::{CloseFrame, MontyTransport, PoolConfig, PoolError};
 
 /// The async WebSocket stream type for a remote worker.
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -102,8 +102,9 @@ struct WebSocketWorker {
     sink: Option<SplitSink<WsStream, Message>>,
     /// Binary frames (or the terminal error) forwarded by the reader task.
     events: mpsc::Receiver<Result<Bytes, FrameError>>,
-    /// The task owning the read half; aborted on teardown/drop.
-    reader: JoinHandle<()>,
+    /// The task owning the read half, which resolves to the server's Close
+    /// frame; `None` once [`Self::peer_close`] took it. Aborted on teardown/drop.
+    reader: Option<JoinHandle<Option<CloseFrame>>>,
 }
 
 impl WebSocketWorker {
@@ -118,8 +119,29 @@ impl WebSocketWorker {
         if let Some(sink) = &mut self.sink {
             send_close(sink).await;
         }
-        self.reader.abort();
+        if let Some(reader) = &self.reader {
+            reader.abort();
+        }
         self.sink = None;
+    }
+
+    /// The Close frame the server sent, for a connection that has just failed.
+    ///
+    /// The reader task exits on the Close it read, so it is finished or about
+    /// to be. The bound is for a connection that failed without one (I/O
+    /// error, vanished peer), whose reader may sit in a read that never
+    /// returns; it is then aborted, as teardown would.
+    async fn peer_close(&mut self) -> Option<CloseFrame> {
+        let mut reader = self.reader.take()?;
+        match timeout(PEER_CLOSE_WAIT, &mut reader).await {
+            Ok(Ok(close)) => close,
+            // panicked or already aborted
+            Ok(Err(_)) => None,
+            Err(_elapsed) => {
+                reader.abort();
+                None
+            }
+        }
     }
 }
 
@@ -132,7 +154,9 @@ impl WebSocketWorker {
 /// notices the worker is gone, and would hold the socket open forever.
 impl Drop for WebSocketWorker {
     fn drop(&mut self) {
-        self.reader.abort();
+        if let Some(reader) = &self.reader {
+            reader.abort();
+        }
         if let Some(mut sink) = self.sink.take()
             && let Ok(handle) = Handle::try_current()
         {
@@ -267,7 +291,7 @@ impl Worker {
             kind: WorkerKind::WebSocket(Box::new(WebSocketWorker {
                 sink: Some(sink),
                 events,
-                reader,
+                reader: Some(reader),
             })),
             checkouts_served: 0,
             #[cfg(feature = "telemetry")]
@@ -445,7 +469,22 @@ impl Worker {
             w.close().await;
         }
     }
+
+    /// The Close frame a WebSocket server sent before its connection failed,
+    /// for the disconnect error being built; `None` for a subprocess worker.
+    /// Call once, after the failing send or receive and before teardown.
+    pub(crate) async fn peer_close(&mut self) -> Option<CloseFrame> {
+        match &mut self.kind {
+            WorkerKind::Subprocess(_) => None,
+            WorkerKind::WebSocket(w) => w.peer_close().await,
+        }
+    }
 }
+
+/// How long [`WebSocketWorker::peer_close`] waits for the reader task to hand
+/// over the server's Close frame. Only a connection that failed *without* a
+/// Close ever waits this long; one that closed properly resolves at once.
+const PEER_CLOSE_WAIT: Duration = Duration::from_millis(100);
 
 /// How long teardown gives a WebSocket Close frame to reach the OS. Not a
 /// latency budget (no ACK or Close echo is awaited) — it only rides out
@@ -585,32 +624,50 @@ const WS_EVENT_CHANNEL_DEPTH: usize = 1;
 /// The WebSocket reader task: polls the read half continuously so
 /// tokio-tungstenite pongs even while the worker is idle (see the module
 /// docs), forwarding each binary frame — or the terminal error — to `recv`.
+/// Resolves to the server's Close frame, which `recv` cannot carry (its
+/// channel speaks `FrameError`, shared with the subprocess transport) and the
+/// disconnect error wants — see [`WebSocketWorker::peer_close`].
 ///
 /// Reserving the slot before polling keeps the reader polling (and ponging)
 /// rather than blocked holding a frame.
-async fn read_ws_events(mut read_half: SplitStream<WsStream>, events: mpsc::Sender<Result<Bytes, FrameError>>) {
+async fn read_ws_events(
+    mut read_half: SplitStream<WsStream>,
+    events: mpsc::Sender<Result<Bytes, FrameError>>,
+) -> Option<CloseFrame> {
     // an Err from reserve means the receiver dropped: the worker is gone
     while let Ok(permit) = events.reserve().await {
-        let result = loop {
+        let (result, close) = loop {
             match read_half.next().await {
-                Some(Ok(Message::Binary(data))) => break Ok(data),
+                Some(Ok(Message::Binary(data))) => break (Ok(data), None),
                 // polling is itself what pongs: tungstenite queues the pong on
                 // read and flushes it during read polling
                 Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
-                // a clean close, or text/raw frames the protocol never uses
-                Some(Ok(Message::Close(_) | Message::Text(_) | Message::Frame(_))) | None => {
-                    break Err(FrameError::Truncated);
+                // the server closed: a bare disconnect to `recv`, the frame
+                // (a policy drop's code and reason) to the caller
+                Some(Ok(Message::Close(frame))) => break (Err(FrameError::Truncated), frame.as_ref().map(close_frame)),
+                // text/raw frames the protocol never uses, or a vanished peer
+                Some(Ok(Message::Text(_) | Message::Frame(_))) | None => {
+                    break (Err(FrameError::Truncated), None);
                 }
-                Some(Err(WsError::Io(err))) => break Err(FrameError::Io(err)),
-                Some(Err(_)) => break Err(FrameError::Truncated),
+                Some(Err(WsError::Io(err))) => break (Err(FrameError::Io(err)), None),
+                Some(Err(_)) => break (Err(FrameError::Truncated), None),
             }
         };
         // any error is terminal: deliver it and exit
         let stop = result.is_err();
         permit.send(result);
         if stop {
-            return;
+            return close;
         }
+    }
+    None
+}
+
+/// Copies a tungstenite Close frame into the pool's public [`CloseFrame`].
+fn close_frame(frame: &WsCloseFrame) -> CloseFrame {
+    CloseFrame {
+        code: frame.code.into(),
+        reason: frame.reason.to_string(),
     }
 }
 

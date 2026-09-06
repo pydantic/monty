@@ -7,6 +7,7 @@ from typing_extensions import Self
 
 from . import (
     AsyncSnapshot,
+    CloseCause,
     ExternalResult,
     ExternalSettledResult,
     OsHandler,
@@ -444,12 +445,29 @@ class MontyDisconnectError(MontyError):
 
     The local analogue is `MontyCrashedError`. The sandbox may have died, or
     the server may have dropped the session by policy — an idle, session, or
-    turn timeout, or being over capacity. A client that only sees the
-    connection go away cannot tell those apart, so this error claims no more
-    than that. Retry on a fresh session.
+    turn timeout, or being over capacity. A bare disconnect cannot tell those
+    apart; a server that closed deliberately says why in its WebSocket Close
+    frame, exposed here as `close_code`, `close_reason` and `close_cause` and
+    repeated in the message. Retry on a fresh session.
+
+    One policy drop is not reported this way: a worker killed for exceeding
+    its memory limit raises the same session-ending `MemoryError` a local
+    pool does.
 
     Cannot be constructed directly from Python.
     """
+
+    @property
+    def close_code(self) -> int | None:
+        """The server's WebSocket close code, `None` when it sent no Close frame."""
+
+    @property
+    def close_reason(self) -> str | None:
+        """The server's close reason; `None` without a Close frame, `''` for a frame that gave none."""
+
+    @property
+    def close_cause(self) -> CloseCause | None:
+        """What `close_code` stands for when it is a code monty defines (see `CloseCause`), else `None`."""
 
 @final
 class MontyShutdown(MontyError):
@@ -851,7 +869,8 @@ class AsyncMontyWebsocket:
     drain it answers the session's next request with `MontyShutdown`, whose
     `dump` restores the session onto another server; every other server-side
     drop (idle, session or turn timeout, capacity) closes the connection and
-    raises `MontyDisconnectError`.
+    raises `MontyDisconnectError`, whose `close_cause` names the policy —
+    except a memory-limit kill, which raises `MemoryError` as a local pool does.
 
     ```python
     async with AsyncMontyWebsocket('ws://127.0.0.1:8799') as pool:
