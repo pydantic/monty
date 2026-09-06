@@ -958,6 +958,11 @@ class AsyncMontySession:
         entries in `external_lookup`) may be coroutines, awaited concurrently.
         See `MontySession.feed_run` for the shared error types.
 
+        Unfinished coroutine callbacks are cancelled and joined before returning
+        the outcome or propagating caller cancellation. Further cancellation
+        reaches their cleanup; callbacks must cooperate with cancellation.
+        Tasks callbacks create themselves remain their responsibility.
+
         Arguments:
             code: The Python snippet to execute; its trailing expression value
                 (if any) is converted to a Python object and returned.

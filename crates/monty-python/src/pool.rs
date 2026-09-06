@@ -52,7 +52,7 @@ use pyo3::{
     Borrowed,
     exceptions::{PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},
     prelude::*,
-    types::{PyBool, PyBytes, PyDict, PyInt, PyList, PyString, PyTuple},
+    types::{PyBool, PyBytes, PyCFunction, PyDict, PyInt, PyList, PyString, PyTuple},
 };
 use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
 use tokio::{
@@ -815,7 +815,18 @@ impl PyAsyncMontySession {
         )?;
         let ext = external_lookup.map(|d| d.clone().unbind());
         let abandoned = Arc::clone(&self.drive_abandoned);
-        future_into_py(py, async move { drive_async(args, ext, abandoned).await })
+        let callbacks = py.import("pydantic_monty._async")?.getattr("CallbackTasks")?.call0()?;
+        let drive_args = Mutex::new(Some((args, ext, abandoned, callbacks.clone().unbind())));
+        let start = PyCFunction::new_closure(py, None, None, move |py_args: &Bound<'_, PyTuple>, _kwargs| {
+            let (args, ext, abandoned, callbacks) = lock(&drive_args)
+                .take()
+                .ok_or_else(|| PyRuntimeError::new_err("feed_run has already started"))?;
+            future_into_py(py_args.py(), async move {
+                drive_async(args, ext, abandoned, callbacks).await
+            })
+            .map(Bound::unbind)
+        })?;
+        callbacks.call_method1("run", (start,))
     }
 
     /// Async counterpart of [`PyMontySession::feed_start`]: the returned
@@ -1397,6 +1408,7 @@ async fn drive_async(
     args: FeedArgs,
     external_lookup: Option<Py<PyDict>>,
     abandoned: Arc<AtomicBool>,
+    callbacks: Py<PyAny>,
 ) -> PyResult<Py<PyAny>> {
     if abandoned.load(Ordering::Acquire) {
         discard_checkout(&args.checkout).await;
@@ -1411,7 +1423,7 @@ async fn drive_async(
         started: Arc::clone(&started),
         armed: true,
     };
-    let result = drive_async_inner(args, external_lookup, started).await;
+    let result = drive_async_inner(args, external_lookup, started, callbacks).await;
     guard.armed = false;
     result
 }
@@ -1457,6 +1469,7 @@ async fn drive_async_inner(
     args: FeedArgs,
     external_lookup: Option<Py<PyDict>>,
     started: Arc<AtomicBool>,
+    callbacks: Py<PyAny>,
 ) -> PyResult<Py<PyAny>> {
     let FeedArgs {
         code,
@@ -1535,7 +1548,7 @@ async fn drive_async_inner(
                     Python::attach(|py| dispatch_os_parts(py, &function_name, &args, &kwargs, os.as_ref(), &instances));
                 TurnAnswer::Call(value)
             }
-            event => match async_turn_answer(event, external_lookup.as_ref(), &instances, &mut join_set) {
+            event => match async_turn_answer(event, external_lookup.as_ref(), &instances, &mut join_set, &callbacks) {
                 Ok(answer) => answer,
                 Err(err) => {
                     discard_checkout(&checkout).await;
@@ -1567,6 +1580,7 @@ fn async_turn_answer(
     external_lookup: Option<&Py<PyDict>>,
     instances: &InstanceStore,
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    callbacks: &Py<PyAny>,
 ) -> PyResult<TurnAnswer> {
     match event {
         TurnEvent::FunctionCall {
@@ -1578,6 +1592,7 @@ fn async_turn_answer(
         } => match dispatch_function_call(&function_name, object_id, &args, &kwargs, external_lookup, instances) {
             CallResult::Sync(result) => Ok(TurnAnswer::Call(ext_to_resume(result)?)),
             CallResult::Coroutine(coro) => {
+                let coro = Python::attach(|py| callbacks.call_method1(py, "wrap", (coro,)))?;
                 spawn_coroutine_task(join_set, call_id, coro, instances)?;
                 Ok(TurnAnswer::Call(ResumeValue::Future))
             }

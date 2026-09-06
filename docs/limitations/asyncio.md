@@ -54,6 +54,17 @@ every branch is blocked on an external call, hands the pending calls to the
 host, and resumes when the host returns results. There is no preemption, no
 threads, and no in-sandbox scheduler.
 
+### Python callback lifetime
+
+[`AsyncMontySession.feed_run()`][pydantic_monty.AsyncMontySession.feed_run] cancels and joins unfinished Python
+coroutine callbacks when the feed ends, including callbacks the sandbox called without awaiting.
+In CPython, calling a coroutine function without awaiting or scheduling its result does not start it.
+Tasks created by a callback remain the callback's responsibility.
+Further caller cancellation reaches callback cleanup.
+Cleanup has no fixed deadline: callbacks must cooperate with cancellation, and Python cannot forcibly terminate them.
+Snapshot-driven execution, started with [`AsyncMontySession.feed_start()`][pydantic_monty.AsyncMontySession.feed_start]
+and [resumed by the host](../snapshots.md), has a separate lifetime and is not covered by this cleanup.
+
 ### Siblings left running by a failed `gather` only advance while something else suspends
 
 When one child of a `gather` raises, the siblings keep running as they do in CPython.
