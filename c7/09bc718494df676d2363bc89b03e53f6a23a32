@@ -1,0 +1,25 @@
+crates/monty/test_cases/os__cwd.py
+  s_8094673681c2fa::t_b9c22fd0dd49d4 70,74,76
+crates/monty/src/run_progress.rs
+  s_8094673681c2fa::t_bd9014ece9a98c 780-783,786
+crates/monty-js/ts/worker/transport.ts
+  s_8094673681c2fa::t_d5aa6306a6c84d 458-461,479
+crates/monty/src/modules/os.rs
+  s_8094673681c2fa::t_b9c22fd0dd49d4 147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c709bc718494df676d2363bc89b03e53f6a23a32",
+  "prompts": {},
+  "sessions": {
+    "s_8094673681c2fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf9081e0-d46f-481b-8256-a7fe2e23cafe",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
