@@ -2602,11 +2602,11 @@ fn bigint_pow(base: BigInt, exp: u64) -> BigInt {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{AssertMessageAnnotations, PrintWriter, ResourceTracker};
+    use monty_types::{PrintWriter, ResourceTracker};
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{bytecode::Code, heap::HeapReader, intern::InternerBuilder};
+    use crate::{bytecode::Code, heap::HeapReader, intern::InternerBuilder, run::VmEnv};
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
@@ -2644,7 +2644,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2667,7 +2667,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2692,7 +2692,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2717,7 +2717,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_int(&mut vm)
         });
@@ -2741,7 +2741,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_int(&mut vm)
         });
@@ -2764,7 +2764,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2787,7 +2787,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2811,7 +2811,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2835,7 +2835,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });

@@ -1,5 +1,6 @@
 //! Public interface for running Monty code.
 use std::{
+    borrow::Cow,
     mem,
     sync::{
         Arc,
@@ -8,7 +9,10 @@ use std::{
 };
 
 pub use monty_types::CompileOptions;
-use monty_types::{ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker};
+use monty_types::{
+    AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker,
+    normalize_virtual_path,
+};
 use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
@@ -27,6 +31,7 @@ use crate::{
     },
     types::str::StringRepr,
     value::Value,
+    virtual_path::{canonical_cwd, posix_join},
 };
 
 /// Primary interface for running Monty code.
@@ -65,7 +70,8 @@ impl MontyRun {
     ///
     /// # Arguments
     /// * `code` - The Python code to execute
-    /// * `script_name` - The script name for error messages
+    /// * `script_name` - The script name for error messages, and what `__file__`
+    ///   places under the working directory (`/main.py` for `main.py` at the root)
     /// * `input_names` - Names of input variables
     /// * `options` - [`CompileOptions`] controlling CPython divergences; usually `CompileOptions::default()`
     ///
@@ -84,6 +90,17 @@ impl MontyRun {
     #[must_use]
     pub fn code(&self) -> &str {
         &self.executor.code
+    }
+
+    /// Sets the sandbox working directory the run starts in (default `/`).
+    ///
+    /// `cwd` is an absolute POSIX virtual path, normalized here (`.`, `..`
+    /// and repeated or trailing slashes collapse) so `os.getcwd()` reports a
+    /// canonical directory: it is what relative paths in `open()` / `os` /
+    /// `pathlib` calls resolve against before reaching the host. Hosts
+    /// typically pass the first mount's virtual path.
+    pub fn set_cwd(&mut self, cwd: &str) {
+        self.executor.cwd = canonical_cwd(cwd);
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
@@ -170,7 +187,7 @@ impl MontyRun {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_bytes,
+                    executor.vm_env(),
                 );
                 executor.populate_inputs(inputs, &mut vm)?;
 
@@ -198,8 +215,10 @@ pub(crate) struct Executor {
     pub(crate) module_code: Arc<Code>,
     /// Interned strings used for looking up names and filenames during execution.
     pub(crate) interns: Interns,
-    /// Source code for error reporting (extracting preview lines for tracebacks).
-    pub(crate) code: String,
+    /// Source code for error reporting (extracting preview lines for
+    /// tracebacks). Shared with the REPL's per-snippet source table rather
+    /// than copied, since a snippet's text is the largest thing a feed carries.
+    pub(crate) code: Arc<str>,
     /// Namespace slots that the REPL input-injection path writes into.
     ///
     /// Pre-resolved at snippet-construction time so the per-call hot path
@@ -211,6 +230,15 @@ pub(crate) struct Executor {
     /// UTF-8 byte cap for each operand repr in introspected assert messages.
     /// Stored with the compiled program and passed to every VM.
     pub(crate) assert_repr_max_bytes: u32,
+    /// The user-facing script name (`main.py`), which `__file__` is derived
+    /// from. For REPL snippets this is the session's name (shared with it,
+    /// not copied per feed), not the `<python-input-N>` name the snippet was
+    /// parsed under.
+    pub(crate) script_name: Arc<str>,
+    /// Sandbox working directory every VM built from this executor starts in;
+    /// `/` unless the host set one (see [`MontyRun::set_cwd`]). Shared with
+    /// the REPL session like `script_name`.
+    pub(crate) cwd: Arc<str>,
     /// Estimated heap capacity for pre-allocation on subsequent runs.
     /// Uses AtomicUsize for thread-safety (required by PyO3's Sync bound).
     heap_capacity: AtomicUsize,
@@ -225,9 +253,68 @@ impl Clone for Executor {
             code: self.code.clone(),
             input_slots: self.input_slots.clone(),
             assert_repr_max_bytes: self.assert_repr_max_bytes,
+            script_name: self.script_name.clone(),
+            cwd: self.cwd.clone(),
             heap_capacity: AtomicUsize::new(self.heap_capacity.load(Ordering::Relaxed)),
         }
     }
+}
+
+/// Per-run environment handed to a fresh VM: the sandbox working directory,
+/// what `__file__` derives from and the assert-repr cap. Built by
+/// [`Executor::vm_env`] so every `VM::new` call site agrees on how the
+/// values derive from the executor. Borrows rather than clones: a VM is
+/// built per run, so this must not allocate.
+pub(crate) struct VmEnv<'h> {
+    /// Working directory `os.getcwd()` reports and relative paths resolve
+    /// against. Borrowed from the executor until `os.chdir` replaces it.
+    pub(crate) cwd: Cow<'h, str>,
+    /// Working directory the run started in; `__file__` is `script_name`
+    /// resolved against it, unaffected by a later `os.chdir`.
+    pub(crate) initial_cwd: &'h str,
+    /// User-facing script name (`main.py`), the basis of `__file__`.
+    pub(crate) script_name: &'h str,
+    /// UTF-8 byte cap for each operand repr in introspected assert messages.
+    pub(crate) assert_repr_max_bytes: u32,
+}
+
+impl VmEnv<'_> {
+    /// `__file__`: computed on read, since most runs never look at it.
+    pub(crate) fn file(&self) -> String {
+        let path = posix_join(self.initial_cwd, self.script_name);
+        if self.script_name.is_empty() || self.script_name.starts_with('/') {
+            path
+        } else {
+            normalize_virtual_path(&path).into_owned()
+        }
+    }
+}
+
+impl Default for VmEnv<'static> {
+    /// The environment of a VM built without an executor (in-module tests):
+    /// root working directory, no script.
+    fn default() -> Self {
+        Self {
+            cwd: Cow::Borrowed(DEFAULT_CWD),
+            initial_cwd: DEFAULT_CWD,
+            script_name: "",
+            assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+        }
+    }
+}
+
+/// The sandbox working directory used until a host sets one.
+pub(crate) const DEFAULT_CWD: &str = "/";
+
+/// Session identity a REPL snippet executor inherits: the user-facing script
+/// name and the working directory the snippet starts in. Both are shared
+/// (`Arc`) so building a snippet executor allocates neither.
+#[derive(Clone, Copy)]
+pub(crate) struct ReplSession<'a> {
+    /// User-facing script name (`main.py`), the basis of `__file__`.
+    pub(crate) script_name: &'a Arc<str>,
+    /// Absolute virtual working directory for the snippet.
+    pub(crate) cwd: &'a Arc<str>,
 }
 
 impl Executor {
@@ -260,11 +347,23 @@ impl Executor {
             globals: prepared.globals,
             module_code: Arc::new(module_code),
             interns: Interns::new(prepared.interner, functions),
-            code,
+            code: Arc::from(code),
             input_slots: Vec::new(),
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            script_name: Arc::from(script_name),
+            cwd: Arc::from(DEFAULT_CWD),
             heap_capacity: AtomicUsize::new(namespace_size),
         })
+    }
+
+    /// Builds the [`VmEnv`] a VM run from this executor starts with.
+    pub(crate) fn vm_env(&self) -> VmEnv<'_> {
+        VmEnv {
+            cwd: Cow::Borrowed(&self.cwd),
+            initial_cwd: &self.cwd,
+            script_name: &self.script_name,
+            assert_repr_max_bytes: self.assert_repr_max_bytes,
+        }
     }
 
     /// Returns the size of the module's global namespace (number of slots).
@@ -289,14 +388,17 @@ impl Executor {
     ///
     /// `input_names` are pre-registered in the globals map before preparation so
     /// they receive stable namespace slots that the REPL input-injection logic
-    /// can use.
+    /// can use. `script_name` is the `<python-input-N>` name the snippet is
+    /// parsed under; `session` carries the user-facing name and working
+    /// directory the VM reports.
     pub(crate) fn new_repl_snippet(
-        code: String,
+        code: Arc<str>,
         script_name: &str,
         globals: &mut NameMap,
         interns: &mut Interns,
         input_names: &[String],
         options: CompileOptions,
+        session: ReplSession<'_>,
     ) -> Result<Self, MontyException> {
         check_identifier(input_names)?;
 
@@ -327,6 +429,8 @@ impl Executor {
             code,
             input_slots,
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            script_name: Arc::clone(session.script_name),
+            cwd: Arc::clone(session.cwd),
             heap_capacity: AtomicUsize::new(0),
         })
     }
@@ -350,6 +454,7 @@ impl Executor {
         mut existing_globals: NameMap,
         interns: &mut Interns,
         options: CompileOptions,
+        session: ReplSession<'_>,
     ) -> Result<Self, MontyException> {
         const CALL_ARGS_NAME: &str = "<monty-call-args>";
 
@@ -389,9 +494,11 @@ impl Executor {
             globals: existing_globals,
             module_code: Arc::new(builder.build(0)),
             interns: mem::take(interns),
-            code,
+            code: Arc::from(code),
             input_slots: vec![args_slot],
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            script_name: Arc::clone(session.script_name),
+            cwd: Arc::clone(session.cwd),
             heap_capacity: AtomicUsize::new(0),
         })
     }
@@ -424,7 +531,7 @@ impl Executor {
                 reader,
                 &executor.interns,
                 print.reborrow(),
-                executor.assert_repr_max_bytes,
+                executor.vm_env(),
             );
             executor.populate_inputs(inputs, &mut vm)?;
             executor.run_to_completion(&mut vm)
@@ -436,7 +543,7 @@ impl Executor {
 
         // Non-REPL execution has exactly one source, so every frame's filename
         // resolves to the same `self.code`.
-        result.map_err(|e| e.into_python_exception(&self.interns, |_| Some(self.code.as_str())))
+        result.map_err(|e| e.into_python_exception(&self.interns, |_| Some(&*self.code)))
     }
 
     /// Runs module code on an already-configured VM to completion.
@@ -514,7 +621,7 @@ impl Executor {
                 reader,
                 &executor.interns,
                 PrintWriter::Stdout,
-                executor.assert_repr_max_bytes,
+                executor.vm_env(),
             );
             executor.populate_inputs(inputs, &mut vm)?;
             // Lookups are answered before the globals are taken below: an
@@ -564,7 +671,7 @@ impl Executor {
             // Convert return value while VM is still alive (needs access to interns).
             // Non-REPL: single source, so every frame resolves to `executor.code`.
             let py_object = frame_exit_to_object(frame_exit_result, &mut vm)
-                .map_err(|e| e.into_python_exception(&executor.interns, |_| Some(executor.code.as_str())))?;
+                .map_err(|e| e.into_python_exception(&executor.interns, |_| Some(&*executor.code)))?;
 
             // Drop globals with proper ref counting
             globals.drop_with(vm.heap);

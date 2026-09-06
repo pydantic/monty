@@ -218,6 +218,9 @@ interface worker {
         code: string,
         inputs: list<named-value>,
         skip-type-check: bool,
+        /// Absolute virtual working directory to switch the session to; empty
+        /// keeps its current one (`/` until a feed or `os.chdir` changes it).
+        cwd: string,
     }
 
     /// A host-raised exception used to resume a call.

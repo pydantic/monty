@@ -127,11 +127,15 @@ export class WorkerTransport {
     code: string,
     inputs: Record<string, unknown> | null,
     mounts: readonly unknown[],
-    skipTypeCheck: boolean,
+    options: { cwd?: string; skipTypeCheck: boolean },
     onPrint: OnPrint,
   ): Promise<NativeTurn> {
     if (mounts.length > 0) {
       throw new Error('the wasm worker does not support filesystem mounts (browser has no host filesystem)')
+    }
+    const cwd = feedCwd(options.cwd)
+    if (typeof cwd !== 'string') {
+      return Promise.resolve(cwd)
     }
     return this.turn(
       {
@@ -139,7 +143,8 @@ export class WorkerTransport {
         val: {
           code,
           inputs: Object.entries(inputs ?? {}).map(([name, value]) => ({ name, value: encodeValue(value) })),
-          skipTypeCheck,
+          skipTypeCheck: options.skipTypeCheck,
+          cwd,
         },
       },
       onPrint,
@@ -416,6 +421,65 @@ function returnValue(value: unknown): CallResult {
   } catch (error) {
     return errorResult('TypeError', error instanceof Error ? error.message : String(error))
   }
+}
+
+/**
+ * Resolves a feed's working directory the way `monty-pool` does for native
+ * workers: unset keeps the session's current directory (the root until a
+ * feed or `os.chdir` changes it — there are no mounts in the browser to
+ * default to), an explicit value must be an absolute POSIX path without NUL
+ * bytes and loses its trailing slashes. A rejected value is the
+ * session-preserving `ValueError` turn the native path produces.
+ */
+function feedCwd(cwd: string | undefined): string | NativeTurn {
+  const invalid = (problem: string): NativeTurn => ({
+    kind: 'error',
+    exception: {
+      excType: 'ValueError',
+      message: `cwd ${problem}: ${rustDebugString(cwd ?? '')}`,
+      traceback: '',
+      frames: [],
+    },
+  })
+  if (cwd === undefined) {
+    return ''
+  }
+  if (cwd.includes('\0')) {
+    return invalid('must not contain NUL bytes')
+  }
+  if (!cwd.startsWith('/')) {
+    return invalid('must be an absolute POSIX path')
+  }
+  const trimmed = cwd.replace(/\/+$/, '')
+  return trimmed === '' ? '/' : trimmed
+}
+
+/**
+ * Quotes a string the way Rust's `{:?}` does, so the wasm transport's
+ * validation errors read like `monty-pool`'s: `"`, `\` and the common
+ * control characters get their short escapes; other control, format and
+ * non-space separator characters become `\u{..}`; everything else is kept
+ * as is. Rust also escapes a leading grapheme extender, left verbatim here.
+ */
+function rustDebugString(value: string): string {
+  const shortEscapes: Record<string, string> = {
+    '"': '\\"',
+    '\\': '\\\\',
+    '\n': '\\n',
+    '\r': '\\r',
+    '\t': '\\t',
+    '\0': '\\0',
+  }
+  let out = '"'
+  for (const ch of value) {
+    const short = shortEscapes[ch]
+    if (short !== undefined) {
+      out += short
+      continue
+    }
+    out += ch !== ' ' && /[\p{C}\p{Z}]/u.test(ch) ? `\\u{${(ch.codePointAt(0) ?? 0).toString(16)}}` : ch
+  }
+  return out + '"'
 }
 
 /** Creates a traceback-free host exception result. */

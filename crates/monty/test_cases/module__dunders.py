@@ -5,6 +5,13 @@ assert __name__ == '__main__'
 assert __name__ is __name__
 assert __debug__ is True
 
+# === __file__ is the absolute path of the script ===
+from pathlib import Path
+
+assert isinstance(__file__, str)
+assert Path(__file__).is_absolute()
+assert Path(__file__).name == 'module__dunders.py'
+
 
 # === Main guard idiom ===
 ran_main_guard = False

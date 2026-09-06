@@ -359,6 +359,124 @@ async fn invalid_mount_host_path_is_rejected_cleanly() {
     session.finish().await.unwrap();
 }
 
+/// The sandbox working directory is session state: the first feed sets it
+/// (its first mount, else `/`), and later feeds keep it — `os.chdir`
+/// included — unless `feed_with_cwd` switches it.
+#[tokio::test]
+async fn working_directory_persists_across_feeds() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("data.txt"), "relative!").unwrap();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+
+    // The first feed's mount, so relative paths reach into it; `__file__` is placed under it.
+    let code = "\
+import os
+from pathlib import Path
+before = (os.getcwd(), __file__, open('data.txt').read())
+os.chdir('sub')
+(before, Path.cwd(), Path('..').resolve())";
+    let result = session.feed(code, vec![], mount(), false, &mut no_print).await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::Tuple(vec![
+            MontyObject::Tuple(vec![
+                MontyObject::String("/mnt".to_owned()),
+                MontyObject::String("/mnt/main.py".to_owned()),
+                MontyObject::String("relative!".to_owned()),
+            ]),
+            MontyObject::Path("/mnt/sub".to_owned()),
+            MontyObject::Path("/mnt".to_owned()),
+        ])
+    );
+
+    // The chdir persists, even into a feed without the mount.
+    let event = session
+        .feed("os.getcwd()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt/sub".to_owned()));
+
+    // An explicit cwd switches it, and the switch persists too.
+    let result = session
+        .feed_with_cwd("os.getcwd()", vec![], mount(), Some("/mnt/"), false, &mut no_print)
+        .await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt".to_owned()));
+
+    // A relative cwd is refused before anything is sent; the session survives unchanged.
+    let err = session
+        .feed_with_cwd("1", vec![], vec![], Some("data"), false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected a runtime error, got {err:?}");
+    };
+    assert_eq!(exc.exc_type(), ExcType::ValueError);
+    assert_eq!(exc.message().unwrap(), "cwd must be an absolute POSIX path: \"data\"");
+    let event = session
+        .feed("os.getcwd()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt".to_owned()));
+    session.finish().await.unwrap();
+
+    // A session whose first feed has no mount starts at the root and stays
+    // there when a later feed mounts something.
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let event = session
+        .feed(
+            "import os\n(os.getcwd(), __file__)",
+            vec![],
+            vec![],
+            false,
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::Tuple(vec![
+            MontyObject::String("/".to_owned()),
+            MontyObject::String("/main.py".to_owned())
+        ])
+    );
+    let result = session.feed("os.getcwd()", vec![], mount(), false, &mut no_print).await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/".to_owned()));
+    session.finish().await.unwrap();
+}
+
+/// A first feed that type checking rejects never reaches the worker's
+/// directory switch, so the next feed still establishes the mount default.
+#[tokio::test]
+async fn working_directory_survives_a_rejected_first_feed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            type_check: true,
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let err = session
+        .feed("x: int = 'nope'", vec![], mount(), false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Typing(_)), "expected Typing, got {err:?}");
+    let result = session
+        .feed("import os\nos.getcwd()", vec![], mount(), false, &mut no_print)
+        .await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt".to_owned()));
+    session.finish().await.unwrap();
+}
+
 /// Mount-covered filesystem OS calls are serviced by the parent and never
 /// surface to the caller — the feed just completes. Covers read, write,
 /// mkdir kwargs, rename, and `open()` + file-handle ops through a mount.
@@ -1463,6 +1581,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1504,6 +1623,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1549,6 +1669,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };

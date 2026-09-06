@@ -19,6 +19,10 @@ whether each call is permitted.
 - `os.remove(path)`, `os.unlink(path)`, `os.rmdir(path)`
 - `os.rename(src, dst)`, `os.replace(src, dst)`
 - `os.fspath(path)` — pure, no host involvement.
+- `os.getcwd()` — pure: the sandbox's virtual working directory.
+- `os.getcwdb()` — pure: the same directory as UTF-8 bytes (virtual paths
+    are always UTF-8, so no filesystem encoding is involved).
+- `os.chdir(path)` — validated through a `Path.stat` host call (see below).
 - Constants (fixed POSIX values on every host OS, matching the sandbox's
     POSIX-only path model): `os.sep == '/'`, `os.altsep is None`,
     `os.extsep == '.'`, `os.curdir == '.'`, `os.pardir == '..'`,
@@ -58,9 +62,31 @@ whether each call is permitted.
     `os.remove`, `os.rmdir`, `os.rename`) report the first unknown keyword
     (`stat() got an unexpected keyword argument 'foo'`) where CPython reports
     the arity (`stat() takes at most 3 keyword arguments (4 given)`).
-- **No working directory.** `os.listdir()`'s default `'.'` (or any relative
-    path) reaches the host unchanged; a mount table matches no mount and
-    raises `PermissionError`.
+- **The working directory is virtual and belongs to the session.** A
+    session's first feed sets it (an explicit `cwd`, else that feed's first
+    mount's virtual path, else `/`); it then persists across feeds, including
+    any `os.chdir()`, until a feed passes `cwd` again. `os.getcwd()` reports
+    it and relative paths are resolved against it inside the interpreter, so
+    a mount or `os` callback only ever sees absolute paths. Host errors
+    therefore name the resolved path
+    (`open('missing')` raises `[Errno 2] No such file or directory: '/data/missing'`) where CPython names the argument as written. Absolute
+    paths reach mounts as written.
+    Joining preserves `.` and `..` so mounts can validate NUL bytes and path limits before normalization.
+    Python and JavaScript `os` callbacks receive lexically normalized paths, including both rename arguments.
+    The interpreter rejects NUL bytes before dispatch, even in components cancelled by `..`.
+    Existence predicates return `False` for these paths; other operations raise `ValueError`.
+    Length and depth limits are mount policy and do not apply to callbacks without mounts.
+- **`os.chdir(path)` suspends as `Path.stat`** on the resolved target: hosts
+    cannot observe a directory change, and without a mount or `os` handler it
+    raises `PermissionError`. The interpreter raises `NotADirectoryError`
+    when the reply is not a directory, naming the argument as written like
+    CPython; `FileNotFoundError` comes from the host and names the resolved
+    path. `os.chdir('')` raises `FileNotFoundError` without consulting the
+    host. Only after the host accepts the target is the stored directory lexically normalized
+    (`..` collapses without consulting symlinks). Integer file descriptors are refused with
+    the `path_t` `TypeError`; CPython would `fchdir`. A Rust host that
+    answers the stat with a future gets `RuntimeError` instead of a silently
+    unchanged directory.
 - **`mode` arguments** are type-checked (`'str' object cannot be interpreted as an integer`) but otherwise ignored:
     Monty's filesystem
     backends do not model POSIX permission bits.
@@ -70,7 +96,7 @@ whether each call is permitted.
     refuse). CPython's `os.replace` guarantees overwrite on all platforms.
 - **Hosts see pathlib-style call names.** `os.listdir` suspends as
     `Path.iterdir` (the interpreter reduces the returned paths to names),
-    `os.stat` as `Path.stat`, `os.remove`/`os.unlink` as `Path.unlink`,
+    `os.stat` and `os.chdir` as `Path.stat`, `os.remove`/`os.unlink` as `Path.unlink`,
     `os.mkdir`/`os.makedirs` as `Path.mkdir`, `os.rename`/`os.replace` as
     `Path.rename`. A custom `os` callback cannot distinguish e.g. `os.listdir`
     from `Path.iterdir`.
@@ -84,7 +110,7 @@ whether each call is permitted.
 ## Not implemented
 
 Everything else, including but not limited to: `os.path.*` (use
-`pathlib.Path` instead), `os.getcwd`, `os.chdir`, `os.walk`, `os.scandir`,
+`pathlib.Path` instead), `os.fchdir`, `os.walk`, `os.scandir`,
 `os.removedirs`, `os.renames`, `os.lstat`, `os.access`, `os.symlink`,
 `os.readlink`, `os.link`, `os.chmod`, `os.chown`, `os.umask`, `os.truncate`,
 `os.utime`, `os.system`, `os.popen`, `os.fork`, `os.exec*`, `os.spawn*`,

@@ -114,6 +114,13 @@ fn run_cli(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let cwd = match sandbox_cwd(cli.cwd.as_deref(), &cli.mounts) {
+        Ok(cwd) => cwd,
+        Err(err) => {
+            eprintln!("{BOLD_RED}error{BOLD_RED:#}: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     if let Some(cmd) = cli.command {
         if cli.file.is_some() {
@@ -121,9 +128,9 @@ fn run_cli(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
         return if cli.interactive {
-            dispatch_repl("<string>", &cmd, limits, mount_table)
+            dispatch_repl("<string>", &cmd, limits, mount_table, &cwd)
         } else {
-            dispatch_script("<string>", cmd, type_check, limits, mount_table)
+            dispatch_script("<string>", cmd, type_check, limits, mount_table, &cwd)
         };
     }
 
@@ -136,13 +143,26 @@ fn run_cli(cli: Cli) -> ExitCode {
             }
         };
         return if cli.interactive {
-            dispatch_repl(file_path, &code, limits, mount_table)
+            dispatch_repl(file_path, &code, limits, mount_table, &cwd)
         } else {
-            dispatch_script(file_path, code, type_check, limits, mount_table)
+            dispatch_script(file_path, code, type_check, limits, mount_table, &cwd)
         };
     }
 
-    dispatch_repl("repl.py", "", limits, mount_table)
+    dispatch_repl("repl.py", "", limits, mount_table, &cwd)
+}
+
+/// Resolves the sandbox working directory: `--cwd`, else the first `--mount`
+/// virtual path, else `/`. An explicit value must be an absolute virtual path.
+fn sandbox_cwd(cwd: Option<&str>, mount_args: &[String]) -> Result<String, String> {
+    match cwd {
+        Some(cwd) if cwd.starts_with('/') => Ok(cwd.to_owned()),
+        Some(cwd) => Err(format!("--cwd must be an absolute virtual path, got {cwd:?}")),
+        None => match mount_args.first() {
+            Some(mount) => parse_mount(mount).map(|(_, virtual_path, _, _)| virtual_path),
+            None => Ok("/".to_owned()),
+        },
+    }
 }
 
 /// Builds the tracker from the CLI resource limits and runs the script.
@@ -152,13 +172,27 @@ fn dispatch_script(
     type_check: Option<TypeCheckingConfig>,
     limits: ResourceLimits,
     mount_table: Option<MountTable>,
+    cwd: &str,
 ) -> ExitCode {
-    run_script(file_path, code, type_check, ResourceTracker::new(limits), mount_table)
+    run_script(
+        file_path,
+        code,
+        type_check,
+        ResourceTracker::new(limits),
+        mount_table,
+        cwd,
+    )
 }
 
 /// REPL analog of [`dispatch_script`].
-fn dispatch_repl(file_path: &str, code: &str, limits: ResourceLimits, mount_table: Option<MountTable>) -> ExitCode {
-    run_repl(file_path, code, ResourceTracker::new(limits), mount_table)
+fn dispatch_repl(
+    file_path: &str,
+    code: &str,
+    limits: ResourceLimits,
+    mount_table: Option<MountTable>,
+    cwd: &str,
+) -> ExitCode {
+    run_repl(file_path, code, ResourceTracker::new(limits), mount_table, cwd)
 }
 
 /// Executes a Python file in one-shot CLI mode.
@@ -176,6 +210,7 @@ fn run_script(
     type_check: Option<TypeCheckingConfig>,
     tracker: ResourceTracker,
     mut mount_table: Option<MountTable>,
+    cwd: &str,
 ) -> ExitCode {
     if let Some(config) = type_check {
         let start = Instant::now();
@@ -198,13 +233,14 @@ fn run_script(
     let input_names = vec![];
     let inputs = vec![];
 
-    let runner = match MontyRun::new(code, file_path, input_names, CompileOptions::default()) {
+    let mut runner = match MontyRun::new(code, file_path, input_names, CompileOptions::default()) {
         Ok(ex) => ex,
         Err(err) => {
             eprintln!("{BOLD_RED}error{BOLD_RED:#}:\n{err}");
             return ExitCode::FAILURE;
         }
     };
+    runner.set_cwd(cwd);
 
     // Use the start() + loop path when mounts are configured or external functions
     // are enabled, since we need to intercept OsCalls.
@@ -273,9 +309,17 @@ fn run_script(
 ///
 /// Returns `ExitCode::SUCCESS` on EOF or `exit`, and `ExitCode::FAILURE` on
 /// initialization or I/O errors.
-fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut mount_table: Option<MountTable>) -> ExitCode {
+fn run_repl(
+    file_path: &str,
+    code: &str,
+    tracker: ResourceTracker,
+    mut mount_table: Option<MountTable>,
+    cwd: &str,
+) -> ExitCode {
     let mut suspensions = SuspensionBudget::new(&tracker);
-    let mut repl = Some(MontyRepl::new(file_path, tracker, CompileOptions::default()));
+    let mut repl = MontyRepl::new(file_path, tracker, CompileOptions::default());
+    repl.set_cwd(cwd);
+    let mut repl = Some(repl);
 
     if !code.is_empty() {
         execute_repl_snippet(&mut repl, code, &mut mount_table, &mut suspensions);

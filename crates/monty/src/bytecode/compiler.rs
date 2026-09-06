@@ -573,9 +573,7 @@ impl<'a> Compiler<'a> {
         );
 
         // All globals are "local names" in the module
-        for (slot, name_id) in globals.iter() {
-            compiler.code.register_local_name(slot.as_u16(), name_id);
-        }
+        compiler.code.register_local_names(globals.names());
 
         compiler.compile_block(nodes)?;
 

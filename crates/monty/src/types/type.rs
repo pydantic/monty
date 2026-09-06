@@ -19,6 +19,7 @@ use crate::{
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
+        path,
         str::StringRepr,
         time, timedelta,
     },
@@ -503,6 +504,7 @@ impl Type {
             }
             (Self::Bytes, m) if m == StaticStrings::Fromhex => bytes_fromhex(args, vm).map(AttrCallResult::Value),
             (Self::Date, m) if m == StaticStrings::Today => date::class_today(vm.heap, args),
+            (Self::Path, m) if m == StaticStrings::Cwd => path::class_cwd(vm, args).map(AttrCallResult::Value),
             (Self::Date, m) if m == StaticStrings::Fromisoformat => {
                 date::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
             }

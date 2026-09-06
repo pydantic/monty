@@ -34,6 +34,10 @@ at all; `monty-proto` links it only with its `worker` feature, which the workers
 The [Rust API](../api/rust/monty.md) pages document `monty`, `monty-pool`, `monty-types`, `monty-fs`, `monty-proto` and
 `monty-type-checking`.
 
+Custom OS handlers can use `monty_types::normalize_virtual_path` after validating the received path.
+It shares the mounts' lexical POSIX normalization; see [filesystem callbacks](../filesystem.md#working-directory)
+for validation order and access checks.
+
 ## Two ways to run Monty
 
 - **[`monty-pool`](../api/rust/monty-pool.md)** runs the interpreter only in `monty` worker subprocesses.
@@ -82,7 +86,9 @@ async fn main() -> Result<(), PoolError> {
 ```
 
 [`Checkout::feed`](../api/rust/monty-pool.md#checkout) takes the code, inputs (host values bound as sandbox globals), per-feed filesystem mounts
-([`MountSpec`](../api/rust/monty-pool.md#mountspec)), a `skip_type_check` flag and a print sink.
+([`MountSpec`](../api/rust/monty-pool.md#mountspec)), a `skip_type_check` flag and a print sink;
+[`Checkout::feed_with_cwd`](../api/rust/monty-pool.md#checkout) also sets the sandbox's
+[working directory](../filesystem.md#working-directory), which otherwise defaults to the first mount.
 It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 
 | `TurnEvent`                                                             | Meaning                                                                                                                                                                | Answer with                                                                      |

@@ -34,7 +34,9 @@ use crate::{
 /// `MontyRepl`'s constructor surface.
 #[derive(Debug, Clone)]
 pub struct ReplConfig {
-    /// Script name used in tracebacks and type-check diagnostics.
+    /// Script name used in tracebacks and type-check diagnostics, and the
+    /// basis of the sandbox's `__file__`: the name placed under the working
+    /// directory a feed starts in (`/main.py` for `main.py` at the root).
     pub script_name: String,
     /// Sandbox resource limits enforced inside the worker. `None` means
     /// unlimited (except monty's standard recursion-depth default).
@@ -355,6 +357,11 @@ pub struct Checkout {
     /// Consulted only by [`Checkout::resume_from_mounts`]. Dropped when the
     /// feed ends so overlay writes never leak into the next feed.
     feed_mounts: Option<MountTable>,
+    /// Whether the session's working directory has been established (a feed
+    /// chose it, or a restored dump carried it). Until then a feed without an
+    /// explicit `cwd` sends the mount-derived default; afterwards it sends
+    /// nothing and the worker keeps the directory, `os.chdir` included.
+    cwd_set: bool,
     /// When the session started, for `monty.pool.session.duration`. Taken by
     /// `finish`, terminal worker loss, or `Drop`, so it is recorded once.
     #[cfg(feature = "telemetry")]
@@ -525,6 +532,7 @@ impl Checkout {
             armed_deadline: None,
             restored_script_name: None,
             feed_mounts: None,
+            cwd_set: false,
             #[cfg(feature = "telemetry")]
             started: Some(Instant::now()),
         };
@@ -587,24 +595,51 @@ impl Checkout {
                 return Err(self.protocol_violation(format!("unexpected reply to Load: {other:?}")));
             }
         };
+        // The adopted dump carries the session's working directory too.
+        self.cwd_set = true;
         Ok((event, self.restored_script_name.take()))
     }
 
     /// Executes one snippet against the session. Inputs become sandbox
     /// globals; mounts apply to this feed only and are serviced by the parent
     /// (an invalid host path fails here, before any frame is sent, as a
-    /// session-preserving [`PoolError::Runtime`]). Returns the first
-    /// suspension (or completion); `print()` output streams to `on_print`
-    /// throughout.
+    /// session-preserving [`PoolError::Runtime`]). The session's first feed
+    /// sets the sandbox working directory to its first mount's virtual path,
+    /// or `/` without mounts; later feeds keep the directory (`os.chdir`
+    /// included) unless [`Checkout::feed_with_cwd`] switches it. Returns the
+    /// first suspension (or completion); `print()` output streams to
+    /// `on_print` throughout.
     ///
     /// # Errors
     /// [`PoolError::Runtime`] / [`PoolError::Typing`] leave the session
     /// usable; all other errors mean the worker was discarded.
     pub async fn feed(
         &mut self,
-        code: &str,
+        code: impl Into<String>,
         inputs: Vec<(String, MontyObject)>,
         mounts: Vec<MountSpec>,
+        skip_type_check: bool,
+        on_print: OnPrint<'_>,
+    ) -> Result<TurnEvent, PoolError> {
+        self.feed_with_cwd(code, inputs, mounts, None, skip_type_check, on_print)
+            .await
+    }
+
+    /// [`Checkout::feed`] with an explicit switch of the sandbox working
+    /// directory before the feed: an absolute POSIX virtual path that
+    /// `os.getcwd()` reports and relative paths resolve against. `None` keeps
+    /// the session's current directory, which the first feed defaults to its
+    /// first mount (else `/`).
+    ///
+    /// # Errors
+    /// A relative or NUL-containing `cwd` is a session-preserving
+    /// [`PoolError::Runtime`] (`ValueError`), raised before any frame is sent.
+    pub async fn feed_with_cwd(
+        &mut self,
+        code: impl Into<String>,
+        inputs: Vec<(String, MontyObject)>,
+        mounts: Vec<MountSpec>,
+        cwd: Option<&str>,
         skip_type_check: bool,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
@@ -615,9 +650,17 @@ impl Checkout {
             ));
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
+        let cwd = match cwd {
+            Some(cwd) => validate_cwd(cwd)?,
+            // An empty wire cwd keeps the worker's current directory.
+            None if self.cwd_set => String::new(),
+            None => mounts
+                .first()
+                .map_or_else(|| "/".to_owned(), |mount| mount.virtual_path().to_owned()),
+        };
         self.feed_mounts = Self::build_feed_mounts(mounts);
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
-            code: code.to_owned(),
+            code: code.into(),
             inputs: inputs
                 .into_iter()
                 .map(|(name, value)| pb::NamedValue {
@@ -626,8 +669,16 @@ impl Checkout {
                 })
                 .collect(),
             skip_type_check,
+            cwd,
         }));
-        self.expect_turn(&request, on_print).await
+        let outcome = self.expect_turn(&request, on_print).await;
+        // The worker adopts the directory after type checking and before
+        // running the snippet, so every reply but a typing rejection means it
+        // took effect (a lost worker takes the session with it).
+        if !matches!(outcome, Err(PoolError::Typing(_))) {
+            self.cwd_set = true;
+        }
+        outcome
     }
 
     /// Answers a [`TurnEvent::FunctionCall`] or [`TurnEvent::OsCall`].
@@ -1300,11 +1351,9 @@ impl Checkout {
                             }
                         },
                     };
-                    // Every OS call surfaces, mount-covered or not: the caller
-                    // decides how to answer it, and reaches this feed's mounts
-                    // through `resume_from_mounts`. The typed call is retained
-                    // for that; the caller-facing `(name, args, kwargs)` shape
-                    // is projected from a clone.
+                    // The caller can answer any OS call or use `resume_from_mounts`.
+                    // Retain the raw typed call for mount validation; `to_args`
+                    // normalizes only the clone presented to callbacks.
                     let function_name = function_call.name().to_owned();
                     let (args, kwargs) = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {
@@ -1666,6 +1715,29 @@ fn min_deadline(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (deadline, None) | (None, deadline) => deadline,
+    }
+}
+/// Checks an explicit working directory: absolute, POSIX, no NUL bytes.
+/// Trailing slashes are dropped so `os.getcwd()` never reports `/data/`;
+/// the root itself stays `/`.
+fn validate_cwd(cwd: &str) -> Result<String, PoolError> {
+    let invalid = |msg: &str| {
+        PoolError::Runtime(MontyException::new(
+            ExcType::ValueError,
+            Some(format!("cwd {msg}: {cwd:?}")),
+        ))
+    };
+    if cwd.contains('\0') {
+        Err(invalid("must not contain NUL bytes"))
+    } else if !cwd.starts_with('/') {
+        Err(invalid("must be an absolute POSIX path"))
+    } else {
+        let trimmed = cwd.trim_end_matches('/');
+        Ok(if trimmed.is_empty() {
+            "/".to_owned()
+        } else {
+            trimmed.to_owned()
+        })
     }
 }
 

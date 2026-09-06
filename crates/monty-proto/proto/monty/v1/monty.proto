@@ -498,6 +498,10 @@ message Feed {
   repeated NamedValue inputs = 2;
   // Skip type checking for this feed even when the session enables it.
   bool skip_type_check = 3;
+  // Absolute virtual working directory to switch the session to before the
+  // feed, resolved by the parent (an explicit choice, or the first mount on
+  // the session's first feed). Empty keeps the session's current directory.
+  string cwd = 4;
 }
 
 // Ends a pending suspension by raising `exception` uncatchably at its site.

@@ -76,6 +76,7 @@ fn feed(child: &mut Child, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind
         code: code.to_owned(),
         inputs: vec![],
         skip_type_check: false,
+        cwd: "/".to_owned(),
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -137,6 +138,7 @@ fn inputs_are_injected() {
             value: Some(WireObject::new(MontyObject::Int(41))),
         }],
         skip_type_check: false,
+        cwd: "/".to_owned(),
     }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -333,6 +335,7 @@ fn turn_events_carry_the_suspension_budget() {
         code: "1 + 1".to_owned(),
         inputs: vec![],
         skip_type_check: false,
+        cwd: "/".to_owned(),
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     let events = decode_full_events(&bytes);

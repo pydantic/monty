@@ -4,10 +4,10 @@
 //! `RunProgress::OsCall` with the correct `OsFunction` variant and arguments,
 //! and that return values are correctly used by Python code.
 
-use monty::{MontyRun, RunProgress};
+use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
 use monty_types::{
-    CompileOptions, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject,
-    OsFunctionCall, PrintWriter, ResourceTracker, file_stat,
+    CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
+    MontyObject, OsFunctionCall, PrintWriter, ResourceTracker, dir_stat, file_stat,
 };
 
 /// Helper to run code and extract the OsCall progress.
@@ -164,14 +164,361 @@ fn path_iterdir() {
 fn path_resolve() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').resolve()");
     assert_eq!(func, "Path.resolve");
-    assert_eq!(args, vec![MontyObject::Path("relative".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("/relative".to_owned())]);
 }
 
 #[test]
 fn path_absolute() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').absolute()");
     assert_eq!(func, "Path.absolute");
-    assert_eq!(args, vec![MontyObject::Path("relative".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("/relative".to_owned())]);
+}
+
+// =============================================================================
+// Working directory: relative paths resolve against it before reaching the host
+// =============================================================================
+
+/// Starts `code` with the working directory set to `cwd` and returns the first
+/// typed OS call. The call is answered with a mock result so
+/// the run winds down cleanly instead of dropping live stack values.
+fn run_to_oscall_in(code: &str, cwd: &str) -> OsFunctionCall {
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    runner.set_cwd(cwd);
+    match runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap()
+    {
+        RunProgress::OsCall(call) => {
+            let mock_result = mock_oscall_result(&call.function_call);
+            let function_call = call.function_call.clone();
+            let _ = call.resume(mock_result, PrintWriter::Stdout);
+            function_call
+        }
+        progress => panic!("expected OsCall, got {progress:?}"),
+    }
+}
+
+#[test]
+fn relative_paths_resolve_against_cwd() {
+    for (code, expected) in [
+        ("open('notes.txt')", "/data/notes.txt"),
+        (
+            "from pathlib import Path; Path('a/./b.txt').read_text()",
+            "/data/a/b.txt",
+        ),
+        ("from pathlib import Path; Path('..').resolve()", "/data/.."),
+        ("from pathlib import Path; Path('../../x').resolve()", "/data/../../x"),
+        // Absolute paths pass through as written; the host normalizes them.
+        ("from pathlib import Path; Path('/a/../b/c').exists()", "/a/../b/c"),
+        ("import os; os.mkdir('/data/../x')", "/data/../x"),
+        ("import os; os.listdir()", "/data/."),
+        ("import os; os.mkdir('sub/')", "/data/sub/"),
+        ("import os; os.stat('a//./b/../c/')", "/data/a//./b/../c/"),
+        ("open('')", ""),
+        ("from pathlib import Path; Path('/abs.txt').exists()", "/abs.txt"),
+    ] {
+        let call = run_to_oscall_in(code, "/data");
+        assert_eq!(call.fs_primary_path(), Some(expected), "{code}");
+    }
+}
+
+#[test]
+fn rename_resolves_both_endpoints() {
+    let call = run_to_oscall_in("import os; os.rename('a/../a.txt', 'b/../b.txt')", "/data");
+    assert_eq!(call.name(), "Path.rename");
+    assert_eq!(call.fs_primary_path(), Some("/data/a/../a.txt"));
+    assert_eq!(call.rename_destination(), Some("/data/b/../b.txt"));
+}
+
+#[test]
+fn getcwd_and_path_cwd_need_no_host() {
+    let mut runner = MontyRun::new(
+        "import os
+from pathlib import Path
+(os.getcwd(), Path.cwd(), Path('/unrelated').cwd())"
+            .to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::Tuple(vec![
+            MontyObject::String("/".to_owned()),
+            MontyObject::Path("/".to_owned()),
+            MontyObject::Path("/".to_owned())
+        ])
+    );
+    runner.set_cwd("/mnt/data");
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::Tuple(vec![
+            MontyObject::String("/mnt/data".to_owned()),
+            MontyObject::Path("/mnt/data".to_owned()),
+            MontyObject::Path("/mnt/data".to_owned())
+        ])
+    );
+}
+
+/// Runs an `os.chdir` snippet, answering its `Path.stat` call with `reply`.
+fn run_chdir(code: &str, reply: impl Into<ExtFunctionResult>) -> Result<MontyObject, MontyException> {
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    runner.set_cwd("/data");
+    match runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap()
+    {
+        RunProgress::OsCall(call) => {
+            assert_eq!(call.function_call.name(), "Path.stat");
+            let (args, _) = call.function_call.clone().to_args();
+            assert_eq!(args, vec![MontyObject::Path("/data/sub".to_owned())]);
+            Ok(call
+                .resume(reply, PrintWriter::Stdout)?
+                .into_complete()
+                .expect("expected Complete after resume"))
+        }
+        progress => panic!("expected OsCall, got {progress:?}"),
+    }
+}
+
+#[test]
+fn os_chdir_adopts_a_directory() {
+    let code = "import os\nfrom pathlib import Path\nos.chdir('sub')\n(os.getcwd(), str(Path('x').absolute()))";
+    // `absolute()` is a second OS call, answered below.
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    runner.set_cwd("/data");
+    let RunProgress::OsCall(call) = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap()
+    else {
+        panic!("expected OsCall");
+    };
+    let RunProgress::OsCall(absolute) = call.resume(dir_stat(0o755, 0.0), PrintWriter::Stdout).unwrap() else {
+        panic!("expected a second OsCall");
+    };
+    let (args, _) = absolute.function_call.clone().to_args();
+    assert_eq!(args, vec![MontyObject::Path("/data/sub/x".to_owned())]);
+    let result = absolute
+        .resume(MontyObject::Path("/data/sub/x".to_owned()), PrintWriter::Stdout)
+        .unwrap()
+        .into_complete()
+        .unwrap();
+    assert_eq!(
+        result,
+        MontyObject::Tuple(vec![
+            MontyObject::String("/data/sub".to_owned()),
+            MontyObject::String("/data/sub/x".to_owned())
+        ])
+    );
+}
+
+#[test]
+fn os_chdir_normalizes_cwd_after_host_acceptance() {
+    let mut runner = MontyRun::new(
+        "import os\nos.chdir('/data/sub/../sub/')\nos.getcwd()".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    runner.set_cwd("/data");
+    let RunProgress::OsCall(call) = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap()
+    else {
+        panic!("expected OsCall");
+    };
+    assert_eq!(call.function_call.fs_primary_path(), Some("/data/sub/../sub/"));
+    let result = call
+        .resume(dir_stat(0o755, 0.0), PrintWriter::Stdout)
+        .unwrap()
+        .into_complete()
+        .unwrap();
+    assert_eq!(result, MontyObject::String("/data/sub".to_owned()));
+}
+
+/// Rejected file operations must release their effect's heap reference before raising.
+#[test]
+fn nul_file_paths_release_pending_effects() {
+    for (mode, operation) in [("r", "f.read()"), ("w", "f.write('data')")] {
+        let runner = MontyRun::new(
+            format!("try:\n    {operation}\nexcept ValueError as e:\n    message = str(e)\nmessage"),
+            "test.py",
+            vec!["f".to_owned()],
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let file = MontyObject::FileHandle(MontyFileHandle {
+            path: "/bad\0/../x".to_owned(),
+            mode: mode.parse().unwrap(),
+            position: 0,
+        });
+        let result = runner
+            .start(vec![file], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        assert_eq!(result, MontyObject::String("embedded null byte".to_owned()));
+    }
+}
+
+#[test]
+fn os_chdir_empty_path_raises_without_the_host() {
+    let err = MontyRun::new(
+        "import os\nos.chdir('')".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap()
+    .run_no_limits(vec![])
+    .unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::FileNotFoundError);
+    assert_eq!(err.message().unwrap(), "[Errno 2] No such file or directory: ''");
+}
+
+#[test]
+fn os_chdir_rejects_a_malformed_stat_reply() {
+    // Directory bits in the first slot are not enough: `st_mode` is found by name.
+    let bogus = MontyObject::NamedTuple {
+        type_name: "other".to_owned(),
+        field_names: vec!["nope".to_owned()],
+        values: vec![MontyObject::Int(0o040_755)],
+    };
+    let err = run_chdir("import os\nos.chdir('sub')", bogus).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::RuntimeError);
+    assert_eq!(
+        err.message().unwrap(),
+        "invalid return type: os.chdir requires the host to return a stat result, got namedtuple"
+    );
+}
+
+#[test]
+fn os_chdir_answered_with_a_future_is_refused() {
+    let err = run_chdir("import os\nos.chdir('sub')", ExtFunctionResult::Future(7)).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::RuntimeError);
+    assert_eq!(err.message().unwrap(), "os.chdir cannot be answered with a future");
+}
+
+#[test]
+fn set_cwd_normalizes() {
+    let mut runner = MontyRun::new(
+        "import os\nos.getcwd()".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    runner.set_cwd("/data/sub/../x//");
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::String("/data/x".to_owned())
+    );
+}
+
+#[test]
+fn os_chdir_returns_none() {
+    assert_eq!(
+        run_chdir("import os\nos.chdir('sub')", dir_stat(0o755, 0.0)).unwrap(),
+        MontyObject::None
+    );
+}
+
+#[test]
+fn os_chdir_to_a_file_raises_not_a_directory() {
+    let err = run_chdir("import os\nos.chdir('sub')", file_stat(0o644, 3, 0.0)).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::NotADirectoryError);
+    // CPython names the argument as spelled, not the resolved path.
+    assert_eq!(err.message().unwrap(), "[Errno 20] Not a directory: 'sub'");
+}
+
+#[test]
+fn os_chdir_host_error_propagates_and_keeps_cwd() {
+    let code = "import os\ntry:\n    os.chdir('sub')\nexcept FileNotFoundError as e:\n    result = (str(e), os.getcwd())\nresult";
+    let missing = MontyException::new(
+        ExcType::FileNotFoundError,
+        Some("[Errno 2] No such file or directory: '/data/sub'".to_owned()),
+    );
+    assert_eq!(
+        run_chdir(code, missing).unwrap(),
+        MontyObject::Tuple(vec![
+            MontyObject::String("[Errno 2] No such file or directory: '/data/sub'".to_owned()),
+            MontyObject::String("/data".to_owned())
+        ])
+    );
+}
+
+/// The REPL refuses a future answering `os.chdir`'s stat like a one-shot run
+/// does, instead of leaving the directory silently unchanged.
+#[test]
+fn repl_os_chdir_answered_with_a_future_is_refused() {
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    repl.set_cwd("/data");
+    let ReplProgress::OsCall(call) = repl
+        .feed_start("import os\nos.chdir('sub')", vec![], PrintWriter::Stdout)
+        .unwrap()
+    else {
+        panic!("expected OsCall");
+    };
+    let err = call
+        .resume(ExtFunctionResult::Future(7), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(err.error.exc_type(), ExcType::RuntimeError);
+    assert_eq!(
+        err.error.message().unwrap(),
+        "os.chdir cannot be answered with a future"
+    );
+    let mut repl = err.repl;
+    assert_eq!(
+        repl.feed_run("os.getcwd()", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::String("/data".to_owned())
+    );
+}
+
+/// The REPL keeps the directory `os.chdir` left the last snippet in, until
+/// the host switches it with `set_cwd`.
+#[test]
+fn repl_keeps_the_directory_across_snippets() {
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    repl.set_cwd("/data");
+    let ReplProgress::OsCall(call) = repl
+        .feed_start("import os\nos.chdir('sub')", vec![], PrintWriter::Stdout)
+        .unwrap()
+    else {
+        panic!("expected OsCall");
+    };
+    let ReplProgress::Complete { repl, .. } = call.resume(dir_stat(0o755, 0.0), PrintWriter::Stdout).unwrap() else {
+        panic!("expected Complete");
+    };
+    let mut repl = repl;
+    assert_eq!(
+        repl.feed_run("os.getcwd()", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::String("/data/sub".to_owned())
+    );
+    repl.set_cwd("/other");
+    assert_eq!(
+        repl.feed_run("os.getcwd()", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::String("/other".to_owned())
+    );
+}
+
+#[test]
+fn os_chdir_rejects_non_path() {
+    let err = MontyRun::new(
+        "import os\nos.chdir(1)".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap()
+    .run_no_limits(vec![])
+    .unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::TypeError);
+    assert_eq!(
+        err.message().unwrap(),
+        "chdir: path should be string or os.PathLike, not int"
+    );
 }
 
 // =============================================================================
@@ -283,7 +630,73 @@ entries[0]
 
     assert_eq!(func, "Path.iterdir");
     assert_eq!(args[0], MontyObject::Path("/home/user".to_owned()));
-    assert_eq!(result, MontyObject::String("/home/user/documents".to_owned()));
+    assert_eq!(result, MontyObject::Path("/home/user/documents".to_owned()));
+}
+
+/// Display names retain the input spelling while a relative host handle is anchored at open time.
+#[test]
+fn open_name_and_target_survive_chdir() {
+    let mut runner = MontyRun::new(
+        "import os\nf = open('./name.txt')\nos.chdir('/other')\n(f.name, f.read())".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    runner.set_cwd("/data");
+    let call = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap()
+        .into_os_call()
+        .unwrap();
+    let call = call
+        .resume(mock_file_handle("target.txt"), PrintWriter::Stdout)
+        .unwrap()
+        .into_os_call()
+        .unwrap();
+    assert_eq!(call.function_call.fs_primary_path(), Some("/other"));
+    let call = call
+        .resume(dir_stat(0o755, 0.0), PrintWriter::Stdout)
+        .unwrap()
+        .into_os_call()
+        .unwrap();
+    assert_eq!(call.function_call.fs_primary_path(), Some("/data/target.txt"));
+    let result = call
+        .resume(MontyObject::String("content".to_owned()), PrintWriter::Stdout)
+        .unwrap()
+        .into_complete()
+        .unwrap();
+    assert_eq!(
+        result,
+        MontyObject::Tuple(vec![
+            MontyObject::String("./name.txt".to_owned()),
+            MontyObject::String("content".to_owned())
+        ])
+    );
+}
+
+/// Malformed host replies must not leak values or bypass result postprocessing.
+#[test]
+fn filesystem_result_effects_reject_invalid_replies() {
+    for (code, operation) in [
+        ("open('./file.txt')", "open"),
+        ("from pathlib import Path\nPath('.').iterdir()", "Path.iterdir"),
+    ] {
+        let call = run_to_oscall_start(code);
+        let err = call
+            .resume(MontyObject::List(vec![MontyObject::Int(1)]), PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(err.exc_type(), ExcType::RuntimeError);
+        assert!(err.message().unwrap().contains(operation));
+        let call = run_to_oscall_start(code);
+        let err = call
+            .resume(ExtFunctionResult::Future(1), PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(
+            err.message().unwrap(),
+            format!("{operation} cannot be answered with a future")
+        );
+    }
 }
 
 #[test]
@@ -533,10 +946,10 @@ fn os_listdir_yields_iterdir_and_strips_names() {
 }
 
 #[test]
-fn os_listdir_default_path_is_dot() {
+fn os_listdir_default_path_is_cwd() {
     let (func, args, result) = run_oscall_with_result("import os\nos.listdir()", MontyObject::List(vec![]));
     assert_eq!(func, "Path.iterdir");
-    assert_eq!(args, vec![MontyObject::Path(".".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("/".to_owned())]);
     assert_eq!(result, MontyObject::List(vec![]));
 }
 

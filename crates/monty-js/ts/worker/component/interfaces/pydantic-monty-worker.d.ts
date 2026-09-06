@@ -294,6 +294,7 @@ export interface FeedRequest {
   code: string
   inputs: Array<NamedValue>
   skipTypeCheck: boolean
+  cwd: string
 }
 export interface RaisedError {
   excType: string

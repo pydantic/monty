@@ -545,7 +545,9 @@ class Monty:
         session and returned to the pool when the `with` block exits.
 
         Arguments:
-            script_name: Name used in tracebacks and error messages.
+            script_name: Name used in tracebacks and error messages, and the
+                basis of the sandbox's `__file__`: the name placed under the
+                working directory the feed starts in (`/main.py` by default).
             limits: Resource limits enforced inside the worker, plus `max_suspensions`,
                 which the pool enforces itself.
             type_check: Type-check each fed snippet before executing it; each
@@ -597,6 +599,7 @@ class MontySession:
         | CollectString
         | None = None,
         mount: MountDir | list[MountDir] | None = None,
+        cwd: str | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
         skip_type_check: bool = False,
     ) -> Any:
@@ -627,6 +630,13 @@ class MontySession:
                 Serviced by the pool on the host side — `'overlay'` writes
                 live in the pool's per-feed mount table and are discarded when
                 the feed ends.
+            cwd: Switches the sandbox's working directory before this feed,
+                an absolute virtual path. The directory persists across the
+                session's feeds, including any `os.chdir()`, so `None` keeps
+                the current one; the session's first feed defaults to its
+                first mount's virtual path, or `/` without mounts.
+                `os.getcwd()` reports it and relative paths resolve against
+                it before reaching a mount or the `os` handler.
             os: Fallback handler for OS calls (e.g. filesystem access) not
                 covered by a mount, invoked as `(function_name, args, kwargs)`,
                 or an `AbstractOS` instance.
@@ -648,6 +658,7 @@ class MontySession:
         external_lookup: dict[str, Any] | None = None,
         print_callback: PrintCallback | None = None,
         mount: MountDir | list[MountDir] | None = None,
+        cwd: str | None = None,
         os: OsHandler | None = None,
         skip_type_check: bool = False,
     ) -> SyncSnapshot:
@@ -690,6 +701,9 @@ class MontySession:
                 (there is no `mount=` on `resume`). `'overlay'` writes live in
                 the pool's per-feed mount table and are discarded when the feed
                 ends.
+            cwd: The sandbox's working directory for the whole feed (there is
+                no `cwd=` on `resume`); see `feed_run`. A dump taken mid-feed
+                carries it, so `load_snapshot` needs none.
             os: Fallback handler for OS calls not covered by a mount, invoked
                 as `(function_name, args, kwargs)`, or an `AbstractOS` instance.
                 Consulted only by `resume_auto()` — `feed_start` always surfaces
@@ -948,6 +962,7 @@ class AsyncMontySession:
         | CollectString
         | None = None,
         mount: MountDir | list[MountDir] | None = None,
+        cwd: str | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
         skip_type_check: bool = False,
     ) -> Any:
@@ -978,6 +993,13 @@ class AsyncMontySession:
                 Serviced by the pool on the host side — `'overlay'` writes
                 live in the pool's per-feed mount table and are discarded when
                 the feed ends.
+            cwd: Switches the sandbox's working directory before this feed,
+                an absolute virtual path. The directory persists across the
+                session's feeds, including any `os.chdir()`, so `None` keeps
+                the current one; the session's first feed defaults to its
+                first mount's virtual path, or `/` without mounts.
+                `os.getcwd()` reports it and relative paths resolve against
+                it before reaching a mount or the `os` handler.
             os: Fallback handler for OS calls (e.g. filesystem access) not
                 covered by a mount, invoked as `(function_name, args, kwargs)`,
                 or an `AbstractOS` instance.
@@ -993,6 +1015,7 @@ class AsyncMontySession:
         external_lookup: dict[str, Any] | None = None,
         print_callback: PrintCallback | None = None,
         mount: MountDir | list[MountDir] | None = None,
+        cwd: str | None = None,
         os: OsHandler | None = None,
         skip_type_check: bool = False,
     ) -> AsyncSnapshot:
@@ -1025,6 +1048,9 @@ class AsyncMontySession:
                 (there is no `mount=` on `resume`). `'overlay'` writes live in
                 the pool's per-feed mount table and are discarded when the feed
                 ends.
+            cwd: The sandbox's working directory for the whole feed (there is
+                no `cwd=` on `resume`); see `feed_run`. A dump taken mid-feed
+                carries it, so `load_snapshot` needs none.
             os: Fallback handler for OS calls not covered by a mount, invoked
                 as `(function_name, args, kwargs)`, or an `AbstractOS` instance.
                 Consulted only by `resume_auto()` — `feed_start` always surfaces

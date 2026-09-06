@@ -28,6 +28,7 @@ hello world
 | `-t`, `--type-check`    | [Type check](type-checking.md) before executing                                                                                           |
 | `--type-check-format`   | Diagnostic format: `full` (default), `concise`, `json`, `github` and the other ty formats                                                 |
 | `-m`, `--mount`         | Mount a host directory into the sandbox (see below)                                                                                       |
+| `--cwd`                 | The sandbox's virtual working directory (default: the first mount, else `/`)                                                              |
 | `--max-duration`        | Maximum execution time in seconds, e.g. `0.5`                                                                                             |
 | `--max-memory`          | Maximum heap memory, e.g. `1024`, `512KB`, `10MB`, `1GB`                                                                                  |
 | `--max-recursion-depth` | Maximum call-stack depth (default 1000)                                                                                                   |
@@ -56,6 +57,12 @@ Without a mount, the sandbox has no filesystem at all.
 See [filesystem access](filesystem.md).
 
 CLI mounts always use the default per-mount memory limit of 100 MB; there is no flag to change it.
+
+The sandbox's [working directory](filesystem.md#working-directory) defaults to the first mount's virtual path, so
+`monty -m ./data::/data script.py` runs with `os.getcwd() == '/data'` and `__file__ == '/data/script.py'`; `--cwd`
+picks another absolute virtual path.
+A relative file argument resolves against that directory; an absolute one passes through as written, like `python`,
+so the script sees that host path.
 
 ## Worker mode
 

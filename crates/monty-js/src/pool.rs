@@ -139,6 +139,16 @@ pub struct NativeCheckoutOptions {
     pub print_flush_interval_ms: Option<f64>,
 }
 
+/// Per-feed settings other than the mounts, passed by the TypeScript
+/// `MontySession` from its feed options.
+#[napi(object, js_name = "NativeFeedOptions")]
+pub struct NativeFeedOptions {
+    /// Absolute virtual working directory; unset takes the first mount, else `/`.
+    pub cwd: Option<String>,
+    /// Skip type checking for this feed even when the session enables it.
+    pub skip_type_check: bool,
+}
+
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
 #[napi(object, js_name = "NativeMount")]
 pub struct NativeMount {
@@ -368,16 +378,21 @@ impl NativeSession {
         code: String,
         inputs: Option<Object<'env>>,
         mounts: Vec<ClassInstance<'env, NativeMountDir>>,
-        skip_type_check: bool,
+        options: NativeFeedOptions,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let inputs = convert_inputs(env, inputs)?;
         let mounts = mount_specs(&mounts)?;
+        let NativeFeedOptions { cwd, skip_type_check } = options;
         self.run_turn(
             env,
             on_print,
             outcome_fn(move |checkout, on_print| {
-                Box::pin(async move { checkout.feed(&code, inputs, mounts, skip_type_check, on_print).await })
+                Box::pin(async move {
+                    checkout
+                        .feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
+                        .await
+                })
             }),
         )
     }

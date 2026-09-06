@@ -59,6 +59,76 @@ Mounts are per-feed, and all arguments are keyword-only:
     ```
 
 Pass a list to `mount=` for several at once.
+
+### Working directory
+
+The sandbox has a virtual working directory.
+A session's first feed sets it to the first mount's virtual path, or `/` when nothing is mounted, and it then persists
+across the session's feeds like the globals do.
+`os.getcwd()` and `Path.cwd()` report it.
+Relative paths in `open()`, `os` and `pathlib` calls are joined onto it.
+Mounts receive these paths without collapsing `.` or `..`, so they can validate every component.
+`__file__` is the script name placed under it.
+`os.chdir()` moves it, and the change carries over to later feeds.
+Pass `cwd=` to switch to another absolute virtual path before a feed.
+
+Custom `os` callbacks in Python and JavaScript receive normalized absolute paths, with `.` and `..` collapsed.
+For example, `os.listdir()` passes `/data` when the cwd is `/data`, and `../secret` becomes `/secret`.
+Both rename arguments are normalized.
+Check access rules against complete path components: a string prefix check can confuse `/data` with `/database`.
+Use `MountTable` for host filesystem access: normalization and prefix checks alone do not confine symlinks or prevent races.
+
+=== "Python"
+
+    ```python
+    import tempfile
+    from pathlib import Path
+
+    from pydantic_monty import Monty, MountDir
+
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, 'notes.txt').write_text('hello')
+
+        code = "import os\n(os.getcwd(), __file__, open('notes.txt').read())"
+
+        with MountDir(host_path=tmp, virtual_path='/data', mode='read-only') as mount:
+            with Monty() as pool:
+                with pool.checkout() as session:
+                    print(session.feed_run(code, mount=mount))
+                    #> ('/data', '/data/main.py', 'hello')
+                    cwd_code = 'import os\nos.getcwd()'
+                    print(session.feed_run(cwd_code, mount=mount, cwd='/data/sub'))
+                    #> /data/sub
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+    import { tmpdir } from 'node:os'
+    import { join } from 'node:path'
+
+    import { Monty } from '@pydantic/monty'
+    import { MountDir } from '@pydantic/monty/node'
+
+    const tmp = mkdtempSync(join(tmpdir(), 'monty-'))
+    writeFileSync(join(tmp, 'notes.txt'), 'hello')
+
+    const code = "import os\n(os.getcwd(), __file__, open('notes.txt').read())"
+
+    {
+      using mount = new MountDir({ hostPath: tmp, virtualPath: '/data', mode: 'read-only' })
+      await using pool = await Monty.create()
+      await using session = await pool.checkout()
+      console.log(await session.feedRun(code, { mount })) // [ '/data', '/data/main.py', 'hello' ]
+      console.log(await session.feedRun('import os\nos.getcwd()', { mount, cwd: '/data/sub' })) // /data/sub
+    }
+    rmSync(tmp, { recursive: true })
+    ```
+
+The directory is not checked against the mounts, and `os.chdir()` needs a mount (or `os` callback) to confirm its
+target exists.
+The divergences are in [`limitations/os.md`](limitations/os.md).
 In JavaScript `MountDir` comes from the `@pydantic/monty/node` subpath and `using` closes it at the end of scope; the
 WebAssembly build rejects mounts outright, because a browser has no host filesystem.
 

@@ -1159,6 +1159,17 @@ pub enum StaticStrings {
     Batched,
     /// `itertools.zip_longest()` function.
     ZipLongest,
+
+    // ==========================
+    // Working-directory strings, appended at the enum end for the same reason.
+    /// `os.getcwd()` function.
+    Getcwd,
+    /// `os.chdir()` function.
+    Chdir,
+    /// `Path.cwd()` classmethod.
+    Cwd,
+    /// `os.getcwdb()` function.
+    Getcwdb,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

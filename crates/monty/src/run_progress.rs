@@ -18,7 +18,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
     object_bridge::MontyObjectExt,
-    os_dispatch::release_pending_effect,
+    os_dispatch::{PendingOsEffect, release_pending_effect},
     run::Executor,
     value::Value,
 };
@@ -401,7 +401,7 @@ impl NameLookup {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_bytes,
+                    executor.vm_env(),
                 );
 
                 // Resolve the name lookup result with the VM alive
@@ -643,7 +643,7 @@ impl ResolveFutures {
                 reader,
                 &executor.interns,
                 PrintWriter::Stdout,
-                executor.assert_repr_max_bytes,
+                executor.vm_env(),
             );
             vm.__force_gc_for_tests();
             vm.snapshot()
@@ -706,7 +706,7 @@ impl ResolveFutures {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_bytes,
+                    executor.vm_env(),
                 );
 
                 // Now check for invalid call_ids after VM is restored.
@@ -769,21 +769,10 @@ impl Snapshot {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_bytes,
+                    executor.vm_env(),
                 );
 
-                let vm_result = match ext_result {
-                    ExtFunctionResult::Return(obj) => vm.resume(obj),
-                    ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
-                    ExtFunctionResult::Future(raw_call_id) => {
-                        let call_id = CallId::new(raw_call_id);
-                        vm.add_pending_call(call_id);
-                        vm.run_external()
-                    }
-                    ExtFunctionResult::NotFound(function_name) => {
-                        vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
-                    }
-                };
+                let vm_result = resume_with_result(&mut vm, ext_result);
 
                 // Three-phase: convert while VM alive, snapshot, build progress
                 let converted = convert_frame_exit(vm_result, &mut vm);
@@ -804,6 +793,40 @@ impl Snapshot {
     }
 }
 
+/// Feeds the host's answer to a paused external or OS call into the restored
+/// VM and runs on. Shared by the one-shot and REPL resume paths so both treat
+/// every [`ExtFunctionResult`] the same way.
+///
+/// Calls requiring result postprocessing refuse futures, which bypass `VM::resume`.
+/// The future is still registered so the host's task drains through `ResolveFutures`.
+pub(crate) fn resume_with_result(vm: &mut VM<'_>, result: ExtFunctionResult) -> Result<FrameExit, RunError> {
+    match result {
+        ExtFunctionResult::Return(obj) => vm.resume(obj),
+        ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
+        ExtFunctionResult::Future(raw_call_id) => {
+            vm.add_pending_call(CallId::new(raw_call_id));
+            if let Some(name) = vm
+                .pending_os_effect
+                .as_ref()
+                .and_then(PendingOsEffect::immediate_result_name)
+            {
+                vm.resume_with_exception(
+                    SimpleException::new_msg(
+                        ExcType::RuntimeError,
+                        format!("{name} cannot be answered with a future"),
+                    )
+                    .into(),
+                )
+            } else {
+                vm.run_external()
+            }
+        }
+        ExtFunctionResult::NotFound(function_name) => {
+            vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+        }
+    }
+}
+
 /// Restores the VM and aborts uncatchably, rolling back any armed OS effect.
 fn abort_restored(
     executor: Executor,
@@ -819,7 +842,7 @@ fn abort_restored(
             reader,
             &executor.interns,
             print.reborrow(),
-            executor.assert_repr_max_bytes,
+            executor.vm_env(),
         );
         let vm_result = vm.abort(exc);
         let converted = convert_frame_exit(vm_result, &mut vm);
@@ -1047,8 +1070,6 @@ pub(crate) fn build_run_progress(
         ConvertedExit::NameLookup { name, scope } => {
             Ok(RunProgress::NameLookup(NameLookup::new(name, scope, new_snapshot!())))
         }
-        ConvertedExit::Error(err) => {
-            Err(err.into_python_exception(&executor.interns, |_| Some(executor.code.as_str())))
-        }
+        ConvertedExit::Error(err) => Err(err.into_python_exception(&executor.interns, |_| Some(&*executor.code))),
     }
 }

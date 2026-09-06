@@ -6,7 +6,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { MontyFileHandle, MontyRuntimeError, MountDir, type MountDirOptions } from '@pydantic/monty/node'
-import { setupPool } from './helpers.js'
+import { checkOsPathValidation, checkRelativePathResults, setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
 
@@ -111,6 +111,91 @@ f"{Path('/child/inside.txt').read_text()}:{Path('/child/secret.txt').exists()}"`
     fs.rmSync(base, { recursive: true, force: true })
     fs.rmSync(outside, { recursive: true, force: true })
   }
+})
+
+// =============================================================================
+// Working directory
+// =============================================================================
+
+test('cwd defaults to the root without mounts', async () => {
+  t.deepEqual(await run('import os\n(os.getcwd(), __file__)'), ['/', '/main.py'])
+  t.deepEqual(await run('import os\nos.getcwd()', { cwd: '/work/' }), '/work')
+})
+
+test('NUL paths never reach callbacks and no-handler errors use clean paths', async () => {
+  await checkOsPathValidation(run)
+})
+
+test('filesystem results preserve relative paths', async () => {
+  await checkRelativePathResults(run)
+})
+
+test.each(['/', '/data'])('os callbacks receive normalized paths with cwd %s', async (cwd) => {
+  const calls: unknown[] = []
+  const result = await run(
+    `import os
+from pathlib import Path
+Path('sub/../file.txt').exists()
+Path('/other//sub/../file.txt').exists()
+os.listdir()
+os.rename('./sub/../src', '../dst')
+open('./sub//../file.txt').read()`,
+    {
+      cwd,
+      os: (name, args) => {
+        calls.push([name, args])
+        if (name === 'Path.iterdir') return []
+        if (name === 'open') return new MontyFileHandle(args[0] as string, 'r')
+        if (name === 'Path.read_text') return 'hello'
+        return true
+      },
+    },
+  )
+  t.is(result, 'hello')
+  const prefix = cwd === '/' ? '' : cwd
+  t.deepEqual(calls, [
+    ['Path.exists', [`${prefix}/file.txt`]],
+    ['Path.exists', ['/other/file.txt']],
+    ['Path.iterdir', [cwd]],
+    ['Path.rename', [`${prefix}/src`, '/dst']],
+    ['open', [`${prefix}/file.txt`, 'r']],
+    ['Path.read_text', [`${prefix}/file.txt`]],
+  ])
+})
+
+test('cwd defaults to the first mount and persists across feeds', async (ctx) => {
+  skipIfBrowser(ctx)
+  const { mount, cleanup } = createTestDir()
+  try {
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
+    await using session = await pool().checkout()
+    t.deepEqual(await session.feedRun("import os\n(os.getcwd(), __file__, open('hello.txt').read())", { mount: md }), [
+      '/data',
+      '/data/main.py',
+      'hello world',
+    ])
+    // chdir carries over, with or without the mount; an explicit cwd switches it
+    t.is(await session.feedRun("os.chdir('subdir')\nos.getcwd()", { mount: md }), '/data/subdir')
+    t.is(await session.feedRun('os.getcwd()', { mount: md }), '/data/subdir')
+    t.is(await session.feedRun('os.getcwd()'), '/data/subdir')
+    t.is(await session.feedRun("open('nested.txt').read()", { mount: md, cwd: '/data/subdir' }), 'nested content')
+    t.is(await session.feedRun('os.getcwd()', { mount: md, cwd: '/data' }), '/data')
+  } finally {
+    cleanup()
+  }
+})
+
+test('an explicit cwd persists across feeds', async () => {
+  // no mounts, so this covers the wasm path too
+  await using session = await pool().checkout()
+  t.is(await session.feedRun('import os\nos.getcwd()', { cwd: '/work' }), '/work')
+  t.is(await session.feedRun('os.getcwd()'), '/work')
+  t.is(await session.feedRun('os.getcwd()', { cwd: '/' }), '/')
+})
+
+test('a relative cwd is refused', async () => {
+  const error = await t.throwsAsync(() => run('1', { cwd: 'data' }), { instanceOf: MontyRuntimeError })
+  t.is(error.message, 'ValueError: cwd must be an absolute POSIX path: "data"')
 })
 
 test('MountDir repr', (ctx) => {
@@ -606,7 +691,7 @@ test('path traversal blocked', async (ctx) => {
       () => run("from pathlib import Path; Path('/data/../../etc/passwd').read_text()", { mount: md }),
       { instanceOf: MontyRuntimeError },
     )
-    t.is(error.message, "PermissionError: Permission denied: '/data/../../etc/passwd'")
+    t.is(error.message, "PermissionError: Permission denied: '/etc/passwd'")
   } finally {
     cleanup()
   }

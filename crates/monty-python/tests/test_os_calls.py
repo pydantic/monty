@@ -15,7 +15,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import NOT_HANDLED, MontyRuntimeError, StatResult
+from pydantic_monty import NOT_HANDLED, MontyFileHandle, MontyRuntimeError, StatResult
 
 # =============================================================================
 # Basic os= callback dispatch
@@ -34,6 +34,127 @@ def test_os_basic(monty_run: RunMonty):
 
     assert result is True
     assert calls == snapshot([('Path.exists', (PurePosixPath('/tmp/test.txt'),))])
+
+
+@pytest.mark.parametrize('cwd', ['/', '/data'])
+def test_os_callback_paths_are_normalized(monty_run: RunMonty, cwd: str):
+    """Callbacks receive canonical paths for relative inputs and both rename endpoints."""
+    calls: list[Any] = []
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        calls.append((function_name, args))
+        if function_name == 'Path.iterdir':
+            return []
+        if function_name == 'open':
+            return MontyFileHandle(str(args[0]), 'r')
+        if function_name == 'Path.read_text':
+            return 'hello'
+        return True
+
+    result = monty_run(
+        """
+import os
+from pathlib import Path
+Path('sub/../file.txt').exists()
+Path('/other//sub/../file.txt').exists()
+os.listdir()
+os.rename('./sub/../src', '../dst')
+open('./sub//../file.txt').read()
+""",
+        cwd=cwd,
+        os=os_handler,
+    )
+    assert result == 'hello'
+    assert calls == [
+        ('Path.exists', (PurePosixPath(cwd) / 'file.txt',)),
+        ('Path.exists', (PurePosixPath('/other/file.txt'),)),
+        ('Path.iterdir', (PurePosixPath(cwd),)),
+        ('Path.rename', (PurePosixPath(cwd) / 'src', PurePosixPath('/dst'))),
+        ('open', (PurePosixPath(cwd) / 'file.txt', 'r')),
+        ('Path.read_text', (PurePosixPath(cwd) / 'file.txt',)),
+    ]
+
+
+def test_relative_paths_survive_os_callbacks(monty_run: RunMonty):
+    """Python results retain relative spelling while callbacks see absolute requests."""
+    calls: list[Any] = []
+
+    def os_handler(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        calls.append((name, args))
+        if name == 'Path.iterdir':
+            return [PurePosixPath('/data/file.txt')]
+        assert name == 'open'
+        return MontyFileHandle(str(args[0]), 'r')
+
+    result = monty_run(
+        """
+from pathlib import Path
+([str(p) for p in Path('.').iterdir()],
+ [str(p) for p in Path('sub/..').iterdir()],
+ open('./file.txt').name,
+ Path('./file.txt').open().name,
+ open(b'./file.txt').name)
+""",
+        cwd='/data',
+        os=os_handler,
+    )
+    assert result == (['file.txt'], ['sub/../file.txt'], './file.txt', 'file.txt', b'./file.txt')
+    assert calls == [
+        ('Path.iterdir', (PurePosixPath('/data'),)),
+        ('Path.iterdir', (PurePosixPath('/data'),)),
+        ('open', (PurePosixPath('/data/file.txt'), 'r')),
+        ('open', (PurePosixPath('/data/file.txt'), 'r')),
+        ('open', (PurePosixPath('/data/file.txt'), 'r')),
+    ]
+
+
+@pytest.mark.parametrize('with_callback', [False, True])
+@pytest.mark.parametrize(
+    'operation, message',
+    [
+        ('open(path)', 'embedded null byte'),
+        ('Path(path).read_text()', 'embedded null byte'),
+        ('os.stat(path)', 'stat: embedded null character in path'),
+        ('os.chdir(path)', 'stat: embedded null character in path'),
+        ("os.rename(path, 'dst')", 'rename: embedded null character in src'),
+        ("os.rename('src', path)", 'rename: embedded null character in dst'),
+    ],
+)
+def test_nul_paths_rejected_before_callback(monty_run: RunMonty, with_callback: bool, operation: str, message: str):
+    """Cancelled NUL components raise without dispatching, even with no mounts."""
+    calls: list[Any] = []
+
+    def os_handler(*args: Any) -> bool:
+        calls.append(args)
+        return True
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(
+            'import os\nfrom pathlib import Path\n' + operation,
+            inputs={'path': 'bad\0/../x'},
+            os=os_handler if with_callback else None,
+        )
+    assert str(exc_info.value) == f'ValueError: {message}'
+    result = monty_run(
+        'from pathlib import Path\np = Path(path)\n(p.exists(), p.is_file(), p.is_dir(), p.is_symlink())',
+        inputs={'path': 'bad\0/../x'},
+        os=os_handler if with_callback else None,
+    )
+    assert result == (False, False, False, False)
+    assert calls == []
+
+
+@pytest.mark.parametrize('with_callback', [False, True])
+@pytest.mark.parametrize('code, path', [('import os\nos.listdir()', '/'), ("open('./x')", '/x'), ("open('')", '')])
+def test_no_handler_uses_normalized_path(monty_run: RunMonty, with_callback: bool, code: str, path: str):
+    """Missing and declining callbacks report the same normalized permission error."""
+
+    def os_handler(*args: object) -> object:
+        return NOT_HANDLED
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code, os=os_handler if with_callback else None)
+    assert str(exc_info.value) == f'PermissionError: Permission denied: {path!r}'
 
 
 def test_path_concatenation(monty_run: RunMonty):

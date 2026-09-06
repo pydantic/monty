@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from pathlib import PurePosixPath
+from typing import Any
 
 import pytest
 from inline_snapshot import snapshot
@@ -235,6 +237,28 @@ Path('/test.txt').read_text()
 """
     result = await asession.feed_run(code, os=fs)
     assert result == snapshot('hello world')
+
+
+async def test_os_callback_paths_are_normalized(asession: AsyncMontySession):
+    """Async sessions use the same canonical callback paths as sync sessions."""
+    calls: list[tuple[Any, ...]] = []
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        calls.append(args)
+        return True
+
+    assert (
+        await asession.feed_run(
+            "from pathlib import Path\nPath('sub/../file.txt').exists()", cwd='/data', os=os_handler
+        )
+        is True
+    )
+    assert calls == [(PurePosixPath('/data/file.txt'),)]
+    calls.clear()
+    with pytest.raises(MontyRuntimeError, match='ValueError: embedded null byte'):
+        await asession.feed_run("open('bad\\0/../file.txt')", os=os_handler)
+    assert await asession.feed_run("Path('bad\\0/../file.txt').exists()", os=os_handler) is False
+    assert calls == []
 
 
 async def test_os_with_external_lookup(asession: AsyncMontySession):

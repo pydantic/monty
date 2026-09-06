@@ -47,6 +47,10 @@ await session.feedRun('x * 2') // 42
 Without `await using`, call `session.close()` (returns the worker to the pool)
 and `pool.close()` explicitly.
 
+`checkout({ scriptName })` names the script in tracebacks and type-checking
+diagnostics, and is what the sandbox's `__file__` places under its working
+directory (`/main.py` by default).
+
 ## Inputs
 
 Pass values as globals for a feed:
@@ -325,6 +329,16 @@ import { MountDir } from '@pydantic/monty/node'
 
 const mount = new MountDir({ hostPath: '/path/on/host', virtualPath: '/mnt/data', mode: 'read-only' })
 await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
+```
+
+The sandbox's working directory is session state: the first feed sets it to
+the first mount's virtual path, or `/` without mounts, and it then persists
+(`os.chdir()` included) unless `cwd` switches it to another absolute virtual
+path. `os.getcwd()` reports it and relative paths resolve against it before
+reaching a mount or the `os` callback.
+
+```ts
+await session.feedRun("open('file.txt').read()", { mount, cwd: '/mnt/data' })
 ```
 
 Each mount has a 100 MB aggregate memory budget by default. Configure it with
