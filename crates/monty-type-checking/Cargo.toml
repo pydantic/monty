@@ -26,8 +26,8 @@ ty_python_semantic = { workspace = true, optional = true }
 ty_python_core = { workspace = true, optional = true }
 ty_module_resolver = { workspace = true, optional = true }
 salsa = { workspace = true, optional = true }
-# `default-features = false` drops pyrefly's bundled third-party stubs (~2.6 MB),
-# which nothing in the sandbox can import.
+# `default-features = false` drops pyrefly's bundled third-party stubs, which
+# nothing in the sandbox can import.
 pyrefly = { git = "https://github.com/yangdanny97/pyrefly", rev = "a155e04163d8bda6f7e30b897f7591531dcaf8b1", optional = true, default-features = false }
 
 [features]
