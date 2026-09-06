@@ -103,7 +103,7 @@ whether each call is permitted.
 ## Not implemented
 
 Everything else, including but not limited to: `os.path.*` (use
-`pathlib.Path` instead), `os.getcwdb`, `os.fchdir`, `os.walk`, `os.scandir`,
+`pathlib.Path` instead), `os.fchdir`, `os.walk`, `os.scandir`,
 `os.removedirs`, `os.renames`, `os.lstat`, `os.access`, `os.symlink`,
 `os.readlink`, `os.link`, `os.chmod`, `os.chown`, `os.umask`, `os.truncate`,
 `os.utime`, `os.system`, `os.popen`, `os.fork`, `os.exec*`, `os.spawn*`,

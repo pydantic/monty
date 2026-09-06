@@ -1213,6 +1213,8 @@ pub enum StaticStrings {
     Chdir,
     /// `Path.cwd()` classmethod.
     Cwd,
+    /// `os.getcwdb()` function.
+    Getcwdb,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

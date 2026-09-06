@@ -19,6 +19,7 @@ try:
     assert Path(os.getcwd()).resolve() == resolved_root
     assert Path.cwd().resolve() == resolved_root
     assert isinstance(os.getcwd(), str)
+    assert os.getcwdb() == os.getcwd().encode()
 
     # === relative paths resolve against the working directory ===
     assert open('hello.txt').read() == 'hello world\n'

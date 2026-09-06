@@ -26,14 +26,6 @@ host resources. The wasm in-process API exposes the same idea as
 between calls, and that there is no protection against the underlying file
 being changed or removed between calls, both documented further down.
 
-## Relative paths
-
-A relative `file` argument is resolved against the sandbox's virtual working
-directory before the `Open` call reaches the host (see [os.md](os.md)), so
-host errors name the absolute path: `open('missing.txt')` raises
-`FileNotFoundError: [Errno 2] No such file or directory: '/data/missing.txt'`
-where CPython reports `'missing.txt'`.
-
 ## Mode strings
 
 - `+` update modes (`r+`, `w+`, `a+`, and their `b` variants) are rejected at
