@@ -18,14 +18,31 @@ path = "src/lib.rs"
 
 [dependencies]
 monty-types = { workspace = true }
-monty-typeshed = { workspace = true }
-ruff_python_ast = { workspace = true }
-ruff_db = { workspace = true }
-ruff_text_size = { workspace = true }
-ty_python_semantic = { workspace = true }
-ty_python_core = { workspace = true }
-ty_module_resolver = { workspace = true }
-salsa = { workspace = true }
+monty-typeshed = { workspace = true, optional = true }
+ruff_python_ast = { workspace = true, optional = true }
+ruff_db = { workspace = true, optional = true }
+ruff_text_size = { workspace = true, optional = true }
+ty_python_semantic = { workspace = true, optional = true }
+ty_python_core = { workspace = true, optional = true }
+ty_module_resolver = { workspace = true, optional = true }
+salsa = { workspace = true, optional = true }
+# `default-features = false` drops pyrefly's bundled third-party stubs, which
+# nothing in the sandbox can import.
+pyrefly = { git = "https://github.com/yangdanny97/pyrefly", rev = "a155e04163d8bda6f7e30b897f7591531dcaf8b1", optional = true, default-features = false }
+
+[features]
+default = ["ty"]
+ty = [
+    "dep:monty-typeshed",
+    "dep:ruff_python_ast",
+    "dep:ruff_db",
+    "dep:ruff_text_size",
+    "dep:ty_python_semantic",
+    "dep:ty_python_core",
+    "dep:ty_module_resolver",
+    "dep:salsa",
+]
+pyrefly = ["dep:pyrefly"]
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

@@ -19,7 +19,10 @@ name = "monty"
 path = "src/main.rs"
 
 [features]
-default = ["standalone"]
+default = ["standalone", "ty"]
+# The type-check backend, forwarded to monty-type-checking and the worker.
+ty = ["monty-type-checking/ty", "monty-proto/type-check-ty"]
+pyrefly = ["monty-type-checking/pyrefly", "monty-proto/type-check-pyrefly"]
 # The standalone CLI (`run.rs`) and its terminal stack. Drop it to build the
 # worker `monty subprocess` alone, which is all a pool ever spawns.
 standalone = ["dep:anstream", "dep:anstyle", "dep:rustyline"]
