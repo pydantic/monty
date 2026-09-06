@@ -1,0 +1,47 @@
+crates/monty-types/src/os.rs
+  s_ef96740ae8813c::t_9887742f0a0c01 129-131
+  s_ef96740ae8813c::t_64d8d386771788 198-210,311-315,318
+crates/monty/tests/os_tests.rs
+  s_ef96740ae8813c::t_64d8d386771788 315
+  s_ef96740ae8813c::t_6c657f1f57ffb1 339-363
+docs/limitations/filesystem.md
+  s_ef96740ae8813c::t_eedd9598653eca 112-113
+  s_ef96740ae8813c::t_64d8d386771788 179-182
+docs/limitations/os.md
+  s_ef96740ae8813c::t_64d8d386771788 76-78
+crates/monty/src/bytecode/vm/mod.rs
+  s_ef96740ae8813c::t_64d8d386771788 163-172,1038-1060
+crates/monty-js/__test__/helpers.ts
+  s_ef96740ae8813c::t_eedd9598653eca 69-70
+  s_ef96740ae8813c::t_cfa1b35b8d9b95 8,20-68,71-72
+crates/monty-js/__test__/mount.spec.ts
+  s_ef96740ae8813c::t_cfa1b35b8d9b95 9,125-126
+  s_ef96740ae8813c::t_eedd9598653eca 690
+docs/limitations/language.md
+  s_ef96740ae8813c::t_64d8d386771788 136
+crates/monty-js/__test__/wasm_value_codec.spec.ts
+  s_ef96740ae8813c::t_cfa1b35b8d9b95 10-17
+crates/monty-python/tests/test_os_calls.py
+  s_ef96740ae8813c::t_6c657f1f57ffb1 78-89,91-114,116-117,122,124-126
+  s_ef96740ae8813c::t_a03d0bfded680b 119-121,123
+  s_ef96740ae8813c::t_174969dd13bd78 90,115
+  s_ef96740ae8813c::t_fdf58583bd9fae 118
+crates/monty-python/tests/test_async.py
+  s_ef96740ae8813c::t_9887742f0a0c01 257-261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "96ec1fd2b1b035c5b9b483dee7e3024ae977f191",
+  "prompts": {},
+  "sessions": {
+    "s_ef96740ae8813c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0789b-9e96-7862-b688-40db306bd662",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
