@@ -822,11 +822,12 @@ impl Set {
         let mut iterator = iterator.read(vm);
         let hint = iterator.iter_size_hint(vm);
         let capacity = checked_preallocation_hint(hint, mem::size_of::<SetEntry>(), &vm.heap.tracker)?;
-        let mut set = Self::with_capacity(capacity);
+        let mut set_guard = DropGuard::new(Self::with_capacity(capacity), vm);
+        let (set, vm) = set_guard.as_parts_mut();
         while let Some(item) = iterator.py_next(vm)? {
             set.add(item, vm)?;
         }
-        Ok(set)
+        Ok(set_guard.into_inner())
     }
 }
 
@@ -867,20 +868,28 @@ impl<'h> HeapRead<'h, Set> {
     /// `set.update(iterable)` via HeapRead.
     fn hr_update(&mut self, other: Value, vm: &mut VM<'h>) -> RunResult<()> {
         // Try direct extraction from Set/FrozenSet
-        let entries_opt = {
+        let values_opt = {
             match &other {
                 Value::Ref(id) => match vm.heap.get(*id) {
-                    HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
-                    HeapData::FrozenSet(fs) => Some(fs.storage.clone_entries(vm.heap)),
+                    HeapData::Set(s) => Some(&s.0),
+                    HeapData::FrozenSet(fs) => Some(&fs.storage),
                     _ => None,
                 },
                 _ => None,
             }
-        };
+        }
+        .map(|storage| {
+            storage
+                .iter()
+                .map(|value| value.clone_with_heap(vm.heap))
+                .collect::<Vec<_>>()
+        });
 
-        if let Some(entries) = entries_opt {
+        if let Some(values) = values_opt {
             other.drop_with(vm);
-            for (value, _hash) in entries {
+            let values = values.into_iter();
+            defer_drop_mut!(values, vm);
+            for value in values {
                 self.add(value, vm)?;
             }
             return Ok(());
@@ -888,7 +897,8 @@ impl<'h> HeapRead<'h, Set> {
 
         // Fall back to iterable
         let temp_set = Set::from_iterable(other, vm)?;
-        let entries: Vec<SetEntry> = temp_set.0.entries.into_iter().collect();
+        let entries = temp_set.0.entries.into_iter();
+        defer_drop_mut!(entries, vm);
         for entry in entries {
             self.add(entry.value, vm)?;
         }
