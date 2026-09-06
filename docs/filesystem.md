@@ -75,7 +75,6 @@ Pass `cwd=` to switch to another absolute virtual path before a feed.
 Custom `os` callbacks in Python and JavaScript receive normalized absolute paths, with `.` and `..` collapsed.
 For example, `os.listdir()` passes `/data` when the cwd is `/data`, and `../secret` becomes `/secret`.
 Both rename arguments are normalized.
-The shared Rust `OsFunctionCall::to_args()` conversion applies this normalization, including for WASM clients.
 Check access rules against complete path components: a string prefix check can confuse `/data` with `/database`.
 Use `MountTable` for host filesystem access: normalization and prefix checks alone do not confine symlinks or prevent races.
 

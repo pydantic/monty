@@ -133,6 +133,7 @@ local.
 `__file__` is the session's script name resolved against the virtual working
 directory the feed started in: `/main.py` by default, `/data/main.py` when the
 feed's first mount is `/data`, or the script name itself when it is absolute.
+Absolute script names are used verbatim, including any `.` and `..` components.
 Through the Python, JavaScript and Rust pool APIs the script name is the fixed
 session name, so `__file__` is a virtual path. The `monty` CLI passes the file
 argument as written, like `python`, so `monty /abs/script.py` reports that host

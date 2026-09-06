@@ -126,8 +126,9 @@ impl OsFunctionCall {
 
     /// Projects this call's args into `(positional, keyword)` [`MontyObject`](crate::MontyObject)
     /// vectors for delivery to a host callback, with lexically normalized paths.
-    /// Empty paths stay empty. Mounts must validate the original typed call, since
-    /// this projection can remove invalid components along with `..`.
+    /// Empty paths stay empty. The interpreter checks NUL bytes before dispatch;
+    /// hosts constructing calls must use [`Self::check_path_null_bytes`] first.
+    /// Mounts must validate length limits on the original typed call.
     #[must_use]
     pub fn to_args(mut self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
         for path in self.fs_paths_mut() {
@@ -192,6 +193,19 @@ impl OsFunctionCall {
             self,
             Self::Exists(_) | Self::IsFile(_) | Self::IsDir(_) | Self::IsSymlink(_)
         )
+    }
+
+    /// Checks both raw filesystem paths before normalization can hide a NUL byte.
+    /// Returns the operation-specific `ValueError` message; existence predicates
+    /// should return `False` instead of raising it.
+    pub fn check_path_null_bytes(&self) -> Result<(), &'static str> {
+        if self.fs_primary_path().is_some_and(|path| path.contains('\0')) {
+            Err(self.embedded_null_message(false))
+        } else if self.rename_destination().is_some_and(|path| path.contains('\0')) {
+            Err(self.embedded_null_message(true))
+        } else {
+            Ok(())
+        }
     }
 
     /// CPython's `ValueError` message for a path containing a null byte.
@@ -294,9 +308,14 @@ impl OsFunctionCall {
     #[must_use]
     pub fn on_no_handler(&self) -> MontyException {
         if let Some(path) = self.fs_primary_path() {
+            let path = if path.is_empty() {
+                Cow::Borrowed(path)
+            } else {
+                normalize_virtual_path(path)
+            };
             MontyException::new(
                 ExcType::PermissionError,
-                Some(format!("Permission denied: {}", StringRepr(path))),
+                Some(format!("Permission denied: {}", StringRepr(&path))),
             )
         } else {
             MontyException::new(

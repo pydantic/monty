@@ -6,7 +6,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { MontyFileHandle, MontyRuntimeError, MountDir, type MountDirOptions } from '@pydantic/monty/node'
-import { setupPool } from './helpers.js'
+import { checkOsPathValidation, setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
 
@@ -120,6 +120,10 @@ f"{Path('/child/inside.txt').read_text()}:{Path('/child/secret.txt').exists()}"`
 test('cwd defaults to the root without mounts', async () => {
   t.deepEqual(await run('import os\n(os.getcwd(), __file__)'), ['/', '/main.py'])
   t.deepEqual(await run('import os\nos.getcwd()', { cwd: '/work/' }), '/work')
+})
+
+test('NUL paths never reach callbacks and no-handler errors use clean paths', async () => {
+  await checkOsPathValidation(run)
 })
 
 test.each(['/', '/data'])('os callbacks receive normalized paths with cwd %s', async (cwd) => {
@@ -683,7 +687,7 @@ test('path traversal blocked', async (ctx) => {
       () => run("from pathlib import Path; Path('/data/../../etc/passwd').read_text()", { mount: md }),
       { instanceOf: MontyRuntimeError },
     )
-    t.is(error.message, "PermissionError: Permission denied: '/data/../../etc/passwd'")
+    t.is(error.message, "PermissionError: Permission denied: '/etc/passwd'")
   } finally {
     cleanup()
   }
