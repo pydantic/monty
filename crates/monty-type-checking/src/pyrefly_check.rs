@@ -3,7 +3,7 @@
 //! Pyrefly needs its module set declared up front, so a run gets exactly two:
 //! the snippet and its stubs. Arbitrary module paths are not importable here.
 
-use std::{fmt, marker::PhantomData};
+use std::fmt;
 
 use monty_types::{TypeCheckingConfig, TypeCheckingFormat};
 use pyrefly::embed::{Checker, Diagnostic, Severity};
@@ -11,9 +11,7 @@ use pyrefly::embed::{Checker, Diagnostic, Severity};
 use crate::source_file::SourceFile;
 
 const PYTHON_VERSION: &str = "3.14";
-
 const MAIN_MODULE: &str = "__monty_main__";
-
 const STUB_MODULE: &str = "__monty_stubs__";
 
 /// A reusable Pyrefly checker. Built lazily: constructing one loads the typeshed.
@@ -22,24 +20,20 @@ pub struct PyreflyChecker {
     checker: Option<Checker>,
 }
 
-impl fmt::Debug for PyreflyChecker {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PyreflyChecker")
-            .field("warm", &self.checker.is_some())
-            .finish()
-    }
-}
-
 impl PyreflyChecker {
     /// Type check `python_source`, with `stubs_file` (if any) importable from it.
     /// `Ok(None)` means it checks clean.
-    pub fn run<'a>(
-        &'a mut self,
+    pub fn run(
+        &mut self,
         python_source: &SourceFile<'_>,
         stubs_file: Option<&SourceFile<'_>>,
         config: TypeCheckingConfig,
-    ) -> Result<Option<PyreflyDiagnostics<'a>>, String> {
-        let format = supported_format(config.format)?;
+    ) -> Result<Option<PyreflyDiagnostics>, String> {
+        // Only the two renderers below are implemented; anything else would be
+        // silently wrong for a host that parses it.
+        if !matches!(config.format, TypeCheckingFormat::Full | TypeCheckingFormat::Concise) {
+            return Err(format!("the pyrefly backend cannot render '{}'", config.format));
+        }
 
         // The injected import shifts reported lines down by one; `line_offset`
         // undoes that when rendering.
@@ -49,101 +43,67 @@ impl PyreflyChecker {
         };
         let stub_source = stubs_file.map_or("", |stubs| stubs.source_code);
 
-        let diagnostics = self
-            .checker()?
-            .check(MAIN_MODULE, &[(STUB_MODULE, stub_source), (MAIN_MODULE, &main_source)]);
+        if self.checker.is_none() {
+            self.checker = Some(Checker::new(Some(PYTHON_VERSION), &[MAIN_MODULE, STUB_MODULE])?);
+        }
+        let Some(checker) = &self.checker else {
+            return Err("pyrefly checker was not initialised".to_owned());
+        };
 
-        let diagnostics: Vec<Diagnostic> = diagnostics
+        let diagnostics: Vec<Diagnostic> = checker
+            .check(MAIN_MODULE, &[(STUB_MODULE, stub_source), (MAIN_MODULE, &main_source)])
             .into_iter()
             .filter(|d| matches!(d.severity, Severity::Error | Severity::Warn))
             .collect();
 
-        if diagnostics.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(PyreflyDiagnostics {
-                diagnostics,
-                path: python_source.path.to_owned(),
-                line_offset,
-                format,
-                checker: PhantomData,
-            }))
-        }
+        Ok((!diagnostics.is_empty()).then(|| PyreflyDiagnostics {
+            diagnostics,
+            path: python_source.path.to_owned(),
+            line_offset,
+            full: config.format == TypeCheckingFormat::Full,
+        }))
     }
 
     /// Blank both modules so the checker can be reused for unrelated code.
     ///
     /// Security-critical: a checker reset and handed to another session without a
-    /// run in between must not still hold the previous session's source. The warm
-    /// typeshed is kept — it carries no session state.
+    /// run in between must not still hold the previous session's source.
     pub fn reset(&mut self) -> Result<(), String> {
         if let Some(checker) = &self.checker {
             checker.check(MAIN_MODULE, &[(STUB_MODULE, ""), (MAIN_MODULE, "")]);
         }
         Ok(())
     }
-
-    fn checker(&mut self) -> Result<&Checker, String> {
-        if self.checker.is_none() {
-            self.checker = Some(Checker::new(Some(PYTHON_VERSION), &[MAIN_MODULE, STUB_MODULE])?);
-        }
-        Ok(self.checker.as_ref().expect("checker built above"))
-    }
-}
-
-/// Pyrefly returns structured diagnostics rather than driving ruff's renderer, so
-/// the machine-readable formats are rejected rather than silently downgraded.
-/// `TypeCheckingConfig::color` is ignored throughout.
-fn supported_format(format: TypeCheckingFormat) -> Result<TypeCheckingFormat, String> {
-    match format {
-        TypeCheckingFormat::Full | TypeCheckingFormat::Concise => Ok(format),
-        other => Err(format!(
-            "the pyrefly type-check backend renders only 'full' and 'concise', not '{other}'"
-        )),
-    }
 }
 
 /// The diagnostics of one failed Pyrefly check.
-#[derive(Debug, Clone)]
-pub struct PyreflyDiagnostics<'a> {
+pub struct PyreflyDiagnostics {
     diagnostics: Vec<Diagnostic>,
     /// The caller's path, reported instead of `__monty_main__`.
     path: String,
     line_offset: u32,
-    format: TypeCheckingFormat,
-    /// Borrows nothing; the lifetime only matches the ty backend's signature.
-    checker: PhantomData<&'a ()>,
+    full: bool,
 }
 
-impl fmt::Display for PyreflyDiagnostics<'_> {
+impl fmt::Display for PyreflyDiagnostics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for diagnostic in &self.diagnostics {
+        for d in &self.diagnostics {
             // Clamped at 1: the injected import line would underflow to 0.
-            let line = diagnostic.start_line.saturating_sub(self.line_offset).max(1);
+            let line = d.start_line.saturating_sub(self.line_offset).max(1);
+            let severity = if d.severity == Severity::Error {
+                "error"
+            } else {
+                "warning"
+            };
             writeln!(
                 f,
-                "{}:{}:{}: {}[{}] {}",
-                self.path,
-                line,
-                diagnostic.start_col,
-                severity_label(diagnostic.severity),
-                diagnostic.kind,
-                diagnostic.message,
+                "{}:{line}:{}: {severity}[{}] {}",
+                self.path, d.start_col, d.kind, d.message
             )?;
-            if self.format == TypeCheckingFormat::Full && !diagnostic.details.is_empty() {
-                writeln!(f, "{}", diagnostic.details)?;
+            if self.full && !d.details.is_empty() {
+                writeln!(f, "{}", d.details)?;
             }
         }
         Ok(())
-    }
-}
-
-/// `ty`-style label, so both backends' output reads the same way.
-fn severity_label(severity: Severity) -> &'static str {
-    match severity {
-        Severity::Error => "error",
-        Severity::Warn => "warning",
-        // Filtered out by `run`; matched so a new severity is a compile error.
-        Severity::Info | Severity::Ignore => "info",
     }
 }
