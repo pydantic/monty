@@ -1,0 +1,64 @@
+crates/monty/src/run.rs
+  s_8094673681c2fa::t_9f85b49dd6b20f 387
+  s_8094673681c2fa::t_92cc7ab3ff4667 99-100
+  s_8094673681c2fa::t_c22a437902664b 24
+  s_8094673681c2fa::t_cfd375f0455f75 424-425,492-493
+  s_8094673681c2fa::t_adf8611d9cb47d 302-303,307,309
+  s_8094673681c2fa::t_f219adcd433403 538
+  s_8094673681c2fa::t_9abf877a3fdaa3 231-234,236-238
+  s_8094673681c2fa::t_39178465317ca1 215-218
+  s_8094673681c2fa::t_f72edd1896b4c4 342,345-346
+  s_8094673681c2fa::t_88df7603d78630 489
+  s_8094673681c2fa::t_29079b92072720 666
+crates/monty/src/run_progress.rs
+  s_8094673681c2fa::t_6a3aecde08d5e9 1067
+crates/monty-python/src/pool.rs
+  s_8094673681c2fa::t_955fb157884c51 1311,1502
+crates/monty-pool/src/checkout.rs
+  s_8094673681c2fa::t_661c95488f400b 616
+  s_8094673681c2fa::t_8eb962c0e2499e 662
+  s_8094673681c2fa::t_4097ca456546d5 637
+crates/monty-runtime/src/run.rs
+  s_8094673681c2fa::t_fe6dd1e2eb019d 131,133,146,148,152,175,193,213,317
+crates/monty-python/src/snapshot.rs
+  s_8094673681c2fa::t_a76f8d9b02b5e4 154,187
+crates/monty/src/os_dispatch.rs
+  s_8094673681c2fa::t_514cfc530641bf 22
+  s_8094673681c2fa::t_d16b2c45089f31 143-150,155-161
+  s_8094673681c2fa::t_6a3aecde08d5e9 151-154
+crates/monty/src/repl.rs
+  s_8094673681c2fa::t_524983e5a70f5a 124-125
+  s_8094673681c2fa::t_e48b021bb2de4b 51
+  s_8094673681c2fa::t_30166f87c27e52 1174,1177
+  s_8094673681c2fa::t_e36cbfaca4cddc 869-871,1108-1110
+  s_8094673681c2fa::t_5068501bab4198 281-283,289
+  s_8094673681c2fa::t_140dabc17187bd 435
+  s_8094673681c2fa::t_77872aa00a0b32 350,354,358,422
+  s_8094673681c2fa::t_a2735dc668dbc4 73
+  s_8094673681c2fa::t_b75bca2da95fe0 198-199,205
+  s_8094673681c2fa::t_939270a1d3a28d 104,110
+  s_8094673681c2fa::t_6e7da744848652 1344
+  s_8094673681c2fa::t_0d888dafaec1f1 1345
+  s_8094673681c2fa::t_6a3aecde08d5e9 329-331,1265-1267
+  s_8094673681c2fa::t_0bc4f0ce63b9c8 82
+  s_8094673681c2fa::t_e6ac0051619919 12
+  s_8094673681c2fa::t_bee52e558c9b8b 30
+crates/monty-js/src/pool.rs
+  s_8094673681c2fa::t_b4c5a35cc88704 393
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a7621d83393dca685d7ea1979cd30e4a25bdfb95",
+  "prompts": {},
+  "sessions": {
+    "s_8094673681c2fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf9081e0-d46f-481b-8256-a7fe2e23cafe",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
