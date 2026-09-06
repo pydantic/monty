@@ -8,7 +8,7 @@ use std::io::ErrorKind;
 
 use ahash::AHashSet;
 use cap_std::fs::Dir;
-use monty_types::{FileMode, MontyObject, dir_stat, file_stat};
+use monty_types::{FileMode, MontyObject, dir_stat, file_stat, normalize_virtual_path};
 
 use super::{
     common::{
@@ -20,8 +20,7 @@ use super::{
     error::MountError,
     overlay_state::{ENTRY_MEMORY_USAGE, OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
     path_security::{
-        MountRelativePath, normalize_virtual_path, reject_drive_or_unc_segments, reject_null_bytes,
-        resolve_virtual_path, strip_mount_prefix,
+        MountRelativePath, reject_drive_or_unc_segments, reject_null_bytes, resolve_virtual_path, strip_mount_prefix,
     },
 };
 
@@ -167,7 +166,7 @@ pub(super) fn execute(
         FsRequest::Stat { path } => stat(state, &relative_path(&path, ctx)?, ctx, &path),
         FsRequest::Rename { src, dst } => rename(state, &src, &dst, ctx),
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
-            Ok(MontyObject::Path(normalize_virtual_path(&path)))
+            Ok(MontyObject::Path(normalize_virtual_path(&path).into_owned()))
         }
         FsRequest::Open { path, mode } => open(state, &path, mode, ctx),
     }

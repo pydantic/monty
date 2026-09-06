@@ -9,7 +9,7 @@
 //! host bindings get a generic `(positional, keyword)` view via
 //! [`OsFunctionCall::to_args`].
 
-use std::{fmt, ops::Deref};
+use std::{borrow::Cow, fmt, ops::Deref};
 
 use crate::{
     args::{ToArgs, ToMontyObject},
@@ -17,6 +17,7 @@ use crate::{
     file_mode::FileMode,
     format::StringRepr,
     object::{MontyObject, MontyTimeZone},
+    virtual_path::normalize_virtual_path,
 };
 // =============================================================================
 // OsFunctionCall — the central public dispatch value.
@@ -124,9 +125,18 @@ impl OsFunctionCall {
     }
 
     /// Projects this call's args into `(positional, keyword)` [`MontyObject`](crate::MontyObject)
-    /// vectors for delivery to a host callback.
+    /// vectors for delivery to a host callback, with lexically normalized paths.
+    /// Empty paths stay empty. Mounts must validate the original typed call, since
+    /// this projection can remove invalid components along with `..`.
     #[must_use]
-    pub fn to_args(self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
+    pub fn to_args(mut self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
+        for path in self.fs_paths_mut() {
+            if !path.is_empty()
+                && let Cow::Owned(normalized) = normalize_virtual_path(path)
+            {
+                *path = MontyPath::new(normalized);
+            }
+        }
         match self {
             // Single-path variants — just the path in positionals.
             Self::Exists(p)
@@ -366,24 +376,26 @@ pub struct GetenvArgs {
 
 /// Owned virtual (sandbox) path carried by OS-call args.
 ///
-/// `String` newtype: derefs to `&str` for fs/ routing, and [`ToMontyObject`](crate::args::ToMontyObject)
-/// projects it back to [`MontyObject::Path`] at the host boundary. Constructed
-/// at the producer site after the source `Value` has been validated as a
-/// path/string — never from raw input.
+/// Preserves the supplied string, including invalid components, for host validation.
+/// Derefs to `&str` for routing; [`ToMontyObject`](crate::args::ToMontyObject)
+/// projects it back to [`MontyObject::Path`] at the host boundary.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyPath(String);
 
 impl MontyPath {
+    /// Stores the path without validation or normalization; hosts validate before I/O.
     #[must_use]
     pub fn new(path: String) -> Self {
         Self(path)
     }
 
+    /// Borrows the original spelling for host validation and error messages.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Takes the original string without copying it.
     #[must_use]
     pub fn into_string(self) -> String {
         self.0

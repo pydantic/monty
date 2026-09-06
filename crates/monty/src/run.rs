@@ -9,7 +9,10 @@ use std::{
     },
 };
 
-use monty_types::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker};
+use monty_types::{
+    AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker,
+    normalize_virtual_path,
+};
 pub use monty_types::{CompileOptions, HostClock};
 use ruff_python_stdlib::identifiers::is_identifier;
 
@@ -22,7 +25,6 @@ use crate::{
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
-    os_dispatch::{canonical_cwd, posix_join},
     parse::{CodeRange, parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
     run_progress::{
@@ -30,6 +32,7 @@ use crate::{
     },
     types::str::StringRepr,
     value::Value,
+    virtual_path::{canonical_cwd, posix_join},
 };
 
 /// Primary interface for running Monty code.
@@ -311,7 +314,12 @@ pub(crate) struct VmEnv<'h> {
 impl VmEnv<'_> {
     /// `__file__`: computed on read, since most runs never look at it.
     pub(crate) fn file(&self) -> String {
-        posix_join(self.initial_cwd, self.script_name)
+        let path = posix_join(self.initial_cwd, self.script_name);
+        if self.script_name.is_empty() || self.script_name.starts_with('/') {
+            path
+        } else {
+            normalize_virtual_path(&path).into_owned()
+        }
     }
 }
 

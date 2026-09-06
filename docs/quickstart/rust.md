@@ -34,6 +34,10 @@ at all; `monty-proto` links it only with its `worker` feature, which the workers
 The [Rust API](../api/rust/monty.md) pages document `monty`, `monty-pool`, `monty-types`, `monty-fs`, `monty-proto` and
 `monty-type-checking`.
 
+Custom OS handlers can use `monty_types::normalize_virtual_path` after validating the received path.
+It shares the mounts' lexical POSIX normalization; see [filesystem callbacks](../filesystem.md#working-directory)
+for validation order and access checks.
+
 ## Two ways to run Monty
 
 - **[`monty-pool`](../api/rust/monty-pool.md)** runs the interpreter only in `monty` worker subprocesses.

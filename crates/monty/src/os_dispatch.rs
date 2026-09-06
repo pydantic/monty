@@ -19,7 +19,7 @@
 //! conversions, then wire the new variant into the fs/ dispatcher and any
 //! host backends.
 
-use std::{mem, sync::Arc};
+use std::mem;
 
 use monty_types::{
     ExcType, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
@@ -33,6 +33,7 @@ use crate::{
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     value::Value,
+    virtual_path::posix_join,
 };
 
 impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
@@ -71,10 +72,10 @@ pub(crate) enum PendingOsEffect {
     /// heap references, so exception/drop cleanup is a no-op.
     ListdirNames,
     /// `os.chdir`: the target was sent to the host as a `Path.stat` call;
-    /// adopt `path` as the working directory once the reply proves it is a
+    /// normalize and adopt `path` once the reply proves it is a
     /// directory. Holds no heap references.
     Chdir {
-        /// Absolute virtual path `os.getcwd()` reports after a successful change.
+        /// Unnormalized absolute target, retained until the host validates it.
         path: String,
         /// The path as the caller spelled it, for `NotADirectoryError` (CPython
         /// reports the argument, not the resolved path).
@@ -105,85 +106,6 @@ pub(crate) fn release_pending_effect(effect: Option<PendingOsEffect>, heap: &mut
     }
 }
 
-/// Resolves `path` against the working directory `cwd`: a relative `path`
-/// becomes the normalized absolute path `os.path.abspath` would give (see
-/// [`normalize_posix_path`]); an absolute one is returned as written, so
-/// host error messages still show what the user spelled. An empty `path`
-/// stays empty so the host reports it the way CPython does.
-///
-/// `cwd` must already be canonical (absolute, no `.`/`..`, no trailing
-/// slash), which `set_cwd` and `os.chdir` guarantee, so it is copied in as
-/// is and only `path` is walked: one allocation sized for the whole result,
-/// since this runs on every relative OS call. Collapsing `..` here is for
-/// canonical output, not safety: the mount table normalizes again and
-/// confines structurally.
-pub(crate) fn posix_join(cwd: &str, path: &str) -> String {
-    if path.is_empty() || path.starts_with('/') {
-        path.to_owned()
-    } else {
-        let mut joined = String::with_capacity(cwd.len() + 1 + path.len());
-        if cwd != "/" {
-            joined.push_str(cwd);
-        }
-        push_normalized(&mut joined, path);
-        finish_absolute(joined)
-    }
-}
-
-/// Collapses an absolute POSIX path lexically: `.` and empty segments are
-/// dropped and `..` pops the previous segment, never above `/`. This is the
-/// same purely textual treatment the mount table applies, so it can never
-/// reach outside a mount.
-pub(crate) fn normalize_posix_path(path: &str) -> String {
-    let mut out = String::with_capacity(path.len());
-    push_normalized(&mut out, path);
-    finish_absolute(out)
-}
-
-/// A host-supplied working directory as the canonical shared string the
-/// executor and REPL keep: one allocation when `cwd` is already canonical
-/// (the usual case, a mount's virtual path), a normalizing pass first
-/// otherwise.
-pub(crate) fn canonical_cwd(cwd: &str) -> Arc<str> {
-    let canonical = cwd == "/"
-        || (cwd.starts_with('/')
-            && !cwd.ends_with('/')
-            && cwd
-                .split('/')
-                .skip(1)
-                .all(|segment| !matches!(segment, "" | "." | "..")));
-    if canonical {
-        Arc::from(cwd)
-    } else {
-        Arc::from(normalize_posix_path(cwd))
-    }
-}
-
-/// Appends `path`'s segments to `out`, each preceded by `/`, dropping `.` and
-/// empty segments and popping the last segment of `out` on `..` (never
-/// above the root, which is the empty string here).
-fn push_normalized(out: &mut String, path: &str) {
-    for segment in path.split('/') {
-        match segment {
-            "" | "." => {}
-            ".." => out.truncate(out.rfind('/').unwrap_or(0)),
-            segment => {
-                out.push('/');
-                out.push_str(segment);
-            }
-        }
-    }
-}
-
-/// Turns the segment buffer of [`push_normalized`] into a path: the empty
-/// buffer is the root.
-fn finish_absolute(mut out: String) -> String {
-    if out.is_empty() {
-        out.push('/');
-    }
-    out
-}
-
 /// Resolves every relative path in `call` against `cwd` (see [`posix_join`]).
 ///
 /// Runs at the VM's single OS-call exit, so builtins and `Path` methods can
@@ -201,7 +123,7 @@ pub(crate) fn resolve_call_paths(call: &mut OsFunctionCall, cwd: &str) {
 /// [`PendingOsEffect::Chdir`], run on the raw [`MontyObject`] before heap
 /// conversion like [`listdir_names`].
 ///
-/// A directory `st_mode` passes and the caller adopts the path (`os.chdir`
+/// A directory `st_mode` passes and the caller normalizes and adopts the path (`os.chdir`
 /// returns `None`); a file raises `NotADirectoryError` naming `spelled`, the
 /// path as the caller wrote it. Hosts that answered `Path.stat` with
 /// something other than a stat result get the same `RuntimeError` shape as

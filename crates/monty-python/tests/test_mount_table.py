@@ -22,7 +22,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import Monty, MontyFileHandle, MontyRuntimeError, MountDir
+from pydantic_monty import Monty, MontyFileHandle, MontyRuntimeError, MontySession, MountDir
 
 
 @pytest.fixture
@@ -693,3 +693,58 @@ def test_chdir_errors(monty_run: RunMonty, test_dir: Path):
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("import os\nos.chdir('/data')")
     assert str(exc_info.value) == snapshot("PermissionError: Permission denied: '/data'")
+
+
+@pytest.mark.parametrize('absolute', [False, True])
+@pytest.mark.parametrize(
+    'prefix, error_type',
+    [
+        pytest.param('bad\0/../', ValueError, id='nul'),
+        pytest.param('a' * 256 + '/../', OSError, id='long-component'),
+        pytest.param('a/' * 1000 + '../' * 1000, OSError, id='long-path'),
+        pytest.param('a/' * 65 + '../' * 65, OSError, id='deep-path'),
+    ],
+)
+@pytest.mark.parametrize(
+    'operation, target',
+    [
+        ('open(path).read()', 'hello.txt'),
+        ('Path(path).read_text()', 'hello.txt'),
+        ('os.chdir(path)', '.'),
+        ("os.rename(path, 'renamed.txt')", 'hello.txt'),
+        ("os.rename('hello.txt', path)", 'renamed.txt'),
+    ],
+)
+def test_paths_are_validated_before_normalization(
+    session: MontySession,
+    test_dir: Path,
+    absolute: bool,
+    prefix: str,
+    error_type: type[Exception],
+    operation: str,
+    target: str,
+):
+    """Cancelled components must still reach the mount's NUL and length checks."""
+    md = MountDir(host_path=test_dir, virtual_path='/data', mode='read-write')
+    path = ('/data/' if absolute else '') + prefix + target
+
+    def os_handler(*args: object) -> None:
+        pytest.fail('invalid paths must be rejected before calling os=')
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        session.feed_run(
+            'import os\nfrom pathlib import Path\n' + operation, inputs={'path': path}, mount=md, os=os_handler
+        )
+    assert type(exc_info.value.exception()) is error_type
+    assert session.feed_run('Path(path).exists()', mount=md) is False
+    assert session.feed_run('os.getcwd()') == '/data'
+    assert (test_dir / 'hello.txt').read_text() == 'hello world'
+    assert not (test_dir / 'renamed.txt').exists()
+
+
+def test_chdir_normalizes_after_mount_validation(session: MontySession, test_dir: Path):
+    """Only successful directory changes update the canonical session cwd."""
+    md = MountDir(host_path=test_dir, virtual_path='/data', mode='read-only')
+    assert session.feed_run("import os\nos.chdir('./subdir/../subdir//')\nos.getcwd()", mount=md) == '/data/subdir'
+    assert session.feed_run("os.chdir('.././')\nos.getcwd()", mount=md) == '/data'
+    assert session.feed_run("os.chdir('/data/./subdir/..//')\nos.getcwd()", mount=md) == '/data'

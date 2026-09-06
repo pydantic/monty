@@ -8,6 +8,34 @@ import { t } from './assertions.js'
 import { skipIfBrowser } from './env.js'
 import { Monty } from '@pydantic/monty/wasm'
 
+test('OS callback paths are normalized over the wasm transport', async (ctx) => {
+  skipIfBrowser(ctx)
+  await using pool = await Monty.create()
+  await using session = await pool.checkout()
+  const calls: unknown[] = []
+  await session.feedRun(
+    `import os
+from pathlib import Path
+Path('sub/../file.txt').exists()
+Path('/other//sub/../file.txt').exists()
+os.listdir()
+os.rename('./sub/../src', '../dst')`,
+    {
+      cwd: '/data',
+      os: (name, args) => {
+        calls.push([name, args])
+        return name === 'Path.iterdir' ? [] : true
+      },
+    },
+  )
+  t.deepEqual(calls, [
+    ['Path.exists', ['/data/file.txt']],
+    ['Path.exists', ['/other/file.txt']],
+    ['Path.iterdir', ['/data']],
+    ['Path.rename', ['/data/src', '/dst']],
+  ])
+})
+
 test('a time decodes over the wasm transport', async (ctx) => {
   skipIfBrowser(ctx)
   await using pool = await Monty.create()

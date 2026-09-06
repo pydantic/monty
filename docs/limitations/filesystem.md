@@ -107,9 +107,9 @@ directory are **not** available unless the host explicitly mounts them.
 The sandbox's working directory is a virtual path the host sets on a
 session's first feed (the first mount's virtual path by default, else `/`)
 and that persists across feeds, so a relative path never reaches a mount as
-written: the interpreter joins it onto the working directory first,
-collapsing `.` and `..` lexically. A mount therefore never sees a relative
-path, and host error messages name the resolved absolute path. See
+written: the interpreter prepends the working directory, preserving every component.
+The mount validates that absolute path before collapsing `.` and `..` lexically.
+Host error messages name the absolute path supplied to the mount. See
 [os.md](os.md) for `os.getcwd()` / `os.chdir()`.
 
 ### `..` is resolved in the virtual namespace, not through symlinks
