@@ -118,6 +118,26 @@ assert b'abc' % {} == b'abc'
 assert b'abc' % [] == b'abc'
 assert b'abc' % range(2) == b'abc'
 
+# === Heap templates and operands ===
+# a template or operand built at runtime lives on the heap rather than in the interns
+template = b''.join([b'%', b's', b' = ', b'%', b'd'])
+assert template % (b'x', 1) == b'x = 1'
+assert (b'%' + b's') % b'a' == b'a'
+assert (b'%(k)s' * 2) % {b'k': b'v'} == b'vv'
+name = b'ab'.upper()
+assert (b'%s!' * 1) % name == b'AB!'
+assert b'%s' % name == b'AB'
+assert b'%b' % name == b'AB'
+assert b'%r' % name == b"b'AB'"
+assert b'%5.1s|' % name == b'    A|'
+assert b'%c' % b'x'.upper() == b'X'
+assert (b'%' + b'5.2f') % 3.14159 == b' 3.14'
+assert (b'%(' + b'A)s') % {b'a'.upper(): b'1'} == b'1'
+assert (b'\xff%s' + b'\xff') % b'x' == b'\xffx\xff'
+assert capture_error(b'%' + b'z', 1) == ('ValueError', "unsupported format character 'z' (0x7a) at index 1")
+assert capture_error(b'abc'.upper(), b'x') == ('TypeError', 'not all arguments converted during bytes formatting')
+assert capture_error(b'%s %s' * 1, name) == ('TypeError', 'not enough arguments for format string')
+
 # === Argument count errors ===
 assert capture_error(b'%s %s', b'a') == ('TypeError', 'not enough arguments for format string')
 assert capture_error(b'%s', ()) == ('TypeError', 'not enough arguments for format string')
