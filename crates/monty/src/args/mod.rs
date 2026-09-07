@@ -385,19 +385,21 @@ impl KwargsValues {
 
     /// The first keyword's name, for callables that accept none and report
     /// CPython's `got an unexpected keyword argument`. A non-string key (only
-    /// reachable via `**` unpacking) reads as an empty name.
-    #[must_use]
-    pub fn first_key(&self, heap: &Heap, interns: &Interns) -> Option<String> {
+    /// possible via `**` unpacking) is CPython's `keywords must be strings`.
+    pub fn first_key(&self, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
         let key = match self {
-            Self::Empty => return None,
-            Self::Inline(kvs) => return kvs.first().map(|(id, _)| interns.get_str(*id).to_owned()),
-            Self::Pairs(kvs) => kvs.first().map(|(key, _)| key)?,
-            Self::Dict(dict) => dict.iter().next().map(|(key, _)| key)?,
+            Self::Empty => return Ok(None),
+            Self::Inline(kvs) => return Ok(kvs.first().map(|(id, _)| interns.get_str(*id).to_owned())),
+            Self::Pairs(kvs) => kvs.first().map(|(key, _)| key),
+            Self::Dict(dict) => dict.iter().next().map(|(key, _)| key),
         };
-        Some(
-            key.as_either_str(heap)
-                .map_or_else(String::new, |key| key.as_str(interns).to_owned()),
-        )
+        match key {
+            None => Ok(None),
+            Some(key) => key
+                .as_either_str(heap)
+                .map(|key| Some(key.as_str(interns).to_owned()))
+                .ok_or_else(ExcType::type_error_kwargs_nonstring_key),
+        }
     }
 
     /// Converts the arguments into a Vec of MontyObjects.

@@ -315,7 +315,7 @@ pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         pos.drop_with(vm);
         kwargs.drop_with(vm);
         // CPython reports a stray keyword before the positional count.
-        return Err(match first_kwarg {
+        return Err(match first_kwarg? {
             Some(key) => ExcType::type_error_unexpected_keyword("Path.cwd", &key),
             None => ExcType::type_error(format!(
                 "Path.cwd() takes 1 positional argument but {} were given",
