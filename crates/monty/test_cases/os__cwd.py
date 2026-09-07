@@ -110,6 +110,11 @@ try:
         assert False, 'expected TypeError'
     except TypeError as e:
         assert str(e) == "Path.cwd() got an unexpected keyword argument 'x'"
+    try:
+        Path.cwd(**{1: 2})
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'keywords must be strings'
 
     # Windows CPython reports WinError messages instead of POSIX errno text.
     try:
