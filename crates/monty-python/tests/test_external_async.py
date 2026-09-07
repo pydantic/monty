@@ -1,5 +1,6 @@
 """Tests for the async external-function surface of the Python bindings."""
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -8,11 +9,48 @@ from inline_snapshot import snapshot
 import pydantic_monty
 
 
+@pytest.mark.parametrize('wrapped', [False, True])
+async def test_coroutine_calls_keep_gather_concurrent(wrapped: bool):
+    """Both host coroutines must start before either can finish, including sandbox wrappers."""
+    ready = asyncio.Event()
+
+    async def first() -> int:
+        await ready.wait()
+        return 1
+
+    async def second() -> int:
+        ready.set()
+        return 2
+
+    code = 'import asyncio\n'
+    if wrapped:
+        code += 'async def a():\n    return await first()\nasync def b():\n    return await second()\n'
+        code += 'await asyncio.gather(a(), b())'
+    else:
+        code += 'await asyncio.gather(first(), second())'
+    result = await asyncio.wait_for(run_async(code, external_lookup={'first': first, 'second': second}), 5)
+    assert result == [1, 2]
+
+
 async def run_async(code: str, **kwargs: Any) -> Any:
     """Runs one snippet in a fresh async pool/session and returns its result."""
     async with pydantic_monty.AsyncMonty() as pool:
         async with pool.checkout() as session:
             return await session.feed_run(code, **kwargs)
+
+
+async def test_sequential_coroutines_use_one_suspension_per_call():
+    """Two eager calls fit a two-suspension budget, including container results."""
+
+    async def fetch() -> list[int]:
+        return [21]
+
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout(limits={'max_suspensions': 2}) as session:
+            result = await session.feed_run(
+                'a = await fetch()\nb = await fetch()\na[0] + b[0]', external_lookup={'fetch': fetch}
+            )
+            assert result == 42
 
 
 async def test_async_external_function_raises_surfaces_as_monty_runtime_error():

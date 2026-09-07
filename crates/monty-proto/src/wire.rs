@@ -124,6 +124,8 @@ pub struct WireFunctionCall {
     /// for `__call__`/classmethod calls); `None` for plain external function
     /// calls. The receiver is never included in `args`.
     pub object_id: Option<MontyUuid>,
+    /// The worker accepts an eagerly settled coroutine via `ResumeFutures`.
+    pub eager_coroutine: bool,
 }
 
 impl Message for WireFunctionCall {
@@ -134,6 +136,9 @@ impl Message for WireFunctionCall {
         encode_uint32(4, self.call_id, buf);
         if let Some(id) = &self.object_id {
             encoding::message::encode(5, &uuid_to_pb(id), buf);
+        }
+        if self.eager_coroutine {
+            encoding::bool::encode(6, &true, buf);
         }
     }
 
@@ -146,6 +151,11 @@ impl Message for WireFunctionCall {
                 .object_id
                 .as_ref()
                 .map_or(0, |id| encoding::message::encoded_len(5, &uuid_to_pb(id)))
+            + if self.eager_coroutine {
+                encoding::bool::encoded_len(6, &true)
+            } else {
+                0
+            }
     }
 
     fn merge_field(
@@ -166,6 +176,7 @@ impl Message for WireFunctionCall {
                 self.object_id = Some(pb_uuid_to_monty(&uuid, "FunctionCall.object_id")?);
                 Ok(())
             }
+            6 => encoding::bool::merge(wire_type, &mut self.eager_coroutine, buf, ctx),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
@@ -176,6 +187,7 @@ impl Message for WireFunctionCall {
         self.kwargs.clear();
         self.call_id = 0;
         self.object_id = None;
+        self.eager_coroutine = false;
     }
 }
 

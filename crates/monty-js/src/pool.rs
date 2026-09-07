@@ -874,8 +874,10 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             kwargs,
             call_id,
             object_id,
+            eager_coroutine,
         }) => {
             obj.set("kind", "functionCall")?;
+            obj.set("eagerCoroutine", eager_coroutine)?;
             obj.set("functionName", function_name)?;
             obj.set("args", values_to_js(env, &args)?)?;
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
