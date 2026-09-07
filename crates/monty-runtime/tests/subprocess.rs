@@ -953,6 +953,29 @@ fn non_finite_float_precision_is_not_charged() {
         child.feed_complete("'%.2000000000f' % float('inf')"),
         MontyObject::String("inf".to_owned())
     );
+}
+
+/// `Path.iterdir()` repeats the receiver in every joined entry, so the joins
+/// are preflighted in one shot before any is built.
+#[test]
+fn iterdir_joins_are_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "from pathlib import Path\nlist(Path('/' + 'd' * 100_000).iterdir())";
+    let (_, event) = child.feed(code);
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    let entries = MontyObject::List(vec![MontyObject::String("x".to_owned()); 20]);
+    let (_, event) = child.resume_call(
+        call.call_id,
+        pb::ext_function_result::Kind::ReturnValue(WireObject::new(entries)),
+    );
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError");
+    let message = error.message.expect("MemoryError should have a message");
+    assert_reported_usage(&message, 2_334_236, code);
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
     child.shutdown();
 }
 

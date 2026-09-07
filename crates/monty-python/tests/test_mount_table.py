@@ -16,13 +16,21 @@ import os
 import sys
 import tempfile
 from collections.abc import Generator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import Monty, MontyFileHandle, MontyRuntimeError, MontySession, MountDir
+from pydantic_monty import (
+    Monty,
+    MontyFileHandle,
+    MontyRuntimeError,
+    MontySession,
+    MontySyntaxError,
+    MontyTypingError,
+    MountDir,
+)
 
 
 @pytest.fixture
@@ -759,3 +767,40 @@ def test_chdir_normalizes_after_mount_validation(session: MontySession, test_dir
     assert session.feed_run("import os\nos.chdir('./subdir/../subdir//')\nos.getcwd()", mount=md) == '/data/subdir'
     assert session.feed_run("os.chdir('.././')\nos.getcwd()", mount=md) == '/data'
     assert session.feed_run("os.chdir('/data/./subdir/..//')\nos.getcwd()", mount=md) == '/data'
+
+
+def test_first_feed_failure_keeps_the_mount_default_cwd(pool: Monty, test_dir: Path):
+    """A first feed that fails after parsing still adopts the mount default; a
+    typing rejection never reaches the worker, so nothing is adopted."""
+    md = MountDir(host_path=test_dir, virtual_path='/data', mode='read-only')
+    with pool.checkout() as session:
+        with pytest.raises(MontySyntaxError):
+            session.feed_run('def', mount=md)
+        assert session.feed_run('import os\nos.getcwd()') == '/data'
+    with pool.checkout(type_check=True) as session:
+        with pytest.raises(MontyTypingError):
+            session.feed_run("x: int = 'a'", mount=md)
+        assert session.feed_run('import os\nos.getcwd()') == '/'
+
+
+def test_path_length_limits_are_mount_policy(monty_run: RunMonty, test_dir: Path):
+    """A feed with no mount passes overlong paths to the callback; a feed with
+    any mount rejects them first, even for paths outside every mount."""
+    seen: list[object] = []
+
+    def os_handler(function_name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        seen.append(args[0])
+        return False
+
+    long_path = '/other/' + 'a' * 5000
+    assert (
+        monty_run('from pathlib import Path\nPath(path).exists()', inputs={'path': long_path}, os=os_handler) is False
+    )
+    assert seen == [PurePosixPath(long_path)]
+    md = MountDir(host_path=test_dir, virtual_path='/data', mode='read-only')
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import os\nos.stat(path)', inputs={'path': long_path}, mount=md, os=os_handler)
+    assert str(exc_info.value) == snapshot(
+        "OSError: [Errno 36] File name too long: '/other/aaaaaaaaaaaaa…aaaaaaaaaaaaaaaaaaaa'"
+    )
+    assert seen == [PurePosixPath(long_path)]

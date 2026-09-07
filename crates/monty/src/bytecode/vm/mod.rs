@@ -1987,7 +1987,7 @@ impl<'h> VM<'h> {
                 Ok(obj) => obj,
                 Err(err) => return self.resume_with_exception(err),
             },
-            Some(PendingOsEffect::IterdirPaths { path }) => match iterdir_paths(obj, &path) {
+            Some(PendingOsEffect::IterdirPaths { path }) => match iterdir_paths(obj, &path, &self.heap.tracker) {
                 Ok(obj) => obj,
                 Err(err) => return self.resume_with_exception(err),
             },

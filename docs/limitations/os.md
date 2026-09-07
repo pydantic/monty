@@ -75,7 +75,8 @@ whether each call is permitted.
     Python and JavaScript `os` callbacks receive lexically normalized paths, including both rename arguments.
     The interpreter rejects NUL bytes before dispatch, even in components cancelled by `..`.
     Existence predicates return `False` for these paths; other operations raise `ValueError`.
-    Length and depth limits are mount policy and do not apply to callbacks without mounts.
+    Length and depth limits are mount policy: a feed with any mount applies them to every path before the callback
+    sees it, including paths no mount covers, while a feed with no mounts passes paths of any length to the callback.
 - **`os.chdir(path)` suspends as `Path.stat`** on the resolved target: hosts
     cannot observe a directory change, and without a mount or `os` handler it
     raises `PermissionError`. The interpreter raises `NotADirectoryError`

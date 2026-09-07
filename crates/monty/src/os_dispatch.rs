@@ -23,7 +23,7 @@ use std::mem;
 
 use monty_types::{
     ExcType, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    RenameCallArgs,
+    RenameCallArgs, ResourceTracker,
 };
 
 use crate::{
@@ -185,16 +185,23 @@ pub(crate) fn check_chdir_stat(obj: &MontyObject, spelled: &str) -> Result<(), R
 /// after the last `/`. Hosts answering the `Path.iterdir` callback themselves
 /// may return `str` entries instead of paths — both work.
 pub(crate) fn listdir_names(obj: MontyObject) -> Result<MontyObject, RunError> {
-    directory_entries(obj, None)
+    directory_entries(obj, None, None)
 }
 
 /// Rebuilds host entries using the caller's original relative or absolute directory path.
-pub(crate) fn iterdir_paths(obj: MontyObject, path: &str) -> Result<MontyObject, RunError> {
-    directory_entries(obj, Some(path))
+///
+/// The joins repeat the receiver once per host entry, so their total is
+/// preflighted against `tracker` in one shot before any is built.
+pub(crate) fn iterdir_paths(obj: MontyObject, path: &str, tracker: &ResourceTracker) -> Result<MontyObject, RunError> {
+    directory_entries(obj, Some(path), Some(tracker))
 }
 
 /// Reduces host paths to entry names, optionally joining them onto a `Path.iterdir()` receiver.
-fn directory_entries(obj: MontyObject, path: Option<&str>) -> Result<MontyObject, RunError> {
+fn directory_entries(
+    obj: MontyObject,
+    path: Option<&str>,
+    tracker: Option<&ResourceTracker>,
+) -> Result<MontyObject, RunError> {
     let invalid = |type_name: &str| -> RunError {
         let operation = if path.is_some() { "Path.iterdir" } else { "os.listdir" };
         SimpleException::new_msg(
@@ -207,6 +214,10 @@ fn directory_entries(obj: MontyObject, path: Option<&str>) -> Result<MontyObject
         return Err(invalid(obj.type_name()));
     };
     let directory = path.map(|path| Path::new(path.to_owned()));
+    if let (Some(path), Some(tracker)) = (path, tracker) {
+        // Each joined path adds the receiver and a separator on top of the entry.
+        tracker.check_allocation(items.len().saturating_mul(path.len() + 1))?;
+    }
     for item in &mut items {
         match item {
             MontyObject::Path(entry) | MontyObject::String(entry) => {
