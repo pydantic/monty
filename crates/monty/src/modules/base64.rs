@@ -132,9 +132,6 @@ const BASE64_FUNCTIONS: &[(StaticStrings, Base64Functions)] = &[
 ];
 
 /// Creates the `base64` module on the heap.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Base64, vm.interns);
 

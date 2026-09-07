@@ -541,12 +541,14 @@ impl<'h> PyTrait<'h> for Value {
     /// of a `str` still needs a buffer for quoting/escaping.
     fn py_repr(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         match self {
-            Self::None => Ok(Self::InternString(vm.interns.static_id(StaticStrings::NoneRepr))),
-            Self::Bool(true) => Ok(Self::InternString(vm.interns.static_id(StaticStrings::TrueRepr))),
-            Self::Bool(false) => Ok(Self::InternString(vm.interns.static_id(StaticStrings::FalseRepr))),
-            Self::Ellipsis => Ok(Self::InternString(vm.interns.static_id(StaticStrings::EllipsisRepr))),
+            Self::None => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::NoneRepr))),
+            Self::Bool(true) => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::TrueRepr))),
+            Self::Bool(false) => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::FalseRepr))),
+            Self::Ellipsis => Ok(Self::InternString(
+                vm.interns.intern_static(StaticStrings::EllipsisRepr),
+            )),
             Self::NotImplemented => Ok(Self::InternString(
-                vm.interns.static_id(StaticStrings::NotImplementedRepr),
+                vm.interns.intern_static(StaticStrings::NotImplementedRepr),
             )),
             Self::Int(i) => Ok(allocate_string(itoa::Buffer::new().format(*i), vm.heap)),
             _ => {

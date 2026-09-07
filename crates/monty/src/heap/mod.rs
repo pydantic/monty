@@ -39,7 +39,7 @@ pub(crate) use crate::{
 
 mod free_list;
 mod stable_heap;
-use stable_heap::StableHeap;
+pub(crate) use stable_heap::StableHeap;
 
 /// Unique identifier for values stored inside the heap arena.
 ///

@@ -164,7 +164,7 @@ fn create_class(
         .collect();
     if source.get_by_str("__doc__", vm.heap, vm.interns).is_none() {
         pairs.push((
-            Value::InternString(vm.interns.static_id(StaticStrings::DunderDoc)),
+            Value::InternString(vm.interns.intern_static(StaticStrings::DunderDoc)),
             Value::None,
         ));
     }

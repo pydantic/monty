@@ -81,7 +81,9 @@ impl Str {
         defer_drop!(errors, vm);
         if encoding.is_none() && errors.is_none() {
             return match object {
-                None => Ok(Value::InternString(vm.interns.static_id(StaticStrings::EmptyString))),
+                None => Ok(Value::InternString(
+                    vm.interns.intern_static(StaticStrings::EmptyString),
+                )),
                 Some(v) => v.py_str(vm),
             };
         }
@@ -91,7 +93,9 @@ impl Str {
         str_ctor_arg_check(errors.as_ref(), "errors", vm)?;
         let Some(object) = object else {
             // A missing object wins over the decoding args: `str(encoding='utf-8')` is ''.
-            return Ok(Value::InternString(vm.interns.static_id(StaticStrings::EmptyString)));
+            return Ok(Value::InternString(
+                vm.interns.intern_static(StaticStrings::EmptyString),
+            ));
         };
         let bytes: &[u8] = match object {
             Value::InternBytes(bytes_id) => vm.interns.get_bytes(*bytes_id),
@@ -187,7 +191,7 @@ pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Valu
 /// Allocates a string while reusing the executor's canonical empty value.
 pub fn allocate_string_with_interns(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap, interns: &Interns) -> Value {
     if s.as_ref().is_empty() {
-        Value::InternString(interns.static_id(StaticStrings::EmptyString))
+        Value::InternString(interns.intern_static(StaticStrings::EmptyString))
     } else {
         allocate_string(s, heap)
     }

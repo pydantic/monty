@@ -149,10 +149,10 @@ fn static_interns_deserialize_as_unknown_text() {
     );
 }
 
-/// Loading fills in module strings known to the current build but absent from
-/// an older interner, appending them without changing serialized IDs.
+/// Module attributes are absent from compiled snapshots and interned lazily
+/// during execution, including when running the same loaded program twice.
 #[test]
-fn deserialization_registers_new_module_static_strings() {
+fn execution_interns_module_static_strings() {
     let runner = MontyRun::new(
         "import functools\n1".to_owned(),
         "test.py",
@@ -160,17 +160,53 @@ fn deserialization_registers_new_module_static_strings() {
         CompileOptions::default(),
     )
     .unwrap();
-    let mut bytes = postcard::to_allocvec(&runner).unwrap();
-    let positions: Vec<_> = bytes
-        .windows(b"partial".len())
-        .enumerate()
-        .filter_map(|(index, value)| (value == b"partial").then_some(index))
-        .collect();
-    assert_eq!(positions.len(), 1, "expected only the interner entry");
-    bytes[positions[0]..positions[0] + b"mystery".len()].copy_from_slice(b"mystery");
-
+    let bytes = postcard::to_allocvec(&runner).unwrap();
+    assert_eq!(
+        bytes
+            .windows(b"partial".len())
+            .filter(|text| *text == b"partial")
+            .count(),
+        0
+    );
     let loaded: MontyRun = postcard::from_bytes(&bytes).unwrap();
     assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(1));
+    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(1));
+}
+
+/// Each module can lazily construct its complete namespace after loading,
+/// without source attribute references masking missing interner entries.
+#[test]
+fn module_imports_after_snapshot() {
+    for module in [
+        "sys",
+        "typing",
+        "asyncio",
+        "pathlib",
+        "os",
+        "math",
+        "json",
+        "re",
+        "datetime",
+        "unicodedata",
+        "itertools",
+        "dataclasses",
+        "collections",
+        "functools",
+        "base64",
+        "binascii",
+    ] {
+        let runner = MontyRun::new(
+            format!("import {module}\n42"),
+            "test.py",
+            vec![],
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let loaded = round_trip(&runner);
+        assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(42));
+        let loaded = round_trip(&loaded);
+        assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(42));
+    }
 }
 
 #[test]

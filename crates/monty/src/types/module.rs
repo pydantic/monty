@@ -27,10 +27,10 @@ pub(crate) struct Module {
 impl Module {
     /// Creates a new module with an empty attributes dictionary.
     ///
-    /// The prepare phase must register names materialized by the module.
+    /// Attribute names are interned lazily when the module materializes them.
     pub fn new(name: StaticStrings, interns: &Interns) -> Self {
         Self {
-            name: interns.static_id(name),
+            name: interns.intern_static(name),
             attrs: Dict::new(),
         }
     }
@@ -47,9 +47,9 @@ impl Module {
 
     /// Sets an attribute in the module's dictionary.
     ///
-    /// The prepare phase must register names materialized by the module.
+    /// Attribute names are interned lazily when the module materializes them.
     pub fn set_attr(&mut self, name: StaticStrings, value: Value, vm: &mut VM<'_>) {
-        let key = Value::InternString(vm.interns.static_id(name));
+        let key = Value::InternString(vm.interns.intern_static(name));
         // Unwrap is safe because InternString keys are always hashable
         self.attrs.set(key, value, vm).unwrap();
     }

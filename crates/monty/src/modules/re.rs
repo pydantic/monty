@@ -90,9 +90,6 @@ pub(crate) enum ReFunctions {
 
 /// Allocates the `re` module — every [`ReFunctions`] variant plus the flag
 /// constants — and returns its `HeapId`.
-///
-/// # Panics
-/// If the required strings were not pre-interned during the prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Re, vm.interns);
 

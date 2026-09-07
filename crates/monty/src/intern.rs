@@ -15,7 +15,7 @@
 //! retain a [`StaticStrings`] tag for dispatch, while snapshots serialize only
 //! their text so another build can load an unknown static string as owned text.
 
-use std::{mem, slice::from_ref, str::FromStr, sync::LazyLock};
+use std::{cell::Cell, mem, ops::Index, slice::from_ref, str::FromStr, sync::LazyLock};
 
 use ahash::AHashMap;
 use num_bigint::BigInt;
@@ -26,7 +26,7 @@ use crate::function::FunctionMetadataFault;
 use crate::{
     function::Function,
     hash::{ASCII_HASHES, HashValue, WithHash, hash_python_str},
-    modules::restore_interned_strings,
+    heap::{HeapId, StableHeap},
 };
 
 /// Index into the string interner's storage.
@@ -1253,6 +1253,81 @@ impl FunctionId {
     }
 }
 
+/// Prehashed core strings reused when constructing independent interners.
+static CORE_ENTRIES: LazyLock<Vec<InternedString>> = LazyLock::new(|| {
+    CORE_STATIC_STRINGS
+        .iter()
+        .copied()
+        .map(InternedString::static_string)
+        .collect()
+});
+
+/// Append-only storage: existing references remain valid across insertion.
+/// No API exposes the underlying arena's removal or mutation operations.
+#[derive(Debug)]
+struct StringEntries(StableHeap<InternedString>);
+
+impl StringEntries {
+    /// Reserves stable slots for a new interner.
+    fn with_capacity(capacity: usize) -> Self {
+        Self(StableHeap::with_capacity(capacity))
+    }
+
+    /// Returns the number of assigned executor-local slots.
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Appends an immutable entry without invalidating borrowed text.
+    fn push(&self, entry: InternedString) {
+        self.0.allocate(entry);
+    }
+
+    /// Looks up an existing slot without exposing arena IDs to callers.
+    fn get(&self, index: usize) -> Option<&InternedString> {
+        (index < self.len()).then(|| self.0.get(HeapId::from_index(index)))
+    }
+
+    /// Visits entries in ID order for cloning and snapshots.
+    fn iter(&self) -> impl Iterator<Item = &InternedString> {
+        (0..self.len()).map(|index| &self[index])
+    }
+}
+
+impl Index<usize> for StringEntries {
+    type Output = InternedString;
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index).expect("invalid string slot")
+    }
+}
+
+impl Clone for StringEntries {
+    fn clone(&self) -> Self {
+        let entries = Self::with_capacity(self.len());
+        for entry in self.iter() {
+            entries.push(entry.clone());
+        }
+        entries
+    }
+}
+
+impl serde::Serialize for StringEntries {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.iter())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for StringEntries {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let values = <Vec<InternedString> as serde::Deserialize>::deserialize(deserializer)?;
+        let entries = Self::with_capacity(values.len());
+        for value in values {
+            entries.push(value);
+        }
+        Ok(entries)
+    }
+}
+
 /// A string, bytes, and long integer interner that stores unique values and returns indices for lookup.
 ///
 /// Interns are deduplicated on insertion - interning the same string twice returns
@@ -1261,16 +1336,16 @@ impl FunctionId {
 ///
 /// # Thread Safety
 ///
-/// The interner is not thread-safe. It's designed to be used single-threaded during
-/// parsing/preparation, then the values are accessed read-only during execution.
+/// The interner is single-threaded. Entries are immutable, but new static strings
+/// may be appended through shared references during execution.
 #[derive(Debug, Clone)]
 pub struct InternerBuilder {
     /// Maps owned strings to their executor-local IDs.
     string_map: AHashMap<String, StringId>,
     /// Maps static tags to the executor-local IDs allocated on first use.
-    static_string_ids: Vec<Option<StringId>>,
+    static_string_ids: Vec<Cell<Option<StringId>>>,
     /// Storage for all non-ASCII interned strings, indexed by `StringId`.
-    strings: Vec<InternedString>,
+    strings: StringEntries,
     /// Storage for interned bytes literals, indexed by `BytesId`. Each
     /// entry carries its precomputed [`HashValue`].
     /// Not deduplicated since bytes literals are rare.
@@ -1280,16 +1355,6 @@ pub struct InternerBuilder {
     /// Not deduplicated since long integer literals are rare.
     long_ints: Vec<WithHash<BigInt>>,
 }
-
-/// Prehashed core entries cloned into each new executor interner.
-static BASE_INTERNER: LazyLock<InternerBuilder> = LazyLock::new(|| {
-    let mut interner = InternerBuilder::empty(0);
-    interner.strings.reserve(CORE_STATIC_STRINGS.len());
-    for &value in CORE_STATIC_STRINGS {
-        interner.intern_static(value);
-    }
-    interner
-});
 
 impl Default for InternerBuilder {
     fn default() -> Self {
@@ -1302,14 +1367,18 @@ impl InternerBuilder {
     /// may materialize without an explicit source reference.
     ///
     /// Other static strings receive ordinary slots only when parsing encounters
-    /// them or an imported module registers the attributes it materializes.
+    /// them or an imported module materializes its attributes.
     /// `code` supplies a rough capacity estimate for additional literals.
     pub fn new(code: &str) -> Self {
         // Rough guess: count quotes and divide by 2 (open+close per string).
         let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
-        let mut interner = BASE_INTERNER.clone();
-        interner.string_map.reserve(capacity);
-        interner.strings.reserve(capacity);
+        let interner = Self::empty(capacity + CORE_STATIC_STRINGS.len());
+        for entry in CORE_ENTRIES.iter() {
+            let value = entry.static_value().expect("core entries are static");
+            let id = next_string_id(interner.strings.len());
+            interner.strings.push(entry.clone());
+            interner.static_string_ids[value as usize].set(Some(id));
+        }
         interner
     }
 
@@ -1317,8 +1386,8 @@ impl InternerBuilder {
     fn empty(string_capacity: usize) -> Self {
         Self {
             string_map: AHashMap::with_capacity(string_capacity),
-            static_string_ids: vec![None; StaticStrings::COUNT],
-            strings: Vec::with_capacity(string_capacity),
+            static_string_ids: vec![Cell::new(None); StaticStrings::COUNT],
+            strings: StringEntries::with_capacity(string_capacity),
             bytes: Vec::new(),
             long_ints: Vec::new(),
         }
@@ -1330,12 +1399,7 @@ impl InternerBuilder {
     /// deduplicated in the executor-local table; recognized static text stores
     /// a compact tag rather than an owned allocation.
     pub fn intern(&mut self, s: &str) -> StringId {
-        intern_str(&mut self.string_map, &mut self.static_string_ids, &mut self.strings, s)
-    }
-
-    /// Interns a known static string into this executor's ordinary ID space.
-    pub(crate) fn intern_static(&mut self, value: StaticStrings) -> StringId {
-        intern_static(&mut self.static_string_ids, &mut self.strings, value)
+        intern_str(&mut self.string_map, &self.static_string_ids, &self.strings, s)
     }
 
     /// Looks up the `StringId` for an ASCII character or previously interned string.
@@ -1383,8 +1447,8 @@ impl InternerBuilder {
 /// encoding the tag in its `StringId`.
 fn intern_str(
     string_map: &mut AHashMap<String, StringId>,
-    static_string_ids: &mut [Option<StringId>],
-    strings: &mut Vec<InternedString>,
+    static_string_ids: &[Cell<Option<StringId>>],
+    strings: &StringEntries,
     s: &str,
 ) -> StringId {
     if s.len() == 1 {
@@ -1402,11 +1466,11 @@ fn intern_str(
 
 /// Interns a static tag into an append-only executor-local table.
 fn intern_static(
-    static_string_ids: &mut [Option<StringId>],
-    strings: &mut Vec<InternedString>,
+    static_string_ids: &[Cell<Option<StringId>>],
+    strings: &StringEntries,
     value: StaticStrings,
 ) -> StringId {
-    if let Some(id) = static_string_ids[value as usize] {
+    if let Some(id) = static_string_ids[value as usize].get() {
         id
     } else {
         let text: &'static str = value.into();
@@ -1417,7 +1481,7 @@ fn intern_static(
             strings.push(InternedString::static_string(value));
             id
         };
-        static_string_ids[value as usize] = Some(id);
+        static_string_ids[value as usize].set(Some(id));
         id
     }
 }
@@ -1431,13 +1495,13 @@ fn next_string_id(strings_len: usize) -> StringId {
 /// Reverse of [`get_str`]: the `StringId` for `s`, or `None` if never interned.
 fn get_string_id_by_name(
     string_map: &AHashMap<String, StringId>,
-    static_string_ids: &[Option<StringId>],
+    static_string_ids: &[Cell<Option<StringId>>],
     s: &str,
 ) -> Option<StringId> {
     if s.len() == 1 {
         Some(StringId::from_ascii(s.as_bytes()[0]))
     } else if let Ok(value) = StaticStrings::from_str(s) {
-        static_string_ids[value as usize]
+        static_string_ids[value as usize].get()
     } else {
         string_map.get(s).copied()
     }
@@ -1448,7 +1512,7 @@ fn get_string_id_by_name(
 /// # Panics
 ///
 /// Panics if the ID is neither ASCII nor a slot in this interner.
-fn get_str(strings: &[InternedString], id: StringId) -> &str {
+fn get_str(strings: &StringEntries, id: StringId) -> &str {
     if let Some(ascii_str) = ASCII_STRS.get(id.index()) {
         ascii_str
     } else {
@@ -1457,7 +1521,7 @@ fn get_str(strings: &[InternedString], id: StringId) -> &str {
 }
 
 /// Returns the static tag stored at `id`, if any.
-fn get_static_string(strings: &[InternedString], id: StringId) -> Option<StaticStrings> {
+fn get_static_string(strings: &StringEntries, id: StringId) -> Option<StaticStrings> {
     if let Some(text) = ASCII_STRS.get(id.index()) {
         StaticStrings::from_str(text).ok()
     } else {
@@ -1497,7 +1561,7 @@ fn get_static_string(strings: &[InternedString], id: StringId) -> Option<StaticS
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "InternsWire")]
 pub(crate) struct Interns {
-    strings: Vec<InternedString>,
+    strings: StringEntries,
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
@@ -1506,7 +1570,7 @@ pub(crate) struct Interns {
     string_id_by_name: AHashMap<String, StringId>,
     /// Static-tag reverse lookup, rebuilt from `strings` after loading.
     #[serde(skip)]
-    static_string_ids: Vec<Option<StringId>>,
+    static_string_ids: Vec<Cell<Option<StringId>>>,
 }
 
 impl Default for Interns {
@@ -1518,7 +1582,7 @@ impl Default for Interns {
 /// Serialized form of [`Interns`]
 #[derive(serde::Deserialize)]
 struct InternsWire {
-    strings: Vec<InternedString>,
+    strings: StringEntries,
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
@@ -1540,7 +1604,7 @@ impl TryFrom<InternsWire> for Interns {
 
     fn try_from(wire: InternsWire) -> Result<Self, Self::Error> {
         let (string_id_by_name, static_string_ids) = build_string_maps(&wire.strings)?;
-        let mut interns = Self {
+        let interns = Self {
             strings: wire.strings,
             bytes: wire.bytes,
             long_ints: wire.long_ints,
@@ -1548,32 +1612,28 @@ impl TryFrom<InternsWire> for Interns {
             string_id_by_name,
             static_string_ids,
         };
-        for &value in CORE_STATIC_STRINGS {
-            interns.intern_static(value);
-        }
-        restore_interned_strings(&mut interns);
         Ok(interns)
     }
 }
 
 /// Reverse maps rebuilt from the serialized ordered string table.
-type StringMaps = (AHashMap<String, StringId>, Vec<Option<StringId>>);
+type StringMaps = (AHashMap<String, StringId>, Vec<Cell<Option<StringId>>>);
 
 /// Rebuilds both reverse maps from the canonical ordered string table.
 ///
 /// Duplicate text is rejected because distinct IDs for equal interned strings
 /// would invalidate the ID-equality fast path used by Python string equality.
-fn build_string_maps(strings: &[InternedString]) -> Result<StringMaps, String> {
+fn build_string_maps(strings: &StringEntries) -> Result<StringMaps, String> {
     let mut seen = AHashMap::with_capacity(strings.len());
     let mut string_id_by_name = AHashMap::new();
-    let mut static_string_ids = vec![None; StaticStrings::COUNT];
+    let static_string_ids = vec![Cell::new(None); StaticStrings::COUNT];
     for (index, entry) in strings.iter().enumerate() {
         let id = next_string_id(index);
         if seen.insert(entry.as_str(), id).is_some() {
             return Err(format!("duplicate interned string {:?}", entry.as_str()));
         }
         if let Some(value) = entry.static_value() {
-            static_string_ids[value as usize] = Some(id);
+            static_string_ids[value as usize].set(Some(id));
         } else {
             string_id_by_name.insert(entry.as_str().to_owned(), id);
         }
@@ -1593,7 +1653,7 @@ impl Interns {
     /// Creates the temporary value used only while an interner is moved out.
     fn placeholder() -> Self {
         Self {
-            strings: Vec::new(),
+            strings: StringEntries::with_capacity(0),
             bytes: Vec::new(),
             long_ints: Vec::new(),
             functions: Vec::new(),
@@ -1638,17 +1698,12 @@ impl Interns {
     /// Used by synthetic REPL inputs and lazily created runtime objects; IDs
     /// remain stable because the table is append-only.
     pub(crate) fn intern(&mut self, s: &str) -> StringId {
-        intern_str(
-            &mut self.string_id_by_name,
-            &mut self.static_string_ids,
-            &mut self.strings,
-            s,
-        )
+        intern_str(&mut self.string_id_by_name, &self.static_string_ids, &self.strings, s)
     }
 
     /// Interns compile-time-known text directly into the append-only table.
-    pub(crate) fn intern_static(&mut self, value: StaticStrings) -> StringId {
-        intern_static(&mut self.static_string_ids, &mut self.strings, value)
+    pub(crate) fn intern_static(&self, value: StaticStrings) -> StringId {
+        intern_static(&self.static_string_ids, &self.strings, value)
     }
 
     /// Looks up a string by its `StringId`.
@@ -1664,15 +1719,6 @@ impl Interns {
     /// Returns the static tag stored in an executor-local string slot.
     pub(crate) fn static_string(&self, id: StringId) -> Option<StaticStrings> {
         get_static_string(&self.strings, id)
-    }
-
-    /// Returns this executor's ID for a static string registered at compile time.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the compiler did not register a runtime-required string.
-    pub(crate) fn static_id(&self, value: StaticStrings) -> StringId {
-        self.static_string_ids[value as usize].unwrap_or_else(|| panic!("static string {value:?} was not registered"))
     }
 
     /// Looks up bytes by their `BytesId`.

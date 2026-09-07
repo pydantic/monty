@@ -299,7 +299,7 @@ fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<DataclassField>) -> RunResu
 /// `fields`. Re-decorating replaces the previous mapping, which nothing else
 /// owns once it is out of the namespace.
 fn store_dataclass_fields<'h>(class: &mut HeapRead<'h, Class>, fields: Value, vm: &mut VM<'h>) -> RunResult<()> {
-    let name = Value::InternString(vm.interns.static_id(StaticStrings::DataclassFields));
+    let name = Value::InternString(vm.interns.intern_static(StaticStrings::DataclassFields));
     let replaced = class.set_attr(name, fields, vm)?;
     replaced.drop_with(vm);
     Ok(())
@@ -317,7 +317,7 @@ fn store_dataclass_params<'h>(
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
     let params = vm.heap.allocate_as(DataclassParams::new(options)).into_value();
-    let name = Value::InternString(vm.interns.static_id(StaticStrings::DataclassParams));
+    let name = Value::InternString(vm.interns.intern_static(StaticStrings::DataclassParams));
     let replaced = class.set_attr(name, params, vm)?;
     replaced.drop_with(vm);
     Ok(())

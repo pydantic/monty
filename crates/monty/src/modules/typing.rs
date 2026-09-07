@@ -17,9 +17,6 @@ use crate::{
 
 /// Creates the `typing` module and allocates it on the heap.
 ///
-/// # Panics
-///
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Typing, vm.interns);
 

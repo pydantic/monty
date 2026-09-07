@@ -54,9 +54,6 @@ pub(crate) enum OsFunctions {
 /// Functions yield to the host via `OsFunction` callbacks (except the pure
 /// `fspath`); constants are fixed POSIX values since the sandbox path model
 /// is always POSIX.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     /// Shorthand for the function-attribute entries in the table below.
     fn function(f: OsFunctions) -> Value {
@@ -88,16 +85,16 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         (StaticStrings::Curdir, Value::InternString(StringId::from_ascii(b'.'))),
         (
             StaticStrings::Pardir,
-            Value::InternString(vm.interns.static_id(StaticStrings::ParentDirString)),
+            Value::InternString(vm.interns.intern_static(StaticStrings::ParentDirString)),
         ),
         (StaticStrings::Linesep, Value::InternString(StringId::from_ascii(b'\n'))),
         (
             StaticStrings::Name,
-            Value::InternString(vm.interns.static_id(StaticStrings::Posix)),
+            Value::InternString(vm.interns.intern_static(StaticStrings::Posix)),
         ),
         (
             StaticStrings::Devnull,
-            Value::InternString(vm.interns.static_id(StaticStrings::DevNullString)),
+            Value::InternString(vm.interns.intern_static(StaticStrings::DevNullString)),
         ),
     ];
 

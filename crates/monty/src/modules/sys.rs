@@ -42,16 +42,13 @@ pub(crate) enum SysFunctions {
 
 /// Creates the `sys` module and allocates it on the heap.
 ///
-/// # Panics
-///
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Sys, vm.interns);
 
     // sys.platform
     module.set_attr(
         StaticStrings::Platform,
-        Value::InternString(vm.interns.static_id(StaticStrings::Monty)),
+        Value::InternString(vm.interns.intern_static(StaticStrings::Monty)),
         vm,
     );
 
@@ -62,12 +59,12 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     // sys.version
     module.set_attr(
         StaticStrings::Version,
-        Value::InternString(vm.interns.static_id(StaticStrings::MontyVersionString)),
+        Value::InternString(vm.interns.intern_static(StaticStrings::MontyVersionString)),
         vm,
     );
     // sys.version_info - named tuple (major=3, minor=14, micro=0, releaselevel='final', serial=0)
     let version_info = NamedTuple::new(
-        EitherStr::Interned(vm.interns.static_id(StaticStrings::SysVersionInfo)),
+        EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysVersionInfo)),
         [
             StaticStrings::Major,
             StaticStrings::Minor,
@@ -75,13 +72,13 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
             StaticStrings::Releaselevel,
             StaticStrings::Serial,
         ]
-        .map(|name| EitherStr::Interned(vm.interns.static_id(name)))
+        .map(|name| EitherStr::Interned(vm.interns.intern_static(name)))
         .to_vec(),
         vec![
             Value::Int(3),
             Value::Int(14),
             Value::Int(0),
-            Value::InternString(vm.interns.static_id(StaticStrings::Final)),
+            Value::InternString(vm.interns.intern_static(StaticStrings::Final)),
             Value::Int(0),
         ],
     );
