@@ -5,6 +5,7 @@
 
 use std::{
     io::{Read, Write},
+    iter::repeat_n,
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     thread,
     time::{Duration, Instant},
@@ -682,6 +683,81 @@ fn async_accumulation_reaches_the_soft_limit() {
     child.shutdown();
 }
 
+/// A value that already meets its width emits no fill, so a multibyte fill
+/// must not be charged as though it were repeated to the full width.
+#[test]
+fn formatting_without_padding_does_not_charge_fill() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "s = 'x' * 400_000\nlen(f'{s:é<400000}')";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(400_000));
+    child.shutdown();
+}
+
+/// Generic string fallback must use the same exact output bound as direct strings.
+#[test]
+fn formatting_generic_value_without_padding_does_not_charge_fill() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "s = 'x' * 400_000\nclass Value:\n    def __str__(self):\n        return s\nvalue = Value()\nlen(f'{value:é<400000}')";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(400_000));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+#[test]
+fn impossible_format_capacity_preserves_the_worker() {
+    let width = isize::MAX.unsigned_abs() / 'é'.len_utf8() + 2;
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    for code in [
+        format!("'{{0:é<{width}}}'.format('x')"),
+        format!("'{{0:é<{width}}}'.format(1)"),
+    ] {
+        let (_, event) = child.feed(&code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+    }
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+#[test]
+fn large_unnested_format_spec_preserves_the_worker() {
+    const SPEC_LEN: usize = 5_500_000;
+    let mut template = String::with_capacity(SPEC_LEN + 4);
+    template.push_str("{0:");
+    template.extend(repeat_n('x', SPEC_LEN));
+    template.push('}');
+
+    for junk_len in [5_000_000, 10_000_000] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(16 * 1024 * 1024));
+        let inputs = vec![pb::NamedValue {
+            name: "template".to_owned(),
+            value: Some(str_value(&template)),
+        }];
+        // The smaller filler reaches tracked error rendering without room for
+        // another spec copy. The larger one requires a preflighted receiver copy.
+        let code = format!("junk = 'j' * {junk_len}\ntemplate.format(0)");
+        let (_, event) = child.feed_with(&code, inputs);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "junk_len {junk_len}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+        child.shutdown();
+    }
+}
+
+#[test]
+fn numeric_formatting_peak_memory_preserves_the_worker() {
+    for code in ["'{:08000000d}'.format(1)", "'{:.8000000f}'.format(1.0)"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(10_000_000));
+        let (_, event) = child.feed(code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
+        child.shutdown();
+    }
+}
+
 /// Gathers nested as *items* of one another (`g = asyncio.gather(g)`) cost no
 /// Python frames, so nothing but `max_memory` bounds how deep a nest gets built.
 /// Building one too large for the limit must end the run with a `MemoryError`,
@@ -745,6 +821,17 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
     let cases = [
         ("'x' * 10_000_000", 10_031_137),
+        // Each formatter builder must fail softly before the worker reaches its hard ceiling.
+        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_231_000),
+        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_431_791),
+        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_230_835),
+        // `%` formatting: padding, float digits, integer zero-extension and output growth.
+        ("'%*d' % (2_000_000, 1)", 2_031_460),
+        ("'%.*f' % (1_000_000, 1.0)", 1_160_498),
+        ("'%.*d' % (2_000_000, 1)", 2_031_466),
+        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_631_924),
+        ("b'%*d' % (2_000_000, 1)", 2_031_588),
+        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_632_055),
         ("b'x' * 10_000_000", 10_031_269),
         ("[None] * 1_000_000", 16_031_391),
         ("2 ** 10_000_000", 10_031_230),
@@ -794,6 +881,19 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
         child.shutdown();
     }
+}
+
+/// `inf` and `nan` print as they are, so a huge float precision costs nothing
+/// and must not be charged against the limit.
+#[test]
+fn non_finite_float_precision_is_not_charged() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(64 * 1024));
+    assert_eq!(
+        child.feed_complete("'%.2000000000f' % float('inf')"),
+        MontyObject::String("inf".to_owned())
+    );
+    child.shutdown();
 }
 
 /// Announcing a suspension must not cost extra copies of the value being

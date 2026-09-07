@@ -48,6 +48,10 @@ not supported; passing more than one argument raises an internal error.
 - `exc.args` — a tuple with 0 or 1 elements. Always a `tuple`, even when
     empty.
 - `str(exc)` — returns the single message string, or `""` if none.
+- `KeyError` always carries the missing key's `str()` text rather than the key
+    itself, so `str(exc)` and `repr(exc)` quote non-string keys:
+    `{}[1]` gives `KeyError('1')` where CPython gives `KeyError(1)`, and a
+    `bytes` key gives `KeyError("b'a'")`.
 - `repr(exc)` — `ClassName('message')` matching CPython, **except**
     `UnicodeDecodeError`/`UnicodeEncodeError`: CPython reprs these from their
     real 5-field constructor (`UnicodeDecodeError('ascii', b'\xff', 0, 1, 'ordinal not in range(128)')`), which Monty

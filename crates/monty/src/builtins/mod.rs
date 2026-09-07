@@ -11,6 +11,7 @@ mod chr;
 mod divmod;
 mod enumerate;
 mod filter;
+mod format;
 mod getattr;
 mod hasattr;
 mod hash;
@@ -140,6 +141,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Divmod => divmod::builtin_divmod(vm, args),
             Self::Enumerate => enumerate::builtin_enumerate(vm, args),
             Self::Filter => filter::builtin_filter(vm, args),
+            Self::Format => format::builtin_format(vm, args),
             // `getattr()` / `hasattr()` may suspend a lazy host attribute lookup.
             Self::Getattr => return getattr::builtin_getattr(vm, args),
             Self::Hasattr => return hasattr::builtin_hasattr(vm, args),

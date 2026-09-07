@@ -152,6 +152,31 @@ Output arrives in batched chunks, not one per `print()`.
 `printFlushInterval` on `checkout()` sets how long (in seconds) the worker may hold it — 0.005 by default, `0` for one
 chunk per line — and output is always flushed before a host call and before a feed ends.
 
+## OpenTelemetry instrumentation
+
+Node applications can pass standard OpenTelemetry components directly, or register `MontyInstrumentation` with an
+OpenTelemetry SDK:
+
+```ts
+import { NodeSDK } from '@opentelemetry/sdk-node'
+import { MontyInstrumentation } from '@pydantic/monty/node'
+
+const instrumentation = new MontyInstrumentation()
+const sdk = new NodeSDK({
+  instrumentations: [instrumentation],
+})
+sdk.start()
+
+await instrumentation.forceFlush()
+await sdk.shutdown()
+```
+
+Instrumentation is an explicit opt-in because it records source, inputs, outputs, host calls, exceptions, and printed
+text. It also records pool and execution metrics through the SDK's meter provider. Drain Monty's callback queues with
+`instrumentation.forceFlush()` before shutting down the SDK. See the
+[package README](https://github.com/pydantic/monty/blob/main/crates/monty-js/README.md#observability) for direct
+`Tracer`, `Meter`, and `Logger` setup.
+
 ## Errors
 
 ```ts

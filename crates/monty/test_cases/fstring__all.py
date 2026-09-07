@@ -232,6 +232,7 @@ assert f'{0.5:.{10**6}%}' == '50.' + '0' * 10**6 + '%'
 # underlying format call still uses the full precision internally.
 assert f'{1.5:.{10**6}g}' == '1.5'
 assert f'{1e-10:.{10**6}g}' == '1.0000000000000000364321973154977415791655470655996396089904010295867919921875e-10'
+assert f'{0.0001:.{2**31 - 1}g}' == ('0.000100000000000000004792173602385929598312941379845142364501953125')
 
 # === Large static width/precision ===
 # Static format specs are parsed at parse time and packed into a compact
@@ -417,6 +418,8 @@ assert f'{42!r:s}' == '42'
 # and its converted form must raise the *same* error. Valid string flags work:
 assert f'{123!s:05}' == '12300'
 assert f'{123!r:>6}' == '   123'
+width = 6
+assert f'{123!r:>{width}}' == '   123'
 assert f'{3.14159!r:.4}' == '3.14'
 
 
@@ -519,6 +522,8 @@ assert f'{1234:07,}' == '001,234'
 assert f'{1234:05,}' == '1,234'
 assert f'{1234567.891:020,.2f}' == '0,000,001,234,567.89'
 assert f'{255:010_b}' == '0_1111_1111'
+assert f'{1234:0=10,}' == '00,001,234'
+assert f'{1:0=+9_g}' == '+0_000_001'
 
 # === Grouping with explicit alignment (fill is not grouped) ===
 assert f'{1234:=10,}' == '     1,234'

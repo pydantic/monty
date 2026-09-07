@@ -35,6 +35,7 @@ from ._monty import (
     MountDir,
     NameLookupSnapshot,
     __version__,
+    _install_telemetry,
 )
 from .class_instance import ClassInstance, ClassType
 from .os_access import (
@@ -62,6 +63,7 @@ __all__ = (
     'OsHandler',
     'SyncSnapshot',
     'AsyncSnapshot',
+    'instrument_telemetry',
     # class_instance
     'ClassInstance',
     'ClassType',
@@ -105,6 +107,15 @@ __all__ = (
     'CallbackFile',
     'OSAccess',
 )
+
+
+def instrument_telemetry(*, tracer: Any | None = None, meter: Any | None = None, logger: Any | None = None) -> None:
+    """Instrument Monty with standard Python OpenTelemetry components.
+
+    Installation is process-wide and can happen only once. Each signal can be
+    enabled independently by supplying its component.
+    """
+    _install_telemetry(tracer, meter, logger)
 
 
 class ResourceLimits(TypedDict, total=False):

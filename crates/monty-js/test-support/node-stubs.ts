@@ -12,12 +12,18 @@ export const findMontyBinary = () => {
   throw new Error('@pydantic/monty/node is not available in browser tests')
 }
 
-export const _flushTelemetry = () => {
+export const flushTelemetry = () => {
   throw new Error('Node telemetry is not available in browser tests')
 }
 
-export const _installTelemetryAdapter = () => {
+export const instrumentTelemetry = () => {
   throw new Error('Node telemetry is not available in browser tests')
+}
+
+export class MontyInstrumentation {
+  constructor() {
+    throw new Error('Node telemetry is not available in browser tests')
+  }
 }
 
 export * from '@pydantic/monty'

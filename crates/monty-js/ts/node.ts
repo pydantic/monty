@@ -53,12 +53,10 @@ export {
 } from './types.js'
 export { findMontyBinary } from './binary.js'
 export {
-  _flushTelemetry,
-  _installTelemetryAdapter,
-  type MontyTelemetryAdapter,
-  type TelemetryEvent,
-  type TelemetryParentContext,
-  type TelemetrySpanEvent,
-  type TelemetryTimestamp,
+  flushTelemetry,
+  instrumentTelemetry,
+  MontyInstrumentation,
+  type MontyInstrumentationConfig,
+  type TelemetryComponents,
 } from './telemetry.js'
 export { MAX_VALUE_DEPTH } from '../native-addon.js'
