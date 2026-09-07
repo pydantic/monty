@@ -1433,11 +1433,6 @@ impl InternerBuilder {
     pub fn get_str(&self, id: StringId) -> &str {
         get_str(&self.strings, id)
     }
-
-    /// Returns the static tag stored in an executor-local string slot.
-    pub(crate) fn static_string(&self, id: StringId) -> Option<StaticStrings> {
-        get_static_string(&self.strings, id)
-    }
 }
 
 /// Interns `s` into the executor-local string table.

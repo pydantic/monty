@@ -575,7 +575,6 @@ impl CodeBuilder {
             Opcode::ReturnValue
                 | Opcode::Raise
                 | Opcode::Reraise
-                | Opcode::RaiseImportError
                 | Opcode::RaiseUnboundLocal
                 | Opcode::AssertFailed
                 | Opcode::Jump
