@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 import time
@@ -20,7 +21,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import NonRecordingSpan, SpanContext, StatusCode, TraceFlags, use_span
 
-from pydantic_monty import Monty, MontyRuntimeError, instrument_telemetry
+from pydantic_monty import AsyncMonty, Monty, MontyRuntimeError, instrument_telemetry
 
 
 class RecordingTracer:
@@ -163,7 +164,7 @@ def test_standard_components_receive_session_tree():
             'logfire.json_schema': '{"type":"object","properties":{"stream":{},"text":{},"length_limit_exceeded":{}}}',
             'thread.id': 1,
             'code.file.path': 'crates/monty-pool/src/telemetry/tracing.rs',
-            'code.line.number': 272,
+            'code.line.number': 282,
             'code.module.name': 'monty_pool::telemetry::tracing',
             'logfire.null_args': ('length_limit_exceeded',),
         }
@@ -293,6 +294,60 @@ def test_standard_meter_receives_metrics():
     run_point = next(point for point in run.data.data_points if point.attributes == {'outcome': 'complete'})
     assert run_point.attributes == snapshot({'outcome': 'complete'})
     assert getattr(run_point, 'sum') > 0
+
+
+@pytest.mark.parametrize('fail', [False, True])
+async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
+    """An eager value or exception closes the call span without a future-results record."""
+    install_telemetry()
+
+    async def fetch() -> int:
+        await asyncio.sleep(0)
+        if fail:
+            raise ValueError('failed')
+        return 42
+
+    code = 'try:\n    result = await fetch()\nexcept ValueError:\n    result = 0\nresult'
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            assert await session.feed_run(code, external_lookup={'fetch': fetch}) == (0 if fail else 42)
+
+    spans = _span_exporter.get_finished_spans()
+    assert [span.name for span in spans] == ['call {function_name}', 'run code', 'session {script_name}']
+    call, run, _session = spans
+    assert call.attributes is not None
+    assert call.attributes['function_name'] == 'fetch'
+    assert call.attributes['return_value'] == ('raise ValueError: failed' if fail else 42)
+    assert call.parent is not None and run.context is not None
+    assert call.parent.span_id == run.context.span_id
+    assert _log_exporter.get_finished_logs() == ()
+
+
+async def test_deferred_coroutine_keeps_future_resolution_telemetry():
+    """A stored awaitable still has a separate wait span and future-results record."""
+    install_telemetry()
+
+    async def fetch() -> int:
+        return 42
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            assert await session.feed_run('pending = fetch()\nawait pending', external_lookup={'fetch': fetch}) == 42
+
+    spans = _span_exporter.get_finished_spans()
+    assert [span.name for span in spans] == [
+        'call {function_name}',
+        'resolve futures',
+        'run code',
+        'session {script_name}',
+    ]
+    call, waiting, _run, _session = spans
+    assert call.attributes is not None
+    assert call.attributes['return_value'] == f'future {call.attributes["call_id"]}'
+    [log] = _log_exporter.get_finished_logs()
+    assert log.log_record.body == 'future results'
+    assert waiting.context is not None
+    assert log.log_record.span_id == waiting.context.span_id
 
 
 def test_logger_failure_does_not_disable_spans():

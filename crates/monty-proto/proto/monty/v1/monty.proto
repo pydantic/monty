@@ -651,7 +651,7 @@ message FunctionCall {
   // The uuid of the receiver; absent for plain external function calls.
   Uuid object_id = 5;
   // The host may await a coroutine and answer with ResumeFutures for this
-  // call_id. Synchronous results still use ResumeCall; returning a pending
+  // call_id. Synchronous results use ResumeCall; returning a pending
   // future remains valid. Absent/false requires the ordinary call reply.
   bool allow_eager_await = 6;
 }

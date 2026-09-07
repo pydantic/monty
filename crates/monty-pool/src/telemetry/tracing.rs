@@ -216,14 +216,24 @@ impl Recorder {
                 self.close_pending("aborted_with", &result, cut);
             }
             Some(pb::parent_request::Kind::ResumeFutures(r)) => {
-                let pending = self.take_pending();
-                let (results, cut) = render_future_results(&r.results);
-                logfire::info!(
-                    parent: pending,
-                    "future results",
-                    results = results,
-                    length_limit_exceeded = cut.then_some(true),
-                );
+                if let [result] = r.results.as_slice()
+                    && self
+                        .pending
+                        .as_ref()
+                        .is_some_and(|pending| pending.eager_call_id == Some(result.call_id))
+                {
+                    let (value, cut) = render_ext_result(result.result.as_ref());
+                    self.close_pending("return_value", &value, cut);
+                } else {
+                    let pending = self.take_pending();
+                    let (results, cut) = render_future_results(&r.results);
+                    logfire::info!(
+                        parent: pending,
+                        "future results",
+                        results = results,
+                        length_limit_exceeded = cut.then_some(true),
+                    );
+                }
             }
             Some(pb::parent_request::Kind::Dump(_)) => {
                 self.dump_turn = true;
@@ -292,11 +302,13 @@ impl Recorder {
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_duration_micros = max_duration,
-                    // filled in by the answering `ResumeCall`, or an `AbortFeed`
+                    // Filled by ResumeCall, an eager ResumeFutures, or AbortFeed.
                     return_value = Empty,
                     aborted_with = Empty,
                 ));
-                self.pending = Some(OpenSpan::new(span, cut));
+                let mut pending = OpenSpan::new(span, cut);
+                pending.eager_call_id = c.allow_eager_await.then_some(c.call_id);
+                self.pending = Some(pending);
             }
             Some(pb::child_event::Kind::OsCall(c)) => {
                 self.pending = Some(os_call_span(c, micros, max_duration, &self.context_span()));
@@ -470,12 +482,18 @@ impl Recorder {
 struct OpenSpan {
     span: Span,
     cut: bool,
+    /// Matches an eager reply to this call; absent on other spans.
+    eager_call_id: Option<u32>,
 }
 
 impl OpenSpan {
     /// Holds a span already flagged (or not) by the values it was opened with.
     const fn new(span: Span, cut: bool) -> Self {
-        Self { span, cut }
+        Self {
+            span,
+            cut,
+            eager_call_id: None,
+        }
     }
 
     const fn span(&self) -> &Span {
