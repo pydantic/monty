@@ -649,27 +649,46 @@ impl Child {
         event
     }
 
-    /// Delivers the parent's resolved future results to a suspended
-    /// `ResolveFutures` state, then resumes execution.
+    /// Delivers settled futures, including a single eager function-call result.
     fn handle_resume_futures(&mut self, resume: pb::ResumeFutures, sink: &mut dyn EventSink) -> pb::ChildEvent {
         let SessionState::Suspended(progress) = &self.state else {
             return protocol_violation("ResumeFutures without suspended futures");
         };
-        if !matches!(progress.as_ref(), ReplProgress::ResolveFutures(_)) {
-            return protocol_violation("ResumeFutures without suspended futures");
+        match progress.as_ref() {
+            ReplProgress::FunctionCall(call) if call.eager_coroutine => {
+                if resume.results.len() != 1 || resume.results[0].call_id != call.call_id {
+                    return protocol_violation("eager ResumeFutures must contain exactly the suspended call id");
+                }
+            }
+            ReplProgress::ResolveFutures(_) => {}
+            _ => return protocol_violation("ResumeFutures without suspended futures"),
         }
         let results = match future_results_from_proto(resume.results) {
             Ok(results) => results,
             Err(err) => return protocol_violation(&format!("invalid results: {err}")),
         };
+        if matches!(progress.as_ref(), ReplProgress::FunctionCall(_))
+            && !matches!(results[0].1, ExtFunctionResult::Return(_) | ExtFunctionResult::Error(_))
+        {
+            return protocol_violation("eager coroutine must resolve to a value or exception");
+        }
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked above");
         };
-        let ReplProgress::ResolveFutures(state) = *progress else {
-            unreachable!("checked above");
-        };
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
-        let outcome = state.resume(results, PrintWriter::Callback(&mut print));
+        let outcome = match *progress {
+            ReplProgress::FunctionCall(call) => {
+                let (_, result) = results.into_iter().next().expect("validated one eager result");
+                let result = match result {
+                    ExtFunctionResult::Return(value) => Ok(value),
+                    ExtFunctionResult::Error(exc) => Err(exc),
+                    _ => unreachable!("validated eager result"),
+                };
+                call.resume_eager(result, PrintWriter::Callback(&mut print))
+            }
+            ReplProgress::ResolveFutures(state) => state.resume(results, PrintWriter::Callback(&mut print)),
+            _ => unreachable!("checked above"),
+        };
         let event = self.drive(outcome, &mut print);
         print.drain();
         event
@@ -985,6 +1004,7 @@ fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::Chi
         kwargs: mem::take(&mut call.kwargs),
         call_id: call.call_id,
         object_id: call.object_id,
+        eager_coroutine: call.eager_coroutine,
     }))
 }
 

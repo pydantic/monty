@@ -51,6 +51,8 @@ export interface FunctionCallTurn {
    *  `__call__` construction). The receiver is NOT in `args`; null/absent
    *  for plain external calls. */
   objectId?: string | null
+  /** A coroutine may settle before replying with `resolveFutures`. */
+  eagerCoroutine?: boolean
 }
 
 /** The sandbox performed an OS operation no mount handled. */

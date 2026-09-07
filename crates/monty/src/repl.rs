@@ -609,6 +609,8 @@ pub struct ReplFunctionCall {
     /// classmethod call, or construction spelled `__call__`); `None` for
     /// plain external function calls. The receiver is NOT included in `args`.
     pub object_id: Option<MontyUuid>,
+    /// The host may await a coroutine and answer with [`Self::resume_eager`].
+    pub eager_coroutine: bool,
     /// Internal REPL execution snapshot.
     snapshot: ReplSnapshot,
 }
@@ -636,6 +638,20 @@ impl ReplFunctionCall {
     /// Uses `self.call_id` internally — no need to pass it again.
     pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
+    }
+
+    /// Resumes with a settled coroutine, preserving its awaitable value and exception timing.
+    /// Only use when [`Self::eager_coroutine`] is true; synchronous returns use [`Self::resume`].
+    pub fn resume_eager(
+        self,
+        result: Result<MontyObject, MontyException>,
+        print: PrintWriter<'_>,
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot.run_inner(
+            result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
+            Some(self.call_id),
+            print,
+        )
     }
 
     /// Aborts the snippet with an uncatchable exception; see [`ReplOsCall::abort`].
@@ -1073,13 +1089,21 @@ impl ReplSnapshot {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.run_inner(result.into(), None, print)
+    }
+
+    /// Registers an eagerly settled coroutine before executing the next instruction.
+    fn run_inner(
+        self,
+        ext_result: ExtFunctionResult,
+        eager_call_id: Option<u32>,
+        print: PrintWriter<'_>,
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
             mut repl,
             executor,
             vm_state,
         } = self;
-
-        let ext_result = result.into();
 
         let (converted, vm_state) =
             HeapReader::with(&mut repl.heap, &mut (&executor, print), |reader, (executor, print)| {
@@ -1092,16 +1116,21 @@ impl ReplSnapshot {
                     executor.assert_repr_max_bytes,
                 );
 
-                let vm_result = match ext_result {
-                    ExtFunctionResult::Return(obj) => vm.resume(obj),
-                    ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
-                    ExtFunctionResult::Future(raw_call_id) => {
-                        let call_id = CallId::new(raw_call_id);
-                        vm.add_pending_call(call_id);
-                        vm.run_external()
-                    }
-                    ExtFunctionResult::NotFound(function_name) => {
-                        vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+                let vm_result = if let Some(call_id) = eager_call_id {
+                    vm.add_pending_call(CallId::new(call_id));
+                    vm.resume_with_resolved_futures(vec![(call_id, ext_result)])
+                } else {
+                    match ext_result {
+                        ExtFunctionResult::Return(obj) => vm.resume(obj),
+                        ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
+                        ExtFunctionResult::Future(raw_call_id) => {
+                            let call_id = CallId::new(raw_call_id);
+                            vm.add_pending_call(call_id);
+                            vm.run_external()
+                        }
+                        ExtFunctionResult::NotFound(function_name) => {
+                            vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+                        }
                     }
                 };
 
@@ -1177,12 +1206,14 @@ fn build_repl_progress(
             kwargs,
             call_id,
             object_id,
+            eager_coroutine,
         } => Ok(ReplProgress::FunctionCall(ReplFunctionCall {
             function_name,
             args,
             kwargs,
             call_id,
             object_id,
+            eager_coroutine,
             snapshot: new_repl_snapshot!(),
         })),
         ConvertedExit::OsCall { function_call, call_id } => Ok(ReplProgress::OsCall(ReplOsCall {

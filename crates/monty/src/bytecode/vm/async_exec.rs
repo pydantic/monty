@@ -11,7 +11,7 @@ use std::{mem, task::Poll};
 use monty_types::{MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
-use super::{AwaitResult, CallFrame, FrameExit, VM};
+use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM};
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
@@ -32,6 +32,12 @@ use crate::{
 };
 
 impl<'h> VM<'h> {
+    /// Allows eager host resolution only for an immediate await with no competing work.
+    pub(crate) fn eager_coroutine(&self) -> bool {
+        let frame = self.current_frame();
+        frame.bytecode.get(frame.ip) == Some(&(Opcode::Await as u8)) && self.scheduler.can_await_eagerly()
+    }
+
     /// Executes the Await opcode.
     ///
     /// Pops the awaitable from the stack and handles it based on its type:

@@ -529,6 +529,9 @@ class TurnAnswerer {
       return this.native.resumeError(excType, message, onPrint)
     }
     if (isThenable(returned)) {
+      if (call.eagerCoroutine) {
+        return this.answerEagerCoroutine(call.callId, returned, onPrint)
+      }
       this.registerFuture(call.callId, Promise.resolve(returned))
       return this.native.resumeFuture(onPrint)
     }
@@ -574,6 +577,9 @@ class TurnAnswerer {
       return this.native.resumeError(excType, message, onPrint)
     }
     if (isThenable(returned)) {
+      if (call.eagerCoroutine) {
+        return this.answerEagerCoroutine(call.callId, returned, onPrint)
+      }
       this.registerFuture(call.callId, Promise.resolve(returned))
       return this.native.resumeFuture(onPrint)
     }
@@ -654,6 +660,22 @@ class TurnAnswerer {
       return await this.native.resumeNotHandled(onPrint)
     }
     return await this.resumeWithValue(returned, onPrint)
+  }
+
+  /** Settles an eligible coroutine at its call suspension, including conversion errors. */
+  private async answerEagerCoroutine(
+    callId: number,
+    promise: PromiseLike<unknown>,
+    onPrint: PrintCallback,
+  ): Promise<object> {
+    let result: NativeFutureResult
+    try {
+      result = { callId, ok: true, value: prepare(await promise, this.instances) }
+    } catch (err) {
+      const { excType, message } = jsErrorParts(err)
+      result = { callId, ok: false, excType, message }
+    }
+    return await this.native.resolveFutures([result], onPrint)
   }
 
   /** Tracks a promise so `resolveFutures` can later deliver its outcome. */
@@ -916,6 +938,8 @@ export class FunctionSnapshot extends SingleUse {
   readonly kwargs: Record<string, unknown>
   readonly callId: number
   readonly isOsFunction: boolean
+  /** `resumeAuto` may await a coroutine directly at this suspension. */
+  readonly eagerCoroutine: boolean
   /** Set for host-routed calls: the receiver's store uuid — a class
    *  instance, or a class type (a classmethod, or `__call__` construction).
    *  The receiver is not in `args`; `null` for plain external calls. */
@@ -933,6 +957,7 @@ export class FunctionSnapshot extends SingleUse {
     this.kwargs = kwargsToRecord(restoreKwargPairs(turn.kwargs, driver.instances))
     this.callId = turn.callId
     this.isOsFunction = isOsFunction
+    this.eagerCoroutine = turn.kind === 'functionCall' && (turn.eagerCoroutine ?? false)
     this.objectId = 'objectId' in turn ? (turn.objectId ?? null) : null
   }
 
@@ -946,8 +971,8 @@ export class FunctionSnapshot extends SingleUse {
    * Answers this call automatically from the `externalLookup` / `os` captured
    * at `feedStart` / `loadSnapshot`, then resolves to the next snapshot (or
    * `MontyComplete`). A name absent from `externalLookup` makes the sandbox
-   * raise `NameError`; a promise-returning external is registered as a future
-   * (settled later by [`FutureSnapshot.resumeAuto`]). Resumes at most once.
+   * raise `NameError`. Eligible promises are awaited directly; others settle
+   * later through [`FutureSnapshot.resumeAuto`]. Resumes at most once.
    */
   resumeAuto(): Promise<Snapshot> {
     this.claim()

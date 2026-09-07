@@ -992,7 +992,7 @@ async def test_cancelled_feed_run_discards_the_worker(apool: AsyncMonty):
         # ensure_future: feed_run returns a Future, not a coroutine
         task = asyncio.ensure_future(session.feed_run('await block()', external_lookup={'block': block}))
         await started.wait()
-        # let the drive loop reach the ResolveFutures suspension before cancelling
+        # Let the drive loop wait for the host coroutine before cancelling.
         await asyncio.sleep(0.05)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -1026,7 +1026,7 @@ async def test_concurrent_feed_run_is_rejected_without_killing_the_first(apool: 
     async with apool.checkout() as session:
         first = asyncio.ensure_future(session.feed_run('await block()', external_lookup={'block': block}))
         await started.wait()
-        # let the drive loop reach the ResolveFutures suspension
+        # Let the drive loop wait for the host coroutine.
         await asyncio.sleep(0.05)
         with pytest.raises(RuntimeError) as exc_info:
             await session.feed_run('1 + 1')

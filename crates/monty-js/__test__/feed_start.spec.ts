@@ -338,15 +338,13 @@ test('resumeAuto answers an OS call with the default unhandled error', async () 
   }
 })
 
-test('resumeAuto spawns a promise external and settles it via a FutureSnapshot', async () => {
+test('resumeAuto settles an immediately awaited promise without a FutureSnapshot', async () => {
   const session = await pool().checkout()
   try {
     const code = 'import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())'
     const snap = (await session.feedStart(code, { externalLookup: { go: async () => 99 } })) as FunctionSnapshot
-    // the coroutine is spawned and answered with a pending future
-    const futures = (await snap.resumeAuto()) as FutureSnapshot
-    t.true(futures instanceof FutureSnapshot)
-    const done = (await futures.resumeAuto()) as MontyComplete
+    t.true(snap.eagerCoroutine)
+    const done = (await snap.resumeAuto()) as MontyComplete
     t.is(done.output, 99)
   } finally {
     await session.close()

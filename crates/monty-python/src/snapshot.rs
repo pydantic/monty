@@ -46,7 +46,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::{sync::Mutex, task::JoinSet};
 
 use crate::{
-    async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
+    async_dispatch::{coroutine_future, dispatch_function_call, spawn_coroutine_task, wait_for_futures},
     exceptions::MontyError,
     external::{CallResult, ExternalLookup, resolve_object_attr, wire_call_arguments},
     pool::{
@@ -244,6 +244,7 @@ pub(crate) fn build_snapshot(
             kwargs,
             call_id,
             object_id,
+            eager_coroutine,
         } => {
             let call = FunctionCallData {
                 function_name,
@@ -252,6 +253,7 @@ pub(crate) fn build_snapshot(
                 call_id,
                 is_os_function: false,
                 object_id,
+                eager_coroutine,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -268,6 +270,7 @@ pub(crate) fn build_snapshot(
                 call_id,
                 is_os_function: true,
                 object_id: None,
+                eager_coroutine: false,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -521,6 +524,8 @@ struct FunctionCallData {
     /// Uuid of the routed receiver — an instance or class type; `None` for
     /// plain external functions and OS calls.
     object_id: Option<MontyUuid>,
+    /// The worker accepts a settled coroutine at this suspension.
+    eager_coroutine: bool,
 }
 
 struct FunctionSnapshot {
@@ -553,6 +558,12 @@ pub struct PyFunctionSnapshot(FunctionSnapshot);
 
 #[pymethods]
 impl PyFunctionSnapshot {
+    /// Whether the worker permits eager coroutine resolution at this suspension.
+    #[getter]
+    fn eager_coroutine(&self) -> bool {
+        self.0.call.eager_coroutine
+    }
+
     #[getter]
     fn script_name(&self) -> &str {
         &self.0.snapshot.ctx.script_name
@@ -667,6 +678,12 @@ pub struct PyAsyncFunctionSnapshot(FunctionSnapshot);
 
 #[pymethods]
 impl PyAsyncFunctionSnapshot {
+    /// Whether `resume_auto` may await a coroutine directly at this suspension.
+    #[getter]
+    fn eager_coroutine(&self) -> bool {
+        self.0.call.eager_coroutine
+    }
+
     #[getter]
     fn script_name(&self) -> &str {
         &self.0.snapshot.ctx.script_name
@@ -718,15 +735,14 @@ impl PyAsyncFunctionSnapshot {
         })
     }
 
-    /// Async sibling of [`PyFunctionSnapshot::resume_auto`]. A coroutine external
-    /// is spawned into the session's shared future pool and answered with a
-    /// pending future — so other sandbox tasks keep running — to be settled
-    /// later by an [`PyAsyncFutureSnapshot::resume_auto`].
+    /// Awaits eligible coroutine calls directly; other coroutines are spawned
+    /// for later resolution by [`PyAsyncFutureSnapshot::resume_auto`].
     fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let ctx = self.0.snapshot.claim(py)?;
         // owned copy: the snapshot is borrowed only for this synchronous prologue
         let call = self.0.call.clone();
         future_into_py(py, async move {
+            let mut eager = false;
             // Dispatch inside the future: a coroutine's `into_future` needs the
             // asyncio task-locals that `future_into_py`'s scope establishes.
             let answer: PyResult<ResumeValue> = if call.is_os_function {
@@ -760,6 +776,13 @@ impl PyAsyncFunctionSnapshot {
                     &ctx.instances,
                 ) {
                     CallResult::Sync(result) => Ok(ext_result_to_resume(result)),
+                    CallResult::Coroutine(coro) if call.eager_coroutine => {
+                        eager = true;
+                        match coroutine_future(coro, &ctx.instances) {
+                            Ok(future) => Ok(ext_result_to_resume(future.await)),
+                            Err(err) => Err(err),
+                        }
+                    }
                     CallResult::Coroutine(coro) => {
                         let mut join_set = ctx.pending_futures.lock().await;
                         spawn_coroutine_task(&mut join_set, call.call_id, coro, &ctx.instances)
@@ -774,7 +797,19 @@ impl PyAsyncFunctionSnapshot {
                     return Err(err);
                 }
             };
-            drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume(value, p)))).await
+            drive_async(
+                ctx,
+                turn_fn(move |c, p| {
+                    Box::pin(async move {
+                        if eager {
+                            c.resume_futures(vec![(call.call_id, value)], p).await
+                        } else {
+                            c.resume(value, p).await
+                        }
+                    })
+                }),
+            )
+            .await
         })
     }
 

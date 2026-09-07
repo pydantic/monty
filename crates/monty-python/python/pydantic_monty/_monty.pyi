@@ -1103,6 +1103,10 @@ class FunctionSnapshot:
     """
 
     @property
+    def eager_coroutine(self) -> bool:
+        """Whether the worker permits eager coroutine resolution at this call."""
+
+    @property
     def script_name(self) -> str: ...
     @property
     def is_os_function(self) -> bool: ...
@@ -1211,6 +1215,10 @@ class AsyncFunctionSnapshot:
     """Async sibling of `FunctionSnapshot`; `resume`/`resume_not_handled` are awaitable."""
 
     @property
+    def eager_coroutine(self) -> bool:
+        """Whether `resume_auto` may await a coroutine directly at this call."""
+
+    @property
     def script_name(self) -> str: ...
     @property
     def is_os_function(self) -> bool: ...
@@ -1229,9 +1237,8 @@ class AsyncFunctionSnapshot:
     async def resume(self, result: ExternalResult) -> AsyncSnapshot: ...
     async def resume_not_handled(self) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
-        """Async sibling of `FunctionSnapshot.resume_auto`. A coroutine external
-        is spawned and answered with a pending future, so other sandbox tasks
-        keep running; it is later settled by `AsyncFutureSnapshot.resume_auto`."""
+        """Awaits eligible coroutine calls directly. Other coroutines are spawned
+        and later settled by `AsyncFutureSnapshot.resume_auto`."""
 
     def dump(self) -> bytes: ...
     def __repr__(self) -> str: ...

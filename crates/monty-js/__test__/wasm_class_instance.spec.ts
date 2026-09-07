@@ -32,6 +32,10 @@ class Point {
   sum(): number {
     return this.x + this.y
   }
+  /** An async host method exercises eager replies over the component transport. */
+  async sumAsync(): Promise<number> {
+    return this.sum()
+  }
   static describe(): string {
     return 'a point'
   }
@@ -53,6 +57,14 @@ test('a ClassInstance round-trips over the wasm transport', async (ctx) => {
   // identity is preserved, nested in a container too
   t.is(await session.feedRun('p', { inputs: { p: wrapper } }), point)
   t.deepEqual(await session.feedRun('[p, [p]]', { inputs: { p: wrapper } }), [point, [point]])
+})
+
+test('async host methods use one suspension per call over wasm', async (ctx) => {
+  skipIfBrowser(ctx)
+  await using pool = await Monty.create()
+  await using session = await pool.checkout({ limits: { maxSuspensions: 2 } })
+  const point = new ClassInstance(new Point(1, 2), { allowedMethods: 'all' })
+  t.is(await session.feedRun('a = await p.sumAsync()\nb = await p.sumAsync()\na + b', { inputs: { p: point } }), 6)
 })
 
 test('a ClassType round-trips over the wasm transport', async (ctx) => {

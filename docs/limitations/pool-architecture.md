@@ -376,6 +376,11 @@ properties that real CPython does not provide, per the caveat above.
     snapshot may be resumed at most once (a second resume raises
     `RuntimeError`), and feeding while suspended raises. This differs from the
     pre-subprocess in-process API, where a snapshot owned freely-copyable state.
+- **Coroutine calls do not always produce a future snapshot.** When a call is immediately awaited and no other
+    sandbox task is runnable or external future is pending, `eager_coroutine` is true (`eagerCoroutine` in JavaScript).
+    Async `resume_auto()` / `resumeAuto()` then awaits the host coroutine and returns the next call or completion
+    directly, without an intermediate future snapshot.
+    Other coroutine calls retain the pending-future sequence, and manual callers may use that sequence in either case.
 - **Restoring a dump is a session method, split by dump kind.** The old
     module-level `load_snapshot` / `load_repl_snapshot` are replaced by two
     fresh-session-only methods: `session.load_session(state)` restores a dump

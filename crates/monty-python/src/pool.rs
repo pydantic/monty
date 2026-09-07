@@ -62,7 +62,7 @@ use tokio::{
 };
 
 use crate::{
-    async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
+    async_dispatch::{coroutine_future, dispatch_function_call, spawn_coroutine_task, wait_for_futures},
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
     external::{CallResult, ExternalLookup, dispatch_object_call, resolve_object_attr},
@@ -1346,6 +1346,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                     match resume_with {
                         TurnAnswer::Call(value) => c.resume(value, p).await,
                         TurnAnswer::Name(value) => c.resume_name_lookup(value, p).await,
+                        TurnAnswer::Eager(call_id, value) => c.resume_futures(vec![(call_id, value)], p).await,
                     }
                 })
             }),
@@ -1451,8 +1452,8 @@ impl Drop for AbandonGuard {
 }
 
 /// The drive loop itself: protocol turns are awaited directly on the runtime;
-/// coroutine external functions are spawned as tasks and resolved via
-/// `ResolveFutures`.
+/// eligible coroutine calls are awaited directly, with others spawned for
+/// later resolution via `ResolveFutures`.
 async fn drive_async_inner(
     args: FeedArgs,
     external_lookup: Option<Py<PyDict>>,
@@ -1535,7 +1536,7 @@ async fn drive_async_inner(
                     Python::attach(|py| dispatch_os_parts(py, &function_name, &args, &kwargs, os.as_ref(), &instances));
                 TurnAnswer::Call(value)
             }
-            event => match async_turn_answer(event, external_lookup.as_ref(), &instances, &mut join_set) {
+            event => match async_turn_answer(event, external_lookup.as_ref(), &instances, &mut join_set).await {
                 Ok(answer) => answer,
                 Err(err) => {
                     discard_checkout(&checkout).await;
@@ -1551,6 +1552,7 @@ async fn drive_async_inner(
                     match answer {
                         TurnAnswer::Call(value) => c.resume(value, p).await,
                         TurnAnswer::Name(value) => c.resume_name_lookup(value, p).await,
+                        TurnAnswer::Eager(call_id, value) => c.resume_futures(vec![(call_id, value)], p).await,
                     }
                 })
             }),
@@ -1562,7 +1564,7 @@ async fn drive_async_inner(
 /// Async counterpart of [`sync_turn_answer`] (minus `ResolveFutures`, which
 /// must await in [`drive_async`]'s loop): a failure here lets the loop discard
 /// the suspended worker instead of leaving it waiting forever for a resume.
-fn async_turn_answer(
+async fn async_turn_answer(
     event: TurnEvent,
     external_lookup: Option<&Py<PyDict>>,
     instances: &InstanceStore,
@@ -1575,8 +1577,13 @@ fn async_turn_answer(
             kwargs,
             call_id,
             object_id,
+            eager_coroutine,
         } => match dispatch_function_call(&function_name, object_id, &args, &kwargs, external_lookup, instances) {
             CallResult::Sync(result) => Ok(TurnAnswer::Call(ext_to_resume(result)?)),
+            CallResult::Coroutine(coro) if eager_coroutine => {
+                let result = coroutine_future(coro, instances)?.await;
+                Ok(TurnAnswer::Eager(call_id, ext_to_resume(result)?))
+            }
             CallResult::Coroutine(coro) => {
                 spawn_coroutine_task(join_set, call_id, coro, instances)?;
                 Ok(TurnAnswer::Call(ResumeValue::Future))
@@ -1608,6 +1615,8 @@ fn async_turn_answer(
 enum TurnAnswer {
     Call(ResumeValue),
     Name(NameLookupResult),
+    /// A settled coroutine answered at its function-call suspension.
+    Eager(u32, ResumeValue),
 }
 
 /// What a turn helper may return, so one implementation serves both an

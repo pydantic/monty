@@ -224,6 +224,8 @@ pub enum TurnEvent {
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
         object_id: Option<MontyUuid>,
+        /// Coroutine results may be awaited and returned via [`Checkout::resume_futures`].
+        eager_coroutine: bool,
     },
     /// The sandbox performed an OS operation (e.g. `"Path.read_text"`).
     /// Answer it from this feed's mounts with
@@ -488,6 +490,8 @@ enum Pending {
         /// `None` for an external function call, which also gates
         /// [`ResumeValue::NotHandled`] — only an OS call can resolve that way.
         os_call: Option<Box<OsFunctionCall>>,
+        /// Accept a settled coroutine for this call via `ResumeFutures`.
+        eager_coroutine: bool,
     },
     NameLookup,
     Futures,
@@ -637,6 +641,7 @@ impl Checkout {
             call_id,
             function_name,
             os_call,
+            ..
         }) = &self.pending
         else {
             return Err(PoolError::Protocol("no suspended call to resume".into()));
@@ -783,14 +788,27 @@ impl Checkout {
     /// Answers a [`TurnEvent::ResolveFutures`] with results for some or all
     /// pending call ids. Each result must be `Return` or `Error` — a future
     /// cannot resolve to another future or to "not found".
+    /// Also accepts exactly one matching result for a call with `eager_coroutine` set.
     pub async fn resume_futures(
         &mut self,
         results: Vec<(u32, ResumeValue)>,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         self.ensure_ready()?;
-        if !matches!(self.pending, Some(Pending::Futures)) {
-            return Err(PoolError::Protocol("no suspended futures to resume".into()));
+        match &self.pending {
+            Some(Pending::Call {
+                call_id,
+                eager_coroutine: true,
+                ..
+            }) => {
+                if results.len() != 1 || results[0].0 != *call_id {
+                    return Err(PoolError::Protocol(
+                        "eager result must match the suspended call id".into(),
+                    ));
+                }
+            }
+            Some(Pending::Futures) => {}
+            _ => return Err(PoolError::Protocol("no suspended futures to resume".into())),
         }
         let results = results
             .into_iter()
@@ -1274,6 +1292,7 @@ impl Checkout {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
                         os_call: None,
+                        eager_coroutine: call.eager_coroutine,
                     });
                     return self.convert_turn(|| {
                         Ok(TurnEvent::FunctionCall {
@@ -1282,6 +1301,7 @@ impl Checkout {
                             kwargs: call.kwargs,
                             call_id: call.call_id,
                             object_id: call.object_id,
+                            eager_coroutine: call.eager_coroutine,
                         })
                     });
                 }
@@ -1311,6 +1331,7 @@ impl Checkout {
                         call_id,
                         function_name: function_name.clone(),
                         os_call: Some(Box::new(function_call)),
+                        eager_coroutine: false,
                     });
                     return Ok(ControlEvent::Turn(TurnEvent::OsCall {
                         function_name,

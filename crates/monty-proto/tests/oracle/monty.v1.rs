@@ -657,6 +657,8 @@ pub mod resume_name_lookup {
 /// call ids.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResumeFutures {
+    /// Also answers an eager FunctionCall with exactly one result matching its
+    /// call_id. The worker creates a settled awaitable before continuing.
     #[prost(message, repeated, tag = "1")]
     pub results: ::prost::alloc::vec::Vec<FutureResult>,
 }
@@ -791,6 +793,11 @@ pub struct FunctionCall {
     /// The uuid of the receiver; absent for plain external function calls.
     #[prost(message, optional, tag = "5")]
     pub object_id: ::core::option::Option<Uuid>,
+    /// The host may await a coroutine and answer with ResumeFutures for this
+    /// call_id. Synchronous results still use ResumeCall; returning a pending
+    /// future remains valid. Absent/false requires the ordinary call reply.
+    #[prost(bool, tag = "6")]
+    pub eager_coroutine: bool,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the parent
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
