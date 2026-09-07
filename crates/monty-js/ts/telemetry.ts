@@ -1,3 +1,5 @@
+import { AsyncResource } from 'node:async_hooks'
+
 import type {
   Attributes,
   Context,
@@ -27,6 +29,7 @@ import {
   _montyVersion as montyVersion,
   _setTelemetryMetricsEnabled as setNativeMetricsEnabled,
 } from '../native-addon.js'
+import { setCallbackContextHandlers } from './callbackContext.js'
 
 const OTEL_SCOPE = '@pydantic/monty'
 const OTEL_VERSION = montyVersion()
@@ -129,6 +132,35 @@ let metricsDisabled = false
 const spans = new Map<string, SpanState>()
 const instruments = new Map<string, MetricHandle>()
 const directOwner = {}
+
+setCallbackContextHandlers({
+  bindPrint(callback) {
+    return AsyncResource.bind((stream, text, parent) =>
+      withCallbackContext(parent ?? undefined, () => callback(stream, text)),
+    )
+  },
+  run: withCallbackContext,
+})
+
+function withCallbackContext<T>(parent: string | undefined, callback: () => T): T {
+  const span = parent === undefined || spansDisabled ? undefined : spans.get(parent)?.span
+  if (span === undefined) {
+    return callback()
+  }
+  let invoked = false
+  try {
+    const context = TraceAPI.setSpan(ContextAPI.active(), span)
+    return ContextAPI.with(context, () => {
+      invoked = true
+      return callback()
+    })
+  } catch (error) {
+    if (invoked) {
+      throw error
+    }
+    return callback()
+  }
+}
 
 /**
  * Instrument Monty with standard OpenTelemetry components.

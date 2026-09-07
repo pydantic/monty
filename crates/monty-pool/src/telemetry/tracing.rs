@@ -428,6 +428,10 @@ impl Recorder {
 
     /// The innermost open span, used as the explicit parent for new spans and
     /// records; [`Span::none`] (a root record) when nothing is open.
+    pub(crate) fn callback_context(&self) -> opentelemetry::Context {
+        self.context_span().context()
+    }
+
     fn context_span(&self) -> Span {
         self.turn
             .as_ref()

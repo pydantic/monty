@@ -10,6 +10,7 @@
 // delivered when the worker reports everything is blocked (`resolveFutures`).
 
 import type { NativeSession } from '../native-addon.js'
+import { bindPrintCallback, runWithCallbackContext } from './callbackContext.js'
 import { AttrNotExposed, attributeErrorMessage, InstanceStore, prepare, restore } from './classInstance.js'
 import {
   MontyCrashedError,
@@ -172,12 +173,15 @@ export class MontySession {
    * Executes one snippet in the worker, driving external function calls
    * (which may return promises), OS callbacks, and print callbacks in this
    * process. Returns the snippet's trailing expression value.
+   *
+   * Node callbacks preserve the caller's async context. With telemetry enabled,
+   * spans created inside callbacks nest under the corresponding Monty operation.
    */
   async feedRun(code: string, options: FeedOptions = {}): Promise<unknown> {
     this.ensureUsable()
     this.driven = true
     const printTarget = new PrintTarget(options.printCallback)
-    const onPrint = printTarget.write.bind(printTarget)
+    const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
     // A fresh answerer (and its pending-future map) per feed, so promises the
     // worker never asks about again cannot accumulate across feeds.
     const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os)
@@ -457,7 +461,14 @@ class TurnAnswerer {
   ) {}
 
   /** Answers one suspension turn and returns the resume turn it produces. */
-  async answer(
+  answer(
+    turn: FunctionCallTurn | OsCallTurn | ResolveFuturesTurn | NameLookupTurn,
+    onPrint: PrintCallback,
+  ): Promise<NativeTurn> {
+    return runWithCallbackContext(turn.callbackSpanKey, () => this.answerInContext(turn, onPrint))
+  }
+
+  private async answerInContext(
     turn: FunctionCallTurn | OsCallTurn | ResolveFuturesTurn | NameLookupTurn,
     onPrint: PrintCallback,
   ): Promise<NativeTurn> {
@@ -763,7 +774,9 @@ class PrintTarget {
  */
 class SnapshotDriver {
   /** Exposed so the session's first turn can stream prints through it. */
-  readonly onPrint: PrintCallback
+  get onPrint(): PrintCallback {
+    return bindPrintCallback(this.printTarget.write.bind(this.printTarget))
+  }
 
   constructor(
     private readonly native: NativeSession,
@@ -773,9 +786,7 @@ class SnapshotDriver {
     private readonly printTarget: PrintTarget,
     private readonly answerer: TurnAnswerer,
     private readonly poison: (err: Error) => Error,
-  ) {
-    this.onPrint = printTarget.write.bind(printTarget)
-  }
+  ) {}
 
   /** Resolves a turn to the next snapshot, answering nothing automatically. */
   async advance(turn: NativeTurn): Promise<Snapshot> {

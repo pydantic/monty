@@ -128,6 +128,25 @@ pub(crate) fn _install_telemetry(
         .map_err(|_| PyRuntimeError::new_err("Monty telemetry is already configured"))
 }
 
+/// Resolves a native callback parent to the span created by the host tracer.
+pub(crate) fn callback_context(py: Python<'_>, context: &Context) -> Option<Py<PyAny>> {
+    let bridge = &BRIDGE.get()?.bridge;
+    let span = context.span();
+    let span = span.span_context();
+    let key = SpanKey {
+        trace_id: span.trace_id(),
+        span_id: span.span_id(),
+    };
+    let span = lock(&bridge.spans).get(&key).map(|state| state.span.clone_ref(py))?;
+    bridge
+        .helpers
+        .set_span_in_context
+        .bind(py)
+        .call1((span,))
+        .ok()
+        .map(Bound::unbind)
+}
+
 /// The pool metrics handle when a meter was installed.
 pub(crate) fn pool_metrics() -> Option<Metrics> {
     BRIDGE

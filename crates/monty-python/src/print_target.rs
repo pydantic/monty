@@ -31,6 +31,8 @@ use pyo3::{
     types::{PyList, PyString},
 };
 
+use crate::callback_context::CallbackContext;
+
 /// Host bytes charged per retained `(stream, text)` entry beyond the payload.
 ///
 /// `String` / `Vec` bookkeeping is not free: many tiny prints can exhaust the
@@ -195,7 +197,7 @@ pub(crate) enum PrintTarget {
     #[default]
     Stdout,
     /// Each fragment is forwarded to a Python callable as `(stream_name, text)`.
-    Callback(Py<PyAny>),
+    Callback(Py<PyAny>, Arc<CallbackContext>),
     /// Each fragment accumulates into a shared buffer of `(stream, text)`
     /// tuples, surfaced as `list[tuple[str, str]]` in Python.
     CollectStreams(CollectStreamsBuffer),
@@ -219,7 +221,10 @@ impl PrintTarget {
         } else if let Ok(collector) = obj.extract::<PyRef<'_, PyCollectString>>() {
             Ok(Self::CollectString(collector.buffer()))
         } else if obj.is_callable() {
-            Ok(Self::Callback(obj.clone().unbind()))
+            Ok(Self::Callback(
+                obj.clone().unbind(),
+                Arc::new(CallbackContext::capture(obj.py())?),
+            ))
         } else {
             Err(PyTypeError::new_err(
                 "print_callback must be a callable, CollectStreams(), CollectString(), or None",
@@ -236,10 +241,17 @@ impl PrintTarget {
     pub fn clone_handle(&self, py: Python<'_>) -> Self {
         match self {
             Self::Stdout => Self::Stdout,
-            Self::Callback(cb) => Self::Callback(cb.clone_ref(py)),
+            Self::Callback(cb, context) => Self::Callback(cb.clone_ref(py), Arc::clone(context)),
             Self::CollectStreams(arc) => Self::CollectStreams(arc.clone()),
             Self::CollectString(arc) => Self::CollectString(arc.clone()),
         }
+    }
+
+    pub(crate) fn capture_context(&mut self, py: Python<'_>) -> PyResult<()> {
+        if let Self::Callback(_, context) = self {
+            *context = Arc::new(CallbackContext::capture(py)?);
+        }
+        Ok(())
     }
 
     /// Delivers one already-formatted output fragment to this target.
@@ -262,7 +274,8 @@ impl PrintTarget {
                 }
                 Ok(())
             }
-            Self::Callback(cb) => Python::attach(|py| {
+            Self::Callback(cb, context) => Python::attach(|py| {
+                let _guard = context.enter(py, &opentelemetry::Context::current())?;
                 let stream_name = match stream {
                     PrintStream::Stdout => "stdout",
                     PrintStream::Stderr => "stderr",

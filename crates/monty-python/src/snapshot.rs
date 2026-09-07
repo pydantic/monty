@@ -47,6 +47,7 @@ use tokio::{sync::Mutex, task::JoinSet};
 
 use crate::{
     async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
+    callback_context::CallbackContext,
     exceptions::MontyError,
     external::{CallResult, ExternalLookup, resolve_object_attr, wire_call_arguments},
     pool::{
@@ -143,6 +144,7 @@ pub(crate) fn feed_start_sync(
         print_target,
         checkout,
         instances,
+        callback_context: _,
     } = args;
     let ctx = DriveContext::new(checkout, instances, print_target, script_name, external_lookup, os);
     drive_sync(
@@ -170,6 +172,7 @@ pub(crate) fn feed_start_async(
         print_target,
         checkout,
         instances,
+        callback_context: _,
     } = args;
     let ctx = DriveContext::new(checkout, instances, print_target, script_name, external_lookup, os);
     future_into_py(py, async move {
@@ -359,7 +362,9 @@ impl SnapshotState {
         if self.resumed.swap(true, Ordering::SeqCst) {
             Err(PyRuntimeError::new_err("snapshot has already been resumed"))
         } else {
-            Ok(self.ctx.clone_ref(py))
+            let mut ctx = self.ctx.clone_ref(py);
+            ctx.print_target.capture_context(py)?;
+            Ok(ctx)
         }
     }
 
@@ -613,6 +618,18 @@ impl PyFunctionSnapshot {
     fn resume_auto(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let ctx = self.0.snapshot.claim(py)?;
         let call = &self.0.call;
+        let native = py.detach(|| {
+            block_on_sync(async {
+                ctx.checkout
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(Checkout::callback_context)
+                    .unwrap_or_default()
+            })
+        })?;
+        let context = CallbackContext::capture(py)?;
+        let guard = context.enter(py, &native)?;
         let value = if call.is_os_function {
             if let Some(event) = try_mounts_sync(py, &ctx)? {
                 return build_snapshot(py, ctx, event, false);
@@ -645,6 +662,7 @@ impl PyFunctionSnapshot {
                 }
             }
         };
+        drop(guard);
         drive_sync(py, ctx, turn_fn(move |c, p| Box::pin(c.resume(value, p))))
     }
 
@@ -726,7 +744,15 @@ impl PyAsyncFunctionSnapshot {
         let ctx = self.0.snapshot.claim(py)?;
         // owned copy: the snapshot is borrowed only for this synchronous prologue
         let call = self.0.call.clone();
+        let context = CallbackContext::capture(py)?;
         future_into_py(py, async move {
+            let native = ctx
+                .checkout
+                .lock()
+                .await
+                .as_ref()
+                .map(Checkout::callback_context)
+                .unwrap_or_default();
             // Dispatch inside the future: a coroutine's `into_future` needs the
             // asyncio task-locals that `future_into_py`'s scope establishes.
             let answer: PyResult<ResumeValue> = if call.is_os_function {
@@ -739,33 +765,37 @@ impl PyAsyncFunctionSnapshot {
                 .await?
                 {
                     Some(event) => return Python::attach(|py| build_snapshot(py, ctx, event, true)),
-                    None => Ok(Python::attach(|py| {
-                        dispatch_os_parts(
+                    None => Python::attach(|py| {
+                        let _guard = context.enter(py, &native)?;
+                        Ok(dispatch_os_parts(
                             py,
                             &call.function_name,
                             &call.args,
                             &call.kwargs,
                             ctx.os.as_ref(),
                             &ctx.instances,
-                        )
-                    })),
+                        ))
+                    }),
                 }
             } else {
-                match dispatch_function_call(
-                    &call.function_name,
-                    call.object_id,
-                    &call.args,
-                    &call.kwargs,
-                    ctx.external_lookup.as_ref(),
-                    &ctx.instances,
-                ) {
-                    CallResult::Sync(result) => Ok(ext_result_to_resume(result)),
-                    CallResult::Coroutine(coro) => {
-                        let mut join_set = ctx.pending_futures.lock().await;
-                        spawn_coroutine_task(&mut join_set, call.call_id, coro, &ctx.instances)
-                            .map(|()| ResumeValue::Future)
+                let mut join_set = ctx.pending_futures.lock().await;
+                Python::attach(|py| {
+                    let _guard = context.enter(py, &native)?;
+                    match dispatch_function_call(
+                        &call.function_name,
+                        call.object_id,
+                        &call.args,
+                        &call.kwargs,
+                        ctx.external_lookup.as_ref(),
+                        &ctx.instances,
+                    ) {
+                        CallResult::Sync(result) => Ok(ext_result_to_resume(result)),
+                        CallResult::Coroutine(coro) => {
+                            spawn_coroutine_task(&mut join_set, call.call_id, coro, &ctx.instances)
+                                .map(|()| ResumeValue::Future)
+                        }
                     }
-                }
+                })
             };
             let value = match answer {
                 Ok(value) => value,
@@ -880,6 +910,18 @@ impl PyNameLookupSnapshot {
     /// Consumes the snapshot.
     fn resume_auto(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let ctx = self.0.snapshot.claim(py)?;
+        let native = py.detach(|| {
+            block_on_sync(async {
+                ctx.checkout
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(Checkout::callback_context)
+                    .unwrap_or_default()
+            })
+        })?;
+        let context = CallbackContext::capture(py)?;
+        let guard = context.enter(py, &native)?;
         let value = match resolve_captured_name(py, &ctx, &self.0.name, self.0.object_id) {
             Ok(value) => value,
             Err(err) => {
@@ -887,6 +929,7 @@ impl PyNameLookupSnapshot {
                 return Err(err);
             }
         };
+        drop(guard);
         drive_sync(py, ctx, turn_fn(move |c, p| Box::pin(c.resume_name_lookup(value, p))))
     }
 
@@ -936,8 +979,19 @@ impl PyAsyncNameLookupSnapshot {
         let ctx = self.0.snapshot.claim(py)?;
         let name = self.0.name.clone();
         let object_id = self.0.object_id;
+        let context = CallbackContext::capture(py)?;
         future_into_py(py, async move {
-            let value = match Python::attach(|py| resolve_captured_name(py, &ctx, &name, object_id)) {
+            let native = ctx
+                .checkout
+                .lock()
+                .await
+                .as_ref()
+                .map(Checkout::callback_context)
+                .unwrap_or_default();
+            let value = match Python::attach(|py| {
+                let _guard = context.enter(py, &native)?;
+                resolve_captured_name(py, &ctx, &name, object_id)
+            }) {
                 Ok(value) => value,
                 Err(err) => {
                     discard_checkout(&ctx.checkout).await;

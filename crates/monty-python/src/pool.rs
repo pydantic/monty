@@ -64,6 +64,7 @@ use tokio::{
 use crate::{
     async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
+    callback_context::CallbackContext,
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
     external::{CallResult, ExternalLookup, dispatch_object_call, resolve_object_attr},
     get_not_handled,
@@ -1233,6 +1234,7 @@ async fn install_deps_checkout(checkout: &SharedCheckout, requirements: Vec<Stri
 /// Everything a feed needs, extracted from Python arguments up front so the
 /// sync and async drive loops share one validation path.
 pub(crate) struct FeedArgs {
+    pub(crate) callback_context: CallbackContext,
     pub(crate) code: String,
     pub(crate) inputs: Vec<(String, MontyObject)>,
     pub(crate) mounts: Vec<MountSpec>,
@@ -1258,6 +1260,7 @@ impl FeedArgs {
     ) -> PyResult<Self> {
         check_callable(py, os.as_ref())?;
         Ok(Self {
+            callback_context: CallbackContext::capture(py)?,
             code: extract_source_code(py, code)?,
             inputs: extract_repl_inputs(inputs, instances)?,
             mounts: extract_mount_specs(mount)?,
@@ -1278,6 +1281,7 @@ impl FeedArgs {
 /// released) via `block_on`; callbacks run between turns with the GIL held.
 fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_, PyDict>>) -> PyResult<Py<PyAny>> {
     let FeedArgs {
+        callback_context,
         code,
         inputs,
         mounts,
@@ -1298,6 +1302,17 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
     loop {
         // `Complete` ends the loop; on any other event a failure to compute the
         // answer discards the checkout (see `sync_turn_answer`).
+        let native = py.detach(|| {
+            block_on_sync(async {
+                checkout
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(monty_pool::Checkout::callback_context)
+                    .unwrap_or_default()
+            })
+        })?;
+        let callback_guard = callback_context.enter(py, &native)?;
         let resume_with = match event {
             TurnEvent::Complete(value) => return monty_to_py(py, &value, &instances),
             // This feed's mounts get first refusal on every OS call; only what
@@ -1337,6 +1352,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                 }
             },
         };
+        drop(callback_guard);
         event = run_turn_sync(
             py,
             &checkout,
@@ -1459,6 +1475,7 @@ async fn drive_async_inner(
     started: Arc<AtomicBool>,
 ) -> PyResult<Py<PyAny>> {
     let FeedArgs {
+        callback_context,
         code,
         inputs,
         mounts,
@@ -1488,6 +1505,12 @@ async fn drive_async_inner(
         // futures `ResolveFutures` awaits erroring) discards the checkout.
         // `Complete` and `ResolveFutures` stay inline — the latter must await
         // the pending tasks.
+        let native = checkout
+            .lock()
+            .await
+            .as_ref()
+            .map(monty_pool::Checkout::callback_context)
+            .unwrap_or_default();
         let answer: TurnAnswer = match event {
             TurnEvent::Complete(value) => {
                 return Python::attach(|py| monty_to_py(py, &value, &instances));
@@ -1531,11 +1554,23 @@ async fn drive_async_inner(
                     event = next;
                     continue;
                 }
-                let value =
-                    Python::attach(|py| dispatch_os_parts(py, &function_name, &args, &kwargs, os.as_ref(), &instances));
+                let value = Python::attach(|py| {
+                    let _guard = callback_context.enter(py, &native)?;
+                    Ok::<_, PyErr>(dispatch_os_parts(
+                        py,
+                        &function_name,
+                        &args,
+                        &kwargs,
+                        os.as_ref(),
+                        &instances,
+                    ))
+                })?;
                 TurnAnswer::Call(value)
             }
-            event => match async_turn_answer(event, external_lookup.as_ref(), &instances, &mut join_set) {
+            event => match Python::attach(|py| {
+                let _guard = callback_context.enter(py, &native)?;
+                async_turn_answer(event, external_lookup.as_ref(), &instances, &mut join_set)
+            }) {
                 Ok(answer) => answer,
                 Err(err) => {
                     discard_checkout(&checkout).await;
