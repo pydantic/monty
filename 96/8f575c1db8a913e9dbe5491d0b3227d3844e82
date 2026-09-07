@@ -1,0 +1,61 @@
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_a13acbd1453eef::t_b75157ce71d450 714
+  s_bf68572fceb021::t_6a13ea954cb421 70,188-215,217-218,220-225,227-231,233-240,719
+  s_bf68572fceb021::t_6b818366a40c33 219
+  s_bf68572fceb021::t_db768b978b7bc3 43-44,46,48-51
+  s_bf68572fceb021::t_d897fac5af4c04 52-66,69,71,74-78,80,82
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_a13acbd1453eef::t_c36f95f0176da5 932
+  s_bf68572fceb021::t_77476688f6fee1 84,86,247-255,257-259,262-264,266-272,275-280,282-293,759,772,939-940,1006-1047
+  s_bf68572fceb021::t_c5aba5ea48c9d6 770,37-39,42,45,47,49,51,74,76,85,87,90,104
+  s_bf68572fceb021::t_6b818366a40c33 265
+  s_bf68572fceb021::t_d3d3bfb2984646 25,53-55,57,59,61,63,65,67,69,71,73,75,77-78,82,88-89,92,95,97,100
+crates/monty-proto/src/wire.rs
+  s_a13acbd1453eef::t_3045490adced69 223
+  s_a13acbd1453eef::t_94267e3cac47ae 313,315
+  s_a13acbd1453eef::t_1f64204b39db30 384,386,389
+  s_a13acbd1453eef::t_5e860bfba9f056 742-743,758,760-761
+  s_a13acbd1453eef::t_178050dbf89775 988,990,994,1000,1008,1030,1034
+  s_bf68572fceb021::t_09b4ec13b59f3e 36-37,152,176,182,1059,1061-1093,1095-1133,1136-1152
+  s_bf68572fceb021::t_473839141e0540 168-170,175,178-179,181
+  s_bf68572fceb021::t_b258d87a754f12 304,314,318-326,380,385,390,538-540
+  s_bf68572fceb021::t_ca1ebcff2bbca2 722-723,744-757,762-763,991-992,995-996,1009-1010,1024,1038-1039
+  s_bf68572fceb021::t_a52a42677fdcad 1012-1023,1134-1135
+  s_bf68572fceb021::t_5804a73663822d 1060
+  s_bf68572fceb021::t_4c4f5cc18a0f76 1094
+  s_bf68572fceb021::t_93a114df81e123 201-207
+  s_bf68572fceb021::t_90c5119ed8895a 208-222,225-229
+crates/monty-proto/tests/differential.rs
+  s_a13acbd1453eef::t_69e117cf7fd364 206,218
+  s_a13acbd1453eef::t_cb6d3824699525 328,330,332
+  s_bf68572fceb021::t_5887888f14e24a 348-349,602,667,172-197,207-215,219-227,320,329,333-334,350-355,357-358,360-365,367,369-375,377-382,384-385,474,477,596-597,599-600,603,605,607-609,611,613,616-619,621,623-628,630,632-638,640,642-651,653,655-665
+  s_a13acbd1453eef::t_5d0ff11316897d 479-483,485-490,492-505,359,376,383
+  s_bf68572fceb021::t_1a7581d9ae18d9 694,604,610,612,620,622,629,631,639,641,652,654,666,695-700
+  s_bf68572fceb021::t_4e27436de9d945 21-22
+  s_bf68572fceb021::t_69ed7dab194b56 356,598,606,614-615
+  s_bf68572fceb021::t_0d33efba1bec20 366,368
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "968f575c1db8a913e9dbe5491d0b3227d3844e82",
+  "prompts": {},
+  "sessions": {
+    "s_a13acbd1453eef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "46b34544-930c-423e-9e81-d58970c2dcab",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_bf68572fceb021": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8ff2ad2-c7e9-4cb1-9a42-b2f5d74a4d5e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
