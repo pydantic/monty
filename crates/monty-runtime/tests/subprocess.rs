@@ -974,7 +974,7 @@ fn iterdir_joins_are_preflighted() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "MemoryError");
     let message = error.message.expect("MemoryError should have a message");
-    assert_reported_usage(&message, 2_334_236, code);
+    assert_reported_usage(&message, 2_234_235, code);
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
     child.shutdown();
 }

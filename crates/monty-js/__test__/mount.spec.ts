@@ -6,7 +6,8 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { MontyFileHandle, MontyRuntimeError, MountDir, type MountDirOptions } from '@pydantic/monty/node'
-import { checkOsPathValidation, checkRelativePathResults, setupPool } from './helpers.js'
+import { setupPool } from './helpers.js'
+import { checkOsPathValidation, checkRelativePathResults } from './os_paths.js'
 
 const { run, pool } = setupPool()
 
@@ -127,7 +128,7 @@ test('NUL paths never reach callbacks and no-handler errors use clean paths', as
 })
 
 test('filesystem results preserve relative paths', async () => {
-  await checkRelativePathResults(run)
+  await checkRelativePathResults(run, MontyFileHandle)
 })
 
 test.each(['/', '/data'])('os callbacks receive normalized paths with cwd %s', async (cwd) => {

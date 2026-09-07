@@ -6,14 +6,14 @@ import { test } from 'vitest'
 
 import { t } from './assertions.js'
 import { skipIfBrowser } from './env.js'
-import { Monty } from '@pydantic/monty/wasm'
-import { checkOsPathValidation, checkRelativePathResults } from './helpers.js'
+import { Monty, MontyFileHandle } from '@pydantic/monty/wasm'
+import { checkOsPathValidation, checkRelativePathResults } from './os_paths.js'
 
 test('WASM filesystem results preserve relative paths', async (ctx) => {
   skipIfBrowser(ctx)
   await using pool = await Monty.create()
   await using session = await pool.checkout()
-  await checkRelativePathResults((code, options) => session.feedRun(code, options))
+  await checkRelativePathResults((code, options) => session.feedRun(code, options), MontyFileHandle)
 })
 
 test('WASM rejects NUL paths before callbacks and reports clean no-handler paths', async (ctx) => {
