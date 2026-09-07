@@ -133,7 +133,7 @@ fn kill_pid(pid: u32) {
 
 /// Rejected eager answers leave the checkout and worker at the same call.
 #[tokio::test]
-async fn eager_coroutine_validates_replies_before_sending() {
+async fn allow_eager_await_validates_replies_before_sending() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let event = session
@@ -142,13 +142,13 @@ async fn eager_coroutine_validates_replies_before_sending() {
         .unwrap();
     let TurnEvent::FunctionCall {
         call_id,
-        eager_coroutine,
+        allow_eager_await,
         ..
     } = event
     else {
         panic!("expected function call, got {event:?}")
     };
-    assert!(eager_coroutine);
+    assert!(allow_eager_await);
     for results in [
         vec![],
         vec![(call_id + 1, ResumeValue::Return(MontyObject::Int(42)))],

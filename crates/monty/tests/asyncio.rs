@@ -24,11 +24,11 @@ fn start_external(code: &str) -> RunProgress {
 
 /// Sequential eager awaits retain container results without yielding ResolveFutures.
 #[test]
-fn eager_coroutine_sequential_results_and_errors() {
+fn allow_eager_await_sequential_results_and_errors() {
     let mut progress = start_external("a = await foo()\nb = await foo()\n[a, b]");
     for n in [1, 2] {
         let call = progress.into_function_call().unwrap();
-        assert!(call.eager_coroutine);
+        assert!(call.allow_eager_await);
         progress = call
             .resume_eager(Ok(MontyObject::List(vec![MontyObject::Int(n)])), PrintWriter::Stdout)
             .unwrap();
@@ -44,7 +44,7 @@ fn eager_coroutine_sequential_results_and_errors() {
     let call = start_external("try:\n    await foo()\nexcept ValueError as e:\n    result = str(e)\nresult")
         .into_function_call()
         .unwrap();
-    assert!(call.eager_coroutine);
+    assert!(call.allow_eager_await);
     let progress = call
         .resume_eager(
             Err(MontyException::new(ExcType::ValueError, Some("failed".to_owned()))),
@@ -59,9 +59,9 @@ fn eager_coroutine_sequential_results_and_errors() {
 
 /// The hint does not change ordinary sync returns or require hosts to use eager resolution.
 #[test]
-fn eager_coroutine_keeps_existing_resume_semantics() {
+fn allow_eager_await_keeps_existing_resume_semantics() {
     let call = start_external("await foo()").into_function_call().unwrap();
-    assert!(call.eager_coroutine);
+    assert!(call.allow_eager_await);
     let err = call.resume(MontyObject::Int(42), PrintWriter::Stdout).unwrap_err();
     assert_eq!(err.exc_type(), ExcType::TypeError);
 
@@ -83,7 +83,7 @@ fn eager_coroutine_keeps_existing_resume_semantics() {
 
 /// Deferred calls, ready siblings, and earlier pending futures must retain concurrency.
 #[test]
-fn eager_coroutine_excludes_competing_work() {
+fn allow_eager_await_excludes_competing_work() {
     for code in [
         "import asyncio\nawait asyncio.gather(foo(), foo())",
         "import asyncio\nasync def task():\n    return await foo()\nawait asyncio.gather(task(), task())",
@@ -94,7 +94,7 @@ fn eager_coroutine_excludes_competing_work() {
         loop {
             match progress {
                 RunProgress::FunctionCall(call) => {
-                    assert!(!call.eager_coroutine, "incorrect eager hint for {code}");
+                    assert!(!call.allow_eager_await, "incorrect eager hint for {code}");
                     results.push((call.call_id, ExtFunctionResult::Return(MontyObject::Int(1))));
                     progress = resolve_name_lookups(call.resume_pending(PrintWriter::Stdout).unwrap()).unwrap();
                 }

@@ -310,7 +310,7 @@ interface worker {
         /// absent for plain external calls.
         object-id: option<string>,
         /// A coroutine may settle before replying with resume-futures.
-        eager-coroutine: bool,
+        allow-eager-await: bool,
     }
 
     /// A suspended name or lazy-attribute lookup.

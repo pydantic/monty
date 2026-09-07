@@ -842,10 +842,10 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
             kwargs,
             call_id,
             object_id,
-            eager_coroutine,
+            allow_eager_await,
         }) => {
             obj.set("kind", "functionCall")?;
-            obj.set("eagerCoroutine", eager_coroutine)?;
+            obj.set("allowEagerAwait", allow_eager_await)?;
             obj.set("functionName", function_name)?;
             obj.set("args", values_to_js(env, &args)?)?;
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;

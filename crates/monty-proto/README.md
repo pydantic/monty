@@ -67,7 +67,7 @@ transport-agnostic child state machine, shared by the native `monty subprocess`
 worker and the wasm worker. It links the `monty` interpreter, so only
 worker-side crates enable it.
 
-An external `FunctionCall` with `eager_coroutine = true` permits the parent to await a coroutine before replying.
+An external `FunctionCall` with `allow_eager_await = true` permits the parent to await a coroutine before replying.
 The parent sends its value or exception in `ResumeFutures`, with exactly one result matching the call ID.
 The worker creates a settled awaitable and continues, avoiding a separate `ResolveFutures` suspension.
 Synchronous returns still use `ResumeCall`; parents may also ignore the hint and register a pending future as before.

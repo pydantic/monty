@@ -48,11 +48,11 @@ fn future_reply(call_id: u32, kind: pb::ext_function_result::Kind) -> pb::Future
 
 /// Each eager reply advances directly to the next call or completion.
 #[test]
-fn eager_coroutine_uses_one_reply_per_call() {
+fn allow_eager_await_uses_one_reply_per_call() {
     let mut child = Child::default();
     let mut call = start_external_call(&mut child, "a = await f()\nb = await f()\na + b");
     for n in [10, 20] {
-        assert!(call.eager_coroutine);
+        assert!(call.allow_eager_await);
         let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
             results: vec![future_reply(
                 call.call_id,
@@ -75,10 +75,10 @@ fn eager_coroutine_uses_one_reply_per_call() {
 
 /// Invalid eager replies leave the suspension available for a valid retry.
 #[test]
-fn eager_coroutine_rejects_malformed_replies() {
+fn allow_eager_await_rejects_malformed_replies() {
     let mut child = Child::default();
     let call = start_external_call(&mut child, "await f()");
-    assert!(call.eager_coroutine);
+    assert!(call.allow_eager_await);
     let value = pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(42).into());
     for results in [
         vec![],
@@ -114,7 +114,7 @@ fn eager_coroutine_rejects_malformed_replies() {
 
 /// Older hosts can ignore the hint; calls without the hint reject the new reply sequence.
 #[test]
-fn eager_coroutine_preserves_legacy_replies() {
+fn allow_eager_await_preserves_legacy_replies() {
     let mut child = Child::default();
     let call = start_external_call(&mut child, "await f()");
     let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
@@ -134,7 +134,7 @@ fn eager_coroutine_preserves_legacy_replies() {
 
     let mut child = Child::default();
     let call = start_external_call(&mut child, "f()");
-    assert!(!call.eager_coroutine);
+    assert!(!call.allow_eager_await);
     let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
         results: vec![future_reply(call.call_id, value.clone())],
     }));

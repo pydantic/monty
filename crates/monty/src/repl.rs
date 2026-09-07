@@ -610,7 +610,7 @@ pub struct ReplFunctionCall {
     /// plain external function calls. The receiver is NOT included in `args`.
     pub object_id: Option<MontyUuid>,
     /// The host may await a coroutine and answer with [`Self::resume_eager`].
-    pub eager_coroutine: bool,
+    pub allow_eager_await: bool,
     /// Internal REPL execution snapshot.
     snapshot: ReplSnapshot,
 }
@@ -641,7 +641,7 @@ impl ReplFunctionCall {
     }
 
     /// Resumes with a settled coroutine, preserving its awaitable value and exception timing.
-    /// Only use when [`Self::eager_coroutine`] is true; synchronous returns use [`Self::resume`].
+    /// Only use when [`Self::allow_eager_await`] is true; synchronous returns use [`Self::resume`].
     pub fn resume_eager(
         self,
         result: Result<MontyObject, MontyException>,
@@ -1206,14 +1206,14 @@ fn build_repl_progress(
             kwargs,
             call_id,
             object_id,
-            eager_coroutine,
+            allow_eager_await,
         } => Ok(ReplProgress::FunctionCall(ReplFunctionCall {
             function_name,
             args,
             kwargs,
             call_id,
             object_id,
-            eager_coroutine,
+            allow_eager_await,
             snapshot: new_repl_snapshot!(),
         })),
         ConvertedExit::OsCall { function_call, call_id } => Ok(ReplProgress::OsCall(ReplOsCall {

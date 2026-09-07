@@ -244,7 +244,7 @@ pub(crate) fn build_snapshot(
             kwargs,
             call_id,
             object_id,
-            eager_coroutine,
+            allow_eager_await,
         } => {
             let call = FunctionCallData {
                 function_name,
@@ -253,7 +253,7 @@ pub(crate) fn build_snapshot(
                 call_id,
                 is_os_function: false,
                 object_id,
-                eager_coroutine,
+                allow_eager_await,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -270,7 +270,7 @@ pub(crate) fn build_snapshot(
                 call_id,
                 is_os_function: true,
                 object_id: None,
-                eager_coroutine: false,
+                allow_eager_await: false,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -525,7 +525,7 @@ struct FunctionCallData {
     /// plain external functions and OS calls.
     object_id: Option<MontyUuid>,
     /// The worker accepts a settled coroutine at this suspension.
-    eager_coroutine: bool,
+    allow_eager_await: bool,
 }
 
 struct FunctionSnapshot {
@@ -560,8 +560,8 @@ pub struct PyFunctionSnapshot(FunctionSnapshot);
 impl PyFunctionSnapshot {
     /// Whether the worker permits eager coroutine resolution at this suspension.
     #[getter]
-    fn eager_coroutine(&self) -> bool {
-        self.0.call.eager_coroutine
+    fn allow_eager_await(&self) -> bool {
+        self.0.call.allow_eager_await
     }
 
     #[getter]
@@ -680,8 +680,8 @@ pub struct PyAsyncFunctionSnapshot(FunctionSnapshot);
 impl PyAsyncFunctionSnapshot {
     /// Whether `resume_auto` may await a coroutine directly at this suspension.
     #[getter]
-    fn eager_coroutine(&self) -> bool {
-        self.0.call.eager_coroutine
+    fn allow_eager_await(&self) -> bool {
+        self.0.call.allow_eager_await
     }
 
     #[getter]
@@ -776,7 +776,7 @@ impl PyAsyncFunctionSnapshot {
                     &ctx.instances,
                 ) {
                     CallResult::Sync(result) => Ok(ext_result_to_resume(result)),
-                    CallResult::Coroutine(coro) if call.eager_coroutine => {
+                    CallResult::Coroutine(coro) if call.allow_eager_await => {
                         eager = true;
                         match coroutine_future(coro, &ctx.instances) {
                             Ok(future) => Ok(ext_result_to_resume(future.await)),

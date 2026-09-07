@@ -797,7 +797,7 @@ pub struct FunctionCall {
     /// call_id. Synchronous results still use ResumeCall; returning a pending
     /// future remains valid. Absent/false requires the ordinary call reply.
     #[prost(bool, tag = "6")]
-    pub eager_coroutine: bool,
+    pub allow_eager_await: bool,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the parent
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm

@@ -655,7 +655,7 @@ impl Child {
             return protocol_violation("ResumeFutures without suspended futures");
         };
         match progress.as_ref() {
-            ReplProgress::FunctionCall(call) if call.eager_coroutine => {
+            ReplProgress::FunctionCall(call) if call.allow_eager_await => {
                 if resume.results.len() != 1 || resume.results[0].call_id != call.call_id {
                     return protocol_violation("eager ResumeFutures must contain exactly the suspended call id");
                 }
@@ -1004,7 +1004,7 @@ fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::Chi
         kwargs: mem::take(&mut call.kwargs),
         call_id: call.call_id,
         object_id: call.object_id,
-        eager_coroutine: call.eager_coroutine,
+        allow_eager_await: call.allow_eager_await,
     }))
 }
 

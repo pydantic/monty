@@ -377,7 +377,7 @@ properties that real CPython does not provide, per the caveat above.
     `RuntimeError`), and feeding while suspended raises. This differs from the
     pre-subprocess in-process API, where a snapshot owned freely-copyable state.
 - **Coroutine calls do not always produce a future snapshot.** When a call is immediately awaited and no other
-    sandbox task is runnable or external future is pending, `eager_coroutine` is true (`eagerCoroutine` in JavaScript).
+    sandbox task is runnable or external future is pending, `allow_eager_await` is true (`allowEagerAwait` in JavaScript).
     Async `resume_auto()` / `resumeAuto()` then awaits the host coroutine and returns the next call or completion
     directly, without an intermediate future snapshot.
     Other coroutine calls retain the pending-future sequence, and manual callers may use that sequence in either case.

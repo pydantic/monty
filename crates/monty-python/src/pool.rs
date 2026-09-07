@@ -1577,10 +1577,10 @@ async fn async_turn_answer(
             kwargs,
             call_id,
             object_id,
-            eager_coroutine,
+            allow_eager_await,
         } => match dispatch_function_call(&function_name, object_id, &args, &kwargs, external_lookup, instances) {
             CallResult::Sync(result) => Ok(TurnAnswer::Call(ext_to_resume(result)?)),
-            CallResult::Coroutine(coro) if eager_coroutine => {
+            CallResult::Coroutine(coro) if allow_eager_await => {
                 let result = coroutine_future(coro, instances)?.await;
                 Ok(TurnAnswer::Eager(call_id, ext_to_resume(result)?))
             }

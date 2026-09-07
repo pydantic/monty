@@ -653,7 +653,7 @@ message FunctionCall {
   // The host may await a coroutine and answer with ResumeFutures for this
   // call_id. Synchronous results still use ResumeCall; returning a pending
   // future remains valid. Absent/false requires the ordinary call reply.
-  bool eager_coroutine = 6;
+  bool allow_eager_await = 6;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent

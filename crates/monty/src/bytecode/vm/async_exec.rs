@@ -33,7 +33,7 @@ use crate::{
 
 impl<'h> VM<'h> {
     /// Allows eager host resolution only for an immediate await with no competing work.
-    pub(crate) fn eager_coroutine(&self) -> bool {
+    pub(crate) fn allow_eager_await(&self) -> bool {
         let frame = self.current_frame();
         frame.bytecode.get(frame.ip) == Some(&(Opcode::Await as u8)) && self.scheduler.can_await_eagerly()
     }

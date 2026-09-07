@@ -1007,7 +1007,7 @@ mod tests {
             kwargs: vec![],
             call_id: 1,
             object_id: None,
-            eager_coroutine: false,
+            allow_eager_await: false,
         }))
     }
 

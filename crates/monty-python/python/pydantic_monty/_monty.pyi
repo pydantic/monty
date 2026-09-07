@@ -1103,7 +1103,7 @@ class FunctionSnapshot:
     """
 
     @property
-    def eager_coroutine(self) -> bool:
+    def allow_eager_await(self) -> bool:
         """Whether the worker permits eager coroutine resolution at this call."""
 
     @property
@@ -1215,7 +1215,7 @@ class AsyncFunctionSnapshot:
     """Async sibling of `FunctionSnapshot`; `resume`/`resume_not_handled` are awaitable."""
 
     @property
-    def eager_coroutine(self) -> bool:
+    def allow_eager_await(self) -> bool:
         """Whether `resume_auto` may await a coroutine directly at this call."""
 
     @property

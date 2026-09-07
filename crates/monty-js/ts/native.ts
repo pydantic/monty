@@ -52,7 +52,7 @@ export interface FunctionCallTurn {
    *  for plain external calls. */
   objectId?: string | null
   /** A coroutine may settle before replying with `resolveFutures`. */
-  eagerCoroutine?: boolean
+  allowEagerAwait?: boolean
 }
 
 /** The sandbox performed an OS operation no mount handled. */

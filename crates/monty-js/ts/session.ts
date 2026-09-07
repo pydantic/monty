@@ -529,7 +529,7 @@ class TurnAnswerer {
       return this.native.resumeError(excType, message, onPrint)
     }
     if (isThenable(returned)) {
-      if (call.eagerCoroutine) {
+      if (call.allowEagerAwait) {
         return this.answerEagerCoroutine(call.callId, returned, onPrint)
       }
       this.registerFuture(call.callId, Promise.resolve(returned))
@@ -577,7 +577,7 @@ class TurnAnswerer {
       return this.native.resumeError(excType, message, onPrint)
     }
     if (isThenable(returned)) {
-      if (call.eagerCoroutine) {
+      if (call.allowEagerAwait) {
         return this.answerEagerCoroutine(call.callId, returned, onPrint)
       }
       this.registerFuture(call.callId, Promise.resolve(returned))
@@ -939,7 +939,7 @@ export class FunctionSnapshot extends SingleUse {
   readonly callId: number
   readonly isOsFunction: boolean
   /** `resumeAuto` may await a coroutine directly at this suspension. */
-  readonly eagerCoroutine: boolean
+  readonly allowEagerAwait: boolean
   /** Set for host-routed calls: the receiver's store uuid — a class
    *  instance, or a class type (a classmethod, or `__call__` construction).
    *  The receiver is not in `args`; `null` for plain external calls. */
@@ -957,7 +957,7 @@ export class FunctionSnapshot extends SingleUse {
     this.kwargs = kwargsToRecord(restoreKwargPairs(turn.kwargs, driver.instances))
     this.callId = turn.callId
     this.isOsFunction = isOsFunction
-    this.eagerCoroutine = turn.kind === 'functionCall' && (turn.eagerCoroutine ?? false)
+    this.allowEagerAwait = turn.kind === 'functionCall' && (turn.allowEagerAwait ?? false)
     this.objectId = 'objectId' in turn ? (turn.objectId ?? null) : null
   }
 

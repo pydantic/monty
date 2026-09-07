@@ -633,13 +633,13 @@ async def test_async_resume_auto_coroutine_external():
         async with pool.checkout() as session:
             snap = await session.feed_start(code, external_lookup={'go': go})
             assert isinstance(snap, AsyncFunctionSnapshot)
-            assert snap.eager_coroutine
+            assert snap.allow_eager_await
             done = await snap.resume_auto()
             assert isinstance(done, MontyComplete)
             assert done.output == snapshot(99)
 
 
-async def test_async_eager_coroutine_survives_snapshot_restore():
+async def test_async_allow_eager_await_survives_snapshot_restore():
     """A restored call retains eager eligibility and finishes without a future suspension."""
 
     async def go() -> list[int]:
@@ -653,7 +653,7 @@ async def test_async_eager_coroutine_survives_snapshot_restore():
         async with pool.checkout() as session:
             restored = await session.load_snapshot(blob, external_lookup={'go': go})
             assert isinstance(restored, AsyncFunctionSnapshot)
-            assert restored.eager_coroutine
+            assert restored.allow_eager_await
             done = await restored.resume_auto()
             assert isinstance(done, MontyComplete)
             assert done.output == [42]
