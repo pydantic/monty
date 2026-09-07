@@ -36,8 +36,8 @@ use crate::{
         namedtuple::cmp_item_seqs,
         slice::slice_collect_iterator,
         str::{
-            allocate_char, allocate_string, concat_allocate_str, get_char_at_index, repeat_str, str_contains,
-            string_repr_fmt,
+            allocate_char, allocate_string, allocate_string_with_interns, concat_allocate_str, get_char_at_index,
+            repeat_str, str_contains, string_repr_fmt,
         },
     },
 };
@@ -667,10 +667,11 @@ impl<'h> PyTrait<'h> for Value {
                 interns.get_str(*s1),
                 interns.get_str(*s2),
                 vm.heap,
+                interns,
             )?)),
             // for strings we need to account for the fact they might be either interned or not
             (Self::InternString(string_id), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => Ok(Some(
-                concat_allocate_str(interns.get_str(*string_id), s2.as_str(), vm.heap)?,
+                concat_allocate_str(interns.get_str(*string_id), s2.as_str(), vm.heap, interns)?,
             )),
             // same for bytes
             (Self::InternBytes(lhs), Self::InternBytes(rhs)) => Ok(Some(concat_bytes(
@@ -747,7 +748,7 @@ impl<'h> PyTrait<'h> for Value {
                 let Some(count) = repeat_count(count, vm)? else {
                     return Ok(None);
                 };
-                Ok(Some(repeat_str(vm.interns.get_str(*id), count, vm.heap)?))
+                Ok(Some(repeat_str(vm.interns.get_str(*id), count, vm.heap, vm.interns)?))
             }
             (Self::InternBytes(id), count) | (count, Self::InternBytes(id)) => {
                 let Some(count) = repeat_count(count, vm)? else {
@@ -1280,7 +1281,7 @@ impl<'h> PyTrait<'h> for Value {
                 {
                     let s = interns.get_str(*string_id);
                     let result_str: Box<str> = slice_collect_iterator(vm, slice_obj, s.chars(), |c| c)?;
-                    return Ok(allocate_string(result_str, vm.heap));
+                    return Ok(allocate_string_with_interns(result_str, vm.heap, vm.interns));
                 }
 
                 // Shared with the heap-`str` path rather than re-matching here,

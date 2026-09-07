@@ -15,7 +15,7 @@
 //! retain a [`StaticStrings`] tag for dispatch, while snapshots serialize only
 //! their text so another build can load an unknown static string as owned text.
 
-use std::{slice::from_ref, str::FromStr};
+use std::{mem, slice::from_ref, str::FromStr, sync::LazyLock};
 
 use ahash::AHashMap;
 use num_bigint::BigInt;
@@ -1281,6 +1281,16 @@ pub struct InternerBuilder {
     long_ints: Vec<WithHash<BigInt>>,
 }
 
+/// Prehashed core entries cloned into each new executor interner.
+static BASE_INTERNER: LazyLock<InternerBuilder> = LazyLock::new(|| {
+    let mut interner = InternerBuilder::empty(0);
+    interner.strings.reserve(CORE_STATIC_STRINGS.len());
+    for &value in CORE_STATIC_STRINGS {
+        interner.intern_static(value);
+    }
+    interner
+});
+
 impl Default for InternerBuilder {
     fn default() -> Self {
         Self::new("")
@@ -1295,20 +1305,23 @@ impl InternerBuilder {
     /// them or an imported module registers the attributes it materializes.
     /// `code` supplies a rough capacity estimate for additional literals.
     pub fn new(code: &str) -> Self {
-        // Reserve capacity for code-specific strings
-        // Rough guess: count quotes and divide by 2 (open+close per string)
+        // Rough guess: count quotes and divide by 2 (open+close per string).
         let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
-        let mut interner = Self {
-            string_map: AHashMap::with_capacity(capacity),
+        let mut interner = BASE_INTERNER.clone();
+        interner.string_map.reserve(capacity);
+        interner.strings.reserve(capacity);
+        interner
+    }
+
+    /// Creates an unseeded interner with room for `string_capacity` entries.
+    fn empty(string_capacity: usize) -> Self {
+        Self {
+            string_map: AHashMap::with_capacity(string_capacity),
             static_string_ids: vec![None; StaticStrings::COUNT],
-            strings: Vec::with_capacity(capacity),
+            strings: Vec::with_capacity(string_capacity),
             bytes: Vec::new(),
             long_ints: Vec::new(),
-        };
-        for &value in CORE_STATIC_STRINGS {
-            interner.intern_static(value);
         }
-        interner
     }
 
     /// Interns a string, returning its `StringId`.
@@ -1396,8 +1409,14 @@ fn intern_static(
     if let Some(id) = static_string_ids[value as usize] {
         id
     } else {
-        let id = next_string_id(strings.len());
-        strings.push(InternedString::static_string(value));
+        let text: &'static str = value.into();
+        let id = if text.len() == 1 {
+            StringId::from_ascii(text.as_bytes()[0])
+        } else {
+            let id = next_string_id(strings.len());
+            strings.push(InternedString::static_string(value));
+            id
+        };
         static_string_ids[value as usize] = Some(id);
         id
     }
@@ -1439,10 +1458,13 @@ fn get_str(strings: &[InternedString], id: StringId) -> &str {
 
 /// Returns the static tag stored at `id`, if any.
 fn get_static_string(strings: &[InternedString], id: StringId) -> Option<StaticStrings> {
-    id.index()
-        .checked_sub(INTERN_STRING_ID_OFFSET)
-        .and_then(|index| strings.get(index))
-        .and_then(InternedString::static_value)
+    if let Some(text) = ASCII_STRS.get(id.index()) {
+        StaticStrings::from_str(text).ok()
+    } else {
+        strings
+            .get(id.index() - INTERN_STRING_ID_OFFSET)
+            .and_then(InternedString::static_value)
+    }
 }
 
 /// Storage for interned strings, bytes, long integers and compiled functions.
@@ -1560,6 +1582,26 @@ fn build_string_maps(strings: &[InternedString]) -> Result<StringMaps, String> {
 }
 
 impl Interns {
+    /// Moves this table out while leaving a cheap, intentionally unusable placeholder.
+    ///
+    /// REPL compilation replaces the placeholder before exposing the session
+    /// again, avoiding full interner initialization on every feed.
+    pub(crate) fn take(&mut self) -> Self {
+        mem::replace(self, Self::placeholder())
+    }
+
+    /// Creates the temporary value used only while an interner is moved out.
+    fn placeholder() -> Self {
+        Self {
+            strings: Vec::new(),
+            bytes: Vec::new(),
+            long_ints: Vec::new(),
+            functions: Vec::new(),
+            string_id_by_name: AHashMap::new(),
+            static_string_ids: Vec::new(),
+        }
+    }
+
     /// Builds the runtime table from a finished parse/prepare interner and the
     /// functions compiled against it.
     pub fn new(interner: InternerBuilder, functions: Vec<Function>) -> Self {

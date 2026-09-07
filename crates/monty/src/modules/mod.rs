@@ -352,6 +352,9 @@ impl StandardLib {
                 StaticStrings::UnidataVersion,
             ],
             Self::Itertools => &[
+                StaticStrings::Accumulate,
+                StaticStrings::Batched,
+                StaticStrings::ZipLongest,
                 StaticStrings::Chain,
                 StaticStrings::Compress,
                 StaticStrings::Count,
@@ -383,6 +386,8 @@ impl StandardLib {
             ],
             Self::Functools => &[StaticStrings::Functools, StaticStrings::Partial, StaticStrings::Reduce],
             Self::Base64 => &[
+                StaticStrings::A85Decode,
+                StaticStrings::A85Encode,
                 StaticStrings::B16Decode,
                 StaticStrings::B16Encode,
                 StaticStrings::B32Decode,
