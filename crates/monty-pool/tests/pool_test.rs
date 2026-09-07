@@ -477,6 +477,29 @@ async fn working_directory_survives_a_rejected_first_feed() {
     session.finish().await.unwrap();
 }
 
+/// A first feed rejected as oversize never reaches the worker, so its
+/// directory is not established: the next feed still sends the mount default.
+#[tokio::test]
+async fn working_directory_survives_an_oversize_first_feed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    // just over monty_proto's 256 MiB MAX_FRAME_LEN
+    let huge = MontyObject::String("x".repeat(257 * 1024 * 1024));
+    let err = session
+        .feed("data", vec![("data".to_owned(), huge)], mount(), false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Runtime(_)), "expected Runtime, got {err:?}");
+    let result = session
+        .feed("import os\nos.getcwd()", vec![], mount(), false, &mut no_print)
+        .await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt".to_owned()));
+    session.finish().await.unwrap();
+}
+
 /// Mount-covered filesystem OS calls are serviced by the parent and never
 /// surface to the caller — the feed just completes. Covers read, write,
 /// mkdir kwargs, rename, and `open()` + file-handle ops through a mount.

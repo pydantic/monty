@@ -325,6 +325,10 @@ where
 /// unknowable. The checkout notices on its next call,
 /// discards the worker, and fails with [`PoolError::Protocol`]; `finish` on
 /// such a session likewise discards the worker rather than returning it.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent turn, abort, cwd and send flags"
+)]
 pub struct Checkout {
     /// `None` after `finish()` or after the worker was discarded on error.
     worker: Option<Worker>,
@@ -364,6 +368,10 @@ pub struct Checkout {
     /// explicit `cwd` sends the mount-derived default; afterwards it sends
     /// nothing and the worker keeps the directory, `os.chdir` included.
     cwd_set: bool,
+    /// Whether the latest request reached the worker. An oversize frame is
+    /// rejected before any bytes are written, so state the request would have
+    /// set on the worker (the working directory) stays as it was.
+    request_sent: bool,
     /// When the session started, for `monty.pool.session.duration`. Taken by
     /// `finish`, terminal worker loss, or `Drop`, so it is recorded once.
     #[cfg(feature = "telemetry")]
@@ -535,6 +543,7 @@ impl Checkout {
             restored_script_name: None,
             feed_mounts: None,
             cwd_set: false,
+            request_sent: false,
             #[cfg(feature = "telemetry")]
             started: Some(Instant::now()),
         };
@@ -675,10 +684,10 @@ impl Checkout {
         }));
         let outcome = self.expect_turn(&request, on_print).await;
         // The worker adopts the directory after type checking and before it
-        // parses or runs the snippet, so every reply but a typing rejection
-        // (a `SyntaxError` included) means it took effect; a lost worker
-        // takes the session with it.
-        if !matches!(outcome, Err(PoolError::Typing(_))) {
+        // parses or runs the snippet, so once the request reached it every
+        // reply but a typing rejection (a `SyntaxError` included) means it
+        // took effect; a lost worker takes the session with it.
+        if self.request_sent && !matches!(outcome, Err(PoolError::Typing(_))) {
             self.cwd_set = true;
         }
         outcome
@@ -1189,24 +1198,9 @@ impl Checkout {
         request: &pb::ParentRequest,
         on_event: OnRawEvent<'_>,
     ) -> Result<pb::ChildEvent, PoolError> {
-        let Some(worker) = self.worker.as_mut() else {
-            return Err(PoolError::Finished);
-        };
-        if let Err(err) = worker.send(request).await {
-            // an oversize frame is rejected before any bytes are written, so
-            // the worker is still synced — see `turn_io`
-            return Err(match err {
-                FrameError::FrameTooLarge { len, max } => PoolError::Runtime(MontyException::new(
-                    ExcType::RuntimeError,
-                    Some(format!(
-                        "request frame of {len} bytes exceeds the maximum of {max} bytes"
-                    )),
-                )),
-                _ => self.poison("sending a request").await,
-            });
-        }
+        self.send_request(request).await?;
         loop {
-            let event = match self.worker.as_mut().expect("checked above").recv().await {
+            let event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
                 Err(FrameError::Decode(err)) => {
                     return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
@@ -1280,29 +1274,9 @@ impl Checkout {
     /// the turn-ending event. All failure paths discard the worker except
     /// `Runtime` / `Typing`, which are sandbox-level outcomes.
     async fn turn_io(&mut self, request: &pb::ParentRequest, on_print: OnPrint<'_>) -> Result<ControlEvent, PoolError> {
-        let Some(worker) = self.worker.as_mut() else {
-            return Err(PoolError::Finished);
-        };
-        if let Err(err) = worker.send(request).await {
-            // An oversize frame is rejected *before* any bytes are written, so
-            // the worker never saw the request and is still synced — surface a
-            // clean, catchable error instead of discarding a healthy worker as
-            // if it had crashed. For a `resume*` request this also leaves
-            // `pending` set (nothing overwrites it on this path), so the
-            // suspension stays answerable with a smaller value. Every other
-            // send failure is a real I/O break (dead worker / closed pipe).
-            return Err(match err {
-                FrameError::FrameTooLarge { len, max } => PoolError::Runtime(MontyException::new(
-                    ExcType::RuntimeError,
-                    Some(format!(
-                        "request frame of {len} bytes exceeds the maximum of {max} bytes"
-                    )),
-                )),
-                _ => self.poison("sending a request").await,
-            });
-        }
+        self.send_request(request).await?;
         loop {
-            let event = match self.worker.as_mut().expect("checked above").recv().await {
+            let event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
                 // a decode failure means the frame arrived intact but its
                 // payload was garbage (including values that fail semantic
@@ -1482,6 +1456,34 @@ impl Checkout {
                     return Err(self.protocol_violation("unexpected event"));
                 }
             }
+        }
+    }
+
+    /// Sends `request`, recording in `request_sent` whether it reached the
+    /// worker. An oversize frame is rejected *before* any bytes are written,
+    /// so the worker never saw the request and is still synced — surface a
+    /// clean, catchable error instead of discarding a healthy worker as if it
+    /// had crashed. For a `resume*` request this also leaves `pending` set
+    /// (nothing overwrites it on this path), so the suspension stays
+    /// answerable with a smaller value. Every other send failure is a real
+    /// I/O break (dead worker / closed pipe).
+    async fn send_request(&mut self, request: &pb::ParentRequest) -> Result<(), PoolError> {
+        self.request_sent = false;
+        let Some(worker) = self.worker.as_mut() else {
+            return Err(PoolError::Finished);
+        };
+        match worker.send(request).await {
+            Ok(()) => {
+                self.request_sent = true;
+                Ok(())
+            }
+            Err(FrameError::FrameTooLarge { len, max }) => Err(PoolError::Runtime(MontyException::new(
+                ExcType::RuntimeError,
+                Some(format!(
+                    "request frame of {len} bytes exceeds the maximum of {max} bytes"
+                )),
+            ))),
+            Err(_) => Err(self.poison("sending a request").await),
         }
     }
 
