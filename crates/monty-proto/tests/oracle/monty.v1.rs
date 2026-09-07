@@ -794,7 +794,7 @@ pub struct FunctionCall {
     #[prost(message, optional, tag = "5")]
     pub object_id: ::core::option::Option<Uuid>,
     /// The host may await a coroutine and answer with ResumeFutures for this
-    /// call_id. Synchronous results still use ResumeCall; returning a pending
+    /// call_id. Synchronous results use ResumeCall; returning a pending
     /// future remains valid. Absent/false requires the ordinary call reply.
     #[prost(bool, tag = "6")]
     pub allow_eager_await: bool,

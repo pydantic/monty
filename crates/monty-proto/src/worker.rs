@@ -649,45 +649,37 @@ impl Child {
         event
     }
 
-    /// Delivers settled futures, including a single eager function-call result.
+    /// Delivers settled futures to a `ResolveFutures` suspension, or one
+    /// settled coroutine to the function call that allowed an eager reply.
     fn handle_resume_futures(&mut self, resume: pb::ResumeFutures, sink: &mut dyn EventSink) -> pb::ChildEvent {
-        let SessionState::Suspended(progress) = &self.state else {
-            return protocol_violation("ResumeFutures without suspended futures");
-        };
-        match progress.as_ref() {
-            ReplProgress::FunctionCall(call) if call.allow_eager_await => {
-                if resume.results.len() != 1 || resume.results[0].call_id != call.call_id {
-                    return protocol_violation("eager ResumeFutures must contain exactly the suspended call id");
-                }
-            }
-            ReplProgress::ResolveFutures(_) => {}
-            _ => return protocol_violation("ResumeFutures without suspended futures"),
-        }
         let results = match future_results_from_proto(resume.results) {
             Ok(results) => results,
             Err(err) => return protocol_violation(&format!("invalid results: {err}")),
         };
-        if matches!(progress.as_ref(), ReplProgress::FunctionCall(_))
-            && !matches!(results[0].1, ExtFunctionResult::Return(_) | ExtFunctionResult::Error(_))
-        {
-            return protocol_violation("eager coroutine must resolve to a value or exception");
-        }
+        // Shaped against the borrowed state, so a rejected reply leaves the suspension intact.
+        let SessionState::Suspended(progress) = &self.state else {
+            return protocol_violation("ResumeFutures without suspended futures");
+        };
+        let reply = match progress.as_ref() {
+            ReplProgress::FunctionCall(call) if call.allow_eager_await => match eager_result(results, call.call_id) {
+                Ok(result) => FuturesReply::Eager(result),
+                Err(message) => return protocol_violation(message),
+            },
+            ReplProgress::ResolveFutures(_) => FuturesReply::Batch(results),
+            _ => return protocol_violation("ResumeFutures without suspended futures"),
+        };
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked above");
         };
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
-        let outcome = match *progress {
-            ReplProgress::FunctionCall(call) => {
-                let (_, result) = results.into_iter().next().expect("validated one eager result");
-                let result = match result {
-                    ExtFunctionResult::Return(value) => Ok(value),
-                    ExtFunctionResult::Error(exc) => Err(exc),
-                    _ => unreachable!("validated eager result"),
-                };
+        let outcome = match (*progress, reply) {
+            (ReplProgress::FunctionCall(call), FuturesReply::Eager(result)) => {
                 call.resume_eager(result, PrintWriter::Callback(&mut print))
             }
-            ReplProgress::ResolveFutures(state) => state.resume(results, PrintWriter::Callback(&mut print)),
-            _ => unreachable!("checked above"),
+            (ReplProgress::ResolveFutures(state), FuturesReply::Batch(results)) => {
+                state.resume(results, PrintWriter::Callback(&mut print))
+            }
+            _ => unreachable!("reply shaped by the suspension above"),
         };
         let event = self.drive(outcome, &mut print);
         print.drain();
@@ -1089,6 +1081,28 @@ fn named_inputs(inputs: Vec<pb::NamedValue>) -> Result<Vec<(String, MontyObject)
             Ok((input.name, value))
         })
         .collect()
+}
+
+/// A validated `ResumeFutures` body, shaped for the suspension it answers.
+enum FuturesReply {
+    /// One settled coroutine for a function call with `allow_eager_await`.
+    Eager(Result<MontyObject, MontyException>),
+    /// Results for a `ResolveFutures` suspension.
+    Batch(Vec<(u32, ExtFunctionResult)>),
+}
+
+/// Checks an eager reply is exactly one settled result for `call_id`; the
+/// error is the protocol-violation message.
+fn eager_result(
+    results: Vec<(u32, ExtFunctionResult)>,
+    call_id: u32,
+) -> Result<Result<MontyObject, MontyException>, &'static str> {
+    match <[_; 1]>::try_from(results) {
+        Ok([(id, ExtFunctionResult::Return(value))]) if id == call_id => Ok(Ok(value)),
+        Ok([(id, ExtFunctionResult::Error(exc))]) if id == call_id => Ok(Err(exc)),
+        Ok([(id, _)]) if id == call_id => Err("eager coroutine must resolve to a value or exception"),
+        _ => Err("eager ResumeFutures must contain exactly the suspended call id"),
+    }
 }
 
 /// Streams sandbox `print()` output as `Print` events through an

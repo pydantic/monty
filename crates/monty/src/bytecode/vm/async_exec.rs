@@ -8,7 +8,7 @@
 
 use std::{mem, task::Poll};
 
-use monty_types::{MontyException, ResourceError, ResourceTracker};
+use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
 use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM};
@@ -989,10 +989,13 @@ impl<'h> VM<'h> {
         for (call_id, ext_result) in results {
             match ext_result {
                 ExtFunctionResult::Return(obj) => {
-                    let value = obj.to_value(self).map_err(|e| {
-                        RunError::from(MontyException::runtime_error(format!(
-                            "Invalid return value for call {call_id}: {e}"
-                        )))
+                    // A resource error is a `MemoryError` here as in `resume`,
+                    // so a large host value is not misreported as a bad type.
+                    let value = obj.to_value(self).map_err(|e| match e {
+                        InvalidInputError::Resource(err) => RunError::from(err),
+                        other @ InvalidInputError::InvalidType(_) => RunError::from(MontyException::runtime_error(
+                            format!("Invalid return value for call {call_id}: {other}"),
+                        )),
                     })?;
                     self.resolve_future(call_id, value);
                 }

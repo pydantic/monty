@@ -1004,8 +1004,9 @@ class AsyncMontySession:
         As in the sync version, `external_lookup` (and `os`) are captured for
         `await snapshot.resume_auto()` rather than consulted during this initial
         drive. A coroutine external answered by `resume_auto()` is awaited
-        concurrently: it yields an `AsyncFutureSnapshot` whose `resume_auto()`
-        settles the pending coroutines.
+        directly when the snapshot's `allow_eager_await` is true; otherwise it
+        is awaited concurrently and yields an `AsyncFutureSnapshot` whose
+        `resume_auto()` settles the pending coroutines.
 
         Arguments:
             code: The Python snippet to execute; its trailing expression value

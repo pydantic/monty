@@ -19,7 +19,7 @@ use std::mem;
 
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
-use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
+use monty_types::{ExtFunctionResult, InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
 pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;
 
@@ -40,6 +40,7 @@ use crate::{
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingOsEffect, listdir_names, release_pending_effect},
     parse::CodeRange,
+    run_progress::ExtFunctionResultExt,
     types::{
         Dict, LongInt, PyTrait,
         file::{apply_buffer_store, apply_write_position},
@@ -1926,6 +1927,35 @@ impl<'h> VM<'h> {
         // Create the module on the heap using pre-interned strings
         let heap_id = module.create(self);
         self.push(Value::Ref(heap_id));
+    }
+
+    /// Continues execution with the host's answer to an external call.
+    ///
+    /// `eager_call_id` marks a coroutine the host already settled at an
+    /// eligible `await` (see `FunctionCall::resume_eager`): the call's future
+    /// is registered and resolved in one step, so the `Await` that follows
+    /// finds it settled without a `ResolveFutures` round trip.
+    pub fn resume_ext_result(
+        &mut self,
+        ext_result: ExtFunctionResult,
+        eager_call_id: Option<u32>,
+    ) -> Result<FrameExit, RunError> {
+        if let Some(call_id) = eager_call_id {
+            self.add_pending_call(CallId::new(call_id));
+            self.resume_with_resolved_futures(vec![(call_id, ext_result)])
+        } else {
+            match ext_result {
+                ExtFunctionResult::Return(obj) => self.resume(obj),
+                ExtFunctionResult::Error(exc) => self.resume_with_exception(exc.into()),
+                ExtFunctionResult::Future(raw_call_id) => {
+                    self.add_pending_call(CallId::new(raw_call_id));
+                    self.run_external()
+                }
+                ExtFunctionResult::NotFound(function_name) => {
+                    self.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+                }
+            }
+        }
     }
 
     /// Resumes execution after an external call completes.

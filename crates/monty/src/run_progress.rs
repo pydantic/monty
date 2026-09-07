@@ -13,7 +13,6 @@ use monty_types::{
 };
 
 use crate::{
-    asyncio::CallId,
     bytecode::{FrameExit, PendingLookupEffect, VM, VMSnapshot},
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
@@ -774,7 +773,8 @@ impl Snapshot {
         self.run_inner(result.into(), None, print)
     }
 
-    /// Registers an eagerly settled coroutine before executing the next instruction.
+    /// Shared body of [`Self::run`] and [`FunctionCall::resume_eager`];
+    /// `eager_call_id` is set only for the latter.
     fn run_inner(
         self,
         ext_result: ExtFunctionResult,
@@ -798,23 +798,7 @@ impl Snapshot {
                     executor.assert_repr_max_bytes,
                 );
 
-                let vm_result = if let Some(call_id) = eager_call_id {
-                    vm.add_pending_call(CallId::new(call_id));
-                    vm.resume_with_resolved_futures(vec![(call_id, ext_result)])
-                } else {
-                    match ext_result {
-                        ExtFunctionResult::Return(obj) => vm.resume(obj),
-                        ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
-                        ExtFunctionResult::Future(raw_call_id) => {
-                            let call_id = CallId::new(raw_call_id);
-                            vm.add_pending_call(call_id);
-                            vm.run_external()
-                        }
-                        ExtFunctionResult::NotFound(function_name) => {
-                            vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
-                        }
-                    }
-                };
+                let vm_result = vm.resume_ext_result(ext_result, eager_call_id);
 
                 // Three-phase: convert while VM alive, snapshot, build progress
                 let converted = convert_frame_exit(vm_result, &mut vm);
