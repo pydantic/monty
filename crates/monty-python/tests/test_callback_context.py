@@ -120,6 +120,7 @@ async def run(index, url=None):
             return 20
         def os_callback(function, args, kwargs):
             assert request.get() == index
+            assert baggage.get_baggage('request') == str(index)
             with tracer.start_as_current_span(f'os {index}'):
                 pass
             return True

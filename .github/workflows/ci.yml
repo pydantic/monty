@@ -265,6 +265,7 @@ jobs:
           eval "$(cargo llvm-cov show-env --export-prefix)"
           cargo llvm-cov clean --workspace
           uv run maturin develop --uv -m crates/monty-python/Cargo.toml
+          cargo test -p pydantic-monty-client --lib
           uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests
           cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
           cargo llvm-cov report --codecov --output-path=python-rust-coverage.json --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
