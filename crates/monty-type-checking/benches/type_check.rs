@@ -92,12 +92,40 @@ fn bench_repl_sequence(c: &mut Criterion, label: &str) {
     });
 }
 
+fn bench_repl_sequence_200(c: &mut Criterion, label: &str) {
+    let snippets: Vec<String> = (0..200).map(|i| format!("v{i}: int = {i}")).collect();
+    let mut checker = prewarmed();
+    let mut group = c.benchmark_group("type_check");
+    group.sample_size(10);
+    group.bench_function(format!("{label}__repl_sequence_200"), |b| {
+        b.iter(|| {
+            let mut stubs = String::new();
+            for (i, snippet) in snippets.iter().enumerate() {
+                let path = format!("step_{i}.py");
+                let out = checker
+                    .run(
+                        &SourceFile::new(snippet, &path),
+                        Some(&SourceFile::new(&stubs, "type_stubs.pyi")),
+                        CONFIG,
+                    )
+                    .expect("repl-sequence benchmark should not hit internal type-check failures");
+                assert!(out.is_none(), "snippet should type-check cleanly: {snippet}");
+                black_box(out);
+                stubs.push_str(snippet);
+                stubs.push('\n');
+            }
+        });
+    });
+    group.finish();
+}
+
 /// Configures the type-checking benchmarks.
 fn criterion_benchmark(c: &mut Criterion) {
     let label = backend_label();
     bench_warm_trivial(c, label);
     bench_warm_builtin(c, label);
     bench_repl_sequence(c, label);
+    bench_repl_sequence_200(c, label);
 }
 
 // Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)

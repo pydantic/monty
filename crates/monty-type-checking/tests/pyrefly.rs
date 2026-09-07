@@ -1,5 +1,6 @@
 #![cfg(feature = "pyrefly")]
 
+use insta::assert_snapshot;
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::TypeCheckingConfig;
 
@@ -28,4 +29,21 @@ fn repl_sequence() {
     let stubs = "x = 1\n";
     assert!(check(&mut checker, "y = x + 2\n", Some(stubs)).is_none());
     assert!(check(&mut checker, "y = undefined\n", Some(stubs)).is_some());
+}
+
+#[test]
+fn error_output() {
+    let mut checker = TypeChecker::default();
+    let code = "def add(x: int, y: int) -> int:\n    return x + y\n\nr = add(1, '2')\n";
+    assert_snapshot!(check(&mut checker, code, None).unwrap(), @"main.py:4:12: error[bad-argument-type] Argument `Literal['2']` is not assignable to parameter `y` with type `int` in function `add`");
+}
+
+/// The injected stub import must not shift the reported line: the error is on
+/// line 2 of the snippet below.
+#[test]
+fn error_output_with_stubs() {
+    let mut checker = TypeChecker::default();
+    let code = "w = Widget()\nw.x = 'not an int'\n";
+    let stubs = "class Widget:\n    x: int\n";
+    assert_snapshot!(check(&mut checker, code, Some(stubs)).unwrap(), @"main.py:2:7: error[bad-assignment] `Literal['not an int']` is not assignable to attribute `x` with type `int`");
 }
