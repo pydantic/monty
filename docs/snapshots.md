@@ -242,7 +242,9 @@ feeding:
 
 [`AsyncMonty`][pydantic_monty.AsyncMonty] sessions expose the same `feed_start`, `load_session`, `load_snapshot` and `dump`, with awaitable
 `resume(...)` and `resume_auto()`.
-A coroutine host function answered by `resume_auto()` is awaited concurrently: it yields an [`AsyncFutureSnapshot`][pydantic_monty.AsyncFutureSnapshot] whose
+A coroutine host function answered by `resume_auto()` is awaited directly when the snapshot's `allow_eager_await` is true,
+which it is for a call that is awaited immediately while no other sandbox task can run.
+Otherwise it is awaited concurrently: `resume_auto()` yields an [`AsyncFutureSnapshot`][pydantic_monty.AsyncFutureSnapshot] whose
 `resume_auto()` settles the pending coroutines.
 
 The sync [`FutureSnapshot.resume_auto()`][pydantic_monty.FutureSnapshot.resume_auto] always raises — a sync session cannot drive coroutine host functions.

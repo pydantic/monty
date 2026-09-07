@@ -51,7 +51,7 @@ time (see [language.md](language.md)).
 Concurrency is cooperative and host-driven. `gather` suspends Monty whenever
 every branch is blocked on an external call, hands the pending calls to the
 host, and resumes when the host returns results. There is no preemption, no
-threads, or exposed event loop.
+threads and no exposed event loop.
 
 ### Siblings left running by a failed `gather` only advance while something else suspends
 

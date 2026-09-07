@@ -22,7 +22,6 @@ use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErr
 use crate::function::FunctionMetadataFault;
 use crate::{
     args::{ArgValues, KwargsValues},
-    asyncio::CallId,
     bytecode::{FrameExit, VM, VMSnapshot},
     exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapData, HeapReader},
@@ -1167,7 +1166,8 @@ impl ReplSnapshot {
         self.run_inner(result.into(), None, print)
     }
 
-    /// Registers an eagerly settled coroutine before executing the next instruction.
+    /// Shared body of [`Self::run`] and [`ReplFunctionCall::resume_eager`];
+    /// `eager_call_id` is set only for the latter.
     fn run_inner(
         self,
         ext_result: ExtFunctionResult,
@@ -1191,12 +1191,7 @@ impl ReplSnapshot {
                     executor.vm_env(),
                 );
 
-                let vm_result = if let Some(call_id) = eager_call_id {
-                    vm.add_pending_call(CallId::new(call_id));
-                    vm.resume_with_resolved_futures(vec![(call_id, ext_result)])
-                } else {
-                    resume_with_result(&mut vm, ext_result)
-                };
+                let vm_result = resume_with_result(&mut vm, ext_result, eager_call_id);
 
                 // Convert while VM alive, then snapshot or reclaim globals
                 let converted = convert_frame_exit(vm_result, &mut vm);

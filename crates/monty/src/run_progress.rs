@@ -774,7 +774,8 @@ impl Snapshot {
         self.run_inner(result.into(), None, print)
     }
 
-    /// Registers an eagerly settled coroutine before executing the next instruction.
+    /// Shared body of [`Self::run`] and [`FunctionCall::resume_eager`];
+    /// `eager_call_id` is set only for the latter.
     fn run_inner(
         self,
         ext_result: ExtFunctionResult,
@@ -798,12 +799,7 @@ impl Snapshot {
                     executor.vm_env(),
                 );
 
-                let vm_result = if let Some(call_id) = eager_call_id {
-                    vm.add_pending_call(CallId::new(call_id));
-                    vm.resume_with_resolved_futures(vec![(call_id, ext_result)])
-                } else {
-                    resume_with_result(&mut vm, ext_result)
-                };
+                let vm_result = resume_with_result(&mut vm, ext_result, eager_call_id);
 
                 // Three-phase: convert while VM alive, snapshot, build progress
                 let converted = convert_frame_exit(vm_result, &mut vm);
@@ -828,34 +824,48 @@ impl Snapshot {
 /// VM and runs on. Shared by the one-shot and REPL resume paths so both treat
 /// every [`ExtFunctionResult`] the same way.
 ///
+/// `eager_call_id` marks a coroutine the host already settled at an eligible
+/// `await` (see [`FunctionCall::resume_eager`]): the call's future is
+/// registered and resolved in one step, so the `Await` that follows finds it
+/// settled without a `ResolveFutures` round trip.
+///
 /// Calls whose result must be postprocessed before execution continues
 /// (`os.chdir`, `Path.iterdir`, `open`) refuse a future: the effect runs in
 /// `VM::resume`, which a future bypasses. The future is not registered, so
 /// nothing waits on a call id no task will ever await.
-pub(crate) fn resume_with_result(vm: &mut VM<'_>, result: ExtFunctionResult) -> Result<FrameExit, RunError> {
-    match result {
-        ExtFunctionResult::Return(obj) => vm.resume(obj),
-        ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
-        ExtFunctionResult::Future(raw_call_id) => {
-            if let Some(name) = vm
-                .pending_effect
-                .as_ref()
-                .and_then(PendingEffect::immediate_result_name)
-            {
-                vm.resume_with_exception(
-                    SimpleException::new_msg(
-                        ExcType::RuntimeError,
-                        format!("{name} cannot be answered with a future"),
+pub(crate) fn resume_with_result(
+    vm: &mut VM<'_>,
+    result: ExtFunctionResult,
+    eager_call_id: Option<u32>,
+) -> Result<FrameExit, RunError> {
+    if let Some(call_id) = eager_call_id {
+        vm.add_pending_call(CallId::new(call_id));
+        vm.resume_with_resolved_futures(vec![(call_id, result)])
+    } else {
+        match result {
+            ExtFunctionResult::Return(obj) => vm.resume(obj),
+            ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
+            ExtFunctionResult::Future(raw_call_id) => {
+                if let Some(name) = vm
+                    .pending_effect
+                    .as_ref()
+                    .and_then(PendingEffect::immediate_result_name)
+                {
+                    vm.resume_with_exception(
+                        SimpleException::new_msg(
+                            ExcType::RuntimeError,
+                            format!("{name} cannot be answered with a future"),
+                        )
+                        .into(),
                     )
-                    .into(),
-                )
-            } else {
-                vm.add_pending_call(CallId::new(raw_call_id));
-                vm.run_external()
+                } else {
+                    vm.add_pending_call(CallId::new(raw_call_id));
+                    vm.run_external()
+                }
             }
-        }
-        ExtFunctionResult::NotFound(function_name) => {
-            vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+            ExtFunctionResult::NotFound(function_name) => {
+                vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+            }
         }
     }
 }
