@@ -304,8 +304,25 @@ impl Path {
 
 /// Classmethod `Path.cwd()`, also callable through instances: returns the VM's
 /// virtual working directory without a host round-trip.
+///
+/// A pure-Python classmethod in CPython, so its arity errors count `cls`:
+/// one stray positional is `takes 1 positional argument but 2 were given`.
 pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    args.check_zero_args("Path.cwd", vm.heap)?;
+    if !matches!(args, ArgValues::Empty) {
+        let (pos, kwargs) = args.into_parts();
+        let given = pos.len();
+        let first_kwarg = kwargs.first_key(vm.heap, vm.interns);
+        pos.drop_with(vm);
+        kwargs.drop_with(vm);
+        // CPython reports a stray keyword before the positional count.
+        return Err(match first_kwarg {
+            Some(key) => ExcType::type_error_unexpected_keyword("Path.cwd", &key),
+            None => ExcType::type_error(format!(
+                "Path.cwd() takes 1 positional argument but {} were given",
+                given + 1
+            )),
+        });
+    }
     let path = Path::new(vm.env.cwd.to_string());
     Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
 }

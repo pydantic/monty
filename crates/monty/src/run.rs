@@ -9,10 +9,7 @@ use std::{
     },
 };
 
-use monty_types::{
-    AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker,
-    normalize_virtual_path,
-};
+use monty_types::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker};
 pub use monty_types::{CompileOptions, HostClock};
 use ruff_python_stdlib::identifiers::is_identifier;
 
@@ -71,8 +68,9 @@ impl MontyRun {
     ///
     /// # Arguments
     /// * `code` - The Python code to execute
-    /// * `script_name` - The script name for error messages, and what `__file__`
-    ///   places under the working directory (`/main.py` for `main.py` at the root)
+    /// * `script_name` - The script name for error messages; its final path
+    ///   component is what `__file__` places under the working directory
+    ///   (`/main.py` for `main.py` or `src/main.py` at the root)
     /// * `input_names` - Names of input variables
     /// * `options` - [`CompileOptions`] controlling CPython divergences; usually `CompileOptions::default()`
     ///
@@ -262,10 +260,10 @@ pub(crate) struct Executor {
     /// path; `System` unless the embedder chose otherwise.
     #[serde(default = "default_clock")]
     pub(crate) clock: HostClock,
-    /// The user-facing script name (`main.py`), which `__file__` is derived
-    /// from. For REPL snippets this is the session's name (shared with it,
-    /// not copied per feed), not the `<python-input-N>` name the snippet was
-    /// parsed under.
+    /// The user-facing script name (`main.py`), whose final component
+    /// `__file__` is derived from. For REPL snippets this is the session's
+    /// name (shared with it, not copied per feed), not the `<python-input-N>`
+    /// name the snippet was parsed under.
     pub(crate) script_name: Arc<str>,
     /// Sandbox working directory every VM built from this executor starts in;
     /// `/` unless the host set one (see [`MontyRun::set_cwd`]). Shared with
@@ -302,8 +300,8 @@ pub(crate) struct VmEnv<'h> {
     /// Working directory `os.getcwd()` reports and relative paths resolve
     /// against. Borrowed from the executor until `os.chdir` replaces it.
     pub(crate) cwd: Cow<'h, str>,
-    /// Working directory the run started in; `__file__` is `script_name`
-    /// resolved against it, unaffected by a later `os.chdir`.
+    /// Working directory the run started in; `__file__` is `script_name`'s
+    /// final component placed under it, unaffected by a later `os.chdir`.
     pub(crate) initial_cwd: &'h str,
     /// User-facing script name (`main.py`), the basis of `__file__`.
     pub(crate) script_name: &'h str,
@@ -312,14 +310,14 @@ pub(crate) struct VmEnv<'h> {
 }
 
 impl VmEnv<'_> {
-    /// `__file__`: computed on read, since most runs never look at it.
+    /// `__file__`: the script name's final path component under the starting
+    /// working directory, computed on read since most runs never look at it.
+    /// Only the final component is kept because the script name is a host-side
+    /// label that may be a host path (`monty /home/me/app.py`), and host
+    /// directory structure must not leak into the sandbox.
     pub(crate) fn file(&self) -> String {
-        let path = posix_join(self.initial_cwd, self.script_name);
-        if self.script_name.is_empty() || self.script_name.starts_with('/') {
-            path
-        } else {
-            normalize_virtual_path(&path).into_owned()
-        }
+        let name = self.script_name.rsplit(['/', '\\']).next().unwrap_or_default();
+        posix_join(self.initial_cwd, name)
     }
 }
 

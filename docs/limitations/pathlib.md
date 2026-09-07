@@ -17,7 +17,7 @@ give `PosixPath` / `<class 'PosixPath'>`, and `pathlib.Path.nonexistent` raises
 `Path(*segments)` works. Each segment may be a `str` or another `Path`.
 Bytes paths are rejected with `TypeError`.
 
-`Path.cwd()` and `Path('.').cwd()` return the sandbox's virtual working directory without a host
+`Path.cwd()`, on the class or any instance, returns the sandbox's virtual working directory without a host
 round-trip; the host sets it per feed and relative paths are resolved against
 it before any I/O method reaches the host (see [os.md](os.md)). `Path.home()`
 is **not** implemented: the sandbox has no home directory.

@@ -85,12 +85,31 @@ try:
         except TypeError as e:
             assert str(e) == message
 
-    for receiver in [Path, Path('.')]:
-        try:
-            receiver.cwd('unexpected')
-            assert False, 'expected TypeError'
-        except TypeError:
-            pass
+    try:
+        Path.cwd('unexpected')
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'Path.cwd() takes 1 positional argument but 2 were given'
+    try:
+        Path('.').cwd('unexpected')
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'Path.cwd() takes 1 positional argument but 2 were given'
+    try:
+        Path.cwd(1, 2)
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'Path.cwd() takes 1 positional argument but 3 were given'
+    try:
+        Path.cwd(x=1)
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == "Path.cwd() got an unexpected keyword argument 'x'"
+    try:
+        Path.cwd(1, x=1)
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == "Path.cwd() got an unexpected keyword argument 'x'"
 
     # Windows CPython reports WinError messages instead of POSIX errno text.
     try:

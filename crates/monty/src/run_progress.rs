@@ -797,14 +797,15 @@ impl Snapshot {
 /// VM and runs on. Shared by the one-shot and REPL resume paths so both treat
 /// every [`ExtFunctionResult`] the same way.
 ///
-/// Calls requiring result postprocessing refuse futures, which bypass `VM::resume`.
-/// The future is still registered so the host's task drains through `ResolveFutures`.
+/// Calls whose result must be postprocessed before execution continues
+/// (`os.chdir`, `Path.iterdir`, `open`) refuse a future: the effect runs in
+/// `VM::resume`, which a future bypasses. The future is not registered, so
+/// nothing waits on a call id no task will ever await.
 pub(crate) fn resume_with_result(vm: &mut VM<'_>, result: ExtFunctionResult) -> Result<FrameExit, RunError> {
     match result {
         ExtFunctionResult::Return(obj) => vm.resume(obj),
         ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
         ExtFunctionResult::Future(raw_call_id) => {
-            vm.add_pending_call(CallId::new(raw_call_id));
             if let Some(name) = vm
                 .pending_os_effect
                 .as_ref()
@@ -818,6 +819,7 @@ pub(crate) fn resume_with_result(vm: &mut VM<'_>, result: ExtFunctionResult) -> 
                     .into(),
                 )
             } else {
+                vm.add_pending_call(CallId::new(raw_call_id));
                 vm.run_external()
             }
         }

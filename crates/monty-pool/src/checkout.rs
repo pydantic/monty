@@ -37,8 +37,8 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct ReplConfig {
     /// Script name used in tracebacks and type-check diagnostics, and the
-    /// basis of the sandbox's `__file__`: the name placed under the working
-    /// directory a feed starts in (`/main.py` for `main.py` at the root).
+    /// basis of the sandbox's `__file__`: its final path component placed
+    /// under the working directory a feed starts in (`/main.py` at the root).
     pub script_name: String,
     /// Sandbox resource limits enforced inside the worker. `None` means
     /// unlimited (except monty's standard recursion-depth default).

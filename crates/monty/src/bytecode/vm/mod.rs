@@ -999,7 +999,9 @@ impl<'h> VM<'h> {
             scheduler: mem::take(&mut self.scheduler),
             pending_os_effect: self.pending_os_effect.take(),
             pending_lookup_effect: self.pending_lookup_effect.take(),
-            cwd: mem::take(&mut self.env.cwd).into_owned(),
+            // Reset to the starting directory rather than `take` (an empty
+            // string), so a later `take_changed_cwd` on this VM stays honest.
+            cwd: mem::replace(&mut self.env.cwd, Cow::Borrowed(self.env.initial_cwd)).into_owned(),
         }
     }
 
@@ -2374,7 +2376,7 @@ impl<'h> VM<'h> {
     /// (asserts always run). `__doc__`/`__spec__`/`__package__` default to
     /// `None` and `__annotations__` to a fresh empty dict — module-level
     /// annotations are not stored (see `limitations/typing.md`), so it is
-    /// always empty. `__file__` is the script name resolved against the
+    /// always empty. `__file__` is the script name's final component under the
     /// working directory the run started in. `__loader__` is deliberately
     /// *not* exposed: CPython only ever puts a loader object there (never
     /// `None`), so rather than diverge on the type we let it raise `NameError`

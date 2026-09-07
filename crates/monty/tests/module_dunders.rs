@@ -46,8 +46,8 @@ fn debug_is_true() {
 
 #[test]
 fn file_is_script_name_under_cwd() {
-    // Like CPython 3.9+, `__main__.__file__` is absolute: the script name
-    // resolved against the working directory the run started in.
+    // Like CPython 3.9+, `__main__.__file__` is absolute: the script name's
+    // final component under the working directory the run started in.
     assert_eq!(eval("__file__"), MontyObject::String("/test.py".to_owned()));
 
     let mut runner = MontyRun::new("__file__".to_owned(), "main.py", vec![], CompileOptions::default()).unwrap();
@@ -57,18 +57,15 @@ fn file_is_script_name_under_cwd() {
         MontyObject::String("/data/main.py".to_owned())
     );
 
-    // An absolute script name is used verbatim.
-    let runner = MontyRun::new("__file__".to_owned(), "/srv/app.py", vec![], CompileOptions::default()).unwrap();
-    assert_eq!(
-        runner.run_no_limits(vec![]).unwrap(),
-        MontyObject::String("/srv/app.py".to_owned())
-    );
-
+    // Only the final component is kept: a script name may be a host path
+    // (the CLI passes its file argument), and no host directory may leak in.
     for (script_name, expected) in [
+        ("/srv/app.py", "/data/app.py"),
         ("./sub/../main.py", "/data/main.py"),
-        ("../main.py", "/main.py"),
-        ("/foo/../main.py", "/foo/../main.py"),
-        ("/foo/./main.py", "/foo/./main.py"),
+        ("../main.py", "/data/main.py"),
+        ("/foo/../main.py", "/data/main.py"),
+        ("C:\\Users\\me\\main.py", "/data/main.py"),
+        ("<string>", "/data/<string>"),
     ] {
         let mut runner = MontyRun::new("__file__".to_owned(), script_name, vec![], CompileOptions::default()).unwrap();
         runner.set_cwd("/data");

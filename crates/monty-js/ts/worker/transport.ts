@@ -429,14 +429,15 @@ function returnValue(value: unknown): CallResult {
  * feed or `os.chdir` changes it — there are no mounts in the browser to
  * default to), an explicit value must be an absolute POSIX path without NUL
  * bytes and loses its trailing slashes. A rejected value is the
- * session-preserving `ValueError` turn the native path produces.
+ * session-preserving `ValueError` turn the native path produces (quoted
+ * as JSON, which matches Rust's `{:?}` for everyday ASCII paths).
  */
 function feedCwd(cwd: string | undefined): string | NativeTurn {
   const invalid = (problem: string): NativeTurn => ({
     kind: 'error',
     exception: {
       excType: 'ValueError',
-      message: `cwd ${problem}: ${rustDebugString(cwd ?? '')}`,
+      message: `cwd ${problem}: ${JSON.stringify(cwd ?? '')}`,
       traceback: '',
       frames: [],
     },
@@ -452,34 +453,6 @@ function feedCwd(cwd: string | undefined): string | NativeTurn {
   }
   const trimmed = cwd.replace(/\/+$/, '')
   return trimmed === '' ? '/' : trimmed
-}
-
-/**
- * Quotes a string the way Rust's `{:?}` does, so the wasm transport's
- * validation errors read like `monty-pool`'s: `"`, `\` and the common
- * control characters get their short escapes; other control, format and
- * non-space separator characters become `\u{..}`; everything else is kept
- * as is. Rust also escapes a leading grapheme extender, left verbatim here.
- */
-function rustDebugString(value: string): string {
-  const shortEscapes: Record<string, string> = {
-    '"': '\\"',
-    '\\': '\\\\',
-    '\n': '\\n',
-    '\r': '\\r',
-    '\t': '\\t',
-    '\0': '\\0',
-  }
-  let out = '"'
-  for (const ch of value) {
-    const short = shortEscapes[ch]
-    if (short !== undefined) {
-      out += short
-      continue
-    }
-    out += ch !== ' ' && /[\p{C}\p{Z}]/u.test(ch) ? `\\u{${(ch.codePointAt(0) ?? 0).toString(16)}}` : ch
-  }
-  return out + '"'
 }
 
 /** Creates a traceback-free host exception result. */

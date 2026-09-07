@@ -116,14 +116,15 @@ fn run_cli(cli: Cli) -> ExitCode {
         .expect("monty-runtime must install LimitedAllocator globally");
 
     // Build mount table early to fail fast on bad -m args.
-    let mount_table = match build_mount_table(&cli.mounts) {
-        Ok(mt) => mt,
+    let (mount_table, first_mount) = match build_mount_table(&cli.mounts) {
+        Ok(Some((mt, first_mount))) => (Some(mt), Some(first_mount)),
+        Ok(None) => (None, None),
         Err(err) => {
             eprintln!("{BOLD_RED}error{BOLD_RED:#}: {err}");
             return ExitCode::FAILURE;
         }
     };
-    let cwd = match sandbox_cwd(cli.cwd.as_deref(), &cli.mounts) {
+    let cwd = match sandbox_cwd(cli.cwd.as_deref(), first_mount) {
         Ok(cwd) => cwd,
         Err(err) => {
             eprintln!("{BOLD_RED}error{BOLD_RED:#}: {err}");
@@ -163,14 +164,11 @@ fn run_cli(cli: Cli) -> ExitCode {
 
 /// Resolves the sandbox working directory: `--cwd`, else the first `--mount`
 /// virtual path, else `/`. An explicit value must be an absolute virtual path.
-fn sandbox_cwd(cwd: Option<&str>, mount_args: &[String]) -> Result<String, String> {
+fn sandbox_cwd(cwd: Option<&str>, first_mount: Option<String>) -> Result<String, String> {
     match cwd {
         Some(cwd) if cwd.starts_with('/') => Ok(cwd.to_owned()),
         Some(cwd) => Err(format!("--cwd must be an absolute virtual path, got {cwd:?}")),
-        None => match mount_args.first() {
-            Some(mount) => parse_mount(mount).map(|(_, virtual_path, _, _)| virtual_path),
-            None => Ok("/".to_owned()),
-        },
+        None => Ok(first_mount.unwrap_or_else(|| "/".to_owned())),
     }
 }
 
@@ -678,23 +676,26 @@ fn resolve_external_call(function_name: &str, args: &[MontyObject]) -> Result<Mo
 // Mount parsing
 // =============================================================================
 
-/// Builds a [`MountTable`] from CLI `-m` arguments.
+/// Builds a [`MountTable`] from CLI `-m` arguments, returning it with the
+/// first mount's virtual path (the default sandbox working directory).
 ///
 /// Returns `None` if no mounts were specified. Fails early with a descriptive
 /// error if any mount spec is malformed or the host path doesn't exist.
-fn build_mount_table(mount_args: &[String]) -> Result<Option<MountTable>, String> {
+fn build_mount_table(mount_args: &[String]) -> Result<Option<(MountTable, String)>, String> {
     if mount_args.is_empty() {
         return Ok(None);
     }
 
     let mut table = MountTable::new();
+    let mut first_virtual_path = None;
     for arg in mount_args {
         let (host_path, virtual_path, mode, write_bytes_limit) = parse_mount(arg)?;
         table
             .mount(&virtual_path, &host_path, mode, write_bytes_limit)
             .map_err(|e| format!("mount {arg}: {e}"))?;
+        first_virtual_path.get_or_insert(virtual_path);
     }
-    Ok(Some(table))
+    Ok(first_virtual_path.map(|first| (table, first)))
 }
 
 /// Parses a single mount specification string.

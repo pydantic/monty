@@ -68,7 +68,7 @@ across the session's feeds like the globals do.
 `os.getcwd()` and `Path.cwd()` report it.
 Relative paths in `open()`, `os` and `pathlib` calls are joined onto it.
 Mounts receive these paths without collapsing `.` or `..`, so they can validate every component.
-`__file__` is the script name placed under it.
+`__file__` is the script name's final component placed under it.
 `os.chdir()` moves it, and the change carries over to later feeds.
 Pass `cwd=` to switch to another absolute virtual path before a feed.
 

@@ -185,7 +185,7 @@ pub(crate) fn check_chdir_stat(obj: &MontyObject, spelled: &str) -> Result<(), R
 /// after the last `/`. Hosts answering the `Path.iterdir` callback themselves
 /// may return `str` entries instead of paths — both work.
 pub(crate) fn listdir_names(obj: MontyObject) -> Result<MontyObject, RunError> {
-    directory_entries(obj, None, None)
+    directory_entries(obj, None)
 }
 
 /// Rebuilds host entries using the caller's original relative or absolute directory path.
@@ -193,17 +193,18 @@ pub(crate) fn listdir_names(obj: MontyObject) -> Result<MontyObject, RunError> {
 /// The joins repeat the receiver once per host entry, so their total is
 /// preflighted against `tracker` in one shot before any is built.
 pub(crate) fn iterdir_paths(obj: MontyObject, path: &str, tracker: &ResourceTracker) -> Result<MontyObject, RunError> {
-    directory_entries(obj, Some(path), Some(tracker))
+    directory_entries(obj, Some((path, tracker)))
 }
 
-/// Reduces host paths to entry names, optionally joining them onto a `Path.iterdir()` receiver.
-fn directory_entries(
-    obj: MontyObject,
-    path: Option<&str>,
-    tracker: Option<&ResourceTracker>,
-) -> Result<MontyObject, RunError> {
+/// Reduces host paths to entry names, joining them onto the `Path.iterdir()`
+/// receiver when one is given (with the tracker its joins are charged to).
+fn directory_entries(obj: MontyObject, receiver: Option<(&str, &ResourceTracker)>) -> Result<MontyObject, RunError> {
     let invalid = |type_name: &str| -> RunError {
-        let operation = if path.is_some() { "Path.iterdir" } else { "os.listdir" };
+        let operation = if receiver.is_some() {
+            "Path.iterdir"
+        } else {
+            "os.listdir"
+        };
         SimpleException::new_msg(
             ExcType::RuntimeError,
             format!("invalid return type: {operation} requires the host to return a list of paths, got {type_name}"),
@@ -213,11 +214,14 @@ fn directory_entries(
     let MontyObject::List(mut items) = obj else {
         return Err(invalid(obj.type_name()));
     };
-    let directory = path.map(|path| Path::new(path.to_owned()));
-    if let (Some(path), Some(tracker)) = (path, tracker) {
-        // Each joined path adds the receiver and a separator on top of the entry.
-        tracker.check_allocation(items.len().saturating_mul(path.len() + 1))?;
-    }
+    let directory = match receiver {
+        Some((path, tracker)) => {
+            // Each joined path adds the receiver and a separator on top of the entry.
+            tracker.check_allocation(items.len().saturating_mul(path.len() + 1))?;
+            Some(Path::new(path.to_owned()))
+        }
+        None => None,
+    };
     for item in &mut items {
         match item {
             MontyObject::Path(entry) | MontyObject::String(entry) => {

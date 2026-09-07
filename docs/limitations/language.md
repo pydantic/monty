@@ -130,15 +130,17 @@ ordinary local in a separate namespace), matching CPython, except `__debug__`,
 which CPython rejects everywhere with `SyntaxError` but Monty permits as a
 local.
 
-`__file__` is the session's script name resolved against the virtual working
-directory the feed started in: `/main.py` by default, `/data/main.py` when the
-feed's first mount is `/data`, or the script name itself when it is absolute.
-Absolute script names are used verbatim, including any `.` and `..` components.
-Through the Python, JavaScript and Rust pool APIs the script name is the fixed
-session name, so `__file__` is a virtual path. The `monty` CLI passes the file
-argument as written, like `python`, so `monty /abs/script.py` reports that host
-path and `monty -c` reports `/<string>` where CPython raises `NameError`. Like
-the other dunders it is read-only, where CPython allows rebinding it.
+`__file__` is the final path component of the session's script name placed
+under the virtual working directory the feed started in: `/main.py` by
+default, `/data/main.py` when the feed's first mount is `/data`. CPython makes
+the script path absolute as given, so `python src/app.py` reports
+`/host/cwd/src/app.py`; Monty keeps only `app.py`, because the script name is a
+host-side label that may be a host path and no host directory may leak into the
+sandbox. The `monty` CLI passes its file argument as the script name, so
+`monty /abs/script.py` reports `/script.py` (or `/data/script.py` under a
+`/data` mount) and `monty -c` reports `/<string>` where CPython raises
+`NameError`. Like the other dunders it is read-only, where CPython allows
+rebinding it.
 
 Other module dunders CPython defines (`__loader__`, `__builtins__`,
 `__cached__`, `__dict__`) are not exposed; reading them falls through to the host

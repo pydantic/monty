@@ -546,8 +546,9 @@ class Monty:
 
         Arguments:
             script_name: Name used in tracebacks and error messages, and the
-                basis of the sandbox's `__file__`: the name placed under the
-                working directory the feed starts in (`/main.py` by default).
+                basis of the sandbox's `__file__`: its final path component
+                placed under the working directory the feed starts in
+                (`/main.py` by default).
             limits: Resource limits enforced inside the worker, plus `max_suspensions`,
                 which the pool enforces itself.
             type_check: Type-check each fed snippet before executing it; each

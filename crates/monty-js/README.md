@@ -48,8 +48,8 @@ Without `await using`, call `session.close()` (returns the worker to the pool)
 and `pool.close()` explicitly.
 
 `checkout({ scriptName })` names the script in tracebacks and type-checking
-diagnostics, and is what the sandbox's `__file__` places under its working
-directory (`/main.py` by default).
+diagnostics; its final path component is what the sandbox's `__file__` places
+under its working directory (`/main.py` by default).
 
 ## Inputs
 
