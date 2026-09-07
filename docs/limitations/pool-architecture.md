@@ -44,17 +44,19 @@ properties that real CPython does not provide, per the caveat above.
     itself recovers by replacing the worker.
 - **WebSocket sessions are lost in two additional ways.** A connection that
     closes mid-session raises [`MontyDisconnectError`][pydantic_monty.MontyDisconnectError]: the client cannot tell a
-    dead remote sandbox from a server-side policy drop (idle/session/turn
-    timeout, over capacity) on its own, so the error carries what the
-    server put in its WebSocket Close frame: `close_code` and `close_reason`,
-    `None` when the connection dropped without one, and `close_cause` naming the
-    policy when the code is one monty defines (`'idle_timeout'`,
-    `'session_timeout'`, `'turn_timeout'`).
-    Two codes raise something else: a memory-limit kill (4003) raises the same
-    session-ending `MemoryError` a local pool does, and a server that drained
-    while the session sat idle (4004) raises [`MontyShutdown`][pydantic_monty.MontyShutdown]
-    with no `dump`. A server that is shutting down instead answers the
-    session's next request with [`MontyShutdown`][pydantic_monty.MontyShutdown]. That request did **not** run,
+    dead remote sandbox from a server-side policy drop (an idle, session or
+    turn timeout) on its own, so the error carries what the server put in its
+    WebSocket Close frame: `close_code` and `close_reason`, `None` when the
+    connection dropped without one, and `close_cause` naming the policy when
+    the code is one monty defines (`'idle_timeout'`, `'session_timeout'`,
+    `'turn_timeout'`).
+    Two codes raise something else.
+    A memory-limit kill (4003) raises the same session-ending `MemoryError` a
+    local pool does.
+    A server that drained while the session sat idle (4004) raises
+    [`MontyShutdown`][pydantic_monty.MontyShutdown] with no `dump`.
+    A server that is shutting down with a request in flight instead answers
+    that request with [`MontyShutdown`][pydantic_monty.MontyShutdown]. That request did **not** run,
     and its `dump` (when present) restores the session onto a fresh checkout
     via `session.load_session` / `session.load_snapshot`. If the interrupted
     request was answering a suspension (external function or `os` callback),

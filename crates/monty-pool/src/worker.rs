@@ -130,17 +130,18 @@ impl WebSocketWorker {
     /// The reader task exits on the Close it read, so it is finished or about
     /// to be. The bound is for a connection that failed without one (I/O
     /// error, vanished peer), whose reader may sit in a read that never
-    /// returns; it is then aborted, as teardown would.
+    /// returns; the teardown that follows aborts it. The handle stays in
+    /// `self.reader` across the await so a caller cancelled mid-wait leaves a
+    /// task that `close`/`Drop` still abort, not a detached one.
     async fn peer_close(&mut self) -> Option<CloseFrame> {
-        let mut reader = self.reader.take()?;
-        match timeout(PEER_CLOSE_WAIT, &mut reader).await {
-            Ok(Ok(close)) => close,
-            // panicked or already aborted
-            Ok(Err(_)) => None,
-            Err(_elapsed) => {
-                reader.abort();
-                None
+        match timeout(PEER_CLOSE_WAIT, self.reader.as_mut()?).await {
+            // a finished handle must not be polled again; a panicked or
+            // aborted task has no frame
+            Ok(joined) => {
+                self.reader = None;
+                joined.ok().flatten()
             }
+            Err(_elapsed) => None,
         }
     }
 }
