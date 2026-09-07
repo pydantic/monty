@@ -69,6 +69,16 @@ impl ArgValues {
         }
     }
 
+    /// Rejects keywords before a positional-only function's arity or conversion checks.
+    pub(crate) fn reject_kwargs(self, name: &str, heap: &mut Heap) -> RunResult<Self> {
+        if self.has_kwargs() {
+            self.drop_with(heap);
+            Err(ExcType::type_error_no_kwargs(name))
+        } else {
+            Ok(self)
+        }
+    }
+
     /// Checks that exactly one positional argument was passed, returning it.
     ///
     /// On error, properly drops all contained values to maintain reference counts.

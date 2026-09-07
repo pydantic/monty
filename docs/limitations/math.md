@@ -16,20 +16,13 @@ below.
 **Integer math**: `factorial`, `gcd`, `lcm`, `comb`, `perm`.
 **Modular**: `fmod`, `remainder`, `modf`, `frexp`, `ldexp`.
 **Special**: `gamma`, `lgamma`, `erf`, `erfc`.
+**Summation / products**: `hypot`, `dist`, `fsum`, `prod`, `sumprod`, `fma`.
 
 **Constants**: `pi`, `e`, `tau`, `inf`, `nan`.
 
-## Not implemented
-
-`fsum`, `prod`, `hypot`, `dist`, `sumprod`, `nan` from arbitrary
-payloads.
-
 ## Behavioural notes
 
-- `math.asin` / `math.acos` reject inputs outside `[-1, 1]` with
-    `ValueError: "expected a number in range from -1 up to 1, got <x>"`, where
-    CPython says `"math domain error"`.
-- Domain errors (e.g. `log(-1)`) raise `ValueError: "math domain error"`,
-    matching CPython.
-- Overflow (finite input, infinite result) raises `OverflowError: "math range error"`, matching CPython.
-- `math.gamma` rejects non-positive integers (poles) with `ValueError`.
+- Real-number arguments accept floats, integers of any size, and booleans, but do not call user-defined `__float__` or
+    `__index__` methods.
+- `factorial`, `comb`, and `perm` raise `OverflowError` for results exceeding the signed 64-bit integer range.
+    `prod` and integer-only `sumprod` support arbitrary-size integer results.

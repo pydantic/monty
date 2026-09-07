@@ -14,11 +14,43 @@ import base64
 import binascii
 import datetime
 import json
+import math
 import re
 import sys
 import unicodedata
 
 is_monty = sys.platform == 'monty'
+
+# === Math aggregations: positional-only calls and keyword-only start ===
+for function, args, kwargs, message in [
+    (math.hypot, (), {'x': 1}, 'math.hypot() takes no keyword arguments'),
+    (math.hypot, ('bad',), {'x': 1}, 'math.hypot() takes no keyword arguments'),
+    (math.fsum, (), {}, 'math.fsum() takes exactly one argument (0 given)'),
+    (math.fsum, ([], []), {}, 'math.fsum() takes exactly one argument (2 given)'),
+    (math.fsum, (), {'seq': []}, 'math.fsum() takes no keyword arguments'),
+    (math.dist, (), {}, 'dist expected 2 arguments, got 0'),
+    (math.dist, ([], [], []), {}, 'dist expected 2 arguments, got 3'),
+    (math.dist, (), {'p': [], 'q': []}, 'math.dist() takes no keyword arguments'),
+    (math.sumprod, ([],), {}, 'sumprod expected 2 arguments, got 1'),
+    (math.sumprod, ([], [], []), {}, 'sumprod expected 2 arguments, got 3'),
+    (math.sumprod, (), {'p': [], 'q': []}, 'math.sumprod() takes no keyword arguments'),
+    (math.prod, (), {}, 'prod() takes exactly 1 positional argument (0 given)'),
+    (math.prod, ([], 2), {}, 'prod() takes exactly 1 positional argument (2 given)'),
+    (math.prod, (), {'iterable': []}, 'prod() takes exactly 1 positional argument (0 given)'),
+    (math.prod, ([],), {'bogus': 1}, "prod() got an unexpected keyword argument 'bogus'"),
+    (math.prod, (1,), {'bogus': 1}, "prod() got an unexpected keyword argument 'bogus'"),
+    (math.prod, ([], 2), {'bogus': 1}, 'prod() takes at most 2 arguments (3 given)'),
+    (math.prod, ([],), {'start': 1, 'bogus': 1}, 'prod() takes at most 2 arguments (3 given)'),
+    (math.fma, (), {}, 'fma expected 3 arguments, got 0'),
+    (math.fma, (1, 2, 3, 4), {}, 'fma expected 3 arguments, got 4'),
+    (math.fma, (), {'x': 1, 'y': 2, 'z': 3}, 'math.fma() takes no keyword arguments'),
+    (math.fma, ('bad', 2, 3), {'x': 1}, 'math.fma() takes no keyword arguments'),
+]:
+    try:
+        function(*args, **kwargs)
+        assert False, 'invalid math arguments must fail'
+    except TypeError as e:
+        assert str(e) == message, (str(e), message)
 
 # =====================================================================
 # === Clinic style (the default — plus `def` for pure-Python targets) ===

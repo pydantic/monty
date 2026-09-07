@@ -504,6 +504,13 @@ pub enum StaticStrings {
     Modf,
     Frexp,
     Ldexp,
+    // Summation and products
+    Hypot,
+    Dist,
+    Fsum,
+    Prod,
+    Sumprod,
+    Fma,
     // Special functions
     Gamma,
     Lgamma,
