@@ -472,7 +472,7 @@ fn hand_call_payloads_match_generated_encoding() {
     // Both receiver states: a routed call (method / `__call__`) and a plain
     // external call (absent field).
     let receivers = [Some(MontyUuid::from_u128(7)), None];
-    for (object_id, eager_coroutine) in receivers.into_iter().flat_map(|id| [(id, false), (id, true)]) {
+    for (object_id, allow_eager_await) in receivers.into_iter().flat_map(|id| [(id, false), (id, true)]) {
         let oracle_object_id = object_id.map(|uuid| oracle_uuid(&uuid));
         let hand_call = WireFunctionCall {
             function_name: "external".to_owned(),
@@ -480,7 +480,7 @@ fn hand_call_payloads_match_generated_encoding() {
             kwargs: kwargs.clone(),
             call_id: 42,
             object_id,
-            eager_coroutine,
+            allow_eager_await,
         };
         let generated_call = oracle::FunctionCall {
             function_name: "external".to_owned(),
@@ -488,7 +488,7 @@ fn hand_call_payloads_match_generated_encoding() {
             kwargs: oracle_pairs(&kwargs),
             call_id: 42,
             object_id: oracle_object_id,
-            eager_coroutine,
+            allow_eager_await,
         };
         assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
         assert_eq!(

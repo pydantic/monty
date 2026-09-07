@@ -125,7 +125,7 @@ pub struct FunctionCall {
     /// plain external function calls.
     pub object_id: Option<MontyUuid>,
     /// The host may await a coroutine and answer with [`Self::resume_eager`].
-    pub eager_coroutine: bool,
+    pub allow_eager_await: bool,
     /// Internal execution snapshot.
     snapshot: Snapshot,
 }
@@ -138,7 +138,7 @@ impl FunctionCall {
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
         object_id: Option<MontyUuid>,
-        eager_coroutine: bool,
+        allow_eager_await: bool,
         snapshot: Snapshot,
     ) -> Self {
         Self {
@@ -147,7 +147,7 @@ impl FunctionCall {
             kwargs,
             call_id,
             object_id,
-            eager_coroutine,
+            allow_eager_await,
             snapshot,
         }
     }
@@ -197,7 +197,7 @@ impl FunctionCall {
     }
 
     /// Resumes with a settled coroutine, preserving its awaitable value and exception timing.
-    /// Only use when [`Self::eager_coroutine`] is true; synchronous returns use [`Self::resume`].
+    /// Only use when [`Self::allow_eager_await`] is true; synchronous returns use [`Self::resume`].
     pub fn resume_eager(
         self,
         result: Result<MontyObject, MontyException>,
@@ -920,7 +920,7 @@ pub(crate) enum ConvertedExit {
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
         object_id: Option<MontyUuid>,
-        eager_coroutine: bool,
+        allow_eager_await: bool,
     },
     /// OS-level operation.
     OsCall {
@@ -971,7 +971,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
                 object_id: None,
-                eager_coroutine: vm.eager_coroutine(),
+                allow_eager_await: vm.allow_eager_await(),
             }
         }
         Ok(FrameExit::OsCall {
@@ -1001,7 +1001,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
                 object_id: Some(object_id),
-                eager_coroutine: vm.eager_coroutine(),
+                allow_eager_await: vm.allow_eager_await(),
             }
         }
         Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
@@ -1084,14 +1084,14 @@ pub(crate) fn build_run_progress(
             kwargs,
             call_id,
             object_id,
-            eager_coroutine,
+            allow_eager_await,
         } => Ok(RunProgress::FunctionCall(FunctionCall::new(
             function_name,
             args,
             kwargs,
             call_id,
             object_id,
-            eager_coroutine,
+            allow_eager_await,
             new_snapshot!(),
         ))),
         ConvertedExit::OsCall { function_call, call_id } => Ok(RunProgress::OsCall(OsCall::new(

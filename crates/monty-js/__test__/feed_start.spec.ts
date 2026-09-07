@@ -343,7 +343,7 @@ test('resumeAuto settles an immediately awaited promise without a FutureSnapshot
   try {
     const code = 'import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())'
     const snap = (await session.feedStart(code, { externalLookup: { go: async () => 99 } })) as FunctionSnapshot
-    t.true(snap.eagerCoroutine)
+    t.true(snap.allowEagerAwait)
     const done = (await snap.resumeAuto()) as MontyComplete
     t.is(done.output, 99)
   } finally {

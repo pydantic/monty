@@ -1646,13 +1646,13 @@ async fn async_turn_answer(
             kwargs,
             call_id,
             object_id,
-            eager_coroutine,
+            allow_eager_await,
         } => {
             let dispatched = Python::attach(|py| {
                 let _guard = callback_context.enter(py, native)?;
                 match dispatch_function_call(&function_name, object_id, &args, &kwargs, external_lookup, instances) {
                     CallResult::Sync(result) => Ok(Dispatched::Done(ext_to_resume(result)?)),
-                    CallResult::Coroutine(coro) if eager_coroutine => {
+                    CallResult::Coroutine(coro) if allow_eager_await => {
                         coroutine_future(coro, instances).map(Dispatched::Eager)
                     }
                     CallResult::Coroutine(coro) => {
