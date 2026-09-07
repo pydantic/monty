@@ -20,14 +20,7 @@ fn prewarmed() -> TypeChecker {
 }
 
 const fn backend_label() -> &'static str {
-    #[cfg(feature = "ty")]
-    {
-        "ty"
-    }
-    #[cfg(feature = "pyrefly")]
-    {
-        "pyrefly"
-    }
+    if cfg!(feature = "pyrefly") { "pyrefly" } else { "ty" }
 }
 
 /// Diagnostics are rendered by the checker, so the format is part of what the

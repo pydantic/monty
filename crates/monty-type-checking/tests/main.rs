@@ -1,4 +1,4 @@
-#![cfg(feature = "ty")]
+#![cfg(not(feature = "pyrefly"))]
 
 use std::thread;
 
