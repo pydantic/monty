@@ -88,6 +88,10 @@ These names are absent from the module namespace rather than stubbed, so they ar
     `TypeError: unhashable type: 'list'`, but `f(([1],))` says `'tuple'` where CPython says `'list'`.
     Monty's tuple hash reports the container rather than the element that refused to hash, which is visible without
     `functools` too (`hash(([1],))`).
+- **An unhashable argument makes the other arguments hash twice.** The key is hashed as a whole, and naming the
+    argument that refused it takes a second pass, so an argument whose `__hash__` has side effects runs it twice on the
+    failing call where CPython runs it once.
+    A call whose arguments all hash is unaffected: one `__hash__` per argument, as in CPython.
 - **`partial` objects carry no dunder attributes.** `p.__call__` and `p.__doc__` both raise `AttributeError`, where
     CPython has a method-wrapper and the type's docstring respectively.
 - **`partial[int]` is not subscriptable at runtime.** CPython returns a `types.GenericAlias`; Monty raises
