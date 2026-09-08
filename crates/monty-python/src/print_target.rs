@@ -22,7 +22,10 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use monty_proto::python::exc_py_to_monty;
-use monty_types::{DEFAULT_MAX_PRINT_COLLECT_BYTES, MontyException, PrintStream, check_print_collect_limit};
+use monty_types::{
+    COLLECT_STREAMS_ENTRY_OVERHEAD, DEFAULT_MAX_PRINT_COLLECT_BYTES, MontyException, PrintStream,
+    check_print_collect_limit,
+};
 use pyo3::{
     PyRef,
     exceptions::PyTypeError,
@@ -32,12 +35,6 @@ use pyo3::{
 };
 
 use crate::callback_context::{self, CallbackContext};
-
-/// Host bytes charged per retained `(stream, text)` entry beyond the payload.
-///
-/// `String` / `Vec` bookkeeping is not free: many tiny prints can exhaust the
-/// host long before payload bytes hit the cap. Charged toward `max_bytes`.
-const COLLECT_STREAMS_ENTRY_OVERHEAD: usize = 64;
 
 /// Shared collect-streams state: labelled fragments plus optional byte cap.
 #[derive(Debug)]

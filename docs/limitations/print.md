@@ -105,18 +105,22 @@ buffers. That growth is **not** covered by `ResourceLimits.max_memory`
         check is its own TypeScript implementation
         (`crates/monty-js/ts/print.ts`), not the Rust `PrintWriter`.
 - Pass `max_bytes=None` to disable the cap (trusted hosts only).
-- Python `CollectStreams` also charges a fixed per-entry overhead toward the
-    cap, since many tiny fragments would otherwise OOM the host before payload
-    bytes hit the limit. Rust `PrintWriter::CollectStreams` merges consecutive
-    same-stream fragments, so entry count stays small for normal `print()`.
+- Every `CollectStreams` also charges a fixed **64 bytes** per retained entry
+    toward the cap, since a retained entry costs vector and `String` bookkeeping
+    that is not text: without it, output alternating between the streams would
+    hold roughly 64x the host memory the cap accounts for. So the cap bounds
+    entries as well as payload, and a run collects less text than `max_bytes`
+    suggests — a fragment per entry caps out at `max_bytes / 65` of them.
+    Rust `PrintWriter::CollectStreams` merges consecutive same-stream fragments,
+    so an ordinary `print()` pays the overhead once.
 - Entries follow the chunk boundaries above, not `print()` calls: several
     prints usually collect into one entry. Set `print_flush_interval=0` to get
     one entry per completed line.
 - JS (`@pydantic/monty`): `CollectString` / `CollectStreams` accept `maxBytes`
     (camelCase), same 10 MiB default and message; `CollectStreams` charges the
-    same **64-byte** per-entry overhead as the Python host path and does **not**
-    merge consecutive same-stream fragments (unlike Rust in-process
-    `PrintWriter::CollectStreams`). Output entries are `{ stream, text }` objects
+    same **64-byte** per-entry overhead and does **not** merge consecutive
+    same-stream fragments (unlike Rust in-process
+    `PrintWriter::CollectStreams`), so it charges one per fragment. Output entries are `{ stream, text }` objects
     rather than Python tuples. The cap is a **logical UTF-8 charge**, not a hard
     V8/host-RSS bound: JS stores strings as UTF-16, so host RSS can exceed the
     stated cap.

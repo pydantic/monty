@@ -6,7 +6,10 @@
 //! Loops stay at ~256 KiB — safe, not a real OOM.
 
 use monty::MontyRun;
-use monty_types::{CollectedStreams, CompileOptions, ExcType, PrintStream, PrintWriter, ResourceTracker};
+use monty_types::{
+    COLLECT_STREAMS_ENTRY_OVERHEAD, CollectedStreams, CompileOptions, ExcType, PrintStream, PrintWriter,
+    ResourceTracker,
+};
 
 /// One KiB payload reused across prints so heap growth stays small.
 const CHUNK: &str = "A";
@@ -70,13 +73,15 @@ fn collect_streams_respects_max_bytes() {
 
     let total: usize = streams.entries().iter().map(|(_, s)| s.len()).sum();
     assert_eq!(err.exc_type(), ExcType::MemoryError);
+    // The loop stays on stdout, so one entry overhead is charged on top of the
+    // payload: the cap is reached a chunk earlier than the `CollectString` case.
     let expected = format!(
         "memory limit exceeded: {} bytes > {LIMIT_BYTES} bytes",
-        LIMIT_BYTES + CHUNK_REPS
+        COLLECT_STREAMS_ENTRY_OVERHEAD + total + CHUNK_REPS
     );
     assert_eq!(err.message(), Some(expected.as_str()));
     assert!(total <= LIMIT_BYTES, "buffer must stay at or under cap, got {total}");
-    assert_eq!(total, LIMIT_BYTES);
+    assert_eq!(total, LIMIT_BYTES - CHUNK_REPS);
 }
 
 /// Opt-out: `max_bytes=None` still allows growth past a 64 KiB would-be cap.
@@ -109,8 +114,10 @@ fn collect_string_unlimited_allows_growth_past_64kib() {
 /// running total against the entries it is meant to track.
 #[test]
 fn collect_streams_charges_both_streams_against_one_cap() {
-    // 'a' and 'b' alternate a byte at a time: 4 payload bytes plus 4 newlines,
-    // so the 7-byte cap refuses the last newline with 8 bytes.
+    // 'a' and 'b' alternate a byte at a time, so each of the four writes starts
+    // an entry: 4 overheads plus 8 payload bytes. A cap one byte short of that
+    // refuses the last newline.
+    const CAP: usize = 4 * COLLECT_STREAMS_ENTRY_OVERHEAD + 7;
     let ex = monty_run("import sys\nfor i in range(2):\n    print('a')\n    print('b', file=sys.stderr)\n");
     let mut streams = CollectedStreams::default();
 
@@ -118,12 +125,13 @@ fn collect_streams_charges_both_streams_against_one_cap() {
         .run(
             vec![],
             ResourceTracker::default(),
-            PrintWriter::CollectStreams(&mut streams, Some(7)),
+            PrintWriter::CollectStreams(&mut streams, Some(CAP)),
         )
         .expect_err("expected MemoryError once both streams together pass the cap");
 
     assert_eq!(err.exc_type(), ExcType::MemoryError);
-    assert_eq!(err.message(), Some("memory limit exceeded: 8 bytes > 7 bytes"));
+    let expected = format!("memory limit exceeded: {} bytes > {CAP} bytes", CAP + 1);
+    assert_eq!(err.message(), Some(expected.as_str()));
     assert_eq!(
         streams.entries(),
         [
@@ -188,9 +196,11 @@ fn collect_string_max_bytes_rejects_newline_push() {
     assert_eq!(output, "a");
 }
 
-/// Same as the string case, but through CollectStreams' char-append path.
+/// Same as the string case, but through CollectStreams' char-append path: the
+/// cap has room for one entry and its byte, so the newline is what crosses it.
 #[test]
 fn collect_streams_max_bytes_rejects_newline_push() {
+    const CAP: usize = COLLECT_STREAMS_ENTRY_OVERHEAD + 1;
     let ex = monty_run("print('a')");
     let mut streams = CollectedStreams::default();
 
@@ -198,11 +208,39 @@ fn collect_streams_max_bytes_rejects_newline_push() {
         .run(
             vec![],
             ResourceTracker::default(),
-            PrintWriter::CollectStreams(&mut streams, Some(1)),
+            PrintWriter::CollectStreams(&mut streams, Some(CAP)),
         )
         .expect_err("expected MemoryError on newline push past max_bytes");
 
     assert_eq!(err.exc_type(), ExcType::MemoryError);
-    assert_eq!(err.message(), Some("memory limit exceeded: 2 bytes > 1 bytes"));
+    let expected = format!("memory limit exceeded: {} bytes > {CAP} bytes", CAP + 1);
+    assert_eq!(err.message(), Some(expected.as_str()));
     assert_eq!(streams.entries(), [(PrintStream::Stdout, "a".to_owned())]);
+}
+
+/// The overhead is what stops a stream-switching run from holding far more host
+/// memory than its text: every fragment starts an entry, so the cap bounds the
+/// entries retained rather than the handful of bytes printed.
+#[test]
+fn collect_streams_bounds_entries_not_just_payload() {
+    const CAP: usize = 4 * 1024;
+    /// Each fragment is one byte and starts its own entry.
+    const PER_ENTRY: usize = COLLECT_STREAMS_ENTRY_OVERHEAD + 1;
+    let ex = monty_run(
+        "import sys\nfor _ in range(200):\n    print('a', end='')\n    print('b', end='', file=sys.stderr)\n",
+    );
+    let mut streams = CollectedStreams::default();
+
+    let err = ex
+        .run(
+            vec![],
+            ResourceTracker::default(),
+            PrintWriter::CollectStreams(&mut streams, Some(CAP)),
+        )
+        .expect_err("expected MemoryError once the per-entry charge fills the cap");
+
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
+    assert_eq!(streams.entries().len(), CAP / PER_ENTRY);
+    let payload: usize = streams.entries().iter().map(|(_, s)| s.len()).sum();
+    assert_eq!(payload, CAP / PER_ENTRY);
 }

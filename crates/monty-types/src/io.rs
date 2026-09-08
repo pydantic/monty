@@ -16,6 +16,14 @@ use crate::{
 /// Pass `max_bytes: None` to opt out on trusted hosts.
 pub const DEFAULT_MAX_PRINT_COLLECT_BYTES: usize = 10 * 1024 * 1024;
 
+/// Host bytes charged for each retained `(stream, text)` entry beyond its text.
+///
+/// A retained entry costs about 32 bytes in the vector plus its `String`'s own
+/// allocation, none of which is text. Charging only the text would let a run
+/// that starts a fresh entry per byte — one that alternates between the two
+/// streams — occupy roughly 64x the host memory the cap accounts for.
+pub const COLLECT_STREAMS_ENTRY_OVERHEAD: usize = 64;
+
 /// Identifies the output stream for a single print fragment.
 ///
 /// `print()` writes to `Stdout` unless it is given `file=sys.stderr`, which is
@@ -67,7 +75,9 @@ pub enum PrintWriter<'a> {
     /// however many fragments it wrote, and one that alternates collects one
     /// per run.
     ///
-    /// Second field: max collected bytes across all entries (`None` = unlimited).
+    /// Second field: the cap the collector's charge is checked against (`None`
+    /// = unlimited), which counts [`COLLECT_STREAMS_ENTRY_OVERHEAD`] per entry
+    /// as well as the text.
     CollectStreams(&'a mut CollectedStreams, Option<usize>),
     /// Delegate to a custom callback.
     Callback(&'a mut dyn PrintWriterCallback),
@@ -189,9 +199,9 @@ impl PrintWriter<'_> {
 }
 
 /// The buffer behind [`PrintWriter::CollectStreams`]: `(stream, text)` entries
-/// plus the byte total their cap is checked against.
+/// plus the running charge their cap is checked against.
 ///
-/// The total is carried rather than re-derived because the cap is checked on
+/// The charge is carried rather than re-derived because the cap is checked on
 /// every fragment: summing the entries each time is O(entries), which a run
 /// alternating between the streams turns into quadratic work, since each switch
 /// starts a new entry. `pydantic_monty`'s collector keeps the same running
@@ -199,8 +209,9 @@ impl PrintWriter<'_> {
 #[derive(Debug, Default)]
 pub struct CollectedStreams {
     entries: Vec<(PrintStream, String)>,
-    /// UTF-8 bytes across `entries`, kept in step with every append.
-    bytes: usize,
+    /// Text bytes plus [`COLLECT_STREAMS_ENTRY_OVERHEAD`] per entry, kept in
+    /// step with every append.
+    charged_bytes: usize,
 }
 
 impl CollectedStreams {
@@ -219,7 +230,8 @@ impl CollectedStreams {
     /// Appends a string fragment, merging into the trailing entry when the
     /// stream matches.
     fn push_str(&mut self, stream: PrintStream, text: &str, max_bytes: Option<usize>) -> Result<(), MontyException> {
-        self.charge(text.len(), max_bytes)?;
+        let starts_entry = self.starts_entry(stream);
+        self.charge(text.len(), starts_entry, max_bytes)?;
         match self.entries.last_mut() {
             Some((s, existing)) if *s == stream => existing.push_str(text),
             _ => self.entries.push((stream, text.to_owned())),
@@ -230,7 +242,8 @@ impl CollectedStreams {
     /// Appends a single character, merging into the trailing entry when the
     /// stream matches.
     fn push_char(&mut self, stream: PrintStream, ch: char, max_bytes: Option<usize>) -> Result<(), MontyException> {
-        self.charge(ch.len_utf8(), max_bytes)?;
+        let starts_entry = self.starts_entry(stream);
+        self.charge(ch.len_utf8(), starts_entry, max_bytes)?;
         match self.entries.last_mut() {
             Some((s, existing)) if *s == stream => existing.push(ch),
             _ => self.entries.push((stream, String::from(ch))),
@@ -238,11 +251,23 @@ impl CollectedStreams {
         Ok(())
     }
 
-    /// Checks `add` bytes against the cap and books them, leaving the total
-    /// untouched when the cap refuses them.
-    fn charge(&mut self, add: usize, max_bytes: Option<usize>) -> Result<(), MontyException> {
-        check_print_collect_limit(self.bytes, add, max_bytes)?;
-        self.bytes = self.bytes.saturating_add(add);
+    /// Whether a fragment on `stream` would start an entry rather than extend
+    /// the trailing one.
+    fn starts_entry(&self, stream: PrintStream) -> bool {
+        !matches!(self.entries.last(), Some((s, _)) if *s == stream)
+    }
+
+    /// Checks a fragment's `add` text bytes against the cap and books them,
+    /// with [`COLLECT_STREAMS_ENTRY_OVERHEAD`] on top when it starts an entry.
+    /// The charge is left untouched when the cap refuses the fragment.
+    fn charge(&mut self, add: usize, starts_entry: bool, max_bytes: Option<usize>) -> Result<(), MontyException> {
+        let add = if starts_entry {
+            add.saturating_add(COLLECT_STREAMS_ENTRY_OVERHEAD)
+        } else {
+            add
+        };
+        check_print_collect_limit(self.charged_bytes, add, max_bytes)?;
+        self.charged_bytes = self.charged_bytes.saturating_add(add);
         Ok(())
     }
 }
