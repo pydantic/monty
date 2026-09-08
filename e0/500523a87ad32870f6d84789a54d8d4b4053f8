@@ -1,0 +1,39 @@
+crates/monty/src/builtins/pow.rs
+  s_34e216fc88bcd9::t_57997049ce0ab7 13-16,123,126,179,209,234
+  s_34e216fc88bcd9::t_3cc5b8fdc4c828 17,124,127,129-131
+crates/monty/src/types/type.rs
+  s_34e216fc88bcd9::t_57997049ce0ab7 21,579,582
+crates/monty/test_cases/float__pow.py
+  s_34e216fc88bcd9::t_3cc5b8fdc4c828 1-76
+crates/monty/src/types/long_int.rs
+  s_34e216fc88bcd9::t_57997049ce0ab7 19,164-170,449,479,491,504-505,525,544,560-562,564,566,570,574,576-579,582,594-595,616,634,637,643,812-820,823-869,871,873-874
+  s_34e216fc88bcd9::t_3cc5b8fdc4c828 30,638,770,787
+crates/monty/src/value.rs
+  s_34e216fc88bcd9::t_3cc5b8fdc4c828 1057-1059,1092,2546-2563
+  s_34e216fc88bcd9::t_57997049ce0ab7 33-34,777-778,780-785,880,887,894,2523-2545,2572
+crates/monty/src/builtins/divmod.rs
+  s_34e216fc88bcd9::t_57997049ce0ab7 15,79-84,86-88,102-111
+crates/monty/test_cases/int__bigint.py
+  s_34e216fc88bcd9::t_f0a8f6e4c4e574 487-610
+docs/limitations/builtins.md
+  s_34e216fc88bcd9::t_0b5cd99f53a69d 104-107
+crates/monty/src/exception_private.rs
+  s_34e216fc88bcd9::t_57997049ce0ab7 1547-1552
+  s_34e216fc88bcd9::t_3cc5b8fdc4c828 1541-1546
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e0500523a87ad32870f6d84789a54d8d4b4053f8",
+  "prompts": {},
+  "sessions": {
+    "s_34e216fc88bcd9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3aaba303-7081-4f93-bb35-94c0503fa539",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
