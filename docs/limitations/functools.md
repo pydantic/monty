@@ -90,9 +90,11 @@ These names are absent from the module namespace rather than stubbed, so they ar
     `functools` too (`hash(([1],))`).
 - **`partial` objects carry no dunder attributes.** `p.__call__` and `p.__doc__` both raise `AttributeError`, where
     CPython has a method-wrapper and the type's docstring respectively.
-- **A `partial` or cached function crossing the host boundary marshals as its `repr`.** Python and JavaScript hosts
-    receive `MontyObject::repr("functools.partial(...)")` rather than a callable, since neither side can call back into
-    a value that only exists inside the sandbox.
+- **A `partial` or cached function crossing the host boundary marshals as its `repr`.** Neither side can call back
+    into a value that only exists inside the sandbox, so Python and JavaScript hosts receive
+    `MontyObject::repr("functools.partial(...)")` for a partial and
+    `MontyObject::repr("<functools._lru_cache_wrapper object at 0x…>")` for a cached function, rather than a callable.
+    The two type objects do cross as themselves, `functools.partial` and `functools._lru_cache_wrapper`.
 
 ## Notes
 
