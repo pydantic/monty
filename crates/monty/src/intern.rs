@@ -1170,6 +1170,28 @@ pub enum StaticStrings {
     Prod,
     Sumprod,
     Fma,
+
+    // ==========================
+    // dataclasses module strings
+    // Appended, per the "new variants go at the end" rule above.
+    /// `dataclasses.field()` function, and the `Field` type name.
+    #[strum(serialize = "field")]
+    Field,
+    /// `dataclasses.MISSING` — the sentinel for an argument not given, since
+    /// `None` is a legitimate default.
+    #[strum(serialize = "MISSING")]
+    Missing,
+    // `field()` keyword arguments not already spelled above (`default`,
+    // `default_factory`, `init`, `repr` and `kw_only` are shared).
+    /// `field(hash=...)`.
+    Hash,
+    /// `field(compare=...)`.
+    Compare,
+    /// `field(metadata=...)`.
+    Metadata,
+    /// `__post_init__` — the hook the synthesized `__init__` calls last.
+    #[strum(serialize = "__post_init__")]
+    PostInit,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

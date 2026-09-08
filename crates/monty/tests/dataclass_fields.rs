@@ -58,21 +58,11 @@ fn field_repr_renders_missing_as_a_bare_name() {
     );
 }
 
-/// A required field's default *is* `MISSING` in CPython; with no such object,
-/// Monty reports the gap rather than inventing a value.
-#[test]
-fn missing_default_is_not_implemented() {
-    assert_snapshot!(
-        expect_error("Point.__dataclass_fields__['x'].default"),
-        @"Field.default is not yet supported, dataclasses.MISSING is not implemented"
-    );
-}
-
 /// The `Field` attributes whose values need an object Monty does not have.
+/// `default`/`default_factory` are no longer among them: `MISSING` exists.
 #[test]
 fn unmodelled_field_attributes_are_not_implemented() {
     for (attr, missing) in [
-        ("default_factory", "dataclasses.MISSING"),
         ("metadata", "types.MappingProxyType"),
         ("_field_type", "dataclasses._FIELD"),
     ] {

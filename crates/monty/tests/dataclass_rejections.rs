@@ -19,28 +19,15 @@ fn expect_error(code: &str) -> String {
     }
 }
 
-#[test]
-fn post_init_is_rejected() {
-    // CPython calls `__post_init__`; Monty would silently skip it, leaving the
-    // instance half-initialised, so the class is refused instead.
-    let err = expect_error(
-        r"
-from dataclasses import dataclass
-
-@dataclass
-class R:
-    x: int
-    def __post_init__(self):
-        self.x = 99
-",
-    );
-    assert_snapshot!(err, @r#"
-    Traceback (most recent call last):
-      File "test.py", line 4, in <module>
-        @dataclass
-         ~~~~~~~~~
-    NotImplementedError: dataclass() does not yet support __post_init__ in a class body, which would be silently skipped
-    "#);
+/// Runs `code` and returns just the exception message, for cases checked in a
+/// loop where a per-case traceback snapshot would say nothing extra.
+fn expect_message(code: &str) -> String {
+    let run =
+        MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("code should compile");
+    match run.run_no_limits(vec![]) {
+        Ok(value) => panic!("expected an exception, got {value:?}"),
+        Err(err) => err.message().map_or_else(|| err.to_string(), ToOwned::to_owned),
+    }
 }
 
 #[test]
@@ -86,6 +73,44 @@ class F:
          ~~~~~~~~~~~~~~~~~~~~~
     NotImplementedError: dataclass() does not yet support the order option
     "#);
+}
+
+/// `field()` refuses each argument it cannot honour, by name and at the call
+/// itself. `init`/`repr`/`compare` are among them: nothing consults them when
+/// the dunders are synthesized, so accepting `init=False` would silently give
+/// the field an `__init__` parameter anyway.
+#[test]
+fn unimplemented_field_argument_names_itself() {
+    let err = expect_error(
+        r"
+from dataclasses import dataclass, field
+
+@dataclass
+class F:
+    x: int = field(init=False, default=1)
+",
+    );
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "test.py", line 5, in <module>
+        class F:
+            x: int = field(init=False, default=1)
+      File "test.py", line 6, in F
+        x: int = field(init=False, default=1)
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    NotImplementedError: field() does not yet support the init argument
+    "#);
+
+    for (arg, value) in [
+        ("repr", "False"),
+        ("hash", "True"),
+        ("compare", "False"),
+        ("metadata", "{}"),
+        ("kw_only", "True"),
+    ] {
+        let err = expect_message(&format!("from dataclasses import field\nfield({arg}={value})\n"));
+        assert_eq!(err, format!("field() does not yet support the {arg} argument"));
+    }
 }
 
 /// A quoted `ClassVar` is excluded from the fields, matching what CPython does
