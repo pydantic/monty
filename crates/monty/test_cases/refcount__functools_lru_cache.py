@@ -47,14 +47,18 @@ dropped = None
 # whose reference the cache no longer holds. `shared` ends at 3: its binding and
 # the two entries the two-entry cache keeps.
 shared = ('s',)
+calls = []
+reentered = []
 
 
 def constant(x):
+    # Recorded so `Reentrant.__eq__` knows which call is in flight: the wrapped
+    # call runs between the lookup that missed and the store that follows.
+    calls.append(x.v)
     return shared
 
 
 colliding = functools.lru_cache(maxsize=2)(constant)
-eq_calls = [0]
 
 
 class Reentrant:
@@ -65,11 +69,12 @@ class Reentrant:
         return 3
 
     def __eq__(self, other):
-        eq_calls[0] += 1
-        # The eighth comparison is the one inside the insertion's own probe;
-        # reaching that branch depends on the dict's probe order, so a change
-        # there means picking the count again rather than dropping the case.
-        if eq_calls[0] == 8:
+        # Making room happens between the store's own lookup and its insertion,
+        # so a comparison while the wrapped call for `Reentrant(2)` is in flight
+        # and the cache is one entry short belongs to that insertion's probe.
+        # Inserting the key it is about to write makes the insertion collide.
+        if calls and calls[-1] == 2 and colliding.cache_info().currsize == 1 and not reentered:
+            reentered.append(True)
             colliding(Reentrant(2))
         return self.v == other.v
 
@@ -77,6 +82,7 @@ class Reentrant:
 colliding(Reentrant(0))
 colliding(Reentrant(1))
 colliding(Reentrant(2))
+assert reentered == [True], 'expected the insertion to be re-entered'
 
 len(held)
-# ref-counts={'functools': 1, 'wrapped': 3, 'cached': 1, 'key': 3, 'held': 2, 'small': 1, 'evicted': 1, 'cyclic': 2, 'shared': 3, 'colliding': 1, 'eq_calls': 1, 'Reentrant': 3}
+# ref-counts={'functools': 1, 'wrapped': 3, 'cached': 1, 'key': 3, 'held': 2, 'small': 1, 'evicted': 1, 'cyclic': 2, 'shared': 3, 'colliding': 1, 'calls': 1, 'reentered': 1, 'Reentrant': 3}
