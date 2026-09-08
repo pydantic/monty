@@ -52,7 +52,7 @@ use crate::{
     types::{
         Dict, LongInt, PyTrait, SessionRandom,
         file::{apply_buffer_store, apply_open_name, apply_write_position},
-        lru_cache::{CacheStore, store_results},
+        lru_cache::{CacheStore, CacheStores, store_results},
         random::SEED_BYTES,
         str::allocate_string,
     },
@@ -418,7 +418,7 @@ pub struct CallFrame<'code> {
     /// entry owns a reference to its cache and to the key, so every path that
     /// abandons a frame — a normal return, an unwind, task teardown — must
     /// release them exactly once (see [`VM::cleanup_frame_state`]).
-    cache_stores: Vec<CacheStore>,
+    cache_stores: CacheStores,
 }
 
 /// Narrows a VM stack index to the frame's `u32` field.
@@ -449,7 +449,7 @@ impl<'code> CallFrame<'code> {
             is_parked: false,
             namespace: None,
             is_initializer: false,
-            cache_stores: Vec::new(),
+            cache_stores: CacheStores::default(),
         }
     }
 
@@ -506,7 +506,7 @@ impl<'code> CallFrame<'code> {
             is_parked: false,
             namespace,
             is_initializer: false,
-            cache_stores: Vec::new(),
+            cache_stores: CacheStores::default(),
         }
     }
 }
@@ -651,7 +651,7 @@ pub struct SerializedFrame {
     /// `CallFrame.cache_stores`). Round-trip for the same reason
     /// `is_initializer` does: a cached function may suspend mid-call.
     #[serde(default)]
-    cache_stores: Vec<CacheStore>,
+    cache_stores: CacheStores,
 }
 
 impl CallFrame<'_> {
