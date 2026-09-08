@@ -2,6 +2,7 @@
 # Each section demonstrates a different category of type error.
 # ===
 
+import functools
 import sys
 from typing import TypedDict, assert_type
 
@@ -134,3 +135,8 @@ def loop_over_dict_items(mapping: dict[str, int]) -> None:
 
 
 print(sys.copyright)
+
+
+# The cached-wrapper stub names its `cache_info()` return type the way typeshed
+# does, `_CacheInfo`; neither CPython nor Monty has a public `CacheInfo`.
+print(functools.CacheInfo)

@@ -21,8 +21,16 @@
 # `Generic` leaves the class subscriptable at check time either way.
 #
 # `cache_parameters()` is a plain dict rather than upstream's TypedDict, and
-# `CacheInfo` a tuple subclass rather than a NamedTuple, so both stay within the
-# stub surface Monty's checker reads.
+# `_CacheInfo` a tuple subclass rather than a NamedTuple, so both stay within
+# the stub surface Monty's checker reads. Both it and `_lru_cache_wrapper` keep
+# typeshed's private names: they name what `cache_info()` and the decorators
+# return, and are not attributes of the module — CPython has them, Monty does
+# not, and a public `CacheInfo` would type check and then raise
+# `AttributeError` on both.
+#
+# `_lru_cache_wrapper.__call__` takes `*args: Hashable` as upstream does, which
+# checks what `lru_cache` requires of an argument rather than the wrapped
+# function's signature; a `ParamSpec` would type the parameters and lose that.
 
 from collections.abc import Callable, Hashable, Iterable
 from typing import Any, Generic, TypeVar, overload
@@ -47,7 +55,7 @@ class partial(Generic[_T]):
     def __new__(cls, func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> Self: ...
     def __call__(self, /, *args: Any, **kwargs: Any) -> _T: ...
 
-class CacheInfo(tuple[int, int, int | None, int]):
+class _CacheInfo(tuple[int, int, int | None, int]):
     @property
     def hits(self) -> int: ...
     @property
@@ -60,7 +68,7 @@ class CacheInfo(tuple[int, int, int | None, int]):
 class _lru_cache_wrapper(Generic[_T]):
     __wrapped__: Callable[..., _T]
     def __call__(self, *args: Hashable, **kwargs: Hashable) -> _T: ...
-    def cache_info(self) -> CacheInfo: ...
+    def cache_info(self) -> _CacheInfo: ...
     def cache_clear(self) -> None: ...
     def cache_parameters(self) -> dict[str, Any]: ...
 

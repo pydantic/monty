@@ -612,6 +612,19 @@ assert_type(list(iter(lambda: 0, 0)), list[int])
 # itself, so the return type is not the stub's to get wrong.
 partial_ann: functools.partial[list[int]] = functools.partial(get_list_int)
 
+
+# The cached wrapper's return type comes from the wrapped function, and
+# `cache_info()` from the stub's `_CacheInfo`.
+@functools.cache
+def cached_double(n: int) -> int:
+    return n * 2
+
+
+assert_type(cached_double(2), int)
+assert_type(cached_double.cache_info().hits, int)
+assert_type(cached_double.cache_info().currsize, int)
+assert_type(cached_double.__wrapped__(2), int)
+
 # Loop variables keep their element type for every iterable, not just lists
 for x_list in get_list_int():
     assert_type(x_list, int)
