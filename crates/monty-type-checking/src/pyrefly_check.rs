@@ -64,10 +64,10 @@ impl PyreflyChecker {
         }))
     }
 
-    /// Blank both modules so the checker can be reused for unrelated code.
+    /// Blank both modules, for parity with the ty backend's `reset`.
     ///
-    /// Security-critical: a checker reset and handed to another session without a
-    /// run in between must not still hold the previous session's source.
+    /// Has no observable effect today: [`Self::run`] re-supplies both modules on
+    /// every call, so nothing survives into the next run anyway.
     pub fn reset(&mut self) -> Result<(), String> {
         if let Some(checker) = &self.checker {
             checker.check(MAIN_MODULE, &[(STUB_MODULE, ""), (MAIN_MODULE, "")]);

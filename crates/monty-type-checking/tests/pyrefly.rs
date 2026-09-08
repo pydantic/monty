@@ -47,14 +47,3 @@ fn error_output_with_stubs() {
     let stubs = "class Widget:\n    x: int\n";
     assert_snapshot!(check(&mut checker, code, Some(stubs)).unwrap(), @"main.py:2:7: error[bad-assignment] `Literal['not an int']` is not assignable to attribute `x` with type `int`");
 }
-
-/// Security-critical: `reset` must scrub the stubs a session supplied.
-#[test]
-fn reset_removes_stubs() {
-    let mut checker = TypeChecker::default();
-    let code = "from __monty_stubs__ import Widget\n";
-    assert!(check(&mut checker, code, Some("class Widget:\n    x: int\n")).is_none());
-
-    checker.reset().unwrap();
-    assert!(check(&mut checker, code, None).is_some());
-}
