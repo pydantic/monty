@@ -1273,25 +1273,29 @@ impl Checkout {
             }
             match event.kind {
                 Some(pb::child_event::Kind::Print(print)) => {
-                    let stream = match print.stream() {
-                        pb::PrintStream::Stderr => PrintStream::Stderr,
-                        pb::PrintStream::Stdout | pb::PrintStream::Unspecified => PrintStream::Stdout,
-                    };
                     #[cfg(feature = "telemetry")]
                     let context = self.callback_context();
-                    let future = {
+                    // One event can carry several runs: hand each to the host
+                    // in order, so the callback shape stays per-stream.
+                    for segment in &print.segments {
+                        let stream = match segment.stream() {
+                            pb::PrintStream::Stderr => PrintStream::Stderr,
+                            pb::PrintStream::Stdout | pb::PrintStream::Unspecified => PrintStream::Stdout,
+                        };
+                        let future = {
+                            #[cfg(feature = "telemetry")]
+                            let _context = context.has_active_span().then(|| context.clone().attach());
+                            on_print(stream, &segment.text)
+                        };
                         #[cfg(feature = "telemetry")]
-                        let _context = context.has_active_span().then(|| context.clone().attach());
-                        on_print(stream, &print.text)
-                    };
-                    #[cfg(feature = "telemetry")]
-                    if context.has_active_span() {
-                        future.with_context(context).await;
-                    } else {
+                        if context.has_active_span() {
+                            future.with_context(context.clone()).await;
+                        } else {
+                            future.await;
+                        }
+                        #[cfg(not(feature = "telemetry"))]
                         future.await;
                     }
-                    #[cfg(not(feature = "telemetry"))]
-                    future.await;
                 }
                 Some(pb::child_event::Kind::FunctionCall(call)) => {
                     self.pending = Some(Pending::Call {

@@ -18,7 +18,8 @@ implementation**.
 - `ResourceTracker` / `ResourceLimits` — the resource tracker the
   interpreter uses to enforce time/memory/recursion limits, plus the
   `max_suspensions` budget hosts enforce themselves.
-- `PrintStream` / `PrintWriter` — `print()` output capture.
+- `PrintStream` / `PrintWriter` / `CollectedStreams` — `print()` output
+  capture, and the labelled buffer behind `PrintWriter::CollectStreams`.
 - `CompileOptions`, `ExtFunctionResult`, `NameLookupResult`, `FileMode`, and
   the CPython-compatible formatting helpers behind their `repr()`s.
 

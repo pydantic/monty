@@ -42,7 +42,7 @@ let result = runner.run(vec![MontyObject::Int(10)], ResourceTracker::default(), 
 assert_eq!(result, MontyObject::Int(55));
 ```
 
-Errors are returned as `MontyException`, with a traceback matching what CPython would produce. `PrintWriter` controls where `print()` output goes: `Stdout`, `Disabled`, or collected into a `String` / `(stream, text)` tuples for the host to inspect.
+Errors are returned as `MontyException`, with a traceback matching what CPython would produce. `PrintWriter` controls where `print()` output goes: `Stdout`, `Disabled`, or collected for the host to inspect — into a `String`, or into a `CollectedStreams` buffer whose `entries()` label each run `stdout` or `stderr`.
 
 ## Resource limits
 

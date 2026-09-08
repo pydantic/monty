@@ -6,7 +6,7 @@
 //! Loops stay at ~256 KiB — safe, not a real OOM.
 
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, PrintStream, PrintWriter, ResourceTracker};
+use monty_types::{CollectedStreams, CompileOptions, ExcType, PrintStream, PrintWriter, ResourceTracker};
 
 /// One KiB payload reused across prints so heap growth stays small.
 const CHUNK: &str = "A";
@@ -58,7 +58,7 @@ fn collect_string_respects_max_bytes() {
 #[test]
 fn collect_streams_respects_max_bytes() {
     let ex = monty_run(print_loop_code());
-    let mut streams: Vec<(PrintStream, String)> = Vec::new();
+    let mut streams = CollectedStreams::default();
 
     let err = ex
         .run(
@@ -68,7 +68,7 @@ fn collect_streams_respects_max_bytes() {
         )
         .expect_err("expected MemoryError when collect buffer exceeds max_bytes");
 
-    let total: usize = streams.iter().map(|(_, s)| s.len()).sum();
+    let total: usize = streams.entries().iter().map(|(_, s)| s.len()).sum();
     assert_eq!(err.exc_type(), ExcType::MemoryError);
     let expected = format!(
         "memory limit exceeded: {} bytes > {LIMIT_BYTES} bytes",
@@ -104,12 +104,43 @@ fn collect_string_unlimited_allows_growth_past_64kib() {
     );
 }
 
-/// Covers `PrintWriter::collect_streams` and `stdout_push` → `append_streams_char`
+/// The cap charges both streams against one total, and a refused fragment books
+/// nothing. Each switch starts a new entry, so this is also what pins the
+/// running total against the entries it is meant to track.
+#[test]
+fn collect_streams_charges_both_streams_against_one_cap() {
+    // 'a' and 'b' alternate a byte at a time: 4 payload bytes plus 4 newlines,
+    // so the 7-byte cap refuses the last newline with 8 bytes.
+    let ex = monty_run("import sys\nfor i in range(2):\n    print('a')\n    print('b', file=sys.stderr)\n");
+    let mut streams = CollectedStreams::default();
+
+    let err = ex
+        .run(
+            vec![],
+            ResourceTracker::default(),
+            PrintWriter::CollectStreams(&mut streams, Some(7)),
+        )
+        .expect_err("expected MemoryError once both streams together pass the cap");
+
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
+    assert_eq!(err.message(), Some("memory limit exceeded: 8 bytes > 7 bytes"));
+    assert_eq!(
+        streams.entries(),
+        [
+            (PrintStream::Stdout, "a\n".to_owned()),
+            (PrintStream::Stderr, "b\n".to_owned()),
+            (PrintStream::Stdout, "a\n".to_owned()),
+            (PrintStream::Stderr, "b".to_owned()),
+        ]
+    );
+}
+
+/// Covers `PrintWriter::collect_streams` and `stdout_push` → `CollectedStreams::push_char`
 /// (the `end=''` loop tests never push a terminator).
 #[test]
 fn collect_streams_helper_merges_newline_push() {
     let ex = monty_run("print('hi')");
-    let mut streams: Vec<(PrintStream, String)> = Vec::new();
+    let mut streams = CollectedStreams::default();
 
     ex.run(
         vec![],
@@ -118,15 +149,15 @@ fn collect_streams_helper_merges_newline_push() {
     )
     .expect("default-capped collect_streams should accept a short print");
 
-    assert_eq!(streams, vec![(PrintStream::Stdout, "hi\n".to_owned())]);
+    assert_eq!(streams.entries(), [(PrintStream::Stdout, "hi\n".to_owned())]);
 }
 
 /// Bare `print()` only `stdout_push`es `'\n'` — exercises the empty-buffer branch
-/// of `append_streams_char`.
+/// of `CollectedStreams::push_char`.
 #[test]
 fn collect_streams_empty_print_pushes_newline_entry() {
     let ex = monty_run("print()");
-    let mut streams: Vec<(PrintStream, String)> = Vec::new();
+    let mut streams = CollectedStreams::default();
 
     ex.run(
         vec![],
@@ -135,7 +166,7 @@ fn collect_streams_empty_print_pushes_newline_entry() {
     )
     .expect("empty print should succeed");
 
-    assert_eq!(streams, vec![(PrintStream::Stdout, "\n".to_owned())]);
+    assert_eq!(streams.entries(), [(PrintStream::Stdout, "\n".to_owned())]);
 }
 
 /// Cap of 1 byte: `print('a')` writes `'a'` then fails on the newline push.
@@ -161,7 +192,7 @@ fn collect_string_max_bytes_rejects_newline_push() {
 #[test]
 fn collect_streams_max_bytes_rejects_newline_push() {
     let ex = monty_run("print('a')");
-    let mut streams: Vec<(PrintStream, String)> = Vec::new();
+    let mut streams = CollectedStreams::default();
 
     let err = ex
         .run(
@@ -173,5 +204,5 @@ fn collect_streams_max_bytes_rejects_newline_push() {
 
     assert_eq!(err.exc_type(), ExcType::MemoryError);
     assert_eq!(err.message(), Some("memory limit exceeded: 2 bytes > 1 bytes"));
-    assert_eq!(streams, vec![(PrintStream::Stdout, "a".to_owned())]);
+    assert_eq!(streams.entries(), [(PrintStream::Stdout, "a".to_owned())]);
 }

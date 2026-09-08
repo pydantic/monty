@@ -268,14 +268,18 @@ impl Recorder {
         }
         match &event.kind {
             Some(pb::child_event::Kind::Print(p)) => {
-                let (text, cut) = truncate_str(&p.text);
-                logfire::info!(
-                    parent: self.context_span(),
-                    "print {stream}",
-                    stream = print_stream(p.stream),
-                    text = text,
-                    length_limit_exceeded = cut.then_some(true),
-                );
+                // One record per run rather than per event: a run is the
+                // largest span of output that has a single stream to name.
+                for segment in &p.segments {
+                    let (text, cut) = truncate_str(&segment.text);
+                    logfire::info!(
+                        parent: self.context_span(),
+                        "print {stream}",
+                        stream = print_stream(segment.stream),
+                        text = text,
+                        length_limit_exceeded = cut.then_some(true),
+                    );
+                }
             }
             Some(pb::child_event::Kind::FunctionCall(c)) => {
                 let (args, kwargs, args_cut) = render_call_arguments(c);
