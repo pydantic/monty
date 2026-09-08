@@ -28,16 +28,21 @@
 # not, and a public `CacheInfo` would type check and then raise
 # `AttributeError` on both.
 #
-# `_lru_cache_wrapper.__call__` takes `*args: Hashable` as upstream does, which
-# checks what `lru_cache` requires of an argument rather than the wrapped
-# function's signature; a `ParamSpec` would type the parameters and lose that.
+# `_lru_cache_wrapper` is parameterized by a `ParamSpec`, where upstream takes
+# `*args: Hashable`: a cached function keeps its signature, so a wrong argument
+# type, a wrong arity or a misspelled keyword is still an error at the call
+# site. Upstream's bound only ever helps where the annotation is itself
+# unhashable, and the cost of dropping it is that one such function —
+# `@cache def f(x: list[int])`, which no argument could ever cache — type
+# checks and raises `TypeError: unhashable type: 'list'` at runtime instead.
 
-from collections.abc import Callable, Hashable, Iterable
-from typing import Any, Generic, TypeVar, overload
+from collections.abc import Callable, Iterable
+from typing import Any, Generic, ParamSpec, TypeVar, overload
 
 from typing_extensions import Self
 
 _T = TypeVar('_T')
+_P = ParamSpec('_P')
 _S = TypeVar('_S')
 
 @overload
@@ -65,9 +70,9 @@ class _CacheInfo(tuple[int, int, int | None, int]):
     @property
     def currsize(self) -> int: ...
 
-class _lru_cache_wrapper(Generic[_T]):
-    __wrapped__: Callable[..., _T]
-    def __call__(self, *args: Hashable, **kwargs: Hashable) -> _T: ...
+class _lru_cache_wrapper(Generic[_P, _T]):
+    __wrapped__: Callable[_P, _T]
+    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _T: ...
     def cache_info(self) -> _CacheInfo: ...
     def cache_clear(self) -> None: ...
     def cache_parameters(self) -> dict[str, Any]: ...
@@ -75,7 +80,7 @@ class _lru_cache_wrapper(Generic[_T]):
 @overload
 def lru_cache(
     maxsize: int | None = 128, typed: bool = False
-) -> Callable[[Callable[..., _T]], _lru_cache_wrapper[_T]]: ...
+) -> Callable[[Callable[_P, _T]], _lru_cache_wrapper[_P, _T]]: ...
 @overload
-def lru_cache(maxsize: Callable[..., _T], typed: bool = False) -> _lru_cache_wrapper[_T]: ...
-def cache(user_function: Callable[..., _T], /) -> _lru_cache_wrapper[_T]: ...
+def lru_cache(maxsize: Callable[_P, _T], typed: bool = False) -> _lru_cache_wrapper[_P, _T]: ...
+def cache(user_function: Callable[_P, _T], /) -> _lru_cache_wrapper[_P, _T]: ...
