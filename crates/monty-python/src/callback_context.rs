@@ -59,7 +59,15 @@ impl CallbackContext {
             return Err(PyErr::fetch(py));
         }
         let mut guard = CallbackGuard { context, otel: None };
-        if let Some(parent) = telemetry::callback_context(py, native) {
+        let parent = telemetry::callback_context(py, native).or_else(|| {
+            // Preserve caller context, but do not inherit an outer callback's private span selection.
+            py.import("opentelemetry.context")
+                .ok()?
+                .call_method1("set_value", (CALLBACK_SPAN_KEY, py.None()))
+                .ok()
+                .map(Bound::unbind)
+        });
+        if let Some(parent) = parent {
             // Telemetry failure must not prevent execution of the user's callback.
             guard.otel = (|| {
                 let module = py.import("opentelemetry.context")?;

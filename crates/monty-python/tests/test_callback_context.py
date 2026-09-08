@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize('mode', ['sampled-out', 'broken-attach', 'broken-tracer'])
+@pytest.mark.parametrize('mode', ['sampled-out', 'broken-attach', 'broken-tracer', 'nested'])
 def test_callback_context_telemetry_fallback(mode: str):
     subprocess.run(
         [
@@ -20,7 +20,7 @@ from contextvars import ContextVar
 from opentelemetry import context, trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
-from pydantic_monty import AsyncMonty, instrument_telemetry
+from pydantic_monty import AsyncMonty, Monty, instrument_telemetry
 
 mode = sys.argv[1]
 provider = TracerProvider(sampler=ALWAYS_OFF)
@@ -28,13 +28,15 @@ tracer = provider.get_tracer('callbacks')
 host_tracer = TracerProvider().get_tracer('host')
 spans = []
 class RecordingTracer:
+    broken = False
     def start_span(self, *args, **kwargs):
-        if mode == 'broken-tracer':
+        if mode == 'broken-tracer' or self.broken:
             raise RuntimeError('tracer failed')
-        span = tracer.start_span(*args, **kwargs)
+        span = (host_tracer if mode == 'nested' else tracer).start_span(*args, **kwargs)
         spans.append(span)
         return span
-instrument_telemetry(tracer=RecordingTracer())
+bridge_tracer = RecordingTracer()
+instrument_telemetry(tracer=bridge_tracer)
 request = ContextVar('request', default='outside')
 
 async def main():
@@ -49,10 +51,26 @@ async def main():
         def printed(stream, text):
             assert request.get() == 'caller'
             current = trace.get_current_span()
-            assert current is (spans[-1] if mode == 'sampled-out' else host)
+            assert current is (spans[-1] if mode in ('sampled-out', 'nested') else host)
             if mode == 'sampled-out':
                 assert not current.is_recording()
             seen.append(text)
+            if mode == 'nested':
+                with host_tracer.start_as_current_span('nested host') as nested_host:
+                    calls = []
+                    def inner():
+                        calls.append(1)
+                        assert request.get() == 'caller'
+                        assert trace.get_current_span() is nested_host
+                        raise ValueError('inner failed')
+                    bridge_tracer.broken = True
+                    with Monty() as pool:
+                        with pool.checkout() as session:
+                            session.feed_run('try:\\n inner()\\nexcept ValueError:\\n pass', external_lookup={'inner': inner})
+                    assert calls == [1]
+                    assert trace.get_current_span() is nested_host
+                    assert not nested_host.events and not current.events
+                assert trace.get_current_span() is current
         try:
             async with AsyncMonty() as pool:
                 async with pool.checkout() as session:
@@ -384,4 +402,5 @@ else:
             failure,
         ],
         check=True,
+        timeout=60,
     )
