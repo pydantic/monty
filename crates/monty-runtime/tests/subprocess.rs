@@ -873,53 +873,53 @@ fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
 fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
     let cases = [
-        ("'x' * 10_000_000", 10_031_137),
+        ("'x' * 10_000_000", 10_031_265),
         // Each formatter builder must fail softly before the worker reaches its hard ceiling.
-        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_231_000),
-        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_431_791),
-        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_230_835),
+        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_231_128),
+        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_431_919),
+        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_230_963),
         // `%` formatting: padding, float digits, integer zero-extension and output growth.
-        ("'%*d' % (2_000_000, 1)", 2_031_460),
-        ("'%.*f' % (1_000_000, 1.0)", 1_160_498),
-        ("'%.*d' % (2_000_000, 1)", 2_031_466),
-        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_631_924),
-        ("b'%*d' % (2_000_000, 1)", 2_031_588),
-        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_632_055),
-        ("b'x' * 10_000_000", 10_031_269),
-        ("[None] * 1_000_000", 16_031_391),
-        ("2 ** 10_000_000", 10_031_230),
-        ("1 << 10_000_000", 1_281_231),
-        ("('a' * 1000).replace('a', 'b' * 2000)", 2_034_769),
+        ("'%*d' % (2_000_000, 1)", 2_031_588),
+        ("'%.*f' % (1_000_000, 1.0)", 1_160_626),
+        ("'%.*d' % (2_000_000, 1)", 2_031_594),
+        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_632_052),
+        ("b'%*d' % (2_000_000, 1)", 2_031_716),
+        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_632_183),
+        ("b'x' * 10_000_000", 10_031_397),
+        ("[None] * 1_000_000", 16_031_519),
+        ("2 ** 10_000_000", 10_031_358),
+        ("1 << 10_000_000", 1_281_359),
+        ("('a' * 1000).replace('a', 'b' * 2000)", 2_034_897),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
-        ("x = [None] * 40_000\nx += x", 1_951_835),
-        ("t = (None,) * 40_000\nt + t", 1_311_835),
-        ("x = [None] * 40_000\nx.copy()", 1_311_585),
+        ("x = [None] * 40_000\nx += x", 1_951_963),
+        ("t = (None,) * 40_000\nt + t", 1_311_963),
+        ("x = [None] * 40_000\nx.copy()", 1_311_713),
         // A partial re-clones its bound arguments on every call, so that clone
         // is preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [None] * 40_000\np()",
-            1_314_563,
+            1_314_727,
         ),
         // Reading `p.args` / `p.keywords` rebuilds them in full, so both are
         // preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [0] * 40_000\np.args",
-            1_314_563,
+            1_314_727,
         ),
         (
             "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
-            1_071_419,
+            1_071_583,
         ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
-            16_031_971,
+            16_032_099,
         ),
         // `itertools.batched` preflights one batch, capped at `n`.
         (
             "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
-            16_032_590,
+            16_032_718,
         ),
     ];
 

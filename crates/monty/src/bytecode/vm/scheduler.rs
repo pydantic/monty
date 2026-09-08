@@ -16,7 +16,7 @@ use crate::{
     exception_private::RunError,
     heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},
     intern::FunctionId,
-    types::lru_cache::CacheStore,
+    types::lru_cache::CacheStores,
     value::Value,
 };
 
@@ -136,7 +136,7 @@ pub(crate) struct SerializedTaskFrame {
     /// The pending `functools.lru_cache` stores of this frame's cached calls
     /// (see `CallFrame.cache_stores`).
     #[serde(default)]
-    pub cache_stores: Vec<CacheStore>,
+    pub cache_stores: CacheStores,
 }
 
 impl Task {

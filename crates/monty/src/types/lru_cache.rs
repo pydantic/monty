@@ -294,8 +294,8 @@ fn call_wrapped(func: &Value, args: ArgValues, store: Option<CacheStore>, vm: &m
 /// Stores `value` in each pending cache, in the order the wrappers were
 /// entered. Consumes every store; on the first failure the rest are released
 /// unstored, since the value never reaches their callers either.
-pub(crate) fn store_results(stores: Vec<CacheStore>, value: &Value, vm: &mut VM<'_>) -> RunResult<()> {
-    let mut stores = stores.into_iter();
+pub(crate) fn store_results(stores: CacheStores, value: &Value, vm: &mut VM<'_>) -> RunResult<()> {
+    let mut stores = stores.into_vec().into_iter();
     let result = stores.try_for_each(|store| store_result(store, value, vm));
     stores.drop_with(vm);
     result
@@ -399,6 +399,37 @@ fn evict_one<'h>(cache: &mut HeapObjectRead<'h, LruCache>, vm: &mut VM<'h>) {
     key.drop_with(vm);
     value.drop_with(vm);
     cache.get_mut(vm.heap).stamps.remove(index);
+}
+
+/// The pending cache stores hanging off one call frame.
+///
+/// Every frame carries this and all but a cached call leaves it empty, so the
+/// list is boxed: an ordinary frame pays one null pointer rather than a `Vec`'s
+/// three words, on a struct the VM preallocates by the dozen.
+// The box is the point: it keeps `CallFrame` small, which is what the lint's
+// "`Vec` is already on the heap" misses.
+#[expect(clippy::box_collection)]
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct CacheStores(Option<Box<Vec<CacheStore>>>);
+
+impl CacheStores {
+    /// Adds a store, allocating the list on first use.
+    pub(crate) fn push(&mut self, store: CacheStore) {
+        self.0.get_or_insert_with(Box::default).push(store);
+    }
+
+    /// The stores in the order they were added, for the return path to drain.
+    fn into_vec(self) -> Vec<CacheStore> {
+        self.0.map(|stores| *stores).unwrap_or_default()
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for CacheStores {
+    fn drop_with(self, heap: &mut C) {
+        if let Some(stores) = self.0 {
+            stores.drop_with(heap);
+        }
+    }
 }
 
 /// The pending "store this frame's return value" note a cached call leaves on
