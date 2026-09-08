@@ -68,6 +68,11 @@ pub(crate) struct Class {
     /// CPython generates and Monty cannot yet install: baked in at decoration
     /// so `__dataclass_params__` stays a report, not a rewritable control.
     options: DataclassOptions,
+    /// Whether the class body defined `__post_init__` when `@dataclass` ran.
+    /// Baked in for the same reason as `options`: CPython decides at decoration
+    /// whether the generated `__init__` calls the hook at all, so one attached
+    /// to the class afterwards is never called.
+    has_post_init: bool,
     /// Boundary identity, generated lazily the first time the class (or one of
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
@@ -85,6 +90,7 @@ impl Class {
             name,
             namespace,
             options: DataclassOptions::default(),
+            has_post_init: false,
             uuid: None,
         }
     }
@@ -110,6 +116,12 @@ impl Class {
     #[must_use]
     pub fn dataclass_options(&self) -> DataclassOptions {
         self.options
+    }
+
+    /// Whether `@dataclass` found a `__post_init__` in the class body.
+    #[must_use]
+    pub fn has_post_init(&self) -> bool {
+        self.has_post_init
     }
 
     /// Returns the class name (interned or heap-owned).
@@ -139,6 +151,17 @@ impl<'h> HeapRead<'h, Class> {
         self.namespace_mut().set(name, value, vm)
     }
 
+    /// Removes a class attribute, returning it for the caller to drop.
+    ///
+    /// Only `@dataclass` needs this, to clear the `field()` object a class body
+    /// bound for a factory-only field — CPython's decorator `delattr`s it.
+    pub fn pop_attr(&mut self, name: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(self.namespace_mut().pop(name, vm)?.map(|(key, value)| {
+            key.drop_with(vm);
+            value
+        }))
+    }
+
     /// Records what `@dataclass(...)` decorated this class with.
     ///
     /// Called once per decoration, so re-decorating replaces the options as it
@@ -147,6 +170,12 @@ impl<'h> HeapRead<'h, Class> {
     /// control.
     pub fn set_dataclass_options(&mut self, options: DataclassOptions, vm: &mut VM<'h>) {
         self.get_mut(vm.heap).options = options;
+    }
+
+    /// Records whether the class body defined `__post_init__`, as `@dataclass`
+    /// found it. Set once per decoration, beside the options.
+    pub fn set_has_post_init(&mut self, has_post_init: bool, vm: &mut VM<'h>) {
+        self.get_mut(vm.heap).has_post_init = has_post_init;
     }
 }
 
