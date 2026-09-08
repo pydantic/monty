@@ -238,24 +238,34 @@ fn cache_mut<'r, 'h>(cache: &'r mut HeapObjectRead<'h, LruCache>) -> BorrowedHea
 }
 
 /// Reassembles the call arguments taken apart to build the key.
+///
+/// A call with nothing in it rebuilds as `ArgValues::Empty`, the shape the rest
+/// of the VM recognizes as "no arguments" — an empty `ArgsKargs` reaches a
+/// class with no `__init__` as an argument it cannot take.
 fn take_args(positional: &mut Vec<Value>, keywords: &mut Vec<(Value, Value)>) -> ArgValues {
-    ArgValues::ArgsKargs {
-        args: take(positional),
-        kwargs: if keywords.is_empty() {
-            KwargsValues::Empty
-        } else {
-            KwargsValues::Pairs(take(keywords))
-        },
+    if positional.is_empty() && keywords.is_empty() {
+        ArgValues::Empty
+    } else {
+        ArgValues::ArgsKargs {
+            args: take(positional),
+            kwargs: if keywords.is_empty() {
+                KwargsValues::Empty
+            } else {
+                KwargsValues::Pairs(take(keywords))
+            },
+        }
     }
 }
 
 /// Runs the wrapped callable, arranging for `store` to receive its result.
 ///
-/// A plain function call gets the store hung off its frame; anything answering
-/// immediately (a builtin, a class, an `async def` handing back its coroutine)
-/// is stored right here. A call that suspends to the host instead — only
-/// reachable when the *wrapped callable itself* is external — passes through
-/// uncached, since its result comes back through neither path.
+/// A call that pushes a frame — a plain function, or a class whose `__init__`
+/// runs as one — gets the store hung off it, and the return path stores what
+/// the caller receives (for a constructor the instance, not `__init__`'s
+/// `None`). Anything answering immediately (a builtin, an `async def` handing
+/// back its coroutine) is stored right here. A call that suspends to the host
+/// instead — only reachable when the *wrapped callable itself* is external —
+/// passes through uncached, since its result comes back through neither path.
 fn call_wrapped(func: &Value, args: ArgValues, store: Option<CacheStore>, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let result = match vm.call_function(func, args) {
         Ok(result) => result,

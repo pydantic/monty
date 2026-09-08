@@ -217,6 +217,62 @@ assert boom.cache_info() == (0, 2, None, 0)
 assert functools.cache(int)('10') == 10
 assert functools.cache(functools.partial(pow, 2))(3) == 8
 
+# a class caches the instance the call produced, not `__init__`'s `None`
+
+
+class Boxed:
+    def __init__(self, n):
+        self.n = n
+
+
+boxed_class = functools.cache(Boxed)
+first_box = boxed_class(1)
+assert first_box.n == 1
+assert boxed_class(1) is first_box
+assert boxed_class(2) is not first_box
+assert boxed_class.cache_info() == (1, 2, None, 2)
+
+
+class Empty:
+    pass
+
+
+empty_class = functools.cache(Empty)
+only_empty = empty_class()
+assert empty_class() is only_empty
+assert empty_class.cache_info() == (1, 1, None, 1)
+
+
+class Fussy:
+    def __init__(self):
+        raise ValueError('no')
+
+
+fussy_class = functools.cache(Fussy)
+for _ in range(2):
+    try:
+        fussy_class()
+        assert False, 'expected the constructor to fail'
+    except ValueError as exc:
+        assert str(exc) == 'no'
+assert fussy_class.cache_info() == (0, 2, None, 0)
+
+
+class Returning:
+    def __init__(self):
+        return 1
+
+
+# `__init__` returning non-`None` raises every time; nothing is cached
+returning_class = functools.cache(Returning)
+for _ in range(2):
+    try:
+        returning_class()
+        assert False, 'expected the constructor to fail'
+    except TypeError as exc:
+        assert str(exc) == "__init__() should return None, not 'int'"
+assert returning_class.cache_info() == (0, 2, None, 0)
+
 # a cached function stored on a class binds the instance, so `self` is part of
 # the key
 

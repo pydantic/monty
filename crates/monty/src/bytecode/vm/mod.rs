@@ -1858,6 +1858,34 @@ impl<'h> VM<'h> {
                     // Pop current frame; `stop` requests returning to the host
                     // (e.g. `evaluate_function`).
                     let stop = self.pop_frame();
+                    // An initializer's own return value is not the call's
+                    // result, so resolve it to the instance *before* anything
+                    // else looks at it — a cached `Foo(...)` must store what
+                    // its caller receives.
+                    let value = if is_init {
+                        match self.take_initializer_result(value) {
+                            Ok(instance) => instance,
+                            Err(err) => {
+                                // A constructor that raises caches nothing, as
+                                // any other raising call does.
+                                cache_stores.drop_with(self);
+                                if stop {
+                                    // The initializer was driven by `evaluate_function`
+                                    // and its frame boundary is already popped —
+                                    // propagate directly rather than unwinding into
+                                    // frames that must not observe this error. The
+                                    // pending instance left on the operand stack is
+                                    // reclaimed by the eventual `handle_exception`
+                                    // stack drain (or final teardown).
+                                    return Err(err);
+                                }
+                                catch!(self, err);
+                                continue;
+                            }
+                        }
+                    } else {
+                        value
+                    };
                     // A cached call stores its result before the caller sees
                     // it, so a recursive cached function finds the inner
                     // results already in place.
@@ -1869,43 +1897,12 @@ impl<'h> VM<'h> {
                         catch!(self, err);
                         continue;
                     }
-                    if is_init {
-                        if !matches!(value, Value::None) {
-                            // CPython raises at the `Foo(...)` call site: the
-                            // initializer frame is already popped, so the traceback
-                            // matches (no `__init__` frame).
-                            let type_name = value.py_type_name(self);
-                            value.drop_with(self);
-                            let err = ExcType::type_error_init_return(type_name);
-                            if stop {
-                                // The initializer was driven by `evaluate_function`
-                                // and its frame boundary is already popped —
-                                // propagate directly rather than unwinding into
-                                // frames that must not observe this error. The
-                                // pending instance left on the operand stack is
-                                // reclaimed by the eventual `handle_exception`
-                                // stack drain (or final teardown).
-                                return Err(err);
-                            }
-                            catch!(self, err);
-                            continue;
-                        }
-                        // `__init__` returned None — discard it. The instance was
-                        // pushed onto the caller's stack before this frame ran and
-                        // is the real result of `Foo(...)`.
-                        value.drop_with(self);
-                        if stop {
-                            let instance = self.pop();
-                            return Ok(FrameExit::Return(instance));
-                        }
-                        // Instance already on the caller's stack — push nothing.
-                    } else if stop {
+                    if stop {
                         // This frame indicated evaluation should stop - return to host with value
                         // e.g. `evaluate_function`
                         return Ok(FrameExit::Return(value));
-                    } else {
-                        self.push(value);
                     }
+                    self.push(value);
                 }
                 // Async/Await
                 Opcode::Await => {
@@ -2156,6 +2153,25 @@ impl<'h> VM<'h> {
             self.decr_recursion();
         }
         frame.should_return
+    }
+
+    /// Resolves a just-popped initializer frame's return value into the result
+    /// of the `Foo(...)` call that pushed it.
+    ///
+    /// `__init__` returns `None`; the constructed instance was pushed onto the
+    /// caller's stack before the frame ran, and that is what the call yields —
+    /// so callers must take it from the stack rather than trust the returned
+    /// value. Anything but `None` raises the `TypeError` CPython reports at the
+    /// `Foo(...)` call site — the initializer frame is already popped, so the
+    /// traceback matches — leaving the instance on the stack for the unwind.
+    fn take_initializer_result(&mut self, value: Value) -> RunResult<Value> {
+        if matches!(value, Value::None) {
+            Ok(self.pop())
+        } else {
+            let type_name = value.py_type_name(self);
+            value.drop_with(self);
+            Err(ExcType::type_error_init_return(type_name))
+        }
     }
 
     /// Releases everything a frame owns: its stack region and, if the frame was
