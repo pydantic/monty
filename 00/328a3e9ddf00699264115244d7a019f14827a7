@@ -1,0 +1,95 @@
+crates/monty/src/types/type.rs
+  s_a13acbd1453eef::t_c19ee3a59a7ea5 100-103
+  s_0dddb5d39d9a85::t_c6069db118de7d 97-99
+crates/monty-js/__test__/external.spec.ts
+  s_a13acbd1453eef::t_60fbb0906a9b89 404
+  s_bf68572fceb021::t_bd96219c60d833 402-403,407
+  s_0dddb5d39d9a85::t_ee2844971958e5 510-515
+crates/monty/src/object_bridge.rs
+  s_a13acbd1453eef::t_3d6a9ae9e89c86 20
+  s_c169c47bf9622b::t_79f260c7b8a9f7 233
+  s_a13acbd1453eef::t_a1bdaf61123dfb 497,499,503,507,522,529,532-534,538,518
+  s_a13acbd1453eef::t_4b40b841d41787 510,515,521
+  s_0dddb5d39d9a85::t_65f905c3f9dd62 798
+  s_bf68572fceb021::t_26ab9934590a55 22
+  s_bf68572fceb021::t_bc60a023e40aec 239,258-259,263
+  s_0dddb5d39d9a85::t_05f379cde10848 251
+  s_bf68572fceb021::t_470cc6045c407b 498,506,511-512,523,525-527,531,536-537
+  s_bf68572fceb021::t_2ef9c9632edf3a 596,616,794,796,803-808,815,817
+  s_bf68572fceb021::t_3fb4d6c8392efe 824
+  s_bf68572fceb021::t_c5487044db5fc9 513-514,516,519-520
+  s_bf68572fceb021::t_d1337fa7c881a8 517
+  s_bf68572fceb021::t_2af9af3a68b398 821
+  s_0dddb5d39d9a85::t_42f826c3155577 765-766
+  s_0dddb5d39d9a85::t_c6069db118de7d 767,769
+crates/monty/tests/py_object.rs
+  s_a13acbd1453eef::t_b75b2941e5635c 315
+  s_bf68572fceb021::t_757fb47299427b 6,8
+  s_bf68572fceb021::t_db785e4685fc13 190-192,194,196-197,319-321,323,325-326
+  s_bf68572fceb021::t_b58f558e4615b8 195,324
+  s_0dddb5d39d9a85::t_6d9876b21c5137 201
+crates/monty-js/ts/errors.ts
+  s_0dddb5d39d9a85::t_6ba743547354e0 282-284,322-327,344
+crates/monty-js/src/convert.rs
+  s_a13acbd1453eef::t_77e2b055fbb0fa 31
+  s_a13acbd1453eef::t_0f7019fff2dd17 424-430,439,451,453-455,458-463
+  s_a13acbd1453eef::t_8b1f36b5820dd8 743,750
+  s_bf68572fceb021::t_06d70179a230e5 788,363,365,751,789-791,798,802-819
+  s_a13acbd1453eef::t_7fff0a94f82d8f 800-801,347-348,370-371,766-767,445,820-821
+  s_bf68572fceb021::t_a2bf8ec08f33f9 83,331-332,340-341,343-345,349,353-354,356-357,367,369
+  s_bf68572fceb021::t_f0cb620bc6ab9c 346,368,444,447-450,465
+  s_bf68572fceb021::t_d39bb7e20a0dfd 355,441,715-721,723-727,744,746,749,758-765,768,770-772,793-795,797,799
+  s_bf68572fceb021::t_b2a908ba22e928 431
+  s_bf68572fceb021::t_0f23cbc8aa2169 722,745,747
+  s_0dddb5d39d9a85::t_6d9876b21c5137 25
+crates/monty-types/src/object.rs
+  s_bf68572fceb021::t_f3f0f728ca795a 264,271,272,278,780,783
+  s_a13acbd1453eef::t_3ee5815eee0591 499-501,505,508-510,512-513
+  s_bf68572fceb021::t_6f48197ff87a73 753-757,759,767-768,770-771,773,778-779,784-785,804-806,812,815-817,789
+  s_0dddb5d39d9a85::t_5d941cba16d1ff 758
+  s_bf68572fceb021::t_beb0825e522432 875,877-878,988
+  s_bf68572fceb021::t_437d8134a6390b 1390-1391
+  s_0dddb5d39d9a85::t_6d9876b21c5137 570-571,573,1222-1224,1230-1234
+crates/monty/src/dump_format.rs
+  s_0dddb5d39d9a85::t_c6069db118de7d 223
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "00328a3e9ddf00699264115244d7a019f14827a7",
+  "prompts": {},
+  "sessions": {
+    "s_0dddb5d39d9a85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4ff5acd4-3351-4ad9-a7b8-0662afd66a41",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_a13acbd1453eef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "46b34544-930c-423e-9e81-d58970c2dcab",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_bf68572fceb021": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8ff2ad2-c7e9-4cb1-9a42-b2f5d74a4d5e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_c169c47bf9622b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "43c83ad4-3a5f-4c72-ab6b-c32cf33cc6a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

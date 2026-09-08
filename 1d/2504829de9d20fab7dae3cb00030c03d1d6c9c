@@ -1,0 +1,72 @@
+crates/monty-proto/src/python/class_instance.rs
+  s_a13acbd1453eef::t_c64db4120a409f 1-3,6-7,21-22,24-26,28-29,32-34,55-56,64-70,72-76,79-81,189-190,200-201,207,210-212,214-217,220-226,232-235,237,326-327,329-330,338-339,342,344-346,348-352,356-361,363-365,368-373,376-379,423-427,40-41,83,85,94,324-325,433,435,240,149,155,118,128,90,109,111,119,121,134,140,142,151,157,162,166-167,170,173,188,197,199,251,264,278,293,296,305,310-311,398-399,407-408,421-422
+  s_c169c47bf9622b::t_793be3d9414f0c 238-239,380,84,154,127,125-126,186-187,248,250,261,263,274,277,295,301,304,313
+  s_0dddb5d39d9a85::t_02a93ec3bada20 340-341,354-355,122
+  s_bf68572fceb021::t_933ee02beacb02 4-5,9,12-13,37-39,78,95,213,218,228-231,430-432,434,309
+  s_0dddb5d39d9a85::t_161fd384bd5f3f 98,139,153,245,258,271,285
+  s_bf68572fceb021::t_b2a908ba22e928 8,332-333,343,362,366
+  s_bf68572fceb021::t_9556c7e92b468a 10-11
+  s_bf68572fceb021::t_7d5c541779b736 63,71,82,202-206,208,227
+  s_bf68572fceb021::t_b3cac829d550af 23,328
+  s_bf68572fceb021::t_da6df90ce959b8 14-18
+  s_0dddb5d39d9a85::t_734c56a78aae7e 30,77,209,219
+  s_0dddb5d39d9a85::t_b278c310ad955e 87,112-117,131-133,138,143-148,156,158
+  s_c169c47bf9622b::t_bb3897a0767bae 96,169
+  s_0dddb5d39d9a85::t_fb60890f485021 105-106,266-269
+  s_0dddb5d39d9a85::t_08ed115d4d8de0 246,259,272,279,281
+  s_0dddb5d39d9a85::t_88fc1e65f4128a 270,280,282-283
+crates/monty-proto/src/python/convert.rs
+  s_a13acbd1453eef::t_5fc49714c50d33 46-47,63,126,284-285,298,318,325,356,365-366,374,381
+  s_a13acbd1453eef::t_007b2f00ee3e2d 53-55
+  s_a13acbd1453eef::t_748b78d1674330 88,107-108,115,122,129
+  s_a13acbd1453eef::t_aee64fbef1cb5a 183-185
+  s_a13acbd1453eef::t_dda4fe1e2cda18 281-282
+  s_a13acbd1453eef::t_f429e73d68ea54 413-414
+  s_bf68572fceb021::t_7a37d1500a6164 33,151,201
+  s_bf68572fceb021::t_75732fb74e1166 508-512
+  s_bf68572fceb021::t_b2a908ba22e928 283
+  s_bf68572fceb021::t_3a87416c52a8c1 156
+  s_bf68572fceb021::t_6a776ffeb0a3db 56-59
+  s_bf68572fceb021::t_33a8078375401c 178-179
+  s_c169c47bf9622b::t_793be3d9414f0c 155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1d2504829de9d20fab7dae3cb00030c03d1d6c9c",
+  "prompts": {},
+  "sessions": {
+    "s_0dddb5d39d9a85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4ff5acd4-3351-4ad9-a7b8-0662afd66a41",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_a13acbd1453eef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "46b34544-930c-423e-9e81-d58970c2dcab",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_bf68572fceb021": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8ff2ad2-c7e9-4cb1-9a42-b2f5d74a4d5e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_c169c47bf9622b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "43c83ad4-3a5f-4c72-ab6b-c32cf33cc6a7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
