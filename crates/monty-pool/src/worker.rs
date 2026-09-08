@@ -277,6 +277,13 @@ impl Worker {
         })
     }
 
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn callback_context(&self) -> opentelemetry::Context {
+        self.recorder
+            .as_ref()
+            .map_or_else(opentelemetry::Context::new, |recorder| recorder.callback_context())
+    }
+
     /// Sends one request, flushed to the wire — the protocol is strict
     /// alternation, so an unflushed frame would deadlock both sides. An
     /// oversize frame is rejected *before* any I/O so the stream stays synced

@@ -963,6 +963,11 @@ class AsyncMontySession:
         reaches their cleanup; callbacks must cooperate with cancellation.
         Tasks callbacks create themselves remain their responsibility.
 
+        Host callbacks run in copies of the caller's Python context. With tracing
+        enabled, telemetry emitted inside callbacks is parented to the corresponding
+        Monty operation: the execution span for prints, or the host-call span for
+        external functions. Async external functions retain that context across awaits.
+
         Arguments:
             code: The Python snippet to execute; its trailing expression value
                 (if any) is converted to a Python object and returned.

@@ -78,7 +78,7 @@ Size the limit with headroom, and use an OS or cgroup limit to bound the process
 Operations whose result size is predictable from their inputs are **pre-checked before allocating**, above a 100 KB
 threshold, including integer multiplication, division and `divmod`, left shift, integer power, sequence repeat
 (`'x' * n`), `str.replace` / `bytes.replace`, `re.sub`, the padding methods, deque rotation and slicing, materialising
-an iterator into a container, and f-string or `str.format()` formatting with a dynamic width or precision.
+an iterator into a container, and f-string, `str.format()` or `%` formatting with a dynamic width or precision.
 So `'x' * 10**12` fails immediately rather than after consuming the machine's memory.
 
 A few integer operations carry their own caps regardless of `max_memory`:

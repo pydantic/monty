@@ -1,7 +1,8 @@
 # String formatting
 
 Monty implements CPython 3.14's format mini-language for f-string
-interpolations and `str.format()` replacement fields. `str.format()` supports
+interpolations, `str.format()` replacement fields and the `format()`
+builtin. `str.format()` supports
 positional and keyword fields, automatic and manual numbering, attribute and
 item access, `!s` / `!r` / `!a` conversions, nested replacement fields in
 format specs, and escaped braces.
@@ -12,20 +13,45 @@ If a replacement field needs a host operation, such as
 `NotImplementedError: str.format attribute access cannot suspend` instead of
 returning the attribute as CPython does.
 
-The other CPython formatting entry points are not implemented:
+`str.format_map()` is not implemented and raises `AttributeError`.
 
-- The `format()` builtin raises `NameError`, and `str.format_map()` raises
-    `AttributeError` (see [builtins.md](builtins.md)).
-- Printf-style `%` formatting (`'%5.3f' % math.pi`, `'%s %s' % (a, b)`) is not
-    implemented. `str` has no `__mod__`, so `str % value` raises
-    `TypeError: unsupported operand type(s) for %: 'str' and '...'`. Use an
-    f-string instead.
+## Printf-style `%` formatting
+
+`str % args` and `bytes % args` implement CPython's printf-style directives:
+`%s`, `%r`, `%a`, `%c`, `%d` / `%i` / `%u`, `%o`, `%x` / `%X`, `%e` / `%E`,
+`%f` / `%F`, `%g` / `%G` and `%%` (plus `%b` for `bytes`), with the `-`, `+`,
+space, `#` and `0` flags, a width and precision given literally or as `*`
+arguments, `%(key)s` mapping lookups, and the ignored `h` / `l` / `L` length
+modifiers. The divergences:
+
+- **`bytes` `%s` / `%b` accept only `bytes`.** Monty has no `bytearray`,
+    `memoryview` or `__bytes__` protocol, so `b'%s' % obj` raises
+    `TypeError: %b requires a bytes-like object, or an object that implements __bytes__, not 'C'`
+    even when `C` defines `__bytes__`.
+
+- **Operands are coerced through `__index__` only.** A class that defines just
+    `__int__` raises `TypeError: %d format: a real number is required, not C`
+    where CPython would call it; likewise one defining just `__float__` under
+    `%f` raises `must be real number, not C`.
+
+- **A user class is never a mapping.** CPython lets `%(key)s` index any object
+    with `__getitem__` and skips the leftover-arguments check for it; Monty
+    recognises only `dict` (and its `collections` subclasses), `list`, `bytes`
+    and `range`, so `'%(k)s' % instance` raises
+    `TypeError: format requires a mapping` and `'abc' % instance` raises
+    `not all arguments converted during string formatting`.
+
+- **`%c` rejects surrogate code points.** `'%c' % 0xD800` raises
+    `OverflowError: %c arg not in range(0x110000)`, the same error as an
+    out-of-range code point, because Monty strings cannot hold lone surrogates
+    (CPython returns `'\ud800'`).
 
 ## Custom `__format__`
 
-f-strings and `str.format()` dispatch to a type's `__format__` only for
-`date`, `datetime` and `time`, which interpret the spec as a `strftime` string
-(`f'{dt:%Y-%m-%d}'` or `'{:%Y-%m-%d}'.format(dt)`); see
+f-strings, `str.format()` and `format()` dispatch to a type's `__format__`
+only for `date`, `datetime` and `time`, which interpret the spec as a
+`strftime` string (`f'{dt:%Y-%m-%d}'`, `'{:%Y-%m-%d}'.format(dt)` or
+`format(dt, '%Y-%m-%d')`); see
 [datetime.md](datetime.md). There is no general `__format__` protocol: user
 classes can't customise formatting (see [classes.md](classes.md)), and all
 other types use the builtin mini-language formatter. A format spec on a
@@ -50,8 +76,8 @@ CPython prints it literally, or the reverse. Common text is unaffected.
 
 - A `width` or `precision` whose decimal value overflows `usize` raises
     `SyntaxError: Invalid format specifier '...': width or precision overflows usize` in a literal f-string spec.
-    Runtime specs, including `str.format()`, raise `ValueError` instead, with an additional
-    `for object of type '...'` suffix.
+    Runtime specs, including `str.format()` and `format()`, raise `ValueError`
+    instead, with an additional `for object of type '...'` suffix.
 - Very large widths/precisions are additionally bounded by the resource
     tracker; see [resource_limits.md](resource_limits.md).
 
@@ -67,4 +93,4 @@ message text otherwise matches, minus CPython's `for object of type '...'`
 suffix, which needs the runtime value type. Specs whose error *is*
 value-type-dependent or only resolvable at format time (`Unknown format code 'k'`, the `Cannot specify …` grouping conflicts, and `Format specifier missing precision`) are deferred to runtime and raise the exact CPython `ValueError`,
 as do all dynamically-built specs (`f'{1:{spec}}'`) and all `str.format()`
-specs.
+and `format()` specs.

@@ -15,7 +15,7 @@ use monty_proto::{
     FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireFunctionCall,
     WireObject, exceeds_max_frame_len, pb, write_frame,
 };
-use monty_types::MontyObject;
+use monty_types::{MontyDate, MontyDateTime, MontyObject};
 
 /// How long a death-expecting helper waits for the child to exit. Generous:
 /// the regression it guards is "the child never dies", so the only cost of a
@@ -499,6 +499,59 @@ fn external_function_not_found_raises_name_error() {
     child.shutdown();
 }
 
+/// The worker's `MontyRepl` carries a `HostClock`, but drives `feed_start`,
+/// which never reads it. Only this test holds the two apart: routing a worker
+/// feed through `feed_run` would answer the clock inside the sandbox instead
+/// of asking the parent.
+#[test]
+fn clock_calls_bubble_to_parent() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+
+    let today = MontyDate {
+        year: 2024,
+        month: 1,
+        day: 15,
+    };
+    let (_, event) = child.feed("from datetime import date\ndate.today()");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(call.call, Some(pb::os_call::Call::DateToday(pb::Unit {})));
+    let (_, event) = child.resume_call(
+        call.call_id,
+        pb::ext_function_result::Kind::ReturnValue(WireObject::new(MontyObject::Date(today.clone()))),
+    );
+    assert_eq!(expect_complete(event), MontyObject::Date(today));
+
+    let now = MontyDateTime {
+        year: 2024,
+        month: 1,
+        day: 15,
+        hour: 9,
+        minute: 30,
+        second: 0,
+        microsecond: 0,
+        offset_seconds: None,
+        timezone_name: None,
+    };
+    let (_, event) = child.feed("from datetime import datetime\ndatetime.now()");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::DateTimeNow(pb::os_call::DateTimeNow { tz: None }))
+    );
+    let (_, event) = child.resume_call(
+        call.call_id,
+        pb::ext_function_result::Kind::ReturnValue(WireObject::new(MontyObject::DateTime(now.clone()))),
+    );
+    assert_eq!(expect_complete(event), MontyObject::DateTime(now));
+
+    child.shutdown();
+}
+
 #[test]
 fn os_call_bubbles_to_parent_without_mounts() {
     let mut child = ChildProc::spawn();
@@ -825,6 +878,13 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_231_000),
         ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_431_791),
         ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_230_835),
+        // `%` formatting: padding, float digits, integer zero-extension and output growth.
+        ("'%*d' % (2_000_000, 1)", 2_031_460),
+        ("'%.*f' % (1_000_000, 1.0)", 1_160_498),
+        ("'%.*d' % (2_000_000, 1)", 2_031_466),
+        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_631_924),
+        ("b'%*d' % (2_000_000, 1)", 2_031_588),
+        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_632_055),
         ("b'x' * 10_000_000", 10_031_269),
         ("[None] * 1_000_000", 16_031_391),
         ("2 ** 10_000_000", 10_031_230),
@@ -874,6 +934,19 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
         child.shutdown();
     }
+}
+
+/// `inf` and `nan` print as they are, so a huge float precision costs nothing
+/// and must not be charged against the limit.
+#[test]
+fn non_finite_float_precision_is_not_charged() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(64 * 1024));
+    assert_eq!(
+        child.feed_complete("'%.2000000000f' % float('inf')"),
+        MontyObject::String("inf".to_owned())
+    );
+    child.shutdown();
 }
 
 /// Announcing a suspension must not cost extra copies of the value being

@@ -23,6 +23,8 @@ Concretely:
 - **There is no ambient authority.** With no mounts and no host functions configured, the sandbox cannot read a file,
     read an environment variable, open a socket, or spawn a process.
     Not "it is blocked" — the capability does not exist in the bytecode VM.
+    The wall clock is the one exception, and only for in-process Rust runs, which read it by default; see
+    [the clock](#the-clock).
 - **The interpreter performs no filesystem I/O at all.** It suspends with a description of the operation it wants, and a
     host component decides what to do about it.
     All filesystem code lives in a separate crate (`monty-fs`) that worker artifacts do not even link in some builds.
@@ -284,6 +286,22 @@ Confinement is structural rather than checked:
     A host path never leaks in.
 
 `/tmp`, `/etc`, `/proc`, `/dev`, `~` and the host working directory are not reachable unless you mount them.
+
+### The clock
+
+`date.today()` and `datetime.now()` are the only two calls that read a clock, and what answers them depends on how you
+run the sandbox.
+
+Through the pool — `pydantic_monty`, `@pydantic/monty`, or `monty-pool` — they reach your `os=` handler as OS calls like
+any other, so the sandbox reads no clock until you write a handler that gives it one, and a handler that answers neither
+makes both raise.
+
+In-process Rust runs have no host loop to ask, so they read this machine's clock, as the `monty` CLI does.
+`MontyRun::with_host_clock` changes that: `HostClock::Denied` if sandboxed code should not read your wall time at all,
+`HostClock::Fixed` for a frozen instant.
+
+Wall-clock time is a weak capability, but it is one — it is what makes elapsed time measurable from inside the sandbox,
+and a naive `datetime.now()` is read in the host's local zone, which discloses its UTC offset.
 
 ## Crash isolation
 

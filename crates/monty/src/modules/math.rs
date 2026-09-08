@@ -17,6 +17,7 @@
 //! **Integer math**: `factorial`, `gcd`, `lcm`, `comb`, `perm`
 //! **Modular**: `fmod`, `remainder`, `modf`, `frexp`, `ldexp`
 //! **Special**: `gamma`, `lgamma`, `erf`, `erfc`
+//! **Summation & products**: `hypot`, `dist`, `fsum`, `prod`, `sumprod`, `fma`
 //!
 //! ## Constants
 //!
@@ -25,6 +26,7 @@
 use std::f64::consts;
 
 use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use smallvec::smallvec;
 
 use crate::{
@@ -38,6 +40,8 @@ use crate::{
     types::{LongInt, Module, allocate_tuple},
     value::Value,
 };
+
+mod aggregate;
 
 // ==========================
 // Shared constants and error helpers
@@ -167,6 +171,13 @@ pub(crate) enum MathFunctions {
     Lgamma,
     Erf,
     Erfc,
+    // Summation and products (append to preserve serialized variant indices).
+    Hypot,
+    Dist,
+    Fsum,
+    Prod,
+    Sumprod,
+    Fma,
 }
 
 /// Creates the `math` module and allocates it on the heap.
@@ -258,6 +269,13 @@ const MATH_FUNCTIONS: &[(StaticStrings, MathFunctions)] = &[
     (StaticStrings::Lgamma, MathFunctions::Lgamma),
     (StaticStrings::Erf, MathFunctions::Erf),
     (StaticStrings::Erfc, MathFunctions::Erfc),
+    // Summation and products
+    (StaticStrings::Hypot, MathFunctions::Hypot),
+    (StaticStrings::Dist, MathFunctions::Dist),
+    (StaticStrings::Fsum, MathFunctions::Fsum),
+    (StaticStrings::Prod, MathFunctions::Prod),
+    (StaticStrings::Sumprod, MathFunctions::Sumprod),
+    (StaticStrings::Fma, MathFunctions::Fma),
 ];
 
 /// Dispatches a call to a math module function.
@@ -326,6 +344,12 @@ pub(super) fn call(vm: &mut VM<'_>, function: MathFunctions, args: ArgValues) ->
         MathFunctions::Lgamma => math_lgamma(vm, args),
         MathFunctions::Erf => math_erf(vm, args),
         MathFunctions::Erfc => math_erfc(vm, args),
+        MathFunctions::Hypot => aggregate::hypot(vm, args),
+        MathFunctions::Dist => aggregate::dist(vm, args),
+        MathFunctions::Fsum => aggregate::fsum(vm, args),
+        MathFunctions::Prod => aggregate::prod(vm, args),
+        MathFunctions::Sumprod => aggregate::sumprod(vm, args),
+        MathFunctions::Fma => aggregate::fma(vm, args),
     }
 }
 
@@ -1307,7 +1331,7 @@ fn math_erfc(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Converts a `Value` to `f64`, raising `TypeError` if the value is not numeric.
 ///
-/// Accepts `Float`, `Int`, and `Bool` values. For other types, raises a `TypeError`
+/// Accepts floats, integers (including big integers), and booleans. Other types raise a `TypeError`
 /// with a message matching CPython's format: "must be real number, not <type>".
 #[expect(
     clippy::cast_precision_loss,
@@ -1318,6 +1342,16 @@ fn value_to_float(value: &Value, vm: &VM<'_>) -> RunResult<f64> {
         Value::Float(f) => Ok(*f),
         Value::Int(n) => Ok(*n as f64),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
+        Value::InternLongInt(id) => vm
+            .interns
+            .get_long_int(*id)
+            .to_f64()
+            .filter(|f| f.is_finite())
+            .ok_or_else(ExcType::overflow_int_to_float),
+        Value::Ref(id) if let HeapData::LongInt(integer) = vm.heap.get(*id) => integer
+            .to_f64()
+            .filter(|f| f.is_finite())
+            .ok_or_else(ExcType::overflow_int_to_float),
         _ => Err(ExcType::type_error(format!(
             "must be real number, not {}",
             value.py_type_name(vm)

@@ -70,11 +70,6 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
     order match, but the whole sequence is built up front, so a very large count
     can hit the memory limit where CPython would stream.
 - **Crosses the host boundary as a plain `dict`.**
-- **In-place `c &= [list]`** (a non-mapping) subscripts `other[elem]` like
-    CPython and raises `TypeError`, but with Monty's list-index wording (`list indices must be integers, not 'str'` vs
-    CPython's `... or slices, not str`).
-    Mapping operands (`c &= {'a': 1}`) match CPython exactly, including the
-    `KeyError` for a key missing from a plain dict.
 
 ## Qualified vs bare type names
 

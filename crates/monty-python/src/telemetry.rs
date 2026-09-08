@@ -26,6 +26,8 @@ use pyo3::{
     types::{PyBytes, PyDict, PyList},
 };
 
+use crate::callback_context::CALLBACK_SPAN_KEY;
+
 /// Installed bridge and process-global Rust tracing pipeline.
 struct InstalledBridge {
     bridge: Arc<PythonBridge>,
@@ -126,6 +128,24 @@ pub(crate) fn _install_telemetry(
     BRIDGE
         .set(InstalledBridge { bridge, handle })
         .map_err(|_| PyRuntimeError::new_err("Monty telemetry is already configured"))
+}
+
+/// Resolves a native callback parent to the span created by the host tracer.
+pub(crate) fn callback_context(py: Python<'_>, context: &Context) -> Option<Py<PyAny>> {
+    let bridge = &BRIDGE.get()?.bridge;
+    let span = context.span();
+    let span = span.span_context();
+    let key = SpanKey {
+        trace_id: span.trace_id(),
+        span_id: span.span_id(),
+    };
+    let span = lock(&bridge.spans).get(&key).map(|state| state.span.clone_ref(py))?;
+    let parent = bridge.helpers.set_span_in_context.bind(py).call1((&span,)).ok()?;
+    py.import("opentelemetry.context")
+        .ok()?
+        .call_method1("set_value", (CALLBACK_SPAN_KEY, span, parent))
+        .ok()
+        .map(Bound::unbind)
 }
 
 /// The pool metrics handle when a meter was installed.
