@@ -3,9 +3,43 @@
 // PyO3 does not yet expose safe wrappers for entering and exiting contextvars contexts.
 #![allow(unsafe_code)]
 
-use pyo3::{ffi, prelude::*};
+use pyo3::{ffi, prelude::*, types::PyDict};
 
 use crate::telemetry;
+
+pub(crate) const CALLBACK_SPAN_KEY: &str = "pydantic_monty.callback_span";
+
+/// Runs before callback exceptions are converted into sandbox exception values.
+pub(crate) fn call<T>(py: Python<'_>, callback: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
+    let manager = (|| {
+        // An ambient caller span is not a substitute when Monty tracing is disabled.
+        let span = py
+            .import("opentelemetry.context")?
+            .call_method1("get_value", (CALLBACK_SPAN_KEY,))?;
+        if span.is_none() {
+            return Ok(None);
+        }
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("end_on_exit", false)?;
+        let manager = py
+            .import("opentelemetry.trace")?
+            .call_method("use_span", (span,), Some(&kwargs))?;
+        manager.call_method0("__enter__")?;
+        Ok::<_, PyErr>(Some(manager))
+    })()
+    .ok()
+    .flatten();
+
+    let result = callback();
+    if let Some(manager) = manager {
+        // Telemetry must neither replace the callback result nor cause it to be retried.
+        let _ = match &result {
+            Ok(_) => manager.call_method1("__exit__", (py.None(), py.None(), py.None())),
+            Err(err) => manager.call_method1("__exit__", (err.get_type(py), err.value(py), err.traceback(py))),
+        };
+    }
+    result
+}
 
 #[derive(Debug)]
 pub(crate) struct CallbackContext(Py<PyAny>);

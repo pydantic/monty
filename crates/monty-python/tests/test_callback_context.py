@@ -298,3 +298,90 @@ for name, parent in [('async callback', 'call {function_name}'), ('sync callback
         check=True,
         timeout=60,
     )
+
+
+@pytest.mark.parametrize('kind', ['external', 'os', 'print', 'method', 'attribute'])
+@pytest.mark.parametrize('failure', ['none', 'enter', 'record', 'disabled'])
+def test_synchronous_callback_exception_recording(kind: str, failure: str):
+    subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            r"""
+import sys
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from pydantic_monty import ClassInstance, Monty, MontyRuntimeError, instrument_telemetry
+
+kind, failure = sys.argv[1:]
+exporter = InMemorySpanExporter()
+provider = TracerProvider()
+provider.add_span_processor(SimpleSpanProcessor(exporter))
+tracer = provider.get_tracer('callbacks')
+if failure != 'disabled':
+    instrument_telemetry(tracer=tracer)
+calls = []
+
+def fail(*args):
+    span = trace.get_current_span()
+    assert span.is_recording()
+    calls.append(span.get_span_context().span_id)
+    if failure == 'record':
+        def broken_record(*args, **kwargs):
+            raise RuntimeError('telemetry failed')
+        span.record_exception = broken_record
+    raise ValueError('callback failed')
+
+class HostObject:
+    method = fail
+    attribute = property(fail)
+
+with tracer.start_as_current_span('host') as host:
+    if failure == 'enter':
+        def broken_use_span(*args, **kwargs):
+            raise RuntimeError('telemetry failed')
+        trace.use_span = broken_use_span
+    with Monty() as pool:
+        with pool.checkout() as session:
+            if kind == 'print':
+                try:
+                    session.feed_run("print('hello')", print_callback=fail)
+                except MontyRuntimeError as exc:
+                    assert str(exc) == 'ValueError: callback failed'
+                else:
+                    raise AssertionError('expected print failure')
+            else:
+                expression = {
+                    'external': 'fail()',
+                    'os': "Path('/foo').exists()",
+                    'method': 'obj.method()',
+                    'attribute': 'obj.attribute',
+                }[kind]
+                code = "from pathlib import Path\ntry:\n    " + expression + "\nexcept ValueError:\n    result = 42\nresult"
+                obj = ClassInstance(HostObject(), allowed_methods='all', lazy_attrs='all')
+                assert session.feed_run(code, inputs={'obj': obj}, external_lookup={'fail': fail}, os=fail) == 42
+    assert trace.get_current_span() is host
+    assert host.is_recording()
+assert len(calls) == 1
+spans = exporter.get_finished_spans()
+span, = [s for s in spans if s.context.span_id == calls[0]]
+if failure != 'disabled':
+    assert span.context.span_id != host.get_span_context().span_id
+assert not host.events
+if failure == 'none':
+    event, = span.events
+    assert event.name == 'exception'
+    assert event.attributes['exception.type'] == 'ValueError'
+    assert event.attributes['exception.message'] == 'callback failed'
+    assert 'in fail' in event.attributes['exception.stacktrace']
+    assert span.status.status_code == trace.StatusCode.ERROR
+else:
+    assert not span.events
+""",
+            kind,
+            failure,
+        ],
+        check=True,
+    )

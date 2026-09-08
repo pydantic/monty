@@ -26,6 +26,8 @@ use pyo3::{
     types::{PyBytes, PyDict, PyList},
 };
 
+use crate::callback_context::CALLBACK_SPAN_KEY;
+
 /// Installed bridge and process-global Rust tracing pipeline.
 struct InstalledBridge {
     bridge: Arc<PythonBridge>,
@@ -138,11 +140,10 @@ pub(crate) fn callback_context(py: Python<'_>, context: &Context) -> Option<Py<P
         span_id: span.span_id(),
     };
     let span = lock(&bridge.spans).get(&key).map(|state| state.span.clone_ref(py))?;
-    bridge
-        .helpers
-        .set_span_in_context
-        .bind(py)
-        .call1((span,))
+    let parent = bridge.helpers.set_span_in_context.bind(py).call1((&span,)).ok()?;
+    py.import("opentelemetry.context")
+        .ok()?
+        .call_method1("set_value", (CALLBACK_SPAN_KEY, span, parent))
         .ok()
         .map(Bound::unbind)
 }

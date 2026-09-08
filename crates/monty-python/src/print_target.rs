@@ -31,7 +31,7 @@ use pyo3::{
     types::{PyList, PyString},
 };
 
-use crate::callback_context::CallbackContext;
+use crate::callback_context::{self, CallbackContext};
 
 /// Host bytes charged per retained `(stream, text)` entry beyond the payload.
 ///
@@ -280,7 +280,7 @@ impl PrintTarget {
                     PrintStream::Stdout => "stdout",
                     PrintStream::Stderr => "stderr",
                 };
-                cb.bind(py).call1((stream_name, text))?;
+                callback_context::call(py, || cb.bind(py).call1((stream_name, text)))?;
                 Ok::<_, PyErr>(())
             })
             .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e))),

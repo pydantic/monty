@@ -64,7 +64,7 @@ use tokio::{
 use crate::{
     async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
-    callback_context::CallbackContext,
+    callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
     external::{CallResult, ExternalLookup, dispatch_object_call, resolve_object_attr},
     get_not_handled,
@@ -1808,7 +1808,7 @@ pub(crate) fn dispatch_os_parts(
         for (k, v) in kwargs {
             py_kwargs.set_item(monty_to_py(py, k, instances)?, monty_to_py(py, v, instances)?)?;
         }
-        let result = os_callback.bind(py).call1((function_name, py_args, py_kwargs))?;
+        let result = callback_context::call(py, || os_callback.bind(py).call1((function_name, py_args, py_kwargs)))?;
         if result.is(get_not_handled(py)?.bind(py)) {
             return Ok(ResumeValue::NotHandled);
         }
