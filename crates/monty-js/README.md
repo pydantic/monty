@@ -239,8 +239,9 @@ pass an `externalLookup` (and/or `os`) to `feedStart` and drive with
 `snapshot.resumeAuto()`, which resolves each external call and name lookup from
 them automatically — the same resolution `feedRun` performs, but one step at a
 time so you can inspect or `dump()` each snapshot along the way. A
-promise-returning external is awaited concurrently (surfacing as an intermediate
-`FutureSnapshot`), exactly as under `feedRun`:
+promise-returning external is awaited directly when the snapshot's
+`allowEagerAwait` is true, and otherwise concurrently (surfacing as an
+intermediate `FutureSnapshot`), exactly as under `feedRun`:
 
 ```ts
 let snap = await session.feedStart('greet(name) + "!"', {

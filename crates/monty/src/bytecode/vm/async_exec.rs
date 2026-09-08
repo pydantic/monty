@@ -8,10 +8,10 @@
 
 use std::{mem, task::Poll};
 
-use monty_types::{MontyException, ResourceError, ResourceTracker};
+use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
-use super::{AwaitResult, CallFrame, FrameExit, VM};
+use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM};
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
@@ -32,6 +32,12 @@ use crate::{
 };
 
 impl<'h> VM<'h> {
+    /// Allows eager host resolution only for an immediate await with no competing work.
+    pub(crate) fn allow_eager_await(&self) -> bool {
+        let frame = self.current_frame();
+        frame.bytecode.get(frame.ip) == Some(&(Opcode::Await as u8)) && self.scheduler.can_await_eagerly()
+    }
+
     /// Executes the Await opcode.
     ///
     /// Pops the awaitable from the stack and handles it based on its type:
@@ -983,10 +989,13 @@ impl<'h> VM<'h> {
         for (call_id, ext_result) in results {
             match ext_result {
                 ExtFunctionResult::Return(obj) => {
-                    let value = obj.to_value(self).map_err(|e| {
-                        RunError::from(MontyException::runtime_error(format!(
-                            "Invalid return value for call {call_id}: {e}"
-                        )))
+                    // A resource error is a `MemoryError` here as in `resume`,
+                    // so a large host value is not misreported as a bad type.
+                    let value = obj.to_value(self).map_err(|e| match e {
+                        InvalidInputError::Resource(err) => RunError::from(err),
+                        other @ InvalidInputError::InvalidType(_) => RunError::from(MontyException::runtime_error(
+                            format!("Invalid return value for call {call_id}: {other}"),
+                        )),
                     })?;
                     self.resolve_future(call_id, value);
                 }

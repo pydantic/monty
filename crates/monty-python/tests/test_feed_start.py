@@ -633,12 +633,30 @@ async def test_async_resume_auto_coroutine_external():
         async with pool.checkout() as session:
             snap = await session.feed_start(code, external_lookup={'go': go})
             assert isinstance(snap, AsyncFunctionSnapshot)
-            # the coroutine is spawned and answered with a pending future
-            fut = await snap.resume_auto()
-            assert isinstance(fut, AsyncFutureSnapshot)
-            done = await fut.resume_auto()
+            assert snap.allow_eager_await
+            done = await snap.resume_auto()
             assert isinstance(done, MontyComplete)
             assert done.output == snapshot(99)
+
+
+async def test_async_allow_eager_await_survives_snapshot_restore():
+    """A restored call retains eager eligibility and finishes without a future suspension."""
+
+    async def go() -> list[int]:
+        return [42]
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap = await session.feed_start('await go()', external_lookup={'go': go})
+            assert isinstance(snap, AsyncFunctionSnapshot)
+            blob = snap.dump()
+        async with pool.checkout() as session:
+            restored = await session.load_snapshot(blob, external_lookup={'go': go})
+            assert isinstance(restored, AsyncFunctionSnapshot)
+            assert restored.allow_eager_await
+            done = await restored.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == [42]
 
 
 async def test_async_resume_auto_multiple_pending_coroutines():

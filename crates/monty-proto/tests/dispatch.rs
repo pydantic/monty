@@ -7,11 +7,146 @@
 
 use monty::{DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
 use monty_proto::{
-    FrameReader, PROTOCOL_VERSION, WireObject, pb,
+    FrameReader, PROTOCOL_VERSION, WireFunctionCall, WireObject, pb,
     worker::{Child, HandleOutcome, dispatch_frame},
     write_frame,
 };
 use monty_types::{CompileOptions, MONTY_VERSION, MontyObject, PrintWriter, ResourceTracker};
+
+/// Starts a feed with `f` already bound, leaving the worker at its first external call.
+fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
+    create_repl(child);
+    let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
+        code: code.to_owned(),
+        inputs: vec![pb::NamedValue {
+            name: "f".to_owned(),
+            value: Some(
+                MontyObject::Function {
+                    name: "f".to_owned(),
+                    docstring: None,
+                }
+                .into(),
+            ),
+        }],
+        skip_type_check: false,
+    }));
+    let (bytes, _) = dispatch_frame(child, &request);
+    let (_, event) = split_turn(&bytes);
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected call, got {event:?}")
+    };
+    call
+}
+
+/// Constructs one settled or malformed future reply without bypassing wire validation.
+fn future_reply(call_id: u32, kind: pb::ext_function_result::Kind) -> pb::FutureResult {
+    pb::FutureResult {
+        call_id,
+        result: Some(pb::ExtFunctionResult { kind: Some(kind) }),
+    }
+}
+
+/// Each eager reply advances directly to the next call or completion.
+#[test]
+fn allow_eager_await_uses_one_reply_per_call() {
+    let mut child = Child::default();
+    let mut call = start_external_call(&mut child, "a = await f()\nb = await f()\na + b");
+    for n in [10, 20] {
+        assert!(call.allow_eager_await);
+        let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+            results: vec![future_reply(
+                call.call_id,
+                pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(n).into()),
+            )],
+        }));
+        let (bytes, outcome) = dispatch_frame(&mut child, &request);
+        assert_eq!(outcome, HandleOutcome::Continue);
+        let (_, event) = split_turn(&bytes);
+        if n == 10 {
+            let pb::child_event::Kind::FunctionCall(next) = event else {
+                panic!("expected next call, got {event:?}")
+            };
+            call = next;
+        } else {
+            assert_eq!(expect_complete(event), MontyObject::Int(30));
+        }
+    }
+}
+
+/// Invalid eager replies leave the suspension available for a valid retry.
+#[test]
+fn allow_eager_await_rejects_malformed_replies() {
+    let mut child = Child::default();
+    let call = start_external_call(&mut child, "await f()");
+    assert!(call.allow_eager_await);
+    let value = pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(42).into());
+    for results in [
+        vec![],
+        vec![future_reply(call.call_id + 1, value.clone())],
+        vec![
+            future_reply(call.call_id, value.clone()),
+            future_reply(call.call_id, value.clone()),
+        ],
+        vec![future_reply(
+            call.call_id,
+            pb::ext_function_result::Kind::Future(call.call_id),
+        )],
+        vec![future_reply(
+            call.call_id,
+            pb::ext_function_result::Kind::NotFound("f".to_owned()),
+        )],
+        vec![pb::FutureResult {
+            call_id: call.call_id,
+            result: None,
+        }],
+    ] {
+        let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results }));
+        let (bytes, outcome) = dispatch_frame(&mut child, &request);
+        assert_eq!(outcome, HandleOutcome::Continue);
+        assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Error(_)));
+    }
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+        results: vec![future_reply(call.call_id, value)],
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::Int(42));
+}
+
+/// Older hosts can ignore the hint; calls without the hint reject the new reply sequence.
+#[test]
+fn allow_eager_await_preserves_legacy_replies() {
+    let mut child = Child::default();
+    let call = start_external_call(&mut child, "await f()");
+    let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+        call_id: call.call_id,
+        result: Some(pb::ExtFunctionResult {
+            kind: Some(pb::ext_function_result::Kind::Future(call.call_id)),
+        }),
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::ResolveFutures(_)));
+    let value = pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(42).into());
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+        results: vec![future_reply(call.call_id, value.clone())],
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::Int(42));
+
+    let mut child = Child::default();
+    let call = start_external_call(&mut child, "f()");
+    assert!(!call.allow_eager_await);
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+        results: vec![future_reply(call.call_id, value.clone())],
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Error(_)));
+    let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+        call_id: call.call_id,
+        result: Some(pb::ExtFunctionResult { kind: Some(value) }),
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::Int(42));
+}
 
 /// Frames one request the way a host transport would before posting it.
 fn frame_request(kind: pb::parent_request::Kind) -> Vec<u8> {

@@ -540,7 +540,19 @@ impl TurnMetrics {
                 };
                 self.close_suspension(outcome);
             }
-            Some(pb::parent_request::Kind::ResumeFutures(_)) => self.close_suspension("resolved"),
+            Some(pb::parent_request::Kind::ResumeFutures(r)) => {
+                let outcome = match (&self.pending, r.results.as_slice()) {
+                    (
+                        Some(Suspension {
+                            kind: SuspensionKind::FunctionCall(Some(call_id)),
+                            ..
+                        }),
+                        [result],
+                    ) if *call_id == result.call_id => ext_result(result.result.as_ref()),
+                    _ => "resolved",
+                };
+                self.close_suspension(outcome);
+            }
             Some(pb::parent_request::Kind::AbortFeed(_)) => self.close_suspension("aborted"),
             None => {}
         }
@@ -561,7 +573,9 @@ impl TurnMetrics {
                 MetricValue::bytes(p.text.len()),
                 &[KeyValue::new("stream", print_stream(p.stream))],
             ),
-            Some(pb::child_event::Kind::FunctionCall(_)) => self.suspend(SuspensionKind::FunctionCall),
+            Some(pb::child_event::Kind::FunctionCall(c)) => {
+                self.suspend(SuspensionKind::FunctionCall(c.allow_eager_await.then_some(c.call_id)));
+            }
             Some(pb::child_event::Kind::OsCall(c)) => self.suspend(SuspensionKind::OsCall(os_call(c.call.as_ref()))),
             Some(pb::child_event::Kind::NameLookup(_)) => self.suspend(SuspensionKind::NameLookup),
             Some(pb::child_event::Kind::ResolveFutures(_)) => self.suspend(SuspensionKind::ResolveFutures),
@@ -719,11 +733,12 @@ struct Suspension {
 /// One variant per suspension the protocol has: the four child events that
 /// hand control to the host and wait for a `Resume*`.
 ///
-/// Only the OS call carries anything, and only values this crate chose. What
-/// the others are *for* — the called function, the looked-up name — is named
-/// by the sandboxed code, so none of it is kept (see the module docs).
+/// Function call IDs correlate eager replies but are never metric attributes.
+/// Only OS calls record their fixed function name; sandbox-chosen names are
+/// omitted to bound cardinality (see the module docs).
 enum SuspensionKind {
-    FunctionCall,
+    /// The call ID when an eager reply is allowed.
+    FunctionCall(Option<u32>),
     /// Carries the call's fixed name, which is the protocol's, not the
     /// sandbox's.
     OsCall(&'static str),
@@ -735,7 +750,7 @@ impl SuspensionKind {
     /// Value of the `kind` attribute this suspension is recorded under.
     const fn label(&self) -> &'static str {
         match self {
-            Self::FunctionCall => "function",
+            Self::FunctionCall(_) => "function",
             Self::OsCall(_) => "os",
             Self::NameLookup => "name_lookup",
             Self::ResolveFutures => "futures",
@@ -1007,6 +1022,7 @@ mod tests {
             kwargs: vec![],
             call_id: 1,
             object_id: None,
+            allow_eager_await: false,
         }))
     }
 

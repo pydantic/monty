@@ -385,6 +385,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                     .collect(),
                 call_id: call.call_id,
                 object_id,
+                allow_eager_await: call.allow_eager_await,
             })
         }
         Some(pb::child_event::Kind::OsCall(_)) => invalid_event("OsCall event bypassed component budget preparation"),

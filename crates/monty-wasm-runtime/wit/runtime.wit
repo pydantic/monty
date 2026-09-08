@@ -309,6 +309,8 @@ interface worker {
         /// Uuid string of the routed receiver (instance or class type);
         /// absent for plain external calls.
         object-id: option<string>,
+        /// A coroutine may settle before replying with resume-futures.
+        allow-eager-await: bool,
     }
 
     /// A suspended name or lazy-attribute lookup.

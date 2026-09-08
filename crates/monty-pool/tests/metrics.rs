@@ -19,12 +19,12 @@ use std::{
 
 use logfire::{Logfire, config::MetricsOptions};
 use monty_pool::{
-    Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
+    Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
     telemetry::{Metrics, TelemetryAdapter, configure_telemetry_adapter},
     telemetry_adapter,
 };
 use monty_proto::pb;
-use monty_types::PrintStream;
+use monty_types::{ExcType, MontyException, MontyObject, PrintStream};
 use opentelemetry::{
     KeyValue,
     trace::{SpanId, TraceId},
@@ -447,6 +447,71 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
         capture.last("monty.print.bytes", "stream", "stdout").value,
         Value::U64(3)
     );
+}
+
+/// Eager replies have sync-style outcomes; deferred replies retain a distinct resolution sample.
+#[tokio::test]
+async fn eager_coroutine_metrics_match_sync_outcomes() {
+    for eager in [true, false] {
+        let (pool, capture) = pool_with_metrics(PoolConfig::subprocess(monty_binary())).await;
+        let mut checkout = pool.checkout(&ReplConfig::default()).await.unwrap();
+        for result in [
+            ResumeValue::Return(MontyObject::Int(42)),
+            ResumeValue::Error(MontyException::new(ExcType::ValueError, Some("failed".to_owned()))),
+        ] {
+            let event = checkout
+                .feed(
+                    "try:\n    await f()\nexcept ValueError:\n    pass",
+                    vec![],
+                    vec![],
+                    false,
+                    &mut no_print,
+                )
+                .await
+                .unwrap();
+            let TurnEvent::FunctionCall {
+                call_id,
+                allow_eager_await: true,
+                ..
+            } = event
+            else {
+                panic!("expected eligible call, got {event:?}");
+            };
+            if !eager {
+                let event = checkout.resume(ResumeValue::Future, &mut no_print).await.unwrap();
+                assert!(matches!(event, TurnEvent::ResolveFutures { .. }));
+            }
+            let event = checkout
+                .resume_futures(vec![(call_id, result)], &mut no_print)
+                .await
+                .unwrap();
+            assert!(matches!(event, TurnEvent::Complete(_)));
+        }
+        checkout.finish().await.unwrap();
+        let samples = capture.named("monty.ext.call.duration");
+        assert_eq!(samples.len(), 2);
+        if eager {
+            assert!(
+                samples
+                    .iter()
+                    .all(|sample| sample.attributes["kind"] == "function" && sample.count == 1)
+            );
+            capture.last("monty.ext.call.duration", "outcome", "value");
+            capture.last("monty.ext.call.duration", "outcome", "error");
+        } else {
+            assert!(samples.iter().all(|sample| sample.count == 2));
+            assert_eq!(
+                capture.last("monty.ext.call.duration", "outcome", "future").attributes["kind"],
+                "function"
+            );
+            assert_eq!(
+                capture
+                    .last("monty.ext.call.duration", "outcome", "resolved")
+                    .attributes["kind"],
+                "futures"
+            );
+        }
+    }
 }
 
 /// A discard-everything print callback, coercible to `OnPrint` at each callsite.

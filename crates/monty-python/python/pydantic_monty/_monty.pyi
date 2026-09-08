@@ -1004,8 +1004,9 @@ class AsyncMontySession:
         As in the sync version, `external_lookup` (and `os`) are captured for
         `await snapshot.resume_auto()` rather than consulted during this initial
         drive. A coroutine external answered by `resume_auto()` is awaited
-        concurrently: it yields an `AsyncFutureSnapshot` whose `resume_auto()`
-        settles the pending coroutines.
+        directly when the snapshot's `allow_eager_await` is true; otherwise it
+        is awaited concurrently and yields an `AsyncFutureSnapshot` whose
+        `resume_auto()` settles the pending coroutines.
 
         Arguments:
             code: The Python snippet to execute; its trailing expression value
@@ -1101,6 +1102,10 @@ class FunctionSnapshot:
     `OsFunction` name; resume with a value, an exception, or
     `resume_not_handled()`.
     """
+
+    @property
+    def allow_eager_await(self) -> bool:
+        """Whether the worker permits eager coroutine resolution at this call."""
 
     @property
     def script_name(self) -> str: ...
@@ -1211,6 +1216,10 @@ class AsyncFunctionSnapshot:
     """Async sibling of `FunctionSnapshot`; `resume`/`resume_not_handled` are awaitable."""
 
     @property
+    def allow_eager_await(self) -> bool:
+        """Whether `resume_auto` may await a coroutine directly at this call."""
+
+    @property
     def script_name(self) -> str: ...
     @property
     def is_os_function(self) -> bool: ...
@@ -1229,9 +1238,8 @@ class AsyncFunctionSnapshot:
     async def resume(self, result: ExternalResult) -> AsyncSnapshot: ...
     async def resume_not_handled(self) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
-        """Async sibling of `FunctionSnapshot.resume_auto`. A coroutine external
-        is spawned and answered with a pending future, so other sandbox tasks
-        keep running; it is later settled by `AsyncFutureSnapshot.resume_auto`."""
+        """Awaits eligible coroutine calls directly. Other coroutines are spawned
+        and later settled by `AsyncFutureSnapshot.resume_auto`."""
 
     def dump(self) -> bytes: ...
     def __repr__(self) -> str: ...

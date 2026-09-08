@@ -415,6 +415,7 @@ export interface FunctionCallEvent {
   kwargs: Array<ValuePair>
   callId: number
   objectId?: string
+  allowEagerAwait: boolean
 }
 export interface NameLookupEvent {
   name: string

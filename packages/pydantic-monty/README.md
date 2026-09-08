@@ -210,8 +210,8 @@ with Monty() as pool:
 
 On `AsyncMonty`, `external_lookup` callables may be coroutine functions and
 `resume_auto` is awaitable (`snapshot = await snapshot.resume_auto()`); a
-coroutine external is awaited concurrently and settled via an
-`AsyncFutureSnapshot`.
+coroutine external is awaited directly when the snapshot's `allow_eager_await`
+is true, and otherwise concurrently, settled via an `AsyncFutureSnapshot`.
 
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's
 `load_snapshot` restores it and returns the snapshot to resume. This lets you

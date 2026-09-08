@@ -532,6 +532,8 @@ message ResumeNameLookup {
 // Answers a `ResolveFutures` suspension with results for some or all pending
 // call ids.
 message ResumeFutures {
+  // Also answers an eager FunctionCall with exactly one result matching its
+  // call_id. The worker creates a settled awaitable before continuing.
   repeated FutureResult results = 1;
 }
 
@@ -648,6 +650,10 @@ message FunctionCall {
   uint32 call_id = 4;
   // The uuid of the receiver; absent for plain external function calls.
   Uuid object_id = 5;
+  // The host may await a coroutine and answer with ResumeFutures for this
+  // call_id. Synchronous results use ResumeCall; returning a pending
+  // future remains valid. Absent/false requires the ordinary call reply.
+  bool allow_eager_await = 6;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent

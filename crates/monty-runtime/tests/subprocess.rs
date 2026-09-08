@@ -375,6 +375,7 @@ fn near_limit_suspension_is_refused_cleanly() {
             kwargs: vec![],
             call_id: 1,
             object_id: None,
+            allow_eager_await: false,
         })),
         ..Default::default()
     };
