@@ -95,9 +95,11 @@ These names are absent from the module namespace rather than stubbed, so they ar
     at all (see [typing.md](typing.md)). The type checker accepts the expression, so this is one of the few divergences
     the stubs
     cannot reject up front. Annotations are unaffected, Monty stringizing them rather than evaluating them.
-- **A `partial` or cached function crossing the host boundary marshals as its `repr`.** Python and JavaScript hosts
-    receive `MontyObject::Repr("functools.partial(...)")` rather than a callable, since neither side can call back into
-    a value that only exists inside the sandbox.
+- **A `partial` or cached function crossing the host boundary marshals as its `repr`.** Neither side can call back
+    into a value that only exists inside the sandbox, so Python and JavaScript hosts receive
+    `MontyObject::Repr("functools.partial(...)")` for a partial and
+    `MontyObject::Repr("<functools._lru_cache_wrapper object at 0x…>")` for a cached function, rather than a callable.
+    The two type objects do cross as themselves, `functools.partial` and `functools._lru_cache_wrapper`.
 
 ## Notes
 

@@ -1273,6 +1273,26 @@ fn repl_abandoned_lookup_releases_in_flight_state() {
     assert_eq!(repl.heap_entry_count(), control);
 }
 
+/// Neither a `partial` nor a cached function can be handed to a host as
+/// something callable, so both cross as their repr — the forms
+/// ./limitations/functools.md quotes.
+#[test]
+fn repl_functools_callables_cross_as_their_repr() {
+    let (mut repl, _) = init_repl("import functools\np = functools.partial(len, [1])\nf = functools.cache(len)");
+    assert_eq!(
+        feed_run_print(&mut repl, "p").unwrap(),
+        MontyObject::Repr("functools.partial(<built-in function len>, [1])".to_owned())
+    );
+    let MontyObject::Repr(cached) = feed_run_print(&mut repl, "f").unwrap() else {
+        panic!("expected the cached wrapper to cross as a repr")
+    };
+    // The address is the wrapper's heap id, so only its shape is pinned here.
+    assert!(
+        cached.starts_with("<functools._lru_cache_wrapper object at 0x"),
+        "unexpected repr: {cached}"
+    );
+}
+
 /// A cached call suspended on an external function owns the wrapper and the
 /// key it is going to store under, and both live on the frame it pushed rather
 /// than on the operand stack. Abandoning the snippet must release them, or a
