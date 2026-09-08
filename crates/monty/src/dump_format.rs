@@ -26,7 +26,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// rejected instead of decoding as their neighbour. That covers the
 /// interpreter's own types *and* everything reachable from [`Dump`] — notably
 /// [`TypeCheckingConfig`](monty_types::TypeCheckingConfig) in `monty-types`.
-pub const DUMP_VERSION: u16 = 8;
+pub const DUMP_VERSION: u16 = 9;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
@@ -174,7 +174,7 @@ impl Error for DumpError {}
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{MontyType, TypeCheckingFormat};
+    use monty_types::{BuiltinsFunctions, MontyType, TypeCheckingFormat};
     use strum::VariantNames;
 
     use super::DUMP_VERSION;
@@ -197,7 +197,7 @@ mod tests {
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0x782b_66f9_b630_180a,
+            0x8bc6_84ec_a12c_3edc,
             "static strings changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
@@ -223,13 +223,21 @@ mod tests {
             0x091c_2e22_e9b8_f5ee,
             "MontyType variants changed for dump version {DUMP_VERSION}"
         );
+        // Builtin discriminants are `CallBuiltinFunction` operands, so the enum
+        // is append-only: a new builtin goes after the last variant.
+        assert_eq!(
+            variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
+            0xd5ef_68ff_fc6b_f752,
+            "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}"
+        );
     }
 
     /// FNV-1a over variant names in declaration order.
     ///
     /// `Type` and `MontyType` are postcard-encoded by variant index inside a
-    /// `Dump`, so inserting a variant rewrites what older dumps decode to rather
-    /// than failing the version check. Appending leaves this unchanged for every
+    /// `Dump`, and `BuiltinsFunctions` discriminants are bytecode operands, so
+    /// inserting a variant rewrites what older dumps decode to rather than
+    /// failing the version check. Appending leaves this unchanged for every
     /// existing variant; inserting or reordering does not.
     ///
     /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`,

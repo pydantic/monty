@@ -34,7 +34,7 @@
 //! tracker error reaches the caller even when the intermediate
 //! `fmt::Error` is swallowed by a downstream formatter.
 
-use std::{fmt, mem};
+use std::{fmt, iter, mem};
 
 use monty_types::{ResourceError, ResourceTracker};
 
@@ -122,6 +122,22 @@ impl<'t> StringBuilder<'t> {
         Ok(())
     }
 
+    /// Appends `count` copies of `c`, in chunks with the tracker's clock polled
+    /// between them so a wide padding request stays interruptible.
+    pub fn push_repeated(&mut self, c: char, count: usize) -> Result<(), ResourceError> {
+        let mut remaining = count;
+        let mut chunk = 0;
+        while remaining > 0 {
+            self.tracker.check_time_every(chunk)?;
+            chunk += 1;
+            let take = remaining.min(FILL_CHUNK);
+            self.ensure(self.inner.len().saturating_add(take.saturating_mul(c.len_utf8())))?;
+            self.inner.extend(iter::repeat_n(c, take));
+            remaining -= take;
+        }
+        Ok(())
+    }
+
     /// Consumes the builder and allocates the resulting string in `heap`.
     ///
     /// If a prior [`fmt::Write`] call captured a tracker error, that error is
@@ -145,20 +161,88 @@ impl<'t> StringBuilder<'t> {
     }
 
     fn ensure(&mut self, needed: usize) -> Result<(), ResourceError> {
-        if needed > self.approved_capacity {
-            // Match `Vec`'s doubling policy so an n-byte build incurs O(log n)
-            // allocator checks rather than one check per push.
-            let new_capacity = self.approved_capacity.saturating_mul(2).max(needed);
-            let additional = new_capacity - self.approved_capacity;
-            self.tracker.check_allocation(additional)?;
-            check_string_capacity(new_capacity)?;
-            self.approved_capacity = new_capacity;
-        }
-        Ok(())
+        approve_growth(&mut self.approved_capacity, needed, self.tracker)
     }
 }
 
+/// Resource-tracked builder for a `Vec<u8>`: the [`StringBuilder`]
+/// counterpart for byte output, with the same preflighted 2× growth.
+pub struct BytesBuilder<'t> {
+    inner: Vec<u8>,
+    tracker: &'t ResourceTracker,
+    /// Capacity already approved by the tracker.
+    approved_capacity: usize,
+}
+
+impl<'t> BytesBuilder<'t> {
+    /// Existing capacity is already tracker-accounted; only later growth needs preflight.
+    pub fn from_existing(inner: Vec<u8>, tracker: &'t ResourceTracker) -> Self {
+        let approved_capacity = inner.capacity();
+        Self {
+            inner,
+            tracker,
+            approved_capacity,
+        }
+    }
+
+    /// Creates a builder with `capacity` bytes reserved up front, after one tracker check.
+    pub fn with_capacity(capacity: usize, tracker: &'t ResourceTracker) -> Result<Self, ResourceError> {
+        tracker.check_allocation(capacity)?;
+        check_string_capacity(capacity)?;
+        Ok(Self {
+            inner: Vec::with_capacity(capacity),
+            tracker,
+            approved_capacity: capacity,
+        })
+    }
+
+    /// Appends a byte slice after checking any required capacity increase.
+    pub fn push_slice(&mut self, bytes: &[u8]) -> Result<(), ResourceError> {
+        let needed = self.inner.len().saturating_add(bytes.len());
+        approve_growth(&mut self.approved_capacity, needed, self.tracker)?;
+        self.inner.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Appends `count` copies of `byte`, in chunks with the tracker's clock
+    /// polled between them so a wide padding request stays interruptible.
+    pub fn push_repeated(&mut self, byte: u8, count: usize) -> Result<(), ResourceError> {
+        let mut remaining = count;
+        let mut chunk = 0;
+        while remaining > 0 {
+            self.tracker.check_time_every(chunk)?;
+            chunk += 1;
+            let take = remaining.min(FILL_CHUNK);
+            let needed = self.inner.len().saturating_add(take);
+            approve_growth(&mut self.approved_capacity, needed, self.tracker)?;
+            self.inner.resize(needed, byte);
+            remaining -= take;
+        }
+        Ok(())
+    }
+
+    /// Consumes the builder and returns the bytes.
+    pub fn finish(self) -> Vec<u8> {
+        self.inner
+    }
+}
+
+/// Approves growth to `needed` bytes against the tracker, doubling the
+/// approved capacity like `Vec` so an n-byte build incurs O(log n) checks.
+fn approve_growth(approved: &mut usize, needed: usize, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+    if needed > *approved {
+        let new_capacity = approved.saturating_mul(2).max(needed);
+        tracker.check_allocation(new_capacity - *approved)?;
+        check_string_capacity(new_capacity)?;
+        *approved = new_capacity;
+    }
+    Ok(())
+}
+
 const MAX_STRING_CAPACITY: usize = isize::MAX as usize;
+
+/// Fill bytes appended between tracker clock polls by `push_repeated`.
+const FILL_CHUNK: usize = 4096;
 
 /// A capacity above `isize::MAX` panics inside the reservation itself, before
 /// the allocator can refuse it, so both reservation paths fence it here.

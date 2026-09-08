@@ -505,6 +505,21 @@ fn timeout_in_sum_builtin() {
     assert_timeout_in_builtin("sum(range(10**18))", "sum(range(10**18))");
 }
 
+/// Math aggregations must interrupt infinite iterators while inside one native call.
+#[test]
+fn timeout_in_math_aggregations() {
+    for expression in [
+        "math.prod(itertools.repeat(1))",
+        "math.fsum(itertools.repeat(1.0))",
+        "math.dist(itertools.repeat(0), [])",
+        "math.dist([], itertools.repeat(0))",
+        "math.sumprod(itertools.repeat(1), itertools.repeat(1))",
+        "math.sumprod(itertools.repeat(1.0), itertools.repeat(1.0))",
+    ] {
+        assert_timeout_in_builtin(&format!("import math\nimport itertools\n{expression}"), expression);
+    }
+}
+
 /// Test that `list(range(huge))` respects the time limit.
 ///
 /// The `list()` constructor drains its concrete Python iterator.
@@ -944,25 +959,28 @@ fn timeout_in_str_format_parser() {
     );
 }
 
+/// Copying the receiver is only a few milliseconds of work, so this compares
+/// the tracker's execution clock rather than wall time: compiling the feed and
+/// tearing down the 20 MB buffer would otherwise be a large share of both runs.
 #[test]
 fn timeout_in_str_format_receiver_snapshot() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run("template = '{missing}' + 'x' * 20_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
 
-    let start = Instant::now();
+    let before = repl.tracker().elapsed();
     let exc = repl
         .feed_run("template.format()", vec![], PrintWriter::Stdout)
         .expect_err("the missing field must fail after snapshotting the receiver");
-    let full_snapshot = start.elapsed();
+    let full_snapshot = repl.tracker().elapsed().saturating_sub(before);
     assert_eq!(exc.exc_type(), ExcType::KeyError);
 
+    // resets the execution clock, so the next feed's elapsed time starts at zero
     repl.tracker_mut().set_max_duration(full_snapshot / 10);
-    let start = Instant::now();
     let exc = repl
         .feed_run("template.format()", vec![], PrintWriter::Stdout)
         .expect_err("the receiver snapshot must hit the time limit before field lookup");
-    let elapsed = start.elapsed();
+    let elapsed = repl.tracker().elapsed();
 
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     assert!(

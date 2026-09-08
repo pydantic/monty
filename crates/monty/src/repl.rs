@@ -9,10 +9,12 @@
 //! cloned, so the cost of a feed depends on the snippet, not on how much the
 //! session has already run.
 
-use std::mem;
+use std::{mem, ops::ControlFlow};
 
 use ahash::AHashMap;
-use monty_types::{ExcType, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker};
+use monty_types::{
+    ExcType, HostClock, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
+};
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
 
@@ -27,7 +29,7 @@ use crate::{
     intern::Interns,
     name_map::NameMap,
     object_bridge::MontyObjectExt,
-    run::{CompileOptions, Executor},
+    run::{CompileOptions, Executor, default_clock},
     run_progress::{
         ConvertedExit, ExtFunctionResult, ExtFunctionResultExt, LookupAnswer, LookupScope, NameLookupResult,
         convert_frame_exit, resume_lookup,
@@ -74,6 +76,12 @@ pub struct MontyRepl {
     /// at construction so all snippets compile consistently.
     #[serde(default)]
     options: CompileOptions,
+    /// Clock serving `date.today()` / `datetime.now()` on the non-suspending
+    /// [`feed_run`](Self::feed_run) and [`call_function`](Self::call_function)
+    /// paths. The host's own unless changed; see
+    /// [`with_host_clock`](Self::with_host_clock).
+    #[serde(default = "default_clock")]
+    clock: HostClock,
     /// Persistent heap across snippets.
     heap: Heap,
     /// Persistent global variable values across snippets.
@@ -101,9 +109,23 @@ impl MontyRepl {
             interns: Interns::default(),
             sources: AHashMap::new(),
             options,
+            clock: default_clock(),
             heap,
             globals: Vec::new(),
         }
+    }
+
+    /// Chooses what `date.today()` and `datetime.now()` read, replacing the
+    /// [`System`](HostClock::System) clock a session starts with.
+    ///
+    /// Only the non-suspending [`feed_run`](Self::feed_run) and
+    /// [`call_function`](Self::call_function) consult it. Under
+    /// [`feed_start`](Self::feed_start) the host answers both calls itself, so
+    /// a clock set here is ignored.
+    #[must_use]
+    pub fn with_host_clock(mut self, clock: HostClock) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Injects `fault` into a compiled function's metadata.
@@ -262,7 +284,8 @@ impl MontyRepl {
             &mut self.interns,
             &input_names,
             self.options,
-        )?;
+        )?
+        .with_clock(self.clock);
 
         self.ensure_globals_size(executor.namespace_size());
 
@@ -337,7 +360,8 @@ impl MontyRepl {
             self.global_names.clone(),
             &mut self.interns,
             self.options,
-        )?;
+        )?
+        .with_clock(self.clock);
         self.sources.insert(input_script_name, executor.code.clone());
 
         let original_globals_len = self.globals.len();
@@ -376,10 +400,16 @@ impl MontyRepl {
                                 vm.push(value);
                                 vm.run_external()
                             }
-                            Ok(exit) => {
-                                let error = vm.unsupported_frame_exit("MontyRepl::call_function", exit);
-                                vm.resume_with_exception(error)
-                            }
+                            // A granted clock is the session's, not the entry
+                            // point's: `date.today()` / `datetime.now()` are
+                            // answered here exactly as `feed_run` answers them.
+                            Ok(exit) => match executor.resolve_clock_call(vm, exit) {
+                                ControlFlow::Continue(resumed) => resumed,
+                                ControlFlow::Break(exit) => {
+                                    let error = vm.unsupported_frame_exit("MontyRepl::call_function", exit);
+                                    vm.resume_with_exception(error)
+                                }
+                            },
                             Err(error) => {
                                 break Err(error.into_python_exception(&executor.interns, |fname| {
                                     self.sources.get(fname).map(String::as_str)

@@ -1159,6 +1159,17 @@ pub enum StaticStrings {
     Batched,
     /// `itertools.zip_longest()` function.
     ZipLongest,
+
+    // ==========================
+    // math summation and product functions. Appended at the enum end rather
+    // than beside the other math names: discriminants are serialized
+    // `StringId`s, so mid-enum insertion would shift every later id.
+    Hypot,
+    Dist,
+    Fsum,
+    Prod,
+    Sumprod,
+    Fma,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

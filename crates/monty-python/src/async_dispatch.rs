@@ -8,7 +8,7 @@
 use monty_proto::python::InstanceStore;
 use monty_types::{ExtFunctionResult, MontyObject, MontyUuid};
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
-use pyo3_async_runtimes::tokio::into_future;
+use pyo3_async_runtimes::{into_future_with_locals, tokio::get_current_locals};
 use tokio::task::{JoinError, JoinSet};
 
 use crate::external::{
@@ -46,7 +46,10 @@ pub(crate) fn spawn_coroutine_task(
     instances: &InstanceStore,
 ) -> PyResult<()> {
     let instances = Python::attach(|py| instances.clone_ref(py));
-    let future = Python::attach(|py| into_future(coro.into_bound(py)))?;
+    let future = Python::attach(|py| {
+        let locals = get_current_locals(py)?.copy_context(py)?;
+        into_future_with_locals(&locals, coro.into_bound(py))
+    })?;
 
     join_set.spawn(async move {
         match future.await {

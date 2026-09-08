@@ -142,7 +142,7 @@ fn bind_slow<const N: usize>(
     if spec.vectorcall && n_kw == 0 && n_pos > spec.n_positional {
         return Err(ExcType::type_error_at_most(spec.func_name, spec.n_positional, n_pos));
     }
-    if spec.at_most_total && n_pos + n_kw > spec.n_positional {
+    if spec.at_most_total && n_pos + n_kw > spec.params.len() {
         return Err(total_overflow_error(spec, n_pos, n_kw));
     }
     if spec.uses_c_method_arity() && n_pos < spec.n_required_pos_only {
@@ -295,7 +295,7 @@ pub(crate) struct ParamSpec {
     pub varargs: bool,
     /// `**kwargs` — unmatched kwargs are collected instead of erroring.
     pub varkwargs: bool,
-    /// Pre-count `positional + kwarg` against `n_positional` before dispatch,
+    /// Pre-count `positional + kwarg` against all named slots before dispatch,
     /// reproducing `PyArg_ParseTupleAndKeywords`' total pre-check. Set per
     /// function from CPython's observed behaviour — not derivable from the
     /// field shapes (identical signatures differ by parser generation).
@@ -643,12 +643,9 @@ fn unpack_arity_error(spec: &ParamSpec, n_pos: usize) -> Option<RunError> {
 fn total_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> RunError {
     let total = n_pos + n_kw;
     match spec.family {
-        ErrorFamily::C {
-            positional_pivot: false,
-        } => ExcType::type_error_c_at_most(spec.n_positional, total),
-        ErrorFamily::C { positional_pivot: true } => ExcType::type_error_c_at_most_positional(spec.n_positional, total),
+        ErrorFamily::C { .. } => ExcType::type_error_c_at_most(spec.params.len(), total),
         // Clinic / CNamed (`def`/`unpack` reject the flag at derive time).
-        _ => ExcType::type_error_method_at_most(spec.func_name, spec.n_positional, total, n_pos == 0),
+        _ => ExcType::type_error_method_at_most(spec.func_name, spec.params.len(), total, n_pos == 0),
     }
 }
 

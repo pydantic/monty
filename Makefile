@@ -184,6 +184,7 @@ pytest: ## Run Python tests with pytest
 
 .PHONY: test-py
 test-py: dev-py pytest ## Build the python package (debug profile) and run tests
+	cargo test -p pydantic-monty-client --lib
 
 .PHONY: test-docs
 test-docs: dev-py ## Test docs examples only (docs/, README.md, crates/monty-python/README.md)

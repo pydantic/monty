@@ -8,7 +8,7 @@ description = "The monty CLI binary — spawned as worker subprocesses by pydant
 readme = "README.md"
 requires-python = ">=3.10"
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Programming Language :: Rust",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
