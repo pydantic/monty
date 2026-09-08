@@ -252,3 +252,33 @@ assert shadowing.outer_value == 10
 assert shadowing.body_lookup == [30]
 assert shadowing.filter_lookup == [30]
 assert shadowing.later_iterable == [30]
+
+
+# A class-body store after a comprehension capture still creates a class
+# member; the comprehension keeps the enclosing function's value.
+def make_post_capture_class(outer_value):
+    class PostCapture:
+        body_lookup = [outer_value for _ in range(1)]
+        outer_value = 10
+
+    return PostCapture
+
+
+post_capture = make_post_capture_class(30)
+assert post_capture.body_lookup == [30]
+assert post_capture.outer_value == 10
+
+
+# A comprehension target is isolated from a later class-body store of the
+# same name.
+def make_target_store():
+    class TargetStore:
+        body_lookup = [target for target in range(1)]
+        target = 5
+
+    return TargetStore
+
+
+target_store = make_target_store()
+assert target_store.body_lookup == [0]
+assert target_store.target == 5

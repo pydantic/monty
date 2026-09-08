@@ -269,6 +269,8 @@ struct FunctionState {
     locals: NameMap,
     /// Names declared `global` in this function — resolve to module globals.
     global_names: AHashSet<StringId>,
+    /// Names declared `nonlocal` in this function — resolve to enclosing cells.
+    nonlocal_names: AHashSet<StringId>,
     /// Names bound in THIS scope (params + body-assigned, minus globals).
     /// A read of any of these resolves to `NameScope::Local`.
     assigned_names: AHashSet<StringId>,
@@ -628,6 +630,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             state: PrepareState::Function(Box::new(FunctionState {
                 locals,
                 global_names,
+                nonlocal_names: nonlocal_names.clone(),
                 assigned_names,
                 enclosing_locals,
                 free_var_map,
@@ -2179,13 +2182,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
             return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Global));
         }
 
-        // A class member bound earlier in the body keeps class-namespace
-        // semantics even when the same name also has a comprehension capture.
-        if self.is_class_scope && !self.skip_class_scope && self.bound_class_members.contains(&name_id) {
-            let slot = fn_state
-                .locals
-                .get(name_id)
-                .expect("bound class member has a local slot");
+        // Class-body stores always bind the class namespace, even when a
+        // nested comprehension has already captured the same name. Explicit
+        // `nonlocal` stores remain cell stores, as in CPython.
+        if !is_read && self.is_class_scope && !self.skip_class_scope && !fn_state.nonlocal_names.contains(&name_id) {
+            let slot = fn_state.locals.ensure_slot(name_id, position)?;
             return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Local));
         }
 
