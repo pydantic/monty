@@ -1737,6 +1737,27 @@ pub enum StaticStrings {
     Combine,
     /// `resolution` class constant of the `datetime` classes.
     Resolution,
+
+    // ==========================
+    // dataclasses module strings, appended for the same reason.
+    /// `dataclasses.field()` function, and the `Field` type name.
+    #[strum(serialize = "field")]
+    Field,
+    /// `dataclasses.MISSING` — the sentinel for an argument not given, since
+    /// `None` is a legitimate default.
+    #[strum(serialize = "MISSING")]
+    Missing,
+    // `field()` keyword arguments not already spelled above (`default`,
+    // `default_factory`, `init`, `repr` and `kw_only` are shared).
+    /// `field(hash=...)`.
+    Hash,
+    /// `field(compare=...)`.
+    Compare,
+    /// `field(metadata=...)`.
+    Metadata,
+    /// `__post_init__` — the hook the synthesized `__init__` calls last.
+    #[strum(serialize = "__post_init__")]
+    PostInit,
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.

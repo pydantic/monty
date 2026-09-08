@@ -13,9 +13,11 @@ wrap them in `ClassInstance` explicitly.
 
 ## Unsupported
 
-`@dataclass`, `@dataclass(...)` with `eq` and/or `frozen`, and `is_dataclass`
-exist. Everything below **raises at decoration time** rather than producing a
-subtly wrong class.
+`@dataclass`, `@dataclass(...)` with `eq` and/or `frozen`, `field()` with
+`default`/`default_factory`, `MISSING`, `__post_init__` and `is_dataclass`
+exist. Everything below **raises where it is written** — at the decoration, or
+at the `field()` call — rather than producing a subtly wrong class, so a class
+body Monty cannot honour never silently misbehaves.
 
 Each raises `NotImplementedError`, marking a feature Monty has not built yet
 rather than a mistake in the calling code. CPython accepts all of them, so the
@@ -29,19 +31,21 @@ around a decoration will not catch these.
     each is named individually rather than reported as an unknown keyword.
     Ordering dunders therefore do not exist, and hashing is whatever `eq`/`frozen`
     imply.
-- **`__post_init__`** — raises
-    `NotImplementedError: dataclass() does not yet support __post_init__ in a class body, which would be silently skipped`.
 - **`InitVar[...]`** — raises
     `NotImplementedError: dataclass() does not yet support InitVar (field <name>), which would become an ordinary field`.
     Detected textually, since annotations are never evaluated: the name need not
     be imported to be rejected.
-- **`field()` / `default_factory` / `MISSING`** — `field(...)` in a class body
-    raises `NameError`. There is no `MISSING` object, so the `Field` attributes
-    whose value would be one raise
-    `NotImplementedError: Field.default is not yet supported, dataclasses.MISSING is not implemented` (likewise
-    `default_factory`, and `default` only for a field that has none).
-    `Field.metadata` and `Field._field_type` raise the same way, for
-    `types.MappingProxyType` and `dataclasses._FIELD`.
+- **Every `field(...)` argument except `default` and `default_factory`** —
+    `init`, `repr`, `hash`, `compare`, `metadata` and `kw_only`. Setting one away
+    from its CPython default raises
+    `NotImplementedError: field() does not yet support the <name> argument`, at the `field()` call rather than at
+    decoration. Nothing consults the three flags when the dunders are
+    synthesized, so `init=False` would otherwise leave the field in `__init__`
+    regardless. They therefore always read back as CPython's defaults
+    (`f.init is True`, `f.kw_only is False`).
+- **`Field.metadata` and `Field._field_type`** — raise
+    `NotImplementedError: Field.metadata is not yet supported, types.MappingProxyType is not implemented` (and likewise
+    `dataclasses._FIELD`), the objects behind them being unimplemented.
 - **Module helpers** — `fields`, `asdict`, `astuple` and `replace` do not exist: accessing them raises
     `AttributeError`, not `NotImplementedError`, since the module has no such attribute.
 
@@ -67,6 +71,23 @@ field after a defaulted one
     `repr(type(field))` is `<class 'Field'>`,
     not `<class 'dataclasses.Field'>` (`Field.__name__` matches either way, so
     attribute errors read the same).
+- **`MISSING` is a marker, not an instance of its own type.** It compares by
+    identity as CPython's does, and `repr(MISSING)` is `MISSING` rather than
+    `<dataclasses._MISSING_TYPE object at 0x..>`, but it shares Monty's internal
+    marker type: `type(MISSING)` reports `<class 'typing._SpecialForm'>` where
+    CPython says `<class 'dataclasses._MISSING_TYPE'>`.
+- **A `default_factory` cannot observe a mid-construction change to the
+    fields.** Every default and factory is read out of `__dataclass_fields__`
+    before the first factory runs, so a factory that rebinds the mapping does
+    not change what the fields after it are given. CPython bakes the same values
+    into the generated `__init__` at decoration, so it agrees; the two differ
+    only if the mapping is rebound *between* constructions, which Monty then
+    honours and CPython ignores.
+- **`default_factory` and `__post_init__` cannot suspend.** Both run in a
+    synchronous position the interpreter cannot preserve and resume, so calling an
+    external function, an `os` function, or awaiting inside one raises
+    `NotImplementedError: dataclass field default_factory: external function 'f' is not yet supported in this context`
+    (and the `__post_init__` equivalent). Ordinary in-sandbox code in them runs normally.
 - **Overwriting `__dataclass_fields__` un-marks the class.** Every dunder reads
     the mapping from the class namespace, so `C.__dataclass_fields__ = 5` makes
     `is_dataclass(C)` false and `C(...)` construct like a plain class. CPython
