@@ -2547,11 +2547,12 @@ pub(crate) fn py_float_divmod(a: f64, b: f64) -> (f64, f64) {
 
 /// Raises `base` to `exp` with CPython's `float_pow` error rules.
 ///
-/// Zero to a negative power is `ZeroDivisionError`, and finite operands whose result
-/// overflows raise `OverflowError` where C's `pow` would set `ERANGE`. Infinite or NaN
-/// operands pass straight through `powf`, whose special cases match C99 `pow`.
+/// Zero to a finite negative power is `ZeroDivisionError`, and finite operands whose
+/// result overflows raise `OverflowError` where C's `pow` would set `ERANGE`. Infinite or
+/// NaN operands pass straight through `powf`, whose special cases match C99 `pow`
+/// (so `0.0 ** -inf` is `inf`, not an error).
 pub(crate) fn float_pow(base: f64, exp: f64) -> RunResult<f64> {
-    if base == 0.0 && exp < 0.0 {
+    if base == 0.0 && exp.is_finite() && exp < 0.0 {
         Err(ExcType::zero_negative_power())
     } else {
         let result = base.powf(exp);

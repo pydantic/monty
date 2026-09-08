@@ -46,6 +46,14 @@ assert str(nan**2) == 'nan'
 assert str(2.0**nan) == 'nan'
 assert pow(inf, 2) == inf
 assert pow(2**70, inf) == inf
+# A zero base with an infinite exponent is not "zero to a negative power".
+assert 0.0**-inf == inf
+assert (-0.0) ** -inf == inf
+assert 0**-inf == inf
+assert False**-inf == inf
+assert pow(0.0, -inf) == inf
+assert 0.0**inf == 0.0
+assert str(0.0**nan) == 'nan'
 
 # === Underflow is silent ===
 assert 2.0**-10000 == 0.0
