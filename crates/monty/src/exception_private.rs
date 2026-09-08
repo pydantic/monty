@@ -1538,6 +1538,18 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "int too large to convert to float").into()
     }
 
+    /// Creates the OverflowError raised when a float power overflows; CPython reports C's `ERANGE`.
+    #[must_use]
+    fn overflow_float_pow() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "(34, 'Result too large')").into()
+    }
+
+    /// Creates the OverflowError raised when `int / int` has a quotient beyond the float range.
+    #[must_use]
+    fn overflow_int_division_to_float() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "integer division result too large for a float").into()
+    }
+
     /// Creates the OverflowError raised when converting an infinite float to an integer.
     #[must_use]
     fn overflow_float_infinity_to_integer() -> RunError {

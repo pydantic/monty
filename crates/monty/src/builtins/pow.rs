@@ -10,8 +10,11 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{Heap, HeapData},
     resource_checks::check_pow_size,
-    types::{LongInt, PyTrait, long_int::modular_pow},
-    value::Value,
+    types::{
+        LongInt, PyTrait,
+        long_int::{bigint_to_f64_checked, modular_pow},
+    },
+    value::{Value, float_pow},
 };
 
 /// Implementation of the pow() builtin function.
@@ -117,29 +120,15 @@ fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
         {
             longint_pow_longint(b_li.inner(), e_li.inner(), vm.heap)
         }
-        (Value::Float(b), Value::Float(e)) => {
-            if *b == 0.0 && *e < 0.0 {
-                Err(ExcType::zero_negative_power())
-            } else {
-                Ok(Value::Float(b.powf(*e)))
-            }
+        (Value::Ref(id), Value::Float(e)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+            Ok(Value::Float(float_pow(li.to_f64_checked()?, *e)?))
         }
-        (Value::Int(b), Value::Float(e)) => {
-            if *b == 0 && *e < 0.0 {
-                Err(ExcType::zero_negative_power())
-            } else {
-                Ok(Value::Float((*b as f64).powf(*e)))
-            }
+        (Value::Float(b), Value::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+            Ok(Value::Float(float_pow(*b, li.to_f64_checked()?)?))
         }
-        (Value::Float(b), Value::Int(e)) => {
-            if *b == 0.0 && *e < 0 {
-                Err(ExcType::zero_negative_power())
-            } else if let Ok(exp_i32) = i32::try_from(*e) {
-                Ok(Value::Float(b.powi(exp_i32)))
-            } else {
-                Ok(Value::Float(b.powf(*e as f64)))
-            }
-        }
+        (Value::Float(b), Value::Float(e)) => Ok(Value::Float(float_pow(*b, *e)?)),
+        (Value::Int(b), Value::Float(e)) => Ok(Value::Float(float_pow(*b as f64, *e)?)),
+        (Value::Float(b), Value::Int(e)) => Ok(Value::Float(float_pow(*b, *e as f64)?)),
         _ => Err(ExcType::binary_type_error(
             "** or pow()",
             base.py_type(vm),
@@ -187,11 +176,7 @@ fn int_pow_longint(b: i64, e: &BigInt, heap: &Heap) -> RunResult<Value> {
     }
     if e.is_negative() {
         // Negative LongInt exponent: return float
-        if let Some(e_f64) = e.to_f64() {
-            Ok(Value::Float((b as f64).powf(e_f64)))
-        } else {
-            Ok(Value::Float(0.0))
-        }
+        Ok(Value::Float((b as f64).powf(bigint_to_f64_checked(e)?)))
     } else if e.is_zero() {
         // x ** 0 = 1 for all x (including 0 ** 0 = 1)
         Ok(Value::Int(1))
@@ -221,11 +206,7 @@ fn longint_pow_int(b: &BigInt, e: i64, heap: &Heap) -> RunResult<Value> {
     }
     if e < 0 {
         // Negative exponent: return float
-        if let (Some(b_f64), Some(e_f64)) = (b.to_f64(), Some(e as f64)) {
-            Ok(Value::Float(b_f64.powf(e_f64)))
-        } else {
-            Ok(Value::Float(0.0))
-        }
+        Ok(Value::Float(bigint_to_f64_checked(b)?.powf(e as f64)))
     } else if let Ok(exp_u32) = u32::try_from(e) {
         // Check size before computing to prevent DoS
         check_pow_size(b.bits(), u64::from(exp_u32), &heap.tracker)?;
@@ -250,11 +231,7 @@ fn longint_pow_longint(b: &BigInt, e: &BigInt, heap: &Heap) -> RunResult<Value> 
     }
     if e.is_negative() {
         // Negative exponent: return float
-        if let (Some(b_f64), Some(e_f64)) = (b.to_f64(), e.to_f64()) {
-            Ok(Value::Float(b_f64.powf(e_f64)))
-        } else {
-            Ok(Value::Float(0.0))
-        }
+        Ok(Value::Float(bigint_to_f64_checked(b)?.powf(bigint_to_f64_checked(e)?)))
     } else if let Some(exp_u32) = e.to_u32() {
         // Check size before computing to prevent DoS
         check_pow_size(b.bits(), u64::from(exp_u32), &heap.tracker)?;

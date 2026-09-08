@@ -18,7 +18,7 @@ use crate::{
         date, datetime,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
-        long_int::INT_MAX_STR_DIGITS,
+        long_int::{INT_MAX_STR_DIGITS, bigint_to_f64_checked},
         str::StringRepr,
         time, timedelta,
     },
@@ -576,8 +576,10 @@ impl Type {
                     Value::InternString(string_id) => {
                         Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
                     }
+                    Value::InternLongInt(id) => Ok(Value::Float(bigint_to_f64_checked(interns.get_long_int(*id))?)),
                     Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
                         HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
+                        HeapData::LongInt(value) => Ok(Value::Float(value.to_f64_checked()?)),
                         _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
                     },
                     _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
