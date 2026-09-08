@@ -1,0 +1,59 @@
+crates/monty/src/args/mod.rs
+  s_38bdd0fe013509::t_de3eea7c3669f4 72-81
+crates/monty/src/args/bind_native.rs
+  s_38bdd0fe013509::t_d9b7b103d6c7dd 145,298,646,648
+crates/monty-macros/README.md
+  s_38bdd0fe013509::t_d9b7b103d6c7dd 88-89
+crates/monty/src/intern.rs
+  s_34e216fc88bcd9::t_01fe7abefdae4f 508-513
+  s_38bdd0fe013509::t_de3eea7c3669f4 507
+crates/monty/test_cases/args__macro_errors.py
+  s_38bdd0fe013509::t_2330e4eb7bc0b0 17,24-53
+crates/monty/src/modules/math/aggregate.rs
+  s_38bdd0fe013509::t_3b40ad42a824ca 172-174,194-197,267-271
+  s_38bdd0fe013509::t_d9b7b103d6c7dd 223
+  s_38bdd0fe013509::t_43fe3b53e0bfc6 184,186-189
+  s_38bdd0fe013509::t_3d04ee32778e5b 4-5
+  s_38bdd0fe013509::t_ea5359761c5428 1-3,6-171,175-183,185,190-193,198-222,224-234,245-266,272-323,325-328,330-339,341-344,346,348-356,358-360,362,382-414
+  s_38bdd0fe013509::t_d194429717ba2b 235-241,243-244
+  s_38bdd0fe013509::t_7fee2caa5e614a 242,324,329,340,345,347,357,361,363-381
+crates/monty/test_cases/math__aggregates.py
+  s_38bdd0fe013509::t_ecc97f837649a4 178-180
+  s_38bdd0fe013509::t_6dc26805456378 25-33
+  s_38bdd0fe013509::t_f2a012c6d94a30 12-13
+  s_38bdd0fe013509::t_24dfa7a876ba9f 191,193-198,200
+  s_38bdd0fe013509::t_9e50cc6de42525 1-11,14-21,24,34-41,43-116,119-140,142-177,181-190,201-229
+  s_38bdd0fe013509::t_494aa58696d3ec 192,199
+  s_38bdd0fe013509::t_5f1c95ef3cffc2 22-23,42,117-118,141
+docs/limitations/math.md
+  s_38bdd0fe013509::t_2330e4eb7bc0b0 19,25-28
+crates/monty/tests/resource_limits.rs
+  s_38bdd0fe013509::t_df608a74cdb827 508-522
+crates/monty/src/modules/math.rs
+  s_38bdd0fe013509::t_de3eea7c3669f4 20,29,44-45,174-180,272-278,347-352,1334,1345-1350
+  s_38bdd0fe013509::t_3b40ad42a824ca 1351-1354
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "319b570d330b26656df9e8d21b82c4079db338e7",
+  "prompts": {},
+  "sessions": {
+    "s_34e216fc88bcd9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3aaba303-7081-4f93-bb35-94c0503fa539",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_38bdd0fe013509": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a07d2e-50cf-7f32-af62-a88f950889c5",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
