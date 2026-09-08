@@ -1,0 +1,23 @@
+crates/monty/test_cases/float__pow.py
+  s_34e216fc88bcd9::t_abaf9250d16568 2-3,22,29
+docs/limitations/builtins.md
+  s_34e216fc88bcd9::t_abaf9250d16568 106-109
+crates/monty/src/exception_private.rs
+  s_34e216fc88bcd9::t_abaf9250d16568 1541-1544,1547
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d8fd29228ba0c724b905e7a3bbeceb0cdfe8f806",
+  "prompts": {},
+  "sessions": {
+    "s_34e216fc88bcd9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3aaba303-7081-4f93-bb35-94c0503fa539",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
