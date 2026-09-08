@@ -387,6 +387,10 @@ assert binascii.b2a_qp(b'x' * 77) == b'x' * 75 + b'=\n' + b'xx'
 assert binascii.b2a_qp(b'x' * 76 + b'\n') == b'x' * 76 + b'\n'
 # an escape is three columns wide and moves to the next line whole
 assert binascii.b2a_qp(b'\xe9' * 30) == b'=E9' * 25 + b'=\n' + b'=E9' * 5
+# an escape that would end exactly on column 76 still moves down a line, so the
+# break comes at 73 literal columns and not at 74
+assert binascii.b2a_qp(b'a' * 72 + b'\xff') == b'a' * 72 + b'=FF'
+assert binascii.b2a_qp(b'a' * 73 + b'\xff') == b'a' * 73 + b'=\n' + b'=FF'
 # the newline the input uses first decides the newline soft breaks use
 assert binascii.b2a_qp(b'a\r\nb' + b'x' * 80) == b'a\r\nb' + b'x' * 74 + b'=\r\n' + b'x' * 6
 assert binascii.b2a_qp(b'a\nb' + b'x' * 80) == b'a\nb' + b'x' * 74 + b'=\n' + b'x' * 6
