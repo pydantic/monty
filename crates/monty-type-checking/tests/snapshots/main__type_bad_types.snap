@@ -28,3 +28,6 @@ bad_types.py:133:19: error[invalid-argument-type] Argument to function `takes_in
 bad_types.py:134:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
 bad_types.py:137:7: error[unresolved-attribute] Module `sys` has no member `copyright`
 bad_types.py:142:7: error[unresolved-attribute] Module `functools` has no member `CacheInfo`
+bad_types.py:152:18: error[invalid-argument-type] Argument to bound method `_lru_cache_wrapper.__call__` is incorrect: Expected `int`, found `Literal["nope"]`
+bad_types.py:153:21: error[too-many-positional-arguments] Too many positional arguments to bound method `_lru_cache_wrapper.__call__`: expected 2, got 3
+bad_types.py:154:18: error[invalid-argument-type] Argument to bound method `_lru_cache_wrapper.__call__` is incorrect: Expected `int`, found `Literal["nope"]`

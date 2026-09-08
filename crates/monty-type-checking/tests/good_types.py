@@ -625,6 +625,19 @@ assert_type(cached_double.cache_info().hits, int)
 assert_type(cached_double.cache_info().currsize, int)
 assert_type(cached_double.__wrapped__(2), int)
 
+
+# Keyword arguments and defaults come through the wrapper too, in every
+# decorator form.
+@functools.lru_cache(maxsize=2)
+def cached_repeat(a: int, b: str = 'x') -> str:
+    return b * a
+
+
+assert_type(cached_repeat(2), str)
+assert_type(cached_repeat(2, 'y'), str)
+assert_type(cached_repeat(2, b='y'), str)
+assert_type(functools.lru_cache(get_list_int)(), list[int])
+
 # Loop variables keep their element type for every iterable, not just lists
 for x_list in get_list_int():
     assert_type(x_list, int)
