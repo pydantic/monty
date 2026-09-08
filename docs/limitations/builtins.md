@@ -116,24 +116,26 @@ These raise `NameError`:
     host callables with the same name share `is`, equality, `id()`, and `hash()`
     results. Once the last sandbox reference is dropped, a later conversion of
     that name may create a new function object.
-- **Type objects across the host boundary** — a `type` object (a class, not an
-    instance) round-trips in both directions.
-    - *Sandbox → host* (external/OS-call argument, or a `.run()` return value): the
+- **Type objects across the host boundary**: conversion of a class object depends on the direction.
+    - *Sandbox → host* (external/OS-call argument, or a `feed_run()` return value): the
         type is reconstructed as the corresponding host class. Genuine builtins
         (`int`, `str`, `type`, `bytes`, `list`, `dict`, `property`, …) resolve to the
         real builtin; Monty's modeled stdlib types map to their host stdlib class:
         `datetime`/`date`/`timedelta`/`timezone` → `datetime.*`,
         `re.Pattern`/`re.Match` → `re.*`, the binary/text file types → `io.*`. The
         `pathlib.Path` class maps to `pathlib.PurePosixPath`, consistent with how Path
-        *instances* round-trip, and instantiable on every host OS. A type with no
-        faithful host class (e.g. an internal function or cell type) cannot be
-        reconstructed and surfaces as an `AttributeError` from the host call.
+        *instances* round-trip, and instantiable on every host OS.
+        A type without an output mapping, such as the generic type used for deque iterators, raises
+        `MontyConversionError: Cannot convert iterator to a host type: no output mapping` from `feed_run()`
+        or `MontyComplete.output`. Catching `MontyError` also catches this error.
+        For callback arguments, the sandbox can catch this `TypeError`; uncaught, it raises `MontyRuntimeError`.
     - *Host → sandbox* (input, or an external-call return value): the same recognized
         builtins and modeled stdlib types are preserved as type objects, so
         `isinstance(x, the_type)` works inside the sandbox. Recognition is by
         type-object **identity**, not class name/module, so a class that forges
         `__name__`/`__module__` to impersonate a builtin is *not* treated as one. Every
         `pathlib` path class collapses to `PurePosixPath` (it re-emerges as
-        `PurePosixPath`). A host class Monty does **not** model (e.g. a user-defined
+        `PurePosixPath`). Output conversion alone does not make a host type a recognized input.
+        A host class Monty does **not** recognize (e.g. a user-defined
         class) is not preserved as a type; it degrades to a callable, appearing inside
         the sandbox as a `function` rather than a `type`.
