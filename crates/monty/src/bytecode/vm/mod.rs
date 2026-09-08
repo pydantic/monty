@@ -622,6 +622,14 @@ impl CallFrame<'_> {
     }
 }
 
+/// Releases what a frame owns once its snapshot is abandoned: only the pending
+/// cache stores, since every other field is plain data.
+impl<C: ContainsHeap> DropWithContext<C> for SerializedFrame {
+    fn drop_with(self, heap: &mut C) {
+        self.cache_stores.drop_with(heap);
+    }
+}
+
 /// VM state for pause/resume at external function calls.
 ///
 /// **Ownership:** This struct OWNS the values (refcounts were already incremented).
@@ -675,12 +683,14 @@ pub struct VMSnapshot {
 impl VMSnapshot {
     /// Discards the in-flight execution state of a snapshot that will never be
     /// restored, releasing every heap reference it holds (operand and exception
-    /// stacks, scheduler tasks, pending resume effects), and returns the globals
-    /// so an abandoned REPL snippet keeps its namespace. Mirrors `VM::drop`.
+    /// stacks, frames' pending cache stores, scheduler tasks, pending resume
+    /// effects), and returns the globals so an abandoned REPL snippet keeps its
+    /// namespace. Mirrors `VM::drop`.
     pub(crate) fn abandon(self, heap: &mut Heap) -> Vec<Value> {
         let Self {
             stack,
             globals,
+            frames,
             exception_stack,
             mut scheduler,
             pending_os_effect,
@@ -692,6 +702,9 @@ impl VMSnapshot {
             pending_lookup_effect.drop_with(heap);
             exception_stack.drop_with(heap);
             stack.drop_with(heap);
+            // A suspended cached call stores nothing, as a raising one does,
+            // so its wrapper and key go here rather than into the cache.
+            frames.drop_with(heap);
             scheduler.cleanup(heap);
         });
         globals
