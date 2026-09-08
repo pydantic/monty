@@ -1538,10 +1538,13 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "int too large to convert to float").into()
     }
 
-    /// Creates the OverflowError raised when a float power overflows; CPython reports C's `ERANGE`.
+    /// Creates the OverflowError raised when a float power overflows.
+    ///
+    /// CPython reports C's `ERANGE` through `strerror`, whose wording depends on the host libc;
+    /// Monty always uses glibc's so sandboxed code sees the same message on every platform.
     #[must_use]
     fn overflow_float_pow() -> RunError {
-        SimpleException::new_msg(ExcType::OverflowError, "(34, 'Result too large')").into()
+        SimpleException::new_msg(ExcType::OverflowError, "(34, 'Numerical result out of range')").into()
     }
 
     /// Creates the OverflowError raised when `int / int` has a quotient beyond the float range.

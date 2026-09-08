@@ -1,4 +1,6 @@
 # === Overflow raises like CPython's float_pow ===
+# CPython's message is strerror(ERANGE), which differs by libc; Monty always uses glibc's.
+ERANGE_MESSAGES = {"(34, 'Numerical result out of range')", "(34, 'Result too large')"}
 for compute in [
     lambda: 1.5**10000,
     lambda: 10.0**400,
@@ -17,14 +19,14 @@ for compute in [
         compute()
         assert False, 'expected OverflowError'
     except OverflowError as e:
-        assert str(e) == "(34, 'Result too large')"
+        assert str(e) in ERANGE_MESSAGES
 
 x = 10.0
 try:
     x **= 400
     assert False, 'expected OverflowError'
 except OverflowError as e:
-    assert str(e) == "(34, 'Result too large')"
+    assert str(e) in ERANGE_MESSAGES
 
 # === Infinite and NaN operands never raise ===
 inf = float('inf')
