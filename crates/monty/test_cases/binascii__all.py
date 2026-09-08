@@ -290,6 +290,18 @@ assert binascii.a2b_uu(b'!  ') == b'\x00'
 # whitespace after the promised bytes is ignored, wherever the line ends
 assert binascii.a2b_uu(b'!80\r\n') == b'a'
 assert binascii.a2b_uu(b'!80   ') == b'a'
+# a newline mid-line decodes as a zero group and the scan carries on past it,
+# so bytes after the break still count towards the promised length
+assert binascii.a2b_uu(b'#\n86)') == b'\x01\x85\x89'
+assert binascii.a2b_uu(b'#8\n6)') == b'`\x05\x89'
+assert binascii.a2b_uu(b'#86\n)') == b'a`\t'
+assert binascii.a2b_uu(b'!\n!') == b'\x00'
+assert binascii.a2b_uu(b'$\n86)+') == b'\x01\x85\x89,'
+# a CR and the LF after it are each consumed as their own zero group
+assert binascii.a2b_uu(b'$\r\n86)') == b'\x00\x06\x16$'
+# once the line is exhausted the padding costs no input, so trailing
+# whitespace after a break is still just whitespace
+assert binascii.a2b_uu(b'!\n!  ') == b'\x00'
 
 # === a2b_uu errors ===
 try:

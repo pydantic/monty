@@ -626,9 +626,16 @@ fn uu_decode(data: &[u8]) -> RunResult<Vec<u8>> {
     let mut leftover: u32 = 0;
     let mut bits = 0_u32;
     while out.len() < remaining {
-        // Once the line runs out — or a newline ends it — the rest is zeros.
         let sextet = match rest.split_first() {
-            Some((b'\n' | b'\r', _)) | None => 0,
+            // A newline stands for spaces an encoder ate off the end of the
+            // line, so it decodes as a zero group like a space would — and is
+            // consumed, leaving anything after it to be decoded in turn.
+            Some((b'\n' | b'\r', tail)) => {
+                rest = tail;
+                0
+            }
+            // Past the end of the line the padding costs no input.
+            None => 0,
             Some((byte, tail)) => {
                 rest = tail;
                 match byte {
