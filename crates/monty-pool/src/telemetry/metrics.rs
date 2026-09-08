@@ -557,14 +557,18 @@ impl TurnMetrics {
         }
         match &event.kind {
             Some(pb::child_event::Kind::Print(p)) => {
-                // One sample per run rather than per event: a run is the
-                // largest span of output that has a single stream to name.
-                for segment in &p.segments {
-                    self.metrics.record(
-                        &PRINT_BYTES,
-                        MetricValue::bytes(segment.text.len()),
-                        &[KeyValue::new("stream", print_stream(segment.stream))],
-                    );
+                // One measurement per stream rather than per run: the
+                // instrument is a counter, so the totals sum identically, and a
+                // sandbox alternating the streams starts a run per fragment.
+                let totals = print_bytes_by_stream(&p.segments);
+                for (stream, bytes) in PRINT_STREAM_NAMES.into_iter().zip(totals) {
+                    if bytes > 0 {
+                        self.metrics.record(
+                            &PRINT_BYTES,
+                            MetricValue::bytes(bytes),
+                            &[KeyValue::new("stream", stream)],
+                        );
+                    }
                 }
             }
             Some(pb::child_event::Kind::FunctionCall(_)) => self.suspend(SuspensionKind::FunctionCall),
@@ -795,13 +799,26 @@ fn os_call(call: Option<&Call>) -> &'static str {
     }
 }
 
-/// The name of a `PrintStream` enum value.
-fn print_stream(stream: i32) -> &'static str {
-    match pb::PrintStream::try_from(stream) {
-        Ok(pb::PrintStream::Stdout) => "stdout",
-        Ok(pb::PrintStream::Stderr) => "stderr",
-        _ => "unspecified",
+/// The stream names a print measurement can be labelled with, in the order
+/// [`print_bytes_by_stream`] totals them.
+///
+/// An unrecognised value keeps its own total rather than folding into stdout,
+/// so a stream added to the protocol later cannot quietly inflate one.
+const PRINT_STREAM_NAMES: [&str; 3] = ["stdout", "stderr", "unspecified"];
+
+/// Totals one `Print` event's text bytes per stream, indexed into
+/// [`PRINT_STREAM_NAMES`].
+fn print_bytes_by_stream(segments: &[pb::PrintSegment]) -> [usize; 3] {
+    let mut totals = [0usize; 3];
+    for segment in segments {
+        let index = match pb::PrintStream::try_from(segment.stream) {
+            Ok(pb::PrintStream::Stdout) => 0,
+            Ok(pb::PrintStream::Stderr) => 1,
+            _ => 2,
+        };
+        totals[index] = totals[index].saturating_add(segment.text.len());
     }
+    totals
 }
 // tests live here rather than in `tests/` because `TurnMetrics` is
 // crate-private: recording is a side effect of the worker, not part of the
@@ -810,7 +827,7 @@ fn print_stream(stream: i32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Barrier},
+        sync::{Arc, Barrier, Mutex, PoisonError},
         thread,
         time::Duration,
     };
@@ -818,13 +835,20 @@ mod tests {
     use logfire::{Logfire, config::MetricsOptions};
     use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
     use monty_types::MontyObject;
-    use opentelemetry::KeyValue;
-    use opentelemetry_sdk::metrics::{
-        InMemoryMetricExporter, PeriodicReader,
-        data::{AggregatedMetrics, MetricData},
+    use opentelemetry::{
+        KeyValue,
+        trace::{SpanId, TraceId},
+    };
+    use opentelemetry_sdk::{
+        logs::SdkLogRecord,
+        metrics::{
+            InMemoryMetricExporter, PeriodicReader,
+            data::{AggregatedMetrics, MetricData},
+        },
+        trace::SpanData,
     };
 
-    use super::{Metrics, TurnMetrics};
+    use super::{Measurement, MetricValue, Metrics, TelemetryAdapter, TurnMetrics, print_bytes_by_stream};
 
     /// A cumulative aggregate exported from the test's Logfire provider.
     struct Capture {
@@ -967,6 +991,43 @@ mod tests {
     }
 
     /// A recorder writing into a fresh local Logfire provider.
+    /// A foreign-SDK adapter that keeps every raw measurement, so a test can
+    /// count them — the aggregated exporter only ever shows their sum.
+    #[derive(Default)]
+    struct MeasurementCapture(Mutex<Vec<(String, String, i64)>>);
+
+    impl TelemetryAdapter for MeasurementCapture {
+        fn start_span(&self, _: &SpanData) -> bool {
+            true
+        }
+
+        fn end_span(&self, _: &SpanData) -> bool {
+            true
+        }
+
+        fn emit_log(&self, _: SpanId, _: &SdkLogRecord) -> bool {
+            true
+        }
+
+        fn disable_root(&self, _: TraceId, _: SpanId) {}
+
+        fn record_metric(&self, measurement: &Measurement<'_>) {
+            let stream = measurement
+                .attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == "stream")
+                .map_or_else(String::new, |kv| kv.value.to_string());
+            let value = match measurement.value {
+                MetricValue::I64(value) => value,
+                other @ MetricValue::F64(_) => panic!("{} recorded {other:?}", measurement.name),
+            };
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((measurement.name.to_owned(), stream, value));
+        }
+    }
+
     fn recorder() -> (TurnMetrics, Arc<Capture>) {
         let exporter = InMemoryMetricExporter::default();
         let logfire = logfire::configure()
@@ -1114,6 +1175,59 @@ mod tests {
             .map(|attributes| attribute(attributes, "outcome").unwrap().to_owned())
             .collect();
         assert_eq!(outcomes, ["error", "not_found", "value"]);
+    }
+
+    /// A sandbox that alternates between the streams starts a segment per
+    /// fragment, so recording one measurement per segment would let it charge
+    /// the host a measurement per byte. The instrument is a counter, so the
+    /// per-stream totals carry the same numbers at one measurement per stream.
+    #[test]
+    fn a_print_event_records_one_measurement_per_stream() {
+        let alternating: Vec<pb::PrintSegment> = (0..64)
+            .map(|i| pb::PrintSegment {
+                stream: if i % 2 == 0 {
+                    pb::PrintStream::Stdout as i32
+                } else {
+                    pb::PrintStream::Stderr as i32
+                },
+                text: "a".to_owned(),
+            })
+            .collect();
+        assert_eq!(print_bytes_by_stream(&alternating), [32, 32, 0]);
+
+        let capture = Arc::new(MeasurementCapture::default());
+        let mut metrics = TurnMetrics::new(Metrics::for_adapter(capture.clone()));
+        metrics.begin_turn(&feed());
+        metrics.event(&event(pb::child_event::Kind::Print(pb::Print {
+            segments: alternating,
+        })));
+
+        let recorded = capture.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert_eq!(
+            recorded,
+            [
+                ("monty.print.bytes".to_owned(), "stdout".to_owned(), 32),
+                ("monty.print.bytes".to_owned(), "stderr".to_owned(), 32),
+            ]
+        );
+    }
+
+    /// A stream that printed nothing gets no measurement, so an unrecognised
+    /// value cannot mint a series for output that never happened.
+    #[test]
+    fn a_print_event_skips_streams_with_no_output() {
+        let capture = Arc::new(MeasurementCapture::default());
+        let mut metrics = TurnMetrics::new(Metrics::for_adapter(capture.clone()));
+        metrics.begin_turn(&feed());
+        metrics.event(&event(pb::child_event::Kind::Print(pb::Print {
+            segments: vec![pb::PrintSegment {
+                stream: pb::PrintStream::Stdout as i32,
+                text: "hello\n".to_owned(),
+            }],
+        })));
+
+        let recorded = capture.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert_eq!(recorded, [("monty.print.bytes".to_owned(), "stdout".to_owned(), 6)]);
     }
 
     /// An os call is the one suspension that names what it did — from the
