@@ -1,0 +1,21 @@
+crates/monty/test_cases/float__pow.py
+  s_34e216fc88bcd9::t_2e2a6545547994 49-56
+crates/monty/src/value.rs
+  s_34e216fc88bcd9::t_2e2a6545547994 2550-2553,2555
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "81c152186b914d2fba0945d5ad7b6c8d0b329abe",
+  "prompts": {},
+  "sessions": {
+    "s_34e216fc88bcd9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3aaba303-7081-4f93-bb35-94c0503fa539",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
