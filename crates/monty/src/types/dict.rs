@@ -582,20 +582,30 @@ impl<'h> HeapRead<'h, Dict> {
     pub fn pop(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Option<(Value, Value)>> {
         // Find the key using the candidate-based lookup
         let (opt_index, _hash) = self.find_index_hash(key, vm)?;
+        Ok(opt_index.map(|index| self.pop_at(index, vm)))
+    }
 
-        if let Some(index) = opt_index {
-            // Remove the entry
-            let entry = self.get_mut(vm.heap).entries.remove(index);
-            // Remove from index table and rebuild (same as dict_popitem)
-            let this = self.get_mut(vm.heap);
-            this.indices.clear();
-            for (idx, e) in this.entries.iter().enumerate() {
-                this.indices.insert_unique(e.hash, idx, |&i| this.entries[i].hash);
-            }
-            Ok(Some((entry.key, entry.value)))
-        } else {
-            Ok(None)
+    /// Removes the entry at dense index `index`, returning its key and value.
+    ///
+    /// Runs no user code — nothing is hashed or compared — so the dict cannot
+    /// change under the caller between choosing a position and removing it.
+    /// That is what `functools.lru_cache` evicts through. Every later entry
+    /// shifts down one, so held indices are stale afterwards.
+    ///
+    /// Reference counting: does not decrement refcounts for the removed key and
+    /// value; caller assumes ownership.
+    ///
+    /// # Panics
+    /// Panics if `index` is out of range — pair it with [`Self::find_entry_index`].
+    pub(crate) fn pop_at(&mut self, index: usize, vm: &mut VM<'h>) -> (Value, Value) {
+        let entry = self.get_mut(vm.heap).entries.remove(index);
+        // The index table holds dense positions, so rebuild it (same as dict_popitem).
+        let this = self.get_mut(vm.heap);
+        this.indices.clear();
+        for (idx, e) in this.entries.iter().enumerate() {
+            this.indices.insert_unique(e.hash, idx, |&i| this.entries[i].hash);
         }
+        (entry.key, entry.value)
     }
 }
 

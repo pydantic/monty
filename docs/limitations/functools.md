@@ -49,6 +49,10 @@ These names are absent from the module namespace rather than stubbed, so they ar
     thousands. Each layer keeps its own cache, so a stacked call that does run is stored by every wrapper it passed
     through. A cached function calling *itself* is unaffected: recursion pushes ordinary Python frames and is bounded
     by `max_recursion_depth` as usual.
+- **Evicting an entry runs no user code.** Monty removes the least recently used entry by position, so a key's
+    `__hash__` and `__eq__` never run during an eviction. CPython pops it out of its cache dict by key, which compares
+    colliding keys, so a key whose `__eq__` has side effects can observe an eviction there — and re-enter the cache
+    while it is in flight.
 - **A cached host function is never cached.** `cache(ext_fn)` calls the host on every call and counts every one as a
     miss: the result comes back from the host after the frame that would have stored it is gone.
     A cached *Python* function that suspends part-way through — because it calls a host function or performs an `os`

@@ -175,6 +175,52 @@ assert zero_calls == [1, 1]
 assert uncached.cache_info() == (0, 2, 0, 0)
 assert functools.lru_cache(maxsize=-5)(lambda n: n).cache_info() == (0, 0, 0, 0)
 
+# === eviction runs no user code ===
+# Monty drops the least recently used entry by position, so a key's `__eq__`
+# cannot re-enter the cache under an eviction already in flight. CPython pops
+# that entry by key, so a colliding `__eq__` does run there (see
+# ./limitations/functools.md).
+reentrant_calls = []
+reentrant_armed = [False]
+
+
+class Colliding:
+    def __init__(self, v):
+        self.v = v
+
+    def __hash__(self):
+        return 1
+
+    def __eq__(self, other):
+        # Only evicting Colliding(2) compares a stored Colliding(1) against it,
+        # so this fills the cache mid-eviction or not at all.
+        if reentrant_armed[0] and self.v == 1 and other.v == 2:
+            reentrant_armed[0] = False
+            reentrant(Colliding(5))
+        return self.v == other.v
+
+
+@functools.lru_cache(maxsize=3)
+def reentrant(k):
+    reentrant_calls.append(k.v)
+    return k.v
+
+
+reentrant(Colliding(1))
+reentrant(Colliding(2))
+reentrant(Colliding(3))
+reentrant(Colliding(1))  # Colliding(2) is now the least recently used
+reentrant_armed[0] = True
+reentrant(Colliding(4))  # evicts Colliding(2)
+# whatever ran while it was evicting, the cache never outgrows `maxsize`
+assert reentrant.cache_info().currsize == 3
+if sys.platform == 'monty':
+    assert reentrant_calls == [1, 2, 3, 4]
+    assert reentrant.cache_info() == (1, 4, 3, 3)
+else:
+    assert reentrant_calls == [1, 2, 3, 4, 5]
+    assert reentrant.cache_info() == (1, 5, 3, 3)
+
 # === decorator forms ===
 # bare, parameterized, and `None` for unbounded
 assert functools.lru_cache(lambda n: n * 2)(3) == 6
