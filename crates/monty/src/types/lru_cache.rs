@@ -351,7 +351,7 @@ fn insert_new<'h>(
     if let Some(maxsize) = maxsize
         && cache.get(vm.heap).cache.len() >= maxsize as usize
     {
-        evict_one(cache, vm)?;
+        evict_one(cache, vm);
     }
 
     let key = replace(key_guard.as_parts_mut().0, Value::None);
@@ -378,30 +378,27 @@ fn insert_new<'h>(
 }
 
 /// Drops the least recently used entry to make room for a new one.
-fn evict_one<'h>(cache: &mut HeapObjectRead<'h, LruCache>, vm: &mut VM<'h>) -> RunResult<()> {
-    let Some(index) = cache.get(vm.heap).lru_index() else {
-        return Ok(());
-    };
-    let Some(key) = cache
-        .get(vm.heap)
-        .cache
-        .key_at(index)
-        .map(|key| key.clone_with_heap(vm))
-    else {
-        return Ok(());
-    };
-    defer_drop!(key, vm);
-    // `Dict::pop` removes the entry from the dense entry vec, shifting
-    // everything after it down — `stamps` must shift in step.
-    if let Some((key, value)) = cache_mut(cache).pop(key, vm)? {
-        key.drop_with(vm);
-        value.drop_with(vm);
+///
+/// Removes it by position rather than by key: looking the key up would compare
+/// it against colliding ones, and a user `__eq__` there is free to fill the
+/// cache under an eviction already in flight — leaving the stamps describing
+/// entries that have moved, and the cache one entry over `maxsize`. Nothing
+/// here runs user code, so the position stays the one that was chosen.
+fn evict_one<'h>(cache: &mut HeapObjectRead<'h, LruCache>, vm: &mut VM<'h>) {
+    let index = {
         let this = cache.get_mut(vm.heap);
-        if index < this.stamps.len() {
-            this.stamps.remove(index);
-        }
-    }
-    Ok(())
+        // The lookup this insertion began with may have run a user `__eq__`
+        // that shrank the cache, leaving stamps the entries no longer have.
+        // The scan below reads them as positions, so drop those first.
+        this.stamps.truncate(this.cache.len());
+        this.lru_index()
+    };
+    let Some(index) = index else { return };
+    // `pop_at` shifts everything after the entry down, so `stamps` shifts too.
+    let (key, value) = cache_mut(cache).pop_at(index, vm);
+    key.drop_with(vm);
+    value.drop_with(vm);
+    cache.get_mut(vm.heap).stamps.remove(index);
 }
 
 /// The pending "store this frame's return value" note a cached call leaves on
