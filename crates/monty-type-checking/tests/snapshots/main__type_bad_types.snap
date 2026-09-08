@@ -27,3 +27,4 @@ bad_types.py:127:19: error[invalid-argument-type] Argument to function `takes_st
 bad_types.py:132:19: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `str`
 bad_types.py:133:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
 bad_types.py:136:7: error[unresolved-attribute] Module `sys` has no member `missing`
+bad_types.py:142:7: error[unresolved-attribute] Module `functools` has no member `CacheInfo`
