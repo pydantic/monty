@@ -2490,6 +2490,8 @@ impl Marker {
     ///
     /// System markers have special repr formats ("<stdout>", "<stderr>").
     /// `typing.Union` uses `<class 'typing.Union'>` format (matching CPython).
+    /// `dataclasses.MISSING` prints its bare name, where CPython prints the
+    /// sentinel object (a documented divergence).
     /// Other typing markers are prefixed with "typing." (e.g., "typing.Any").
     pub(crate) fn py_repr_fmt(self, f: &mut impl Write) -> fmt::Result {
         let s: &'static str = self.0.into();
@@ -2497,6 +2499,7 @@ impl Marker {
             StaticStrings::Stdout => f.write_str("<stdout>")?,
             StaticStrings::Stderr => f.write_str("<stderr>")?,
             StaticStrings::UnionType => f.write_str("<class 'typing.Union'>")?,
+            StaticStrings::Missing => f.write_str("MISSING")?,
             _ => write!(f, "typing.{s}")?,
         }
         Ok(())

@@ -2034,13 +2034,11 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::DataclassField(field) => {
-            // A captured default can reach back to the class the field belongs
-            // to (`x: object = SomeInstanceOfIt`), closing a cycle.
-            if let Value::Ref(id) = field.annotation() {
-                on_child(*id);
-            }
-            if let Some(Value::Ref(id)) = field.default() {
-                on_child(*id);
+            // A captured default or factory can reach back to the class the
+            // field belongs to (`x: object = SomeInstanceOfIt`, or a factory
+            // closure capturing the class), closing a cycle.
+            for value in field.ref_children() {
+                on_child(value);
             }
         }
         HeapData::ListIterator(iter) => on_child(iter.list_id()),

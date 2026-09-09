@@ -18,6 +18,7 @@ use std::{
     mem,
 };
 
+use self::field::{adoptable_field, field_at, field_at_id};
 pub(crate) use self::{field::DataclassField, options::DataclassParams};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
@@ -26,7 +27,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapRead, HeapReadOutput},
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     types::{
@@ -34,7 +35,7 @@ use crate::{
         host_class::{host_class_type, write_dataclass_repr},
         instance::{class_defines, class_dunder, class_name, instance_attr},
     },
-    value::Value,
+    value::{Marker, Value},
 };
 
 /// `dataclasses` module functions — each variant is a Python-visible callable.
@@ -45,6 +46,9 @@ pub(crate) enum DataclassesFunctions {
     Dataclass,
     /// `is_dataclass(obj)` — true for a dataclass class or instance.
     IsDataclass,
+    /// `field(...)` — builds the `Field` a class body binds and the decorator
+    /// then adopts.
+    Field,
     /// The decorator `@dataclass(...)` returns while it waits for the class,
     /// carrying the bound options so `d = dataclass(frozen=True)` then `@d`
     /// works. Named for the user-visible decorator, not the variant.
@@ -70,6 +74,18 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::Builtin(Builtins::ExcType(ExcType::FrozenInstanceError)),
         vm,
     );
+    module.set_attr(
+        StaticStrings::Field,
+        Value::ModuleFunction(ModuleFunctions::Dataclasses(DataclassesFunctions::Field)),
+        vm,
+    );
+    // `MISSING` is a bare sentinel compared by identity, so it needs no state
+    // beyond its name — a `Marker`, like `sys.stdout` and the `typing` forms.
+    module.set_attr(
+        StaticStrings::Missing,
+        Value::Marker(Marker(StaticStrings::Missing)),
+        vm,
+    );
     vm.heap.allocate_as(module).into_id()
 }
 
@@ -78,6 +94,7 @@ pub(super) fn call(vm: &mut VM<'_>, func: DataclassesFunctions, args: ArgValues)
     match func {
         DataclassesFunctions::Dataclass => dataclass_decorator(vm, args),
         DataclassesFunctions::IsDataclass => is_dataclass(vm, args),
+        DataclassesFunctions::Field => field::field(vm, args),
         // The options are already bound; this call supplies the class.
         DataclassesFunctions::Configured(options) => {
             let ConfiguredArgs { cls } = ConfiguredArgs::from_args(args, vm)?;
@@ -235,12 +252,22 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
         return Err(non_class_error(cls, vm));
     };
     let fields = build_dataclass_fields(&class, vm)?;
+    let Value::Ref(fields_id) = fields else {
+        unreachable!("the fields mapping is a dict")
+    };
     // Fields first, so nothing owns the mapping while the params allocation
     // can still fail; a class left with fields alone reads back as a default one.
     store_dataclass_fields(&mut class, fields, vm)?;
+    // Now that the mapping owns them, the `field()` objects the class body left
+    // as attributes can be rewritten to what CPython leaves behind.
+    rewrite_field_attributes(&mut class, fields_id, vm)?;
     store_dataclass_params(&mut class, options, vm)?;
-    // Last, so the options a class acts on are only ever those of a decoration
-    // that ran to completion.
+    // Last, so what the class acts on is only ever from a decoration that ran
+    // to completion. `__post_init__` is decided here rather than at
+    // construction: CPython bakes the call into the generated `__init__`, so a
+    // hook attached to the class afterwards is never reached.
+    let has_post_init = class_defines(*class_id, StaticStrings::PostInit.into(), vm);
+    class.set_has_post_init(has_post_init, vm);
     class.set_dataclass_options(options, vm);
     Ok(guard.into_inner())
 }
@@ -270,7 +297,6 @@ fn build_dataclass_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) -> R
     // Field validation runs first, so a class CPython would reject reports
     // CPython's own message and the Monty-only guards can only fire after.
     validate_fields(vm, fields)?;
-    reject_unsupported_members(class, vm)?;
     let (fields, vm) = guard.into_parts();
     allocate_fields_dict(vm, fields)
 }
@@ -278,18 +304,26 @@ fn build_dataclass_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) -> R
 /// Allocates the dict `__dataclass_fields__` holds, consuming the collected
 /// fields. The dict owns every `Field` from its first insertion, so a failure
 /// part-way releases them with it.
-fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<DataclassField>) -> RunResult<Value> {
+fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<Value>) -> RunResult<Value> {
     let dict = vm.heap.allocate_as(Dict::with_capacity(fields.len()));
     let mut guard = DropGuard::new(dict, vm);
     let (dict, vm) = guard.as_parts_mut();
     let dict = dict.read(vm.heap);
-    for field in fields {
-        let name = field.name();
-        let field = vm.heap.allocate_as(field).into_value();
-        // Annotation keys are unique, so nothing is ever replaced — released
-        // rather than asserted away so a future duplicate cannot leak. A dict
-        // rejected by the memory limit releases the field it was handed.
-        let replaced = dict.set(Value::InternString(name), field, vm)?;
+    for field_value in fields {
+        // Consumed rather than matched: the reference moves into the dict below,
+        // so the original must not also be released.
+        let Some(field_id) = field_value.into_ref_id() else {
+            unreachable!("collection produces only heap fields")
+        };
+        let name = field_at_id(vm, field_id)
+            .expect("collection produces only `Field`s")
+            .name()
+            .expect("collection adopts every field");
+        // One `field()` object bound under two names is adopted twice and keyed
+        // by the second, so a replacement does happen — CPython collapses the
+        // pair the same way. A dict rejected by the memory limit releases the
+        // field it was handed.
+        let replaced = dict.set(Value::InternString(name), Value::Ref(field_id), vm)?;
         replaced.drop_with(vm);
     }
     Ok(guard.into_inner().into_value())
@@ -321,60 +355,125 @@ fn store_dataclass_params<'h>(
     Ok(())
 }
 
-/// Class-body members Monty does not dispatch, paired with what ignoring them
-/// would cost. Refused rather than quietly built wrong; delete an entry once
-/// its dispatch lands.
-const UNSUPPORTED_MEMBERS: [(&str, &str); 1] = [("__post_init__", "which would be silently skipped")];
-
-/// Rejects a class body defining any of [`UNSUPPORTED_MEMBERS`].
-fn reject_unsupported_members<'h>(class: &HeapRead<'h, Class>, vm: &VM<'h>) -> RunResult<()> {
-    let namespace = class.get(vm.heap).namespace();
-    match UNSUPPORTED_MEMBERS
-        .iter()
-        .find(|&&(name, _)| namespace.get_by_str(name, vm.heap, vm.interns).is_some())
-    {
-        Some((name, consequence)) => Err(ExcType::not_implemented(format!(
-            "dataclass() does not yet support {name} in a class body, {consequence}"
-        ))
-        .into()),
-        None => Ok(()),
+/// Rewrites the class attribute each `field()` left behind, as CPython does:
+/// a plain default becomes the attribute, and a field with only a factory —
+/// which has no single value to expose — loses it.
+///
+/// Runs once the fields are stored, so the mapping is the list of names to fix.
+fn rewrite_field_attributes<'h>(class: &mut HeapRead<'h, Class>, fields_id: HeapId, vm: &mut VM<'h>) -> RunResult<()> {
+    for (name, field_id) in adopted_field_ids(fields_id, vm) {
+        // Only an attribute that *is* the field object needs rewriting; a plain
+        // `x: int = 5` already binds the value CPython would leave behind.
+        let bound = class
+            .get(vm.heap)
+            .namespace()
+            .get_by_str(vm.interns.get_str(name), vm.heap, vm.interns);
+        if !matches!(bound, Some(Value::Ref(id)) if *id == field_id) {
+            continue;
+        }
+        let default = field_at_id(vm, field_id).and_then(|field| field.default().map(|v| v.clone_with_heap(vm.heap)));
+        let name = Value::InternString(name);
+        let replaced = match default {
+            Some(default) => class.set_attr(name, default, vm)?,
+            None => class.pop_attr(&name, vm)?,
+        };
+        replaced.drop_with(vm);
     }
+    Ok(())
+}
+
+/// The `(name, field_id)` of every field in a `__dataclass_fields__` dict.
+fn adopted_field_ids(fields_id: HeapId, vm: &VM<'_>) -> Vec<(StringId, HeapId)> {
+    let HeapData::Dict(fields) = vm.heap.get(fields_id) else {
+        return Vec::new();
+    };
+    fields
+        .iter()
+        .filter_map(|(_, value)| match value {
+            Value::Ref(id) => Some((field_at_id(vm, *id)?.name()?, *id)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Collects the dataclass fields from `__annotations__`, in definition order,
-/// dropping `ClassVar` entries.
+/// dropping `ClassVar` entries, as owned references to heap `Field`s.
 ///
-/// Each field owns its annotation and captured default from here on, so a
-/// caller that discards the result must release them (`drop_with`).
-fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, vm: &VM<'h>) -> Vec<DataclassField> {
-    let namespace = class.get(vm.heap).namespace();
-    let ann_id = match namespace.get_by_str("__annotations__", vm.heap, vm.interns) {
-        Some(Value::Ref(id)) => *id,
-        _ => return Vec::new(),
-    };
-    let HeapData::Dict(annotations) = vm.heap.get(ann_id) else {
-        return Vec::new();
-    };
-    let mut fields = Vec::new();
-    for (key, annotation) in annotations {
-        // Annotation keys are always interned field-name strings.
-        let Value::InternString(name_id) = key else { continue };
-        // `ClassVar[...]` entries are class variables, not dataclass fields.
-        if is_classvar(&annotation_text(annotation, vm)) {
-            continue;
-        }
+/// A class-body value that is already a `field()` result is **adopted in place**
+/// — the same object gains the name and annotation and goes on to
+/// `__dataclass_fields__`, as CPython's decorator does — so
+/// `C.__dataclass_fields__['x'] is f`. Anything else is an ordinary default and
+/// gets a fresh `Field` built around it.
+///
+/// The returned references are owned, so a caller that discards them must
+/// release them (`drop_with`).
+fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) -> Vec<Value> {
+    let names = annotated_field_names(class, vm);
+    let mut guard = DropGuard::new(Vec::with_capacity(names.len()), vm);
+    let (fields, vm) = guard.as_parts_mut();
+    for name_id in names {
+        let namespace = class.get(vm.heap).namespace();
         // Captured now, as CPython bakes it into the generated `__init__`:
         // rebinding the class attribute later must not change it.
-        let default = namespace
-            .get_by_str(vm.interns.get_str(*name_id), vm.heap, vm.interns)
+        let bound = namespace
+            .get_by_str(vm.interns.get_str(name_id), vm.heap, vm.interns)
             .map(|v| v.clone_with_heap(vm.heap));
-        fields.push(DataclassField::new(
-            *name_id,
-            annotation.clone_with_heap(vm.heap),
-            default,
-        ));
+        let annotation = field_annotation(class, name_id, vm);
+        // The class body bound a `field()` result: it *is* the field, so it
+        // takes the name and annotation and the list keeps that reference.
+        // Anything else is a plain default, wrapped in a field of its own.
+        if let Some(field_id) = adoptable_field(bound.as_ref(), vm) {
+            let HeapReadOutput::DataclassField(mut field) = vm.heap.read(field_id) else {
+                unreachable!("adoptable_field matched the variant")
+            };
+            let replaced = field.get_mut(vm.heap).adopt(name_id, annotation);
+            replaced.drop_with(vm);
+            fields.push(bound.expect("adoptable_field matched a bound value"));
+        } else {
+            let field = DataclassField::new(name_id, annotation, bound);
+            fields.push(vm.heap.allocate_as(field).into_value());
+        }
     }
-    fields
+    guard.into_parts().0
+}
+
+/// The annotated field names in definition order, minus `ClassVar` entries.
+///
+/// Names alone, so the collection loop can take the heap mutably instead of
+/// holding a borrow of the annotations dict across an allocation.
+fn annotated_field_names<'h>(class: &HeapRead<'h, Class>, vm: &VM<'h>) -> Vec<StringId> {
+    let Some(annotations) = annotations_dict(class, vm) else {
+        return Vec::new();
+    };
+    annotations
+        .into_iter()
+        .filter_map(|(key, annotation)| match key {
+            Value::InternString(name_id) if !is_classvar(&annotation_text(annotation, vm)) => Some(*name_id),
+            _ => None,
+        })
+        .collect()
+}
+
+/// One field's annotation, cloned as an owned reference for the `Field` to hold.
+fn field_annotation<'h>(class: &HeapRead<'h, Class>, name: StringId, vm: &VM<'h>) -> Value {
+    annotations_dict(class, vm)
+        .and_then(|annotations| annotations.get_by_str(vm.interns.get_str(name), vm.heap, vm.interns))
+        .map_or(Value::None, |annotation| annotation.clone_with_heap(vm.heap))
+}
+
+/// The class's `__annotations__` dict, or `None` for a class body with none.
+fn annotations_dict<'a, 'h>(class: &HeapRead<'h, Class>, vm: &'a VM<'h>) -> Option<&'a Dict> {
+    match class
+        .get(vm.heap)
+        .namespace()
+        .get_by_str("__annotations__", vm.heap, vm.interns)
+    {
+        Some(Value::Ref(id)) => match vm.heap.get(*id) {
+            HeapData::Dict(annotations) => Some(annotations),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// A stringized annotation as text, or `""` for the non-string annotations
@@ -390,19 +489,24 @@ fn annotation_text(annotation: &Value, vm: &VM<'_>) -> String {
 ///
 /// CPython validates defaults per field as it collects them, so a mutable
 /// default is reported before the whole-list non-default-after-default check.
-fn validate_fields(vm: &mut VM<'_>, fields: &[DataclassField]) -> RunResult<()> {
-    for field in fields {
-        let name = vm.interns.get_str(field.name()).to_owned();
-        if is_initvar(&annotation_text(field.annotation(), vm)) {
+fn validate_fields(vm: &mut VM<'_>, fields: &[Value]) -> RunResult<()> {
+    for field_value in fields {
+        // Read out first: hashing a default needs the heap mutably.
+        let Some((name, annotation_text, default)) = read_field(field_value, vm) else {
+            continue;
+        };
+        defer_drop!(default, vm);
+        let name = vm.interns.get_str(name).to_owned();
+        if is_initvar(&annotation_text) {
             return Err(ExcType::not_implemented(format!(
                 "dataclass() does not yet support InitVar (field {name}), which would become an ordinary field"
             ))
             .into());
         }
-        if let Some(default) = field.default() {
+        if let Some(default) = default {
             // CPython's rule is hashability, not a list/dict/set type check, so
-            // a class with `__hash__ = None` is rejected the same way. Borrowed,
-            // not consumed — `build_dataclass_fields` releases it on rejection.
+            // a class with `__hash__ = None` is rejected the same way. A factory
+            // is exempt: it is the sanctioned way to have a mutable default.
             if default.py_hash(vm)?.is_none() {
                 let ty = default.py_type_name(vm);
                 return Err(ExcType::value_error(format!(
@@ -412,7 +516,7 @@ fn validate_fields(vm: &mut VM<'_>, fields: &[DataclassField]) -> RunResult<()> 
         }
     }
     // CPython rejects the class outright rather than failing at construction.
-    if let Some((prev, field)) = first_non_default_after_default(fields) {
+    if let Some((prev, field)) = first_non_default_after_default(fields, vm) {
         let (prev, field) = (vm.interns.get_str(prev), vm.interns.get_str(field));
         return Err(ExcType::type_error(format!(
             "non-default argument '{field}' follows default argument '{prev}'"
@@ -421,20 +525,39 @@ fn validate_fields(vm: &mut VM<'_>, fields: &[DataclassField]) -> RunResult<()> 
     Ok(())
 }
 
+/// A collected field's name, annotation text, and a **cloned** default — the
+/// three things validation needs, read before it takes the heap mutably.
+fn read_field(field: &Value, vm: &VM<'_>) -> Option<(StringId, String, Option<Value>)> {
+    let Value::Ref(id) = field else { return None };
+    let field = field_at_id(vm, *id)?;
+    let annotation = field.annotation().map_or_else(String::new, |a| annotation_text(a, vm));
+    Some((
+        field.name().expect("collection adopts every field"),
+        annotation,
+        field.default().map(|d| d.clone_with_heap(vm.heap)),
+    ))
+}
+
 /// The first `(defaulted, non_defaulted)` field pair that would produce an
 /// invalid `__init__` signature, or `None` when the order is valid.
-fn first_non_default_after_default(fields: &[DataclassField]) -> Option<(StringId, StringId)> {
+///
+/// A `default_factory` counts as a default, as it does in CPython's generated
+/// signature.
+fn first_non_default_after_default(fields: &[Value], vm: &VM<'_>) -> Option<(StringId, StringId)> {
     let mut last_default = None;
-    fields
-        .iter()
-        .find_map(|field| match (field.default().is_some(), last_default) {
+    fields.iter().find_map(|field| {
+        let Value::Ref(id) = field else { return None };
+        let field = field_at_id(vm, *id)?;
+        let name = field.name().expect("collection adopts every field");
+        match (field.has_default(), last_default) {
             (true, _) => {
-                last_default = Some(field.name());
+                last_default = Some(name);
                 None
             }
-            (false, Some(prev)) => Some((prev, field.name())),
+            (false, Some(prev)) => Some((prev, name)),
             (false, None) => None,
-        })
+        }
+    })
 }
 
 /// Whether a stringized annotation denotes `typing.ClassVar`, so the field is
@@ -564,6 +687,9 @@ pub(crate) fn dataclass_fields(class_id: HeapId, vm: &VM<'_>) -> Option<Vec<Stri
 
 /// Each field's `(name, has_default)`, in definition order — everything
 /// `bind_dataclass_fields` needs once the heap borrow is released.
+///
+/// A `default_factory` counts as a default: the parameter is optional, and the
+/// factory runs when nothing is bound to it.
 fn field_specs(fields_id: HeapId, vm: &VM<'_>) -> Vec<(StringId, bool)> {
     let HeapData::Dict(fields) = vm.heap.get(fields_id) else {
         return Vec::new();
@@ -571,10 +697,10 @@ fn field_specs(fields_id: HeapId, vm: &VM<'_>) -> Vec<(StringId, bool)> {
     fields
         .iter()
         .filter_map(|(_, value)| match value {
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::DataclassField(field) => Some((field.name(), field.default().is_some())),
-                _ => None,
-            },
+            Value::Ref(id) => {
+                let field = field_at_id(vm, *id)?;
+                Some((field.name()?, field.has_default()))
+            }
             _ => None,
         })
         .collect()
@@ -617,7 +743,30 @@ pub(crate) fn dataclass_init<'h>(
     };
     let values = bind_dataclass_fields(vm, class, fields_id, &fields, args)?;
     store_bound_fields(&mut instance, &fields, values, vm)?;
+    run_post_init(*instance_id, class, vm)?;
     Ok(CallResult::Value(guard.into_inner()))
+}
+
+/// Calls the class's `__post_init__` once every field is stored, as CPython's
+/// generated `__init__` ends by doing.
+///
+/// Runs through [`VM::evaluate_function`], like a `default_factory`, so it
+/// cannot suspend on an external or OS call where a hand-written `__init__`
+/// can — documented in `limitations/dataclasses.md`. Its return value is
+/// discarded, and anything it raises propagates out of the constructor, leaving
+/// the half-built instance to the caller's guard.
+fn run_post_init<'h>(instance_id: HeapId, class: &HeapRead<'h, Class>, vm: &mut VM<'h>) -> RunResult<()> {
+    if !class.get(vm.heap).has_post_init() {
+        return Ok(());
+    }
+    // Read as an attribute, so the method arrives bound to the instance.
+    let Some(post_init) = instance_attr(instance_id, StaticStrings::PostInit.into(), vm) else {
+        return Ok(());
+    };
+    defer_drop!(post_init, vm);
+    let result = vm.evaluate_function("__post_init__", post_init, ArgValues::Empty)?;
+    result.drop_with(vm);
+    Ok(())
 }
 
 /// Stores one bound value per field on the instance `__dict__`, consuming
@@ -699,22 +848,45 @@ fn bind_dataclass_fields<'h>(
         ));
     }
 
-    // Unbound slots take the default captured at decoration time; a field with
-    // none is missing from the call.
-    let mut missing: Vec<String> = Vec::new();
-    for (idx, (id, _)) in fields.iter().enumerate() {
-        if values[idx].is_some() {
-            continue;
-        }
-        match captured_default(vm, fields_id, idx) {
-            Some(default) => values[idx] = Some(default),
-            None => missing.push(vm.interns.get_str(*id).to_owned()),
-        }
-    }
+    // Everything the unbound slots need, read out as owned values before a
+    // single factory runs. Past this point nothing resolves `fields_id`, so a
+    // factory that replaces `__dataclass_fields__` cannot leave the loop
+    // reading a freed dict — nor shift a later field's default.
+    let plan = snapshot_field_inits(vm, fields_id, values);
+    let mut plan_guard = DropGuard::new(plan, vm);
+    let (plan, vm) = plan_guard.as_parts_mut();
+
+    // Reported before any factory runs, as CPython's argument binding raises
+    // before the generated `__init__` body — and therefore its factories — ever
+    // executes.
+    let missing: Vec<String> = plan
+        .iter()
+        .enumerate()
+        .filter(|(idx, init)| values[*idx].is_none() && matches!(init, FieldInit::Unsupplied))
+        .map(|(idx, _)| vm.interns.get_str(fields[idx].0).to_owned())
+        .collect();
     if !missing.is_empty() {
         let refs: Vec<&str> = missing.iter().map(String::as_str).collect();
         return Err(ExcType::type_error_missing_positional_with_names(&init_name, &refs));
     }
+
+    // Factories run in field order, and only for a field left unbound. Each
+    // entry is taken out of the plan as it is used, so an error part-way leaves
+    // the guard only the ones still to come.
+    for idx in 0..plan.len() {
+        if values[idx].is_some() {
+            continue;
+        }
+        values[idx] = Some(match mem::replace(&mut plan[idx], FieldInit::Unsupplied) {
+            FieldInit::Default(default) => default,
+            FieldInit::Factory(factory) => {
+                defer_drop!(factory, vm);
+                vm.evaluate_function("dataclass field default_factory", factory, ArgValues::Empty)?
+            }
+            FieldInit::Unsupplied => unreachable!("the missing check rejected every unsupplied field"),
+        });
+    }
+    drop(plan_guard);
 
     Ok(guard
         .into_inner()
@@ -756,19 +928,50 @@ fn bind_keyword_args(
     Ok(())
 }
 
-/// A fresh reference to the default `@dataclass` captured for field `idx`, or
-/// `None` for a required field.
-fn captured_default(vm: &VM<'_>, fields_id: HeapId, idx: usize) -> Option<Value> {
-    let HeapData::Dict(fields) = vm.heap.get(fields_id) else {
-        return None;
-    };
-    match fields.value_at(idx) {
-        Some(Value::Ref(id)) => match vm.heap.get(*id) {
-            HeapData::DataclassField(field) => field.default().map(|v| v.clone_with_heap(vm.heap)),
-            _ => None,
-        },
-        _ => None,
+/// What the synthesized `__init__` supplies for a field the call left unbound.
+///
+/// Snapshotted as owned values before any of it is used, because running a
+/// `default_factory` re-enters the VM: sandbox code there can rebind
+/// `__dataclass_fields__`, freeing the dict the plan was read from.
+enum FieldInit {
+    /// Nothing to supply — either the call bound the field, or it has no
+    /// default and no factory. The missing-argument check separates the two.
+    Unsupplied,
+    /// The default captured at decoration, cloned for this construction.
+    Default(Value),
+    /// The `default_factory` callable, to be called once for this construction.
+    Factory(Value),
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for FieldInit {
+    fn drop_with(self, ctx: &mut C) {
+        match self {
+            Self::Unsupplied => {}
+            Self::Default(value) | Self::Factory(value) => value.drop_with(ctx),
+        }
     }
+}
+
+/// Reads every unbound field's default or factory out of `fields_id` as owned
+/// references, in field order.
+///
+/// The one place the fields mapping is read during construction, and it runs
+/// before anything can re-enter the VM — see [`FieldInit`]. A slot the call
+/// already bound is skipped, so a construction that supplies every argument
+/// clones nothing.
+fn snapshot_field_inits(vm: &VM<'_>, fields_id: HeapId, values: &[Option<Value>]) -> Vec<FieldInit> {
+    values
+        .iter()
+        .enumerate()
+        .map(|(idx, bound)| match (bound, field_at(vm, fields_id, idx)) {
+            (Some(_), _) | (_, None) => FieldInit::Unsupplied,
+            (None, Some(field)) => match (field.default(), field.default_factory()) {
+                (Some(default), _) => FieldInit::Default(default.clone_with_heap(vm.heap)),
+                (None, Some(factory)) => FieldInit::Factory(factory.clone_with_heap(vm.heap)),
+                (None, None) => FieldInit::Unsupplied,
+            },
+        })
+        .collect()
 }
 
 /// Field-wise `__eq__`: equal only to the *same* dataclass with equal fields.
