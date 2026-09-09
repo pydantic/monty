@@ -19,6 +19,7 @@ pub(crate) mod asyncio;
 pub(crate) mod base64;
 pub(crate) mod binascii;
 pub(crate) mod collections;
+pub(crate) mod copy;
 pub(crate) mod dataclasses;
 pub(crate) mod datetime;
 pub(crate) mod functools;
@@ -73,6 +74,8 @@ pub(crate) enum StandardLib {
     /// The `binascii` module providing binary-to-ASCII conversions, CRC32,
     /// and the `Error` class used by `base64`.
     Binascii,
+    /// The `copy` module providing `copy()` and `deepcopy()`.
+    Copy,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -104,6 +107,7 @@ impl StandardLib {
             StaticStrings::Functools => Some(Self::Functools),
             StaticStrings::Base64 => Some(Self::Base64),
             StaticStrings::Binascii => Some(Self::Binascii),
+            StaticStrings::Copy => Some(Self::Copy),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -133,6 +137,7 @@ impl StandardLib {
             Self::Functools => functools::create_module(vm),
             Self::Base64 => base64::create_module(vm),
             Self::Binascii => binascii::create_module(vm),
+            Self::Copy => copy::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -160,6 +165,7 @@ pub(crate) enum ModuleFunctions {
     Functools(functools::FunctoolsFunctions),
     Base64(base64::Base64Functions),
     Binascii(binascii::BinasciiFunctions),
+    Copy(copy::CopyFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -188,6 +194,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Functools(func) => write!(f, "{func}"),
             Self::Base64(func) => write!(f, "{func}"),
             Self::Binascii(func) => write!(f, "{func}"),
+            Self::Copy(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -215,6 +222,7 @@ impl ModuleFunctions {
             Self::Functools(functions) => functools::call(vm, functions, args).map(CallResult::Value),
             Self::Base64(functions) => base64::call(vm, functions, args).map(CallResult::Value),
             Self::Binascii(functions) => binascii::call(vm, functions, args).map(CallResult::Value),
+            Self::Copy(functions) => copy::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
