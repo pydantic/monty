@@ -351,6 +351,9 @@ jobs:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
 
       - run: uv sync --all-packages --only-dev
+      # workaround for https://github.com/PyO3/maturin/pull/3299
+      # (dev-py doesn't invalidate all cache properly)
+      - run: cargo clean -p pyo3-ffi
       - run: make dev-py
       - run: make pytest
         # also test with a release build
