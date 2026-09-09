@@ -1,30 +1,33 @@
 ---
 source: crates/monty-type-checking/tests/main.rs
-assertion_line: 199
 expression: actual
 ---
-bad_types.py:22:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `Literal["hello"]`
-bad_types.py:23:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `float*`
-bad_types.py:24:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `Literal[42]`
-bad_types.py:25:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `list[int]`
-bad_types.py:28:16: error[invalid-argument-type] Argument to function `takes_list_int` is incorrect: Expected `list[int]`, found `list[int | str]`
-bad_types.py:29:16: error[invalid-argument-type] Argument to function `takes_list_int` is incorrect: Expected `list[int]`, found `list[float]`
-bad_types.py:36:12: error[invalid-return-type] Return type does not match returned value: expected `int`, found `Literal["oops"]`
-bad_types.py:40:12: error[invalid-return-type] Return type does not match returned value: expected `str`, found `Literal[123]`
-bad_types.py:44:12: error[invalid-return-type] Return type does not match returned value: expected `list[int]`, found `list[int | str]`
-bad_types.py:48:12: error[invalid-return-type] Return type does not match returned value: expected `None`, found `Literal[42]`
-bad_types.py:63:11: error[unsupported-operator] Operator `+` is not supported between objects of type `int` and `str`
-bad_types.py:64:11: error[unsupported-operator] Operator `-` is not supported between objects of type `str` and `int`
-bad_types.py:70:1: error[type-assertion-failure] Type `Literal[42]` does not match asserted type `str`
-bad_types.py:73:1: error[type-assertion-failure] Type `list[int]` does not match asserted type `list[str]`
-bad_types.py:85:5: error[unresolved-attribute] Object of type `MyClass` has no attribute `nonexistent_attr`
-bad_types.py:95:1: error[missing-argument] No argument provided for required parameter `b` of function `takes_two`
-bad_types.py:96:23: error[too-many-positional-arguments] Too many positional arguments to function `takes_two`: expected 2, got 3
-bad_types.py:101:1: error[missing-argument] No argument provided for required parameter `b` of function `takes_two`
-bad_types.py:101:16: error[unknown-argument] Argument `c` does not match any known parameter of function `takes_two`
-bad_types.py:107:1: error[call-non-callable] Object of type `Literal[42]` is not callable
-bad_types.py:122:23: error[invalid-key] Unknown key "uuid" for TypedDict `SearchTag`
-bad_types.py:127:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
-bad_types.py:132:19: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `str`
-bad_types.py:133:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
-bad_types.py:136:7: error[unresolved-attribute] Module `sys` has no member `copyright`
+bad_types.py:23:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `Literal["hello"]`
+bad_types.py:24:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `float*`
+bad_types.py:25:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `Literal[42]`
+bad_types.py:26:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `list[int]`
+bad_types.py:29:16: error[invalid-argument-type] Argument to function `takes_list_int` is incorrect: Expected `list[int]`, found `list[int | str]`
+bad_types.py:30:16: error[invalid-argument-type] Argument to function `takes_list_int` is incorrect: Expected `list[int]`, found `list[float]`
+bad_types.py:37:12: error[invalid-return-type] Return type does not match returned value: expected `int`, found `Literal["oops"]`
+bad_types.py:41:12: error[invalid-return-type] Return type does not match returned value: expected `str`, found `Literal[123]`
+bad_types.py:45:12: error[invalid-return-type] Return type does not match returned value: expected `list[int]`, found `list[int | str]`
+bad_types.py:49:12: error[invalid-return-type] Return type does not match returned value: expected `None`, found `Literal[42]`
+bad_types.py:64:11: error[unsupported-operator] Operator `+` is not supported between objects of type `int` and `str`
+bad_types.py:65:11: error[unsupported-operator] Operator `-` is not supported between objects of type `str` and `int`
+bad_types.py:71:1: error[type-assertion-failure] Type `Literal[42]` does not match asserted type `str`
+bad_types.py:74:1: error[type-assertion-failure] Type `list[int]` does not match asserted type `list[str]`
+bad_types.py:86:5: error[unresolved-attribute] Object of type `MyClass` has no attribute `nonexistent_attr`
+bad_types.py:96:1: error[missing-argument] No argument provided for required parameter `b` of function `takes_two`
+bad_types.py:97:23: error[too-many-positional-arguments] Too many positional arguments to function `takes_two`: expected 2, got 3
+bad_types.py:102:1: error[missing-argument] No argument provided for required parameter `b` of function `takes_two`
+bad_types.py:102:16: error[unknown-argument] Argument `c` does not match any known parameter of function `takes_two`
+bad_types.py:108:1: error[call-non-callable] Object of type `Literal[42]` is not callable
+bad_types.py:123:23: error[invalid-key] Unknown key "uuid" for TypedDict `SearchTag`
+bad_types.py:128:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
+bad_types.py:133:19: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `str`
+bad_types.py:134:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
+bad_types.py:137:7: error[unresolved-attribute] Module `sys` has no member `copyright`
+bad_types.py:142:7: error[unresolved-attribute] Module `functools` has no member `CacheInfo`
+bad_types.py:152:18: error[invalid-argument-type] Argument to bound method `_lru_cache_wrapper.__call__` is incorrect: Expected `int`, found `Literal["nope"]`
+bad_types.py:153:21: error[too-many-positional-arguments] Too many positional arguments to bound method `_lru_cache_wrapper.__call__`: expected 2, got 3
+bad_types.py:154:18: error[invalid-argument-type] Argument to bound method `_lru_cache_wrapper.__call__` is incorrect: Expected `int`, found `Literal["nope"]`

@@ -1273,6 +1273,49 @@ fn repl_abandoned_lookup_releases_in_flight_state() {
     assert_eq!(repl.heap_entry_count(), control);
 }
 
+/// Neither a `partial` nor a cached function can be handed to a host as
+/// something callable, so both cross as their repr — the forms
+/// ./limitations/functools.md quotes.
+#[test]
+fn repl_functools_callables_cross_as_their_repr() {
+    let (mut repl, _) = init_repl("import functools\np = functools.partial(len, [1])\nf = functools.cache(len)");
+    assert_eq!(
+        feed_run_print(&mut repl, "p").unwrap(),
+        MontyObject::Repr("functools.partial(<built-in function len>, [1])".to_owned())
+    );
+    let MontyObject::Repr(cached) = feed_run_print(&mut repl, "f").unwrap() else {
+        panic!("expected the cached wrapper to cross as a repr")
+    };
+    // The address is the wrapper's heap id, so only its shape is pinned here.
+    assert!(
+        cached.starts_with("<functools._lru_cache_wrapper object at 0x"),
+        "unexpected repr: {cached}"
+    );
+}
+
+/// A cached call suspended on an external function owns the wrapper and the
+/// key it is going to store under, and both live on the frame it pushed rather
+/// than on the operand stack. Abandoning the snippet must release them, or a
+/// long-lived REPL grows a key per abandoned call.
+#[cfg(feature = "ref-count-return")]
+#[test]
+fn repl_abandoned_cached_call_releases_its_pending_store() {
+    const SETUP: &str =
+        "import functools\n\n\ndef _fetch(a, b):\n    return ext_fn(a) + b\n\n\nfetch = functools.cache(_fetch)";
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(SETUP, vec![], PrintWriter::Stdout).unwrap();
+    let control = repl.heap_entry_count();
+
+    // Two arguments, so the key is a heap tuple: a leaked one is an entry the
+    // abandoned session can never reach again.
+    let progress = repl.feed_start("fetch('a', 'b')", vec![], PrintWriter::Stdout).unwrap();
+    let repl = progress
+        .into_function_call()
+        .expect("expected an external call")
+        .into_repl();
+    assert_eq!(repl.heap_entry_count(), control);
+}
+
 /// A sandbox class or instance the host hands back (by the uuid it crossed
 /// out with) resolves to the original object rather than a host-backed copy,
 /// including after a dump/restore rebuilds the uuid index; one the sandbox has

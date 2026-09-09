@@ -980,7 +980,7 @@ pub enum StaticStrings {
     Starmap,
 
     // ==========================
-    // functools module strings
+    // functools module strings; `partial.args` reuses the `Args` variant.
     // Appended, per the "new variants go at the end" rule above.
     /// Module name for `import functools`.
     Functools,
@@ -1170,6 +1170,36 @@ pub enum StaticStrings {
     Prod,
     Sumprod,
     Fma,
+
+    // ==========================
+    // `functools.lru_cache` strings, appended at the enum end for the same
+    // reason as the blocks above.
+    /// `functools.lru_cache()` function.
+    LruCache,
+    /// `functools.cache()` function.
+    Cache,
+    /// `maxsize` argument of `functools.lru_cache()`.
+    Maxsize,
+    /// `typed` argument of `functools.lru_cache()`.
+    Typed,
+    /// `cache_info()` method of a cached function.
+    CacheInfo,
+    /// `cache_clear()` method of a cached function.
+    CacheClear,
+    /// `cache_parameters()` method of a cached function.
+    CacheParameters,
+    /// Type name of the `CacheInfo` named tuple `cache_info()` returns.
+    #[strum(serialize = "CacheInfo")]
+    CacheInfoName,
+    /// `CacheInfo.hits` field.
+    Hits,
+    /// `CacheInfo.misses` field.
+    Misses,
+    /// `CacheInfo.currsize` field.
+    Currsize,
+    /// `__wrapped__` attribute of a cached function.
+    #[strum(serialize = "__wrapped__")]
+    DunderWrapped,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

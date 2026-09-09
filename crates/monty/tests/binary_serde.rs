@@ -267,6 +267,53 @@ ext_fn(0)
     assert_eq!(from_loaded.into_complete().unwrap(), expected);
 }
 
+/// A cached call suspended mid-flight keeps the pending cache store hung off
+/// its frame across a round-trip, so the result still lands in the cache and
+/// the repeat call is a hit — the only coverage that carries a live
+/// `CacheStore` through postcard.
+#[test]
+fn run_progress_round_trip_preserves_pending_cache_store() {
+    let code = r"
+import functools
+
+
+@functools.cache
+def fetch(n):
+    return ext_fn(n) + n
+
+
+first = fetch(1)
+[first, fetch(1), fetch.cache_info().hits, fetch.cache_info().misses]
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+    // Suspend inside `fetch`, whose frame is waiting to store the result.
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded: RunProgress = round_trip_progress(&progress);
+
+    // One external call only: the second `fetch(1)` is answered from the cache.
+    let expected = MontyObject::List(vec![
+        MontyObject::Int(101),
+        MontyObject::Int(101),
+        MontyObject::Int(1),
+        MontyObject::Int(1),
+    ]);
+
+    // Both are resumed for the reason given in the itertools round-trip above.
+    let original = progress.into_function_call().expect("should be at function call");
+    assert_eq!(original.function_name, "ext_fn");
+    let from_original = original.resume(MontyObject::Int(100), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_original.into_complete().unwrap(), expected);
+
+    let call = loaded.into_function_call().expect("should be at function call");
+    let from_loaded = call.resume(MontyObject::Int(100), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_loaded.into_complete().unwrap(), expected);
+}
+
 /// A live `functools.partial` on the heap survives a round-trip with its bound
 /// callable, positionals and keywords intact — the only coverage that carries
 /// `HeapData::Partial` through postcard.
