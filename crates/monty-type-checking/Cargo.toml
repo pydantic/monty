@@ -28,7 +28,7 @@ ty_module_resolver = { workspace = true }
 salsa = { workspace = true }
 # `default-features = false` drops pyrefly's bundled third-party stubs, which
 # nothing in the sandbox can import.
-pyrefly = { git = "https://github.com/yangdanny97/pyrefly", rev = "a155e04163d8bda6f7e30b897f7591531dcaf8b1", optional = true, default-features = false }
+pyrefly = { git = "https://github.com/yangdanny97/pyrefly", rev = "04e9e8ee345495e90b52b9ba9bb41a3c642f0020", optional = true, default-features = false }
 
 [features]
 # Swaps the ty backend for pyrefly; ty is used when unset.

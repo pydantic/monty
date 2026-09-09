@@ -44,7 +44,7 @@ impl PyreflyChecker {
         let stub_source = stubs_file.map_or("", |stubs| stubs.source_code);
 
         if self.checker.is_none() {
-            self.checker = Some(Checker::new(Some(PYTHON_VERSION), &[MAIN_MODULE, STUB_MODULE])?);
+            self.checker = Some(Checker::new(Some(PYTHON_VERSION))?);
         }
         let Some(checker) = &self.checker else {
             return Err("pyrefly checker was not initialised".to_owned());
