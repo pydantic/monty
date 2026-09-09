@@ -211,4 +211,9 @@ try:
     type(json)([1, 2])
     assert False, 'type(json)([1, 2]) should raise'
 except TypeError as e:
-    assert str(e) == "cannot create 'module' instances"
+    # monty raises its own message; CPython reaches module.__init__
+    # with a non-str name instead. Both prove the call raises TypeError.
+    assert str(e) in (
+        "cannot create 'module' instances",  # monty
+        "module() argument 'name' must be str, not list",  # CPython
+    )
