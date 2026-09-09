@@ -1763,13 +1763,14 @@ impl Value {
                         vm.heap,
                     )));
                 }
-                if *t == Type::TimeZone && attr.as_str(vm.interns) == "utc" {
-                    return Ok(CallResult::Value(vm.heap.get_timezone_utc()));
+                let t = *t;
+                if let Some(constant) = t.class_constant(attr, vm) {
+                    return Ok(CallResult::Value(constant));
                 }
                 // `chain.from_iterable`, the one attribute an `itertools`
                 // type carries. Handed out as a value so it can be bound and
                 // called later, not only called in place.
-                if *t == Type::ItertoolsChain && attr.matches(StaticStrings::FromIterable.into(), vm.interns) {
+                if t == Type::ItertoolsChain && attr.matches(StaticStrings::FromIterable.into(), vm.interns) {
                     return Ok(CallResult::Value(Self::ModuleFunction(ModuleFunctions::Itertools(
                         ItertoolsFunctions::ChainFromIterable,
                     ))));
@@ -1777,7 +1778,7 @@ impl Value {
                 // `object.__setattr__` is the only member `object` carries: it
                 // exists so a class that hooks attribute writes has a way to
                 // perform one (see `limitations/classes.md`).
-                if *t == Type::Object && attr.as_str(vm.interns) == "__setattr__" {
+                if t == Type::Object && attr.as_str(vm.interns) == "__setattr__" {
                     return Ok(CallResult::Value(Self::Builtin(Builtins::Function(
                         BuiltinsFunctions::ObjectSetattr,
                     ))));

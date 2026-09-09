@@ -14,20 +14,27 @@ pub(crate) use monty_types::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SE
 
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    intern::Interns,
+    intern::{Interns, StaticStrings},
     types::{
         LazyHeapSet, PyTrait, Type,
         str::{StringRepr, allocate_string},
         timedelta,
         timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
+
+/// Magnitude of the `timezone.min` / `timezone.max` class constants: 23:59.
+///
+/// Whole minutes, unlike [`MAX_TIMEZONE_OFFSET_SECONDS`]: CPython defines the
+/// constants as `±timedelta(hours=23, minutes=59)` while still *accepting*
+/// sub-minute offsets, so the two bounds differ by 59 seconds.
+pub(crate) const MAX_TIMEZONE_CONSTANT_SECONDS: i32 = 86_340;
 
 /// Python `datetime.timezone` value.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -189,11 +196,35 @@ pub(crate) fn tzname_string(offset_seconds: i32, name: Option<&str>) -> String {
 }
 
 /// Builds the value `utcoffset()` returns: a `timedelta` for a fixed offset,
-/// `None` for a naive one.
+/// `None` for a naive value. Shared by `timezone`, `datetime` and `time`.
 pub(crate) fn utcoffset_value(offset_seconds: Option<i32>, heap: &Heap) -> Value {
     match offset_seconds {
         None => Value::None,
         Some(offset_seconds) => timedelta::allocate_micros(i128::from(offset_seconds) * MICROSECONDS_PER_SECOND, heap),
+    }
+}
+
+/// Allocates an unnamed `timezone` for an offset known to be in range.
+///
+/// For the `timezone.min` / `timezone.max` class constants; anything derived
+/// from user input must go through [`TimeZone::new`] so the bounds are checked.
+pub(crate) fn allocate_offset(offset_seconds: i32, heap: &Heap) -> Value {
+    let tz = TimeZone::new(offset_seconds, None).expect("caller guarantees an in-range offset");
+    Value::Ref(heap.allocate(HeapData::TimeZone(tz)))
+}
+
+/// Validates the `dt` argument every `tzinfo` method takes.
+///
+/// The offset is fixed, so the argument is never read. CPython still requires
+/// it to be a `datetime` or `None`, and so does this.
+fn check_tzinfo_dt_arg(method: &str, dt: &Value, heap: &Heap, interns: &Interns) -> RunResult<()> {
+    match dt {
+        Value::None => Ok(()),
+        Value::Ref(id) if matches!(heap.get(*id), HeapData::DateTime(_)) => Ok(()),
+        _ => Err(ExcType::type_error_tzinfo_dt_arg(
+            method,
+            &dt.py_type_heap(heap).cpython_arg_name(heap, interns),
+        )),
     }
 }
 
@@ -280,4 +311,42 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
         let s = tzname_string(tz.offset_seconds, tz.name.as_deref());
         Ok(allocate_string(s, vm.heap))
     }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        // Each method takes the `dt` it would need to resolve a DST rule. A fixed
+        // offset has no such rule, so `take_dt_arg` validates and discards it.
+        match attr.string_id() {
+            Some(id) if id == StaticStrings::Utcoffset => {
+                take_dt_arg("timezone.utcoffset", args, vm)?;
+                let offset_seconds = self.get(vm.heap).offset_seconds;
+                Ok(CallResult::Value(utcoffset_value(Some(offset_seconds), vm.heap)))
+            }
+            Some(id) if id == StaticStrings::Tzname => {
+                take_dt_arg("timezone.tzname", args, vm)?;
+                let tz = self.get(vm.heap);
+                let name = tzname_string(tz.offset_seconds, tz.name.as_deref());
+                Ok(CallResult::Value(allocate_string(name, vm.heap)))
+            }
+            Some(id) if id == StaticStrings::Dst => {
+                take_dt_arg("timezone.dst", args, vm)?;
+                // A fixed offset never observes daylight saving.
+                Ok(CallResult::Value(Value::None))
+            }
+            _ => Err(ExcType::attribute_error_method(Type::TimeZone, attr, args, vm)),
+        }
+    }
+}
+
+/// Consumes the single `dt` argument shared by `utcoffset` / `tzname` / `dst`.
+///
+/// CPython qualifies the arity error (`timezone.dst() takes exactly one
+/// argument`) but names the bare method in the type error, so the qualified
+/// name is split apart here rather than passed as two literals per call site.
+fn take_dt_arg(qualified_name: &'static str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<()> {
+    let dt = args.get_one_arg(qualified_name, vm.heap)?;
+    defer_drop!(dt, vm);
+    let (_, method) = qualified_name
+        .split_once('.')
+        .expect("tzinfo method names are qualified as `timezone.<method>`");
+    check_tzinfo_dt_arg(method, dt, vm.heap, vm.interns)
 }

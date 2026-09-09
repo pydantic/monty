@@ -290,7 +290,8 @@ pub enum StaticStrings {
     PycachePrefix,
 
     // ==========================
-    // sys.float_info fields
+    // sys.float_info fields; `Min`/`Max` are shared with the `min`/`max` class
+    // constants of the `datetime` classes.
     FloatInfo,
     #[strum(serialize = "sys.float_info")]
     SysFloatInfo,
@@ -1199,7 +1200,7 @@ pub enum StaticStrings {
     /// `tzname()` method of `time`, `datetime` and `timezone`. (`dst()` reuses
     /// the `Dst` variant already interned for the `os` kwarg of the same name.)
     Tzname,
-    /// `timespec` keyword of `time.isoformat()`.
+    /// `timespec` keyword of `time.isoformat()` and `datetime.isoformat()`.
     Timespec,
     /// `functools.partial` type.
     Partial,
@@ -1390,6 +1391,13 @@ pub enum StaticStrings {
     /// `_nil` parameter of `copy.deepcopy()`, CPython's private sentinel.
     #[strum(serialize = "_nil")]
     NilSentinel,
+
+    // ==========================
+    // `datetime` strings, appended at the enum end for the same reason.
+    /// `datetime.combine()` class method.
+    Combine,
+    /// `resolution` class constant of the `datetime` classes.
+    Resolution,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

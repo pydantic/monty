@@ -77,6 +77,20 @@ impl Time {
         self.tzinfo
     }
 
+    /// The wall-clock components as `(hour, minute, second, microsecond)`.
+    ///
+    /// Widened to `i32` because the caller feeds them straight back into a
+    /// component-validating constructor; [`Time::to_components`] is the same
+    /// fields at their stored widths, plus `fold`. Used by `datetime.combine()`.
+    pub(crate) fn components_i32(&self) -> (i32, i32, i32, i32) {
+        (
+            i32::from(self.hour),
+            i32::from(self.minute),
+            i32::from(self.second),
+            i32::try_from(self.microsecond).expect("microsecond is always in 0..=999_999"),
+        )
+    }
+
     /// The wall-clock components and `fold`, for a value crossing to the host.
     ///
     /// Unlike the `datetime` equivalent this cannot fail: every field is bounded
@@ -234,6 +248,17 @@ pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult
     }
 
     Ok(Value::Ref(vm.heap.allocate(HeapData::Time(time))))
+}
+
+/// Allocates a naive `time` from already-in-range components.
+///
+/// For Rust-side construction where the values are known good (the `time.min` /
+/// `time.max` class constants); anything derived from user input must go
+/// through [`allocate`] so the components are validated.
+pub(crate) fn allocate_naive(hour: i32, minute: i32, second: i32, microsecond: i32, heap: &Heap) -> Value {
+    let time =
+        from_components(hour, minute, second, microsecond, 0).expect("caller guarantees in-range time components");
+    Value::Ref(heap.allocate(HeapData::Time(time)))
 }
 
 /// Argument shape for `time(hour=0, minute=0, second=0, microsecond=0,
@@ -430,7 +455,8 @@ pub(crate) fn format_time_strftime(time: &Time, format: &str) -> RunResult<Strin
     let anchored = NaiveDate::from_ymd_opt(1900, 1, 1)
         .expect("1900-01-01 is a valid date")
         .and_time(naive_time(time));
-    date::render_strftime(anchored.format_with_items(StrftimeItems::new_lenient(format)))
+    let format = date::rewrite_microsecond_directive(format);
+    date::render_strftime(anchored.format_with_items(StrftimeItems::new_lenient(&format)))
         .ok_or_else(date::invalid_strftime_error)
 }
 
